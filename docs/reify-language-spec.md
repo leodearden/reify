@@ -204,12 +204,16 @@ param wall_thickness : Length = auto(free)     // Free -- exploration mode
 |----------|-------------|
 | `Bool`   | Predicates, flags, gating of optional sub-structures |
 | `Int`    | Counts, indices, discrete quantities. Promotes to `Real` implicitly but not reverse |
-| `Real`   | General-purpose numeric. Dimensionless real number. Precision is an implementation concern |
+| `Real`   | Dimensionless real number. Alias for `Scalar<Dimensionless>` (Section 3.3.1). Precision is an implementation concern |
 | `String` | Names, labels, identifiers, human-readable descriptions |
 
 `Int` and `Real` are separate types. A bolt count is categorically different from a wall thickness. The type system catches continuous/discrete confusion. Precision (float32/float64/arbitrary) is abstracted away -- the toolchain decides based on context.
 
 **Subtyping rule:** `Int` promotes to `Real` implicitly, but `Real` does NOT promote to `Int`.
+
+**`Real` and the dimensional type system:** `Real` is identical to `Scalar<Dimensionless>` -- they are the same type. `Dimensionless` is the dimension whose exponent vector is all zeros. Bare real numbers participate in dimensional arithmetic naturally: `3.14 * 5mm` produces `Scalar<Length>` because `Scalar<Dimensionless> * Scalar<Length> = Scalar<Length>` (dimension exponent vectors add).
+
+**`Int` in dimensional arithmetic:** When `Int` appears in arithmetic with a dimensioned quantity, it promotes to `Real` (= `Scalar<Dimensionless>`) first. Thus `3 * 5mm` evaluates as `Scalar<Dimensionless> * Scalar<Length>` = `15mm`. When both operands are `Int`, no promotion occurs -- `Int` arithmetic stays `Int` (except division; see Section 5.1). An `Int` literal immediately followed by a unit (`5mm`) is a quantity literal (Section 2.6), not a promotion -- it directly produces a `Scalar<Length>`.
 
 ### 3.2 Physical Quantity Types and Dimensional Analysis
 
@@ -253,9 +257,9 @@ Type system distinguishes:
 - `Temperature - Temperature -> TemperatureDiff` (valid)
 - `Temperature + Temperature -> type error` (invalid)
 
-**Standard named dimension aliases (34 in `std.units.dimensions`):**
+**Standard named dimension aliases (35 in `std.units.dimensions`):**
 
-`Area`, `Volume`, `Velocity`, `Acceleration`, `AngularVelocity`, `AngularAcceleration`, `Frequency`, `Force`, `Torque`, `Energy`, `Power`, `Pressure`, `Stress` (= `Pressure`), `Strain` (= `Dimensionless`), `Density`, `MomentOfInertia`, `SectionModulus`, `SecondMomentOfArea`, `Stiffness`, `RotationalStiffness`, `Viscosity`, `KinematicViscosity`, `Voltage`, `Resistance`, `Capacitance`, `Inductance`, `Charge`, `MagneticFlux`, `MagneticFluxDensity`, `ElectricField`, `ThermalConductivity`, `SpecificHeat`, `HeatFlux`, `TemperatureDiff`, `Luminance`, `LuminousFlux`, `Illuminance`
+`Dimensionless` (all-zero exponent vector, identical to `Real`), `Area`, `Volume`, `Velocity`, `Acceleration`, `AngularVelocity`, `AngularAcceleration`, `Frequency`, `Force`, `Torque`, `Energy`, `Power`, `Pressure`, `Stress` (= `Pressure`), `Strain` (= `Dimensionless`), `Density`, `MomentOfInertia`, `SectionModulus`, `SecondMomentOfArea`, `Stiffness`, `RotationalStiffness`, `Viscosity`, `KinematicViscosity`, `Voltage`, `Resistance`, `Capacitance`, `Inductance`, `Charge`, `MagneticFlux`, `MagneticFluxDensity`, `ElectricField`, `ThermalConductivity`, `SpecificHeat`, `HeatFlux`, `TemperatureDiff`, `Luminance`, `LuminousFlux`, `Illuminance`
 
 ### 3.3 Geometric Types
 
@@ -289,8 +293,14 @@ Geometric types carry physical dimensions. `Point3<Length>` = position in physic
 **Scalar type:**
 
 ```
-Scalar<Q> = Tensor<0, N, Q>    // Rank-0 alias -- dimensioned number
+Scalar<Q: Dimension>           // Dimensioned number -- independent type
 ```
+
+`Scalar<Q>` is an independent type representing a single dimensioned value. Unlike `Vector` and higher-rank tensors, `Scalar` does not carry a spatial dimensionality parameter -- a rank-0 tensor has no spatial indices, so `N` is meaningless.
+
+`Scalar<Dimensionless>` is identical to `Real` (see Section 3.1).
+
+**Tensor conversion:** `Scalar<Q>` converts implicitly to `Tensor<0, N, Q>` for any `N`, and vice versa. This allows scalars to participate seamlessly in generic tensor expressions.
 
 **Tensor type:**
 
@@ -302,7 +312,8 @@ All indices range over the same spatial dimension N. Transforms covariantly/cont
 
 Subtype/alias relationships:
 - `Vector<N, Q> = Tensor<1, N, Q>` (rank-1 alias)
-- `Scalar<Q> = Tensor<0, N, Q>` (rank-0 alias)
+- `Scalar<Q>` is an independent type; converts to/from `Tensor<0, N, Q>` for any `N`
+- `Real = Scalar<Dimensionless>` (convenience alias; see Section 3.1)
 - `Point<N, Q>` is NOT a tensor -- separate affine-space type
 
 Tensor symmetry is expressed via trait (`Symmetric`), not type parameter. Allows implementation to optimize storage (6 vs. 9 components for symmetric 3x3) based on trait satisfaction.
@@ -857,6 +868,65 @@ a ^ n       -a          a % b       // modulo (integers only)
 
 All arithmetic is dimensionally checked. `5mm + 3mm` = `8mm`. `5mm + 3kg` = type error. `5mm * 3mm` = `15mm^2`.
 
+**Operator type rules:**
+
+`Int` promotes to `Real` (= `Scalar<Dimensionless>`) when the other operand is a dimensioned type. When both operands are `Int`, no promotion occurs (except `/`). Operations not listed are type errors.
+
+**Addition / subtraction (`+`, `-`):**
+
+| Left | Op | Right | Result |
+|------|----|-------|--------|
+| `Int` | +, - | `Int` | `Int` |
+| `Scalar<Q>` | +, - | `Scalar<Q>` | `Scalar<Q>` (same `Q` required) |
+| `Vector<N,Q>` | +, - | `Vector<N,Q>` | `Vector<N,Q>` |
+| `Point<N,Q>` | + | `Vector<N,Q>` | `Point<N,Q>` |
+| `Vector<N,Q>` | + | `Point<N,Q>` | `Point<N,Q>` |
+| `Point<N,Q>` | - | `Point<N,Q>` | `Vector<N,Q>` |
+| `Matrix<M,N,Q>` | +, - | `Matrix<M,N,Q>` | `Matrix<M,N,Q>` |
+| `Tensor<R,N,Q>` | +, - | `Tensor<R,N,Q>` | `Tensor<R,N,Q>` |
+
+`Point + Point` is a type error. Temperature addition follows Section 3.2 rules.
+
+**Multiplication (`*`):**
+
+| Left | Right | Result |
+|------|-------|--------|
+| `Int` | `Int` | `Int` |
+| `Scalar<Q1>` | `Scalar<Q2>` | `Scalar<Q1*Q2>` |
+| `Scalar<Q>` | `Vector<N,Q2>` | `Vector<N, Q*Q2>` |
+| `Scalar<Q>` | `Matrix<M,N,Q2>` | `Matrix<M,N, Q*Q2>` |
+| `Scalar<Q>` | `Tensor<R,N,Q2>` | `Tensor<R,N, Q*Q2>` |
+| `Matrix<M,K,Q1>` | `Matrix<K,N,Q2>` | `Matrix<M,N, Q1*Q2>` |
+| `Matrix<M,K,Q1>` | `Vector<K,Q2>` | `Vector<M, Q1*Q2>` |
+
+Scalar-multiply is commutative (right-operand forms omitted). `Q1*Q2` means element-wise addition of dimension exponent vectors. `Vector * Vector` is not defined -- use `dot()` or `cross()`.
+
+**Division (`/`):**
+
+| Left | Right | Result |
+|------|-------|--------|
+| `Int` | `Int` | `Real` |
+| `Scalar<Q1>` | `Scalar<Q2>` | `Scalar<Q1/Q2>` |
+| `Vector<N,Q>` | `Scalar<Q2>` | `Vector<N, Q/Q2>` |
+| `Matrix<M,N,Q>` | `Scalar<Q2>` | `Matrix<M,N, Q/Q2>` |
+| `Tensor<R,N,Q>` | `Scalar<Q2>` | `Tensor<R,N, Q/Q2>` |
+
+`Int / Int` produces `Real` -- no silent truncation. Use `floor(a / b)` for truncating integer division. Division by a non-scalar is not defined; use `inverse()` for matrices.
+
+**Exponentiation (`^`):**
+
+| Base | Exponent | Result |
+|------|----------|--------|
+| `Int` | `Int` (>= 0) | `Int` |
+| `Real` | `Real` | `Real` |
+| `Scalar<Q>` | integer literal `n` | `Scalar<Q^n>` |
+
+`Scalar<Q> ^ n` scales the dimension exponent vector by `n`. Non-integer exponents on dimensioned quantities are type errors in v0.1 (use `sqrt` for half-integer exponents).
+
+**Unary negation (`-`) and modulo (`%`):**
+
+Negation is defined for `Int`, `Scalar<Q>`, `Vector<N,Q>`, `Matrix<M,N,Q>`, `Tensor<R,N,Q>` -- returns the same type. Modulo is `Int % Int -> Int` only.
+
 ### 5.2 Comparison Operators
 
 ```
@@ -877,6 +947,22 @@ Equality is structural for value types, identity for structure references.
 - **Identity equality (`==` on geometry):** Compares specification identity (same evaluation graph node). Cheap, exact, deterministic.
 - **Geometric equivalence (`geo_equiv`):** `fn geo_equiv(a: Geometry, b: Geometry, tolerance: Length) -> Bool`. Expensive, approximate, explicitly requested.
 
+**Comparison type rules:**
+
+| Type | `==` `!=` | `<` `>` `<=` `>=` |
+|------|-----------|---------------------|
+| `Bool` | yes | no |
+| `Int` | yes | yes |
+| `Scalar<Q>` | yes (same `Q`) | yes (same `Q`) |
+| `String` | yes | no |
+| `Vector<N,Q>`, `Point<N,Q>` | yes (same `N`, `Q`) | no |
+| `Matrix`, `Tensor` | yes (same shape, `Q`) | no |
+| `Option<T>` | yes (if `T` supports `==`) | no |
+| Enum variants | yes (same enum) | no |
+| Geometry types | identity only (see above) | no |
+
+All comparisons return `Bool`. `Int` promotes to `Real` when compared with `Scalar<Q>`. Ordering (`<`, `>`, `<=`, `>=`) is defined only for scalar numeric types.
+
 ### 5.3 Logical Operators
 
 ```
@@ -885,6 +971,8 @@ a implies b
 ```
 
 Keywords, not symbols. `and` and `or` are used instead of `&&` and `||`.
+
+**Logical type rules:** All logical operators (`and`, `or`, `not`, `implies`) take `Bool` operands and return `Bool`. No truthy/falsy coercion -- `0`, `none`, empty collections, and `""` are not implicitly boolean.
 
 ### 5.4 Quantifiers (`forall`, `exists`)
 
@@ -1292,7 +1380,7 @@ Every module implicitly imports `std.prelude`. The user never writes this import
 **Prelude contents (v0.1):**
 
 - **Primitive types:** `Bool`, `Int`, `Real`, `String`
-- **Physical quantity dimension aliases:** All 34 named dimensions
+- **Physical quantity dimension aliases:** All 35 named dimensions (including `Dimensionless`)
 - **Unit literals:** All SI units with prefixes, core imperial units, `pi`
 - **Core math:** `abs`, `min`, `max`, `clamp`, `sqrt`, `lerp`, `remap`, `pow`, `log`, `log10`, `exp`, `sign`, `floor`, `ceil`, `round`, `mod`
 - **Trigonometry:** `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`
