@@ -1,0 +1,1077 @@
+# Reify Standard Library Reference
+
+**Version:** 0.1
+**Date:** 2026-03-13
+**Status:** Draft
+**Companion to:** Reify Language Specification v0.1
+
+---
+
+This document is the complete API reference for the Reify standard library. It is a companion to the Reify Language Specification, which defines the core language. The prelude (automatically imported into every module) is defined in the language specification (Section 7.6). This document covers all `std.*` modules beyond the prelude.
+
+---
+
+## Module Overview
+
+```
+std
+  prelude
+  math
+    numeric
+    trig
+    linalg
+    complex
+  units
+    dimensions
+    si
+    imperial
+    constants
+  geometry
+    constructors
+    primitive
+    compound
+    boolean
+    modify
+    sweep
+    transform
+    pattern
+    query
+    traits
+  structural
+    traits
+  ports
+    mod.ri
+    mechanical
+    electrical
+    thermal
+    fluid
+  materials
+    mod.ri
+    mechanical
+    thermal
+    electrical
+    optical
+    chemical
+  tolerancing
+    dimensional
+    geometric
+    surface
+  process
+    mod.ri         // Process trait, categories
+    dfm            // DFMRule trait
+  io
+    mod.ri         // Source, Sink, Input, Buy, Output, Discard
+    formats        // STEP, STL, 3MF, Display, PointCloud
+  analysis
+    mod.ri         // Analysis trait
+    stress         // von_mises, principal_stresses, safety_factor
+    result         // AnalysisResult trait
+  fields
+    mod.ri         // Field<D,C>
+    interpolation  // constant_field, fn_field, from_samples
+    spatial        // compose, sample, restrict, differential operators
+  determinacy
+    mod.ri         // determined(), constrained(), undetermined()
+    purposes       // design_review, simulation_ready
+```
+
+---
+
+## 1. `std.math`
+
+### 1.1 `std.math.numeric`
+
+```
+fn abs<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q>
+fn min<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>) -> Scalar<Q>
+fn max<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>) -> Scalar<Q>
+fn clamp<Q: Dimension>(x: Scalar<Q>, lo: Scalar<Q>, hi: Scalar<Q>) -> Scalar<Q>
+fn lerp<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>, t: Real) -> Scalar<Q>
+fn remap(x: Real, from_lo: Real, from_hi: Real, to_lo: Real, to_hi: Real) -> Real
+fn sqrt<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q^(1/2)>   // Compiler intrinsic -- halves even exponents
+fn pow(base: Real, exp: Real) -> Real                      // Dimensionless only for non-integer exp
+fn log(x: Real) -> Real
+fn log10(x: Real) -> Real
+fn exp(x: Real) -> Real
+fn sign<Q: Dimension>(x: Scalar<Q>) -> Real
+fn floor(x: Real) -> Int
+fn ceil(x: Real) -> Int
+fn round(x: Real) -> Int
+fn mod(x: Int, y: Int) -> Int
+```
+
+**Dimensional `sqrt`:** `sqrt` is a compiler intrinsic that halves even exponents. `pow` with non-integer exponents is restricted to dimensionless in v0.1. `pow` with integer literal exponents on dimensioned quantities works through repeated multiplication.
+
+### 1.2 `std.math.trig`
+
+```
+fn sin(x: Angle) -> Real
+fn cos(x: Angle) -> Real
+fn tan(x: Angle) -> Real
+fn asin(x: Real) -> Angle
+fn acos(x: Real) -> Angle
+fn atan(x: Real) -> Angle
+fn atan2<Q: Dimension>(y: Scalar<Q>, x: Scalar<Q>) -> Angle
+fn sinh(x: Real) -> Real
+fn cosh(x: Real) -> Real
+fn tanh(x: Real) -> Real
+```
+
+Trig functions take `Angle` (not `Real`), enforcing the 8th-dimension distinction.
+
+### 1.3 `std.math.linalg`
+
+```
+fn dot<N: Nat, Q1: Dimension, Q2: Dimension>(a: Vector<N,Q1>, b: Vector<N,Q2>) -> Scalar<Q1*Q2>
+fn cross<Q1: Dimension, Q2: Dimension>(a: Vector<3,Q1>, b: Vector<3,Q2>) -> Vector<3, Q1*Q2>
+fn normalize<N: Nat, Q: Dimension>(v: Vector<N,Q>) -> Vector<N, Dimensionless>
+fn magnitude<N: Nat, Q: Dimension>(v: Vector<N,Q>) -> Scalar<Q>
+fn determinant<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Scalar<Q^N>
+fn inverse<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Matrix<N,N,Q^(-1)>
+fn transpose<M: Nat, N: Nat, Q: Dimension>(m: Matrix<M,N,Q>) -> Matrix<N,M,Q>
+fn outer<N: Nat, M: Nat, Q1: Dimension, Q2: Dimension>(a: Vector<N,Q1>, b: Vector<M,Q2>) -> Matrix<N,M,Q1*Q2>
+fn trace<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Scalar<Q>
+fn eigenvalues<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> List<Scalar<Q>>
+```
+
+### 1.4 `std.math.complex`
+
+```
+Complex<Q: Dimension>:
+    re : Scalar<Q>
+    im : Scalar<Q>
+
+fn complex<Q>(re: Scalar<Q>, im: Scalar<Q>) -> Complex<Q>
+fn real<Q>(c: Complex<Q>) -> Scalar<Q>
+fn imag<Q>(c: Complex<Q>) -> Scalar<Q>
+fn conjugate<Q>(c: Complex<Q>) -> Complex<Q>
+fn complex_magnitude<Q>(c: Complex<Q>) -> Scalar<Q>
+fn phase<Q>(c: Complex<Q>) -> Angle
+```
+
+---
+
+## 2. `std.units`
+
+### 2.1 `std.units.dimensions`
+
+34 named dimension aliases (see Section 3.2).
+
+### 2.2 `std.units.si`
+
+Complete SI base units (`m`, `kg`, `s`, `A`, `K`, `rad`, `mol`, `cd`) with all SI prefixes (quecto through quetta). Derived units include: `N`, `J`, `W`, `Pa`, `V`, `ohm`, `S`, `F`, `H`, `Wb`, `T`, `Hz`, `rpm`, `rad_per_s`, `Pa_s`, `lm`, `lx`, `Bq`, `Gy`, `Sv`, `eV`, `bar`, `mbar`, with all common prefixes.
+
+Temperature offset: `degC : Temperature offset 273.15K`
+
+### 2.3 `std.units.imperial`
+
+Minimal set: `in` (= 25.4mm), `ft`, `thou`, `yd`, `lb`, `oz`, `lbf`, `psi`, `ksi`, `degF`, `fl_oz`, `gal`.
+
+### 2.4 `std.units.constants`
+
+```
+let pi : Real = 3.14159265358979...
+let e : Real = 2.71828182845904...
+let g : Acceleration = 9.80665m/s^2
+let c : Velocity = 299792458m/s
+let boltzmann : Energy / Temperature = 1.380649e-23J/K
+let avogadro : Real / Amount = 6.02214076e23/mol
+let planck : Energy * Time = 6.62607015e-34J*s
+let stefan_boltzmann : Power / (Area * Temperature^4) = 5.670374419e-8W/(m^2*K^4)
+let vacuum_permittivity : Capacitance / Length = 8.8541878128e-12F/m
+let vacuum_permeability : Inductance / Length = 1.25663706212e-6H/m
+let gas_constant : Energy / (Amount * Temperature) = 8.314462618J/(mol*K)
+let elementary_charge : Charge = 1.602176634e-19A*s
+```
+
+---
+
+## 3. `std.geometry`
+
+### 3.1 `std.geometry.constructors` (in prelude)
+
+```
+fn point2<Q: Dimension>(x: Scalar<Q>, y: Scalar<Q>) -> Point2<Q>
+fn point3<Q: Dimension>(x: Scalar<Q>, y: Scalar<Q>, z: Scalar<Q>) -> Point3<Q>
+fn vec2<Q: Dimension>(x: Scalar<Q>, y: Scalar<Q>) -> Vector2<Q>
+fn vec3<Q: Dimension>(x: Scalar<Q>, y: Scalar<Q>, z: Scalar<Q>) -> Vector3<Q>
+
+fn orient_axis_angle(axis: Vector3<Dimensionless>, angle: Angle) -> Orientation<3>
+fn orient_quaternion(w: Real, x: Real, y: Real, z: Real) -> Orientation<3>
+fn orient_euler(convention: EulerConvention, a: Angle, b: Angle, c: Angle) -> Orientation<3>
+fn orient_basis(x_axis: Vector3<Dimensionless>, y_axis: Vector3<Dimensionless>, z_axis: Vector3<Dimensionless>) -> Orientation<3>
+fn orient_look_at(forward: Vector3<Dimensionless>, up: Vector3<Dimensionless>) -> Orientation<3>
+let orient_identity : Orientation<3>
+
+fn frame3(origin: Point3<Length>, basis: Orientation<3>) -> Frame<3>
+let frame3_identity : Frame<3>
+fn transform3(rotation: Orientation<3>, translation: Vector3<Length>) -> Transform<3>
+let transform3_identity : Transform<3>
+
+fn project(point: Point3<Length>, to: Frame<3>) -> Point3<Length>
+fn project(vector: Vector3<Length>, to: Frame<3>) -> Vector3<Length>
+
+enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX }
+```
+
+### 3.2 `std.geometry.primitive`
+
+**3D solids:**
+
+```
+fn box(width: Length, depth: Length, height: Length) -> Solid
+fn box_centered(width: Length, depth: Length, height: Length) -> Solid
+fn cylinder(radius: Length, height: Length) -> Solid
+fn cylinder_centered(radius: Length, height: Length) -> Solid
+fn cone(bottom_radius: Length, top_radius: Length, height: Length) -> Solid
+fn sphere(radius: Length) -> Solid
+fn torus(major_radius: Length, minor_radius: Length) -> Solid
+fn wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Solid
+fn half_space(plane: Plane) -> Solid     // Unbounded -- Solid no longer implies Bounded
+```
+
+**2D shapes:**
+
+```
+fn rectangle(width: Length, height: Length) -> Surface
+fn circle(radius: Length) -> Surface
+fn polygon(vertices: List<Point2<Length>>) -> Surface
+fn ellipse(semi_major: Length, semi_minor: Length) -> Surface
+```
+
+**Curves:**
+
+```
+fn line_segment<N: Nat>(start: Point<N,Length>, end: Point<N,Length>) -> Curve
+fn arc(center: Point3<Length>, radius: Length, start_angle: Angle, end_angle: Angle) -> Curve
+fn helix(radius: Length, pitch: Length, height: Length) -> Curve
+fn interp<N: Nat>(points: List<Point<N,Length>>) -> Curve
+fn bezier<N: Nat>(control_points: List<Point<N,Length>>) -> Curve
+fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, knots: List<Real>, degree: Int) -> Curve
+fn nurbs_surface(/* NURBS surface parameters */) -> Surface
+```
+
+### 3.3 `std.geometry.compound`
+
+```
+fn tube(outer_radius: Length, inner_radius: Length, height: Length) -> Solid
+fn pipe(path: Curve, radius: Length) -> Solid
+```
+
+### 3.4 `std.geometry.boolean`
+
+```
+fn union(a: Solid, b: Solid) -> Solid
+fn union_all(solids: List<Solid>) -> Solid
+fn intersection(a: Solid, b: Solid) -> Solid
+fn intersection_all(solids: List<Solid>) -> Solid
+fn difference(a: Solid, b: Solid) -> Solid
+// Same for Surface (no _all variants)
+fn union(a: Surface, b: Surface) -> Surface
+fn intersection(a: Surface, b: Surface) -> Surface
+fn difference(a: Surface, b: Surface) -> Surface
+```
+
+### 3.5 `std.geometry.modify`
+
+```
+fn fillet(solid: Solid, edges: List<Curve>, radius: Length) -> Solid
+fn fillet_all(solid: Solid, radius: Length) -> Solid
+fn chamfer(solid: Solid, edges: List<Curve>, distance: Length) -> Solid
+fn chamfer_asymmetric(solid: Solid, edges: List<Curve>, distance1: Length, distance2: Length) -> Solid
+fn shell(solid: Solid, thickness: Length) -> Solid
+fn shell_open(solid: Solid, thickness: Length, open_faces: List<Surface>) -> Solid
+fn offset_solid(solid: Solid, distance: Length) -> Solid
+fn offset_surface(surface: Surface, distance: Length) -> Surface
+fn offset_curve(curve: Curve, distance: Length) -> Curve             // 2D unambiguous
+fn offset_curve(curve: Curve, distance: Length, reference: Surface) -> Curve  // 3D with reference
+fn offset_curve(curve: Curve, distance: Length, direction: Vector3<Dimensionless>) -> Curve  // 3D with direction
+fn draft(solid: Solid, faces: List<Surface>, angle: Angle, neutral_plane: Plane) -> Solid
+fn split(solid: Solid, tool: Plane) -> List<Solid>                   // + multiple overloads
+fn thicken(surface: Surface, thickness: Length) -> Solid
+fn thicken_asymmetric(surface: Surface, thickness_above: Length, thickness_below: Length) -> Solid
+```
+
+### 3.6 `std.geometry.sweep`
+
+```
+fn extrude(profile: Surface, distance: Length) -> Solid
+fn extrude_to(profile: Surface, target: Surface) -> Solid
+fn extrude_symmetric(profile: Surface, distance: Length) -> Solid
+fn revolve(profile: Surface, axis: Axis, angle: Angle) -> Solid
+fn revolve_full(profile: Surface, axis: Axis) -> Solid
+fn sweep(profile: Surface, path: Curve) -> Solid
+fn sweep_guided(profile: Surface, path: Curve, guide: Curve) -> Solid
+fn loft(profiles: List<Surface>) -> Solid
+fn loft_guided(profiles: List<Surface>, guides: List<Curve>) -> Solid
+```
+
+### 3.7 `std.geometry.transform`
+
+```
+fn translate<G: Transformable>(geometry: G, displacement: Vector3<Length>) -> G
+fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G
+fn rotate<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G
+fn rotate_around<G: Transformable>(geometry: G, point: Point3<Length>, axis: Vector3<Dimensionless>, angle: Angle) -> G
+fn scale<G: Transformable>(geometry: G, factor: Real) -> G              // Uniform
+fn scale<G: Transformable>(geometry: G, factors: Vector3<Real>) -> G    // Per-axis (non-rigid)
+fn apply_transform<G: Transformable>(geometry: G, transform: Transform<3>) -> G
+```
+
+Note: `scale` is non-rigid -- does not compose with `Transform<3>`.
+
+### 3.8 `std.geometry.pattern`
+
+```
+fn mirror<G: Transformable>(geometry: G, plane: Plane) -> G
+fn linear_pattern<G: Transformable>(geometry: G, direction: Vector3<Length>, count: Int, spacing: Length) -> List<G>
+fn circular_pattern<G: Transformable>(geometry: G, axis: Axis, count: Int, angle: Angle) -> List<G>
+fn linear_pattern_2d<G: Transformable>(geometry: G, dir1: Vector3<Length>, count1: Int, spacing1: Length, dir2: Vector3<Length>, count2: Int, spacing2: Length) -> List<G>
+fn arbitrary_pattern<G: Transformable>(geometry: G, transforms: List<Transform<3>>) -> List<G>
+```
+
+Patterns return `List` for per-instance constraints; compose with `union_all` for merged solid.
+
+### 3.9 `std.geometry.query`
+
+**Distance and containment:**
+
+```
+fn distance<G1: Geometry, G2: Geometry>(a: G1, b: G2) -> Scalar<Length>
+fn closest_point<G: Geometry>(point: Point3<Length>, geometry: G) -> Point3<Length>
+fn contains(solid: Solid, point: Point3<Length>) -> Bool
+fn on<G: Geometry>(point: Point3<Length>, geometry: G) -> Bool
+fn intersects(a: Geometry, b: Geometry) -> Bool
+fn geo_equiv(a: Geometry, b: Geometry, tolerance: Length) -> Bool
+```
+
+**Angular:**
+
+```
+fn angle(a: Vector3<Dimensionless>, b: Vector3<Dimensionless>) -> Angle
+fn angle_between_surfaces(a: Surface, b: Surface) -> Angle
+```
+
+**Measurement:**
+
+```
+fn area(surface: Surface) -> Scalar<Area>
+fn area(solid: Solid) -> Scalar<Area>          // Surface area
+fn volume(solid: Solid) -> Scalar<Volume>
+fn length(curve: Curve) -> Scalar<Length>
+fn perimeter(surface: Surface) -> Scalar<Length>
+```
+
+**Mass properties:**
+
+```
+fn centroid(solid: Solid) -> Point3<Length>
+fn center_of_mass(solid: Solid, density: Scalar<Density>) -> Point3<Length>
+fn moment_of_inertia(solid: Solid, density: Scalar<Density>) -> Tensor<2, 3, MomentOfInertia>
+fn bounding_box<G: Geometry>(geometry: G) -> BoundingBox
+```
+
+**Surface/curve analysis:**
+
+```
+fn normal(surface: Surface, at: Point3<Length>) -> Vector3<Dimensionless>
+fn curvature(curve: Curve, at: Point3<Length>) -> Scalar<Length^(-1)>
+fn curvature(surface: Surface, at: Point3<Length>) -> Matrix<2, 2, Length^(-1)>
+```
+
+**Topology selectors:**
+
+```
+fn edges(solid: Solid) -> List<Curve>
+fn faces(solid: Solid) -> List<Surface>
+fn adjacent_faces(solid: Solid, face: Surface) -> List<Surface>
+fn shared_edges(face1: Surface, face2: Surface) -> List<Curve>
+fn edges_by_length(solid: Solid, range: Range<Length>) -> List<Curve>
+fn faces_by_area(solid: Solid, range: Range<Area>) -> List<Surface>
+fn faces_by_normal(solid: Solid, direction: Vector3<Dimensionless>, tolerance: Angle) -> List<Surface>
+fn edges_parallel_to(solid: Solid, direction: Vector3<Dimensionless>, tolerance: Angle) -> List<Curve>
+fn edges_at_height(solid: Solid, height: Length, tolerance: Length) -> List<Curve>
+```
+
+### 3.10 `std.geometry.traits`
+
+```
+trait Geometry                                    // Supertrait for all geometric entities
+trait Transformable                               // Can be spatially transformed
+trait Closed                                      // Boundary is closed
+trait Manifold                                    // 2-manifold faces
+trait Orientable                                  // Consistently orientable
+trait Convex                                      // Convex geometry
+trait Connected                                   // Single connected component
+trait Bounded                                     // Finite extent
+trait Watertight : Closed + Manifold              // Printable/meshable
+
+structure def Plane {
+    param origin : Point3<Length>
+    param normal : Vector3<Dimensionless>
+}
+
+structure def Axis {
+    param origin : Point3<Length>
+    param direction : Vector3<Dimensionless>
+}
+
+structure def BoundingBox {
+    param min : Point3<Length>
+    param max : Point3<Length>
+    let size = max - min
+    let center = point3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2)
+}
+
+fn plane_xy(z: Length) -> Plane
+fn plane_xz(y: Length) -> Plane
+fn plane_yz(x: Length) -> Plane
+fn axis_x(origin: Point3<Length>) -> Axis
+fn axis_y(origin: Point3<Length>) -> Axis
+fn axis_z(origin: Point3<Length>) -> Axis
+```
+
+---
+
+## 4. `std.structural`
+
+```
+trait Physical {
+    param geometry : Solid
+    param material : Material
+    let mass = volume(geometry) * material.density
+    let centroid = centroid(geometry)
+}
+
+trait Rigid : Physical {
+    let moment_of_inertia = moment_of_inertia(geometry, material.density)
+}
+
+trait Flexible : Physical {
+    param stiffness_model : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+}
+
+trait ElasticallyDeformable : Flexible
+trait Plastic : Flexible {
+    param yield_point : Pressure
+}
+
+trait ThermallyConductive : Physical
+trait ElectricallyConductive : Physical
+trait Sealed {
+    param seal_rating : Pressure
+}
+```
+
+---
+
+## 5. `std.ports`
+
+### 5.1 Base Ports
+
+```
+trait Port {
+    param direction : Directionality = Directionality.Bidi
+}
+
+enum Directionality { In, Out, Bidi }
+
+trait LocatedPort : Port {
+    param frame : Frame<3>
+}
+
+trait RegionPort : LocatedPort {
+    param region : Geometry
+}
+```
+
+Compatibility rules: `In` <-> `Out` (valid), `Bidi` <-> anything (valid), `In` <-> `In` (type error), `Out` <-> `Out` (type error).
+
+### 5.2 `std.ports.mechanical`
+
+```
+trait MechanicalPort : LocatedPort {
+    param max_load : Force = undef
+    param max_torque : Torque = undef
+}
+
+trait MatingFace : MechanicalPort {
+    param contact_area : Area
+    param surface_finish : Length
+    param flatness : Length
+}
+
+trait Bore : MechanicalPort {
+    param diameter : Length
+    param depth : Length
+    param fit : FitType
+}
+
+trait Shaft : MechanicalPort {
+    param diameter : Length
+    param length : Length
+    param fit : FitType
+}
+
+trait ThreadedPort : MechanicalPort {
+    param thread_spec : ThreadSpec
+}
+
+structure def ThreadSpec {
+    param system : ThreadSystem
+    param nominal_diameter : Length
+    param pitch : Length
+    param class : ThreadClass
+    param direction : ThreadTighteningDirection = ThreadTighteningDirection.Clockwise
+    let clearance_hole = ...    // from standards tables
+    let tap_drill = ...
+    let minor_diameter = ...
+    let pitch_diameter = ...
+    param thread_form : Geometry = undef
+}
+
+enum ThreadSystem { ISO_Metric, ISO_Metric_Fine, UNC, UNF }
+enum ThreadClass { Class_6g6H, Class_4g6H }
+enum ThreadTighteningDirection { Clockwise, Counterclockwise }
+
+trait MotivePort : MechanicalPort
+trait RotaryPort : MotivePort {
+    param max_speed : AngularVelocity
+    param max_torque : Torque
+    param axis : Axis
+}
+trait LinearPort : MotivePort {
+    param max_speed : Velocity
+    param max_force : Force
+    param stroke : Length
+    param axis : Axis
+}
+trait GuidePort : MechanicalPort {
+    param degrees_of_freedom : Int
+}
+trait LinearGuidePort : GuidePort {
+    constraint degrees_of_freedom == 1
+}
+trait RotaryGuidePort : GuidePort {
+    constraint degrees_of_freedom == 1
+    param max_radial_load : Force
+    param max_axial_load : Force
+}
+```
+
+### 5.3 `std.ports.electrical`
+
+```
+trait ElectricalPort : Port {
+    param voltage_rating : Voltage
+    param current_rating : Current
+}
+trait PowerPort : ElectricalPort {
+    param power_rating : Power
+}
+trait SignalPort : ElectricalPort {
+    param signal_type : SignalType
+    param impedance : Resistance = undef
+}
+enum SignalType { Analog, Digital, PWM, Differential }
+trait PinPort : ElectricalPort + LocatedPort {
+    param pin_id : String
+}
+```
+
+### 5.4 `std.ports.thermal`
+
+```
+trait ThermalPort : Port {
+    param temperature : Temperature = undef
+    param heat_flux : HeatFlux = undef
+    param thermal_resistance : Resistance = undef   // thermal resistance (dimension: Temperature*Time^3/(Mass*Length^2))
+}
+trait ThermalContactPort : ThermalPort + RegionPort {
+    param contact_area : Area
+    param contact_conductance : ThermalConductivity = undef
+}
+```
+
+### 5.5 `std.ports.fluid`
+
+```
+trait FluidPort : Port {
+    param pressure_range : Range<Pressure>
+    param flow_rate_range : Range<Scalar<Volume/Time>>
+    param fluid_type : FluidType
+}
+enum FluidType { Liquid, Gas, TwoPhase }
+trait PipedFluidPort : FluidPort + LocatedPort {
+    param inner_diameter : Length
+    param connection_type : PipeConnectionType
+}
+enum PipeConnectionType { Threaded, Flanged, Compression, PushFit, Welded }
+```
+
+### 5.6 Multi-Domain Ports
+
+Interfaces (port bundles) are simply traits that require multiple ports with geometric constraints. No new concept is needed. Multi-domain ports compose via trait inheritance:
+
+```
+trait HydraulicPort : FluidPort + MechanicalPort {
+    param fitting_type : FittingStandard
+}
+```
+
+---
+
+## 6. `std.materials`
+
+### 6.1 Base
+
+```
+trait Material {
+    param density : Density
+    param name : String
+}
+
+trait TemperatureDependent {
+    param reference_temperature : Temperature = 293.15K
+}
+```
+
+### 6.2 `std.materials.mechanical`
+
+```
+trait Elastic : Material {
+    param youngs_modulus : Pressure
+    param poissons_ratio : Real
+    param shear_modulus : Pressure = undef
+    constraint 0 < poissons_ratio < 0.5
+}
+trait Strong : Material {
+    param yield_strength : Pressure
+    param ultimate_tensile_strength : Pressure
+    param compressive_strength : Pressure = undef
+    constraint ultimate_tensile_strength >= yield_strength
+}
+trait Hard : Material {
+    param hardness_value : Real
+    param hardness_scale : HardnessScale
+}
+enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D }
+trait FatigueRated : Material {
+    param fatigue_limit : Pressure = undef
+    param fatigue_strength_at : Pressure = undef
+    param fatigue_cycles : Int = undef
+}
+trait FractureTough : Material {
+    param fracture_toughness : Scalar<Pressure * Length^(1/2)>
+}
+trait Ductile : Material {
+    param elongation_at_break : Real
+    param reduction_of_area : Real = undef
+}
+trait ImpactResistant : Material {
+    param charpy_impact : Energy = undef
+    param izod_impact : Energy = undef
+}
+trait Damping : Material {
+    param loss_factor : Real
+}
+```
+
+### 6.3 `std.materials.thermal`
+
+```
+trait ThermallyCharacterized : Material {
+    param thermal_conductivity : ThermalConductivity
+    param specific_heat : SpecificHeat
+    param thermal_expansion : Real / Temperature     // coefficient of linear expansion
+    param melting_point : Temperature = undef
+    param max_service_temperature : Temperature = undef
+    param glass_transition : Temperature = undef
+}
+trait Refractory : ThermallyCharacterized {
+    constraint max_service_temperature >= 1500degC
+}
+```
+
+### 6.4 `std.materials.electrical`
+
+```
+trait ElectricallyCharacterized : Material {
+    param resistivity : Scalar<Voltage * Length / Current>
+    param dielectric_constant : Real = undef
+    param dielectric_strength : Scalar<Voltage / Length> = undef
+    param magnetic_permeability : Real = undef
+}
+trait Conductive : ElectricallyCharacterized {
+    constraint resistivity < 1e-4ohm*m
+}
+trait Insulating : ElectricallyCharacterized {
+    constraint resistivity > 1e6ohm*m
+    constraint determined(dielectric_strength)
+}
+```
+
+### 6.5 `std.materials.optical`
+
+```
+trait OpticallyCharacterized : Material {
+    param refractive_index : Real
+    param absorption_coefficient : Real = undef
+    param transmittance : Real = undef
+    param reference_thickness : Length = undef
+}
+```
+
+### 6.6 `std.materials.chemical`
+
+```
+trait CorrosionResistant : Material {
+    param corrosion_class : CorrosionClass
+}
+enum CorrosionClass { C1, C2, C3, C4, C5 }
+trait Biocompatible : Material {
+    param biocompatibility_class : BiocompatibilityClass
+}
+enum BiocompatibilityClass { USP_Class_I, USP_Class_VI, ISO_10993 }
+```
+
+---
+
+## 7. `std.tolerancing`
+
+### 7.1 `std.tolerancing.dimensional`
+
+```
+structure def DimensionalTolerance {
+    param nominal : Length
+    param upper_deviation : Length
+    param lower_deviation : Length
+    let upper_limit = nominal + upper_deviation
+    let lower_limit = nominal + lower_deviation
+    let tolerance_band = upper_deviation - lower_deviation
+    constraint upper_deviation >= lower_deviation
+}
+
+fn symmetric_tolerance(nominal: Length, deviation: Length) -> DimensionalTolerance
+fn limit_tolerance(upper: Length, lower: Length) -> DimensionalTolerance
+
+structure def Fit {
+    param hole_tolerance : DimensionalTolerance
+    param shaft_tolerance : DimensionalTolerance
+    param fit_type : FitCategory
+    let max_clearance = hole_tolerance.upper_limit - shaft_tolerance.lower_limit
+    let min_clearance = hole_tolerance.lower_limit - shaft_tolerance.upper_limit
+}
+enum FitCategory { Clearance, Transition, Interference }
+
+structure def ISOToleranceGrade {
+    param grade : Int
+    param nominal_range : Range<Length>
+    let tolerance_value = ...  // from standards tables
+}
+```
+
+### 7.2 `std.tolerancing.geometric`
+
+```
+trait GeometricTolerance {
+    param tolerance_value : Length
+    param feature : Geometry
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+    let nominal_zone = ...
+}
+enum MaterialCondition { MMC, LMC, RFS }
+
+structure def Datum {
+    param label : String
+    param feature : Geometry
+}
+
+// Form tolerances (no datum)
+trait FormTolerance : GeometricTolerance
+structure def Flatness : FormTolerance { ... }
+structure def Straightness : FormTolerance { ... }
+structure def Circularity : FormTolerance { ... }
+structure def Cylindricity : FormTolerance { ... }
+
+// Orientation tolerances (require datums)
+trait OrientationTolerance : GeometricTolerance { ... }
+structure def Parallelism : OrientationTolerance { ... }
+structure def Perpendicularity : OrientationTolerance { ... }
+structure def Angularity : OrientationTolerance {
+    param nominal_angle : Angle
+}
+
+// Location tolerances
+trait LocationTolerance : GeometricTolerance { ... }
+structure def Position : LocationTolerance { ... }
+structure def Concentricity : LocationTolerance { ... }
+structure def Symmetry : LocationTolerance { ... }
+
+// Runout
+structure def CircularRunout : GeometricTolerance { ... }
+structure def TotalRunout : GeometricTolerance { ... }
+
+// Profile
+structure def ProfileOfSurface : GeometricTolerance { ... }
+structure def ProfileOfLine : GeometricTolerance { ... }
+
+// Universal conformance
+constraint def Conforms {
+    param tolerance : GeometricTolerance
+    // Handles MMC/LMC/RFS material condition expansion
+}
+```
+
+### 7.3 `std.tolerancing.surface`
+
+```
+structure def SurfaceFinish {
+    param parameter : SurfaceParameter
+    param value : Length
+    param direction : SurfaceDirection = SurfaceDirection.Multidirectional
+    param process : String = undef
+}
+enum SurfaceParameter { Ra, Rz, Rq, Rt, Rp, Rv, Rsk, Rku }
+enum SurfaceDirection { Parallel, Perpendicular, Crossed, Multidirectional, Circular, Radial }
+
+fn require_finish(feature: Geometry, finish: SurfaceFinish) -> Bool
+```
+
+---
+
+## 8. `std.process`
+
+```
+trait Process {
+    param duration : Time = undef
+    param cost : Scalar<Money> = undef
+}
+```
+
+**Process categories (gerund-form traits):**
+
+```
+trait Subtracting : Process {
+    param tool_access : Geometry
+    param min_feature_size : Length
+    param achievable_finish : Length
+}
+trait Adding : Process {
+    param layer_thickness : Length
+    param min_feature_size : Length
+    param build_volume : Solid
+}
+trait Forming : Process {
+    param min_bend_radius : Length
+    param max_draw_depth : Length
+    param draft_angle : Angle
+}
+trait Joining : Process {
+    param joint_strength : Pressure
+    param reversible : Bool
+}
+trait Parting : Process {
+    param kerf_width : Length
+    param min_feature_size : Length
+}
+trait SurfaceTreating : Process {
+    param coating_thickness : Length = undef
+    param achievable_finish : Length
+}
+trait HeatTreating : Process {
+    param treatment_temperature : Temperature
+    param hold_duration : Time
+}
+```
+
+**DFM framework:**
+
+```
+trait DFMRule {
+    param subject : Structure
+    param process : Process
+}
+```
+
+---
+
+## 9. `std.io`
+
+**Boundary abstractions:**
+
+```
+trait Source                  // Something enters design scope
+trait Sink                   // Something leaves design scope
+
+trait Input : Source {
+    param source : String
+    param provenance : Provenance = undef
+}
+
+trait Buy : Source {
+    param supplier : String
+    param part_number : String
+    param unit_cost : Scalar<Money>
+    param lead_time : Time = undef
+}
+
+trait Output : Sink {
+    param format : OutputFormat = undef
+}
+
+trait Discard : Sink {
+    param reason : DiscardReason
+    param disposal_method : DisposalMethod
+}
+
+enum DiscardReason { Offcut, Scrap, FailedInspection, Waste }
+enum DisposalMethod { Recycle, Landfill, Reprocess }
+
+structure def Provenance {
+    param source_tool : String
+    param source_version : String = undef
+    param timestamp : String = undef        // ISO 8601 string; no Date type in v0.1
+    param tolerance_guarantee : Length = undef
+}
+
+enum OutputFormat { STEP, STL, ThreeMF, Display }
+```
+
+**Format occurrences (`std.io.formats`):**
+
+```
+occurrence def STEPOutput : Output {
+    param subject : Structure
+    param version : STEPVersion = STEPVersion.AP214
+    constraint determined(subject.geometry)
+}
+enum STEPVersion { AP203, AP214, AP242 }
+
+occurrence def STLOutput : Output {
+    param subject : Solid
+    param resolution : Length
+}
+
+occurrence def ThreeMFOutput : Output {
+    param subject : Structure
+    param include_materials : Bool = true
+    param include_colors : Bool = true
+}
+
+occurrence def DisplayOutput : Output {
+    param subject : Geometry
+    param pane : Int = 0
+    param style : DisplayStyle = undef
+}
+
+structure def DisplayStyle {
+    param color : Vector3<Dimensionless> = vec3(0.7, 0.7, 0.7)
+    param opacity : Real = 1.0
+    param wireframe : Bool = false
+}
+
+occurrence def STEPInput : Input {
+    param result : Structure
+    param version : STEPVersion = undef
+}
+
+occurrence def PointCloudInput : Input {
+    param result : PointCloud
+    param format : PointCloudFormat = undef
+}
+enum PointCloudFormat { PLY, PCD, XYZ, LAS }
+```
+
+---
+
+## 10. `std.analysis`
+
+```
+trait Analysis {
+    param mesh_resolution : Length = undef
+    param convergence_target : Real = undef
+}
+
+trait AnalysisResult {
+    param source : String
+    param mesh : Geometry = undef
+}
+```
+
+**Stress post-processing (`std.analysis.stress`):**
+
+```
+fn von_mises(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Point3<Length>, Scalar<Pressure>>
+fn principal_stresses(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> List<Field<Point3<Length>, Scalar<Pressure>>>
+fn safety_factor(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>, yield_strength: Pressure) -> Field<Point3<Length>, Scalar<Dimensionless>>
+fn max_shear(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Point3<Length>, Scalar<Pressure>>
+```
+
+---
+
+## 11. `std.fields`
+
+**Interpolation (`std.fields.interpolation`):**
+
+```
+enum InterpolationMethod { Linear, Bilinear, Trilinear, NearestNeighbor, RBF, Kriging }
+
+fn constant_field<D, C>(value: C) -> Field<D, C>
+fn fn_field<D, C>(f: fn(D) -> C) -> Field<D, C>
+fn from_samples<D, C>(points: List<D>, values: List<C>, method: InterpolationMethod = InterpolationMethod.Linear) -> Field<D, C>
+```
+
+**Spatial operations (`std.fields.spatial`):**
+
+```
+fn compose<A, B, C>(f: Field<A, B>, g: Field<B, C>) -> Field<A, C>
+fn sample<D, C>(field: Field<D, C>, at: D) -> C
+fn restrict<D, C, G: Geometry>(field: Field<D, C>, region: G) -> Field<D, C>
+fn clamp_field<D, Q: Dimension>(field: Field<D, Scalar<Q>>, lo: Scalar<Q>, hi: Scalar<Q>) -> Field<D, Scalar<Q>>
+fn remap_field<D, Q: Dimension>(field: Field<D, Scalar<Q>>, from_range: Range<Scalar<Q>>, to_range: Range<Scalar<Q>>) -> Field<D, Scalar<Q>>
+fn threshold<D, Q: Dimension>(field: Field<D, Scalar<Q>>, value: Scalar<Q>) -> Field<D, Bool>
+```
+
+**Differential operators (all `@optimized`):**
+
+```
+fn gradient<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Scalar<Q>>) -> Field<Point<N,Length>, Vector<N, Q/Length>>
+fn divergence<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Vector<N,Q>>) -> Field<Point<N,Length>, Scalar<Q/Length>>
+fn curl<Q: Dimension>(field: Field<Point3<Length>, Vector3<Q>>) -> Field<Point3<Length>, Vector3<Q/Length>>
+fn laplacian<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Scalar<Q>>) -> Field<Point<N,Length>, Scalar<Q/Length^2>>
+```
+
+---
+
+## 12. `std.determinacy`
+
+**Predicates (compiler intrinsics, in prelude):**
+
+```
+fn determined(param_ref) -> Bool
+fn constrained(param_ref) -> Bool
+fn undetermined(param_ref) -> Bool
+fn partially_determined(param_ref) -> Bool    // constrained && !determined
+```
+
+**Utility constraints:**
+
+```
+constraint def AllParamsDetermined { ... }      // Compiler intrinsic -- walks all params
+constraint def AllGeometryDetermined { ... }     // Compiler intrinsic -- walks all Geometry-typed params
+constraint def RepresentationWithin { ... }      // Asserts geometry realizations within tolerance
+```
+
+**Example purposes (`std.determinacy.purposes`):**
+
+```
+purpose design_review(subject : Structure) {
+    constraint AllParamsDetermined(subject)
+}
+
+purpose simulation_ready(subject : Physical) {
+    constraint AllGeometryDetermined(subject)
+    constraint determined(subject.material)
+}
+```

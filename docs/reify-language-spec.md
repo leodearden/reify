@@ -47,7 +47,7 @@ Reify targets mechanical and mechatronic design, simulation, and manufacturing -
 - `PascalCase` -- types, traits, entity definitions
 - `SCREAMING_SNAKE` -- compile-time constants (convention only, not enforced by grammar)
 - Start with a letter or underscore, followed by letters, digits, underscores.
-- Unicode letters permitted (for internationalisation of parameter names, material names, etc.).
+- Unicode letters permitted (for internationalization of parameter names, material names, etc.).
 - Keywords are ASCII-only.
 
 ```
@@ -127,7 +127,7 @@ Units compose with `*`, `/`, and `^` in postfix position after a number:
 ```
 5kg*m/s^2           // = kg . m . s^-2  (Force) -- ^ binds to s only
 5kg*m/(s^2)         // Same thing, explicit
-5(kg*m/s)^2         // = kg^2 . m^2 . s^-2 -- parenthesised unit raised to power
+5(kg*m/s)^2         // = kg^2 . m^2 . s^-2 -- parenthesized unit raised to power
 ```
 
 The full unit table is defined in the standard library (`std.units`), not the grammar. The grammar defines the syntax for unit expressions; the standard library populates the unit namespace.
@@ -182,7 +182,7 @@ param wall_thickness : Length = auto(free)     // Free -- exploration mode
 
 **Value literals/keywords:** `true`, `false`, `undef`, `auto`, `some`, `none`
 
-**Optimisation keywords:** `minimize`, `maximize`
+**Optimization keywords:** `minimize`, `maximize`
 
 **Metadata:** `meta`
 
@@ -275,7 +275,7 @@ Algebraic rules enforced by the type system:
 - `Vector + Vector -> Vector` (valid)
 - `Point + Point` -> type error
 
-**Parameterisation:** Geometric types are parameterised by spatial dimensionality and quantity:
+**Parameterization:** Geometric types are parameterized by spatial dimensionality and quantity:
 
 ```
 Point<N: Nat, Q: Dimension>    // Position. Q typically Length.
@@ -475,8 +475,8 @@ enum FitType { Clearance, Transition, Interference }
 
 **Two kinds of parameters:**
 
-- **Type parameters** -- parameterise over types. Resolved at definition time (compile time). Written in angle brackets.
-- **Value parameters** -- parameterise over values. Resolved at instantiation time. Exist along the determinacy spectrum. Written in the body.
+- **Type parameters** -- parameterize over types. Resolved at definition time (compile time). Written in angle brackets.
+- **Value parameters** -- parameterize over values. Resolved at instantiation time. Exist along the determinacy spectrum. Written in the body.
 
 ```
 structure def FlexibleCoupling<DriverPort: RotaryPort, DrivenPort: RotaryPort> {
@@ -609,7 +609,7 @@ constraint def Coaxial {
 }
 ```
 
-Bare expressions in a constraint body are assertions (predicate lines). Default connective between predicate lines is `and` (conjunction). Constraints are first-class entities: named, parameterised, composed, inherited, collected into libraries.
+Bare expressions in a constraint body are assertions (predicate lines). Default connective between predicate lines is `and` (conjunction). Constraints are first-class entities: named, parameterized, composed, inherited, collected into libraries.
 
 #### 4.1.4 Field Declarations
 
@@ -749,7 +749,7 @@ Semantics:
 
 ### 4.4 Purpose Declarations
 
-Purposes are named, parameterised declaration kinds with AST identity. Semantically equivalent to a scope containing zero or more `constraint` declarations and/or `Output` occurrence instantiations. They have activation/deactivation mechanics via implementation-defined UX.
+Purposes are named, parameterized declaration kinds with AST identity. Semantically equivalent to a scope containing zero or more `constraint` declarations and/or `Output` occurrence instantiations. They have activation/deactivation mechanics via implementation-defined UX.
 
 ```
 purpose_decl ::= 'pub'? 'purpose' IDENT type_params? '(' purpose_params ')' '{' purpose_member* '}'
@@ -869,7 +869,7 @@ type StressTensor = Tensor<2, 3, Pressure>
 type Point3<Q> = Point<3, Q>
 ```
 
-Named type alias. The RHS is a type expression. Type aliases are transparent -- `Pressure` and `Force / Area` are the same type. Can be parameterised with type parameters. Can be `pub` for cross-module reuse.
+Named type alias. The RHS is a type expression. Type aliases are transparent -- `Pressure` and `Force / Area` are the same type. Can be parameterized with type parameters. Can be `pub` for cross-module reuse.
 
 #### `constraint` -- Inline Constraints
 
@@ -908,7 +908,7 @@ Semantics:
 - Purely informational -- metadata is opaque to the evaluation graph.
 - At most one `meta` block per entity body or module. Duplicates are a compile error.
 - No duplicate keys within a `meta` block.
-- Not inherited through traits or specialisation.
+- Not inherited through traits or specialization.
 - Accessible via `entity.meta.key_name`.
 
 `meta` blocks can appear in any entity body and at the module level.
@@ -1034,7 +1034,7 @@ Keywords, not symbols. `and` and `or` are used instead of `&&` and `||`.
 
 ### 5.4 Quantifiers (`forall`, `exists`)
 
-Generalised to both expressions and statements:
+Generalized to both expressions and statements:
 
 ```
 // Expression form (produces Bool)
@@ -1169,17 +1169,29 @@ connect plate_a.face <-> plate_b.face : ButtWeld
 
 `connect` is a statement-level construct. `->` indicates connection direction. `<->` for explicitly bidirectional connections.
 
-**`connect` creates:**
-1. A connector structure (instance of the connector type)
-2. Constraints between connector and both ports (from connector trait definition)
-3. Frame alignment constraints (when ports are geometrically located)
-4. A topology edge in the design graph
+**Semantic decomposition.** A `connect` statement is not a primitive -- it desugars into concrete artifacts that participate in the evaluation graph:
+
+1. **Connector structure instance** -- if a connector type is specified (e.g., `: ShrinkFit`), an instance of that type is created as a sub-structure. If no connector type is given, only constraints are generated (no connector instance). The connector instance is a normal structure with parameters, ports, and constraints; it can be referenced by name for inspection or further constraining.
+2. **Port compatibility constraints** -- type-checked assertions that the connected ports are compatible (matching or complementary traits, `In` <-> `Out` directionality).
+3. **Connector-port binding constraints** -- constraints from the connector type's trait definition that relate connector parameters to port parameters on both sides.
+4. **Frame alignment constraints** -- when both ports are geometrically located (`LocatedPort`), the compiler generates constraints that align the port frames according to the connector type's alignment semantics (e.g., coincident origins, matching orientations). When no connector type is given, default frame coincidence is assumed.
+5. **Topology edge** -- a directed (or bidirectional) edge in the assembly topology graph, used for traversal, visualization, and connectivity queries.
+
+All generated artifacts are accessible via the containing scope. The connector instance (if any) can be referenced by an auto-generated name derived from the connected ports, or explicitly named via `let`:
+
+```
+connect motor.shaft -> coupling.driver : SplineConnection { tooth_count = 24 }
+// The connector instance is accessible as motor_shaft__coupling_driver (auto-named)
+// or explicitly: let shaft_spline = connect motor.shaft -> coupling.driver : SplineConnection { ... }
+```
 
 **Connector ownership:** The connector structure instance is owned by the nearest common ancestor of the connected ports by default. A designer override is available to place it elsewhere.
 
 **Cyclic connection topology:** Cyclic connection graphs are supported (e.g., four-bar linkages, closed kinematic chains).
 
-#### 6.1.1 Connector Parameterisation
+**Concision trade-off:** A single `connect` statement can generate multiple structures and constraints that are not visible in the source text. This favors concision over explicitness. The tooling must make generated artifacts inspectable -- a "connection inspector" showing all generated constraints and the connector instance is expected in the IDE.
+
+#### 6.1.1 Connector Parameterization
 
 ```
 connect housing.bore -> shaft.journal : ShrinkFit {
@@ -1246,6 +1258,15 @@ Standard library selectors:
 | `@edge(name_or_expr)` | A named or computed edge |
 | `@body(name_or_expr)` | A named or computed volume region |
 
+**Geometry selector stability (v0.1 limitation).** Geometry selectors depend on persistent naming -- the ability to identify a geometric feature (face, edge, etc.) stably across parameter changes and geometry regeneration. Persistent naming is a known hard problem in parametric CAD.
+
+v0.1 strategy:
+- **Named features:** Selectors referencing features by construction-history name (e.g., `@face(top)` where `top` was explicitly named during geometry construction) are stable.
+- **Computed features:** Selectors using geometric queries (e.g., `@face(faces_by_normal(solid, vec3(0, 0, 1), 1deg)[0])`) may become invalid when upstream parameters change the topology (e.g., a fillet removes an edge, a boolean changes face count).
+- **Failure behavior:** When a selector cannot resolve to a geometric feature, the ad-hoc port's frame becomes `undef`, and any constraints referencing it propagate `undef` or become `indeterminate`. A diagnostic is emitted identifying the broken selector and the parameter change that caused the failure.
+
+Strengthened persistent naming and advanced topological queries are deferred to v0.2 (see Section 18).
+
 ### 6.2 `chain`
 
 ```
@@ -1253,6 +1274,18 @@ chain casting -> machining -> heat_treat -> finishing
 ```
 
 `chain` is sugar for connecting each occurrence's default output port to the next's default input port. Uses fully implicit matching via default ports only. Non-default port mapping requires explicit `connect`.
+
+**Desugaring:** `chain` is expanded to a sequence of `connect` statements before evaluation graph construction. Each element must be an occurrence with exactly one `out` port and one `in` port (or ports marked as default for their direction). The desugaring is:
+
+```
+chain casting -> machining -> heat_treat -> finishing
+// Desugars to:
+connect casting.default_out -> machining.default_in
+connect machining.default_out -> heat_treat.default_in
+connect heat_treat.default_out -> finishing.default_in
+```
+
+If any element has multiple `in` or `out` ports and none is marked as default, `chain` is a compile error for that element. The designer must use explicit `connect` statements instead.
 
 ### 6.3 `where` Guards and Blocks
 
@@ -1491,28 +1524,28 @@ Warn, not forbid. When a declaration in a child scope uses the same name as a de
 
 ### 8.6 `self`
 
-The `self` keyword refers to the enclosing entity definition or specialisation. `self.param_name` is equivalent to `param_name` for locally declared names. Required when the entity itself (rather than one of its members) is the referent.
+The `self` keyword refers to the enclosing entity definition or specialization. `self.param_name` is equivalent to `param_name` for locally declared names. Required when the entity itself (rather than one of its members) is the referent.
 
 `self` never refers to the module. The module is not an entity.
 
-### 8.7 Specialisation Scopes
+### 8.7 Specialization Scopes
 
-When a sub-entity is instantiated within a parent body, its body is a specialisation scope:
+When a sub-entity is instantiated within a parent body, its body is a specialization scope:
 - Sees the parent scope (and transitively, all ancestor scopes)
 - Can set parameters and add constraints on the instance
 - Does not modify the underlying definition
 
-**Permitted in a specialisation body:**
+**Permitted in a specialization body:**
 
 | Member kind | Meaning |
 |-------------|---------|
 | Parameter assignments | `thickness = 3mm` -- set a value for an existing parameter |
 | `constraint` | Add constraints on the instance's parameters |
-| `let` bindings | Local computed values (scoped to the specialisation) |
+| `let` bindings | Local computed values (scoped to the specialization) |
 | `connect` | Connect the instance's ports |
 | `where` guards | Conditionally include any of the above |
 
-**Not permitted:** New `param`, `port`, or `sub` declarations. A specialisation configures an existing definition; it does not extend its schema. To add members, define a new structure that inherits via trait or composition.
+**Not permitted:** New `param`, `port`, or `sub` declarations. A specialization configures an existing definition; it does not extend its schema. To add members, define a new structure that inherits via trait or composition.
 
 ```
 structure def Assembly {
@@ -1541,7 +1574,7 @@ Conflict resolution:
 
 ### 8.9 Recursive Structures
 
-Recursive structure definitions are permitted. Structural unfolding is eager -- once the parameters controlling recursion depth are determined, the full instance tree is materialised.
+Recursive structure definitions are permitted. Structural unfolding is eager -- once the parameters controlling recursion depth are determined, the full instance tree is materialized.
 
 ```
 structure def TreeBracket {
@@ -1791,7 +1824,7 @@ Freshness:
 
 ### 10.1 First-Class Constraints
 
-Constraints are first-class entities: named, parameterised, composed, inherited, collected into libraries. They are predicates -- they assert truth.
+Constraints are first-class entities: named, parameterized, composed, inherited, collected into libraries. They are predicates -- they assert truth.
 
 The `@optimized` hook indicates a definition has a semantically equivalent optimized implementation. Language-level definition is in terms of language primitives; the optimized implementation may use a specialized solver.
 
@@ -1821,9 +1854,9 @@ Three modes form a hierarchy with graceful degradation.
 
 The constraint engine is an orchestrator dispatching to specialized sub-solvers, not a monolithic solver.
 
-### 10.4 Optimisation
+### 10.4 Optimization
 
-Optimisation is unified with constraint solving. `minimize`/`maximize` are syntactic sugar:
+Optimization is unified with constraint solving. `minimize`/`maximize` are syntactic sugar:
 
 ```
 structure def LightweightBracket : Rigid {
@@ -1840,7 +1873,7 @@ structure def LightweightBracket : Rigid {
 
 ### 10.5 Scope-Level Objectives
 
-Optimisation objectives are scoped to the containing entity. Narrowest scope wins.
+Optimization objectives are scoped to the containing entity. Narrowest scope wins.
 
 ```
 structure def System {
@@ -1867,7 +1900,7 @@ Bottom-up is an approximation when scopes are coupled. Implementation should det
 
 ### 10.7 Default Objectives
 
-If no explicit purpose or objective is specified, a default purpose applies (provided by standard library). Expected default: robustness-oriented -- among feasible values, prefer those maximising distance from constraint boundaries (centrality in the feasible region).
+If no explicit purpose or objective is specified, a default purpose applies (provided by standard library). Expected default: robustness-oriented -- among feasible values, prefer those maximizing distance from constraint boundaries (centrality in the feasible region).
 
 **Legibility:** Designer can always query what objective governs a given `auto` resolution.
 **Override:** Any scope can override with a local `minimize`/`maximize`.
@@ -1948,982 +1981,32 @@ std
 
 See Section 7.6 for full listing.
 
-### 11.3 `std.math`
-
-#### `std.math.numeric`
-
-```
-fn abs<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q>
-fn min<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>) -> Scalar<Q>
-fn max<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>) -> Scalar<Q>
-fn clamp<Q: Dimension>(x: Scalar<Q>, lo: Scalar<Q>, hi: Scalar<Q>) -> Scalar<Q>
-fn lerp<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>, t: Real) -> Scalar<Q>
-fn remap(x: Real, from_lo: Real, from_hi: Real, to_lo: Real, to_hi: Real) -> Real
-fn sqrt<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q^(1/2)>   // Compiler intrinsic -- halves even exponents
-fn pow(base: Real, exp: Real) -> Real                      // Dimensionless only for non-integer exp
-fn log(x: Real) -> Real
-fn log10(x: Real) -> Real
-fn exp(x: Real) -> Real
-fn sign<Q: Dimension>(x: Scalar<Q>) -> Real
-fn floor(x: Real) -> Int
-fn ceil(x: Real) -> Int
-fn round(x: Real) -> Int
-fn mod(x: Int, y: Int) -> Int
-```
-
-**Dimensional `sqrt`:** `sqrt` is a compiler intrinsic that halves even exponents. `pow` with non-integer exponents is restricted to dimensionless in v0.1. `pow` with integer literal exponents on dimensioned quantities works through repeated multiplication.
-
-#### `std.math.trig`
-
-```
-fn sin(x: Angle) -> Real
-fn cos(x: Angle) -> Real
-fn tan(x: Angle) -> Real
-fn asin(x: Real) -> Angle
-fn acos(x: Real) -> Angle
-fn atan(x: Real) -> Angle
-fn atan2<Q: Dimension>(y: Scalar<Q>, x: Scalar<Q>) -> Angle
-fn sinh(x: Real) -> Real
-fn cosh(x: Real) -> Real
-fn tanh(x: Real) -> Real
-```
-
-Trig functions take `Angle` (not `Real`), enforcing the 8th-dimension distinction.
-
-#### `std.math.linalg`
-
-```
-fn dot<N: Nat, Q1: Dimension, Q2: Dimension>(a: Vector<N,Q1>, b: Vector<N,Q2>) -> Scalar<Q1*Q2>
-fn cross<Q1: Dimension, Q2: Dimension>(a: Vector<3,Q1>, b: Vector<3,Q2>) -> Vector<3, Q1*Q2>
-fn normalize<N: Nat, Q: Dimension>(v: Vector<N,Q>) -> Vector<N, Dimensionless>
-fn magnitude<N: Nat, Q: Dimension>(v: Vector<N,Q>) -> Scalar<Q>
-fn determinant<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Scalar<Q^N>
-fn inverse<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Matrix<N,N,Q^(-1)>
-fn transpose<M: Nat, N: Nat, Q: Dimension>(m: Matrix<M,N,Q>) -> Matrix<N,M,Q>
-fn outer<N: Nat, M: Nat, Q1: Dimension, Q2: Dimension>(a: Vector<N,Q1>, b: Vector<M,Q2>) -> Matrix<N,M,Q1*Q2>
-fn trace<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Scalar<Q>
-fn eigenvalues<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> List<Scalar<Q>>
-```
-
-#### `std.math.complex`
-
-```
-Complex<Q: Dimension>:
-    re : Scalar<Q>
-    im : Scalar<Q>
-
-fn complex<Q>(re: Scalar<Q>, im: Scalar<Q>) -> Complex<Q>
-fn real<Q>(c: Complex<Q>) -> Scalar<Q>
-fn imag<Q>(c: Complex<Q>) -> Scalar<Q>
-fn conjugate<Q>(c: Complex<Q>) -> Complex<Q>
-fn complex_magnitude<Q>(c: Complex<Q>) -> Scalar<Q>
-fn phase<Q>(c: Complex<Q>) -> Angle
-```
-
-### 11.4 `std.units`
-
-#### `std.units.dimensions`
-
-34 named dimension aliases (see Section 3.2).
-
-#### `std.units.si`
-
-Complete SI base units (`m`, `kg`, `s`, `A`, `K`, `rad`, `mol`, `cd`) with all SI prefixes (quecto through quetta). Derived units include: `N`, `J`, `W`, `Pa`, `V`, `ohm`, `S`, `F`, `H`, `Wb`, `T`, `Hz`, `rpm`, `rad_per_s`, `Pa_s`, `lm`, `lx`, `Bq`, `Gy`, `Sv`, `eV`, `bar`, `mbar`, with all common prefixes.
-
-Temperature offset: `degC : Temperature offset 273.15K`
-
-#### `std.units.imperial`
-
-Minimal set: `in` (= 25.4mm), `ft`, `thou`, `yd`, `lb`, `oz`, `lbf`, `psi`, `ksi`, `degF`, `fl_oz`, `gal`.
-
-#### `std.units.constants`
-
-```
-let pi : Real = 3.14159265358979...
-let e : Real = 2.71828182845904...
-let g : Acceleration = 9.80665m/s^2
-let c : Velocity = 299792458m/s
-let boltzmann : Energy / Temperature = 1.380649e-23J/K
-let avogadro : Real / Amount = 6.02214076e23/mol
-let planck : Energy * Time = 6.62607015e-34J*s
-let stefan_boltzmann : Power / (Area * Temperature^4) = 5.670374419e-8W/(m^2*K^4)
-let vacuum_permittivity : Capacitance / Length = 8.8541878128e-12F/m
-let vacuum_permeability : Inductance / Length = 1.25663706212e-6H/m
-let gas_constant : Energy / (Amount * Temperature) = 8.314462618J/(mol*K)
-let elementary_charge : Charge = 1.602176634e-19A*s
-```
-
-### 11.5 `std.geometry`
-
-#### `std.geometry.constructors` (in prelude)
-
-```
-fn point2<Q: Dimension>(x: Scalar<Q>, y: Scalar<Q>) -> Point2<Q>
-fn point3<Q: Dimension>(x: Scalar<Q>, y: Scalar<Q>, z: Scalar<Q>) -> Point3<Q>
-fn vec2<Q: Dimension>(x: Scalar<Q>, y: Scalar<Q>) -> Vector2<Q>
-fn vec3<Q: Dimension>(x: Scalar<Q>, y: Scalar<Q>, z: Scalar<Q>) -> Vector3<Q>
-
-fn orient_axis_angle(axis: Vector3<Dimensionless>, angle: Angle) -> Orientation<3>
-fn orient_quaternion(w: Real, x: Real, y: Real, z: Real) -> Orientation<3>
-fn orient_euler(convention: EulerConvention, a: Angle, b: Angle, c: Angle) -> Orientation<3>
-fn orient_basis(x_axis: Vector3<Dimensionless>, y_axis: Vector3<Dimensionless>, z_axis: Vector3<Dimensionless>) -> Orientation<3>
-fn orient_look_at(forward: Vector3<Dimensionless>, up: Vector3<Dimensionless>) -> Orientation<3>
-let orient_identity : Orientation<3>
-
-fn frame3(origin: Point3<Length>, basis: Orientation<3>) -> Frame<3>
-let frame3_identity : Frame<3>
-fn transform3(rotation: Orientation<3>, translation: Vector3<Length>) -> Transform<3>
-let transform3_identity : Transform<3>
-
-fn project(point: Point3<Length>, to: Frame<3>) -> Point3<Length>
-fn project(vector: Vector3<Length>, to: Frame<3>) -> Vector3<Length>
-
-enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX }
-```
-
-#### `std.geometry.primitive`
-
-**3D solids:**
-
-```
-fn box(width: Length, depth: Length, height: Length) -> Solid
-fn box_centered(width: Length, depth: Length, height: Length) -> Solid
-fn cylinder(radius: Length, height: Length) -> Solid
-fn cylinder_centered(radius: Length, height: Length) -> Solid
-fn cone(bottom_radius: Length, top_radius: Length, height: Length) -> Solid
-fn sphere(radius: Length) -> Solid
-fn torus(major_radius: Length, minor_radius: Length) -> Solid
-fn wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Solid
-fn half_space(plane: Plane) -> Solid     // Unbounded -- Solid no longer implies Bounded
-```
-
-**2D shapes:**
-
-```
-fn rectangle(width: Length, height: Length) -> Surface
-fn circle(radius: Length) -> Surface
-fn polygon(vertices: List<Point2<Length>>) -> Surface
-fn ellipse(semi_major: Length, semi_minor: Length) -> Surface
-```
-
-**Curves:**
-
-```
-fn line_segment<N: Nat>(start: Point<N,Length>, end: Point<N,Length>) -> Curve
-fn arc(center: Point3<Length>, radius: Length, start_angle: Angle, end_angle: Angle) -> Curve
-fn helix(radius: Length, pitch: Length, height: Length) -> Curve
-fn interp<N: Nat>(points: List<Point<N,Length>>) -> Curve
-fn bezier<N: Nat>(control_points: List<Point<N,Length>>) -> Curve
-fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, knots: List<Real>, degree: Int) -> Curve
-fn nurbs_surface(/* NURBS surface parameters */) -> Surface
-```
-
-#### `std.geometry.compound`
-
-```
-fn tube(outer_radius: Length, inner_radius: Length, height: Length) -> Solid
-fn pipe(path: Curve, radius: Length) -> Solid
-```
-
-#### `std.geometry.boolean`
-
-```
-fn union(a: Solid, b: Solid) -> Solid
-fn union_all(solids: List<Solid>) -> Solid
-fn intersection(a: Solid, b: Solid) -> Solid
-fn intersection_all(solids: List<Solid>) -> Solid
-fn difference(a: Solid, b: Solid) -> Solid
-// Same for Surface (no _all variants)
-fn union(a: Surface, b: Surface) -> Surface
-fn intersection(a: Surface, b: Surface) -> Surface
-fn difference(a: Surface, b: Surface) -> Surface
-```
-
-#### `std.geometry.modify`
-
-```
-fn fillet(solid: Solid, edges: List<Curve>, radius: Length) -> Solid
-fn fillet_all(solid: Solid, radius: Length) -> Solid
-fn chamfer(solid: Solid, edges: List<Curve>, distance: Length) -> Solid
-fn chamfer_asymmetric(solid: Solid, edges: List<Curve>, distance1: Length, distance2: Length) -> Solid
-fn shell(solid: Solid, thickness: Length) -> Solid
-fn shell_open(solid: Solid, thickness: Length, open_faces: List<Surface>) -> Solid
-fn offset_solid(solid: Solid, distance: Length) -> Solid
-fn offset_surface(surface: Surface, distance: Length) -> Surface
-fn offset_curve(curve: Curve, distance: Length) -> Curve             // 2D unambiguous
-fn offset_curve(curve: Curve, distance: Length, reference: Surface) -> Curve  // 3D with reference
-fn offset_curve(curve: Curve, distance: Length, direction: Vector3<Dimensionless>) -> Curve  // 3D with direction
-fn draft(solid: Solid, faces: List<Surface>, angle: Angle, neutral_plane: Plane) -> Solid
-fn split(solid: Solid, tool: Plane) -> List<Solid>                   // + multiple overloads
-fn thicken(surface: Surface, thickness: Length) -> Solid
-fn thicken_asymmetric(surface: Surface, thickness_above: Length, thickness_below: Length) -> Solid
-```
-
-#### `std.geometry.sweep`
-
-```
-fn extrude(profile: Surface, distance: Length) -> Solid
-fn extrude_to(profile: Surface, target: Surface) -> Solid
-fn extrude_symmetric(profile: Surface, distance: Length) -> Solid
-fn revolve(profile: Surface, axis: Axis, angle: Angle) -> Solid
-fn revolve_full(profile: Surface, axis: Axis) -> Solid
-fn sweep(profile: Surface, path: Curve) -> Solid
-fn sweep_guided(profile: Surface, path: Curve, guide: Curve) -> Solid
-fn loft(profiles: List<Surface>) -> Solid
-fn loft_guided(profiles: List<Surface>, guides: List<Curve>) -> Solid
-```
-
-#### `std.geometry.transform`
-
-```
-fn translate<G: Transformable>(geometry: G, displacement: Vector3<Length>) -> G
-fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G
-fn rotate<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G
-fn rotate_around<G: Transformable>(geometry: G, point: Point3<Length>, axis: Vector3<Dimensionless>, angle: Angle) -> G
-fn scale<G: Transformable>(geometry: G, factor: Real) -> G              // Uniform
-fn scale<G: Transformable>(geometry: G, factors: Vector3<Real>) -> G    // Per-axis (non-rigid)
-fn apply_transform<G: Transformable>(geometry: G, transform: Transform<3>) -> G
-```
-
-Note: `scale` is non-rigid -- does not compose with `Transform<3>`.
-
-#### `std.geometry.pattern`
-
-```
-fn mirror<G: Transformable>(geometry: G, plane: Plane) -> G
-fn linear_pattern<G: Transformable>(geometry: G, direction: Vector3<Length>, count: Int, spacing: Length) -> List<G>
-fn circular_pattern<G: Transformable>(geometry: G, axis: Axis, count: Int, angle: Angle) -> List<G>
-fn linear_pattern_2d<G: Transformable>(geometry: G, dir1: Vector3<Length>, count1: Int, spacing1: Length, dir2: Vector3<Length>, count2: Int, spacing2: Length) -> List<G>
-fn arbitrary_pattern<G: Transformable>(geometry: G, transforms: List<Transform<3>>) -> List<G>
-```
-
-Patterns return `List` for per-instance constraints; compose with `union_all` for merged solid.
-
-#### `std.geometry.query`
-
-**Distance and containment:**
-
-```
-fn distance<G1: Geometry, G2: Geometry>(a: G1, b: G2) -> Scalar<Length>
-fn closest_point<G: Geometry>(point: Point3<Length>, geometry: G) -> Point3<Length>
-fn contains(solid: Solid, point: Point3<Length>) -> Bool
-fn on<G: Geometry>(point: Point3<Length>, geometry: G) -> Bool
-fn intersects(a: Geometry, b: Geometry) -> Bool
-fn geo_equiv(a: Geometry, b: Geometry, tolerance: Length) -> Bool
-```
-
-**Angular:**
-
-```
-fn angle(a: Vector3<Dimensionless>, b: Vector3<Dimensionless>) -> Angle
-fn angle_between_surfaces(a: Surface, b: Surface) -> Angle
-```
-
-**Measurement:**
-
-```
-fn area(surface: Surface) -> Scalar<Area>
-fn area(solid: Solid) -> Scalar<Area>          // Surface area
-fn volume(solid: Solid) -> Scalar<Volume>
-fn length(curve: Curve) -> Scalar<Length>
-fn perimeter(surface: Surface) -> Scalar<Length>
-```
-
-**Mass properties:**
-
-```
-fn centroid(solid: Solid) -> Point3<Length>
-fn center_of_mass(solid: Solid, density: Scalar<Density>) -> Point3<Length>
-fn moment_of_inertia(solid: Solid, density: Scalar<Density>) -> Tensor<2, 3, MomentOfInertia>
-fn bounding_box<G: Geometry>(geometry: G) -> BoundingBox
-```
-
-**Surface/curve analysis:**
-
-```
-fn normal(surface: Surface, at: Point3<Length>) -> Vector3<Dimensionless>
-fn curvature(curve: Curve, at: Point3<Length>) -> Scalar<Length^(-1)>
-fn curvature(surface: Surface, at: Point3<Length>) -> Matrix<2, 2, Length^(-1)>
-```
-
-**Topology selectors:**
-
-```
-fn edges(solid: Solid) -> List<Curve>
-fn faces(solid: Solid) -> List<Surface>
-fn adjacent_faces(solid: Solid, face: Surface) -> List<Surface>
-fn shared_edges(face1: Surface, face2: Surface) -> List<Curve>
-fn edges_by_length(solid: Solid, range: Range<Length>) -> List<Curve>
-fn faces_by_area(solid: Solid, range: Range<Area>) -> List<Surface>
-fn faces_by_normal(solid: Solid, direction: Vector3<Dimensionless>, tolerance: Angle) -> List<Surface>
-fn edges_parallel_to(solid: Solid, direction: Vector3<Dimensionless>, tolerance: Angle) -> List<Curve>
-fn edges_at_height(solid: Solid, height: Length, tolerance: Length) -> List<Curve>
-```
-
-#### `std.geometry.traits`
-
-```
-trait Geometry                                    // Supertrait for all geometric entities
-trait Transformable                               // Can be spatially transformed
-trait Closed                                      // Boundary is closed
-trait Manifold                                    // 2-manifold faces
-trait Orientable                                  // Consistently orientable
-trait Convex                                      // Convex geometry
-trait Connected                                   // Single connected component
-trait Bounded                                     // Finite extent
-trait Watertight : Closed + Manifold              // Printable/meshable
-
-structure def Plane {
-    param origin : Point3<Length>
-    param normal : Vector3<Dimensionless>
-}
-
-structure def Axis {
-    param origin : Point3<Length>
-    param direction : Vector3<Dimensionless>
-}
-
-structure def BoundingBox {
-    param min : Point3<Length>
-    param max : Point3<Length>
-    let size = max - min
-    let center = point3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2)
-}
-
-fn plane_xy(z: Length) -> Plane
-fn plane_xz(y: Length) -> Plane
-fn plane_yz(x: Length) -> Plane
-fn axis_x(origin: Point3<Length>) -> Axis
-fn axis_y(origin: Point3<Length>) -> Axis
-fn axis_z(origin: Point3<Length>) -> Axis
-```
-
-### 11.6 `std.structural`
-
-```
-trait Physical {
-    param geometry : Solid
-    param material : Material
-    let mass = volume(geometry) * material.density
-    let centroid = centroid(geometry)
-}
-
-trait Rigid : Physical {
-    let moment_of_inertia = moment_of_inertia(geometry, material.density)
-}
-
-trait Flexible : Physical {
-    param stiffness_model : Field<Point3<Length>, Tensor<2, 3, Pressure>>
-}
-
-trait ElasticallyDeformable : Flexible
-trait Plastic : Flexible {
-    param yield_point : Pressure
-}
-
-trait ThermallyConductive : Physical
-trait ElectricallyConductive : Physical
-trait Sealed {
-    param seal_rating : Pressure
-}
-```
-
-### 11.7 `std.ports`
-
-#### Base Ports
-
-```
-trait Port {
-    param direction : Directionality = Directionality.Bidi
-}
-
-enum Directionality { In, Out, Bidi }
-
-trait LocatedPort : Port {
-    param frame : Frame<3>
-}
-
-trait RegionPort : LocatedPort {
-    param region : Geometry
-}
-```
-
-Compatibility rules: `In` <-> `Out` (valid), `Bidi` <-> anything (valid), `In` <-> `In` (type error), `Out` <-> `Out` (type error).
-
-#### `std.ports.mechanical`
-
-```
-trait MechanicalPort : LocatedPort {
-    param max_load : Force = undef
-    param max_torque : Torque = undef
-}
-
-trait MatingFace : MechanicalPort {
-    param contact_area : Area
-    param surface_finish : Length
-    param flatness : Length
-}
-
-trait Bore : MechanicalPort {
-    param diameter : Length
-    param depth : Length
-    param fit : FitType
-}
-
-trait Shaft : MechanicalPort {
-    param diameter : Length
-    param length : Length
-    param fit : FitType
-}
-
-trait ThreadedPort : MechanicalPort {
-    param thread_spec : ThreadSpec
-}
-
-structure def ThreadSpec {
-    param system : ThreadSystem
-    param nominal_diameter : Length
-    param pitch : Length
-    param class : ThreadClass
-    param direction : ThreadTighteningDirection = ThreadTighteningDirection.Clockwise
-    let clearance_hole = ...    // from standards tables
-    let tap_drill = ...
-    let minor_diameter = ...
-    let pitch_diameter = ...
-    param thread_form : Geometry = undef
-}
-
-enum ThreadSystem { ISO_Metric, ISO_Metric_Fine, UNC, UNF }
-enum ThreadClass { Class_6g6H, Class_4g6H }
-enum ThreadTighteningDirection { Clockwise, Counterclockwise }
-
-trait MotivePort : MechanicalPort
-trait RotaryPort : MotivePort {
-    param max_speed : AngularVelocity
-    param max_torque : Torque
-    param axis : Axis
-}
-trait LinearPort : MotivePort {
-    param max_speed : Velocity
-    param max_force : Force
-    param stroke : Length
-    param axis : Axis
-}
-trait GuidePort : MechanicalPort {
-    param degrees_of_freedom : Int
-}
-trait LinearGuidePort : GuidePort {
-    constraint degrees_of_freedom == 1
-}
-trait RotaryGuidePort : GuidePort {
-    constraint degrees_of_freedom == 1
-    param max_radial_load : Force
-    param max_axial_load : Force
-}
-```
-
-#### `std.ports.electrical`
-
-```
-trait ElectricalPort : Port {
-    param voltage_rating : Voltage
-    param current_rating : Current
-}
-trait PowerPort : ElectricalPort {
-    param power_rating : Power
-}
-trait SignalPort : ElectricalPort {
-    param signal_type : SignalType
-    param impedance : Resistance = undef
-}
-enum SignalType { Analog, Digital, PWM, Differential }
-trait PinPort : ElectricalPort + LocatedPort {
-    param pin_id : String
-}
-```
-
-#### `std.ports.thermal`
-
-```
-trait ThermalPort : Port {
-    param temperature : Temperature = undef
-    param heat_flux : HeatFlux = undef
-    param thermal_resistance : Resistance = undef   // thermal resistance (dimension: Temperature*Time^3/(Mass*Length^2))
-}
-trait ThermalContactPort : ThermalPort + RegionPort {
-    param contact_area : Area
-    param contact_conductance : ThermalConductivity = undef
-}
-```
-
-#### `std.ports.fluid`
-
-```
-trait FluidPort : Port {
-    param pressure_range : Range<Pressure>
-    param flow_rate_range : Range<Scalar<Volume/Time>>
-    param fluid_type : FluidType
-}
-enum FluidType { Liquid, Gas, TwoPhase }
-trait PipedFluidPort : FluidPort + LocatedPort {
-    param inner_diameter : Length
-    param connection_type : PipeConnectionType
-}
-enum PipeConnectionType { Threaded, Flanged, Compression, PushFit, Welded }
-```
-
-#### Multi-Domain Ports
-
-Interfaces (port bundles) are simply traits that require multiple ports with geometric constraints. No new concept is needed. Multi-domain ports compose via trait inheritance:
-
-```
-trait HydraulicPort : FluidPort + MechanicalPort {
-    param fitting_type : FittingStandard
-}
-```
-
-### 11.8 `std.materials`
-
-#### Base
-
-```
-trait Material {
-    param density : Density
-    param name : String
-}
-
-trait TemperatureDependent {
-    param reference_temperature : Temperature = 293.15K
-}
-```
-
-#### `std.materials.mechanical`
-
-```
-trait Elastic : Material {
-    param youngs_modulus : Pressure
-    param poissons_ratio : Real
-    param shear_modulus : Pressure = undef
-    constraint 0 < poissons_ratio < 0.5
-}
-trait Strong : Material {
-    param yield_strength : Pressure
-    param ultimate_tensile_strength : Pressure
-    param compressive_strength : Pressure = undef
-    constraint ultimate_tensile_strength >= yield_strength
-}
-trait Hard : Material {
-    param hardness_value : Real
-    param hardness_scale : HardnessScale
-}
-enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D }
-trait FatigueRated : Material {
-    param fatigue_limit : Pressure = undef
-    param fatigue_strength_at : Pressure = undef
-    param fatigue_cycles : Int = undef
-}
-trait FractureTough : Material {
-    param fracture_toughness : Scalar<Pressure * Length^(1/2)>
-}
-trait Ductile : Material {
-    param elongation_at_break : Real
-    param reduction_of_area : Real = undef
-}
-trait ImpactResistant : Material {
-    param charpy_impact : Energy = undef
-    param izod_impact : Energy = undef
-}
-trait Damping : Material {
-    param loss_factor : Real
-}
-```
-
-#### `std.materials.thermal`
-
-```
-trait ThermallyCharacterised : Material {
-    param thermal_conductivity : ThermalConductivity
-    param specific_heat : SpecificHeat
-    param thermal_expansion : Real / Temperature     // coefficient of linear expansion
-    param melting_point : Temperature = undef
-    param max_service_temperature : Temperature = undef
-    param glass_transition : Temperature = undef
-}
-trait Refractory : ThermallyCharacterised {
-    constraint max_service_temperature >= 1500degC
-}
-```
-
-#### `std.materials.electrical`
-
-```
-trait ElectricallyCharacterised : Material {
-    param resistivity : Scalar<Voltage * Length / Current>
-    param dielectric_constant : Real = undef
-    param dielectric_strength : Scalar<Voltage / Length> = undef
-    param magnetic_permeability : Real = undef
-}
-trait Conductive : ElectricallyCharacterised {
-    constraint resistivity < 1e-4ohm*m
-}
-trait Insulating : ElectricallyCharacterised {
-    constraint resistivity > 1e6ohm*m
-    constraint determined(dielectric_strength)
-}
-```
-
-#### `std.materials.optical`
-
-```
-trait OpticallyCharacterised : Material {
-    param refractive_index : Real
-    param absorption_coefficient : Real = undef
-    param transmittance : Real = undef
-    param reference_thickness : Length = undef
-}
-```
-
-#### `std.materials.chemical`
-
-```
-trait CorrosionResistant : Material {
-    param corrosion_class : CorrosionClass
-}
-enum CorrosionClass { C1, C2, C3, C4, C5 }
-trait Biocompatible : Material {
-    param biocompatibility_class : BiocompatibilityClass
-}
-enum BiocompatibilityClass { USP_Class_I, USP_Class_VI, ISO_10993 }
-```
-
-### 11.9 `std.tolerancing`
-
-#### `std.tolerancing.dimensional`
-
-```
-structure def DimensionalTolerance {
-    param nominal : Length
-    param upper_deviation : Length
-    param lower_deviation : Length
-    let upper_limit = nominal + upper_deviation
-    let lower_limit = nominal + lower_deviation
-    let tolerance_band = upper_deviation - lower_deviation
-    constraint upper_deviation >= lower_deviation
-}
-
-fn symmetric_tolerance(nominal: Length, deviation: Length) -> DimensionalTolerance
-fn limit_tolerance(upper: Length, lower: Length) -> DimensionalTolerance
-
-structure def Fit {
-    param hole_tolerance : DimensionalTolerance
-    param shaft_tolerance : DimensionalTolerance
-    param fit_type : FitCategory
-    let max_clearance = hole_tolerance.upper_limit - shaft_tolerance.lower_limit
-    let min_clearance = hole_tolerance.lower_limit - shaft_tolerance.upper_limit
-}
-enum FitCategory { Clearance, Transition, Interference }
-
-structure def ISOToleranceGrade {
-    param grade : Int
-    param nominal_range : Range<Length>
-    let tolerance_value = ...  // from standards tables
-}
-```
-
-#### `std.tolerancing.geometric`
-
-```
-trait GeometricTolerance {
-    param tolerance_value : Length
-    param feature : Geometry
-    param material_condition : MaterialCondition = MaterialCondition.RFS
-    let nominal_zone = ...
-}
-enum MaterialCondition { MMC, LMC, RFS }
-
-structure def Datum {
-    param label : String
-    param feature : Geometry
-}
-
-// Form tolerances (no datum)
-trait FormTolerance : GeometricTolerance
-structure def Flatness : FormTolerance { ... }
-structure def Straightness : FormTolerance { ... }
-structure def Circularity : FormTolerance { ... }
-structure def Cylindricity : FormTolerance { ... }
-
-// Orientation tolerances (require datums)
-trait OrientationTolerance : GeometricTolerance { ... }
-structure def Parallelism : OrientationTolerance { ... }
-structure def Perpendicularity : OrientationTolerance { ... }
-structure def Angularity : OrientationTolerance {
-    param nominal_angle : Angle
-}
-
-// Location tolerances
-trait LocationTolerance : GeometricTolerance { ... }
-structure def Position : LocationTolerance { ... }
-structure def Concentricity : LocationTolerance { ... }
-structure def Symmetry : LocationTolerance { ... }
-
-// Runout
-structure def CircularRunout : GeometricTolerance { ... }
-structure def TotalRunout : GeometricTolerance { ... }
-
-// Profile
-structure def ProfileOfSurface : GeometricTolerance { ... }
-structure def ProfileOfLine : GeometricTolerance { ... }
-
-// Universal conformance
-constraint def Conforms {
-    param tolerance : GeometricTolerance
-    // Handles MMC/LMC/RFS material condition expansion
-}
-```
-
-#### `std.tolerancing.surface`
-
-```
-structure def SurfaceFinish {
-    param parameter : SurfaceParameter
-    param value : Length
-    param direction : SurfaceDirection = SurfaceDirection.Multidirectional
-    param process : String = undef
-}
-enum SurfaceParameter { Ra, Rz, Rq, Rt, Rp, Rv, Rsk, Rku }
-enum SurfaceDirection { Parallel, Perpendicular, Crossed, Multidirectional, Circular, Radial }
-
-fn require_finish(feature: Geometry, finish: SurfaceFinish) -> Bool
-```
-
-### 11.10 `std.process`
-
-```
-trait Process {
-    param duration : Time = undef
-    param cost : Scalar<Money> = undef
-}
-```
-
-**Process categories (gerund-form traits):**
-
-```
-trait Subtracting : Process {
-    param tool_access : Geometry
-    param min_feature_size : Length
-    param achievable_finish : Length
-}
-trait Adding : Process {
-    param layer_thickness : Length
-    param min_feature_size : Length
-    param build_volume : Solid
-}
-trait Forming : Process {
-    param min_bend_radius : Length
-    param max_draw_depth : Length
-    param draft_angle : Angle
-}
-trait Joining : Process {
-    param joint_strength : Pressure
-    param reversible : Bool
-}
-trait Parting : Process {
-    param kerf_width : Length
-    param min_feature_size : Length
-}
-trait SurfaceTreating : Process {
-    param coating_thickness : Length = undef
-    param achievable_finish : Length
-}
-trait HeatTreating : Process {
-    param treatment_temperature : Temperature
-    param hold_duration : Time
-}
-```
-
-**DFM framework:**
-
-```
-trait DFMRule {
-    param subject : Structure
-    param process : Process
-}
-```
-
-### 11.11 `std.io`
-
-**Boundary abstractions:**
-
-```
-trait Source                  // Something enters design scope
-trait Sink                   // Something leaves design scope
-
-trait Input : Source {
-    param source : String
-    param provenance : Provenance = undef
-}
-
-trait Buy : Source {
-    param supplier : String
-    param part_number : String
-    param unit_cost : Scalar<Money>
-    param lead_time : Time = undef
-}
-
-trait Output : Sink {
-    param format : OutputFormat = undef
-}
-
-trait Discard : Sink {
-    param reason : DiscardReason
-    param disposal_method : DisposalMethod
-}
-
-enum DiscardReason { Offcut, Scrap, FailedInspection, Waste }
-enum DisposalMethod { Recycle, Landfill, Reprocess }
-
-structure def Provenance {
-    param source_tool : String
-    param source_version : String = undef
-    param timestamp : String = undef        // ISO 8601 string; no Date type in v0.1
-    param tolerance_guarantee : Length = undef
-}
-
-enum OutputFormat { STEP, STL, ThreeMF, Display }
-```
-
-**Format occurrences (`std.io.formats`):**
-
-```
-occurrence def STEPOutput : Output {
-    param subject : Structure
-    param version : STEPVersion = STEPVersion.AP214
-    constraint determined(subject.geometry)
-}
-enum STEPVersion { AP203, AP214, AP242 }
-
-occurrence def STLOutput : Output {
-    param subject : Solid
-    param resolution : Length
-}
-
-occurrence def ThreeMFOutput : Output {
-    param subject : Structure
-    param include_materials : Bool = true
-    param include_colors : Bool = true
-}
-
-occurrence def DisplayOutput : Output {
-    param subject : Geometry
-    param pane : Int = 0
-    param style : DisplayStyle = undef
-}
-
-structure def DisplayStyle {
-    param color : Vector3<Dimensionless> = vec3(0.7, 0.7, 0.7)
-    param opacity : Real = 1.0
-    param wireframe : Bool = false
-}
-
-occurrence def STEPInput : Input {
-    param result : Structure
-    param version : STEPVersion = undef
-}
-
-occurrence def PointCloudInput : Input {
-    param result : PointCloud
-    param format : PointCloudFormat = undef
-}
-enum PointCloudFormat { PLY, PCD, XYZ, LAS }
-```
-
-### 11.12 `std.analysis`
-
-```
-trait Analysis {
-    param mesh_resolution : Length = undef
-    param convergence_target : Real = undef
-}
-
-trait AnalysisResult {
-    param source : String
-    param mesh : Geometry = undef
-}
-```
-
-**Stress post-processing (`std.analysis.stress`):**
-
-```
-fn von_mises(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Point3<Length>, Scalar<Pressure>>
-fn principal_stresses(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> List<Field<Point3<Length>, Scalar<Pressure>>>
-fn safety_factor(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>, yield_strength: Pressure) -> Field<Point3<Length>, Scalar<Dimensionless>>
-fn max_shear(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Point3<Length>, Scalar<Pressure>>
-```
-
-### 11.13 `std.fields`
-
-**Interpolation (`std.fields.interpolation`):**
-
-```
-enum InterpolationMethod { Linear, Bilinear, Trilinear, NearestNeighbor, RBF, Kriging }
-
-fn constant_field<D, C>(value: C) -> Field<D, C>
-fn fn_field<D, C>(f: fn(D) -> C) -> Field<D, C>
-fn from_samples<D, C>(points: List<D>, values: List<C>, method: InterpolationMethod = InterpolationMethod.Linear) -> Field<D, C>
-```
-
-**Spatial operations (`std.fields.spatial`):**
-
-```
-fn compose<A, B, C>(f: Field<A, B>, g: Field<B, C>) -> Field<A, C>
-fn sample<D, C>(field: Field<D, C>, at: D) -> C
-fn restrict<D, C, G: Geometry>(field: Field<D, C>, region: G) -> Field<D, C>
-fn clamp_field<D, Q: Dimension>(field: Field<D, Scalar<Q>>, lo: Scalar<Q>, hi: Scalar<Q>) -> Field<D, Scalar<Q>>
-fn remap_field<D, Q: Dimension>(field: Field<D, Scalar<Q>>, from_range: Range<Scalar<Q>>, to_range: Range<Scalar<Q>>) -> Field<D, Scalar<Q>>
-fn threshold<D, Q: Dimension>(field: Field<D, Scalar<Q>>, value: Scalar<Q>) -> Field<D, Bool>
-```
-
-**Differential operators (all `@optimized`):**
-
-```
-fn gradient<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Scalar<Q>>) -> Field<Point<N,Length>, Vector<N, Q/Length>>
-fn divergence<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Vector<N,Q>>) -> Field<Point<N,Length>, Scalar<Q/Length>>
-fn curl<Q: Dimension>(field: Field<Point3<Length>, Vector3<Q>>) -> Field<Point3<Length>, Vector3<Q/Length>>
-fn laplacian<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Scalar<Q>>) -> Field<Point<N,Length>, Scalar<Q/Length^2>>
-```
-
-### 11.14 `std.determinacy`
-
-**Predicates (compiler intrinsics, in prelude):**
-
-```
-fn determined(param_ref) -> Bool
-fn constrained(param_ref) -> Bool
-fn undetermined(param_ref) -> Bool
-fn partially_determined(param_ref) -> Bool    // constrained && !determined
-```
-
-**Utility constraints:**
-
-```
-constraint def AllParamsDetermined { ... }      // Compiler intrinsic -- walks all params
-constraint def AllGeometryDetermined { ... }     // Compiler intrinsic -- walks all Geometry-typed params
-constraint def RepresentationWithin { ... }      // Asserts geometry realizations within tolerance
-```
-
-**Example purposes (`std.determinacy.purposes`):**
-
-```
-purpose design_review(subject : Structure) {
-    constraint AllParamsDetermined(subject)
-}
-
-purpose simulation_ready(subject : Physical) {
-    constraint AllGeometryDetermined(subject)
-    constraint determined(subject.material)
-}
-```
+### 11.3 Module Summaries
+
+The complete API reference for all `std.*` modules is in the [Standard Library Reference](reify-stdlib-reference.md). Brief summaries:
+
+| Module | Purpose |
+|--------|---------|
+| `std.math` | Numeric functions (`abs`, `sqrt`, `clamp`), trigonometry (`sin`, `cos` -- take `Angle`), linear algebra (`dot`, `cross`, `normalize`), complex numbers |
+| `std.units` | 34 named dimension aliases, SI units with prefixes, imperial units, physical constants (`pi`, `g`, `c`, `boltzmann`) |
+| `std.geometry` | Primitive constructors (box, cylinder, sphere), boolean operations, sweeps, transforms, patterns, spatial queries, topology selectors, geometric traits (`Geometry`, `Transformable`, `Bounded`, `Watertight`) |
+| `std.structural` | Physical structure traits (`Physical`, `Rigid`, `Flexible`, `ElasticallyDeformable`) |
+| `std.ports` | Port trait hierarchy: mechanical (`Bore`, `Shaft`, `RotaryPort`), electrical (`PowerPort`, `SignalPort`), thermal, fluid. Directionality and compatibility rules |
+| `std.materials` | Material trait hierarchy: mechanical (`Elastic`, `Strong`, `Ductile`), thermal, electrical, optical, chemical properties |
+| `std.tolerancing` | Dimensional tolerances, geometric tolerances (GD&T: flatness, position, runout, etc.), surface finish |
+| `std.process` | Manufacturing process traits (`Subtracting`, `Adding`, `Forming`, `Joining`), DFM rule framework |
+| `std.io` | Boundary abstractions (`Source`, `Sink`, `Input`, `Buy`, `Output`, `Discard`), format occurrences (STEP, STL, 3MF) |
+| `std.analysis` | Analysis trait, stress post-processing (`von_mises`, `safety_factor`) |
+| `std.fields` | Field interpolation, spatial operations (`compose`, `sample`, `restrict`), differential operators (`gradient`, `divergence`, `curl`, `laplacian`) |
+| `std.determinacy` | Determinacy predicates (in prelude), utility constraints (`AllParamsDetermined`), example purposes (`design_review`, `simulation_ready`) |
+
+**Language-semantic notes** (details that affect type system or compilation, retained here):
+
+- **Dimensional `sqrt`:** `sqrt` is a compiler intrinsic that halves even exponents. `pow` with non-integer exponents is restricted to dimensionless in v0.1. `pow` with integer literal exponents on dimensioned quantities works through repeated multiplication.
+- **Trig functions take `Angle`** (not `Real`), enforcing the 8th-dimension distinction.
+- **Port compatibility rules:** `In` <-> `Out` (valid), `Bidi` <-> anything (valid), `In` <-> `In` (type error), `Out` <-> `Out` (type error).
+- **Patterns return `List`** for per-instance constraints; compose with `union_all` for merged solid.
+- **`scale` is non-rigid** -- does not compose with `Transform<3>`.
 
 ---
 
@@ -2961,12 +2044,52 @@ The language-level definition remains the specification of correctness; the solv
 structure def OldBracket { ... }
 ```
 
-**`@test`** -- marks a constraint or structure as a test case:
+**`@test`** -- marks a constraint definition or structure definition as a test case. Tests are the mechanism for regression testing of engineering designs: verifying that safety factors hold, tolerances are met, and design intent is preserved across changes.
+
+**Test declarations:**
 
 ```
 @test
-constraint def TestBoltStrength() { ... }
+constraint def TestBoltStrength {
+    sub bolt : M8Bolt { grade = 10.9, length = 25mm }
+    bolt.proof_load >= 40kN
+    bolt.yield_strength >= 900MPa
+}
+
+@test
+constraint def TestBracketSafetyFactor {
+    sub bracket : Bracket { thickness = 3mm, width = 50mm, material = Steel_1045 }
+    safety_factor(bracket.stress_field, bracket.material.yield_strength).min >= 2.0
+}
+
+@test
+structure def TestAssemblyFit {
+    sub housing : Housing { bore_diameter = 25mm }
+    sub shaft : Shaft { diameter = 24.98mm }
+    connect housing.bore -> shaft.journal : ClearanceFit
+    constraint housing.bore.diameter > shaft.diameter
+    constraint housing.bore.diameter - shaft.diameter < 0.1mm
+}
 ```
+
+**Test semantics:**
+- A test is a self-contained scope. Sub-structures instantiated in a test are local fixtures -- they do not affect the containing module's design.
+- Bare constraint expressions in a `@test constraint def` body are assertions. All must hold for the test to pass.
+- A `@test structure def` passes if all its constraints are satisfied and no computation failures occur.
+- Tests are never part of the evaluation graph during normal design use. They are evaluated on demand by the test runner.
+
+**Test discovery and execution:**
+- The test runner discovers all `@test`-annotated declarations in the specified modules.
+- Tests are independent and may run in parallel.
+- A test passes if all constraints are `satisfied`. A test fails if any constraint is `violated`. A test is `indeterminate` if any required parameter is `undef` (missing fixture data).
+- Test output reports pass/fail with constraint diagnostics for failures.
+
+**What can be asserted in tests:**
+- Parameter values and relationships (`bolt.length == 25mm`)
+- Constraint satisfaction (`safety_factor(...) >= 2.0`)
+- Determinacy state (`determined(bracket.thickness)`)
+- Geometric properties (`volume(part.geometry) < 100cm^3`)
+- Connection compatibility (via test structures with `connect` statements)
 
 ### 12.2 Pragmas
 
@@ -2996,9 +2119,113 @@ Pragmas use `#name(arguments)` and are scoped to the enclosing block. They are t
 #kernel(occt)
 ```
 
+**`#version`** -- declare the target language version (see Section 14.2):
+
+```
+#version(0.1)
+```
+
 ---
 
-## 13. Grammar Summary
+## 13. Documentation Generation
+
+Reify source files produce structured documentation from two mechanisms: **doc comments** (`///`) and **`meta` blocks**.
+
+### 13.1 Doc Comments
+
+Doc comments (`///`) are attached to the immediately following declaration. They produce API documentation -- hover text, reference pages, inline help.
+
+```
+/// A standard hex-head bolt per ISO 4014.
+///
+/// The bolt length includes the head. Thread length is computed
+/// from the nominal length per ISO 888 Table 3.
+pub structure def HexBolt : Fastener {
+    /// Nominal bolt diameter (shank diameter).
+    param diameter : Length
+    /// Total bolt length including head.
+    param length : Length
+}
+```
+
+Doc comments support a minimal markup:
+- Blank `///` lines separate paragraphs.
+- Inline code uses backticks: `` `parameter_name` ``.
+- No other formatting in v0.1.
+
+### 13.2 `meta` Blocks in Documentation
+
+`meta` block entries (Section 4.8) are included in generated documentation as structured metadata -- part numbers, revision codes, compliance references. They are displayed separately from the prose description.
+
+### 13.3 Generated Output
+
+The documentation tool generates structured output (format implementation-defined) containing:
+- Declaration name, kind, type parameters, trait list
+- Doc comment prose
+- Parameter table (name, type, default, doc comment)
+- Port table (name, type, direction, doc comment)
+- Constraint summaries
+- `meta` block entries
+- Module hierarchy and cross-references
+
+Documentation generation is a toolchain feature, not a language semantic. The language defines the source annotations; the toolchain defines the output format.
+
+---
+
+## 14. Language Versioning and Stability
+
+### 14.1 Version Scheme
+
+Reify uses semantic versioning for the language specification: `MAJOR.MINOR.PATCH`.
+
+- **MAJOR** (0 -> 1): Language stabilization. Breaking changes are expected during the 0.x series.
+- **MINOR** (0.1 -> 0.2): New features, possible breaking changes to unstable features.
+- **PATCH** (0.1.0 -> 0.1.1): Bug fixes, clarifications, non-breaking additions.
+
+### 14.2 Source File Versioning
+
+Every `.ri` file may declare the language version it targets:
+
+```
+#version(0.1)
+module my_project.bracket
+```
+
+If omitted, the file is assumed to target the toolchain's current version. The `#version` pragma is advisory in v0.1 -- full version-gated parsing is deferred.
+
+### 14.3 Stability Guarantees (v0.1)
+
+v0.1 is a **draft specification**. No backwards compatibility guarantees are made between v0.1 and any future version. Users should expect breaking changes.
+
+The following are expected to be stable across the 0.x series:
+- Core syntax shape (curly-brace declarations, `param`/`port`/`sub`/`let`/`constraint` member kinds)
+- Dimensional analysis model (9 base dimensions, quantity literals with units)
+- Determinacy spectrum (`undef`/constrained/`auto`/determined)
+- Module system structure (one file = one module, `pub`/private visibility)
+
+The following may change:
+- Standard library API surface (trait hierarchies, function signatures)
+- Keyword set (additions likely, removals possible)
+- Grammar details (operator precedence, syntactic sugar)
+- Annotation and pragma set
+
+### 14.4 Standard Library Versioning
+
+The standard library evolves independently of the language specification. Its API surface is documented in the [Standard Library Reference](reify-stdlib-reference.md).
+
+Policy for `std.prelude`: Additions are acceptable; removals and semantic changes are breaking. All other `std.*` modules may evolve freely during the 0.x series.
+
+### 14.5 Migration
+
+When a breaking change is introduced, the toolchain should provide:
+1. A diagnostic identifying the affected construct and the migration path.
+2. Where feasible, an automated migration tool (`reify migrate --from 0.1 --to 0.2`).
+
+Detailed migration guides are published with each minor version release.
+
+---
+
+## 15. Grammar Summary
 
 Complete EBNF grammar incorporating all updates from all documents and design review resolutions.
 
@@ -3234,7 +2461,7 @@ Other leading operators do NOT continue the previous line. Use parentheses or tr
 
 ---
 
-## 14. Appendix: Operator Precedence Table
+## 16. Appendix: Operator Precedence Table
 
 From highest to lowest precedence:
 
@@ -3260,7 +2487,7 @@ Chained comparisons: `a < b < c` desugars to `a < b and b < c`.
 
 ---
 
-## 15. Appendix: Complete Keyword List
+## 17. Appendix: Complete Keyword List
 
 Alphabetical listing of all v0.1 keywords:
 
@@ -3281,7 +2508,7 @@ where
 
 ---
 
-## 16. Appendix: Items Deferred to v0.2+
+## 18. Appendix: Items Deferred to v0.2+
 
 | # | Item | Target | Notes |
 |---|------|--------|-------|
