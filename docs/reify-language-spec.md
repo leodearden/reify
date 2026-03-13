@@ -24,7 +24,7 @@ Reify targets mechanical and mechatronic design, simulation, and manufacturing -
 2. **Concision** -- common things short, rare things can be longer, no ceremony for simple cases.
 3. **Explicitness** -- structure visible in text, no significant whitespace, no implicit scoping rules requiring indentation counting.
 4. **Readability at a glance** -- scanning a file immediately reveals entities, types, connections. Keywords over symbols for semantically important constructs.
-5. **Parseability** -- LL(1) or close. No ambiguities requiring unbounded lookahead. LLMs generate more reliably when grammar is predictable.
+5. **Parseability** -- LL(k) with small k. No ambiguities requiring unbounded lookahead. LLMs generate more reliably when grammar is predictable.
 
 **Broader principles:**
 
@@ -168,7 +168,7 @@ param wall_thickness : Length = auto(free)     // Free -- exploration mode
 
 **Entity kinds:** `structure`, `occurrence`, `constraint`, `field`
 
-**Declaration keywords:** `def`, `param`, `port`, `sub`, `let`, `fn`, `pub`, `module`, `import`, `trait`, `purpose`, `enum`, `unit`
+**Declaration keywords:** `def`, `param`, `port`, `sub`, `let`, `type`, `fn`, `pub`, `module`, `import`, `trait`, `purpose`, `enum`, `unit`
 
 **Connection keywords:** `connect`, `chain`
 
@@ -178,6 +178,8 @@ param wall_thickness : Length = auto(free)     // Free -- exploration mode
 
 **Direction keywords:** `in`, `out`
 
+> **Disambiguation: `in` as keyword vs unit.** `in` is both a direction keyword and the imperial unit for inches (= 25.4mm). Since quantity literals require no space between number and unit, the lexer distinguishes them: `5in` is a quantity literal (5 inches), while bare `in` is always the keyword. The sequence `5 in` (with space) is the integer `5` followed by the keyword `in`.
+
 **Value literals/keywords:** `true`, `false`, `undef`, `auto`, `some`, `none`
 
 **Optimisation keywords:** `minimize`, `maximize`
@@ -186,11 +188,11 @@ param wall_thickness : Length = auto(free)     // Free -- exploration mode
 
 **Self-reference:** `self`
 
-**Set literal prefix:** `set`
+**Collection literal prefixes:** `set`, `map`
 
 **Module/import-related:** `as`
 
-**Removed keywords (not part of v0.1):** `derived` (replaced by `let`), `require` (replaced by `constraint` + determinacy predicates), `dimension` (replaced by `let` for type aliases)
+**Removed keywords (not part of v0.1):** `derived` (replaced by `let`), `require` (replaced by `constraint` + determinacy predicates), `dimension` (replaced by `type` for type aliases)
 
 **Not keywords (standard library functions):** `determined`, `constrained`, `undetermined`, `partially_determined`, `point3`, `vec3`, `point2`, `vec2`, `project`, `geo_equiv`
 
@@ -240,9 +242,9 @@ Multiplication adds exponent vectors. Division subtracts. Checked at compile tim
 **Named dimension aliases:** Type aliases, not new types -- `Force` and `Mass * Length / Time^2` are the same type.
 
 ```
-let Force    = Mass * Length / Time^2       // type alias
-let Pressure = Force / Length^2             // type alias
-let Density  = Mass / Length^3              // type alias
+type Force    = Mass * Length / Time^2
+type Pressure = Force / Length^2
+type Density  = Mass / Length^3
 ```
 
 **Temperature offsets:** `degC` and `degF` are offset units. The distinction between absolute temperature and temperature difference matters:
@@ -282,10 +284,10 @@ Vector<N: Nat, Q: Dimension>   // Displacement / physical vector.
 
 Type aliases for common cases:
 ```
-let Point2<Q> = Point<2, Q>
-let Point3<Q> = Point<3, Q>
-let Vector2<Q> = Vector<2, Q>
-let Vector3<Q> = Vector<3, Q>
+type Point2<Q> = Point<2, Q>
+type Point3<Q> = Point<3, Q>
+type Vector2<Q> = Vector<2, Q>
+type Vector3<Q> = Vector<3, Q>
 ```
 
 Geometric types carry physical dimensions. `Point3<Length>` = position in physical space. `Vector3<Force>` = force vector. Unifies dimensional analysis with geometry.
@@ -405,8 +407,8 @@ The `Geometry` supertrait is the parent of all geometric entity types. `Transfor
 
 ```
 [1, 2, 3]                       // List literal
-set{a, b, c}                    // Set literal -- explicit prefix avoids block ambiguity
-("key" => value, "k2" => v2)    // Map literal
+set{a, b, c}                    // Set literal -- prefix avoids block ambiguity
+map{"key" => value, "k2" => v2} // Map literal -- prefix avoids paren ambiguity
 ```
 
 ### 3.5 Field Type
@@ -817,13 +819,19 @@ sub rib : Rib { height = thickness * 0.8 }
 let volume = thickness * width * height                    // Type inferred
 let mass : Mass = volume * material.density                // Type annotated
 pub let torque_constant : Torque/Current = back_emf / rated_speed
-let Pressure = Force / Area                                // Type alias
-let StressTensor = Tensor<2, 3, Pressure>                  // Type alias
 ```
 
 Named, typed, computed value with mandatory initialiser expression. Cannot be set from outside -- not a configurable parameter. Private by default; `pub let` to expose. Type annotation optional (type always inferrable from expression via dimensional analysis).
 
-`let` is used for both value bindings and type aliases. The compiler determines from context whether the RHS is a type expression or value expression. PascalCase/snake_case naming convention provides visual disambiguation.
+#### `type` -- Type Aliases
+
+```
+type Pressure = Force / Area
+type StressTensor = Tensor<2, 3, Pressure>
+type Point3<Q> = Point<3, Q>
+```
+
+Named type alias. The RHS is a type expression. Type aliases are transparent -- `Pressure` and `Force / Area` are the same type. Can be parameterised with type parameters. Can be `pub` for cross-module reuse.
 
 #### `constraint` -- Inline Constraints
 
@@ -1046,7 +1054,7 @@ bracket.(Rigid::max_temperature)          // Instance-level qualified access
 ```
 [1, 2, 3]                       // List literal
 set{a, b, c}                    // Set literal
-("key" => value, "k2" => v2)    // Map literal
+map{"key" => value, "k2" => v2} // Map literal
 
 list.map(|x| x * 2)             // Map over collection
 list.filter(|x| x > 5mm)        // Filter
@@ -2808,7 +2816,7 @@ module_path     ::= IDENT ('.' IDENT)*
 
 (* === Declarations === *)
 declaration     ::= visibility? (entity_decl | trait_decl | fn_decl | purpose_decl
-                                | enum_decl | unit_decl | let_decl)
+                                | enum_decl | unit_decl | let_decl | type_alias_decl)
                    | connect_stmt | chain_stmt | meta_block
 
 visibility      ::= 'pub'
@@ -2827,7 +2835,7 @@ trait_decl      ::= 'pub'? 'trait' TYPE_IDENT type_params?
 trait_member    ::= param_decl | port_decl | sub_decl | let_decl | constraint_line
                    | assoc_type_decl
 
-assoc_type_decl ::= 'let' TYPE_IDENT (':' trait_bound)?          (* associated type *)
+assoc_type_decl ::= 'type' TYPE_IDENT (':' trait_bound)?         (* associated type *)
 
 (* --- Function declarations --- *)
 fn_decl         ::= 'pub'? 'fn' IDENT type_params? '(' fn_params? ')' '->' type_expr
@@ -2837,6 +2845,9 @@ fn_params       ::= fn_param (',' fn_param)*
 fn_param        ::= IDENT ':' type_expr
 
 fn_body         ::= (let_decl)* expr
+
+(* --- Type alias declarations --- *)
+type_alias_decl ::= 'pub'? 'type' TYPE_IDENT type_params? '=' type_expr
 
 (* --- Purpose declarations --- *)
 purpose_decl    ::= 'pub'? 'purpose' IDENT type_params?
@@ -2879,20 +2890,22 @@ type_expr       ::= TYPE_IDENT type_args?
 type_args       ::= '<' type_arg (',' type_arg)* '>'
 type_arg        ::= type_expr | expr
 
-where_clause    ::= 'where' constraint_expr (',' constraint_expr)*
+where_clause    ::= 'where' expr (',' expr)*            (* boolean expressions *)
 
 (* === Members === *)
-member          ::= param_decl | port_decl | sub_decl | let_decl
+member          ::= param_decl | port_decl | sub_decl | let_decl | type_alias_decl
                    | constraint_line | connect_stmt | chain_stmt
                    | entity_decl | field_body | fn_decl
                    | where_block | match_block | meta_block
                    | minimize_decl | maximize_decl
 
-param_decl      ::= 'param' IDENT ':' type_expr ('=' expr)?
-port_decl       ::= 'port' IDENT ':' dir? type_expr ('{' member* '}')?
-sub_decl        ::= 'sub' IDENT ':' type_expr ('{' member* '}')?
-let_decl        ::= 'pub'? 'let' IDENT (':' type_expr)? '=' expr
-constraint_line ::= 'constraint' (constraint_ref | expr)
+where_guard     ::= 'where' expr                         (* per-declaration guard *)
+
+param_decl      ::= 'param' IDENT ':' type_expr ('=' expr)? where_guard?
+port_decl       ::= 'port' IDENT ':' dir? type_expr ('{' member* '}')? where_guard?
+sub_decl        ::= 'sub' IDENT ':' type_expr where_guard? ('{' member* '}')?
+let_decl        ::= 'pub'? 'let' IDENT (':' type_expr)? '=' expr where_guard?
+constraint_line ::= 'constraint' (constraint_ref | expr) where_guard?
 
 constraint_ref  ::= TYPE_IDENT type_args? '(' args? ')'
 
@@ -2992,7 +3005,7 @@ range_lit       ::= expr '..' expr
 
 list_lit        ::= '[' (expr (',' expr)*)? ']'
 set_lit         ::= 'set' '{' (expr (',' expr)*)? '}'
-map_lit         ::= '(' map_entry (',' map_entry)* ')'
+map_lit         ::= 'map' '{' (map_entry (',' map_entry)*)? '}'
 map_entry       ::= expr '=>' expr
 
 BOOL_LIT        ::= 'true' | 'false'
@@ -3012,7 +3025,10 @@ Reify is newline-significant: newlines terminate declarations and statements wit
 - Comma: `,`
 - Opening delimiters: `(`, `[`, `{`
 
-**Leading operators do NOT continue** the previous line. Use parentheses.
+**Leading continuation:** A line beginning with any of the following continues the previous line:
+- Logical operators: `and`, `or`, `implies`
+
+Other leading operators do NOT continue the previous line. Use parentheses or trailing-operator style.
 
 **No backslash continuation.** The combination of free continuation inside `()`/`[]` and trailing-operator continuation covers all practical cases.
 
@@ -3049,18 +3065,19 @@ Chained comparisons: `a < b < c` desugars to `a < b and b < c`.
 Alphabetical listing of all v0.1 keywords:
 
 ```
-and          as           auto         chain        constraint
-def          else         enum         exists       false
-field        fn           forall       if           implies
-import       in           let          match        maximize
-meta         minimize     module       none         not
-occurrence   or           out          param        port
-pub          purpose      self         set          some
-structure    sub          then         trait        true
-undef        unit         where
+and          as           auto         chain        connect
+constraint   def          else         enum         exists
+false        field        fn           forall       if
+implies      import       in           let          map
+match        maximize     meta         minimize     module
+none         not          occurrence   or           out
+param        port         pub          purpose      self
+set          some         structure    sub          then
+trait        true         type         undef        unit
+where
 ```
 
-**Total: 43 keywords.**
+**Total: 46 keywords.**
 
 ---
 
