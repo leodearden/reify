@@ -390,7 +390,9 @@ The `Geometry` supertrait is the parent of all geometric entity types. `Transfor
 | `Range<T>`    | Bounded interval -- `Range<Length>` for `2mm..5mm` tolerance ranges |
 | `Option<T>`   | Explicit optionality (present or absent). Distinct from `undef` |
 
-**`Option<T>` vs `undef`:** `Option` is a type-level statement about existence (the value may or may not be present); `undef` is a determinacy state (the value has not been decided yet). A parameter is always present -- it may just be `undef`.
+**`Option<T>` vs `undef`:** `Option` is a type-level statement about existence (the value may or may not be present); `undef` is a determinacy state (the value has not been decided yet). A parameter is always present -- it may just be `undef`. See Section 9.2.8 for the four-way distinction between `some(value)`, `some(undef)`, `none`, and `undef` of type `Option<T>`.
+
+**`Option<Option<T>>`** is a valid type. `some(some(x))`, `some(none)`, and `none` are all distinguishable via pattern matching.
 
 **Collection operations (v0.1):**
 
@@ -400,6 +402,15 @@ The `Geometry` supertrait is the parent of all geometric entity types. `Transfor
 - **`Range<T>`:** `contains`, `lower`, `upper`, `span` (upper - lower).
 
 **Out-of-bounds / missing key:** Evaluation-graph-level failure (see Section 9), not a language-level exception.
+
+**Empty collections:**
+
+- `List.generate(0, fn)` is valid and returns `[]` (empty list of the appropriate element type).
+- `[].sum` requires element type context. When the element type is known (e.g., the list is typed as `List<Length>`), the result is the additive identity for that dimension (`0mm` for `Length`, `0N` for `Force`, etc.). Without type context, it is a type error.
+- `[].count` is `0`. `set{}.count` is `0`. `map{}.count` is `0`.
+- `forall x in []: P(x)` evaluates to `true` (vacuous truth -- standard mathematical convention).
+- `exists x in []: P(x)` evaluates to `false` (vacuous falsity -- standard mathematical convention).
+- Empty set literal `set{}` and empty map literal `map{}` require type context (e.g., `let s : Set<Material> = set{}`).
 
 **Counted sub-structures use `List<T>` uniformly.** The `[n]` syntax for counted sub-structure arrays is removed. Declaration: `sub vents : List<Vent>` plus `constraint vents.count == vent_count`. The runtime recognizes `count == N` constraints on `List<Structure>` sub-declarations as structure-controlling, triggering schema re-elaboration. v0.1 uses positional indexing (`vents[0]`, `vents[1]`, ...).
 
@@ -992,7 +1003,7 @@ a implies b
 
 Keywords, not symbols. `and` and `or` are used instead of `&&` and `||`.
 
-**Logical type rules:** All logical operators (`and`, `or`, `not`, `implies`) take `Bool` operands and return `Bool`. No truthy/falsy coercion -- `0`, `none`, empty collections, and `""` are not implicitly boolean.
+**Logical type rules:** All logical operators (`and`, `or`, `not`, `implies`) take `Bool` operands and return `Bool`. No truthy/falsy coercion -- `0`, `none`, empty collections, and `""` are not implicitly boolean. When operands are `undef`, logical operators follow Kleene three-valued logic (see Section 9.2.3).
 
 ### 5.4 Quantifiers (`forall`, `exists`)
 
@@ -1012,13 +1023,19 @@ Disambiguation is by the token after the colon: `connect` or `constraint` for st
 
 v0.1 statement scope: `connect` and `constraint` only.
 
+**Empty collections:** `forall` over an empty collection is `true` (vacuous truth). `exists` over an empty collection is `false` (vacuous falsity). See Section 3.4.
+
+**`undef` propagation:** Quantifiers follow Kleene semantics (iterated `and` / `or`). See Section 9.2.6 for the full truth table.
+
+**Guarded collections:** A quantifier over a `where`-guarded collection is subject to reference safety (Section 8.10) -- the quantifier must be under the same or stronger guard. When the guard is active, the quantifier operates on the collection's current contents. When the guard is inactive, the quantifier is absent from the evaluation graph entirely (not vacuously true -- simply not present).
+
 ### 5.5 Conditional Expressions
 
 ```
 if condition then expr_a else expr_b
 ```
 
-Expression-level conditional (always has both branches, always produces a value). Not a statement-level `if`.
+Expression-level conditional (always has both branches, always produces a value). Not a statement-level `if`. When the condition is determined, only the selected branch contributes; the unselected branch's determinacy is irrelevant. When the condition is `undef`, the result is `undef`. See Section 9.2.4.
 
 ### 5.6 Lambda Expressions
 
@@ -1089,7 +1106,7 @@ let total = match coating {
 }
 ```
 
-Exhaustiveness enforced. Wildcard `_` catches remaining cases. Multiple variants with `|`: `Socket | Button => recessed_drive`. No fall-through.
+Exhaustiveness enforced. Wildcard `_` catches remaining cases. Multiple variants with `|`: `Socket | Button => recessed_drive`. No fall-through. When the discriminant is `undef`, the result is `undef` (see Section 9.2.5).
 
 ### 5.11 Indexing
 
@@ -1109,7 +1126,7 @@ param width : Length = auto          // Delegated to solver
 let area = thickness * width         // area is undef if either input is undef
 ```
 
-`undef` and `auto` are valid in any expression position where a value is expected.
+`undef` and `auto` are valid in any expression position where a value is expected. Detailed propagation rules for `undef` through all operator and expression types are specified in Section 9.2.
 
 ---
 
@@ -1535,10 +1552,140 @@ Every parameter sits on a determinacy spectrum:
 
 ### 9.2 `undef` Semantics
 
-- Default state: every unassigned parameter without a default is `undef`.
-- Propagation: `undef` propagates through dependent computations (to the extent that the result relevantly depends on the undefined input). May be contained/swallowed where downstream computation doesn't depend on the undefined value.
-- Always valid syntactically and semantically.
-- Tracing: tooling should make it easy to trace why something is `undef`.
+`undef` means "not yet decided." It is the default state of every unassigned parameter without a default value. `undef` is always valid syntactically and semantically -- a design with `undef` parameters is a legitimate, partially-specified design.
+
+**Core propagation principle:** `undef` propagates strictly through computations, except where the result is provably independent of the unknown operand under the semantics of the operator. The rules below are exhaustive for v0.1.
+
+#### 9.2.1 Arithmetic Operators
+
+`undef` propagates strictly through all arithmetic. No algebraic identities are exploited.
+
+| Expression | Result | Rationale |
+|------------|--------|-----------|
+| `undef + 5mm` | `undef` | Result depends on unknown operand |
+| `5mm - undef` | `undef` | Result depends on unknown operand |
+| `0 * undef` | `undef` | Strict; `0 * x = 0` not exploited |
+| `undef * undef` | `undef` | Even for the same parameter |
+| `undef ^ 0` | `undef` | Strict; `x^0 = 1` not exploited |
+| `-undef` | `undef` | Unary negation propagates |
+| `undef % 5` | `undef` | Modulo propagates |
+
+**Rationale for strict arithmetic:** Exploiting algebraic identities (like `0 * x = 0`) would require the compiler to reason about mathematical properties of operators, creating implementation complexity and surprising edge cases (e.g., `0 / 0`, overflow). Strict propagation is simpler, predictable, and sufficient -- expressions like `0 * param` with a literal zero are vanishingly rare in engineering designs.
+
+#### 9.2.2 Comparison Operators
+
+Comparisons with any `undef` operand produce `undef` (of type `Bool`).
+
+| Expression | Result |
+|------------|--------|
+| `undef < 5mm` | `undef` |
+| `5mm == undef` | `undef` |
+| `undef == undef` | `undef` |
+| `2mm < undef < 10mm` | `undef` (desugars to `2mm < undef and undef < 10mm`) |
+
+An `undef`-valued `Bool` in a constraint context makes the constraint **indeterminate** -- neither satisfied nor violated.
+
+#### 9.2.3 Logical Operators (Kleene Three-Valued Logic)
+
+Logical operators follow **Kleene's strong three-valued logic**, where `undef` acts as "unknown." A logical operator absorbs `undef` only when the result is determined regardless of the unknown operand's value.
+
+| `a` | `b` | `a and b` | `a or b` | `not a` | `a implies b` |
+|---------|---------|-----------|----------|---------|---------------|
+| `true`  | `true`  | `true`    | `true`   | `false` | `true`        |
+| `true`  | `false` | `false`   | `true`   |         | `false`       |
+| `true`  | `undef` | `undef`   | `true`   |         | `undef`       |
+| `false` | `true`  | `false`   | `true`   | `true`  | `true`        |
+| `false` | `false` | `false`   | `false`  |         | `true`        |
+| `false` | `undef` | `false`   | `undef`  |         | `true`        |
+| `undef` | `true`  | `undef`   | `true`   | `undef` | `true`        |
+| `undef` | `false` | `false`   | `undef`  |         | `undef`       |
+| `undef` | `undef` | `undef`   | `undef`  |         | `undef`       |
+
+Logical operators are **commutative with respect to `undef`** -- operand order does not affect propagation. This is consistent with Reify's declarative semantics (not imperative short-circuit evaluation).
+
+**Rationale for Kleene but not algebraic identities in arithmetic:** Boolean absorption is cheap to verify (two rules per operator, finite truth table). Arithmetic identity exploitation opens unbounded complexity (must reason about `0 * infinity`, dimensional edge cases, etc.). The asymmetry is deliberate.
+
+#### 9.2.4 Conditional Expressions
+
+```
+if condition then expr_a else expr_b
+```
+
+| `condition` | Result |
+|-------------|--------|
+| `true`      | `expr_a` (evaluated; `expr_b` does not contribute) |
+| `false`     | `expr_b` (evaluated; `expr_a` does not contribute) |
+| `undef`     | `undef` (neither branch can be selected) |
+
+When the condition is determined, only the selected branch's determinacy matters. `if true then 5mm else undef` evaluates to `5mm`. The compiler does not attempt to prove branch equivalence when the condition is `undef` -- even `if undef then 5mm else 5mm` evaluates to `undef`.
+
+#### 9.2.5 `match` Expressions
+
+| Discriminant | Result |
+|--------------|--------|
+| Determined   | Result of the matching branch |
+| `undef`      | `undef` (no branch can be selected) |
+
+#### 9.2.6 Collection Operations
+
+**Collection structure vs element values:** A collection's structure (count, keys) is independent of its element values. When the collection structure is determined but elements contain `undef`, structural operations produce determined results.
+
+| Expression | Collection state | Result |
+|------------|-----------------|--------|
+| `list.count` | Structure determined (3 elements) | `3` (even if elements are `undef`) |
+| `list.count` | List itself `undef` | `undef` |
+| `list.sum` | Structure determined | `undef` if any element is `undef` |
+| `list[i]` | Structure determined, valid index | Element value (may be `undef`) |
+| `list[i]` | List itself `undef` | `undef` |
+| `map[key]` | Structure determined, key present | Value (may be `undef`) |
+| `map[key]` | Structure determined, key absent | Evaluation failure (not `undef`) |
+| `map[key]` | Map itself `undef` | `undef` |
+
+**`forall` and `exists`:** Quantifiers follow Kleene semantics, consistent with their interpretation as iterated `and` / `or`:
+
+| Quantifier | Predicate results across elements | Result |
+|------------|----------------------------------|--------|
+| `forall` | All `true` | `true` |
+| `forall` | Any `false` | `false` |
+| `forall` | No `false`, some `undef` | `undef` |
+| `forall` | Empty collection | `true` (vacuous truth) |
+| `exists` | Any `true` | `true` |
+| `exists` | All `false` | `false` |
+| `exists` | No `true`, some `undef` | `undef` |
+| `exists` | Empty collection | `false` (vacuous falsity) |
+
+When the collection itself is `undef`, quantifiers produce `undef`.
+
+#### 9.2.7 Function Application
+
+`undef` propagates strictly through function calls. If any argument is `undef`, the result is `undef`. Functions are pure and cannot inspect the determinacy state of their arguments.
+
+**Exception:** Determinacy predicates (`determined()`, `constrained()`, `undetermined()`, `partially_determined()`) operate on the determinacy state itself, not the value. `determined(undef_param)` returns `false`, not `undef`.
+
+#### 9.2.8 `Option` Constructors
+
+`some(undef)` is valid and distinct from both `none` and `undef`:
+
+| Expression | Meaning |
+|------------|---------|
+| `some(5mm)` | Value present, determined |
+| `some(undef)` | Value present, content not yet decided |
+| `none` | Value absent |
+| `undef` (of type `Option<T>`) | Existence itself not yet decided |
+
+`Option<Option<T>>` is a valid type. `some(none)`, `some(some(x))`, `none`, and `undef` are all distinguishable states. Pattern matching on `Option<Option<T>>`:
+
+```
+match outer {
+    some(some(x)) => ...    // Inner value present
+    some(none) => ...       // Outer present, inner absent
+    none => ...             // Outer absent
+}
+```
+
+#### 9.2.9 Tracing
+
+Tooling should make it easy to trace why a value is `undef` -- which upstream parameter's undetermined state is responsible. This is an implementation concern, not a language semantics concern.
 
 ### 9.3 `auto` Resolution
 
