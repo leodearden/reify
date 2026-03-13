@@ -503,6 +503,14 @@ structure def Fastener<HeadStyle: HeadType = Hex> { ... }
 sub bearing1 : Bearing<auto: Seal> { bore_diameter = 25mm }
 ```
 
+**Type parameter `auto` resolution:** The search space is all concrete types visible at the instantiation site that satisfy the bound. Resolution proceeds as follows:
+
+1. **Enumerate candidates** -- all types satisfying the trait/kind bound that are in scope (imported or fully qualified).
+2. **Filter by feasibility** -- instantiate with each candidate and check whether the resulting constraints are satisfiable (using the same mechanism as value `auto`).
+3. **Select** -- if exactly one candidate is feasible, use it (strict `auto`). If multiple are feasible, strict `auto` is an error; `auto(free)` selects one deterministically (lexicographic by fully qualified name).
+
+Type parameter `auto` is resolved at elaboration time, before value parameter resolution begins. If resolution fails, the diagnostic reports the bound, the candidates considered, and why each was rejected or why selection was ambiguous.
+
 **Type inference:** Conservative. Infer type parameters when context unambiguously determines them. Never infer value parameters -- the determinacy model handles "not yet specified" via `undef`/`auto`/constrained/determined.
 
 **Limited dependent typing:** Value parameters of type `Int` and `Bool` can appear in type-level positions (collection sizes, conditional presence gating, array dimensions). This is a targeted set of rules, not a general dependent type theory.
@@ -759,6 +767,23 @@ purpose manufacturing_ready(subject : Structure) {
 
 When activated, a purpose's constraints and outputs are present in the evaluation graph; when deactivated, they are absent. The checking/solving/proposing mode is determined by input determinacy state, not explicit mode selection.
 
+**Purpose parameters are entity references, not values.** Purpose parameters bind to entities in the evaluation graph, not to values on the determinacy spectrum. The type annotation is an entity-kind selector: `Structure`, `Occurrence`, `Constraint`, or `Field`. These are built-in keywords in purpose parameter position, not value types -- `param x : Structure` inside a structure body is not valid.
+
+Entity references provide **compiler-generated reflective access** over the bound entity's schema:
+
+| Reflective member | Returns | Meaning |
+|-------------------|---------|---------|
+| `.params` | `List<ParamRef>` | All `param` declarations on the entity |
+| `.geometric_params` | `List<ParamRef>` | Parameters whose type has nonzero geometric dimension exponents (Length, Area, Angle, etc.) |
+| `.material_params` | `List<ParamRef>` | Parameters whose type is a material trait or contains material properties |
+| `.sub_entities` | `List<EntityRef>` | All `sub` declarations |
+| `.ports` | `List<PortRef>` | All `port` declarations |
+| `.constraints` | `List<ConstraintRef>` | All constraint declarations |
+
+These are schema queries resolved at elaboration time. Named members on the bound entity (e.g., `subject.cost`) resolve to the entity's ValueCells through the entity binding, and participate in the evaluation graph normally.
+
+Purposes are graph-level constructs. They express requirements and objectives over the *shape and state* of a design, not computations over values. This is what makes them universally applicable -- `manufacturing_ready` works on any structure without per-structure opt-in.
+
 ### 4.5 Enum Declarations
 
 v0.1 enums are C-style (no associated data):
@@ -806,6 +831,8 @@ port workpiece_a : in StructurePort
 ```
 
 Ports are typed scopes with members, uniform across structure ports and occurrence ports. Access via dot notation.
+
+**Port type requirement:** A port's type annotation must be a trait that refines `Port` (defined in `std.ports`, re-exported in the prelude). The `Port` trait provides the `direction` parameter; domain-specific port traits (`MechanicalPort`, `RotaryPort`, etc.) refine it with additional interface parameters. A declaration `port x : T` where `T` does not refine `Port` is a compile error.
 
 - **Structure ports** contain interface parameters defined by the port's trait.
 - **Occurrence ports** contain a primary payload plus port-level parameters.
@@ -1319,6 +1346,8 @@ sub head : SocketHead where head_type == HeadType.Socket { ... }
 // ...
 ```
 
+**Same-name guarded declarations:** The desugaring produces multiple declarations with the same name (`head`) but different types. This is permitted when the guards are mutually exclusive (which exhaustive `match` guarantees). The declarations are treated as a single logical entity -- external references use the shared name (`self.head`), and the type at any reference site is the union of the possible types, narrowed by the active guard. This exception to the normal "one name per scope" rule applies only to declarations with provably mutually exclusive guards.
+
 Multiple variants with `|`: `Socket | Button => sub head : RecessedHead { ... }`.
 
 ---
@@ -1472,6 +1501,18 @@ When a sub-entity is instantiated within a parent body, its body is a specialisa
 - Sees the parent scope (and transitively, all ancestor scopes)
 - Can set parameters and add constraints on the instance
 - Does not modify the underlying definition
+
+**Permitted in a specialisation body:**
+
+| Member kind | Meaning |
+|-------------|---------|
+| Parameter assignments | `thickness = 3mm` -- set a value for an existing parameter |
+| `constraint` | Add constraints on the instance's parameters |
+| `let` bindings | Local computed values (scoped to the specialisation) |
+| `connect` | Connect the instance's ports |
+| `where` guards | Conditionally include any of the above |
+
+**Not permitted:** New `param`, `port`, or `sub` declarations. A specialisation configures an existing definition; it does not extend its schema. To add members, define a new structure that inherits via trait or composition.
 
 ```
 structure def Assembly {
@@ -1831,7 +1872,7 @@ If no explicit purpose or objective is specified, a default purpose applies (pro
 **Legibility:** Designer can always query what objective governs a given `auto` resolution.
 **Override:** Any scope can override with a local `minimize`/`maximize`.
 
-**Domain library smart defaults via `@optimized`:** Domain libraries can register smarter defaults for specific parameter types via the `@optimized` hook (e.g., bolt length snaps to next standard size, sheet thickness snaps to available stock).
+**Domain library smart defaults via `@solver_hint`:** Domain libraries can register smarter defaults for specific parameter types via the `@solver_hint` annotation (e.g., bolt length snaps to next standard size, sheet thickness snaps to available stock). Unlike `@optimized` (which provides a semantically equivalent fast path), `@solver_hint` changes solver behavior -- it provides domain-specific guidance about feasible values, preferred search strategies, or discrete candidate sets. See Section 12.1.
 
 **Conflicting objectives:** Two objectives in the same scope that conflict without weighting = error. Designer must combine into weighted objective or establish lexicographic priority.
 
@@ -2890,9 +2931,9 @@ purpose simulation_ready(subject : Physical) {
 
 ### 12.1 Annotations
 
-Annotations use `@name` or `@name(arguments)`. They do not change semantics -- they provide hints to the toolchain.
+Annotations use `@name` or `@name(arguments)`. They provide hints to the toolchain.
 
-**`@optimized`** -- registers that a language-level definition has a semantically equivalent optimized implementation in the runtime:
+**`@optimized`** -- registers that a language-level definition has a semantically equivalent optimized implementation in the runtime. The optimized implementation must produce identical results; it is a pure performance optimization:
 
 ```
 @optimized("geo_kernel::coincidence_solver")
@@ -2900,6 +2941,18 @@ constraint def Coincident(a : Point3<Length>, b : Point3<Length>) {
     distance(a, b) == 0mm
 }
 ```
+
+**`@solver_hint`** -- provides domain-specific guidance to the constraint solver. Unlike `@optimized`, this *may change solver behavior* -- it narrows search spaces, provides discrete candidate sets, or suggests preferred strategies:
+
+```
+@solver_hint("discrete_set", standard_bolt_lengths)
+param length : Length = auto
+
+@solver_hint("prefer_stock", sheet_stock_thicknesses)
+param thickness : Length = auto
+```
+
+The language-level definition remains the specification of correctness; the solver hint influences *how* the solver searches, not *what* constitutes a valid solution. Solver hints are advisory -- the solver may ignore them if they conflict with constraints.
 
 **`@deprecated`** -- marks a definition as deprecated with a message:
 
