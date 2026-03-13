@@ -682,9 +682,21 @@ trait Cylindrical {
 
 **Conformance interleaving with determinacy:** Conformance is interleaved with determinacy. A fully `undef` structure trivially conforms (constraints vacuously satisfiable). Constraints are checked as parameters become determined. Full conformance is only verifiable when all relevant parameters are determined.
 
-### 4.2.1 No Definition Overloading
+### 4.2.1 Overloading Rules
 
-Definition overloading by parameter type is not supported in v0.1. Use traits instead. Overloading interacts badly with the determinacy spectrum -- when a parameter is `auto` or partially constrained, the compiler may not know which overload to select.
+**Entity definition overloading is not supported.** Two entity definitions (structures, occurrences, constraints, fields) with the same name but different parameter types are an error. Overloading entity definitions interacts badly with the determinacy spectrum -- when a parameter is `auto` or partially constrained, the compiler may not know which definition to select. Use traits instead.
+
+**Function (`fn`) overloading by parameter types is permitted.** Functions are pure computations with no determinacy state. At every call site, argument types are statically known (even when values are `undef` or `auto`), so dispatch is unambiguous. Resolution rule: the compiler matches argument types against all candidates with the same name; exactly one candidate must match. If zero or more than one match, the call is an error. Implicit `Int` -> `Real` promotion is NOT considered during overload resolution.
+
+```
+// Valid: same name, different parameter types
+fn area(surface: Surface) -> Scalar<Area> { ... }
+fn area(solid: Solid) -> Scalar<Area> { ... }
+
+// Valid: same name, different arity
+fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
+fn rotate<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... }
+```
 
 ### 4.3 Function Declarations (`fn`)
 
