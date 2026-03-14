@@ -48,7 +48,7 @@ Key corrections from design review:
 
 The evaluation graph is the central runtime data structure. It is a directed acyclic graph (DAG) of typed nodes connected by dependency edges, built on immutable snapshots with persistent data structures.
 
-### 2.1 Node Taxonomy (6 Types)
+### 2.1 Node Taxonomy (7 Types)
 
 #### ValueCell -- the atomic data layer
 
@@ -90,11 +90,11 @@ ResolutionNode(scope_id, auto_params: Set<ValueCellId>) -> Map<ValueCellId, Valu
 
 Granularity: per scope. Reflects the constraint system's bottom-up resolution strategy. Coupled optimization over a scope's `auto` parameters cannot generally be decomposed per-parameter.
 
-This is the **only node type that writes to ValueCells it does not own.** In the immutable snapshot model, this "write" manifests as producing a new snapshot with resolved values.
+The ResolutionNode's output is a map of resolved values. This output is committed to a new snapshot with `Resolution` provenance (section 2.5), advancing the design from a less-resolved state to a more-resolved state. This is a state transition, not a within-state dependency -- the ResolutionNode does not appear as a dependency of the ValueCells it resolves within any single graph state.
 
 Internal decomposition: the ResolutionNode analyzes the constraint graph to identify connected components; uncoupled subsets become independent sub-problems solved concurrently. The graph layer sees one ResolutionNode per scope.
 
-Cycle handling: the apparent cycle `ValueCell -> RealizationNode -> ConstraintNode -> ResolutionNode -> ValueCell` is a convergence loop *within* the ResolutionNode's computation, not a graph cycle. The ResolutionNode internally iterates (propose values, realize geometry, check constraints, adjust) using the same graph infrastructure via evaluation contexts (section 2.4). The graph itself remains a DAG at the macro level.
+What might appear as a dependency cycle (`ValueCell -> ConstraintNode -> ResolutionNode -> ValueCell`) is actually a helix across states: the unresolved ValueCells at the input are in state S_n; the resolved ValueCells at the output are in state S_{n+1}. The dependency graph within any single state is a strict DAG. The additional dimension is monotonic state progression -- determinacy only increases. See section 2.5.
 
 #### RealizationNode -- producing representations
 
@@ -122,7 +122,7 @@ Covers: FEA, CFD, toolpath generation, lattice infill, surrogate model training,
 SchemaNode(scope_id) -> SchemaFragment
 ```
 
-Introduced by the structural graph changes design. A SchemaNode's computation takes source definitions and structure-controlling parameter values as inputs, produces a `SchemaFragment` as output:
+Introduced by the structural graph changes design. A SchemaNode produces a `SchemaFragment` describing the topology of its scope:
 
 ```
 SchemaFragment:
@@ -133,33 +133,56 @@ SchemaFragment:
     structure_version: ContentHash
 ```
 
-Each `NodeDeclaration` carries enough information to create a node (type, computation definition, static metadata) but no values. Schema nodes compose via the containment tree: an assembly's schema = own nodes + child occurrence schemas. Changing a guard deep in the hierarchy only re-elaborates that scope and ancestors' composition; sibling subtrees are cache hits.
+Each `NodeDeclaration` carries the information needed to create a node: type, node identity, edge connectivity, and references to the SourceNodes that define its computation. The computation definition itself lives in SourceNodes, not in the NodeDeclaration -- this is what allows non-structural source edits (changing a constraint body, adjusting a default value) to bypass SchemaNode re-elaboration entirely.
 
-Schema node inputs fall into three categories:
-1. Source AST for the scope (content-addressable; same source = same hash).
-2. Resolved values of all structure-controlling parameters: guard booleans, collection sizes, recursion depths, variant discriminants.
-3. Elaborated schemas of trait definitions applied to this scope.
+Schema nodes compose via the containment tree: an assembly's schema = own nodes + child occurrence schemas. Changing a guard deep in the hierarchy only re-elaborates that scope and ancestors' composition; sibling subtrees are cache hits.
 
-**Non-structure-controlling parameters are NOT inputs to elaboration.** Changing `bracket.thickness` does not dirty the SchemaNode.
+SchemaNode inputs:
+1. Structure-controlling SourceNodes: guard expressions, sub declarations, collection definitions (via edge #1).
+2. Structure-controlling ValueCells: resolved guard booleans, collection sizes, recursion depths, variant discriminants (via edge #7).
+3. Child SchemaNodes: elaborated schemas of child occurrences (via edge #13).
 
-### 2.2 Edge Types (10 Kinds)
+**Non-structure-controlling SourceNodes feed evaluation nodes directly** (via edge #2), bypassing the SchemaNode. Changing a constraint body or parameter default does not dirty the SchemaNode. **Non-structure-controlling parameter values are not inputs to elaboration.** Changing `bracket.thickness` does not dirty the SchemaNode.
 
-Ten edge types connect the six node types:
+#### SourceNode -- compiler-to-graph boundary
+
+```
+SourceNode(ast_path) -> ASTFragment
+```
+
+The interface between the compiler and the evaluation graph. Each SourceNode holds a content-addressable AST subtree representing a single unit of source definition: a parameter default expression, a let binding body, a constraint predicate, a guard expression, a geometry operation sequence, etc.
+
+Granularity: per declaration or finer. Different parts of a declaration may be separate SourceNodes when they feed different evaluation nodes. For example, a `sub` declaration's `where` guard is a structure-controlling SourceNode (feeds the SchemaNode via edge #1), while its parameter assignments are non-structure-controlling SourceNodes (feed ValueCells directly via edge #2). A bare `param` declaration with no default has no SourceNode -> ValueCell edge; its ValueCell exists in the schema but its value comes from constraints, resolution, user edit, or remains `undef`.
+
+SourceNode evaluation is trivial: look up the current AST subtree and compute its content hash. The compiler populates SourceNodes when source text changes; the evaluation graph's normal invalidation machinery handles the rest. Incremental parsing produces incremental SourceNode updates; content-hash early cutoff means whitespace-only or comment-only changes are free.
+
+The SourceNode is what makes source-change invalidation uniform with parameter-change invalidation. Both flow through the same dependency edges, dirty/demand cones, and cache verification. No special-case handling of "source changed" is needed.
+
+### 2.2 Edge Types (13 Kinds)
+
+Thirteen dependency edge types connect the seven node types. Every edge in this table is a dependency edge: it participates in pull-based evaluation, dirty/demand cone computation, and DAG cycle detection.
 
 | # | From -> To | Meaning | Example |
 |---|---|---|---|
-| 1 | ValueCell -> ValueCell | `let` value reads other values | `volume` reads `thickness`, `width`, `height` |
-| 2 | ValueCell -> ConstraintNode | Constraint reads parameter | `thickness > 2mm` reads `thickness` |
-| 3 | ValueCell -> RealizationNode | Geometry parameterised by value | Box dimensions, fillet radius |
-| 4 | ValueCell -> ComputeNode | Computation reads parameters | FEA reads `material.youngs_modulus` |
-| 5 | ConstraintNode -> ResolutionNode | Solver reads constraint landscape | `auto` resolution reads constraints |
-| 6 | ResolutionNode -> ValueCell | Solver writes resolved values | `auto thickness` gets determined |
-| 7 | RealizationNode -> ConstraintNode | DFM constraint reads geometry | Wall thickness check needs solid |
-| 8 | RealizationNode -> ComputeNode | Computation needs representation | Stress analysis reads mesh |
-| 9 | ComputeNode -> ValueCell | Result feeds back | Stress field -> density -> lattice params |
-| 10 | RealizationNode -> RealizationNode | Parent composes sub-realizations | Assembly reads sub-structures |
+| 1 | SourceNode -> SchemaNode | Structure-controlling source feeds elaboration | Guard expression `where needs_cooling` feeds Housing's SchemaNode |
+| 2 | SourceNode -> evaluation node | Computation definition feeds evaluation | Constraint body feeds its ConstraintNode; default expression feeds ValueCell |
+| 3 | ValueCell -> ValueCell | `let` value reads other values | `volume` reads `thickness`, `width`, `height` |
+| 4 | ValueCell -> ConstraintNode | Constraint reads parameter value | `thickness > 2mm` reads `thickness` |
+| 5 | ValueCell -> RealizationNode | Geometry parameterised by value | Box dimensions, fillet radius |
+| 6 | ValueCell -> ComputeNode | Computation reads parameter values | FEA reads `material.youngs_modulus` |
+| 7 | ValueCell -> SchemaNode | Structure-controlling value feeds elaboration | `needs_cooling` boolean feeds Housing's SchemaNode |
+| 8 | ConstraintNode -> ResolutionNode | Solver reads constraint landscape | `auto` resolution reads constraints |
+| 9 | RealizationNode -> ConstraintNode | DFM constraint reads geometry | Wall thickness check needs solid |
+| 10 | RealizationNode -> ComputeNode | Computation needs representation | Stress analysis reads mesh |
+| 11 | RealizationNode -> RealizationNode | Parent composes sub-realizations | Assembly reads sub-structures |
+| 12 | ComputeNode -> ValueCell | Computation result populates value | FEA safety factor feeds field value |
+| 13 | SchemaNode -> SchemaNode | Child schema composes into parent | Vent's SchemaNode feeds Housing's SchemaNode |
 
-The graph is a DAG at the macro level. The apparent cycle through ResolutionNodes is resolved by pushing the convergence loop inside them.
+In edge #2, "evaluation node" means any of ValueCell, ConstraintNode, RealizationNode, or ComputeNode -- whichever node the source definition feeds. The meaning is uniform: the AST subtree defining a node's computation is an explicit dependency of that node.
+
+The dependency graph is a DAG. There is no cycle caveat. The relationship between ResolutionNodes and the ValueCells they resolve is a state transition, not a within-state dependency, and does not appear in this table. See section 2.5.
+
+`ComputeNode -> ConstraintNode` is deliberately absent. The canonical pattern routes through an intermediate ValueCell: the ComputeNode result populates a ValueCell (edge #12), which the ConstraintNode reads (edge #4). The intermediate ValueCell provides an early-cutoff opportunity -- if the ComputeNode recomputes but produces the same result, the ConstraintNode is not re-evaluated.
 
 ### 2.3 Immutable Snapshots and Persistent Data Structures
 
@@ -229,6 +252,36 @@ Benefits of trial snapshots:
 - Recursive nesting -- resolving scope X may first resolve child scope Y.
 
 Concurrency from immutability: multiple readers with zero coordination; concurrent solvers explore trial snapshots without interference; speculative evaluation proceeds against trial snapshots and wrong speculation is simply unused.
+
+The structure of how per-scope resolutions compose across the containment tree -- the resolution tree -- is described in section 2.5.
+
+### 2.5 Resolution as State Progression
+
+The ResolutionNode's relationship to ValueCells is not a dependency within a single graph state but a transition between states. This section describes the structure of that transition.
+
+#### The resolution helix
+
+Within any single snapshot, the dependency graph is a strict DAG. The path `ValueCell -> ConstraintNode -> ResolutionNode` is a dependency chain: the ResolutionNode reads constraints, which read ValueCells. The ResolutionNode's output (resolved values) appears not in the same snapshot but in a *new* snapshot with `Resolution` provenance. What might look like a cycle when projected flat is actually a helix: the input ValueCells are in state S_n (determinacy: `auto`); the output ValueCells are in state S_{n+1} (determinacy: `determined`). The additional dimension is monotonic -- determinacy only increases (`undef -> constrained -> auto -> determined`), guaranteeing well-foundedness.
+
+#### The resolution tree
+
+Multiple scopes may have `auto` parameters requiring resolution. The ordering of resolution transitions follows the containment tree of auto resolution scopes:
+
+- Leaf scopes resolve first (their auto parameters have no structural dependencies on child scopes).
+- Parent scopes resolve after all children (child results are inputs to parent constraints).
+- Sibling scopes are independent and may resolve concurrently.
+
+The dependency structure of resolution events is a tree isomorphic to the containment tree restricted to scopes with auto parameters. Each node in this tree represents a state transition: one scope's auto parameters advancing from unresolved to determined.
+
+```
+S0 --[resolve LeafA]--> S1 --[resolve LeafB]--> S2 --[resolve Parent]--> S3
+```
+
+The resolution tree may be lazily discovered. When a parent has a structure-controlling auto parameter (e.g., `vent_count = auto`), child scopes do not exist until that parameter is resolved. The two-pass schema elaboration (section 6.6) handles this: partial elaboration creates the resolution problem for structure-controlling autos, resolution determines their values, full elaboration creates child scopes, and bottom-up resolution proceeds on the now-known subtree.
+
+#### Relationship to evaluation contexts
+
+Each resolution transition uses the trial snapshot mechanism described in section 2.4. The ResolutionNode explores trial values within child snapshots, converges, and the converged snapshot becomes the next state. The sequence of converged snapshots along the resolution tree is the state progression of the design from underdetermined to determined.
 
 ---
 
@@ -317,6 +370,7 @@ Equality determination by node type:
 
 | Node type | Equality check | Cost |
 |---|---|---|
+| SourceNode | Content hash of AST subtree | Trivial |
 | ValueCell (scalar) | Bitwise value equality | Trivial |
 | ValueCell (geometric spec) | Content hash of expression tree | Cheap |
 | ConstraintNode | Satisfaction status equality | Cheap |
@@ -387,15 +441,15 @@ The protocol supports tiers 2 and 3 without modification.
 
 ```
 ReverseDependencyIndex:
-    Map<ValueCellId, Set<NodeId>>   // "which nodes read this cell?"
+    Map<NodeId, Set<NodeId>>   // "which nodes read this node's output?"
 ```
 
-Maintained incrementally: entries added on evaluation/caching, removed on eviction. Derived from the cache and reconstructible at any time. A stale index merely makes the dirty cone slightly more conservative (harmless).
+Maintained incrementally: entries added on evaluation/caching, removed on eviction. Derived from the cache and reconstructible at any time. A stale index merely makes the dirty cone slightly more conservative (harmless). Any node that appears on the left side of a dependency edge (section 2.2) gets entries in the index.
 
 Dirty cone computation:
 
 ```
-dirty = reverse_index[changed_cells]
+dirty = reverse_index[changed_nodes]
 for node in dirty:
     dirty |= reverse_index[node]
 ```
@@ -412,6 +466,7 @@ The content-hash cache naturally handles "change and change back." If thickness 
 
 | Node type | Granularity | Primary incrementality | Rationale |
 |---|---|---|---|
+| SourceNode | Per declaration or finer | Early cutoff via content hash | Trivial evaluation; changes only when source text changes |
 | ValueCell | Per parameter/`let` | Early cutoff via value comparison | Finest grain; trivial recomputation |
 | ConstraintNode | Per constraint application | Full re-eval with diagnostic diff | Semantic unit |
 | ResolutionNode | Per scope, internal decomposition | Warm starting (previous solution as initial guess) | Coupled optimization |
@@ -1174,7 +1229,7 @@ DemandRegistry:
 
 ```
 ReverseDependencyIndex:
-    Map<ValueCellId, Set<NodeId>>     // "which nodes read this cell?"
+    Map<NodeId, Set<NodeId>>     // "which nodes read this node's output?"
 ```
 
 ### Task
@@ -1215,12 +1270,13 @@ trait WarmStartable:
 
 | # | Node Type | Signature |
 |---|---|---|
-| 1 | ValueCell | `(entity_id, member_name) -> (Value, DeterminacyState)` |
-| 2 | ConstraintNode | `(constraint_instance_id) -> (Satisfaction, Diagnostics)` |
-| 3 | ResolutionNode | `(scope_id, auto_params: Set<ValueCellId>) -> Map<ValueCellId, Value>` |
-| 4 | RealizationNode | `(entity_id, repr_kind, tolerance) -> Representation` |
-| 5 | ComputeNode | `(computation_id) -> ComputationResults` |
-| 6 | SchemaNode | `(scope_id) -> SchemaFragment` |
+| 1 | SourceNode | `(ast_path) -> ASTFragment` |
+| 2 | ValueCell | `(entity_id, member_name) -> (Value, DeterminacyState)` |
+| 3 | ConstraintNode | `(constraint_instance_id) -> (Satisfaction, Diagnostics)` |
+| 4 | ResolutionNode | `(scope_id, auto_params: Set<ValueCellId>) -> Map<ValueCellId, Value>` |
+| 5 | RealizationNode | `(entity_id, repr_kind, tolerance) -> Representation` |
+| 6 | ComputeNode | `(computation_id) -> ComputationResults` |
+| 7 | SchemaNode | `(scope_id) -> SchemaFragment` |
 
 ---
 
@@ -1235,7 +1291,7 @@ trait WarmStartable:
 | 3 | JIT optimization of node graphs (node fusion, scheduling pattern learning, adaptive granularity) | Deferred | Post-v0.1 |
 | 4 | Sophisticated cost estimation for gating heuristics (marginal value, convergence rate, monetary cost) | Deferred | Post-v0.1 |
 | 5 | Keyed collection identity (upgrade from positional indexing -- angular, spatial, user-defined) | Deferred | v0.2 |
-| 6 | Whether SchemaNode is a 6th node type or a specialized ComputeNode | Open | Implementation-level |
+| 6 | ~~Whether SchemaNode is a 6th node type or a specialized ComputeNode~~ | Resolved: SchemaNode is a distinct node type (7th, alongside SourceNode) | -- |
 | 7 | Structural diff cost optimization via content-addressed child schemas | Open | Optimization |
 | 8 | Kernel registration mechanism and format | Open | v0.1 |
 | 9 | `Geometry` supertrait integration with type system | Open | v0.1 |
