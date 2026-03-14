@@ -283,6 +283,24 @@ The resolution tree may be lazily discovered. When a parent has a structure-cont
 
 Each resolution transition uses the trial snapshot mechanism described in section 2.4. The ResolutionNode explores trial values within child snapshots, converges, and the converged snapshot becomes the next state. The sequence of converged snapshots along the resolution tree is the state progression of the design from underdetermined to determined.
 
+#### Snapshot transition protocol
+
+When a ResolutionNode's evaluation completes, the scheduling layer commits its result to the design state in three steps:
+
+1. **Evaluate.** The ResolutionNode is evaluated via the generic `evaluate()` function (section 3.1). Its `compute()` runs the convergence loop internally (creating trial snapshots, evaluating constraints against them, iterating). Its result is `Map<ValueCellId, Value>` — the resolved values for its scope's auto parameters. This result is cached like any other node result.
+
+2. **Commit.** The scheduling layer produces a new snapshot S_{n+1} from S_n by writing the resolved values (updating the relevant ValueCells from `(_, auto)` to `(value, determined)`). The new snapshot carries `Resolution` provenance recording the scope and resolved cells.
+
+3. **Broadcast.** S_{n+1} enters the same scheduling pipeline as any other new snapshot. The two-cone model (section 3.3) applies: dirty cone forward from the resolved ValueCells, intersection with the demand cone, priority scheduling. From the scheduler's perspective, a Resolution snapshot is indistinguishable from an Edit snapshot — the provenance differs but the scheduling machinery is identical.
+
+**Concurrent evaluations.** In-flight evaluations against S_n that do not read the resolved cells are outside the dirty cone and continue undisturbed. Their cached results are valid in S_{n+1} via content-hash match (the inputs they depend on are identical in both snapshots). In-flight evaluations that read the resolved cells are in the dirty cone and subject to the normal cancellation rules (section 7.5).
+
+**Trial snapshots are internal.** The trial snapshots created during the ResolutionNode's convergence loop (section 2.4) are not broadcast, do not trigger two-cone scheduling, and are not visible to concurrent evaluations. Only the final converged result produces a committed snapshot transition.
+
+**Cache promotion.** Results cached during the convergence loop (ConstraintNode evaluations, RealizationNode evaluations against trial snapshots) remain in the content-addressed cache. When S_{n+1} is broadcast and demand-driven evaluation pulls these nodes, their input content hashes match and cached results are returned without recomputation. Trial-era work is reused automatically because the content-addressed cache is keyed by input content, not by snapshot identity.
+
+**Sibling resolution ordering.** Independent sibling scopes (no shared auto parameters, no shared constraints) may resolve concurrently against the same base snapshot. For v0.1, their results are committed sequentially — LeafA's converged snapshot becomes the basis for LeafB's commit. Content-hash caching ensures this ordering does not cause redundant work: LeafB's constraints do not read LeafA's resolved cells, so all of LeafB's cached results remain valid across the intervening snapshot transition. Concurrent commit (merging sibling resolution results into a single snapshot) is a future optimization.
+
 ---
 
 ## 3. Evaluation Strategy
@@ -319,6 +337,8 @@ evaluate(snapshot, node_id):
 
 Depth-first for linear chains; breadth-first parallelism at fan-out points. The async runtime's work-stealing scheduler handles thread utilisation.
 
+**ResolutionNode and the evaluate pipeline.** The ResolutionNode follows the same `evaluate()` pattern as all other nodes. Its `compute()` is where the convergence loop lives — creating trial snapshots, evaluating sub-graphs against them, iterating toward convergence. Its result type is `Map<ValueCellId, Value>`, cached and content-hash-keyed like any other result. What distinguishes the ResolutionNode is what happens *after* evaluation: the scheduling layer detects the completed resolution and commits its result as a new snapshot (section 2.5). The commit-and-broadcast step is outside `evaluate()` — it is a scheduling-layer concern, not an evaluation concern.
+
 ### 3.2 Demand Registry and Always-Demanded Nodes
 
 ```
@@ -332,6 +352,9 @@ Registered as always-demanded:
 - ConstraintNodes shown in the constraint panel.
 - ValueCells feeding the property editor.
 - Any node feeding live diagnostic indicators.
+- ResolutionNodes for scopes with unresolved `auto` parameters.
+
+ResolutionNode demand is driven by the existence of unresolved `auto` parameters in the snapshot, not by graph edges. The ResolutionNode has graph-level inputs (ConstraintNodes, via edge #8) but its output is a state transition (section 2.5), not a graph edge — nothing in the dependency graph pulls it. The scheduler registers ResolutionNodes as demanded when their scope contains ValueCells with `auto` determinacy; once those cells become `determined`, the ResolutionNode leaves the demand set.
 
 The demand cone is maintained incrementally.
 
@@ -382,6 +405,12 @@ Equality determination by node type:
 **Bitwise equality for scalar values.** Tolerance-based comparison risks hiding genuine small changes. False positives from floating-point non-determinism trigger cheap downstream recomputation. Correctness over premature optimization.
 
 **RealizationNodes skip output equality checking.** B-rep/mesh comparison is expensive and ill-defined. Content-hash cache keying on inputs provides cutoff instead.
+
+**Freshness propagation after value early cutoff.** Input hashes are computed from input *values*, not from freshness metadata or snapshot version ids (the version fast path in section 3.1 is a shortcut only). When a node's value is unchanged but its freshness transitions (e.g., Intermediate → Final), value early cutoff fires: the input hash for downstream nodes is unchanged, so no value recomputation occurs.
+
+However, the freshness change must still propagate — downstream nodes need accurate freshness for UI display and for gating policies (section 7.3, "only run on final inputs"). Freshness propagation is a lightweight mode within the dirty-cone walk, not a separate mechanism. When value early cutoff fires at a node, propagation continues downstream in freshness-only mode: at each visited node, freshness is recomputed from current input freshness. If the node's freshness changes, propagation continues. If not (e.g., another input is still Intermediate), freshness early cutoff fires and propagation stops. No value recomputation occurs during freshness-only propagation.
+
+Freshness propagation can unlock gated work. When it reaches a node with the "only run on final inputs" policy (section 7.3) and all inputs are now Final, the node enters the value dirty set for evaluation. This is the mechanism by which gated nodes discover that their inputs have settled.
 
 ---
 
@@ -522,6 +551,8 @@ When a SchemaNode produces a genuinely different `SchemaFragment` (early cutoff 
 | **Surviving nodes with unchanged edges** | Unaffected; cache hit. |
 | **Reverse dependency index** | Incrementally updated. O(changed edges), not O(total edges). |
 
+**In-flight evaluations of removed nodes.** When a schema change removes a node that has an in-flight evaluation, the task is cancelled immediately regardless of commitment status. Schema removal supersedes commitment — a committed task's justification is that its result will be useful when it completes, but a removed node has no place in the current schema and the committed-stale-completion sequence (section 7.5) cannot apply (there is no node to re-evaluate at step 4). Warm state is donated to the pool (keyed by node type and input signature) for potential reuse if the node reappears via path-based identity (section 6.4). For ResolutionNodes mid-convergence, trial snapshots are simply abandoned (they are internal per section 2.5); the solver's warm state (best-so-far solution, iteration state) is donated.
+
 ### 6.4 Node Identity
 
 **Path-based identity.** Nodes are identified by their path in the containment tree plus role: `assembly.bracket.thickness` is the same ValueCell regardless of schema version. If a guard flips an occurrence off and back on, "new" nodes have the same identity as old ones and find their old cached results and warm state. Cache reuse across structural toggles is trivial -- same identity, same cache key, cache hit.
@@ -589,7 +620,7 @@ else:
     Final
 ```
 
-When the last upstream intermediate becomes Final, downstream nodes re-evaluate (input hash changes). If the downstream node is not itself progressive, output becomes Final. This is normal cache invalidation.
+When an upstream Intermediate becomes Final, two cases arise. If the upstream value changed, the downstream input hash changes and the node recomputes — normal cache invalidation. If the upstream value is unchanged (value early cutoff fired upstream), no value recomputation occurs; freshness propagation (section 3.5) updates downstream freshness metadata instead. When the last Intermediate input to a node becomes Final and the node is not itself still refining, its freshness becomes Final.
 
 **Eager evaluation of intermediates with cost-aware gating:**
 - Downstream nodes eagerly consume intermediate upstream results, but at **lower priority** than otherwise-equal-priority tasks based on final inputs.
@@ -625,6 +656,7 @@ Uses persistent data structure structural sharing: if the subtree providing a no
 |---|---|
 | Task in dirty cone, NOT committed | Cancelled |
 | Task in dirty cone, committed | Runs to completion; result cached with stale `basis_version` |
+| Node removed by schema change | Cancelled immediately; warm state donated to pool. Overrides commitment (section 6.3). |
 | User explicitly requests re-evaluation | Force-cancels even committed; restarts at P1-slow |
 | User explicitly cancels | Force-cancels; warm state saved |
 
