@@ -42,6 +42,19 @@ Key corrections from design review:
 - `purpose` is a named declaration with AST identity. When activated, its constraints and outputs are present in the evaluation graph; when deactivated, they are absent.
 - `fn` is pure computation with no graph presence (inlined into dependent nodes).
 
+### 1.3 Terminology: "Scope"
+
+The term "scope" appears throughout this document in four related but distinct senses:
+
+| Term | Meaning | Example |
+|---|---|---|
+| **Containment scope** | A language-level lexical scope -- the body of a `structure`, `occurrence`, or `purpose` declaration. Every entity instance has one. Defines the namespace for members. | The body of `structure def Bracket { ... }` is a containment scope. |
+| **Schema scope** | The containment scope as seen by a SchemaNode. Each containment scope has one SchemaNode that elaborates its topology. Always 1:1 with containment scopes. | `SchemaNode(scope_id)` -- `scope_id` identifies a containment scope. |
+| **Resolution scope** | The set of coupled `auto` parameters within a containment scope that a single ResolutionNode solves jointly. Usually 1:1 with the containment scope, but a scope with no `auto` parameters has no resolution scope, and internal decomposition may split a containment scope's autos into independent resolution sub-problems. | `ResolutionNode(scope_id, auto_params)` -- the resolution scope is `scope_id` restricted to the connected component of `auto_params`. |
+| **Objective scope** | The containment scope to which an optimization objective (`minimize`, `maximize`) is attached (section 11.5). Narrowest scope wins. | `minimize mass` inside `structure def Bracket` scopes the objective to `Bracket`. |
+
+Where context is insufficient to disambiguate, the qualified term is used. Unqualified "scope" defaults to containment scope.
+
 ---
 
 ## 2. Evaluation Graph
@@ -58,7 +71,7 @@ ValueCell(entity_id, member_name) -> (Value, DeterminacyState)
 
 Where `DeterminacyState` is `undef | constrained | auto | determined`.
 
-Granularity: per parameter. Every `param` and `let` member of every entity instance gets a ValueCell. A design with 10,000 parameters produces 10,000 ValueCells. `let` members are ValueCells (not transparent inlined expressions) to provide early-cutoff opportunities. For example, `clamp(thickness, 2mm, 10mm)` stays at 10mm when thickness changes from 11mm to 12mm.
+Granularity: per parameter. Every `param` and `let` member of every entity instance gets a ValueCell. A design with 10,000 parameters produces 10,000 ValueCells. `let` members are ValueCells (not transparent inlined expressions) to provide early-cutoff opportunities. For example, `clamp(thickness, 2mm, 10mm)` stays at 10mm when thickness changes from 11mm to 12mm. `let` ValueCells are always `determined` -- their value is the result of evaluating their defining expression. They participate in dependency tracking and early cutoff but never in resolution (they cannot be `undef`, `constrained`, or `auto`).
 
 Collection-derived values are single ValueCells containing the whole collection. Per-element decomposition creates node-per-element scaling problems; whole-collection recomputation is typically cheap.
 
