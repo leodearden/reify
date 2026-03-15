@@ -116,33 +116,35 @@ ComputeNode(computation_id) -> ComputationResults
 
 Covers: FEA, CFD, toolpath generation, lattice infill, surrogate model training, format export, etc. Granularity: per computation invocation. One FEA run = one node. Fine-grained incrementality belongs inside the node's warm-start implementation. Results may include fields (stress tensor), scalars (safety factor), collections (critical points), or any typed value.
 
-#### SchemaNode -- topology production
+#### SchemaNode -- topology determination
 
 ```
-SchemaNode(scope_id) -> SchemaFragment
+SchemaNode(scope_id) -> EvaluationGraph
 ```
 
-Introduced by the structural graph changes design. A SchemaNode produces a `SchemaFragment` describing the topology of its scope:
+Each scope in the containment tree has one SchemaNode. The SchemaNode determines the topology (nodes and edges) of the evaluation graph for its scope and all descendant scopes, returning a complete immutable subgraph.
 
-```
-SchemaFragment:
-    scope_id: ScopeId
-    nodes: Set<NodeDeclaration>
-    edges: Set<(NodeId, NodeId, EdgeKind)>
-    child_schemas: Map<OccurrenceId, SchemaFragmentRef>
-    structure_version: ContentHash
-```
+**Two-phase evaluation model.** The runtime alternates between two phases:
 
-Each `NodeDeclaration` carries the information needed to create a node: type, node identity, edge connectivity, and references to the SourceNodes that define its computation. The computation definition itself lives in SourceNodes, not in the NodeDeclaration -- this is what allows non-structural source edits (changing a constraint body, adjusting a default value) to bypass SchemaNode re-elaboration entirely.
+1. **Elaboration** -- SchemaNode.compute() builds (or rebuilds) the immutable evaluation graph. Starting from the root scope, each SchemaNode instantiates evaluation nodes for its own scope, recursively calls child SchemaNodes to obtain their subgraphs, and fuses the results into a single immutable graph via structural sharing. Early cutoff prunes unchanged subtrees: if a child SchemaNode's inputs have not changed, it returns the existing subgraph without re-evaluation.
 
-Schema nodes compose via the containment tree: an assembly's schema = own nodes + child occurrence schemas. Changing a guard deep in the hierarchy only re-elaborates that scope and ancestors' composition; sibling subtrees are cache hits.
+2. **Value evaluation** -- demand-driven pull evaluates nodes within the constructed graph (section 3.1). This phase produces value updates: new graphs with the same topology but updated values.
 
-SchemaNode inputs:
-1. Structure-controlling SourceNodes: guard expressions, sub declarations, collection definitions (via edge #1).
-2. Structure-controlling ValueCells: resolved guard booleans, collection sizes, recursion depths, variant discriminants (via edge #7).
-3. Child SchemaNodes: elaborated schemas of child occurrences (via edge #13).
+If value evaluation resolves a structure-controlling value (a where-guard boolean, a collection size, an auto type), the runtime triggers a new elaboration phase, producing a new graph with updated topology. The two phases iterate until no structure-controlling values remain unresolved and all topology is stable.
 
-**Non-structure-controlling SourceNodes feed evaluation nodes directly** (via edge #2), bypassing the SchemaNode. Changing a constraint body or parameter default does not dirty the SchemaNode. **Non-structure-controlling parameter values are not inputs to elaboration.** Changing `bracket.thickness` does not dirty the SchemaNode.
+**Topology templates.** Each SchemaNode references a compile-time topology template produced by the compiler. The template encodes the mapping from structure-controlling inputs to evaluation nodes and edges: which declarations exist in the scope, which are conditional on guards, which depend on collection sizes or auto type resolution. Non-structural source edits (changing a constraint body, adjusting a default value) change SourceNode content but do not change the topology template -- the SchemaNode does not re-elaborate for such changes.
+
+**SchemaNode inputs:**
+1. Structure-controlling SourceNodes: guard expressions, sub declarations, collection definitions (via edge #1). These determine the topology template.
+2. Structure-controlling ValueCells: resolved guard booleans, collection sizes, recursion depths, auto type resolutions, variant discriminants (via edge #7). These parameterize the template.
+
+**Non-structure-controlling SourceNodes feed evaluation nodes directly** (via edge #2), bypassing the SchemaNode. Changing a constraint body or parameter default does not trigger re-elaboration. **Non-structure-controlling parameter values are not inputs to elaboration.** Changing `bracket.thickness` does not trigger re-elaboration.
+
+**Parent and child SchemaNodes are independent.** A parent SchemaNode controls which child scopes exist (based on its own guards, collection sizes, and type autos), but does not depend on the internal topology of child scopes. The parent needs only the child's interface (exposed ValueCells, determined at compile time from the type definition), not its internals. Child SchemaNodes evaluate independently and may run in parallel with siblings.
+
+**Structural sharing and incremental re-elaboration.** Because the evaluation graph is an immutable persistent data structure, re-elaboration after a topology change produces a new graph that shares structure with the old graph. Unchanged subtrees (child scopes whose SchemaNode inputs did not change) are shared by pointer. The cost of re-elaboration is O(depth) spine copies from the changed scope to the root, plus the cost of instantiating genuinely new nodes. For a typical containment tree of depth 5-10, spine copies are trivial.
+
+**Early cutoff.** A SchemaNode caches a topology fingerprint (content hash of the evaluation nodes and edges it produces for its immediate scope). If re-elaboration produces the same fingerprint, no topology change occurred and the existing subgraph is reused. This prevents cascading re-elaboration when a structure-controlling value changes but the resulting topology is the same (e.g., guard expression `x > 5` when x changes from 10 to 12 -- still true).
 
 #### SourceNode -- compiler-to-graph boundary
 
@@ -158,9 +160,9 @@ SourceNode evaluation is trivial: look up the current AST subtree and compute it
 
 The SourceNode is what makes source-change invalidation uniform with parameter-change invalidation. Both flow through the same dependency edges, dirty/demand cones, and cache verification. No special-case handling of "source changed" is needed.
 
-### 2.2 Edge Types (13 Kinds)
+### 2.2 Edge Types (12 Kinds)
 
-Thirteen dependency edge types connect the seven node types. Every edge in this table is a dependency edge: it participates in pull-based evaluation, dirty/demand cone computation, and DAG cycle detection.
+Twelve dependency edge types connect the seven node types. Every edge in this table is a dependency edge within the evaluation graph: it participates in pull-based evaluation, dirty/demand cone computation, and DAG cycle detection.
 
 | # | From -> To | Meaning | Example |
 |---|---|---|---|
@@ -176,7 +178,6 @@ Thirteen dependency edge types connect the seven node types. Every edge in this 
 | 10 | RealizationNode -> ComputeNode | Computation needs representation | Stress analysis reads mesh |
 | 11 | RealizationNode -> RealizationNode | Parent composes sub-realizations | Assembly reads sub-structures |
 | 12 | ComputeNode -> ValueCell | Computation result populates value | FEA safety factor feeds field value |
-| 13 | SchemaNode -> SchemaNode | Child schema composes into parent | Vent's SchemaNode feeds Housing's SchemaNode |
 
 In edge #2, "evaluation node" means any of ValueCell, ConstraintNode, RealizationNode, or ComputeNode -- whichever node the source definition feeds. The meaning is uniform: the AST subtree defining a node's computation is an explicit dependency of that node.
 
@@ -184,19 +185,22 @@ The dependency graph is a DAG. There is no cycle caveat. The relationship betwee
 
 `ComputeNode -> ConstraintNode` is deliberately absent. The canonical pattern routes through an intermediate ValueCell: the ComputeNode result populates a ValueCell (edge #12), which the ConstraintNode reads (edge #4). The intermediate ValueCell provides an early-cutoff opportunity -- if the ComputeNode recomputes but produces the same result, the ConstraintNode is not re-evaluated.
 
+**No SchemaNode -> SchemaNode edge.** Parent and child SchemaNodes are independent. A parent SchemaNode controls which child scopes exist, but does not depend on the child's internal topology. The parent-child relationship is structural (the parent's SchemaNode.compute() recursively invokes child SchemaNodes during elaboration) rather than a dependency edge within a single evaluation graph. See section 2.1.
+
 ### 2.3 Immutable Snapshots and Persistent Data Structures
 
-#### Snapshot model (with schema separation)
+#### Snapshot model
 
 ```
 Snapshot:
     version: VersionId              // monotonic, globally unique
-    schema: SchemaRef               // topology (subsumes edges)
+    graph: EvaluationGraph          // topology: nodes with embedded dependency edges
     values: PersistentMap<ValueCellId, (Value, DeterminacyState)>  // state
+    topology_fingerprint: ContentHash  // for cheap "did topology change?" checks
     provenance: SnapshotProvenance
 ```
 
-The `edges` field from the original v0.1 design is subsumed by the schema. Dependency edges are part of `SchemaFragment`, not the value map.
+The evaluation graph is an immutable persistent data structure. Nodes carry embedded references to their dependencies (forward edges). The topology is the graph itself -- there is no separate schema representation. The `topology_fingerprint` is a content hash of the graph's node set and edge structure, computed incrementally via structural sharing: if the graph was produced by re-elaboration with unchanged subtrees, the fingerprint computation shares work with the previous fingerprint. A value update (same topology, new values) preserves the same `topology_fingerprint`; a topology update produces a new one.
 
 #### HAMT structural sharing
 
@@ -209,17 +213,19 @@ Snapshots carry lightweight provenance:
 ```
 SnapshotProvenance:
     | Edit { changed: Set<ValueCellId>, parent: SnapshotId }
-    | Restructure { new_schema: SchemaRef, parent: SnapshotId }
+    | Elaboration { changed_scopes: Set<ScopeId>, parent: SnapshotId }
     | Merge { sources: List<SnapshotId>, resolution: ConflictResolution }
     | Import { source: ExternalSource }
     | Resolution { scope: ScopeId, resolved: Set<ValueCellId>, parent: SnapshotId }
 ```
 
-`Edit` provenance gives changed cells at O(1). `Restructure` records topology changes. Fallback for computing diffs: structural HAMT diffing at O(k log n) where k is the number of changes.
+`Edit` provenance gives changed cells at O(1). `Elaboration` records topology changes (which scopes were re-elaborated). `Resolution` records value updates from auto resolution. Fallback for computing diffs: structural HAMT diffing at O(k log n) where k is the number of changes.
 
 #### Graph representation
 
-Forward dependency edges: embedded references within nodes. A node IS a handle for its dependency subgraph. When a node's dependency changes, a new node is created pointing to the updated dependency, sharing all others. Cascade is O(depth) along the spine; siblings are shared.
+The evaluation graph is a persistent data structure (tree of nodes with embedded dependency references). Forward dependency edges are embedded references within nodes: a node IS a handle for its dependency subgraph. When a topology update changes a node or its dependencies, a new node is created pointing to the updated dependency, sharing all others. Cascade is O(depth) along the spine from the change to the root; siblings are shared. This is the same structural sharing mechanism used within SchemaNode.compute() during re-elaboration (section 2.1).
+
+Value updates do not change the graph structure. They update the separate `values` map (a HAMT), leaving the graph and its `topology_fingerprint` unchanged.
 
 Reverse dependency edges: mutable side-index (derived, reconstructible acceleration structure). Safe failure mode: stale index leads to conservative dirty cone (wasted recomputation, not incorrect results). Upgrade path: replace with second immutable persistent data structure mirroring the forward graph with reversed edges, updated atomically.
 
@@ -277,7 +283,7 @@ The dependency structure of resolution events is a tree isomorphic to the contai
 S0 --[resolve LeafA]--> S1 --[resolve LeafB]--> S2 --[resolve Parent]--> S3
 ```
 
-The resolution tree may be lazily discovered. When a parent has a structure-controlling auto parameter (e.g., `vent_count = auto`), child scopes do not exist until that parameter is resolved. The two-pass schema elaboration (section 6.6) handles this: partial elaboration creates the resolution problem for structure-controlling autos, resolution determines their values, full elaboration creates child scopes, and bottom-up resolution proceeds on the now-known subtree.
+The resolution tree may be lazily discovered. When a parent has a structure-controlling auto parameter (e.g., `vent_count = auto`), child scopes do not exist until that parameter is resolved. The two-phase iteration handles this naturally: elaboration creates the resolution problem for structure-controlling autos (the ResolutionNode and its constraints exist, but the structure-dependent child scopes do not). Resolution determines the structure-controlling values (value update). Re-elaboration then creates the child scopes (topology update). Bottom-up resolution proceeds on the now-known subtree. See section 6.
 
 #### Relationship to evaluation contexts
 
@@ -400,7 +406,7 @@ Equality determination by node type:
 | ResolutionNode | Resolved value set equality | Cheap |
 | RealizationNode | Not checked -- input-hash match used instead | N/A |
 | ComputeNode | Domain-specific, typically result hash | Varies |
-| SchemaNode | `structure_version` content hash | Cheap |
+| SchemaNode | Topology fingerprint (content hash of scope's node set and edges) | Cheap |
 
 **Bitwise equality for scalar values.** Tolerance-based comparison risks hiding genuine small changes. False positives from floating-point non-determinism trigger cheap downstream recomputation. Correctness over premature optimization.
 
@@ -501,69 +507,88 @@ The content-hash cache naturally handles "change and change back." If thickness 
 | ResolutionNode | Per scope, internal decomposition | Warm starting (previous solution as initial guess) | Coupled optimization |
 | RealizationNode | Per entity per (repr_kind, tolerance) | Warm starting + sub-entity cache reuse | Containment tree provides decomposition |
 | ComputeNode | Per computation invocation | Warm starting | Monolithic; internal incrementality solver-specific |
-| SchemaNode | Per scope | Early cutoff on `structure_version` hash | Topology rarely changes |
+| SchemaNode | Per scope | Early cutoff on topology fingerprint; structural sharing prunes unchanged subtrees | Topology rarely changes |
 
 ---
 
 ## 6. Structural Graph Changes
 
-### 6.1 Sources of Structural Change
+### 6.1 Two Kinds of Graph Update
 
-Five sources, all handled by the same unified dataflow mechanism:
+The evaluation graph evolves through two kinds of update, both producing new immutable graphs:
+
+**Value updates** change the values stored in ValueCells without changing the graph's topology (nodes and edges). A user editing `bracket.thickness` from 5mm to 6mm produces a value update. The new graph shares the same topology (same `topology_fingerprint`) and all the same nodes; only the `values` map differs.
+
+**Topology updates** change the graph's structure: which nodes and edges exist. A where-guard flipping from false to true, a collection size changing from 3 to 4, or an auto type resolving to a concrete type all produce topology updates. The new graph has different nodes, different edges, and a different `topology_fingerprint`.
+
+Both produce new immutable snapshots. The distinction matters for the two-phase evaluation model (section 2.1): value evaluation produces value updates; elaboration produces topology updates.
+
+### 6.2 Sources of Topology Change
+
+Six sources, all handled by re-elaboration (SchemaNode.compute()):
 
 | Source | Trigger | Example |
 |---|---|---|
+| Source edit | User adds, removes, or modifies a declaration | New `param` added to a structure definition |
 | Guard flip | `where` clause boolean changes truth value | `sub fan_mount : FanMount where needs_cooling` -- `needs_cooling` becomes `true` |
 | Recursive depth change | Recursion-controlling parameter changes | `TreeBracket { depth = 5 }` -> `depth = 3` |
 | Collection size change | `count` constraint on `List<Structure>` changes | `sub vents : List<Vent>` with `constraint vents.count == vent_count` -- `vent_count` 4 -> 3 |
+| Auto type resolution | `auto` type parameter resolved to a concrete type | `Bearing<auto: Seal>` resolved to `Bearing<ORingSeal>` |
 | Purpose activation/deactivation | Purpose toggled, adding/removing scoped constraints | `manufacturing_ready(bracket)` activated |
-| Auto resolution | `auto` parameter feeding structure-controlling input resolved | `vent_count = auto` resolved to 4 |
 
-All five are instances of the same event: a structure-controlling value changed, causing a SchemaNode to re-evaluate and emit a different topology.
+All six are instances of the same event: a SchemaNode input changed (either a SourceNode or a structure-controlling ValueCell), causing SchemaNode.compute() to produce a different topology. The mechanism is uniform. Source edits change SourceNodes (edge #1); all other sources change structure-controlling ValueCells (edge #7). Both feed into SchemaNode re-elaboration.
 
-The distinction between "parametric change" and "structural change" is **not a distinction in mechanism**. Both are dataflow: a parameter changes, its dependents re-evaluate, and if one of those dependents is a SchemaNode, the re-evaluation may yield a different topology. The existing evaluation machinery handles this uniformly. No separate phases or orchestration are introduced.
+The distinction between "parametric change" and "structural change" is a distinction of **consequence, not mechanism**. A value update that changes a structure-controlling ValueCell triggers re-elaboration, which may produce a topology update. A value update that changes a non-structure-controlling ValueCell does not trigger re-elaboration. Both are value updates; only the first has structural consequences.
 
-### 6.2 Schema Nodes and SchemaFragment
+### 6.3 The Elaboration-Evaluation Cycle
 
-The evaluation graph manages two orthogonal concerns:
-- **Schema** -- what nodes and edges exist (topology).
-- **State** -- what values populate those nodes.
-
-These are different kinds of nodes in a single dataflow graph. Pipeline:
+The two phases interact as follows:
 
 ```
-Source AST + structure-controlling values -> SchemaNodes -> Value/Constraint/Realization nodes -> evaluated state
+1. Elaborate: root SchemaNode.compute() builds the evaluation graph
+2. Evaluate: demand-driven pull computes values within the graph
+3. Check: did evaluation resolve any structure-controlling values?
+   - If yes: goto 1 (re-elaborate with the new values)
+   - If no: done (graph is stable)
 ```
 
-Caching key: `(source_ast_hash, structure_controlling_values_hash)`. Source AST is usually stable, so misses almost always come from structure-controlling value changes (typically a small set of booleans and counts).
+**Step 1 (Elaboration)** is the recursive SchemaNode.compute() described in section 2.1. Each SchemaNode reads its topology template and structure-controlling inputs, instantiates evaluation nodes for its scope, recursively invokes child SchemaNodes, and fuses the results via structural sharing. Early cutoff prunes unchanged subtrees.
 
-Early cutoff on schema output: if elaboration re-runs but produces the same `SchemaFragment` (e.g., guard `x > 5` when x changes from 10 to 12 -- still true), the `structure_version` hash matches and nothing downstream re-evaluates.
+**Step 2 (Evaluation)** is the demand-driven pull described in section 3. Nodes are evaluated, caches are checked, values propagate. Resolution of `auto` parameters (section 2.5) occurs during this phase, producing value updates.
 
-### 6.3 Schema Change Propagation and Reconciliation
+**Step 3 (Check)** detects whether any value update during step 2 changed a structure-controlling value. If so, the affected SchemaNode's inputs have changed, and re-elaboration is needed. The check is cheap: the dirty cone from the resolved values is intersected with the set of SchemaNode input edges (edge #7). If the intersection is non-empty, re-elaborate.
 
-When a SchemaNode produces a genuinely different `SchemaFragment` (early cutoff does not fire), downstream propagation includes **graph mutation** -- creating/removing nodes. This is the one additional propagation mode:
+In the common case (no structure-controlling autos, no guard flips during evaluation), the cycle executes once: elaborate, evaluate, done. The cycle iterates only when resolution or evaluation changes structural inputs.
 
-| Category | Action |
+**Cascading topology updates.** Re-elaboration may create new child scopes (e.g., `vent_count` resolved to 4 creates 4 vent instances). These new scopes have their own SchemaNodes, which elaborate their own topology, potentially discovering further structure-controlling autos. Each re-elaboration pass may trigger further resolution and further re-elaboration. The process converges because determinacy is monotonically increasing (`undef -> constrained -> auto -> determined`) and the containment tree is finite.
+
+### 6.4 Topology Update Mechanics
+
+When SchemaNode.compute() produces a graph with a different `topology_fingerprint` than the current graph, a new snapshot is created with `Elaboration` provenance. The old and new graphs differ as follows:
+
+| Category | Treatment |
 |---|---|
-| **New nodes** | Create NodeCache entries. Check warm-state pool for applicable warm state (keyed by node type + relevant input signature). Enter dirty set. |
-| **Removed nodes** | Cached results orphaned in content-addressed cache (age out via LRU). Warm state donated to warm-state pool. Demand registrations cleaned up. |
-| **Surviving nodes with changed edges** | Input hash changes; enter dirty set for normal re-evaluation. |
-| **Surviving nodes with unchanged edges** | Unaffected; cache hit. |
-| **Reverse dependency index** | Incrementally updated. O(changed edges), not O(total edges). |
+| **New nodes** | Present in new graph. NodeCache entries created. Warm-state pool checked for applicable warm state (keyed by node type + path-based identity). |
+| **Removed nodes** | Absent from new graph. Cached results remain in the content-addressed cache (age out via LRU). Warm state donated to warm-state pool for potential reuse. Demand registrations cleaned up. |
+| **Surviving nodes with changed edges** | Present in both graphs but with different dependencies. Input hash changes; cache miss triggers re-evaluation. |
+| **Surviving nodes with unchanged edges** | Present in both graphs with identical dependencies. Cache hit; no re-evaluation needed. Structural sharing means these nodes are literally the same objects in memory. |
+| **Reverse dependency index** | Incrementally updated from the set of changed edges. O(changed edges), not O(total edges). |
 
-**In-flight evaluations of removed nodes.** When a schema change removes a node that has an in-flight evaluation, the task is cancelled immediately regardless of commitment status. Schema removal supersedes commitment — a committed task's justification is that its result will be useful when it completes, but a removed node has no place in the current schema and the committed-stale-completion sequence (section 7.5) cannot apply (there is no node to re-evaluate at step 4). Warm state is donated to the pool (keyed by node type and input signature) for potential reuse if the node reappears via path-based identity (section 6.4). For ResolutionNodes mid-convergence, trial snapshots are simply abandoned (they are internal per section 2.5); the solver's warm state (best-so-far solution, iteration state) is donated.
+**In-flight evaluations of removed nodes.** When a topology update removes a node that has an in-flight evaluation, the task is cancelled immediately regardless of commitment status. Topology removal supersedes commitment -- a committed task's justification is that its result will be useful when it completes, but a removed node has no place in the new graph. Warm state is donated to the pool (keyed by node type and path-based identity) for potential reuse if the node reappears. For ResolutionNodes mid-convergence, trial snapshots are simply abandoned (they are internal per section 2.5); the solver's warm state (best-so-far solution, iteration state) is donated.
 
-### 6.4 Node Identity
+### 6.5 Node Identity
 
-**Path-based identity.** Nodes are identified by their path in the containment tree plus role: `assembly.bracket.thickness` is the same ValueCell regardless of schema version. If a guard flips an occurrence off and back on, "new" nodes have the same identity as old ones and find their old cached results and warm state. Cache reuse across structural toggles is trivial -- same identity, same cache key, cache hit.
+**Path-based identity.** Nodes are identified by their path in the containment tree plus role: `assembly.bracket.thickness` is the same ValueCell regardless of topology version. If a guard flips an occurrence off and back on, the "new" nodes have the same path-based identity as the old ones and find their old cached results and warm state in the content-addressed cache. Cache reuse across structural toggles is trivial -- same identity, same cache key, cache hit.
 
 **Collections use positional indexing for v0.1** (`vents[0]`, `vents[1]`, ...). Shrinking removes from the end. Keyed collection identity (e.g., angular position for bolt patterns) is deferred to post-v0.1.
 
-### 6.5 Stratification of Structure-Controlling Values
+### 6.6 Stratification of Structure-Controlling Values
 
 Structure-controlling values must be resolvable without reference to nodes whose existence they control. The shape of a structure cannot depend on nodes that only exist if the shape is already known.
 
-This falls out of the DAG property. If a structure-controlling value depended on a node whose existence it controls, the dependency graph would contain a cycle -- statically detectable, reported as an error. **No separate enforcement rule is needed.**
+This falls out of the DAG property within any single elaborated graph. If a structure-controlling value depended on a node whose existence it controls, the dependency graph would contain a cycle -- statically detectable, reported as an error. **No separate enforcement rule is needed.**
+
+The two-phase model provides an additional perspective: elaboration reads structure-controlling values and produces topology; evaluation reads topology and produces values. A structure-controlling value that depends on a topology-dependent node would create a cycle between phases, which is the definition of a stratification violation.
 
 Example of the designer's natural fix for a stratification cycle:
 
@@ -578,16 +603,6 @@ Fixed (acyclic):
 constraint per_vent_airflow(Vent) * vent_count >= required_airflow(fan_mount) where needs_cooling
 ```
 Depends on type-level property and count parameter, not instances.
-
-### 6.6 Partial Elaboration and Progressive Schemas
-
-When a structure-controlling parameter is `auto` and unresolved, the SchemaNode cannot fully elaborate.
-
-**Two-pass schema elaboration (partial -> resolution -> full).** The SchemaNode emits an `Intermediate` result. The partial `SchemaFragment` contains enough to set up the resolution problem (ResolutionNode, bounding constraints, non-structure-dependent nodes) but leaves the structure-dependent portion unelaborated. When the ResolutionNode resolves `auto`, the structure-controlling value becomes determined, the SchemaNode re-evaluates, and produces a `Final` SchemaFragment with the full topology.
-
-This maps directly onto the existing intermediate/final freshness distinction. No new machinery is required.
-
-Schema nodes compose bottom-up via the containment tree: child schemas are dependencies of parent schemas. Pull-based evaluation naturally evaluates children before parents. Independent sibling schemas elaborate in parallel.
 
 ---
 
@@ -656,7 +671,7 @@ Uses persistent data structure structural sharing: if the subtree providing a no
 |---|---|
 | Task in dirty cone, NOT committed | Cancelled |
 | Task in dirty cone, committed | Runs to completion; result cached with stale `basis_version` |
-| Node removed by schema change | Cancelled immediately; warm state donated to pool. Overrides commitment (section 6.3). |
+| Node removed by topology update | Cancelled immediately; warm state donated to pool. Overrides commitment (section 6.4). |
 | User explicitly requests re-evaluation | Force-cancels even committed; restarts at P1-slow |
 | User explicitly cancels | Force-cancels; warm state saved |
 
@@ -1148,7 +1163,7 @@ When activated, its constraints and outputs are present in the evaluation graph.
 
 ### 14.2 Activation/Deactivation Mechanics
 
-Activation/deactivation is via implementation-defined UX (GUI toggle, CLI flag, headless always-on). Diagnostics reference the purpose by name. Activating a purpose is equivalent to a structural change (adding constraints and occurrences). Deactivating removes them. Both are handled by the standard schema change propagation mechanism.
+Activation/deactivation is via implementation-defined UX (GUI toggle, CLI flag, headless always-on). Diagnostics reference the purpose by name. Activating a purpose is equivalent to a topology update (adding constraints and occurrences). Deactivating removes them. Both are handled by re-elaboration (section 6).
 
 ### 14.3 Checking/Solving/Proposing Falls Out of Determinacy
 
@@ -1188,25 +1203,15 @@ Output and Input are traits on occurrences, not separate entity types. This pres
 
 ## 15. Appendix: Snapshot Data Model
 
-### Snapshot (Final, Post-Structural-Changes)
+### Snapshot
 
 ```
 Snapshot:
     version: VersionId              // monotonic, globally unique
-    schema: SchemaRef               // topology (subsumes edges)
+    graph: EvaluationGraph          // topology: nodes with embedded dependency edges
     values: PersistentMap<ValueCellId, (Value, DeterminacyState)>  // state
+    topology_fingerprint: ContentHash  // cheap "did topology change?" check
     provenance: SnapshotProvenance
-```
-
-### SchemaFragment
-
-```
-SchemaFragment:
-    scope_id: ScopeId
-    nodes: Set<NodeDeclaration>
-    edges: Set<(NodeId, NodeId, EdgeKind)>
-    child_schemas: Map<OccurrenceId, SchemaFragmentRef>
-    structure_version: ContentHash
 ```
 
 ### NodeCache (Final, Post-Freshness-Extension)
@@ -1235,7 +1240,7 @@ Freshness:
 ```
 SnapshotProvenance:
     | Edit { changed: Set<ValueCellId>, parent: SnapshotId }
-    | Restructure { new_schema: SchemaRef, parent: SnapshotId }
+    | Elaboration { changed_scopes: Set<ScopeId>, parent: SnapshotId }
     | Merge { sources: List<SnapshotId>, resolution: ConflictResolution }
     | Import { source: ExternalSource }
     | Resolution { scope: ScopeId, resolved: Set<ValueCellId>, parent: SnapshotId }
@@ -1308,7 +1313,7 @@ trait WarmStartable:
 | 4 | ResolutionNode | `(scope_id, auto_params: Set<ValueCellId>) -> Map<ValueCellId, Value>` |
 | 5 | RealizationNode | `(entity_id, repr_kind, tolerance) -> Representation` |
 | 6 | ComputeNode | `(computation_id) -> ComputationResults` |
-| 7 | SchemaNode | `(scope_id) -> SchemaFragment` |
+| 7 | SchemaNode | `(scope_id) -> EvaluationGraph` |
 
 ---
 
@@ -1324,7 +1329,7 @@ trait WarmStartable:
 | 4 | Sophisticated cost estimation for gating heuristics (marginal value, convergence rate, monetary cost) | Deferred | Post-v0.1 |
 | 5 | Keyed collection identity (upgrade from positional indexing -- angular, spatial, user-defined) | Deferred | v0.2 |
 | 6 | ~~Whether SchemaNode is a 6th node type or a specialized ComputeNode~~ | Resolved: SchemaNode is a distinct node type (7th, alongside SourceNode) | -- |
-| 7 | Structural diff cost optimization via content-addressed child schemas | Open | Optimization |
+| 7 | ~~Structural diff cost optimization via content-addressed child schemas~~ | Resolved: eliminated by the two-phase elaboration model; structural sharing in SchemaNode.compute() handles this directly | -- |
 | 8 | Kernel registration mechanism and format | Open | v0.1 |
 | 9 | `Geometry` supertrait integration with type system | Open | v0.1 |
 | 10 | Geometric queries and selectors / persistent naming problem | Open | v0.1 |
@@ -1368,31 +1373,31 @@ Four-level priority ordering for constraint system implementation (applies broad
 
 ### Lifecycle Worked Examples
 
-#### Bracket thickness change (5mm -> 6mm)
+#### Bracket thickness change (5mm -> 6mm) -- value update only
 
-1. New snapshot created with `Edit` provenance, `changed = {bracket.thickness}`.
-2. Dirty cone computed via forward walk from `bracket.thickness` using the reverse dependency index.
-3. Intersection with demand cone computed.
-4. P1-fast: `bracket.volume` recomputed. Early cutoff check against previous value.
-5. P1-fast: `constraint: thickness > 2mm` re-evaluated. `satisfied -> satisfied` = early cutoff; downstream not re-evaluated.
-6. P1-slow: `bracket body realization` dispatched with warm start. Input diff: `thickness: 5mm -> 6mm`. OCCT incremental rebuild.
-7. P3: speculative re-evaluation of STEP export, FEA mesh.
-8. Reverse dependency index updated with fresh traces.
+1. New snapshot created with `Edit` provenance, `changed = {bracket.thickness}`. Same `topology_fingerprint` (no structural change).
+2. No re-elaboration needed: `bracket.thickness` is not a structure-controlling value (no SchemaNode depends on it via edge #7).
+3. Dirty cone computed via forward walk from `bracket.thickness` using the reverse dependency index.
+4. Intersection with demand cone computed.
+5. P1-fast: `bracket.volume` recomputed. Early cutoff check against previous value.
+6. P1-fast: `constraint: thickness > 2mm` re-evaluated. `satisfied -> satisfied` = early cutoff; downstream not re-evaluated.
+7. P1-slow: `bracket body realization` dispatched with warm start. Input diff: `thickness: 5mm -> 6mm`. OCCT incremental rebuild.
+8. P3: speculative re-evaluation of STEP export, FEA mesh.
+9. Reverse dependency index updated with fresh traces.
 
-#### Housing guard flip (needs_cooling: false -> true)
+#### Housing guard flip (needs_cooling: false -> true) -- topology update with cascading elaboration
 
-1. New snapshot with `Edit` provenance.
-2. SchemaNode for Housing is in the dirty cone (inputs include `needs_cooling`).
-3. SchemaNode re-evaluates. `needs_cooling` was `false`, now `true`.
-4. **First pass (partial):** `Intermediate` SchemaFragment emitted containing fan_mount nodes, cooling constraints, ResolutionNode for `vent_count`, but no vent instances (because `vent_count = auto` is unresolved).
-5. ResolutionNode evaluates: analyzes airflow constraints, resolves `vent_count = 4`.
-6. **Second pass (full):** SchemaNode re-evaluates with `vent_count = 4` determined. `Final` SchemaFragment includes 4 vent instances (`vents[0]` through `vents[3]`).
-7. Schema diff: new nodes for fan_mount and 4 vents created. NodeCache entries initialised. Warm-state pool checked for applicable state.
-8. Normal evaluation: vent spacings computed (20mm), geometries realized, `total_mass` updated.
+1. New snapshot with `Edit` provenance, `changed = {housing.needs_cooling}`.
+2. `needs_cooling` is a structure-controlling value (Housing's SchemaNode depends on it via edge #7). **Re-elaboration triggered.**
+3. **Elaboration pass 1:** Housing's SchemaNode.compute() re-evaluates. `needs_cooling` is now `true`. The topology template instantiates fan_mount nodes, cooling constraints, and a ResolutionNode for `vent_count`. No vent instances yet (`vent_count = auto` is unresolved). New snapshot with `Elaboration` provenance and new `topology_fingerprint`.
+4. **Value evaluation:** ResolutionNode for `vent_count` evaluates: analyzes airflow constraints, resolves `vent_count = 4`. New snapshot with `Resolution` provenance (value update).
+5. `vent_count` is a structure-controlling value. **Re-elaboration triggered.**
+6. **Elaboration pass 2:** Housing's SchemaNode.compute() re-evaluates. `vent_count = 4`. The topology template instantiates 4 vent instances (`vents[0]` through `vents[3]`), each with its own SchemaNode. Child SchemaNodes elaborate their internal topology (vent parameters, constraints, geometry nodes). New snapshot with `Elaboration` provenance and new `topology_fingerprint`.
+7. **Value evaluation:** Normal demand-driven evaluation. Vent spacings computed (20mm), geometries realized, `total_mass` updated. No further structure-controlling values change. Cycle complete.
 
 If `needs_cooling` is toggled back to `false` and then to `true` again:
-- Off: all cooling nodes disappear; results orphaned in cache; warm state donated to pool.
-- On: nodes reappear with same path-based identity. Content-addressed cache still holds results from the first activation -- cache hits across the board. The toggle costs nearly nothing the second time.
+- Off: re-elaboration produces a graph without cooling nodes. Removed nodes' cached results remain in the content-addressed cache; warm state donated to pool.
+- On: re-elaboration produces a graph with cooling nodes. Path-based identity (section 6.5) means the "new" nodes have the same identity as before. Content-addressed cache still holds results from the first activation -- cache hits across the board. The toggle costs nearly nothing the second time.
 
 ---
 
@@ -1400,7 +1405,7 @@ If `needs_cooling` is toggled back to `false` and then to `true` again:
 
 | Category | Items | Invariant |
 |---|---|---|
-| **Immutable (load-bearing)** | Snapshots (value maps, schema refs), cached results, dependency traces | Core evaluation correctness |
+| **Immutable (load-bearing)** | Snapshots (evaluation graphs, value maps, topology fingerprints), cached results, dependency traces | Core evaluation correctness |
 | **Mutable, encapsulated behind pure interface** | Warm-start state (behind `compute_cold`/`compute_warm`) | Semantic transparency: absent warm state -> cold compute -> identical result |
 | **Mutable acceleration structures (derived, reconstructible)** | Reverse dependency index, cache storage (lock-free reads) | Stale = conservative dirty cone = wasted recomputation, not incorrect results |
 | **Mutable, outside evaluation model** | Demand registry / demand cone (ephemeral UI state), thread pool / task scheduler | Does not affect evaluation determinism |
