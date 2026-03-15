@@ -229,9 +229,13 @@ Value updates do not change the graph structure. They update the separate `value
 
 Reverse dependency edges: mutable side-index (derived, reconstructible acceleration structure). Safe failure mode: stale index leads to conservative dirty cone (wasted recomputation, not incorrect results). Upgrade path: replace with second immutable persistent data structure mirroring the forward graph with reversed edges, updated atomically.
 
-#### Garbage collection
+#### Snapshot lifetime management
 
-Snapshots stay alive as long as referenced. Working set is small: current snapshot, 1-2 previous ones held by in-flight evaluations, current solver's trial snapshot. Cache eviction: LRU weighted by recomputation cost (expensive results like B-rep Booleans get higher weights). Cache capacity is configurable.
+Snapshots are reference-counted (`Arc` in Rust). An in-flight evaluation pins its snapshot for the duration of its computation — the snapshot cannot be deallocated while any task holds a reference. When the evaluation completes (or is cancelled), the reference is dropped. Unreferenced snapshots are deallocated, and their HAMT nodes are freed if no other snapshot shares them.
+
+Working set is small: current snapshot, 1-2 previous ones held by in-flight evaluations, current solver's trial snapshot. During rapid editing (e.g., dragging a slider producing dozens of snapshots per second), intermediate snapshots are created and quickly dereferenced as in-flight evaluations against them complete or are cancelled. HAMT structural sharing ensures each snapshot's marginal memory cost is O(log n) for the changed values, not O(n) for the full value map. Rapid editing does not cause memory accumulation — snapshots that no task references are freed immediately.
+
+Cache eviction (separate from snapshot lifetime): LRU weighted by recomputation cost (expensive results like B-rep Booleans get higher weights). Cache capacity is configurable.
 
 ### 2.4 Evaluation Contexts for Resolution
 
@@ -417,6 +421,59 @@ Equality determination by node type:
 However, the freshness change must still propagate — downstream nodes need accurate freshness for UI display and for gating policies (section 7.3, "only run on final inputs"). Freshness propagation is a lightweight mode within the dirty-cone walk, not a separate mechanism. When value early cutoff fires at a node, propagation continues downstream in freshness-only mode: at each visited node, freshness is recomputed from current input freshness. If the node's freshness changes, propagation continues. If not (e.g., another input is still Intermediate), freshness early cutoff fires and propagation stops. No value recomputation occurs during freshness-only propagation.
 
 Freshness propagation can unlock gated work. When it reaches a node with the "only run on final inputs" policy (section 7.3) and all inputs are now Final, the node enters the value dirty set for evaluation. This is the mechanism by which gated nodes discover that their inputs have settled.
+
+### 3.6 Content Hashing
+
+Content hashing is load-bearing throughout the architecture: cache keying (section 3.1), early cutoff (section 3.5), topology fingerprinting (section 2.3), and schema change detection (section 2.1). This section specifies the hashing model.
+
+#### Requirements
+
+The hash function must be non-cryptographic, deterministic, and have good distribution. No adversarial collision resistance is needed — the cache is not a security boundary. Performance matters: hashing is on the critical path for every cache lookup that misses the version fast path. Specific algorithm choice (xxHash, wyhash, etc.) is an implementation technology decision (open question #2).
+
+#### Floating-point hashing
+
+Consistent with the bitwise equality decision in section 3.5, floating-point values are hashed by their IEEE 754 bit representation. Two exceptions:
+
+- **NaN canonicalization.** All NaN bit patterns (signaling, quiet, with varying payloads) are normalized to a single canonical NaN before hashing. Without this, computations that produce NaN via different code paths would have different hashes despite semantically identical results. NaN is rare in engineering computation but should not cause pathological cache behavior.
+- **-0 and +0 are distinct.** `-0.0` and `+0.0` have different IEEE 754 representations and produce different hashes. This is correct: `-0.0` can produce different downstream results (e.g., `1.0 / -0.0 = -inf`), so they should be different cache keys.
+
+No tolerance-based normalization. Same rationale as section 3.5: correctness over premature optimization.
+
+#### What gets hashed
+
+Hashing is **Merkle-tree-structured**: a node's input hash is computed from the content hashes of its immediate dependencies, not by reading and hashing raw values transitively. When one dependency changes, only the consuming node's input hash needs recomputation — sibling dependencies contribute their existing cached hashes.
+
+Per node type:
+
+| Node type | Input hash computed from | Notes |
+|---|---|---|
+| SourceNode | AST subtree content | Already content-addressable from the compiler |
+| ValueCell | SourceNode hash (for defaults) + hashes of ValueCells read by the defining expression | For scalar values, the bitwise representation. For compound values (collections, records), recursive structural hashing |
+| ConstraintNode | Hashes of ValueCells and RealizationNodes it reads | |
+| ResolutionNode | Hashes of ConstraintNodes it reads | |
+| RealizationNode | Hashes of ValueCells it reads + input hashes of child RealizationNodes | Child RealizationNode *input* hashes, not output hashes — avoids hashing geometry results |
+| ComputeNode | Hashes of all dependency values/input-hashes | Same pattern as RealizationNode |
+| SchemaNode | Source AST hash + structure-controlling ValueCell hashes | |
+
+**Opaque geometry handles are never hashed directly.** Cache keying is by input hash, not output hash. RealizationNodes skip output equality checking (section 3.5). For early cutoff in downstream consumers, the RealizationNode's input hash serves as the proxy: if inputs are unchanged, the output is presumed unchanged. This sidesteps the problem of hashing kernel-internal data structures (OCCT `TopoDS_Shape`, mesh buffers, etc.) entirely.
+
+HAMT nodes carry cached hashes for their subtrees, enabling incremental hash computation when the value map is updated. Changing one ValueCell in a 50,000-entry map recomputes O(log n) hashes along the trie spine.
+
+#### Collision handling
+
+A content-hash match is treated as **presumptive equality** — no full-value comparison fallback. This is the same trust model as git, Bazel, and Buck2. With a 128-bit hash, the probability of collision in a working set of 10^8 entries is ~10^-20. A debug mode providing full comparison on hash match can be offered for validation, but is not the default path.
+
+The consequence of a hash collision would be returning a stale cached result (incorrect). The consequence of a hash miss is recomputation (wasteful but correct). The asymmetry favors a wide hash (128-bit) and accepts the vanishingly small collision risk.
+
+#### Determinism boundary
+
+Content hashes are valid within a **single runtime binary on a single platform**. Cache entries are not portable across:
+
+- **Runtime versions.** Compiler changes may alter AST structure; evaluation changes may alter node computation.
+- **Platforms.** Floating-point operation ordering may differ across CPU architectures, producing bitwise-different results for the same source computation.
+- **Kernel versions.** An OCCT upgrade may produce different B-rep topology for the same inputs.
+
+Kernel version pinning (section 10.3) and runtime version tagging on cache entries are the mitigations. A cache populated by one runtime version is invalidated (not corrupted) by a version change: the version tag mismatches and entries are treated as misses.
 
 ---
 
