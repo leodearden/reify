@@ -674,6 +674,28 @@ constraint per_vent_airflow(Vent) * vent_count >= required_airflow(fan_mount) wh
 ```
 Depends on type-level property and count parameter, not instances.
 
+### 6.7 Connection and Chain Elaboration
+
+`connect` and `chain` are language-level statements for assembly composition. They desugar into primitive declarations that map to existing node types. No new node types or edge types are introduced.
+
+**`chain` desugars to `connect`.** `chain A -> B -> C` becomes `connect A.default_out -> B.default_in; connect B.default_out -> C.default_in`. This is a compile-time transformation before elaboration.
+
+**`connect` desugars during elaboration** into up to five artifacts, each mapping to existing evaluation graph infrastructure:
+
+| Artifact | Graph mapping |
+|---|---|
+| **Connector structure instance** (when a connector type is specified) | Occurrence in the nearest common ancestor's scope. Produces ValueCells, RealizationNode, and ConstraintNodes like any `sub` declaration. If no connector type is given, no instance is created. |
+| **Port compatibility checks** | Compile-time type checks (matching or complementary traits, `In` <-> `Out` directionality). No graph presence. |
+| **Connector-port binding constraints** | ConstraintNodes relating connector parameters to port parameters on both sides. |
+| **Frame alignment constraints** | ConstraintNodes for spatial relationships (coincident origins, matching orientations) when both ports are geometrically located. These are geometric constraints, potentially backed by `@optimized` kernel-native solvers. When no connector type is given, default frame coincidence is assumed. |
+| **Assembly topology edge** | Metadata outside the evaluation graph. Used for traversal, visualization, and connectivity queries. Not a dependency edge; does not participate in dirty/demand cone computation. |
+
+**Node identity for connection artifacts.** Connector instances and generated constraints follow the same path-based identity scheme as all other nodes (section 6.5). The connector instance gets a path derived from the connected ports (e.g., `housing.motor_shaft__coupling_driver`) unless explicitly named by the designer.
+
+**Connections and structural changes.** If a `connect` references an occurrence gated by a `where` clause, the connection's artifacts (connector instance, constraints) appear and disappear with the gated occurrence. This is the same topology update mechanism described in sections 6.2-6.4 -- no special handling is required. The SchemaNode for the connection's owning scope re-elaborates when the guard flips, and the connection artifacts are present or absent in the resulting graph.
+
+**Cyclic connection topology.** The assembly topology graph (the directed graph of topology edges) may contain cycles -- e.g., four-bar linkages, closed kinematic chains. This is safe because topology edges are metadata outside the evaluation graph. The evaluation graph itself remains a DAG; only the assembly topology graph permits cycles.
+
 ---
 
 ## 7. Provisional State and Long-Running Tasks
@@ -1094,6 +1116,98 @@ The constraint survey identifies the following solver categories relevant to Rei
 **Equation-based:** ModelingToolkit.jl (acausal composition with Pantelides algorithm for DAE index reduction).
 
 The recommended architecture layers these tools: constraint classification at the language level, dispatch to appropriate solvers per domain, and managed interaction for cross-domain constraints.
+
+### 11.8 v0.1 Dispatch Protocol
+
+The orchestrator for v0.1 is deliberately simple: classify constraints by domain, dispatch each to the appropriate single-domain solver, and handle cross-domain constraints via decomposition with a diagnostic fallback.
+
+#### Solver interface
+
+All sub-solvers implement a common interface:
+
+```
+trait ConstraintSolver:
+    fn capabilities() -> SolverCapabilities  // domains, variable types, constraint forms
+    fn check(constraints, values) -> Vec<(ConstraintId, Satisfaction, Diagnostics)>
+    fn solve(constraints, auto_params, values, warm_state) -> SolveResult
+```
+
+Where `SolveResult` is:
+
+```
+SolveResult:
+    | Solved { values: Map<ValueCellId, Value>, warm_state: OpaqueState }
+    | Infeasible { core: Set<ConstraintId> }   // minimal unsatisfiable subset, if available
+    | NoProgress { reason: DiagnosticRef }     // solver cannot handle this problem
+    | DidNotConverge { best_so_far: Map<ValueCellId, Value>, warm_state: OpaqueState }
+```
+
+`check` is separated from `solve` because checking is always cheap (evaluate predicates) while solving may be expensive (search). The checking -> solving -> proposing spectrum (section 11.3) maps directly: `check` handles checking mode; `solve` handles solving mode; proposing mode is a future extension.
+
+#### Constraint classification
+
+Each ConstraintNode is classified into a domain based on two signals:
+
+1. **Input types**: the types of the ValueCells that are inputs to the ConstraintNode. Scalar `Length`/`Force`/`Angle` inputs indicate dimensional; `Point`/`Curve`/`Surface` inputs indicate geometric; `Bool`/enum inputs indicate logical.
+2. **Operator structure**: the constraint's predicate AST. Arithmetic comparisons indicate dimensional; named geometric predicates (`Coincident`, `Parallel`, `Tangent`) indicate geometric; boolean connectives and implications indicate logical.
+
+Classification is the conjunction: a constraint over scalar values using arithmetic operators is dimensional; a constraint invoking `Coincident` on `Point` inputs is geometric; a constraint mixing `Point` inputs with scalar comparisons (e.g., `distance(a, b) > 5mm`) is cross-domain.
+
+For v0.1, classification is performed once per ConstraintNode when the node is created during elaboration. Reclassification occurs only on topology changes (the constraint's input types or predicate structure changed).
+
+#### Dispatch algorithm
+
+```
+dispatch(scope_constraints, auto_params, values):
+    classified = classify(scope_constraints)
+
+    // Single-domain groups: dispatch directly
+    for (domain, constraints) in classified.single_domain_groups:
+        solver = select_solver(domain)
+        results += solver.solve(constraints, auto_params, values, warm_state)
+
+    // Cross-domain constraints: attempt decomposition
+    for constraint in classified.cross_domain:
+        sub_problems = decompose(constraint)
+        if sub_problems.all_single_domain():
+            // Decomposition succeeded: dispatch sub-problems independently
+            for (domain, sub) in sub_problems:
+                results += select_solver(domain).solve(sub, ...)
+        else:
+            // Decomposition failed: fall back to nonlinear programming solver
+            result = nlp_solver.solve([constraint], auto_params, values, warm_state)
+            if result is NoProgress:
+                emit diagnostic: "constraint spans domains that v0.1 cannot solve jointly"
+                // Constraint is still checked (not solved) -- violations are reported
+
+    return merge(results)
+```
+
+`select_solver` for v0.1 is a static mapping:
+
+| Domain | Primary solver | Fallback |
+|---|---|---|
+| Dimensional/parametric | NLopt (AUGLAG meta-algorithm) | Ipopt (for large sparse systems) |
+| Geometric | SolveSpace `libslvs` | Ceres Solver (as nonlinear least squares) |
+| Logical/combinatorial | OR-Tools CP-SAT | Enumeration (small domains only) |
+| Cross-domain (fallback) | NLopt | Report inability |
+
+The static mapping is sufficient for v0.1. Post-v0.1, the orchestrator gains capability-based solver selection: solvers register capabilities via `SolverCapabilities`, and the dispatcher selects based on best match (considering variable count, constraint form, sparsity pattern).
+
+#### Failure modes
+
+| Failure | Orchestrator response |
+|---|---|
+| **No solver handles the constraint** | Constraint is checked but not solved. `auto` parameters that depend solely on this constraint remain `auto` (unresolved). Diagnostic emitted. |
+| **Solver returns `Infeasible`** | Constraints in the unsatisfiable core are marked `violated`. If the solver provides a minimal core, only those constraints are flagged; otherwise all constraints in the group are flagged. Diagnostic includes the core for the determinacy stack trace. |
+| **Solver returns `DidNotConverge`** | Best-so-far values are used as an `Intermediate` result. Warm state is saved. The ResolutionNode emits `Intermediate` freshness, triggering re-evaluation at the next opportunity. |
+| **Solver crashes or times out** | The ResolutionNode's result is `Failed`. Downstream nodes become `Pending`. Cooperative cancellation token (section 7.5) prevents runaway solvers. User-triggered retry is available. |
+
+#### Cross-domain decomposition (v0.1 strategy)
+
+Decomposition attempts to split a cross-domain constraint into independent sub-problems by identifying sub-expressions that operate within a single domain. For example, `distance(a, b) > 5mm` decomposes into: (1) a geometric computation `d = distance(a, b)` producing a scalar, and (2) a dimensional constraint `d > 5mm`. The geometric solver resolves `distance`; the dimensional solver checks the comparison.
+
+This works when the cross-domain interaction is mediated by a scalar value (geometric computation producing a number consumed by a dimensional constraint). It does not work when domains are tightly coupled (e.g., an optimization objective that simultaneously varies geometric and dimensional parameters). For v0.1, tightly coupled cross-domain optimization is reported as a limitation and the designer is guided to restructure the problem.
 
 ---
 
