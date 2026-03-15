@@ -496,7 +496,13 @@ Warm state is explicitly **NOT** part of the content-addressed cache. Not hashed
 
 The dependency trace records inputs and values. On cache miss, the system computes an input diff (which traced values differ). The diff is passed to `compute_warm` to scope the incremental update.
 
-Example: a RealizationNode wrapping OCCT receives input diff "fillet radius changed from 2mm to 3mm." OCCT locates the fillet feature, updates the radius, and incrementally rebuilds -- dramatically faster than cold recomputation.
+Example: a RealizationNode wrapping OCCT receives input diff "fillet radius changed from 2mm to 3mm." The warm-start strategy depends on the level of feature history available:
+
+- **Operation replay (v0.1 baseline).** The previous `TopoDS_Shape` is the warm state. The binding layer replays the full operation sequence from source, seeding from the previous shape. This is faster than cold computation — base geometry import is avoided, tessellation caches are reused, and tolerance negotiation converges faster — but does not skip unchanged operations.
+
+- **Feature-level incrementality (future).** A feature history layer built on top of OCCT tracks which operations produced which topological entities. Given the input diff, the layer identifies the fillet operation, removes its effects, re-applies with the new radius, and rebuilds only downstream operations. This is dramatically faster but requires maintaining a parametric history that OCCT does not natively provide — significant implementation effort, deferred beyond v0.1.
+
+Both strategies are transparent to the evaluation graph. The `compute_warm` interface is identical regardless of the internal warm-start strategy; the binding layer chooses the best available strategy.
 
 ### 4.3 Warm-State Encapsulation and Pools
 
@@ -512,6 +518,13 @@ NodeCache:
 ```
 
 Warm-state pools: small pool (initially size 1, expandable). Supports checkout, return, clone-then-modify (when kernel supports it, e.g. OCCT shape copying). Interface generalizes from mutex (pool size 1) to pool (size N) without changing evaluation code.
+
+**Warm-state eviction.** Warm state can be large — an OCCT `TopoDS_Shape` for a moderately complex part is tens to hundreds of MB; mesh buffers, solver state, and SDF grids similarly. Unmanaged retention across many nodes will exhaust memory.
+
+- **Memory budget.** Total warm-state memory is capped at a configurable project-level budget. When aggregate warm-state usage exceeds the budget, states are evicted until usage falls below the threshold.
+- **Eviction order.** LRU weighted by recomputation cost per byte: `estimated_cold_compute_time / state_size_bytes`. This preferentially evicts large cheap-to-reproduce states (a 500 MB tessellation cache that takes 1s to rebuild evicts before a 10 MB OCCT model that takes 30s). Among states with similar cost-per-byte, LRU recency is the tiebreaker.
+- **Eviction mechanism.** The pool's `checkout()` returns `None` when warm state has been evicted. The node falls back to `compute_cold`, producing identical results — already guaranteed by the WarmStartable protocol (section 4.1). No new machinery is required.
+- **Donated state.** When a topology update removes a node (section 6.4), its warm state is donated to the pool keyed by node type and path-based identity for potential reuse if the node reappears. Donated state counts against the memory budget and is subject to the same eviction policy.
 
 ### 4.4 Tiers
 
