@@ -43,7 +43,6 @@ fn bracket_structure() {
 
 /// Error recovery: malformed input still produces partial declarations + ParseErrors.
 #[test]
-#[ignore = "requires Tree-sitter parser implementation"]
 fn error_recovery_partial_parse() {
     let source = r#"structure Broken {
     param width: Scalar = 80mm
@@ -169,7 +168,6 @@ fn bracket_source_round_trip() {
 
 /// Parse bracket → all members carry non-empty spans.
 #[test]
-#[ignore = "requires Tree-sitter parser implementation"]
 fn all_spans_valid() {
     let source = bracket_source();
     let module = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
