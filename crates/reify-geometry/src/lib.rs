@@ -71,8 +71,8 @@ mod tests {
     use reify_test_support::MockGeometryKernel;
     use reify_test_support::mm3;
     use reify_types::{
-        GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, QueryError,
-        ReprKind, Value,
+        ExportError, ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
+        GeometryQuery, QueryError, ReprKind, Value,
     };
 
     use super::*;
@@ -165,5 +165,43 @@ mod tests {
         let query = GeometryQuery::Volume(GeometryHandleId(1));
         let result = planner.query(&query).expect("query should succeed");
         assert_eq!(result, expected_volume);
+    }
+
+    #[test]
+    fn export_no_kernel_returns_error() {
+        let planner = DispatchPlanner::new();
+        let mut buf = Vec::new();
+        let result = planner.export(GeometryHandleId(1), ExportFormat::Step, &mut buf);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ExportError::FormatError(msg) => {
+                assert!(
+                    msg.contains("no geometry kernel registered"),
+                    "unexpected error message: {}",
+                    msg
+                );
+            }
+            other => panic!("expected FormatError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn export_delegates_to_registered_kernel() {
+        let mut planner = DispatchPlanner::new();
+        planner.register_kernel(Box::new(MockGeometryKernel::new()));
+
+        // Execute an op to create a handle
+        let op = GeometryOp::Box {
+            width: Value::length(0.01),
+            height: Value::length(0.01),
+            depth: Value::length(0.01),
+        };
+        planner.execute(&op).unwrap();
+
+        let mut buf = Vec::new();
+        planner
+            .export(GeometryHandleId(1), ExportFormat::Step, &mut buf)
+            .expect("export should succeed");
+        assert_eq!(buf, b"MOCK_EXPORT_DATA");
     }
 }
