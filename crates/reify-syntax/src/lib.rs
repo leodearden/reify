@@ -151,8 +151,7 @@ pub struct ParseError {
 
 /// Parse a source string into a `ParsedModule`.
 ///
-/// Currently backed by a hand-written recursive descent parser for the M1 subset.
-/// Will be replaced by Tree-sitter in a future milestone.
+/// Backed by a Tree-sitter grammar parser with CST→AST lowering.
 pub fn parse(source: &str, module_path: reify_types::ModulePath) -> ParsedModule {
-    parser::parse(source, module_path)
+    ts_parser::parse(source, module_path)
 }
