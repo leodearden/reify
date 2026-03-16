@@ -29,6 +29,7 @@ impl DispatchPlanner {
 #[cfg(test)]
 mod tests {
     use reify_test_support::MockGeometryKernel;
+    use reify_types::{GeometryError, GeometryKernel, GeometryOp, Value};
 
     use super::*;
 
@@ -44,5 +45,27 @@ mod tests {
         let mock = MockGeometryKernel::new();
         planner.register_kernel(Box::new(mock));
         assert!(planner.has_kernel());
+    }
+
+    #[test]
+    fn execute_no_kernel_returns_error() {
+        let mut planner = DispatchPlanner::new();
+        let op = GeometryOp::Box {
+            width: Value::length(0.01),
+            height: Value::length(0.01),
+            depth: Value::length(0.01),
+        };
+        let result = planner.execute(&op);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            GeometryError::OperationFailed(msg) => {
+                assert!(
+                    msg.contains("no geometry kernel registered"),
+                    "unexpected error message: {}",
+                    msg
+                );
+            }
+            other => panic!("expected OperationFailed, got {:?}", other),
+        }
     }
 }
