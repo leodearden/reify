@@ -1,4 +1,30 @@
-// Stub — M1 implementation pending
+use reify_types::GeometryKernel;
+
+/// A dispatch planner that wraps an optional geometry kernel.
+///
+/// For M1, holds a single optional kernel and delegates all
+/// `GeometryKernel` calls to it. When no kernel is registered,
+/// each method returns the appropriate error.
+pub struct DispatchPlanner {
+    kernel: Option<Box<dyn GeometryKernel>>,
+}
+
+impl DispatchPlanner {
+    /// Create a new `DispatchPlanner` with no kernel registered.
+    pub fn new() -> Self {
+        Self { kernel: None }
+    }
+
+    /// Register a geometry kernel for dispatch.
+    pub fn register_kernel(&mut self, kernel: Box<dyn GeometryKernel>) {
+        self.kernel = Some(kernel);
+    }
+
+    /// Returns `true` if a kernel has been registered.
+    pub fn has_kernel(&self) -> bool {
+        self.kernel.is_some()
+    }
+}
 
 #[cfg(test)]
 mod tests {
