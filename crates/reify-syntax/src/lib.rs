@@ -1,3 +1,5 @@
+mod parser;
+
 use reify_types::{ContentHash, SourceSpan};
 
 /// A parsed module — the output of the parser.
@@ -148,7 +150,8 @@ pub struct ParseError {
 
 /// Parse a source string into a `ParsedModule`.
 ///
-/// Stub implementation — will be backed by Tree-sitter in M1.
-pub fn parse(_source: &str, _module_path: reify_types::ModulePath) -> ParsedModule {
-    todo!("reify-syntax: Tree-sitter parser not yet implemented")
+/// Currently backed by a hand-written recursive descent parser for the M1 subset.
+/// Will be replaced by Tree-sitter in a future milestone.
+pub fn parse(source: &str, module_path: reify_types::ModulePath) -> ParsedModule {
+    parser::parse(source, module_path)
 }
