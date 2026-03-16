@@ -222,10 +222,10 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
 
 fn eval_div(lv: &Value, rv: &Value) -> Value {
     // Check for division by zero
-    if let Some(denom) = rv.as_f64() {
-        if denom == 0.0 {
-            return Value::Undef;
-        }
+    if let Some(denom) = rv.as_f64()
+        && denom == 0.0
+    {
+        return Value::Undef;
     }
 
     match (lv, rv) {

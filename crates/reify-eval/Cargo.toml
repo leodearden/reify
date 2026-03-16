@@ -13,3 +13,4 @@ reify-compiler.workspace = true
 
 [dev-dependencies]
 reify-test-support.workspace = true
+reify-kernel-occt.workspace = true

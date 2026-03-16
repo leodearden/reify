@@ -875,22 +875,17 @@ impl<'a> Parser<'a> {
     fn parse_postfix_expr(&mut self) -> Option<Expr> {
         let mut expr = self.parse_primary_expr()?;
 
-        loop {
-            match self.peek_kind() {
-                TokenKind::Dot => {
-                    self.advance(); // consume '.'
-                    let (member, member_span) = self.expect_ident()?;
-                    let span = SourceSpan::new(expr.span.start, member_span.end);
-                    expr = Expr {
-                        kind: ExprKind::MemberAccess {
-                            object: Box::new(expr),
-                            member,
-                        },
-                        span,
-                    };
-                }
-                _ => break,
-            }
+        while let TokenKind::Dot = self.peek_kind() {
+            self.advance(); // consume '.'
+            let (member, member_span) = self.expect_ident()?;
+            let span = SourceSpan::new(expr.span.start, member_span.end);
+            expr = Expr {
+                kind: ExprKind::MemberAccess {
+                    object: Box::new(expr),
+                    member,
+                },
+                span,
+            };
         }
 
         Some(expr)
@@ -899,7 +894,6 @@ impl<'a> Parser<'a> {
     fn parse_primary_expr(&mut self) -> Option<Expr> {
         match self.peek_kind().clone() {
             TokenKind::Number(value) => {
-                let value = value;
                 let tok = self.advance();
                 let num_span = tok.span;
 
