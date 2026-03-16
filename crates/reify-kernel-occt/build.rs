@@ -100,6 +100,12 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib={}", lib);
     }
 
+    // Set rpath so the dynamic linker can find OCCT libs at runtime
+    println!(
+        "cargo:rustc-link-arg=-Wl,-rpath,{}",
+        lib_dir.display()
+    );
+
     // Also need to link the C++ standard library
     println!("cargo:rustc-link-lib=dylib=stdc++");
 }

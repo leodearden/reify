@@ -1,0 +1,3 @@
+# Use runner script to set LD_LIBRARY_PATH for OCCT shared libraries.
+[target.x86_64-unknown-linux-gnu]
+runner = ".cargo/run-with-occt.sh"

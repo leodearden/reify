@@ -129,6 +129,12 @@ fn mock_kernel_translate() {
 
 /// Tests that will run against the real OCCT kernel — ignored until implemented.
 mod occt_tests {
+    use reify_kernel_occt::OcctKernel;
+    use reify_test_support::*;
+    use reify_types::{
+        ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery,
+        Value,
+    };
     #[test]
     #[ignore = "requires OCCT kernel implementation"]
     fn create_box_export_step() {
