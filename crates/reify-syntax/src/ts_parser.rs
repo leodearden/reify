@@ -820,6 +820,108 @@ mod tests {
     }
 
     #[test]
+    fn full_integration_matches_hand_written_parser() {
+        // Comprehensive structural comparison between tree-sitter and hand-written parser.
+        let source = reify_test_support::bracket_source();
+        let hw = crate::parser::parse(source, reify_types::ModulePath::single("bracket"));
+        let ts = parse(source, reify_types::ModulePath::single("bracket"));
+
+        // Module level
+        assert_eq!(ts.content_hash, hw.content_hash);
+        assert_eq!(ts.errors.len(), hw.errors.len());
+        assert_eq!(ts.declarations.len(), hw.declarations.len());
+
+        let hw_s = match &hw.declarations[0] { Declaration::Structure(s) => s, _ => panic!() };
+        let ts_s = match &ts.declarations[0] { Declaration::Structure(s) => s, _ => panic!() };
+
+        assert_eq!(ts_s.name, hw_s.name);
+        assert_eq!(ts_s.span, hw_s.span);
+        assert_eq!(ts_s.content_hash, hw_s.content_hash);
+        assert_eq!(ts_s.members.len(), hw_s.members.len());
+
+        // Compare each member deeply
+        for (i, (ts_m, hw_m)) in ts_s.members.iter().zip(hw_s.members.iter()).enumerate() {
+            match (ts_m, hw_m) {
+                (MemberDecl::Param(ts_p), MemberDecl::Param(hw_p)) => {
+                    assert_eq!(ts_p.name, hw_p.name, "param {} name", i);
+                    assert_eq!(ts_p.span, hw_p.span, "param {} span", i);
+                    assert_eq!(ts_p.content_hash, hw_p.content_hash, "param {} hash", i);
+                    // Type expr
+                    match (&ts_p.type_expr, &hw_p.type_expr) {
+                        (Some(ts_t), Some(hw_t)) => {
+                            assert_eq!(ts_t.name, hw_t.name, "param {} type name", i);
+                            assert_eq!(ts_t.span, hw_t.span, "param {} type span", i);
+                        }
+                        (None, None) => {}
+                        _ => panic!("param {} type_expr mismatch", i),
+                    }
+                    // Default expr kind
+                    match (&ts_p.default, &hw_p.default) {
+                        (Some(ts_d), Some(hw_d)) => {
+                            assert_eq!(ts_d.span, hw_d.span, "param {} default span", i);
+                            assert_expr_kind_eq(&ts_d.kind, &hw_d.kind, &format!("param {} default", i));
+                        }
+                        (None, None) => {}
+                        _ => panic!("param {} default mismatch", i),
+                    }
+                }
+                (MemberDecl::Let(ts_l), MemberDecl::Let(hw_l)) => {
+                    assert_eq!(ts_l.name, hw_l.name, "let {} name", i);
+                    assert_eq!(ts_l.span, hw_l.span, "let {} span", i);
+                    assert_eq!(ts_l.content_hash, hw_l.content_hash, "let {} hash", i);
+                    assert_eq!(ts_l.value.span, hw_l.value.span, "let {} value span", i);
+                    assert_expr_kind_eq(&ts_l.value.kind, &hw_l.value.kind, &format!("let {}", i));
+                }
+                (MemberDecl::Constraint(ts_c), MemberDecl::Constraint(hw_c)) => {
+                    assert_eq!(ts_c.label, hw_c.label, "constraint {} label", i);
+                    assert_eq!(ts_c.span, hw_c.span, "constraint {} span", i);
+                    assert_eq!(ts_c.content_hash, hw_c.content_hash, "constraint {} hash", i);
+                    assert_eq!(ts_c.expr.span, hw_c.expr.span, "constraint {} expr span", i);
+                    assert_expr_kind_eq(&ts_c.expr.kind, &hw_c.expr.kind, &format!("constraint {}", i));
+                }
+                _ => panic!("member {} kind mismatch: {:?} vs {:?}", i, ts_m, hw_m),
+            }
+        }
+    }
+
+    /// Recursively compare expression kinds.
+    fn assert_expr_kind_eq(actual: &ExprKind, expected: &ExprKind, ctx: &str) {
+        match (actual, expected) {
+            (ExprKind::NumberLiteral(a), ExprKind::NumberLiteral(b)) => {
+                assert!((a - b).abs() < f64::EPSILON, "{}: num {} != {}", ctx, a, b);
+            }
+            (ExprKind::QuantityLiteral { value: av, unit: au },
+             ExprKind::QuantityLiteral { value: bv, unit: bu }) => {
+                assert!((av - bv).abs() < f64::EPSILON, "{}: qty value", ctx);
+                assert_eq!(au, bu, "{}: qty unit", ctx);
+            }
+            (ExprKind::Ident(a), ExprKind::Ident(b)) => {
+                assert_eq!(a, b, "{}: ident", ctx);
+            }
+            (ExprKind::BinOp { op: ao, left: al, right: ar },
+             ExprKind::BinOp { op: bo, left: bl, right: br }) => {
+                assert_eq!(ao, bo, "{}: binop op", ctx);
+                assert_expr_kind_eq(&al.kind, &bl.kind, &format!("{}/left", ctx));
+                assert_expr_kind_eq(&ar.kind, &br.kind, &format!("{}/right", ctx));
+            }
+            (ExprKind::FunctionCall { name: an, args: aa },
+             ExprKind::FunctionCall { name: bn, args: ba }) => {
+                assert_eq!(an, bn, "{}: fn name", ctx);
+                assert_eq!(aa.len(), ba.len(), "{}: fn arg count", ctx);
+                for (j, (a, b)) in aa.iter().zip(ba.iter()).enumerate() {
+                    assert_expr_kind_eq(&a.kind, &b.kind, &format!("{}/arg{}", ctx, j));
+                }
+            }
+            _ => {
+                assert_eq!(
+                    format!("{:?}", actual), format!("{:?}", expected),
+                    "{}: expr kind mismatch", ctx
+                );
+            }
+        }
+    }
+
+    #[test]
     fn tree_sitter_parses_bracket_source_without_errors() {
         let source = reify_test_support::bracket_source();
         let mut parser = tree_sitter::Parser::new();
