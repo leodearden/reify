@@ -1,4 +1,7 @@
-use reify_types::GeometryKernel;
+use reify_types::{
+    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
+    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
+};
 
 /// A dispatch planner that wraps an optional geometry kernel.
 ///
@@ -23,6 +26,38 @@ impl DispatchPlanner {
     /// Returns `true` if a kernel has been registered.
     pub fn has_kernel(&self) -> bool {
         self.kernel.is_some()
+    }
+}
+
+impl GeometryKernel for DispatchPlanner {
+    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.execute(op),
+            None => Err(GeometryError::OperationFailed(
+                "no geometry kernel registered".to_string(),
+            )),
+        }
+    }
+
+    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+        todo!()
+    }
+
+    fn export(
+        &self,
+        _handle: GeometryHandleId,
+        _format: ExportFormat,
+        _writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        todo!()
+    }
+
+    fn tessellate(
+        &self,
+        _handle: GeometryHandleId,
+        _tolerance: f64,
+    ) -> Result<Mesh, TessError> {
+        todo!()
     }
 }
 
