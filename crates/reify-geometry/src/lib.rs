@@ -255,4 +255,42 @@ mod tests {
         assert!(mesh.normals.is_some());
         assert_eq!(mesh.normals.unwrap().len(), 9); // 3 normals * 3 coords
     }
+
+    #[test]
+    fn multi_operation_sequence_dispatched() {
+        let mock = MockGeometryKernel::new();
+        let ops_ref = mock.operations_ref();
+
+        let mut planner = DispatchPlanner::new();
+        planner.register_kernel(Box::new(mock));
+
+        // Create a box
+        let box_op = GeometryOp::Box {
+            width: Value::length(0.01),
+            height: Value::length(0.02),
+            depth: Value::length(0.03),
+        };
+        let box_handle = planner.execute(&box_op).expect("box should succeed");
+        assert_eq!(box_handle.id, GeometryHandleId(1));
+
+        // Translate the box
+        let translate_op = GeometryOp::Translate {
+            target: box_handle.id,
+            dx: 0.1,
+            dy: 0.0,
+            dz: 0.0,
+        };
+        let translate_handle = planner.execute(&translate_op).expect("translate should succeed");
+        assert_eq!(translate_handle.id, GeometryHandleId(2));
+
+        // Verify both operations were recorded
+        let ops = ops_ref.lock().unwrap();
+        assert_eq!(ops.len(), 2);
+        assert_eq!(ops[0].result_handle, GeometryHandleId(1));
+        assert_eq!(ops[1].result_handle, GeometryHandleId(2));
+
+        // Verify op types
+        assert!(matches!(ops[0].op, GeometryOp::Box { .. }));
+        assert!(matches!(ops[1].op, GeometryOp::Translate { .. }));
+    }
 }
