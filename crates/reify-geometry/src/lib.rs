@@ -8,8 +8,24 @@ use reify_types::{
 /// For M1, holds a single optional kernel and delegates all
 /// `GeometryKernel` calls to it. When no kernel is registered,
 /// each method returns the appropriate error.
+///
+/// `DispatchPlanner` implements [`GeometryKernel`] itself, so it can be
+/// used as a transparent drop-in wherever `Box<dyn GeometryKernel>` is
+/// expected (e.g., the `reify-eval` [`Engine`]).
 pub struct DispatchPlanner {
     kernel: Option<Box<dyn GeometryKernel>>,
+}
+
+// Compile-time check: DispatchPlanner is Send + Sync (required by GeometryKernel).
+const _: fn() = || {
+    fn must_be_send_sync<T: Send + Sync>() {}
+    must_be_send_sync::<DispatchPlanner>();
+};
+
+impl Default for DispatchPlanner {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DispatchPlanner {
