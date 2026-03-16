@@ -64,8 +64,10 @@ impl GeometryKernel for DispatchPlanner {
 #[cfg(test)]
 mod tests {
     use reify_test_support::MockGeometryKernel;
+    use reify_test_support::mm3;
     use reify_types::{
-        GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, ReprKind, Value,
+        GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, QueryError,
+        ReprKind, Value,
     };
 
     use super::*;
@@ -119,5 +121,44 @@ mod tests {
         let handle = planner.execute(&op).expect("execute should succeed");
         assert_eq!(handle.id, GeometryHandleId(1));
         assert_eq!(handle.repr, ReprKind::Solid);
+    }
+
+    #[test]
+    fn query_no_kernel_returns_error() {
+        let planner = DispatchPlanner::new();
+        let query = GeometryQuery::Volume(GeometryHandleId(1));
+        let result = planner.query(&query);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("no geometry kernel registered"),
+                    "unexpected error message: {}",
+                    msg
+                );
+            }
+            other => panic!("expected QueryFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn query_delegates_to_registered_kernel() {
+        let mut planner = DispatchPlanner::new();
+        let expected_volume = mm3(1000.0); // 1000 mm³
+        let mock = MockGeometryKernel::new()
+            .with_query_result(GeometryHandleId(1), expected_volume.clone());
+        planner.register_kernel(Box::new(mock));
+
+        // Execute an op first to create handle 1
+        let op = GeometryOp::Box {
+            width: Value::length(0.01),
+            height: Value::length(0.01),
+            depth: Value::length(0.01),
+        };
+        planner.execute(&op).unwrap();
+
+        let query = GeometryQuery::Volume(GeometryHandleId(1));
+        let result = planner.query(&query).expect("query should succeed");
+        assert_eq!(result, expected_volume);
     }
 }
