@@ -77,7 +77,7 @@ mod tests {
     use reify_test_support::mm3;
     use reify_types::{
         ExportError, ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
-        GeometryQuery, QueryError, ReprKind, Value,
+        GeometryQuery, QueryError, ReprKind, TessError, Value,
     };
 
     use super::*;
@@ -208,5 +208,46 @@ mod tests {
             .export(GeometryHandleId(1), ExportFormat::Step, &mut buf)
             .expect("export should succeed");
         assert_eq!(buf, b"MOCK_EXPORT_DATA");
+    }
+
+    #[test]
+    fn tessellate_no_kernel_returns_error() {
+        let planner = DispatchPlanner::new();
+        let result = planner.tessellate(GeometryHandleId(1), 0.1);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TessError::TessellationFailed(msg) => {
+                assert!(
+                    msg.contains("no geometry kernel registered"),
+                    "unexpected error message: {}",
+                    msg
+                );
+            }
+            other => panic!("expected TessellationFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tessellate_delegates_to_registered_kernel() {
+        let mut planner = DispatchPlanner::new();
+        planner.register_kernel(Box::new(MockGeometryKernel::new()));
+
+        // Execute an op to create a handle
+        let op = GeometryOp::Box {
+            width: Value::length(0.01),
+            height: Value::length(0.01),
+            depth: Value::length(0.01),
+        };
+        planner.execute(&op).unwrap();
+
+        let mesh = planner
+            .tessellate(GeometryHandleId(1), 0.1)
+            .expect("tessellate should succeed");
+
+        // MockGeometryKernel returns a single triangle
+        assert_eq!(mesh.vertices.len(), 9); // 3 vertices * 3 coords
+        assert_eq!(mesh.indices.len(), 3); // 1 triangle
+        assert!(mesh.normals.is_some());
+        assert_eq!(mesh.normals.unwrap().len(), 9); // 3 normals * 3 coords
     }
 }
