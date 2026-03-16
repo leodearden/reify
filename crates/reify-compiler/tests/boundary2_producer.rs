@@ -120,7 +120,6 @@ fn content_hashes_present() {
 
 /// Type error detection: adding length to mass should fail.
 #[test]
-#[ignore = "requires compiler implementation with type checking"]
 fn type_error_dimension_mismatch() {
     // This would test: compile a module where `thickness + 2kg` is used
     // → should produce a diagnostic about dimension mismatch
