@@ -293,4 +293,23 @@ mod tests {
         assert!(matches!(ops[0].op, GeometryOp::Box { .. }));
         assert!(matches!(ops[1].op, GeometryOp::Translate { .. }));
     }
+
+    #[test]
+    fn dispatch_planner_usable_as_boxed_geometry_kernel() {
+        let mock = MockGeometryKernel::new();
+        let mut planner = DispatchPlanner::new();
+        planner.register_kernel(Box::new(mock));
+
+        // Box the planner as a trait object — this is how reify-eval uses it
+        let kernel: Box<dyn GeometryKernel> = Box::new(planner);
+
+        // Use through trait interface
+        let mut kernel = kernel;
+        let op = GeometryOp::Sphere {
+            radius: Value::length(0.05),
+        };
+        let handle = kernel.execute(&op).expect("execute through trait object should succeed");
+        assert_eq!(handle.id, GeometryHandleId(1));
+        assert_eq!(handle.repr, ReprKind::Solid);
+    }
 }
