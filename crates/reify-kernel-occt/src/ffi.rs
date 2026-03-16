@@ -1,5 +1,6 @@
 //! CXX bridge to the OCCT C++ wrapper.
 
+#[allow(clippy::module_inception)]
 #[cxx::bridge(namespace = "occt")]
 pub mod ffi {
     /// 3D point returned from queries.

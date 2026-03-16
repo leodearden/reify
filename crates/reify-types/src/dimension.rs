@@ -140,8 +140,8 @@ impl DimensionVector {
     /// Multiply dimensions (add exponents).
     pub fn mul(&self, other: &DimensionVector) -> DimensionVector {
         let mut result = [Rational::ZERO; 9];
-        for i in 0..9 {
-            result[i] = self.0[i] + other.0[i];
+        for (i, slot) in result.iter_mut().enumerate() {
+            *slot = self.0[i] + other.0[i];
         }
         DimensionVector(result)
     }
@@ -149,8 +149,8 @@ impl DimensionVector {
     /// Divide dimensions (subtract exponents).
     pub fn div(&self, other: &DimensionVector) -> DimensionVector {
         let mut result = [Rational::ZERO; 9];
-        for i in 0..9 {
-            result[i] = self.0[i] - other.0[i];
+        for (i, slot) in result.iter_mut().enumerate() {
+            *slot = self.0[i] - other.0[i];
         }
         DimensionVector(result)
     }
@@ -159,8 +159,8 @@ impl DimensionVector {
     pub fn pow(&self, n: i8) -> DimensionVector {
         let mut result = [Rational::ZERO; 9];
         let nr = Rational { num: n, den: 1 };
-        for i in 0..9 {
-            result[i] = Rational::new(self.0[i].num * nr.num, self.0[i].den * nr.den);
+        for (i, slot) in result.iter_mut().enumerate() {
+            *slot = Rational::new(self.0[i].num * nr.num, self.0[i].den * nr.den);
         }
         DimensionVector(result)
     }

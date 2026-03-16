@@ -64,21 +64,21 @@ impl Engine {
         for template in &module.templates {
             // First pass: evaluate Param defaults to populate the value map
             for cell in &template.value_cells {
-                if cell.kind == ValueCellKind::Param {
-                    if let Some(ref expr) = cell.default_expr {
-                        let val = reify_expr::eval_expr(expr, &values);
-                        values.insert(cell.id.clone(), val);
-                    }
+                if cell.kind == ValueCellKind::Param
+                    && let Some(ref expr) = cell.default_expr
+                {
+                    let val = reify_expr::eval_expr(expr, &values);
+                    values.insert(cell.id.clone(), val);
                 }
             }
 
             // Second pass: evaluate Let bindings (which may reference params)
             for cell in &template.value_cells {
-                if cell.kind == ValueCellKind::Let {
-                    if let Some(ref expr) = cell.default_expr {
-                        let val = reify_expr::eval_expr(expr, &values);
-                        values.insert(cell.id.clone(), val);
-                    }
+                if cell.kind == ValueCellKind::Let
+                    && let Some(ref expr) = cell.default_expr
+                {
+                    let val = reify_expr::eval_expr(expr, &values);
+                    values.insert(cell.id.clone(), val);
                 }
             }
         }
