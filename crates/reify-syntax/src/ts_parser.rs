@@ -787,6 +787,39 @@ mod tests {
     }
 
     #[test]
+    fn error_recovery_partial_parse() {
+        let source = r#"structure Broken {
+    param width: Scalar = 80mm
+    param !!!invalid!!!
+    param height: Scalar = 100mm
+}"#;
+        let module = parse(source, reify_types::ModulePath::single("broken"));
+
+        // Should have parse errors
+        assert!(!module.errors.is_empty(), "expected errors for malformed input");
+
+        // Should also have recovered declarations
+        assert!(!module.declarations.is_empty(), "expected partial declarations");
+
+        if let Declaration::Structure(s) = &module.declarations[0] {
+            assert_eq!(s.name, "Broken");
+            // Should have at least some valid members (width and/or height)
+            let valid_params: Vec<_> = s.members.iter()
+                .filter_map(|m| match m {
+                    MemberDecl::Param(p) => Some(&p.name),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                !valid_params.is_empty(),
+                "expected at least some valid params, got none"
+            );
+        } else {
+            panic!("expected Structure declaration");
+        }
+    }
+
+    #[test]
     fn tree_sitter_parses_bracket_source_without_errors() {
         let source = reify_test_support::bracket_source();
         let mut parser = tree_sitter::Parser::new();
