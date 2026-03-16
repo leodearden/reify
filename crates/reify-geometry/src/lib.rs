@@ -64,7 +64,9 @@ impl GeometryKernel for DispatchPlanner {
 #[cfg(test)]
 mod tests {
     use reify_test_support::MockGeometryKernel;
-    use reify_types::{GeometryError, GeometryKernel, GeometryOp, Value};
+    use reify_types::{
+        GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, ReprKind, Value,
+    };
 
     use super::*;
 
@@ -102,5 +104,20 @@ mod tests {
             }
             other => panic!("expected OperationFailed, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn execute_delegates_to_registered_kernel() {
+        let mut planner = DispatchPlanner::new();
+        planner.register_kernel(Box::new(MockGeometryKernel::new()));
+
+        let op = GeometryOp::Box {
+            width: Value::length(0.01),
+            height: Value::length(0.01),
+            depth: Value::length(0.01),
+        };
+        let handle = planner.execute(&op).expect("execute should succeed");
+        assert_eq!(handle.id, GeometryHandleId(1));
+        assert_eq!(handle.repr, ReprKind::Solid);
     }
 }
