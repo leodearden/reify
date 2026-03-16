@@ -136,9 +136,27 @@ mod occt_tests {
         Value,
     };
     #[test]
-    #[ignore = "requires OCCT kernel implementation"]
     fn create_box_export_step() {
-        // Create box → export STEP → non-empty, contains "ISO-10303-21"
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Box {
+                width: mm(10.0),
+                height: mm(10.0),
+                depth: mm(10.0),
+            })
+            .unwrap();
+
+        let mut output = Vec::new();
+        kernel
+            .export(handle.id, ExportFormat::Step, &mut output)
+            .unwrap();
+
+        let step_str = String::from_utf8(output).expect("STEP output should be valid UTF-8");
+        assert!(!step_str.is_empty(), "STEP export should produce output");
+        assert!(
+            step_str.contains("ISO-10303-21"),
+            "STEP output should contain ISO-10303-21 header"
+        );
     }
 
     #[test]
