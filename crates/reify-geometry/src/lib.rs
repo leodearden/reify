@@ -64,10 +64,15 @@ impl GeometryKernel for DispatchPlanner {
 
     fn tessellate(
         &self,
-        _handle: GeometryHandleId,
-        _tolerance: f64,
+        handle: GeometryHandleId,
+        tolerance: f64,
     ) -> Result<Mesh, TessError> {
-        todo!()
+        match self.kernel.as_ref() {
+            Some(k) => k.tessellate(handle, tolerance),
+            None => Err(TessError::TessellationFailed(
+                "no geometry kernel registered".to_string(),
+            )),
+        }
     }
 }
 
