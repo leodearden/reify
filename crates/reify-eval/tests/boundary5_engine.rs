@@ -7,7 +7,7 @@ use reify_types::Satisfaction;
 
 /// Full pipeline with mocks: compile → evaluate → expected ValueMap.
 #[test]
-#[ignore = "requires eval implementation"]
+
 fn full_pipeline_with_mocks() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
@@ -19,7 +19,7 @@ fn full_pipeline_with_mocks() {
 
 /// Build with mock geometry kernel → produces output.
 #[test]
-#[ignore = "requires eval implementation"]
+
 fn build_with_mock_kernel() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
@@ -31,7 +31,7 @@ fn build_with_mock_kernel() {
 
 /// Engine with predetermined constraint results → reports violations.
 #[test]
-#[ignore = "requires eval implementation"]
+
 fn engine_reports_violations() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new()

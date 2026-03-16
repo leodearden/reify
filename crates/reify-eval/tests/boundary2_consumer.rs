@@ -8,7 +8,7 @@ use reify_types::{Satisfaction, Type, ValueMap};
 
 /// Accept well-formed CompiledModule → evaluate to values.
 #[test]
-#[ignore = "requires eval implementation"]
+
 fn accept_well_formed_compiled_module() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
@@ -19,7 +19,7 @@ fn accept_well_formed_compiled_module() {
 
 /// Handle empty realizations (no geometry).
 #[test]
-#[ignore = "requires eval implementation"]
+
 fn handle_empty_realizations() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
@@ -31,7 +31,7 @@ fn handle_empty_realizations() {
 
 /// Evaluate bracket with defaults → all params Determined.
 #[test]
-#[ignore = "requires eval implementation"]
+
 fn bracket_defaults_evaluated() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
@@ -49,7 +49,7 @@ fn bracket_defaults_evaluated() {
 
 /// Evaluate bracket → volume let = width * height * thickness.
 #[test]
-#[ignore = "requires eval implementation"]
+
 fn bracket_volume_computed() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
@@ -68,7 +68,7 @@ fn bracket_volume_computed() {
 
 /// Check bracket → all 3 constraints Satisfied with default values.
 #[test]
-#[ignore = "requires eval implementation"]
+
 fn bracket_constraints_satisfied() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new(); // Real checker tested in boundary3
