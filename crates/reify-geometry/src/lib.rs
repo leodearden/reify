@@ -50,11 +50,16 @@ impl GeometryKernel for DispatchPlanner {
 
     fn export(
         &self,
-        _handle: GeometryHandleId,
-        _format: ExportFormat,
-        _writer: &mut dyn std::io::Write,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
-        todo!()
+        match self.kernel.as_ref() {
+            Some(k) => k.export(handle, format, writer),
+            None => Err(ExportError::FormatError(
+                "no geometry kernel registered".to_string(),
+            )),
+        }
     }
 
     fn tessellate(
