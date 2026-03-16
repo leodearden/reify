@@ -310,10 +310,39 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 result.vertices.push_back(static_cast<float>(p.Z()));
             }
 
-            // Extract normals if available
+            // Extract normals — use stored normals if available, else compute from triangles
             if (tri->HasNormals()) {
                 for (int i = 1; i <= nb_nodes; ++i) {
                     gp_Dir n = tri->Normal(i);
+                    if (!loc.IsIdentity()) {
+                        n.Transform(loc.Transformation());
+                    }
+                    result.normals.push_back(static_cast<float>(n.X()));
+                    result.normals.push_back(static_cast<float>(n.Y()));
+                    result.normals.push_back(static_cast<float>(n.Z()));
+                }
+            } else {
+                // Compute per-vertex normals by averaging face normals
+                std::vector<gp_Vec> vertex_normals(nb_nodes, gp_Vec(0, 0, 0));
+                for (int i = 1; i <= nb_tris; ++i) {
+                    int n1, n2, n3;
+                    tri->Triangle(i).Get(n1, n2, n3);
+                    gp_Pnt p1 = tri->Node(n1);
+                    gp_Pnt p2 = tri->Node(n2);
+                    gp_Pnt p3 = tri->Node(n3);
+                    gp_Vec v1(p1, p2);
+                    gp_Vec v2(p1, p3);
+                    gp_Vec face_normal = v1.Crossed(v2);
+                    vertex_normals[n1 - 1] += face_normal;
+                    vertex_normals[n2 - 1] += face_normal;
+                    vertex_normals[n3 - 1] += face_normal;
+                }
+                for (int i = 0; i < nb_nodes; ++i) {
+                    gp_Vec n = vertex_normals[i];
+                    double mag = n.Magnitude();
+                    if (mag > 1e-10) {
+                        n /= mag;
+                    }
                     if (!loc.IsIdentity()) {
                         n.Transform(loc.Transformation());
                     }

@@ -160,50 +160,223 @@ mod occt_tests {
     }
 
     #[test]
-    #[ignore = "requires OCCT kernel implementation"]
     fn cylinder_volume_query() {
-        // Create cylinder → query volume → ≈ π·r²·h
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: mm(5.0),
+                height: mm(20.0),
+            })
+            .unwrap();
+
+        let result = kernel
+            .query(&GeometryQuery::Volume(handle.id))
+            .unwrap();
+        match result {
+            Value::Real(v) => {
+                // r = 0.005m, h = 0.02m, V = π·r²·h ≈ 1.5708e-6 m³
+                let expected = std::f64::consts::PI * 0.005_f64.powi(2) * 0.02;
+                assert!(
+                    (v - expected).abs() < 1e-9,
+                    "expected volume ≈ {}, got {}",
+                    expected,
+                    v
+                );
+            }
+            other => panic!("expected Real, got {:?}", other),
+        }
     }
 
     #[test]
-    #[ignore = "requires OCCT kernel implementation"]
     fn boolean_difference() {
-        // Boolean difference → export STEP
+        let mut kernel = OcctKernel::new();
+
+        let box1 = kernel
+            .execute(&GeometryOp::Box {
+                width: mm(20.0),
+                height: mm(20.0),
+                depth: mm(20.0),
+            })
+            .unwrap();
+
+        let box2 = kernel
+            .execute(&GeometryOp::Box {
+                width: mm(10.0),
+                height: mm(10.0),
+                depth: mm(10.0),
+            })
+            .unwrap();
+
+        let diff = kernel
+            .execute(&GeometryOp::Difference {
+                left: box1.id,
+                right: box2.id,
+            })
+            .unwrap();
+
+        // Export to STEP to verify valid shape
+        let mut output = Vec::new();
+        kernel
+            .export(diff.id, ExportFormat::Step, &mut output)
+            .unwrap();
+        let step_str = String::from_utf8(output).unwrap();
+        assert!(!step_str.is_empty(), "difference STEP should be non-empty");
+        assert!(step_str.contains("ISO-10303-21"));
     }
 
     #[test]
-    #[ignore = "requires OCCT kernel implementation"]
     fn fillet_edges() {
-        // Fillet edges of box
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Box {
+                width: mm(20.0),
+                height: mm(20.0),
+                depth: mm(20.0),
+            })
+            .unwrap();
+
+        let filleted = kernel
+            .execute(&GeometryOp::Fillet {
+                target: handle.id,
+                radius: mm(2.0),
+            })
+            .unwrap();
+
+        // Export to STEP to verify valid shape
+        let mut output = Vec::new();
+        kernel
+            .export(filleted.id, ExportFormat::Step, &mut output)
+            .unwrap();
+        let step_str = String::from_utf8(output).unwrap();
+        assert!(!step_str.is_empty(), "filleted STEP should be non-empty");
+        assert!(step_str.contains("ISO-10303-21"));
     }
 
     #[test]
-    #[ignore = "requires OCCT kernel implementation"]
     fn translate_centroid() {
-        // Translate → query centroid → verify displacement
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Box {
+                width: mm(10.0),
+                height: mm(10.0),
+                depth: mm(10.0),
+            })
+            .unwrap();
+
+        let translated = kernel
+            .execute(&GeometryOp::Translate {
+                target: handle.id,
+                dx: 0.05,
+                dy: 0.0,
+                dz: 0.0,
+            })
+            .unwrap();
+
+        let result = kernel
+            .query(&GeometryQuery::Centroid(translated.id))
+            .unwrap();
+        match result {
+            Value::String(s) => {
+                // Parse centroid JSON and check x ≈ 0.05
+                assert!(s.contains("\"x\":"), "centroid should contain x coordinate");
+                // Extract x value from JSON string
+                let x_start = s.find("\"x\":").unwrap() + 4;
+                let x_end = s[x_start..].find([',', '}']).unwrap() + x_start;
+                let x: f64 = s[x_start..x_end].parse().unwrap();
+                assert!(
+                    (x - 0.05).abs() < 1e-9,
+                    "centroid x should be ≈ 0.05, got {}",
+                    x
+                );
+            }
+            other => panic!("expected String (centroid JSON), got {:?}", other),
+        }
     }
 
     #[test]
-    #[ignore = "requires OCCT kernel implementation"]
     fn invalid_reference_error() {
-        // Invalid op reference → GeometryError::InvalidReference
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Union {
+            left: GeometryHandleId(999),
+            right: GeometryHandleId(1000),
+        });
+
+        match result {
+            Err(GeometryError::InvalidReference(_)) => {} // expected
+            other => panic!(
+                "expected GeometryError::InvalidReference, got {:?}",
+                other
+            ),
+        }
     }
 
     #[test]
-    #[ignore = "requires OCCT kernel implementation"]
     fn zero_dimension_error() {
-        // Zero-dimension primitive → GeometryError::OperationFailed
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Box {
+            width: mm(0.0),
+            height: mm(10.0),
+            depth: mm(10.0),
+        });
+
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {} // expected
+            other => panic!(
+                "expected GeometryError::OperationFailed for zero width, got {:?}",
+                other
+            ),
+        }
     }
 
     #[test]
-    #[ignore = "requires OCCT kernel implementation"]
     fn tessellation_valid_mesh() {
-        // Tessellation → valid mesh (vertices > 0, indices % 3 == 0)
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: mm(10.0),
+            })
+            .unwrap();
+
+        let mesh = kernel.tessellate(handle.id, 0.1).unwrap();
+        assert!(
+            !mesh.vertices.is_empty(),
+            "mesh should have vertices"
+        );
+        assert!(
+            mesh.indices.len() % 3 == 0,
+            "indices should be triangle triples, got len={}",
+            mesh.indices.len()
+        );
+        assert!(
+            mesh.normals.is_some(),
+            "mesh normals should be present"
+        );
     }
 
     #[test]
-    #[ignore = "requires OCCT kernel implementation"]
     fn box_volume_10mm() {
-        // Volume query: 10×10×10mm box → ≈ 1e-6 m³
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Box {
+                width: mm(10.0),
+                height: mm(10.0),
+                depth: mm(10.0),
+            })
+            .unwrap();
+
+        let result = kernel
+            .query(&GeometryQuery::Volume(handle.id))
+            .unwrap();
+        match result {
+            Value::Real(v) => {
+                // 10mm = 0.01m, volume = 0.01³ = 1e-6 m³
+                assert!(
+                    (v - 1e-6).abs() < 1e-9,
+                    "expected volume ≈ 1e-6 m³, got {}",
+                    v
+                );
+            }
+            other => panic!("expected Real, got {:?}", other),
+        }
     }
 }
