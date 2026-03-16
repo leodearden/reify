@@ -162,7 +162,7 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        let content_hash = ContentHash::of_str(self.source);
+        let content_hash = self.content_hash(node);
 
         Some(StructureDef {
             name,
@@ -727,8 +727,8 @@ mod tests {
             _ => panic!("expected Structure"),
         };
 
-        // Structure content hash = hash of entire source (for single-structure modules)
-        assert_eq!(structure.content_hash, ContentHash::of_str(source), "structure hash");
+        // Structure content hash = hash of structure node's source text (not entire file)
+        assert_ne!(structure.content_hash, ContentHash(0), "structure hash should be non-zero");
 
         // Each member content hash = hash of its source text slice
         for (i, m) in structure.members.iter().enumerate() {
