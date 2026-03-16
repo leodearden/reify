@@ -658,6 +658,77 @@ mod tests {
     }
 
     #[test]
+    fn spans_match_hand_written_parser() {
+        // Compare tree-sitter parser output against the hand-written parser.
+        // Note: the bracket_parsed_module() fixture has stale span values from
+        // a prior version of bracket_source(). The hand-written parser is the
+        // ground truth for correct span computation.
+        let source = reify_test_support::bracket_source();
+        let hw = crate::parser::parse(source, reify_types::ModulePath::single("bracket"));
+        let ts = parse(source, reify_types::ModulePath::single("bracket"));
+
+        let hw_struct = match &hw.declarations[0] {
+            Declaration::Structure(s) => s,
+            _ => panic!("expected Structure"),
+        };
+        let ts_struct = match &ts.declarations[0] {
+            Declaration::Structure(s) => s,
+            _ => panic!("expected Structure"),
+        };
+
+        // Structure span
+        assert_eq!(ts_struct.span, hw_struct.span, "structure span mismatch");
+
+        // Each member span
+        assert_eq!(ts_struct.members.len(), hw_struct.members.len());
+        for (i, (ts_m, hw_m)) in ts_struct.members.iter()
+            .zip(hw_struct.members.iter())
+            .enumerate()
+        {
+            let ts_span = match ts_m {
+                MemberDecl::Param(p) => p.span,
+                MemberDecl::Let(l) => l.span,
+                MemberDecl::Constraint(c) => c.span,
+                MemberDecl::Sub(s) => s.span,
+            };
+            let hw_span = match hw_m {
+                MemberDecl::Param(p) => p.span,
+                MemberDecl::Let(l) => l.span,
+                MemberDecl::Constraint(c) => c.span,
+                MemberDecl::Sub(s) => s.span,
+            };
+            assert_eq!(ts_span, hw_span, "member {} span mismatch", i);
+        }
+
+        // Key expression spans — verify they're non-empty and match
+        if let (MemberDecl::Param(ts_p), MemberDecl::Param(hw_p)) =
+            (&ts_struct.members[0], &hw_struct.members[0])
+        {
+            let ts_def = ts_p.default.as_ref().unwrap();
+            let hw_def = hw_p.default.as_ref().unwrap();
+            assert_eq!(ts_def.span, hw_def.span, "width default expr span");
+
+            let ts_ty = ts_p.type_expr.as_ref().unwrap();
+            let hw_ty = hw_p.type_expr.as_ref().unwrap();
+            assert_eq!(ts_ty.span, hw_ty.span, "width type expr span");
+        }
+
+        // Volume expression tree spans
+        if let (MemberDecl::Let(ts_l), MemberDecl::Let(hw_l)) =
+            (&ts_struct.members[5], &hw_struct.members[5])
+        {
+            assert_eq!(ts_l.value.span, hw_l.value.span, "volume expr span");
+        }
+
+        // Body function call span
+        if let (MemberDecl::Let(ts_l), MemberDecl::Let(hw_l)) =
+            (&ts_struct.members[9], &hw_struct.members[9])
+        {
+            assert_eq!(ts_l.value.span, hw_l.value.span, "body expr span");
+        }
+    }
+
+    #[test]
     fn tree_sitter_parses_bracket_source_without_errors() {
         let source = reify_test_support::bracket_source();
         let mut parser = tree_sitter::Parser::new();
