@@ -1,4 +1,3 @@
-mod parser;
 mod ts_parser;
 
 use reify_types::{ContentHash, SourceSpan};

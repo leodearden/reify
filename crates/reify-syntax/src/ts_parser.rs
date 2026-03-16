@@ -658,120 +658,92 @@ mod tests {
     }
 
     #[test]
-    fn spans_match_hand_written_parser() {
-        // Compare tree-sitter parser output against the hand-written parser.
-        // Note: the bracket_parsed_module() fixture has stale span values from
-        // a prior version of bracket_source(). The hand-written parser is the
-        // ground truth for correct span computation.
+    fn spans_are_valid_and_cover_source_text() {
         let source = reify_test_support::bracket_source();
-        let hw = crate::parser::parse(source, reify_types::ModulePath::single("bracket"));
-        let ts = parse(source, reify_types::ModulePath::single("bracket"));
+        let module = parse(source, reify_types::ModulePath::single("bracket"));
 
-        let hw_struct = match &hw.declarations[0] {
-            Declaration::Structure(s) => s,
-            _ => panic!("expected Structure"),
-        };
-        let ts_struct = match &ts.declarations[0] {
+        let structure = match &module.declarations[0] {
             Declaration::Structure(s) => s,
             _ => panic!("expected Structure"),
         };
 
-        // Structure span
-        assert_eq!(ts_struct.span, hw_struct.span, "structure span mismatch");
+        // Structure spans entire source
+        assert_eq!(structure.span.start, 0);
+        assert_eq!(structure.span.end as usize, source.len());
 
-        // Each member span
-        assert_eq!(ts_struct.members.len(), hw_struct.members.len());
-        for (i, (ts_m, hw_m)) in ts_struct.members.iter()
-            .zip(hw_struct.members.iter())
-            .enumerate()
-        {
-            let ts_span = match ts_m {
+        // All member spans are non-empty, within source, and contain expected keywords
+        for (i, m) in structure.members.iter().enumerate() {
+            let span = match m {
                 MemberDecl::Param(p) => p.span,
                 MemberDecl::Let(l) => l.span,
                 MemberDecl::Constraint(c) => c.span,
                 MemberDecl::Sub(s) => s.span,
             };
-            let hw_span = match hw_m {
-                MemberDecl::Param(p) => p.span,
-                MemberDecl::Let(l) => l.span,
-                MemberDecl::Constraint(c) => c.span,
-                MemberDecl::Sub(s) => s.span,
-            };
-            assert_eq!(ts_span, hw_span, "member {} span mismatch", i);
+            assert!(span.start < span.end, "member {} span empty", i);
+            assert!((span.end as usize) <= source.len(), "member {} span overflows", i);
+
+            let text = &source[span.start as usize..span.end as usize];
+            match m {
+                MemberDecl::Param(p) => {
+                    assert!(text.starts_with("param"), "param member {} text: {:?}", i, text);
+                    assert!(text.contains(&p.name), "param {} name in text", i);
+                }
+                MemberDecl::Let(l) => {
+                    assert!(text.starts_with("let"), "let member {} text: {:?}", i, text);
+                    assert!(text.contains(&l.name), "let {} name in text", i);
+                }
+                MemberDecl::Constraint(_) => {
+                    assert!(text.starts_with("constraint"), "constraint member {} text: {:?}", i, text);
+                }
+                MemberDecl::Sub(s) => {
+                    assert!(text.starts_with("sub"), "sub member {} text: {:?}", i, text);
+                    assert!(text.contains(&s.name), "sub {} name in text", i);
+                }
+            }
         }
 
-        // Key expression spans — verify they're non-empty and match
-        if let (MemberDecl::Param(ts_p), MemberDecl::Param(hw_p)) =
-            (&ts_struct.members[0], &hw_struct.members[0])
-        {
-            let ts_def = ts_p.default.as_ref().unwrap();
-            let hw_def = hw_p.default.as_ref().unwrap();
-            assert_eq!(ts_def.span, hw_def.span, "width default expr span");
+        // Expression spans are valid
+        if let MemberDecl::Param(p) = &structure.members[0] {
+            let def_span = p.default.as_ref().unwrap().span;
+            let def_text = &source[def_span.start as usize..def_span.end as usize];
+            assert_eq!(def_text, "80mm", "width default text");
 
-            let ts_ty = ts_p.type_expr.as_ref().unwrap();
-            let hw_ty = hw_p.type_expr.as_ref().unwrap();
-            assert_eq!(ts_ty.span, hw_ty.span, "width type expr span");
-        }
-
-        // Volume expression tree spans
-        if let (MemberDecl::Let(ts_l), MemberDecl::Let(hw_l)) =
-            (&ts_struct.members[5], &hw_struct.members[5])
-        {
-            assert_eq!(ts_l.value.span, hw_l.value.span, "volume expr span");
-        }
-
-        // Body function call span
-        if let (MemberDecl::Let(ts_l), MemberDecl::Let(hw_l)) =
-            (&ts_struct.members[9], &hw_struct.members[9])
-        {
-            assert_eq!(ts_l.value.span, hw_l.value.span, "body expr span");
+            let ty_span = p.type_expr.as_ref().unwrap().span;
+            let ty_text = &source[ty_span.start as usize..ty_span.end as usize];
+            assert_eq!(ty_text, "Scalar", "width type text");
         }
     }
 
     #[test]
-    fn content_hashes_match_hand_written_parser() {
+    fn content_hashes_computed_from_source_text() {
         let source = reify_test_support::bracket_source();
-        let hw = crate::parser::parse(source, reify_types::ModulePath::single("bracket"));
-        let ts = parse(source, reify_types::ModulePath::single("bracket"));
+        let module = parse(source, reify_types::ModulePath::single("bracket"));
 
-        // Module content hash
-        assert_eq!(ts.content_hash, hw.content_hash, "module content hash");
-        assert_eq!(ts.content_hash, ContentHash::of_str(source), "module hash = hash of source");
+        // Module content hash = hash of entire source
+        assert_eq!(module.content_hash, ContentHash::of_str(source), "module hash");
 
-        let hw_struct = match &hw.declarations[0] {
-            Declaration::Structure(s) => s,
-            _ => panic!("expected Structure"),
-        };
-        let ts_struct = match &ts.declarations[0] {
+        let structure = match &module.declarations[0] {
             Declaration::Structure(s) => s,
             _ => panic!("expected Structure"),
         };
 
-        // Structure content hash
-        assert_eq!(ts_struct.content_hash, hw_struct.content_hash, "structure content hash");
+        // Structure content hash = hash of entire source (for single-structure modules)
+        assert_eq!(structure.content_hash, ContentHash::of_str(source), "structure hash");
 
-        // All member content hashes
-        for (i, (ts_m, hw_m)) in ts_struct.members.iter()
-            .zip(hw_struct.members.iter())
-            .enumerate()
-        {
-            let ts_hash = match ts_m {
-                MemberDecl::Param(p) => p.content_hash,
-                MemberDecl::Let(l) => l.content_hash,
-                MemberDecl::Constraint(c) => c.content_hash,
-                MemberDecl::Sub(s) => s.content_hash,
+        // Each member content hash = hash of its source text slice
+        for (i, m) in structure.members.iter().enumerate() {
+            let (span, hash) = match m {
+                MemberDecl::Param(p) => (p.span, p.content_hash),
+                MemberDecl::Let(l) => (l.span, l.content_hash),
+                MemberDecl::Constraint(c) => (c.span, c.content_hash),
+                MemberDecl::Sub(s) => (s.span, s.content_hash),
             };
-            let hw_hash = match hw_m {
-                MemberDecl::Param(p) => p.content_hash,
-                MemberDecl::Let(l) => l.content_hash,
-                MemberDecl::Constraint(c) => c.content_hash,
-                MemberDecl::Sub(s) => s.content_hash,
-            };
-            assert_eq!(ts_hash, hw_hash, "member {} content hash mismatch", i);
+            let text = &source[span.start as usize..span.end as usize];
+            assert_eq!(hash, ContentHash::of_str(text), "member {} hash from source text", i);
         }
 
         // All param hashes should be unique
-        let param_hashes: Vec<ContentHash> = ts_struct.members.iter()
+        let param_hashes: Vec<ContentHash> = structure.members.iter()
             .filter_map(|m| match m {
                 MemberDecl::Param(p) => Some(p.content_hash),
                 _ => None,
@@ -820,104 +792,39 @@ mod tests {
     }
 
     #[test]
-    fn full_integration_matches_hand_written_parser() {
-        // Comprehensive structural comparison between tree-sitter and hand-written parser.
+    fn parse_deterministic() {
+        // Parsing the same source twice produces identical output.
         let source = reify_test_support::bracket_source();
-        let hw = crate::parser::parse(source, reify_types::ModulePath::single("bracket"));
-        let ts = parse(source, reify_types::ModulePath::single("bracket"));
+        let m1 = parse(source, reify_types::ModulePath::single("bracket"));
+        let m2 = parse(source, reify_types::ModulePath::single("bracket"));
 
-        // Module level
-        assert_eq!(ts.content_hash, hw.content_hash);
-        assert_eq!(ts.errors.len(), hw.errors.len());
-        assert_eq!(ts.declarations.len(), hw.declarations.len());
+        assert_eq!(m1.content_hash, m2.content_hash);
+        assert_eq!(m1.declarations.len(), m2.declarations.len());
+        assert_eq!(m1.errors.len(), m2.errors.len());
 
-        let hw_s = match &hw.declarations[0] { Declaration::Structure(s) => s, _ => panic!() };
-        let ts_s = match &ts.declarations[0] { Declaration::Structure(s) => s, _ => panic!() };
+        let s1 = match &m1.declarations[0] { Declaration::Structure(s) => s, _ => panic!() };
+        let s2 = match &m2.declarations[0] { Declaration::Structure(s) => s, _ => panic!() };
 
-        assert_eq!(ts_s.name, hw_s.name);
-        assert_eq!(ts_s.span, hw_s.span);
-        assert_eq!(ts_s.content_hash, hw_s.content_hash);
-        assert_eq!(ts_s.members.len(), hw_s.members.len());
+        assert_eq!(s1.name, s2.name);
+        assert_eq!(s1.span, s2.span);
+        assert_eq!(s1.content_hash, s2.content_hash);
+        assert_eq!(s1.members.len(), s2.members.len());
 
-        // Compare each member deeply
-        for (i, (ts_m, hw_m)) in ts_s.members.iter().zip(hw_s.members.iter()).enumerate() {
-            match (ts_m, hw_m) {
-                (MemberDecl::Param(ts_p), MemberDecl::Param(hw_p)) => {
-                    assert_eq!(ts_p.name, hw_p.name, "param {} name", i);
-                    assert_eq!(ts_p.span, hw_p.span, "param {} span", i);
-                    assert_eq!(ts_p.content_hash, hw_p.content_hash, "param {} hash", i);
-                    // Type expr
-                    match (&ts_p.type_expr, &hw_p.type_expr) {
-                        (Some(ts_t), Some(hw_t)) => {
-                            assert_eq!(ts_t.name, hw_t.name, "param {} type name", i);
-                            assert_eq!(ts_t.span, hw_t.span, "param {} type span", i);
-                        }
-                        (None, None) => {}
-                        _ => panic!("param {} type_expr mismatch", i),
-                    }
-                    // Default expr kind
-                    match (&ts_p.default, &hw_p.default) {
-                        (Some(ts_d), Some(hw_d)) => {
-                            assert_eq!(ts_d.span, hw_d.span, "param {} default span", i);
-                            assert_expr_kind_eq(&ts_d.kind, &hw_d.kind, &format!("param {} default", i));
-                        }
-                        (None, None) => {}
-                        _ => panic!("param {} default mismatch", i),
-                    }
-                }
-                (MemberDecl::Let(ts_l), MemberDecl::Let(hw_l)) => {
-                    assert_eq!(ts_l.name, hw_l.name, "let {} name", i);
-                    assert_eq!(ts_l.span, hw_l.span, "let {} span", i);
-                    assert_eq!(ts_l.content_hash, hw_l.content_hash, "let {} hash", i);
-                    assert_eq!(ts_l.value.span, hw_l.value.span, "let {} value span", i);
-                    assert_expr_kind_eq(&ts_l.value.kind, &hw_l.value.kind, &format!("let {}", i));
-                }
-                (MemberDecl::Constraint(ts_c), MemberDecl::Constraint(hw_c)) => {
-                    assert_eq!(ts_c.label, hw_c.label, "constraint {} label", i);
-                    assert_eq!(ts_c.span, hw_c.span, "constraint {} span", i);
-                    assert_eq!(ts_c.content_hash, hw_c.content_hash, "constraint {} hash", i);
-                    assert_eq!(ts_c.expr.span, hw_c.expr.span, "constraint {} expr span", i);
-                    assert_expr_kind_eq(&ts_c.expr.kind, &hw_c.expr.kind, &format!("constraint {}", i));
-                }
-                _ => panic!("member {} kind mismatch: {:?} vs {:?}", i, ts_m, hw_m),
-            }
-        }
-    }
-
-    /// Recursively compare expression kinds.
-    fn assert_expr_kind_eq(actual: &ExprKind, expected: &ExprKind, ctx: &str) {
-        match (actual, expected) {
-            (ExprKind::NumberLiteral(a), ExprKind::NumberLiteral(b)) => {
-                assert!((a - b).abs() < f64::EPSILON, "{}: num {} != {}", ctx, a, b);
-            }
-            (ExprKind::QuantityLiteral { value: av, unit: au },
-             ExprKind::QuantityLiteral { value: bv, unit: bu }) => {
-                assert!((av - bv).abs() < f64::EPSILON, "{}: qty value", ctx);
-                assert_eq!(au, bu, "{}: qty unit", ctx);
-            }
-            (ExprKind::Ident(a), ExprKind::Ident(b)) => {
-                assert_eq!(a, b, "{}: ident", ctx);
-            }
-            (ExprKind::BinOp { op: ao, left: al, right: ar },
-             ExprKind::BinOp { op: bo, left: bl, right: br }) => {
-                assert_eq!(ao, bo, "{}: binop op", ctx);
-                assert_expr_kind_eq(&al.kind, &bl.kind, &format!("{}/left", ctx));
-                assert_expr_kind_eq(&ar.kind, &br.kind, &format!("{}/right", ctx));
-            }
-            (ExprKind::FunctionCall { name: an, args: aa },
-             ExprKind::FunctionCall { name: bn, args: ba }) => {
-                assert_eq!(an, bn, "{}: fn name", ctx);
-                assert_eq!(aa.len(), ba.len(), "{}: fn arg count", ctx);
-                for (j, (a, b)) in aa.iter().zip(ba.iter()).enumerate() {
-                    assert_expr_kind_eq(&a.kind, &b.kind, &format!("{}/arg{}", ctx, j));
-                }
-            }
-            _ => {
-                assert_eq!(
-                    format!("{:?}", actual), format!("{:?}", expected),
-                    "{}: expr kind mismatch", ctx
-                );
-            }
+        for (i, (m_a, m_b)) in s1.members.iter().zip(s2.members.iter()).enumerate() {
+            let (hash_a, span_a) = match m_a {
+                MemberDecl::Param(p) => (p.content_hash, p.span),
+                MemberDecl::Let(l) => (l.content_hash, l.span),
+                MemberDecl::Constraint(c) => (c.content_hash, c.span),
+                MemberDecl::Sub(s) => (s.content_hash, s.span),
+            };
+            let (hash_b, span_b) = match m_b {
+                MemberDecl::Param(p) => (p.content_hash, p.span),
+                MemberDecl::Let(l) => (l.content_hash, l.span),
+                MemberDecl::Constraint(c) => (c.content_hash, c.span),
+                MemberDecl::Sub(s) => (s.content_hash, s.span),
+            };
+            assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
+            assert_eq!(span_a, span_b, "member {} span determinism", i);
         }
     }
 
