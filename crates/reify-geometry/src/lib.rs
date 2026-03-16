@@ -39,8 +39,13 @@ impl GeometryKernel for DispatchPlanner {
         }
     }
 
-    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-        todo!()
+    fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.query(query),
+            None => Err(QueryError::QueryFailed(
+                "no geometry kernel registered".to_string(),
+            )),
+        }
     }
 
     fn export(
