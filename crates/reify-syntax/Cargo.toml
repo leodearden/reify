@@ -7,6 +7,8 @@ description = "Tree-sitter parser producing ParsedModule AST"
 
 [dependencies]
 reify-types.workspace = true
+tree-sitter.workspace = true
+tree-sitter-reify.workspace = true
 
 [dev-dependencies]
 reify-test-support.workspace = true
