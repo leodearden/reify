@@ -1,0 +1,12 @@
+[package]
+name = "reify-expr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Expression evaluator for Reify compiled expressions"
+
+[dependencies]
+reify-types.workspace = true
+
+[dev-dependencies]
+reify-test-support.workspace = true

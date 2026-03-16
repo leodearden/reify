@@ -1,0 +1,9 @@
+[package]
+name = "reify-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared type vocabulary and trait definitions for Reify"
+
+[dependencies]
+xxhash-rust.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "reify-stdlib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standard library: unit definitions and built-in functions"
+
+[dependencies]
+reify-types.workspace = true
+
+[dev-dependencies]
+reify-test-support.workspace = true

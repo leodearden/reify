@@ -1,0 +1,11 @@
+[package]
+name = "reify-test-support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Test builders, fixtures, and mock implementations for Reify"
+
+[dependencies]
+reify-types.workspace = true
+reify-syntax.workspace = true
+reify-compiler.workspace = true

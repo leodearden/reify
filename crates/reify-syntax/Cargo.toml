@@ -1,0 +1,12 @@
+[package]
+name = "reify-syntax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tree-sitter parser producing ParsedModule AST"
+
+[dependencies]
+reify-types.workspace = true
+
+[dev-dependencies]
+reify-test-support.workspace = true

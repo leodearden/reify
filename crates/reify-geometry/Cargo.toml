@@ -1,0 +1,12 @@
+[package]
+name = "reify-geometry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DispatchPlanner wrapping geometry kernels"
+
+[dependencies]
+reify-types.workspace = true
+
+[dev-dependencies]
+reify-test-support.workspace = true

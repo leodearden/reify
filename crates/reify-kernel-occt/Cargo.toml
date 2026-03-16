@@ -1,0 +1,12 @@
+[package]
+name = "reify-kernel-occt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenCASCADE geometry kernel implementation"
+
+[dependencies]
+reify-types.workspace = true
+
+[dev-dependencies]
+reify-test-support.workspace = true

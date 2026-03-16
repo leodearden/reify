@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/reify-types",
+    "crates/reify-expr",
+    "crates/reify-syntax",
+    "crates/reify-compiler",
+    "crates/reify-eval",
+    "crates/reify-constraints",
+    "crates/reify-geometry",
+    "crates/reify-kernel-occt",
+    "crates/reify-runtime",
+    "crates/reify-stdlib",
+    "crates/reify-lsp",
+    "crates/reify-cli",
+    "crates/reify-test-support",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[workspace.dependencies]
+reify-types = { path = "crates/reify-types" }
+reify-expr = { path = "crates/reify-expr" }
+reify-syntax = { path = "crates/reify-syntax" }
+reify-compiler = { path = "crates/reify-compiler" }
+reify-eval = { path = "crates/reify-eval" }
+reify-constraints = { path = "crates/reify-constraints" }
+reify-geometry = { path = "crates/reify-geometry" }
+reify-kernel-occt = { path = "crates/reify-kernel-occt" }
+reify-runtime = { path = "crates/reify-runtime" }
+reify-stdlib = { path = "crates/reify-stdlib" }
+reify-lsp = { path = "crates/reify-lsp" }
+reify-test-support = { path = "crates/reify-test-support" }
+
+xxhash-rust = { version = "0.8", features = ["xxh3"] }

@@ -1,0 +1,225 @@
+use reify_types::{
+    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Diagnostic,
+    Satisfaction, Severity, Value,
+};
+
+/// Simple constraint checker for M1: evaluates constraint expressions
+/// and checks whether they are satisfied (true), violated (false), or
+/// indeterminate (undef input).
+pub struct SimpleConstraintChecker;
+
+impl ConstraintChecker for SimpleConstraintChecker {
+    fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
+        input
+            .constraints
+            .iter()
+            .map(|(id, expr)| {
+                let value = reify_expr::eval_expr(expr, input.values);
+                let (satisfaction, diagnostics) = match value {
+                    Value::Bool(true) => (Satisfaction::Satisfied, ConstraintDiagnostics::default()),
+                    Value::Bool(false) => (
+                        Satisfaction::Violated,
+                        ConstraintDiagnostics {
+                            messages: vec![Diagnostic {
+                                severity: Severity::Error,
+                                message: format!("constraint {} violated", id),
+                                labels: vec![],
+                            }],
+                        },
+                    ),
+                    Value::Undef => (
+                        Satisfaction::Indeterminate,
+                        ConstraintDiagnostics {
+                            messages: vec![Diagnostic {
+                                severity: Severity::Warning,
+                                message: format!(
+                                    "constraint {} indeterminate: undefined inputs",
+                                    id
+                                ),
+                                labels: vec![],
+                            }],
+                        },
+                    ),
+                    _ => (
+                        Satisfaction::Violated,
+                        ConstraintDiagnostics {
+                            messages: vec![Diagnostic {
+                                severity: Severity::Error,
+                                message: format!(
+                                    "constraint {} evaluated to non-boolean value",
+                                    id
+                                ),
+                                labels: vec![],
+                            }],
+                        },
+                    ),
+                };
+
+                ConstraintResult {
+                    id: id.clone(),
+                    satisfaction,
+                    diagnostics,
+                }
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_types::{
+        BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
+        ValueMap,
+    };
+
+    fn mm(v: f64) -> Value {
+        Value::Scalar {
+            si_value: v * 0.001,
+            dimension: DimensionVector::LENGTH,
+        }
+    }
+
+    fn vcid(entity: &str, member: &str) -> ValueCellId {
+        ValueCellId::new(entity, member)
+    }
+
+    fn cnid(entity: &str, index: u32) -> ConstraintNodeId {
+        ConstraintNodeId::new(entity, index)
+    }
+
+    fn thickness_gt_2mm() -> CompiledExpr {
+        // thickness > 2mm
+        let thickness = CompiledExpr::value_ref(vcid("Bracket", "thickness"), Type::length());
+        let two_mm = CompiledExpr::literal(mm(2.0), Type::length());
+        CompiledExpr::binop(BinOp::Gt, thickness, two_mm, Type::Bool)
+    }
+
+    #[test]
+    fn satisfied_constraint() {
+        let checker = SimpleConstraintChecker;
+        let expr = thickness_gt_2mm();
+        let mut values = ValueMap::new();
+        values.insert(vcid("Bracket", "thickness"), mm(5.0));
+
+        let input = ConstraintInput {
+            constraints: vec![(cnid("Bracket", 0), &expr)],
+            values: &values,
+        };
+
+        let results = checker.check(&input);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].satisfaction, Satisfaction::Satisfied);
+    }
+
+    #[test]
+    fn violated_constraint() {
+        let checker = SimpleConstraintChecker;
+        let expr = thickness_gt_2mm();
+        let mut values = ValueMap::new();
+        values.insert(vcid("Bracket", "thickness"), mm(1.0));
+
+        let input = ConstraintInput {
+            constraints: vec![(cnid("Bracket", 0), &expr)],
+            values: &values,
+        };
+
+        let results = checker.check(&input);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].satisfaction, Satisfaction::Violated);
+    }
+
+    #[test]
+    fn indeterminate_constraint() {
+        let checker = SimpleConstraintChecker;
+        let expr = thickness_gt_2mm();
+        let values = ValueMap::new(); // thickness is Undef
+
+        let input = ConstraintInput {
+            constraints: vec![(cnid("Bracket", 0), &expr)],
+            values: &values,
+        };
+
+        let results = checker.check(&input);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].satisfaction, Satisfaction::Indeterminate);
+    }
+
+    #[test]
+    fn compound_constraint() {
+        // thickness < width / 4
+        let checker = SimpleConstraintChecker;
+        let thickness = CompiledExpr::value_ref(vcid("Bracket", "thickness"), Type::length());
+        let width = CompiledExpr::value_ref(vcid("Bracket", "width"), Type::length());
+        let four = CompiledExpr::literal(Value::Int(4), Type::Int);
+        let width_div_4 = CompiledExpr::binop(BinOp::Div, width, four, Type::length());
+        let expr = CompiledExpr::binop(BinOp::Lt, thickness, width_div_4, Type::Bool);
+
+        let mut values = ValueMap::new();
+        values.insert(vcid("Bracket", "thickness"), mm(5.0));
+        values.insert(vcid("Bracket", "width"), mm(80.0));
+
+        let input = ConstraintInput {
+            constraints: vec![(cnid("Bracket", 0), &expr)],
+            values: &values,
+        };
+
+        let results = checker.check(&input);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].satisfaction, Satisfaction::Satisfied);
+    }
+
+    #[test]
+    fn batch_independent_constraints() {
+        let checker = SimpleConstraintChecker;
+
+        // thickness > 2mm (satisfied)
+        let expr1 = thickness_gt_2mm();
+
+        // width > 100mm (violated: width = 80mm)
+        let width = CompiledExpr::value_ref(vcid("Bracket", "width"), Type::length());
+        let hundred_mm = CompiledExpr::literal(mm(100.0), Type::length());
+        let expr2 = CompiledExpr::binop(BinOp::Gt, width, hundred_mm, Type::Bool);
+
+        let mut values = ValueMap::new();
+        values.insert(vcid("Bracket", "thickness"), mm(5.0));
+        values.insert(vcid("Bracket", "width"), mm(80.0));
+
+        let input = ConstraintInput {
+            constraints: vec![(cnid("Bracket", 0), &expr1), (cnid("Bracket", 1), &expr2)],
+            values: &values,
+        };
+
+        let results = checker.check(&input);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].satisfaction, Satisfaction::Satisfied);
+        assert_eq!(results[1].satisfaction, Satisfaction::Violated);
+    }
+
+    #[test]
+    fn division_by_zero_no_panic() {
+        let checker = SimpleConstraintChecker;
+
+        // x > (y / 0)
+        let x = CompiledExpr::value_ref(vcid("Bracket", "x"), Type::length());
+        let y = CompiledExpr::value_ref(vcid("Bracket", "y"), Type::length());
+        let zero = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let div = CompiledExpr::binop(BinOp::Div, y, zero, Type::length());
+        let expr = CompiledExpr::binop(BinOp::Gt, x, div, Type::Bool);
+
+        let mut values = ValueMap::new();
+        values.insert(vcid("Bracket", "x"), mm(5.0));
+        values.insert(vcid("Bracket", "y"), mm(10.0));
+
+        let input = ConstraintInput {
+            constraints: vec![(cnid("Bracket", 0), &expr)],
+            values: &values,
+        };
+
+        // Should not panic
+        let results = checker.check(&input);
+        assert_eq!(results.len(), 1);
+        // Division by zero → Undef → Indeterminate
+        assert_eq!(results[0].satisfaction, Satisfaction::Indeterminate);
+    }
+}

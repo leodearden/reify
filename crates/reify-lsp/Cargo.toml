@@ -1,0 +1,9 @@
+[package]
+name = "reify-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Language server protocol implementation (stub in M1)"
+
+[dependencies]
+reify-types.workspace = true

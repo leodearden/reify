@@ -1,0 +1,9 @@
+[package]
+name = "reify-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Task scheduling runtime (stub in M1)"
+
+[dependencies]
+reify-types.workspace = true

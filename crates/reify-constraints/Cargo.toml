@@ -1,0 +1,13 @@
+[package]
+name = "reify-constraints"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Constraint checking implementation for Reify"
+
+[dependencies]
+reify-types.workspace = true
+reify-expr.workspace = true
+
+[dev-dependencies]
+reify-test-support.workspace = true

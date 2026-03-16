@@ -1,0 +1,5 @@
+.env
+.mcp.json
+/target
+**/*.rs.bk
+Cargo.lock

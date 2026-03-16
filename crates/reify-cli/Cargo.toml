@@ -1,0 +1,18 @@
+[package]
+name = "reify-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI binary for Reify"
+
+[[bin]]
+name = "reify"
+path = "src/main.rs"
+
+[dependencies]
+reify-types.workspace = true
+reify-eval.workspace = true
+reify-constraints.workspace = true
+reify-geometry.workspace = true
+reify-kernel-occt.workspace = true
+reify-stdlib.workspace = true

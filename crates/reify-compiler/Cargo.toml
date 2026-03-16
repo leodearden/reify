@@ -1,0 +1,13 @@
+[package]
+name = "reify-compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Name resolution and elaboration from ParsedModule to CompiledModule"
+
+[dependencies]
+reify-types.workspace = true
+reify-syntax.workspace = true
+
+[dev-dependencies]
+reify-test-support.workspace = true
