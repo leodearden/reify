@@ -256,10 +256,10 @@ impl<'a> Lowering<'a> {
             if child.kind() == "named_argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
-                    if arg_child.kind() == "named_argument" {
-                        if let Some(pair) = self.lower_named_arg(arg_child) {
-                            args.push(pair);
-                        }
+                    if arg_child.kind() == "named_argument"
+                        && let Some(pair) = self.lower_named_arg(arg_child)
+                    {
+                        args.push(pair);
                     }
                 }
             }
@@ -433,10 +433,10 @@ impl<'a> Lowering<'a> {
             if child.kind() == "argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
-                    if arg_child.is_named() {
-                        if let Some(expr) = self.lower_expr(arg_child) {
-                            args.push(expr);
-                        }
+                    if arg_child.is_named()
+                        && let Some(expr) = self.lower_expr(arg_child)
+                    {
+                        args.push(expr);
                     }
                 }
             }

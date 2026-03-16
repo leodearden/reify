@@ -9,5 +9,8 @@ build = "build.rs"
 [dependencies]
 tree-sitter-language = "0.1"
 
+[dev-dependencies]
+tree-sitter.workspace = true
+
 [build-dependencies]
 cc = "1"
