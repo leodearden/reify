@@ -729,6 +729,64 @@ mod tests {
     }
 
     #[test]
+    fn content_hashes_match_hand_written_parser() {
+        let source = reify_test_support::bracket_source();
+        let hw = crate::parser::parse(source, reify_types::ModulePath::single("bracket"));
+        let ts = parse(source, reify_types::ModulePath::single("bracket"));
+
+        // Module content hash
+        assert_eq!(ts.content_hash, hw.content_hash, "module content hash");
+        assert_eq!(ts.content_hash, ContentHash::of_str(source), "module hash = hash of source");
+
+        let hw_struct = match &hw.declarations[0] {
+            Declaration::Structure(s) => s,
+            _ => panic!("expected Structure"),
+        };
+        let ts_struct = match &ts.declarations[0] {
+            Declaration::Structure(s) => s,
+            _ => panic!("expected Structure"),
+        };
+
+        // Structure content hash
+        assert_eq!(ts_struct.content_hash, hw_struct.content_hash, "structure content hash");
+
+        // All member content hashes
+        for (i, (ts_m, hw_m)) in ts_struct.members.iter()
+            .zip(hw_struct.members.iter())
+            .enumerate()
+        {
+            let ts_hash = match ts_m {
+                MemberDecl::Param(p) => p.content_hash,
+                MemberDecl::Let(l) => l.content_hash,
+                MemberDecl::Constraint(c) => c.content_hash,
+                MemberDecl::Sub(s) => s.content_hash,
+            };
+            let hw_hash = match hw_m {
+                MemberDecl::Param(p) => p.content_hash,
+                MemberDecl::Let(l) => l.content_hash,
+                MemberDecl::Constraint(c) => c.content_hash,
+                MemberDecl::Sub(s) => s.content_hash,
+            };
+            assert_eq!(ts_hash, hw_hash, "member {} content hash mismatch", i);
+        }
+
+        // All param hashes should be unique
+        let param_hashes: Vec<ContentHash> = ts_struct.members.iter()
+            .filter_map(|m| match m {
+                MemberDecl::Param(p) => Some(p.content_hash),
+                _ => None,
+            })
+            .collect();
+        for (i, h1) in param_hashes.iter().enumerate() {
+            for (j, h2) in param_hashes.iter().enumerate() {
+                if i != j {
+                    assert_ne!(h1, h2, "params {} and {} have same hash", i, j);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn tree_sitter_parses_bracket_source_without_errors() {
         let source = reify_test_support::bracket_source();
         let mut parser = tree_sitter::Parser::new();
