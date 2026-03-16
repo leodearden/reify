@@ -528,6 +528,135 @@ mod tests {
         ]);
     }
 
+    /// Helper to get structure members from bracket parse.
+    fn bracket_members() -> Vec<MemberDecl> {
+        let module = parse_bracket();
+        match module.declarations.into_iter().next().unwrap() {
+            Declaration::Structure(s) => s.members,
+            _ => panic!("expected Structure"),
+        }
+    }
+
+    #[test]
+    fn quantity_literal_80mm() {
+        let members = bracket_members();
+        let width = match &members[0] {
+            MemberDecl::Param(p) => p,
+            _ => panic!("expected Param"),
+        };
+        assert_eq!(width.name, "width");
+        match &width.default.as_ref().unwrap().kind {
+            ExprKind::QuantityLiteral { value, unit } => {
+                assert!((value - 80.0).abs() < f64::EPSILON);
+                assert_eq!(unit, "mm");
+            }
+            other => panic!("expected QuantityLiteral, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn number_literal_4() {
+        // In `constraint thickness < width / 4`, the `4` is a number literal
+        let members = bracket_members();
+        // constraints[1] is `constraint thickness < width / 4`
+        let constraint = match &members[7] {
+            MemberDecl::Constraint(c) => c,
+            _ => panic!("expected Constraint"),
+        };
+        // expr is `thickness < width / 4`
+        match &constraint.expr.kind {
+            ExprKind::BinOp { right, .. } => {
+                // right is `width / 4`
+                match &right.kind {
+                    ExprKind::BinOp { right: inner_right, .. } => {
+                        match &inner_right.kind {
+                            ExprKind::NumberLiteral(v) => {
+                                assert!((v - 4.0).abs() < f64::EPSILON);
+                            }
+                            other => panic!("expected NumberLiteral(4), got {:?}", other),
+                        }
+                    }
+                    other => panic!("expected BinOp, got {:?}", other),
+                }
+            }
+            other => panic!("expected BinOp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn function_call_box() {
+        let members = bracket_members();
+        // Last member: `let body = box(width, height, thickness)`
+        let body = match &members[9] {
+            MemberDecl::Let(l) => l,
+            _ => panic!("expected Let"),
+        };
+        assert_eq!(body.name, "body");
+        match &body.value.kind {
+            ExprKind::FunctionCall { name, args } => {
+                assert_eq!(name, "box");
+                assert_eq!(args.len(), 3);
+                assert!(matches!(&args[0].kind, ExprKind::Ident(n) if n == "width"));
+                assert!(matches!(&args[1].kind, ExprKind::Ident(n) if n == "height"));
+                assert!(matches!(&args[2].kind, ExprKind::Ident(n) if n == "thickness"));
+            }
+            other => panic!("expected FunctionCall, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn binary_ops_left_associative() {
+        let members = bracket_members();
+        // `let volume = width * height * thickness`
+        let volume = match &members[5] {
+            MemberDecl::Let(l) => l,
+            _ => panic!("expected Let"),
+        };
+        assert_eq!(volume.name, "volume");
+        // Should be ((width * height) * thickness)
+        match &volume.value.kind {
+            ExprKind::BinOp { op, left, right } => {
+                assert_eq!(op, "*");
+                // right is "thickness"
+                assert!(matches!(&right.kind, ExprKind::Ident(n) if n == "thickness"));
+                // left is (width * height)
+                match &left.kind {
+                    ExprKind::BinOp { op: inner_op, left: ll, right: lr } => {
+                        assert_eq!(inner_op, "*");
+                        assert!(matches!(&ll.kind, ExprKind::Ident(n) if n == "width"));
+                        assert!(matches!(&lr.kind, ExprKind::Ident(n) if n == "height"));
+                    }
+                    other => panic!("expected inner BinOp, got {:?}", other),
+                }
+            }
+            other => panic!("expected BinOp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn comparison_with_quantity() {
+        let members = bracket_members();
+        // `constraint thickness > 2mm`
+        let constraint = match &members[6] {
+            MemberDecl::Constraint(c) => c,
+            _ => panic!("expected Constraint"),
+        };
+        match &constraint.expr.kind {
+            ExprKind::BinOp { op, left, right } => {
+                assert_eq!(op, ">");
+                assert!(matches!(&left.kind, ExprKind::Ident(n) if n == "thickness"));
+                match &right.kind {
+                    ExprKind::QuantityLiteral { value, unit } => {
+                        assert!((value - 2.0).abs() < f64::EPSILON);
+                        assert_eq!(unit, "mm");
+                    }
+                    other => panic!("expected QuantityLiteral, got {:?}", other),
+                }
+            }
+            other => panic!("expected BinOp, got {:?}", other),
+        }
+    }
+
     #[test]
     fn tree_sitter_parses_bracket_source_without_errors() {
         let source = reify_test_support::bracket_source();
