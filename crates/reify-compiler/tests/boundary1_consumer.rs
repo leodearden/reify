@@ -7,7 +7,6 @@ use reify_test_support::*;
 
 /// Accept well-formed ParsedModule → produce compiled output.
 #[test]
-#[ignore = "requires compiler implementation"]
 fn accept_well_formed_parsed_module() {
     let parsed = bracket_parsed_module();
     let compiled = reify_compiler::compile(&parsed);
@@ -18,7 +17,6 @@ fn accept_well_formed_parsed_module() {
 
 /// Reject ParsedModule with unresolved type names → diagnostics, not panic.
 #[test]
-#[ignore = "requires compiler implementation"]
 fn reject_unresolved_type_names() {
     use reify_syntax::*;
     use reify_types::*;
@@ -50,7 +48,6 @@ fn reject_unresolved_type_names() {
 
 /// Handle ParsedModule with parse errors → process valid declarations.
 #[test]
-#[ignore = "requires compiler implementation"]
 fn handle_parse_errors_gracefully() {
     use reify_syntax::*;
     use reify_types::*;
