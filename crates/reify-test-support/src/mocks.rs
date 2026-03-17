@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use reify_types::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintNodeId, ConstraintResult,
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, QueryError, ReprKind, Satisfaction, TessError, Value,
+    ConstraintSolver, Diagnostic, ExportError, ExportFormat, GeometryError, GeometryHandle,
+    GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, ReprKind,
+    ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueCellId,
 };
 
 /// Mock constraint checker that returns predetermined results.
@@ -54,6 +55,42 @@ impl ConstraintChecker for MockConstraintChecker {
                 }
             })
             .collect()
+    }
+}
+
+/// Mock constraint solver that returns predetermined results.
+pub struct MockConstraintSolver {
+    result: SolveResult,
+}
+
+impl MockConstraintSolver {
+    /// Create a solver that returns Solved with the given values.
+    pub fn new_solved(values: HashMap<ValueCellId, Value>) -> Self {
+        Self {
+            result: SolveResult::Solved { values },
+        }
+    }
+
+    /// Create a solver that returns Infeasible with the given diagnostics.
+    pub fn new_infeasible(diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
+            result: SolveResult::Infeasible { diagnostics },
+        }
+    }
+
+    /// Create a solver that returns NoProgress with the given reason.
+    pub fn new_no_progress(reason: impl Into<String>) -> Self {
+        Self {
+            result: SolveResult::NoProgress {
+                reason: reason.into(),
+            },
+        }
+    }
+}
+
+impl ConstraintSolver for MockConstraintSolver {
+    fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
+        self.result.clone()
     }
 }
 
@@ -206,5 +243,76 @@ mod tests {
         let h2 = kernel.execute(&op).unwrap();
         assert_eq!(h1.id, GeometryHandleId(1));
         assert_eq!(h2.id, GeometryHandleId(2));
+    }
+
+    #[test]
+    fn mock_constraint_solver_solved() {
+        let mut values = HashMap::new();
+        values.insert(ValueCellId::new("S", "x"), Value::length(0.005));
+
+        let solver = MockConstraintSolver::new_solved(values.clone());
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+        };
+
+        match solver.solve(&problem) {
+            SolveResult::Solved { values: v } => {
+                assert_eq!(v.len(), 1);
+                assert!(v.contains_key(&ValueCellId::new("S", "x")));
+            }
+            other => panic!("expected Solved, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_constraint_solver_infeasible() {
+        let solver = MockConstraintSolver::new_infeasible(vec![
+            Diagnostic::error("constraints are infeasible"),
+        ]);
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+        };
+
+        match solver.solve(&problem) {
+            SolveResult::Infeasible { diagnostics } => {
+                assert_eq!(diagnostics.len(), 1);
+                assert!(diagnostics[0].message.contains("infeasible"));
+            }
+            other => panic!("expected Infeasible, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_constraint_solver_no_progress() {
+        let solver = MockConstraintSolver::new_no_progress("iteration limit reached");
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+        };
+
+        match solver.solve(&problem) {
+            SolveResult::NoProgress { reason } => {
+                assert_eq!(reason, "iteration limit reached");
+            }
+            other => panic!("expected NoProgress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_constraint_solver_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MockConstraintSolver>();
+
+        let _boxed: Box<dyn ConstraintSolver> = Box::new(
+            MockConstraintSolver::new_no_progress("test"),
+        );
     }
 }

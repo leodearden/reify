@@ -9,9 +9,10 @@ use std::collections::HashMap;
 
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
-    ConstraintChecker, ConstraintInput, DeterminacyState, Diagnostic, ExportFormat,
-    GeometryHandleId, GeometryKernel, Satisfaction, SnapshotId, SnapshotProvenance,
-    ValueCellId, ValueMap, VersionId,
+    AutoParam, ConstraintChecker, ConstraintInput, ConstraintSolver, DeterminacyState,
+    Diagnostic, ExportFormat, GeometryHandleId, GeometryKernel, ResolutionProblem,
+    Satisfaction, SnapshotId, SnapshotProvenance, SolveResult, ValueCellId, ValueMap,
+    VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
@@ -23,6 +24,7 @@ use crate::snapshot::Snapshot;
 pub struct Engine {
     constraint_checker: Box<dyn ConstraintChecker>,
     geometry_kernel: Option<Box<dyn GeometryKernel>>,
+    solver: Option<Box<dyn ConstraintSolver>>,
     cache: CacheStore,
     /// Overridden param values (set by set_param_and_invalidate).
     param_overrides: std::collections::HashMap<ValueCellId, reify_types::Value>,
@@ -62,6 +64,7 @@ pub struct CachedEvalResult {
 pub struct EvalResult {
     pub values: ValueMap,
     pub diagnostics: Vec<Diagnostic>,
+    pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
 }
 
 /// Result of checking constraints.
@@ -70,6 +73,7 @@ pub struct CheckResult {
     pub values: ValueMap,
     pub constraint_results: Vec<ConstraintCheckEntry>,
     pub diagnostics: Vec<Diagnostic>,
+    pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
 }
 
 /// A single constraint's check result.
@@ -87,6 +91,7 @@ pub struct BuildResult {
     pub constraint_results: Vec<ConstraintCheckEntry>,
     pub geometry_output: Option<Vec<u8>>,
     pub diagnostics: Vec<Diagnostic>,
+    pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
 }
 
 impl Engine {
@@ -97,6 +102,7 @@ impl Engine {
         Self {
             constraint_checker,
             geometry_kernel,
+            solver: None,
             cache: CacheStore::new(),
             param_overrides: std::collections::HashMap::new(),
             current_snapshot: None,
@@ -107,6 +113,12 @@ impl Engine {
             next_version_id: 0,
             last_eval_set: Vec::new(),
         }
+    }
+
+    /// Set the constraint solver for resolving auto parameters.
+    pub fn with_solver(mut self, solver: Box<dyn ConstraintSolver>) -> Self {
+        self.solver = Some(solver);
+        self
     }
 
     /// Access the cache store (for testing/inspection).
@@ -148,7 +160,7 @@ impl Engine {
         module: &CompiledModule,
     ) -> EvalResult {
         let mut values = ValueMap::new();
-        let diagnostics = Vec::new();
+        let mut diagnostics = Vec::new();
 
         // Build Snapshot from CompiledModule (creates EvaluationGraph internally)
         let snapshot_id = self.next_snapshot_id;
@@ -256,6 +268,140 @@ impl Engine {
             }
         }
 
+        // Resolution phase: resolve auto params using the constraint solver.
+        let mut resolved_params = HashMap::new();
+        if let Some(ref solver) = self.solver {
+            for template in &module.templates {
+                // Collect auto param IDs for this template
+                let auto_ids: std::collections::HashSet<ValueCellId> = template
+                    .value_cells
+                    .iter()
+                    .filter(|cell| cell.kind == ValueCellKind::Auto)
+                    .map(|cell| cell.id.clone())
+                    .collect();
+
+                if auto_ids.is_empty() {
+                    continue;
+                }
+
+                // Find constraints whose dependency traces reference auto params
+                let filtered_constraints: Vec<_> = template
+                    .constraints
+                    .iter()
+                    .filter(|c| {
+                        let trace = extract_dependency_trace(&c.expr);
+                        trace.reads.iter().any(|r| auto_ids.contains(r))
+                    })
+                    .map(|c| (c.id.clone(), c.expr.clone()))
+                    .collect();
+
+                // Build AutoParam list from template value cells
+                let auto_param_list: Vec<AutoParam> = template
+                    .value_cells
+                    .iter()
+                    .filter(|cell| cell.kind == ValueCellKind::Auto)
+                    .map(|cell| AutoParam {
+                        id: cell.id.clone(),
+                        param_type: cell.cell_type.clone(),
+                        bounds: None,
+                    })
+                    .collect();
+
+                // Build ResolutionProblem
+                let problem = ResolutionProblem {
+                    auto_params: auto_param_list,
+                    constraints: filtered_constraints,
+                    current_values: values.clone(),
+                    objective: None,
+                };
+
+                let parent_snap_id = snapshot.id;
+
+                match solver.solve(&problem) {
+                    SolveResult::Solved { values: solver_values } => {
+                        // Allocate new snapshot/version IDs BEFORE recording cache
+                        // entries so all resolution-phase entries share the same
+                        // basis_version as the snapshot. This preserves the invariant
+                        // that try_fast_path relies on for incremental evaluation.
+                        let res_snapshot_id = self.next_snapshot_id;
+                        self.next_snapshot_id += 1;
+                        let res_version_id = self.next_version_id;
+                        self.next_version_id += 1;
+
+                        // Update values map with resolved values
+                        let mut resolved_ids = std::collections::HashSet::new();
+                        for (id, val) in &solver_values {
+                            values.insert(id.clone(), val.clone());
+                            resolved_params.insert(id.clone(), val.clone());
+                            resolved_ids.insert(id.clone());
+
+                            // Update snapshot values with (resolved_val, Determined)
+                            snapshot.values.insert(
+                                id.clone(),
+                                (val.clone(), DeterminacyState::Determined),
+                            );
+
+                            // Update cache with res_version_id (matches snapshot)
+                            let node_id = NodeId::Value(id.clone());
+                            let trace = DependencyTrace::default();
+                            let cached_result =
+                                CachedResult::Value(val.clone(), DeterminacyState::Determined);
+                            self.cache.record_evaluation(
+                                node_id,
+                                cached_result,
+                                VersionId(res_version_id),
+                                trace,
+                            );
+                        }
+
+                        // Set child snapshot with Resolution provenance
+                        snapshot.id = SnapshotId(res_snapshot_id);
+                        snapshot.version = VersionId(res_version_id);
+                        snapshot.provenance = SnapshotProvenance::Resolution {
+                            scope: template.name.clone(),
+                            resolved: resolved_ids,
+                            parent: parent_snap_id,
+                        };
+
+                        // Re-run let binding evaluation with resolved values
+                        for cell in &template.value_cells {
+                            if cell.kind == ValueCellKind::Let
+                                && let Some(ref expr) = cell.default_expr
+                            {
+                                let val = reify_expr::eval_expr(expr, &values);
+                                values.insert(cell.id.clone(), val.clone());
+
+                                snapshot.values.insert(
+                                    cell.id.clone(),
+                                    (val.clone(), DeterminacyState::Determined),
+                                );
+
+                                let node_id = NodeId::Value(cell.id.clone());
+                                let trace = extract_dependency_trace(expr);
+                                let cached_result =
+                                    CachedResult::Value(val, DeterminacyState::Determined);
+                                self.cache.record_evaluation(
+                                    node_id,
+                                    cached_result,
+                                    VersionId(res_version_id),
+                                    trace,
+                                );
+                            }
+                        }
+                    }
+                    SolveResult::Infeasible { diagnostics: solver_diags } => {
+                        diagnostics.extend(solver_diags);
+                    }
+                    SolveResult::NoProgress { reason } => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "Constraint solver made no progress: {}",
+                            reason
+                        )));
+                    }
+                }
+            }
+        }
+
         // Store internal state for incremental evaluation
         self.current_snapshot = Some(snapshot);
         self.reverse_index = Some(reverse_index);
@@ -263,7 +409,7 @@ impl Engine {
         self.demand = demand;
         self.last_eval_set = Vec::new(); // Cold start: no incremental eval set
 
-        EvalResult { values, diagnostics }
+        EvalResult { values, diagnostics, resolved_params }
     }
 
     /// Incrementally re-evaluate after changing a parameter value.
@@ -391,6 +537,7 @@ impl Engine {
         EvalResult {
             values,
             diagnostics: Vec::new(),
+            resolved_params: HashMap::new(),
         }
     }
 
@@ -585,7 +732,7 @@ impl Engine {
         }
 
         CachedEvalResult {
-            eval_result: EvalResult { values, diagnostics },
+            eval_result: EvalResult { values, diagnostics, resolved_params: HashMap::new() },
             stats,
         }
     }
@@ -632,6 +779,7 @@ impl Engine {
             values: eval_result.values,
             constraint_results,
             diagnostics,
+            resolved_params: eval_result.resolved_params,
         }
     }
 
@@ -705,6 +853,7 @@ impl Engine {
             constraint_results: check_result.constraint_results,
             geometry_output,
             diagnostics,
+            resolved_params: check_result.resolved_params,
         }
     }
 }
