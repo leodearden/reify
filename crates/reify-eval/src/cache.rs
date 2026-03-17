@@ -691,7 +691,6 @@ mod tests {
     fn cold_start_cache_miss() {
         use reify_test_support::builders::*;
         use reify_test_support::mocks::MockConstraintChecker;
-        use reify_test_support::values::mm;
         use reify_types::{BinOp, ModulePath, Type, VersionId};
 
         let e = "T";
