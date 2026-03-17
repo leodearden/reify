@@ -195,3 +195,49 @@ fn check_reports_satisfied_after_resolution() {
         result.constraint_results[0].satisfaction
     );
 }
+
+#[test]
+fn resolve_multiple_auto_params() {
+    let a_id = ValueCellId::new("S", "a");
+    let b_id = ValueCellId::new("S", "b");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(a_id.clone(), mm(5.0));
+    solved_values.insert(b_id.clone(), mm(10.0));
+
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "a", Type::length())
+        .auto_param("S", "b", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "a"), literal(mm(1.0))))
+        .constraint("S", 1, None, gt(value_ref("S", "b"), literal(mm(2.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    let a_val = result.values.get(&a_id).expect("a should be in values");
+    assert!(
+        matches!(a_val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
+        "expected a=mm(5.0), got {:?}",
+        a_val
+    );
+
+    let b_val = result.values.get(&b_id).expect("b should be in values");
+    assert!(
+        matches!(b_val, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-10),
+        "expected b=mm(10.0), got {:?}",
+        b_val
+    );
+
+    assert_eq!(result.resolved_params.len(), 2);
+    assert!(result.resolved_params.contains_key(&a_id));
+    assert!(result.resolved_params.contains_key(&b_id));
+}
