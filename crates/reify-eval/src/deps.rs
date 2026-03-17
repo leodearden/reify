@@ -165,4 +165,44 @@ mod tests {
         assert!(deps.contains(&node_b));
         assert!(deps.contains(&node_c));
     }
+
+    #[test]
+    fn build_from_graph_bracket_topology() {
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        let e = "Bracket";
+
+        // width is read by: volume (let), C1 (constraint: thickness < width/4)
+        let width_deps = index.dependents_of(&ValueCellId::new(e, "width"));
+        assert_eq!(width_deps.len(), 2, "width dependents: {:?}", width_deps);
+        assert!(width_deps.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
+        assert!(width_deps.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
+
+        // thickness is read by: volume (let), C0, C1, C2 (all three constraints)
+        let thickness_deps = index.dependents_of(&ValueCellId::new(e, "thickness"));
+        assert_eq!(thickness_deps.len(), 4, "thickness dependents: {:?}", thickness_deps);
+        assert!(thickness_deps.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
+        assert!(thickness_deps.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
+        assert!(thickness_deps.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
+        assert!(thickness_deps.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
+
+        // fillet_radius is not read by anything in bracket
+        let fillet_deps = index.dependents_of(&ValueCellId::new(e, "fillet_radius"));
+        assert!(fillet_deps.is_empty(), "fillet_radius dependents: {:?}", fillet_deps);
+
+        // hole_diameter is read by: C2 (constraint: hole_diameter < thickness*2)
+        let hole_deps = index.dependents_of(&ValueCellId::new(e, "hole_diameter"));
+        assert_eq!(hole_deps.len(), 1, "hole_diameter dependents: {:?}", hole_deps);
+        assert!(hole_deps.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
+
+        // height is read by: volume (let)
+        let height_deps = index.dependents_of(&ValueCellId::new(e, "height"));
+        assert_eq!(height_deps.len(), 1, "height dependents: {:?}", height_deps);
+        assert!(height_deps.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
+    }
 }
