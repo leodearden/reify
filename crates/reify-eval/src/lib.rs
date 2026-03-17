@@ -307,6 +307,7 @@ impl Engine {
 
         // Mark all nodes in the eval set as Pending before re-evaluation.
         // This transitions Final → Pending{last_substantive: hash}.
+        self.cache.reset_pending_transition_count();
         for node_id in &eval_set {
             self.cache.mark_pending(node_id);
         }

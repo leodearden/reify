@@ -119,6 +119,10 @@ pub struct CacheStore {
     /// that caused them to be dirty. A node stays dirty until ALL its dirty
     /// reasons have been resolved (e.g., by early cutoffs on upstream nodes).
     dirty_reasons: HashMap<NodeId, std::collections::HashSet<ValueCellId>>,
+    /// Count of successful mark_pending() calls since last reset.
+    /// Used to verify that Pending intermediate state is actually applied
+    /// during edit_param() evaluation.
+    pending_transition_count: usize,
 }
 
 impl CacheStore {
@@ -127,6 +131,7 @@ impl CacheStore {
         Self {
             caches: HashMap::new(),
             dirty_reasons: HashMap::new(),
+            pending_transition_count: 0,
         }
     }
 
@@ -277,6 +282,7 @@ impl CacheStore {
             entry.freshness = Freshness::Pending {
                 last_substantive: Some(entry.result_hash),
             };
+            self.pending_transition_count += 1;
             true
         } else {
             false
@@ -295,6 +301,16 @@ impl CacheStore {
         } else {
             false
         }
+    }
+
+    /// Get the number of successful mark_pending() calls since last reset.
+    pub fn pending_transition_count(&self) -> usize {
+        self.pending_transition_count
+    }
+
+    /// Reset the pending transition counter to 0.
+    pub fn reset_pending_transition_count(&mut self) {
+        self.pending_transition_count = 0;
     }
 
     /// Version fast path: if the node is cached and its basis_version matches

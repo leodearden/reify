@@ -455,17 +455,26 @@ fn mark_pending_is_called_for_eval_set_nodes() {
     let width_id = ValueCellId::new(e, "width");
     engine.edit_param(width_id, Value::length(0.1));
 
-    // pending_transition_count should equal the eval_set length:
-    // the dirty∩demand intersection when width changes includes
-    // volume (Value), C1 (Constraint) = 2 nodes in eval set.
-    let eval_set_len = engine.last_eval_set().len();
+    // pending_transition_count should equal the number of cached nodes
+    // in the eval set. Only Value nodes are cached during eval(); Constraint
+    // and Realization nodes are tracked in the eval set but not cached,
+    // so mark_pending() returns false for them.
+    let eval_set = engine.last_eval_set();
     assert!(
-        eval_set_len > 0,
+        !eval_set.is_empty(),
         "eval set should be non-empty after editing width"
+    );
+    let cached_node_count = eval_set
+        .iter()
+        .filter(|n| matches!(n, NodeId::Value(_)))
+        .count();
+    assert!(
+        cached_node_count > 0,
+        "at least one Value node should be in eval set"
     );
     assert_eq!(
         engine.cache_store().pending_transition_count(),
-        eval_set_len,
-        "mark_pending should have been called once for each node in the eval set"
+        cached_node_count,
+        "mark_pending should have been called once for each cached node in the eval set"
     );
 }
