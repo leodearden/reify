@@ -391,7 +391,9 @@ fn compile_expr(
 
                     // Dimension compatibility check for Add/Sub
                     if matches!(bin_op, BinOp::Add | BinOp::Sub) {
+                        let op_name = if bin_op == BinOp::Add { "addition" } else { "subtraction" };
                         match (&compiled_left.result_type, &compiled_right.result_type) {
+                            // Scalar + Scalar with different dimensions
                             (
                                 Type::Scalar { dimension: ld },
                                 Type::Scalar { dimension: rd },
@@ -399,13 +401,29 @@ fn compile_expr(
                                 diagnostics.push(
                                     Diagnostic::error(format!(
                                         "dimension mismatch in {}: {} vs {}",
-                                        if bin_op == BinOp::Add { "addition" } else { "subtraction" },
+                                        op_name,
                                         compiled_left.result_type,
                                         compiled_right.result_type,
                                     ))
                                     .with_label(DiagnosticLabel::new(
                                         expr.span,
                                         "incompatible dimensions",
+                                    )),
+                                );
+                            }
+                            // Scalar + Int/Real or Int/Real + Scalar (dimensioned + dimensionless)
+                            (Type::Scalar { .. }, Type::Int | Type::Real)
+                            | (Type::Int | Type::Real, Type::Scalar { .. }) => {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "incompatible types in {}: {} vs {}",
+                                        op_name,
+                                        compiled_left.result_type,
+                                        compiled_right.result_type,
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        "dimensioned + dimensionless",
                                     )),
                                 );
                             }
@@ -663,6 +681,21 @@ fn compile_structure(
             }
             reify_syntax::MemberDecl::Constraint(constraint) => {
                 let compiled_expr = compile_expr(&constraint.expr, &scope, diagnostics);
+
+                // Check that the constraint expression produces Bool
+                if compiled_expr.result_type != Type::Bool {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "constraint expression has type {}, expected Bool",
+                            compiled_expr.result_type,
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            constraint.expr.span,
+                            "expected Bool",
+                        )),
+                    );
+                }
+
                 let id = ConstraintNodeId::new(entity_name, constraint_index);
                 constraints.push(CompiledConstraint {
                     id,
@@ -683,17 +716,16 @@ fn compile_structure(
     let mut realization_index: u32 = 0;
 
     for member in &structure.members {
-        if let reify_syntax::MemberDecl::Let(let_decl) = member {
-            if is_geometry_let(&let_decl.value) {
-                if let Some(ops) = compile_geometry_call(&let_decl.value, &scope, diagnostics) {
-                    realizations.push(RealizationDecl {
-                        id: RealizationNodeId::new(entity_name, realization_index),
-                        operations: ops,
-                        span: SourceSpan::new(0, 0),
-                    });
-                    realization_index += 1;
-                }
-            }
+        if let reify_syntax::MemberDecl::Let(let_decl) = member
+            && is_geometry_let(&let_decl.value)
+            && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, diagnostics)
+        {
+            realizations.push(RealizationDecl {
+                id: RealizationNodeId::new(entity_name, realization_index),
+                operations: ops,
+                span: SourceSpan::new(0, 0),
+            });
+            realization_index += 1;
         }
     }
 
