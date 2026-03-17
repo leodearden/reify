@@ -1,3 +1,5 @@
+mod solver;
+
 use reify_types::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Diagnostic,
     Satisfaction, Severity, Value,
