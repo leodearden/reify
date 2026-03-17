@@ -454,7 +454,11 @@ mod tests {
         store.put(node.clone(), make_test_node_cache(42, 1));
 
         let result = store.try_fast_path(&node, VersionId(1));
-        assert!(result.is_some());
+        if let Some(CachedResult::Value(v, _)) = result {
+            assert_eq!(v, Value::Int(42));
+        } else {
+            panic!("expected Value variant with Int(42)");
+        }
     }
 
     #[test]
