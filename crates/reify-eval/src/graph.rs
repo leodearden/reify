@@ -479,4 +479,41 @@ mod tests {
 
         assert_ne!(node.content_hash, ContentHash(0), "param without default_expr should have non-zero content_hash");
     }
+
+    #[test]
+    fn from_templates_with_realizations() {
+        use reify_test_support::TopologyTemplateBuilder;
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".to_string(), CompiledExpr::literal(Value::length(0.08), Type::length())),
+                ("height".to_string(), CompiledExpr::literal(Value::length(0.10), Type::length())),
+                ("depth".to_string(), CompiledExpr::literal(Value::length(0.005), Type::length())),
+            ],
+        }];
+
+        let template = TopologyTemplateBuilder::new("A")
+            .param("A", "w", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
+            .realization("A", 0, ops.clone())
+            .build();
+
+        let graph = EvaluationGraph::from_templates(&[template]);
+
+        // Realization should be populated
+        assert_eq!(graph.realizations.len(), 1);
+        let r_node = graph.realizations.get(&RealizationNodeId::new("A", 0)).unwrap();
+        assert_eq!(r_node.id, RealizationNodeId::new("A", 0));
+        assert_eq!(r_node.operations.len(), 1);
+
+        // Verify content_hash matches manually computed value:
+        // id_hash.combine(ops_hash)
+        let expected_id_hash = ContentHash::of_str(&format!("{}", RealizationNodeId::new("A", 0)));
+        let expected_ops_hash = ContentHash::combine_all(
+            ops.iter().map(|op| ContentHash::of_str(&format!("{:?}", op)))
+        );
+        let expected_hash = expected_id_hash.combine(expected_ops_hash);
+        assert_eq!(r_node.content_hash, expected_hash, "realization content_hash should be id_hash.combine(ops_hash)");
+        assert_ne!(r_node.content_hash, ContentHash(0));
+    }
 }
