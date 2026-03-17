@@ -154,6 +154,138 @@ mod tests {
     }
 
     #[test]
+    fn compute_violation_satisfied_constraint() {
+        use super::compute_total_violation;
+        use reify_types::{
+            BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
+        };
+
+        // thickness > 2mm, thickness = 5mm → satisfied, violation = 0
+        let thickness_ref =
+            CompiledExpr::value_ref(ValueCellId::new("Bracket", "thickness"), Type::length());
+        let two_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.002,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let expr = CompiledExpr::binop(BinOp::Gt, thickness_ref, two_mm, Type::Bool);
+
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("Bracket", "thickness"),
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let constraints = vec![(ConstraintNodeId::new("Bracket", 0), expr)];
+        let violation = compute_total_violation(&constraints, &values);
+        assert!(
+            violation.abs() < 1e-15,
+            "satisfied constraint should have zero violation, got {}",
+            violation
+        );
+    }
+
+    #[test]
+    fn compute_violation_violated_constraint() {
+        use super::compute_total_violation;
+        use reify_types::{
+            BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
+        };
+
+        // thickness > 2mm, thickness = 1mm → violated
+        let thickness_ref =
+            CompiledExpr::value_ref(ValueCellId::new("Bracket", "thickness"), Type::length());
+        let two_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.002,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let expr = CompiledExpr::binop(BinOp::Gt, thickness_ref, two_mm, Type::Bool);
+
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("Bracket", "thickness"),
+            Value::Scalar {
+                si_value: 0.001,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let constraints = vec![(ConstraintNodeId::new("Bracket", 0), expr)];
+        let violation = compute_total_violation(&constraints, &values);
+        assert!(
+            violation > 0.0,
+            "violated constraint should have positive violation"
+        );
+    }
+
+    #[test]
+    fn compute_violation_multiple_constraints() {
+        use super::compute_total_violation;
+        use reify_types::{
+            BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
+        };
+
+        // constraint 1: thickness > 2mm (satisfied, thickness=5mm)
+        let thickness_ref =
+            CompiledExpr::value_ref(ValueCellId::new("Bracket", "thickness"), Type::length());
+        let two_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.002,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let expr1 = CompiledExpr::binop(BinOp::Gt, thickness_ref, two_mm, Type::Bool);
+
+        // constraint 2: width > 100mm (violated, width=80mm)
+        let width_ref =
+            CompiledExpr::value_ref(ValueCellId::new("Bracket", "width"), Type::length());
+        let hundred_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.100,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let expr2 = CompiledExpr::binop(BinOp::Gt, width_ref, hundred_mm, Type::Bool);
+
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("Bracket", "thickness"),
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Bracket", "width"),
+            Value::Scalar {
+                si_value: 0.080,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let constraints = vec![
+            (ConstraintNodeId::new("Bracket", 0), expr1),
+            (ConstraintNodeId::new("Bracket", 1), expr2),
+        ];
+        let violation = compute_total_violation(&constraints, &values);
+        // Only the violated constraint contributes
+        assert!(
+            violation > 0.0,
+            "should have positive violation from width constraint"
+        );
+    }
+
+    #[test]
     fn empty_problem_returns_solved() {
         use crate::DimensionalSolver;
 
