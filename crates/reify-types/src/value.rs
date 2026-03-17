@@ -242,6 +242,17 @@ mod tests {
     }
 
     #[test]
+    fn test_eval_error_display() {
+        let err = EvalError("division by zero".to_string());
+        assert_eq!(format!("{}", err), "division by zero");
+        assert_eq!(err.0, "division by zero");
+
+        // Verify Clone and PartialEq
+        let err2 = err.clone();
+        assert_eq!(err, err2);
+    }
+
+    #[test]
     fn value_map_get_or_undef() {
         let mut map = ValueMap::new();
         let id = ValueCellId::new("Bracket", "width");
