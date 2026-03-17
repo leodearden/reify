@@ -50,6 +50,8 @@ pub enum CachedResult {
     Satisfaction(Satisfaction),
     /// A geometry handle result (proxy for the actual shape).
     GeometryHandle(GeometryHandleId),
+    /// A resolution result: resolved auto parameter values.
+    Resolution(HashMap<ValueCellId, Value>),
 }
 
 impl CachedResult {
@@ -70,6 +72,18 @@ impl CachedResult {
             CachedResult::GeometryHandle(handle_id) => {
                 let tag = ContentHash::of(&[22]);
                 tag.combine(handle_id.content_hash())
+            }
+            CachedResult::Resolution(values) => {
+                let tag = ContentHash::of(&[23]);
+                // Sort entries by ValueCellId Debug repr for deterministic hashing
+                let mut entries: Vec<_> = values.iter().collect();
+                entries.sort_by_key(|(k, _)| format!("{:?}", k));
+                let combined = ContentHash::combine_all(entries.iter().map(|(k, v)| {
+                    let key_hash = ContentHash::of_str(&format!("{:?}", k));
+                    let val_hash = v.content_hash();
+                    key_hash.combine(val_hash)
+                }));
+                tag.combine(combined)
             }
         }
     }
@@ -818,6 +832,29 @@ mod tests {
 
         let r3 = CachedResult::GeometryHandle(GeometryHandleId(8));
         assert_ne!(r1.content_hash(), r3.content_hash());
+    }
+
+    #[test]
+    fn cached_result_resolution_variant() {
+        use std::collections::HashMap;
+        use reify_types::Value;
+
+        let mut values1 = HashMap::new();
+        values1.insert(ValueCellId::new("A", "x"), Value::Real(1.0));
+        let r1 = CachedResult::Resolution(values1.clone());
+
+        let hash1 = r1.content_hash();
+        assert_ne!(hash1, ContentHash(0), "resolution hash should be non-zero");
+
+        // Same content → same hash
+        let r1b = CachedResult::Resolution(values1);
+        assert_eq!(r1.content_hash(), r1b.content_hash());
+
+        // Tag byte [23] — verified by domain separation
+        let mut values2 = HashMap::new();
+        values2.insert(ValueCellId::new("A", "x"), Value::Real(2.0));
+        let r2 = CachedResult::Resolution(values2);
+        assert_ne!(r1.content_hash(), r2.content_hash(), "different values → different hash");
     }
 
     #[test]
