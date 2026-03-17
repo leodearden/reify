@@ -653,13 +653,32 @@ fn compile_structure(
         }
     }
 
+    // Third pass: compile geometry let bindings into realizations.
+    let mut realizations = Vec::new();
+    let mut realization_index: u32 = 0;
+
+    for member in &structure.members {
+        if let reify_syntax::MemberDecl::Let(let_decl) = member {
+            if is_geometry_let(&let_decl.value) {
+                if let Some(ops) = compile_geometry_call(&let_decl.value, &scope, diagnostics) {
+                    realizations.push(RealizationDecl {
+                        id: RealizationNodeId::new(entity_name, realization_index),
+                        operations: ops,
+                        span: SourceSpan::new(0, 0),
+                    });
+                    realization_index += 1;
+                }
+            }
+        }
+    }
+
     let content_hash = ContentHash::of_str(entity_name);
 
     TopologyTemplate {
         name: entity_name.clone(),
         value_cells,
         constraints,
-        realizations: Vec::new(),
+        realizations,
         content_hash,
     }
 }
@@ -670,4 +689,81 @@ fn is_geometry_let(expr: &reify_syntax::Expr) -> bool {
         &expr.kind,
         reify_syntax::ExprKind::FunctionCall { name, .. } if is_geometry_function(name)
     )
+}
+
+/// Compile a geometry function call expression into CompiledGeometryOps.
+///
+/// Maps positional arguments to the named parameters expected by each primitive:
+/// - `box(width, height, depth)`
+/// - `cylinder(radius, height)`
+/// - `sphere(radius)`
+fn compile_geometry_call(
+    expr: &reify_syntax::Expr,
+    scope: &CompilationScope,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Vec<CompiledGeometryOp>> {
+    let (name, args) = match &expr.kind {
+        reify_syntax::ExprKind::FunctionCall { name, args } => (name.as_str(), args),
+        _ => return None,
+    };
+
+    let compiled_args: Vec<CompiledExpr> = args
+        .iter()
+        .map(|arg| compile_expr(arg, scope, diagnostics))
+        .collect();
+
+    let named_args = match name {
+        "box" => {
+            if compiled_args.len() != 3 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "box() expects 3 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            vec![
+                ("width".to_string(), it.next().unwrap()),
+                ("height".to_string(), it.next().unwrap()),
+                ("depth".to_string(), it.next().unwrap()),
+            ]
+        }
+        "cylinder" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "cylinder() expects 2 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            vec![
+                ("radius".to_string(), it.next().unwrap()),
+                ("height".to_string(), it.next().unwrap()),
+            ]
+        }
+        "sphere" => {
+            if compiled_args.len() != 1 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "sphere() expects 1 argument, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            vec![("radius".to_string(), compiled_args.into_iter().next().unwrap())]
+        }
+        _ => return None,
+    };
+
+    let kind = match name {
+        "box" => PrimitiveKind::Box,
+        "cylinder" => PrimitiveKind::Cylinder,
+        "sphere" => PrimitiveKind::Sphere,
+        _ => return None,
+    };
+
+    Some(vec![CompiledGeometryOp::Primitive {
+        kind,
+        args: named_args,
+    }])
 }

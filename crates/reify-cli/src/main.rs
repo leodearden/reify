@@ -1,1 +1,169 @@
-fn main() { eprintln!("reify: not yet implemented"); std::process::exit(1); }
+use std::process::ExitCode;
+
+use reify_constraints::SimpleConstraintChecker;
+use reify_geometry::DispatchPlanner;
+use reify_kernel_occt::OcctKernel;
+use reify_types::{ExportFormat, ModulePath, Satisfaction};
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.len() < 2 {
+        eprintln!("Usage: reify <command> [options]");
+        eprintln!("Commands:");
+        eprintln!("  check <file>              Check constraints");
+        eprintln!("  build <file> -o <output>   Build geometry and export");
+        return ExitCode::FAILURE;
+    }
+
+    match args[1].as_str() {
+        "check" => cmd_check(&args[2..]),
+        "build" => cmd_build(&args[2..]),
+        other => {
+            eprintln!("Unknown command: {}", other);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitCode> {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return Err(ExitCode::FAILURE);
+        }
+    };
+
+    let module_name = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unnamed");
+
+    let parsed = reify_syntax::parse(&source, ModulePath::single(module_name));
+
+    if !parsed.errors.is_empty() {
+        for err in &parsed.errors {
+            eprintln!("Parse error: {}", err.message);
+        }
+    }
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    for diag in &compiled.diagnostics {
+        eprintln!("{}: {}", diag.severity, diag.message);
+    }
+
+    Ok(compiled)
+}
+
+fn cmd_check(args: &[String]) -> ExitCode {
+    if args.is_empty() {
+        eprintln!("Usage: reify check <file>");
+        return ExitCode::FAILURE;
+    }
+
+    let compiled = match parse_and_compile(&args[0]) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.check(&compiled);
+
+    let mut all_satisfied = true;
+    for entry in &result.constraint_results {
+        let status = match entry.satisfaction {
+            Satisfaction::Satisfied => "OK",
+            Satisfaction::Violated => {
+                all_satisfied = false;
+                "VIOLATED"
+            }
+            Satisfaction::Indeterminate => "INDETERMINATE",
+        };
+        let id_str = format!("{}", entry.id);
+        let label = entry.label.as_deref().unwrap_or(&id_str);
+        println!("  {} {}", status, label);
+    }
+
+    for diag in &result.diagnostics {
+        eprintln!("{}: {}", diag.severity, diag.message);
+    }
+
+    if all_satisfied {
+        println!("All constraints satisfied.");
+        ExitCode::SUCCESS
+    } else {
+        println!("Some constraints violated.");
+        ExitCode::FAILURE
+    }
+}
+
+fn cmd_build(args: &[String]) -> ExitCode {
+    if args.is_empty() {
+        eprintln!("Usage: reify build <file> -o <output>");
+        return ExitCode::FAILURE;
+    }
+
+    let file = &args[0];
+    let output_path = match args.iter().position(|a| a == "-o") {
+        Some(i) if i + 1 < args.len() => &args[i + 1],
+        _ => {
+            eprintln!("Usage: reify build <file> -o <output>");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let format = if output_path.ends_with(".step") || output_path.ends_with(".stp") {
+        ExportFormat::Step
+    } else if output_path.ends_with(".stl") {
+        ExportFormat::Stl
+    } else {
+        eprintln!("Unknown output format, defaulting to STEP");
+        ExportFormat::Step
+    };
+
+    let compiled = match parse_and_compile(file) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+
+    let checker = SimpleConstraintChecker;
+    let mut planner = DispatchPlanner::new();
+    planner.register_kernel(Box::new(OcctKernel::new()));
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let result = engine.build(&compiled, format);
+
+    for diag in &result.diagnostics {
+        eprintln!("{}: {}", diag.severity, diag.message);
+    }
+
+    // Report constraint status
+    for entry in &result.constraint_results {
+        let status = match entry.satisfaction {
+            Satisfaction::Satisfied => "OK",
+            Satisfaction::Violated => "VIOLATED",
+            Satisfaction::Indeterminate => "INDETERMINATE",
+        };
+        let id_str = format!("{}", entry.id);
+        let label = entry.label.as_deref().unwrap_or(&id_str);
+        eprintln!("  {} {}", status, label);
+    }
+
+    match result.geometry_output {
+        Some(data) => {
+            if let Err(e) = std::fs::write(output_path, &data) {
+                eprintln!("Error writing {}: {}", output_path, e);
+                return ExitCode::FAILURE;
+            }
+            println!("Wrote {} ({} bytes)", output_path, data.len());
+            ExitCode::SUCCESS
+        }
+        None => {
+            eprintln!("No geometry output produced");
+            ExitCode::FAILURE
+        }
+    }
+}
