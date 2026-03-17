@@ -17,6 +17,8 @@ pub struct Engine {
     constraint_checker: Box<dyn ConstraintChecker>,
     geometry_kernel: Option<Box<dyn GeometryKernel>>,
     cache: CacheStore,
+    /// Overridden param values (set by set_param_and_invalidate).
+    param_overrides: std::collections::HashMap<ValueCellId, reify_types::Value>,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
@@ -75,12 +77,26 @@ impl Engine {
             constraint_checker,
             geometry_kernel,
             cache: CacheStore::new(),
+            param_overrides: std::collections::HashMap::new(),
         }
     }
 
     /// Access the cache store (for testing/inspection).
     pub fn cache_store(&self) -> &CacheStore {
         &self.cache
+    }
+
+    /// Set a parameter override and invalidate cache entries that depend on it.
+    pub fn set_param_and_invalidate(
+        &mut self,
+        param: &ValueCellId,
+        value: reify_types::Value,
+    ) {
+        self.param_overrides.insert(param.clone(), value);
+        // Invalidate the param's own cache entry
+        self.cache.invalidate(&NodeId::Value(param.clone()));
+        // Invalidate all nodes that depend on this param
+        self.cache.invalidate_dependents(&[param.clone()]);
     }
 
     /// Evaluate a compiled module, returning computed values.
@@ -132,11 +148,9 @@ impl Engine {
         let mut stats = CacheStats::default();
 
         for template in &module.templates {
-            // First pass: evaluate Param defaults
+            // First pass: evaluate Param defaults (or use overrides)
             for cell in &template.value_cells {
-                if cell.kind == ValueCellKind::Param
-                    && let Some(ref expr) = cell.default_expr
-                {
+                if cell.kind == ValueCellKind::Param {
                     let node_id = NodeId::Value(cell.id.clone());
 
                     // Check version fast path
@@ -148,8 +162,37 @@ impl Engine {
                         }
                     }
 
+                    // Check if cache entry still exists (not invalidated).
+                    // For params without overrides, we can reuse cached values.
+                    if !self.param_overrides.contains_key(&cell.id) {
+                        if let Some(entry) = self.cache.get(&node_id) {
+                            if let CachedResult::Value(ref val, _) = entry.result {
+                                let val = val.clone();
+                                values.insert(cell.id.clone(), val);
+                                let trace = entry.dependency_trace.clone();
+                                let result = entry.result.clone();
+                                self.cache.record_evaluation(
+                                    node_id,
+                                    result,
+                                    version,
+                                    trace,
+                                );
+                                stats.cache_hits += 1;
+                                continue;
+                            }
+                        }
+                    }
+
                     stats.cache_misses += 1;
-                    let val = reify_expr::eval_expr(expr, &values);
+
+                    // Use override if available, otherwise evaluate default
+                    let val = if let Some(override_val) = self.param_overrides.get(&cell.id) {
+                        override_val.clone()
+                    } else if let Some(ref expr) = cell.default_expr {
+                        reify_expr::eval_expr(expr, &values)
+                    } else {
+                        reify_types::Value::Undef
+                    };
 
                     // Build dependency trace (params have no reads - they are roots)
                     let trace = DependencyTrace::default();
@@ -178,6 +221,27 @@ impl Engine {
                     if let Some(cached) = self.cache.try_fast_path(&node_id, version) {
                         if let CachedResult::Value(val, _) = cached {
                             values.insert(cell.id.clone(), val);
+                            stats.cache_hits += 1;
+                            continue;
+                        }
+                    }
+
+                    // Check if cache entry still exists (not invalidated).
+                    // If so, the node's dependencies haven't changed, so we
+                    // can reuse the cached result and update its basis_version.
+                    if let Some(entry) = self.cache.get(&node_id) {
+                        if let CachedResult::Value(ref val, _) = entry.result {
+                            let val = val.clone();
+                            values.insert(cell.id.clone(), val);
+                            // Update basis_version to current so fast path works next time
+                            let trace = entry.dependency_trace.clone();
+                            let result = entry.result.clone();
+                            self.cache.record_evaluation(
+                                node_id,
+                                result,
+                                version,
+                                trace,
+                            );
                             stats.cache_hits += 1;
                             continue;
                         }
