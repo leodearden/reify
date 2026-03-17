@@ -716,17 +716,16 @@ fn compile_structure(
     let mut realization_index: u32 = 0;
 
     for member in &structure.members {
-        if let reify_syntax::MemberDecl::Let(let_decl) = member {
-            if is_geometry_let(&let_decl.value) {
-                if let Some(ops) = compile_geometry_call(&let_decl.value, &scope, diagnostics) {
-                    realizations.push(RealizationDecl {
-                        id: RealizationNodeId::new(entity_name, realization_index),
-                        operations: ops,
-                        span: SourceSpan::new(0, 0),
-                    });
-                    realization_index += 1;
-                }
-            }
+        if let reify_syntax::MemberDecl::Let(let_decl) = member
+            && is_geometry_let(&let_decl.value)
+            && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, diagnostics)
+        {
+            realizations.push(RealizationDecl {
+                id: RealizationNodeId::new(entity_name, realization_index),
+                operations: ops,
+                span: SourceSpan::new(0, 0),
+            });
+            realization_index += 1;
         }
     }
 
