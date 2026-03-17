@@ -319,6 +319,15 @@ impl Engine {
 
                 match solver.solve(&problem) {
                     SolveResult::Solved { values: solver_values } => {
+                        // Allocate new snapshot/version IDs BEFORE recording cache
+                        // entries so all resolution-phase entries share the same
+                        // basis_version as the snapshot. This preserves the invariant
+                        // that try_fast_path relies on for incremental evaluation.
+                        let res_snapshot_id = self.next_snapshot_id;
+                        self.next_snapshot_id += 1;
+                        let res_version_id = self.next_version_id;
+                        self.next_version_id += 1;
+
                         // Update values map with resolved values
                         let mut resolved_ids = std::collections::HashSet::new();
                         for (id, val) in &solver_values {
@@ -332,7 +341,7 @@ impl Engine {
                                 (val.clone(), DeterminacyState::Determined),
                             );
 
-                            // Update cache
+                            // Update cache with res_version_id (matches snapshot)
                             let node_id = NodeId::Value(id.clone());
                             let trace = DependencyTrace::default();
                             let cached_result =
@@ -340,16 +349,12 @@ impl Engine {
                             self.cache.record_evaluation(
                                 node_id,
                                 cached_result,
-                                VersionId(version_id),
+                                VersionId(res_version_id),
                                 trace,
                             );
                         }
 
-                        // Create child snapshot with Resolution provenance
-                        let res_snapshot_id = self.next_snapshot_id;
-                        self.next_snapshot_id += 1;
-                        let res_version_id = self.next_version_id;
-                        self.next_version_id += 1;
+                        // Set child snapshot with Resolution provenance
                         snapshot.id = SnapshotId(res_snapshot_id);
                         snapshot.version = VersionId(res_version_id);
                         snapshot.provenance = SnapshotProvenance::Resolution {
@@ -378,7 +383,7 @@ impl Engine {
                                 self.cache.record_evaluation(
                                     node_id,
                                     cached_result,
-                                    VersionId(version_id),
+                                    VersionId(res_version_id),
                                     trace,
                                 );
                             }
