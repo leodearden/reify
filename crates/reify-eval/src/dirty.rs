@@ -321,4 +321,98 @@ mod tests {
         assert!(vol_pos > h_pos, "volume should appear after height");
         assert!(vol_pos > t_pos, "volume should appear after thickness");
     }
+
+    #[test]
+    fn topo_sort_constraint_after_deps() {
+        // C1 depends on width and thickness, both in set → C1 after both
+        use crate::deps::DependencyTrace;
+        use crate::dirty::topological_sort;
+        use std::collections::HashMap;
+
+        let e = "B";
+        let width = NodeId::Value(ValueCellId::new(e, "width"));
+        let thickness = NodeId::Value(ValueCellId::new(e, "thickness"));
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+
+        let mut nodes = HashSet::new();
+        nodes.insert(width.clone());
+        nodes.insert(thickness.clone());
+        nodes.insert(c1.clone());
+
+        let mut traces = HashMap::new();
+        traces.insert(width.clone(), DependencyTrace::default());
+        traces.insert(thickness.clone(), DependencyTrace::default());
+        traces.insert(
+            c1.clone(),
+            DependencyTrace {
+                reads: vec![
+                    ValueCellId::new(e, "width"),
+                    ValueCellId::new(e, "thickness"),
+                ],
+            },
+        );
+
+        let sorted = topological_sort(&nodes, &traces);
+        assert_eq!(sorted.len(), 3);
+        let c1_pos = sorted.iter().position(|n| n == &c1).unwrap();
+        let w_pos = sorted.iter().position(|n| n == &width).unwrap();
+        let t_pos = sorted.iter().position(|n| n == &thickness).unwrap();
+        assert!(c1_pos > w_pos, "C1 should appear after width");
+        assert!(c1_pos > t_pos, "C1 should appear after thickness");
+    }
+
+    #[test]
+    fn topo_sort_mixed_set() {
+        // {volume, C1, width, thickness}: width+thickness first,
+        // then volume and C1 (both depend on width/thickness)
+        use crate::deps::DependencyTrace;
+        use crate::dirty::topological_sort;
+        use std::collections::HashMap;
+
+        let e = "B";
+        let width = NodeId::Value(ValueCellId::new(e, "width"));
+        let thickness = NodeId::Value(ValueCellId::new(e, "thickness"));
+        let volume = NodeId::Value(ValueCellId::new(e, "volume"));
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+
+        let mut nodes = HashSet::new();
+        nodes.insert(width.clone());
+        nodes.insert(thickness.clone());
+        nodes.insert(volume.clone());
+        nodes.insert(c1.clone());
+
+        let mut traces = HashMap::new();
+        traces.insert(width.clone(), DependencyTrace::default());
+        traces.insert(thickness.clone(), DependencyTrace::default());
+        traces.insert(
+            volume.clone(),
+            DependencyTrace {
+                reads: vec![
+                    ValueCellId::new(e, "width"),
+                    ValueCellId::new(e, "thickness"),
+                ],
+            },
+        );
+        traces.insert(
+            c1.clone(),
+            DependencyTrace {
+                reads: vec![
+                    ValueCellId::new(e, "width"),
+                    ValueCellId::new(e, "thickness"),
+                ],
+            },
+        );
+
+        let sorted = topological_sort(&nodes, &traces);
+        assert_eq!(sorted.len(), 4);
+        // width and thickness before volume and C1
+        let w_pos = sorted.iter().position(|n| n == &width).unwrap();
+        let t_pos = sorted.iter().position(|n| n == &thickness).unwrap();
+        let vol_pos = sorted.iter().position(|n| n == &volume).unwrap();
+        let c1_pos = sorted.iter().position(|n| n == &c1).unwrap();
+        assert!(vol_pos > w_pos);
+        assert!(vol_pos > t_pos);
+        assert!(c1_pos > w_pos);
+        assert!(c1_pos > t_pos);
+    }
 }
