@@ -13,6 +13,7 @@ pub struct DependencyTrace {
 
 /// Accumulates value cell reads during expression evaluation.
 /// Use with `eval_expr_traced` by calling `record_read` from the callback.
+#[derive(Default)]
 pub struct TraceRecorder {
     trace: DependencyTrace,
 }
