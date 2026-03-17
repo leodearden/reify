@@ -264,4 +264,80 @@ mod tests {
         assert!(changed.contains(&volume));
         assert!(changed.contains(&c1));
     }
+
+    #[test]
+    fn integration_full_pipeline_bracket() {
+        // Integration test: full pipeline from bracket module through to scheduler.
+        // 1. Build EvaluationGraph from bracket topology
+        // 2. Build ReverseDependencyIndex
+        // 3. Build DemandRegistry demanding all constraints, rebuild cone
+        // 4. Simulate width change via compute_dirty_cone
+        // 5. compute_eval_set
+        // 6. Verify eval_set = [C1] in correct order
+        // 7. Execute via SequentialScheduler
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::demand::DemandRegistry;
+        use reify_eval::deps::{build_trace_map, ReverseDependencyIndex};
+        use reify_eval::dirty::{compute_dirty_cone, compute_eval_set};
+        use reify_eval::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+        use reify_types::{ConstraintNodeId, ValueCellId};
+        use std::collections::HashSet;
+
+        // 1. Build graph
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+
+        // 2. Build reverse index
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+        let traces = build_trace_map(&graph);
+
+        let e = "Bracket";
+
+        // 3. Demand all constraints
+        let c0 = NodeId::Constraint(ConstraintNodeId::new(e, 0));
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+        let c2 = NodeId::Constraint(ConstraintNodeId::new(e, 2));
+
+        let mut demand = DemandRegistry::new();
+        demand.add_demand(c0.clone());
+        demand.add_demand(c1.clone());
+        demand.add_demand(c2.clone());
+        demand.rebuild_cone(&graph);
+
+        // 4. Simulate width change
+        let mut changed_cells = HashSet::new();
+        changed_cells.insert(ValueCellId::new(e, "width"));
+        let dirty = compute_dirty_cone(&changed_cells, &index);
+
+        // Verify dirty cone
+        assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
+        assert!(dirty.contains(&c1));
+        assert_eq!(dirty.len(), 2);
+
+        // 5. Compute eval set
+        let eval_set = compute_eval_set(&dirty, &demand, &traces);
+
+        // 6. Verify eval_set = [C1]
+        assert_eq!(eval_set.len(), 1, "eval_set: {:?}", eval_set);
+        assert_eq!(eval_set[0], c1);
+
+        // 7. Execute via mock evaluator (always Changed)
+        struct AlwaysDirtyChanged;
+        impl NodeEvaluator for AlwaysDirtyChanged {
+            fn is_dirty(&self, _node: &NodeId) -> bool {
+                true
+            }
+            fn evaluate(&mut self, _node: &NodeId) -> EvalOutcome {
+                EvalOutcome::Changed
+            }
+        }
+
+        let scheduler = SequentialScheduler;
+        let mut evaluator = AlwaysDirtyChanged;
+        let result = scheduler.execute(eval_set, &mut evaluator);
+
+        assert_eq!(result.len(), 1);
+        assert!(result.contains(&c1));
+    }
 }
