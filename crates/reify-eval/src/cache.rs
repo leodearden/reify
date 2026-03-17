@@ -173,14 +173,14 @@ impl CacheStore {
     ) -> EvalOutcome {
         let new_hash = new_result.content_hash();
 
-        if let Some(existing) = self.caches.get_mut(&node) {
-            if existing.result_hash == new_hash {
-                // Early cutoff: result unchanged, just update version
-                existing.basis_version = version;
-                existing.dependency_trace = trace;
-                existing.freshness = Freshness::Final;
-                return EvalOutcome::Unchanged;
-            }
+        if let Some(existing) = self.caches.get_mut(&node)
+            && existing.result_hash == new_hash
+        {
+            // Early cutoff: result unchanged, just update version
+            existing.basis_version = version;
+            existing.dependency_trace = trace;
+            existing.freshness = Freshness::Final;
+            return EvalOutcome::Unchanged;
         }
 
         // Changed or cold start: store full entry

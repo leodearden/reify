@@ -97,7 +97,7 @@ impl Engine {
         let param_node = NodeId::Value(param.clone());
         self.cache.invalidate(&param_node);
         // Mark all nodes that depend on this param as dirty
-        self.cache.invalidate_dependents(&[param.clone()]);
+        self.cache.invalidate_dependents(std::slice::from_ref(param));
     }
 
     /// Evaluate a compiled module, returning computed values.
@@ -155,33 +155,33 @@ impl Engine {
                     let node_id = NodeId::Value(cell.id.clone());
 
                     // Check version fast path
-                    if let Some(cached) = self.cache.try_fast_path(&node_id, version) {
-                        if let CachedResult::Value(val, _) = cached {
-                            values.insert(cell.id.clone(), val);
-                            stats.cache_hits += 1;
-                            continue;
-                        }
+                    if let Some(CachedResult::Value(val, _)) =
+                        self.cache.try_fast_path(&node_id, version)
+                    {
+                        values.insert(cell.id.clone(), val);
+                        stats.cache_hits += 1;
+                        continue;
                     }
 
                     // Check if cache entry still exists and is not dirty.
                     // For params without overrides, we can reuse cached values.
-                    if !self.param_overrides.contains_key(&cell.id) && !self.cache.is_dirty(&node_id) {
-                        if let Some(entry) = self.cache.get(&node_id) {
-                            if let CachedResult::Value(ref val, _) = entry.result {
-                                let val = val.clone();
-                                values.insert(cell.id.clone(), val);
-                                let trace = entry.dependency_trace.clone();
-                                let result = entry.result.clone();
-                                self.cache.record_evaluation(
-                                    node_id,
-                                    result,
-                                    version,
-                                    trace,
-                                );
-                                stats.cache_hits += 1;
-                                continue;
-                            }
-                        }
+                    if !self.param_overrides.contains_key(&cell.id)
+                        && !self.cache.is_dirty(&node_id)
+                        && let Some(entry) = self.cache.get(&node_id)
+                        && let CachedResult::Value(ref val, _) = entry.result
+                    {
+                        let val = val.clone();
+                        values.insert(cell.id.clone(), val);
+                        let trace = entry.dependency_trace.clone();
+                        let result = entry.result.clone();
+                        self.cache.record_evaluation(
+                            node_id,
+                            result,
+                            version,
+                            trace,
+                        );
+                        stats.cache_hits += 1;
+                        continue;
                     }
 
                     stats.cache_misses += 1;
@@ -219,34 +219,33 @@ impl Engine {
                     let node_id = NodeId::Value(cell.id.clone());
 
                     // Check version fast path
-                    if let Some(cached) = self.cache.try_fast_path(&node_id, version) {
-                        if let CachedResult::Value(val, _) = cached {
-                            values.insert(cell.id.clone(), val);
-                            stats.cache_hits += 1;
-                            continue;
-                        }
+                    if let Some(CachedResult::Value(val, _)) =
+                        self.cache.try_fast_path(&node_id, version)
+                    {
+                        values.insert(cell.id.clone(), val);
+                        stats.cache_hits += 1;
+                        continue;
                     }
 
                     // Check if cache entry still exists and is not dirty.
                     // If so, the node's dependencies haven't changed, so we
                     // can reuse the cached result and update its basis_version.
-                    if !self.cache.is_dirty(&node_id) {
-                        if let Some(entry) = self.cache.get(&node_id) {
-                            if let CachedResult::Value(ref val, _) = entry.result {
-                                let val = val.clone();
-                                values.insert(cell.id.clone(), val);
-                                let trace = entry.dependency_trace.clone();
-                                let result = entry.result.clone();
-                                self.cache.record_evaluation(
-                                    node_id,
-                                    result,
-                                    version,
-                                    trace,
-                                );
-                                stats.cache_hits += 1;
-                                continue;
-                            }
-                        }
+                    if !self.cache.is_dirty(&node_id)
+                        && let Some(entry) = self.cache.get(&node_id)
+                        && let CachedResult::Value(ref val, _) = entry.result
+                    {
+                        let val = val.clone();
+                        values.insert(cell.id.clone(), val);
+                        let trace = entry.dependency_trace.clone();
+                        let result = entry.result.clone();
+                        self.cache.record_evaluation(
+                            node_id,
+                            result,
+                            version,
+                            trace,
+                        );
+                        stats.cache_hits += 1;
+                        continue;
                     }
 
                     stats.cache_misses += 1;
