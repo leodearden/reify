@@ -577,10 +577,12 @@ impl Engine {
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             // Execute geometry operations from realizations
             let mut last_handle: Option<GeometryHandleId> = None;
+            let mut total_ops: usize = 0;
 
             for template in &module.templates {
                 for realization in &template.realizations {
                     for op in &realization.operations {
+                        total_ops += 1;
                         let geom_op =
                             compile_geometry_op(op, &check_result.values, &last_handle);
                         match geom_op {
@@ -604,16 +606,24 @@ impl Engine {
                 }
             }
 
-            // Export the result
-            let export_handle = last_handle.unwrap_or(GeometryHandleId(0));
-            let mut output = Vec::new();
-            match kernel.export(export_handle, format, &mut output) {
-                Ok(()) => Some(output),
-                Err(e) => {
-                    diagnostics.push(Diagnostic::error(
-                        format!("export error: {}", e),
-                    ));
-                    None
+            if last_handle.is_none() && total_ops > 0 {
+                // All geometry operations failed — skip export entirely
+                diagnostics.push(Diagnostic::error(
+                    "all geometry operations failed; no geometry output produced",
+                ));
+                None
+            } else {
+                // Export the result
+                let export_handle = last_handle.unwrap_or(GeometryHandleId(0));
+                let mut output = Vec::new();
+                match kernel.export(export_handle, format, &mut output) {
+                    Ok(()) => Some(output),
+                    Err(e) => {
+                        diagnostics.push(Diagnostic::error(
+                            format!("export error: {}", e),
+                        ));
+                        None
+                    }
                 }
             }
         } else {
