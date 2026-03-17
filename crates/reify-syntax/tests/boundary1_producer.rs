@@ -166,6 +166,36 @@ fn bracket_source_round_trip() {
     assert!(source.contains("let body = box(width, height, thickness)"));
 }
 
+/// Parse `param thickness: Scalar = auto` → ExprKind::Auto default.
+#[test]
+fn parse_auto_param() {
+    let source = r#"structure T {
+    param thickness: Scalar = auto
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
+    assert_eq!(module.declarations.len(), 1);
+
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    assert_eq!(structure.members.len(), 1);
+    let param = match &structure.members[0] {
+        MemberDecl::Param(p) => p,
+        other => panic!("expected Param, got {:?}", other),
+    };
+
+    assert_eq!(param.name, "thickness");
+    match &param.default {
+        Some(expr) => {
+            assert!(matches!(expr.kind, ExprKind::Auto), "expected ExprKind::Auto, got {:?}", expr.kind);
+        }
+        None => panic!("expected auto default, got None"),
+    }
+}
+
 /// Parse bracket → all members carry non-empty spans.
 #[test]
 fn all_spans_valid() {
