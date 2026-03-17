@@ -1,6 +1,7 @@
 use crate::diagnostics::Diagnostic;
 use crate::expr::CompiledExpr;
-use crate::identity::ConstraintNodeId;
+use crate::identity::{ConstraintNodeId, ValueCellId};
+use crate::ty::Type;
 use crate::value::{Satisfaction, ValueMap};
 
 /// Input to constraint checking: a batch of constraints with current values.
@@ -38,6 +39,17 @@ pub enum ConstraintDomain {
     Logical,
     /// Cross-domain constraints spanning multiple domains.
     CrossDomain,
+}
+
+/// An auto parameter to be resolved by the constraint solver.
+#[derive(Debug, Clone)]
+pub struct AutoParam {
+    /// The value cell this auto param corresponds to.
+    pub id: ValueCellId,
+    /// The declared type of the parameter.
+    pub param_type: Type,
+    /// Optional lower and upper bounds for numeric resolution.
+    pub bounds: Option<(f64, f64)>,
 }
 
 /// Trait for constraint checking. Lives in reify-types for dependency inversion —
