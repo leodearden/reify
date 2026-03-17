@@ -1,13 +1,58 @@
 // Snapshot: immutable evaluation state with provenance tracking.
 
+use reify_compiler::CompiledModule;
+use reify_types::{
+    ContentHash, DeterminacyState, PersistentMap, SnapshotId, SnapshotProvenance, Value,
+    ValueCellId, VersionId,
+};
+
+use crate::graph::EvaluationGraph;
+
+/// An immutable snapshot of evaluation state.
+///
+/// Contains the topology graph, current values with determinacy states,
+/// a topology fingerprint for cache invalidation, and provenance tracking.
+/// Cloning is O(1) via PersistentMap structural sharing.
+#[derive(Debug, Clone)]
+pub struct Snapshot {
+    pub id: SnapshotId,
+    pub version: VersionId,
+    pub graph: EvaluationGraph,
+    pub values: PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    pub topology_fingerprint: ContentHash,
+    pub provenance: SnapshotProvenance,
+}
+
+impl Snapshot {
+    /// Create an initial snapshot from a compiled module.
+    ///
+    /// Builds the evaluation graph from the module's templates,
+    /// initializes all values to (Undef, Undetermined), and sets
+    /// provenance to Initial with version/snapshot IDs starting at 0.
+    pub fn from_compiled_module(module: &CompiledModule) -> Self {
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let topology_fingerprint = graph.topology_fingerprint();
+
+        // Initialize all value cells to (Undef, Undetermined)
+        let mut values = PersistentMap::new();
+        for (id, _node) in graph.value_cells.iter() {
+            values.insert(id.clone(), (Value::Undef, DeterminacyState::Undetermined));
+        }
+
+        Snapshot {
+            id: SnapshotId(0),
+            version: VersionId(0),
+            graph,
+            values,
+            topology_fingerprint,
+            provenance: SnapshotProvenance::Initial,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use reify_types::{
-        ContentHash, DeterminacyState, PersistentMap, SnapshotId, SnapshotProvenance, Value,
-        ValueCellId, VersionId,
-    };
-
-    use crate::graph::EvaluationGraph;
+    use reify_types::{ValueCellId};
 
     use super::*;
 
