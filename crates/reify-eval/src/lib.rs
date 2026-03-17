@@ -305,8 +305,17 @@ impl Engine {
         // Overwrite with the new param value
         values.insert(cell.clone(), new_value);
 
-        // Evaluate only Value nodes in the eval set (topo-sorted order)
+        // Evaluate only Value nodes in the eval set (topo-sorted order).
+        // Track nodes to skip due to early cutoff of upstream nodes.
+        let mut skipped: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
+        let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
+
         for node_id in &eval_set {
+            if skipped.contains(node_id) {
+                continue;
+            }
+            actual_eval_set.push(node_id.clone());
+
             if let NodeId::Value(vcid) = node_id {
                 if let Some(node) = new_snapshot.graph.value_cells.get(vcid) {
                     if let Some(ref expr) = node.default_expr {
@@ -317,16 +326,26 @@ impl Engine {
                             (val.clone(), DeterminacyState::Determined),
                         );
 
-                        // Record in cache
+                        // Record in cache and check for early cutoff
                         let trace = extract_dependency_trace(expr);
                         let cached_result =
                             CachedResult::Value(val, DeterminacyState::Determined);
-                        self.cache.record_evaluation(
+                        let outcome = self.cache.record_evaluation(
                             node_id.clone(),
                             cached_result,
                             VersionId(version_id),
                             trace,
                         );
+
+                        // Early cutoff: if result unchanged, remove downstream
+                        // dependents from remaining eval set
+                        if outcome == EvalOutcome::Unchanged {
+                            if let Some(rev_idx) = &self.reverse_index {
+                                for dependent in rev_idx.dependents_of(vcid) {
+                                    skipped.insert(dependent.clone());
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -334,8 +353,8 @@ impl Engine {
             // (deferred to check()/build())
         }
 
-        // Store state
-        self.last_eval_set = eval_set;
+        // Store state (actual_eval_set excludes early-cutoff-skipped nodes)
+        self.last_eval_set = actual_eval_set;
         self.current_snapshot = Some(new_snapshot);
 
         EvalResult {
