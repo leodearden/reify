@@ -8,6 +8,9 @@ description = "Constraint checking implementation for Reify"
 [dependencies]
 reify-types.workspace = true
 reify-expr.workspace = true
+argmin = "0.10"
+argmin-math = { version = "0.4", features = ["ndarray_latest-nolinalg"] }
+ndarray = "0.16"
 
 [dev-dependencies]
 reify-test-support.workspace = true
