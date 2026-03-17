@@ -4,9 +4,10 @@
   "modules": [
     "crates/reify-types/src",
     "crates/reify-eval/src",
-    "crates/reify-eval/tests"
+    "crates/reify-eval/tests",
+    "crates/reify-test-support/src"
   ],
-  "analysis": "This task builds the core M2 evaluation data structures: typed graph nodes, an EvaluationGraph backed by PersistentMap, and a Snapshot with provenance tracking. The codebase already has all prerequisite types: ValueCellId/ConstraintNodeId/RealizationNodeId in reify-types/identity.rs, PersistentMap in reify-types/persistent.rs, ContentHash in reify-types/hash.rs, CompiledExpr in reify-types/expr.rs, and CompiledGeometryOp/ValueCellKind/TopologyTemplate in reify-compiler. The M1 evaluator (reify-eval/src/lib.rs) uses flat ValueMap; this task adds the graph layer alongside it without disrupting existing evaluation. New files: reify-types/src/provenance.rs (SnapshotProvenance), reify-eval/src/graph.rs (node types + EvaluationGraph), reify-eval/src/snapshot.rs (Snapshot). ValueCellKind lives in reify-compiler and will be referenced from reify-eval (which already depends on reify-compiler). SourceNodeId already exists in identity.rs with struct fields; the task spec's u64 newtype version is aspirational for later milestones, so we skip changing it. ComputeNodeId is also deferred since ComputeNode is not needed for M2.",
+  "analysis": "This task builds the core M2 evaluation data structures: typed graph nodes, an EvaluationGraph backed by PersistentMap, and a Snapshot with provenance tracking. The codebase already has all prerequisite types: ValueCellId/ConstraintNodeId/RealizationNodeId in reify-types/identity.rs, PersistentMap in reify-types/persistent.rs, ContentHash in reify-types/hash.rs, CompiledExpr in reify-types/expr.rs, and CompiledGeometryOp/ValueCellKind/TopologyTemplate in reify-compiler. The M1 evaluator (reify-eval/src/lib.rs) uses flat ValueMap; this task adds the graph layer alongside it without disrupting existing evaluation. New files: reify-types/src/provenance.rs (SnapshotProvenance), reify-eval/src/graph.rs (node types + EvaluationGraph), reify-eval/src/snapshot.rs (Snapshot). ValueCellKind lives in reify-compiler and will be referenced from reify-eval (which already depends on reify-compiler). SourceNodeId already exists in identity.rs with struct fields; the task spec's u64 newtype version is aspirational for later milestones, so we skip changing it. ComputeNodeId is also deferred since ComputeNode is not needed for M2.\n\nPOST-REVIEW ADDITIONS (steps 21-28, pre-4): Three blocking issues were identified in review. (1) content_hash in from_templates does not incorporate the node ID, so two nodes with identical expressions but different IDs (e.g. param A.width=80mm and param A.height=80mm) produce identical content_hashes — breaking cache invalidation. Fix: always mix ContentHash::of_str(display_id).combine(expr_hash) for all node types. (2) The realization conversion branch in from_templates is completely untested because TopologyTemplateBuilder has no .realization() builder method. Fix: add .realization() to the builder, write tests exercising the branch. (3) topology_fingerprint() merges all node-type hashes into one sorted list without type discrimination, so a value_cell with hash H aliases with a constraint of hash H. Fix: compute three per-type sub-hashes, then combine in fixed order for domain separation.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -27,6 +28,13 @@
       "description": "Create empty crates/reify-eval/src/graph.rs and crates/reify-eval/src/snapshot.rs files with module declarations in lib.rs. Ensure cargo check passes.",
       "status": "done",
       "commit": "3a0bf4a",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Add Display impl for RealizationNodeId in crates/reify-types/src/identity.rs (format: '{entity}#realization[{index}]', consistent with ConstraintNodeId's Display). Add .realization(entity, index, operations: Vec<CompiledGeometryOp>) builder method to TopologyTemplateBuilder in crates/reify-test-support/src/builders.rs that pushes a RealizationDecl with the given id and operations. Ensure cargo check passes.",
+      "status": "done",
+      "commit": "35bc3b9",
       "tests": []
     }
   ],
@@ -170,6 +178,62 @@
       "description": "Fix any issues found in the integration test. Ensure cargo test --workspace passes with all new tests. Wire up pub exports from reify-eval/src/lib.rs for graph and snapshot modules.",
       "status": "done",
       "commit": "0fc2507"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing tests for review Issue 1 (content_hash must incorporate node ID). In graph.rs tests, add test `content_hash_includes_node_id_for_value_cells`: build two TopologyTemplates — one with param('A','width') defaulting to literal 80mm, another with param('A','height') defaulting to the same literal 80mm. Call from_templates for each. Get the ValueCellNode for each and assert their content_hashes are NOT equal (currently they will be equal since only the expression hash is used, so this test fails). Add test `content_hash_includes_node_id_for_constraints`: two constraints with different IDs (ConstraintNodeId::new('A',0) vs ('A',1)) but identical expressions must produce different content_hashes. Add test `content_hash_no_expr_value_cell_uses_id`: a param with no default_expr should still have a non-zero content_hash derived from its ID.",
+      "status": "done",
+      "commit": "8e9c2d9"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Fix content_hash computation in EvaluationGraph::from_templates to always mix the node's ID into its content_hash. For ValueCellNode: `content_hash: ContentHash::of_str(&format!(\"{}\", cell.id)).combine(cell.default_expr.as_ref().map(|e| e.content_hash).unwrap_or(ContentHash(0)))`. For ConstraintNodeData: `content_hash: ContentHash::of_str(&format!(\"{}\", constraint.id)).combine(constraint.expr.content_hash)`. For RealizationNodeData: `content_hash: ContentHash::of_str(&format!(\"{}\", realization.id)).combine(ContentHash::combine_all(realization.operations.iter().map(|op| ContentHash::of_str(&format!(\"{:?}\", op)))))`. Tests from step-21 should now pass. Verify all existing tests still pass (existing tests check equality/inequality of fingerprints, not specific hash values, so they remain valid).",
+      "status": "done",
+      "commit": "7612a30"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write failing test for review Issue 2 (realization conversion branch coverage). In graph.rs tests, add test `from_templates_with_realizations`: use TopologyTemplateBuilder with the new .realization() method (from pre-4) to build a template with one param and one realization containing a single Primitive Box CompiledGeometryOp. Call from_templates and assert: graph.realizations.len() == 1, the RealizationNodeData at RealizationNodeId::new('A', 0) exists, has operations.len() == 1, and has a non-zero content_hash. Also verify the content_hash matches a manually computed value: ContentHash::of_str(&format!(\"{}\", RealizationNodeId::new(\"A\", 0))).combine(ContentHash::combine_all(ops_debug_hashes)) — this validates both the ID mixing from step-22 and the ops hashing.",
+      "status": "done",
+      "commit": "98ab5b9"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Verify the realization conversion branch in from_templates works correctly with the ID-mixed content_hash from step-22. The test from step-23 should pass after pre-4 adds the builder method and step-22 fixes the hash computation. If any field mapping bugs are found in the realization loop (e.g., wrong field mapping, incorrect hash computation), fix them here. This step exercises the previously-unreachable code path end-to-end.",
+      "status": "done",
+      "commit": "98ab5b9"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Write failing tests for review Issue 3 (topology_fingerprint must domain-separate node types). In graph.rs tests, add test `fingerprint_domain_separates_node_types`: manually construct graph_a with one ValueCellNode having content_hash H (e.g. ContentHash::of_str(\"same\")) and empty constraints/realizations. Construct graph_b with empty value_cells, one ConstraintNodeData with the same content_hash H, and empty realizations. Assert graph_a.topology_fingerprint() != graph_b.topology_fingerprint() (currently equal, so test fails). Add test `fingerprint_domain_separates_all_three_types`: construct graph_c with empty value_cells/constraints and one RealizationNodeData with hash H. Assert all three fingerprints (graph_a, graph_b, graph_c) are pairwise distinct.",
+      "status": "done",
+      "commit": "4fa0545"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Fix topology_fingerprint() to domain-separate hashes by node type. Replace the single merged-and-sorted list with three independent sub-hashes: (1) collect+sort value_cell content_hashes → ContentHash::combine_all → vc_hash, (2) collect+sort constraint content_hashes → ContentHash::combine_all → cn_hash, (3) collect+sort realization content_hashes → ContentHash::combine_all → real_hash. Final fingerprint: ContentHash::combine_all([vc_hash, cn_hash, real_hash]). The fixed combine order ensures determinism and the per-bucket aggregation ensures different node-type compositions with the same hash multiset produce different fingerprints. Tests from step-25 should now pass. Verify all existing fingerprint tests still pass.",
+      "status": "done",
+      "commit": "817c9ae"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Write integration test `snapshot_from_template_with_realizations` in crates/reify-eval/tests/snapshot_graph.rs: build a CompiledModule via CompiledModuleBuilder containing one TopologyTemplate with 2 params (width, height with literal defaults), 1 constraint, and 1 realization (Primitive Box op) using the builders. Create Snapshot via from_compiled_module. Verify: graph.value_cells.len() == 2, graph.constraints.len() == 1, graph.realizations.len() == 1. Verify the realization node has correct id and 1 operation. Collect all content_hashes across all node types and assert they are all unique (no aliasing). Assert topology_fingerprint is non-zero. This provides end-to-end coverage of all three fixes working together.",
+      "status": "done",
+      "commit": "379604b"
+    },
+    {
+      "id": "step-28",
+      "type": "impl",
+      "description": "Fix any issues found in the integration test from step-27. Run `cargo test --workspace` and ensure all new and existing tests pass. This is the final validation that all three blocking review issues (content_hash node-ID mixing, realization branch coverage, domain-separated fingerprint) are resolved.",
+      "status": "done",
+      "commit": "379604b"
     }
   ],
   "design_decisions": [
@@ -204,6 +268,18 @@
     {
       "decision": "Provenance uses std::collections::HashSet (not a persistent set)",
       "rationale": "The changed/resolved sets in SnapshotProvenance are small and created once per snapshot transition. They don't need structural sharing — regular HashSet is simpler and sufficient."
+    },
+    {
+      "decision": "Mix node ID into content_hash via Display string then combine (not replace)",
+      "rationale": "Review Issue 1 fix: content_hash must be a function of both the node's identity AND its content. Using ContentHash::of_str(&format!(\"{}\", id)).combine(expr_hash) ensures two nodes with identical expressions but different IDs produce different hashes, preventing stale-cache hits. The combine operation is order-dependent, so id-hash.combine(expr-hash) is deterministic. For nodes without an expression (e.g. param with no default), the expr portion uses ContentHash(0) as sentinel."
+    },
+    {
+      "decision": "Domain-separate topology_fingerprint by computing three per-type sub-hashes",
+      "rationale": "Review Issue 3 fix: merging all hashes into one sorted list loses node-type information, allowing cross-type aliasing. Computing per-type sub-hashes (vc_hash, cn_hash, real_hash) independently, then combining in fixed order via ContentHash::combine_all([vc_hash, cn_hash, real_hash]) ensures that swapping a value_cell for a constraint of equal hash produces a different fingerprint. Empty buckets contribute ContentHash(0) as their sub-hash, which is the identity element of combine_all."
+    },
+    {
+      "decision": "Add Display impl for RealizationNodeId for consistency with other ID types",
+      "rationale": "ValueCellId and ConstraintNodeId already have Display impls. RealizationNodeId needs one so the same content_hash pattern (ContentHash::of_str(&format!(\"{}\", id))) works uniformly across all node types. Format: '{entity}#realization[{index}]' mirrors ConstraintNodeId's '{entity}#constraint[{index}]'."
     }
   ],
   "reuse": [
@@ -213,14 +289,14 @@
       "how": "Used as the backing store for all EvaluationGraph node maps and Snapshot values map. Provides O(1) clone via structural sharing."
     },
     {
-      "what": "ContentHash",
+      "what": "ContentHash + ContentHash::combine + ContentHash::combine_all",
       "where": "crates/reify-types/src/hash.rs",
-      "how": "Used for topology_fingerprint computation and content_hash fields on all node data types. ContentHash::combine_all for fingerprint aggregation."
+      "how": "Used for topology_fingerprint computation and content_hash fields on all node data types. combine() mixes node ID hash with expression/content hash. combine_all() aggregates per-bucket sub-hashes and final fingerprint."
     },
     {
-      "what": "ValueCellId, ConstraintNodeId, RealizationNodeId",
+      "what": "ValueCellId, ConstraintNodeId, RealizationNodeId (with Display impls)",
       "where": "crates/reify-types/src/identity.rs",
-      "how": "Used as keys in EvaluationGraph PersistentMaps and as identifiers in node data types."
+      "how": "Used as keys in EvaluationGraph PersistentMaps and as identifiers in node data types. Their Display impls provide deterministic string representations used in content_hash computation via ContentHash::of_str(&format!(\"{}\", id))."
     },
     {
       "what": "CompiledExpr, Value, DeterminacyState, Type",
@@ -235,7 +311,7 @@
     {
       "what": "TopologyTemplateBuilder, CompiledModuleBuilder",
       "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Used in tests to construct TopologyTemplate and CompiledModule fixtures for from_templates and from_compiled_module tests."
+      "how": "Used in tests to construct TopologyTemplate and CompiledModule fixtures. Extended with .realization() method in pre-4 to enable realization branch testing."
     },
     {
       "what": "bracket_compiled_module() fixture",
