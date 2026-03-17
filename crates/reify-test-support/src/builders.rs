@@ -231,6 +231,25 @@ impl TopologyTemplateBuilder {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_param_builder() {
+        let template = TopologyTemplateBuilder::new("T")
+            .auto_param("T", "x", Type::length())
+            .build();
+
+        assert_eq!(template.value_cells.len(), 1);
+        let cell = &template.value_cells[0];
+        assert_eq!(cell.id, ValueCellId::new("T", "x"));
+        assert_eq!(cell.kind, ValueCellKind::Auto);
+        assert!(cell.default_expr.is_none());
+        assert_eq!(cell.cell_type, Type::length());
+    }
+}
+
 /// Builder for `CompiledModule`.
 pub struct CompiledModuleBuilder {
     path: reify_types::ModulePath,
