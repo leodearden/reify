@@ -419,4 +419,61 @@ mod tests {
 
         assert_eq!(g1.topology_fingerprint(), g2.topology_fingerprint());
     }
+
+    #[test]
+    fn content_hash_includes_node_id_for_value_cells() {
+        use reify_test_support::TopologyTemplateBuilder;
+
+        // Two params with different IDs but identical default expressions
+        let template_a = TopologyTemplateBuilder::new("A")
+            .param("A", "width", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
+            .build();
+        let template_b = TopologyTemplateBuilder::new("A")
+            .param("A", "height", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
+            .build();
+
+        let graph_a = EvaluationGraph::from_templates(&[template_a]);
+        let graph_b = EvaluationGraph::from_templates(&[template_b]);
+
+        let hash_width = graph_a.value_cells.get(&ValueCellId::new("A", "width")).unwrap().content_hash;
+        let hash_height = graph_b.value_cells.get(&ValueCellId::new("A", "height")).unwrap().content_hash;
+
+        // Different IDs with same expression must produce different content hashes
+        assert_ne!(hash_width, hash_height, "content_hash must incorporate node ID");
+    }
+
+    #[test]
+    fn content_hash_includes_node_id_for_constraints() {
+        use reify_test_support::{TopologyTemplateBuilder, gt, literal, value_ref};
+
+        let expr = gt(value_ref("A", "x"), literal(Value::length(0.0)));
+        let template = TopologyTemplateBuilder::new("A")
+            .param("A", "x", Type::length(), None)
+            .constraint("A", 0, None, expr.clone())
+            .constraint("A", 1, None, expr)
+            .build();
+
+        let graph = EvaluationGraph::from_templates(&[template]);
+
+        let hash_0 = graph.constraints.get(&ConstraintNodeId::new("A", 0)).unwrap().content_hash;
+        let hash_1 = graph.constraints.get(&ConstraintNodeId::new("A", 1)).unwrap().content_hash;
+
+        // Different constraint IDs with same expression must produce different content hashes
+        assert_ne!(hash_0, hash_1, "content_hash must incorporate constraint node ID");
+    }
+
+    #[test]
+    fn content_hash_no_expr_value_cell_uses_id() {
+        use reify_test_support::TopologyTemplateBuilder;
+
+        // A param with no default_expr should still have a non-zero content_hash derived from its ID
+        let template = TopologyTemplateBuilder::new("A")
+            .param("A", "x", Type::length(), None)
+            .build();
+
+        let graph = EvaluationGraph::from_templates(&[template]);
+        let node = graph.value_cells.get(&ValueCellId::new("A", "x")).unwrap();
+
+        assert_ne!(node.content_hash, ContentHash(0), "param without default_expr should have non-zero content_hash");
+    }
 }
