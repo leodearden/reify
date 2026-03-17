@@ -192,3 +192,90 @@ fn type_error_dimension_mismatch() {
         compiled.diagnostics
     );
 }
+
+/// Constraint expression with non-Bool result type should produce a warning.
+#[test]
+fn constraint_non_bool_produces_warning() {
+    use reify_syntax::*;
+    use reify_types::*;
+
+    // Build a module with: constraint width * height
+    // This produces Scalar[m^2], not Bool
+    let module = ParsedModule {
+        path: ModulePath::single("non_bool_constraint"),
+        declarations: vec![Declaration::Structure(StructureDef {
+            name: "Bad".into(),
+            members: vec![
+                MemberDecl::Param(ParamDecl {
+                    name: "width".into(),
+                    type_expr: Some(TypeExpr {
+                        name: "Scalar".into(),
+                        span: SourceSpan::new(0, 6),
+                    }),
+                    default: Some(Expr {
+                        kind: ExprKind::QuantityLiteral {
+                            value: 80.0,
+                            unit: "mm".into(),
+                        },
+                        span: SourceSpan::new(9, 13),
+                    }),
+                    span: SourceSpan::new(0, 13),
+                    content_hash: ContentHash::of_str("param width: Scalar = 80mm"),
+                }),
+                MemberDecl::Param(ParamDecl {
+                    name: "height".into(),
+                    type_expr: Some(TypeExpr {
+                        name: "Scalar".into(),
+                        span: SourceSpan::new(20, 26),
+                    }),
+                    default: Some(Expr {
+                        kind: ExprKind::QuantityLiteral {
+                            value: 100.0,
+                            unit: "mm".into(),
+                        },
+                        span: SourceSpan::new(29, 34),
+                    }),
+                    span: SourceSpan::new(18, 34),
+                    content_hash: ContentHash::of_str("param height: Scalar = 100mm"),
+                }),
+                MemberDecl::Constraint(ConstraintDecl {
+                    label: None,
+                    expr: Expr {
+                        kind: ExprKind::BinOp {
+                            op: "*".into(),
+                            left: Box::new(Expr {
+                                kind: ExprKind::Ident("width".into()),
+                                span: SourceSpan::new(50, 55),
+                            }),
+                            right: Box::new(Expr {
+                                kind: ExprKind::Ident("height".into()),
+                                span: SourceSpan::new(58, 64),
+                            }),
+                        },
+                        span: SourceSpan::new(50, 64),
+                    },
+                    span: SourceSpan::new(39, 64),
+                    content_hash: ContentHash::of_str("constraint width * height"),
+                }),
+            ],
+            span: SourceSpan::new(0, 70),
+            content_hash: ContentHash::of_str("structure Bad non_bool"),
+        })],
+        errors: vec![],
+        content_hash: ContentHash::of_str("non_bool_constraint module"),
+    };
+
+    let compiled = reify_compiler::compile(&module);
+    assert!(
+        !compiled.diagnostics.is_empty(),
+        "should have diagnostics for non-Bool constraint expression"
+    );
+    assert!(
+        compiled.diagnostics.iter().any(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("bool") || msg.contains("constraint")
+        }),
+        "diagnostics should mention Bool or constraint type issue, got: {:?}",
+        compiled.diagnostics
+    );
+}
