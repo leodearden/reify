@@ -478,3 +478,195 @@ fn mark_pending_is_called_for_eval_set_nodes() {
         "mark_pending should have been called once for each cached node in the eval set"
     );
 }
+
+/// Verify that consecutive edit_param() calls produce correct results and
+/// that each call computes a fresh dirty cone from only its own changed set,
+/// with no residual dirty state from prior edits.
+///
+/// Scenario:
+/// 1. Cold-start eval of bracket module (volume = 0.08 * 0.10 * 0.005 = 4e-5)
+/// 2. Edit width 0.08→0.1: dirty cone = {volume, C1}
+/// 3. Edit height 0.10→0.12: dirty cone = {volume} only (NOT C1)
+///
+/// The key assertion is that the second edit's eval set contains ONLY volume
+/// (not C1), proving that each edit_param computes its dirty cone independently.
+#[test]
+fn consecutive_edit_param_only_reevaluates_affected_nodes() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let e = "Bracket";
+
+    // ── (1) Cold-start eval ──────────────────────────────────────────
+    let initial = engine.eval(&module);
+    assert_eq!(initial.values.len(), 6, "bracket should have 6 values");
+
+    let vol = initial
+        .values
+        .get(&ValueCellId::new(e, "volume"))
+        .expect("volume should exist")
+        .as_f64()
+        .expect("volume should be numeric");
+    assert!(
+        (vol - 4e-5).abs() < 1e-10,
+        "initial volume should be ~4e-5, got {}",
+        vol
+    );
+
+    // ── (2) First edit: width 0.08 → 0.1 ────────────────────────────
+    let width_id = ValueCellId::new(e, "width");
+    let result1 = engine.edit_param(width_id.clone(), Value::length(0.1));
+
+    // Volume recomputed: 0.1 * 0.10 * 0.005 = 5e-5
+    let vol1 = result1
+        .values
+        .get(&ValueCellId::new(e, "volume"))
+        .expect("volume should exist after first edit")
+        .as_f64()
+        .expect("volume should be numeric");
+    assert!(
+        (vol1 - 5e-5).abs() < 1e-10,
+        "volume after width edit should be ~5e-5, got {}",
+        vol1
+    );
+
+    // Eval set should contain volume and C1 (both read width)
+    let eval_set1 = engine.last_eval_set();
+    assert!(
+        eval_set1.contains(&NodeId::Value(ValueCellId::new(e, "volume"))),
+        "volume should be in first edit's eval set"
+    );
+    assert!(
+        eval_set1.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))),
+        "C1 should be in first edit's eval set (reads width)"
+    );
+
+    // Other params should NOT be in eval set
+    assert!(
+        !eval_set1.contains(&NodeId::Value(ValueCellId::new(e, "height"))),
+        "height should NOT be in first edit's eval set"
+    );
+    assert!(
+        !eval_set1.contains(&NodeId::Value(ValueCellId::new(e, "fillet_radius"))),
+        "fillet_radius should NOT be in first edit's eval set"
+    );
+    assert!(
+        !eval_set1.contains(&NodeId::Value(ValueCellId::new(e, "hole_diameter"))),
+        "hole_diameter should NOT be in first edit's eval set"
+    );
+    assert!(
+        !eval_set1.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))),
+        "C0 should NOT be in first edit's eval set"
+    );
+    assert!(
+        !eval_set1.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))),
+        "C2 should NOT be in first edit's eval set"
+    );
+
+    // ── (3) Second edit: height 0.10 → 0.12 ─────────────────────────
+    let height_id = ValueCellId::new(e, "height");
+    let result2 = engine.edit_param(height_id.clone(), Value::length(0.12));
+
+    // Volume recomputed: 0.1 * 0.12 * 0.005 = 6e-5
+    let vol2 = result2
+        .values
+        .get(&ValueCellId::new(e, "volume"))
+        .expect("volume should exist after second edit")
+        .as_f64()
+        .expect("volume should be numeric");
+    assert!(
+        (vol2 - 6e-5).abs() < 1e-10,
+        "volume after height edit should be ~6e-5, got {}",
+        vol2
+    );
+
+    // Width should be preserved from first edit (0.1, not original 0.08)
+    assert_eq!(
+        result2.values.get(&ValueCellId::new(e, "width")),
+        Some(&Value::length(0.1)),
+        "width should still be 0.1 (preserved from first edit)"
+    );
+
+    // Other params unchanged from initial
+    assert_eq!(
+        result2.values.get(&ValueCellId::new(e, "thickness")),
+        initial.values.get(&ValueCellId::new(e, "thickness")),
+        "thickness should be unchanged"
+    );
+    assert_eq!(
+        result2.values.get(&ValueCellId::new(e, "fillet_radius")),
+        initial.values.get(&ValueCellId::new(e, "fillet_radius")),
+        "fillet_radius should be unchanged"
+    );
+    assert_eq!(
+        result2.values.get(&ValueCellId::new(e, "hole_diameter")),
+        initial.values.get(&ValueCellId::new(e, "hole_diameter")),
+        "hole_diameter should be unchanged"
+    );
+
+    // KEY ASSERTION: eval set for second edit contains ONLY volume, NOT C1
+    let eval_set2 = engine.last_eval_set();
+    assert!(
+        eval_set2.contains(&NodeId::Value(ValueCellId::new(e, "volume"))),
+        "volume should be in second edit's eval set (reads height)"
+    );
+    assert!(
+        !eval_set2.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))),
+        "C1 should NOT be in second edit's eval set (does not read height) — \
+         proves no residual dirty state from first edit"
+    );
+
+    // ── (4) Snapshot provenance chain ────────────────────────────────
+    let snap = engine.snapshot().expect("snapshot should exist after second edit");
+    assert_eq!(snap.id, SnapshotId(2), "second edit should produce snapshot ID 2");
+
+    let mut expected_changed = std::collections::HashSet::new();
+    expected_changed.insert(height_id);
+    assert_eq!(
+        snap.provenance,
+        SnapshotProvenance::Edit {
+            changed: expected_changed,
+            parent: SnapshotId(1),
+        },
+        "second edit's parent should be SnapshotId(1), not SnapshotId(0)"
+    );
+
+    // ── (5) All 6 value cells should have Freshness::Final ──────────
+    let cache = engine.cache_store();
+    for name in ["width", "height", "thickness", "fillet_radius", "hole_diameter", "volume"] {
+        let node_id = NodeId::Value(ValueCellId::new(e, name));
+        let entry = cache
+            .get(&node_id)
+            .unwrap_or_else(|| panic!("{} should be in cache", name));
+        assert_eq!(
+            entry.freshness,
+            Freshness::Final,
+            "{} should have Final freshness after both edits",
+            name
+        );
+    }
+
+    // ── (6) pending_transition_count ────────────────────────────────
+    //
+    // `pending_transition_count` counts `mark_pending()` calls over the
+    // full pre-cutoff `eval_set`, NOT the post-cutoff `actual_eval_set`
+    // returned by `last_eval_set()`. In the presence of early cutoff the
+    // two sets diverge: nodes are marked pending (incrementing the
+    // counter) then skipped and restored via `restore_final()`, which
+    // does NOT decrement the counter.
+    //
+    // For this test's second edit (height → 0.12) there is no early
+    // cutoff — the dirty cone intersected with demand yields exactly
+    // {volume}, a terminal Value node with no downstream dependents in
+    // the eval set. Therefore eval_set == actual_eval_set == {volume},
+    // making the distinction moot here. We assert the known constant
+    // directly rather than deriving it from `last_eval_set()` to avoid
+    // creating a false equivalence that would silently break if the
+    // fixture were extended with early-cutoff scenarios.
+    assert_eq!(
+        cache.pending_transition_count(),
+        1,
+        "second edit's eval_set has exactly one Value node (volume), no early cutoff"
+    );
+}
