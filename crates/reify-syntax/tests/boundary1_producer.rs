@@ -196,6 +196,48 @@ fn parse_auto_param() {
     }
 }
 
+/// Mixed auto and normal params coexist correctly.
+#[test]
+fn parse_mixed_auto_and_normal_params() {
+    let source = r#"structure S {
+    param x: Scalar = 5mm
+    param y: Scalar = auto
+    param z: Scalar
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
+
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    assert_eq!(structure.members.len(), 3);
+
+    // x has QuantityLiteral default
+    let x = match &structure.members[0] {
+        MemberDecl::Param(p) => p,
+        other => panic!("expected Param, got {:?}", other),
+    };
+    assert_eq!(x.name, "x");
+    assert!(matches!(x.default.as_ref().unwrap().kind, ExprKind::QuantityLiteral { .. }));
+
+    // y has Auto default
+    let y = match &structure.members[1] {
+        MemberDecl::Param(p) => p,
+        other => panic!("expected Param, got {:?}", other),
+    };
+    assert_eq!(y.name, "y");
+    assert!(matches!(y.default.as_ref().unwrap().kind, ExprKind::Auto));
+
+    // z has no default
+    let z = match &structure.members[2] {
+        MemberDecl::Param(p) => p,
+        other => panic!("expected Param, got {:?}", other),
+    };
+    assert_eq!(z.name, "z");
+    assert!(z.default.is_none());
+}
+
 /// Parse bracket → all members carry non-empty spans.
 #[test]
 fn all_spans_valid() {
