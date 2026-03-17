@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use crate::diagnostics::Diagnostic;
 use crate::expr::CompiledExpr;
 use crate::identity::{ConstraintNodeId, ValueCellId};
 use crate::ty::Type;
-use crate::value::{Satisfaction, ValueMap};
+use crate::value::{Satisfaction, Value, ValueMap};
 
 /// Input to constraint checking: a batch of constraints with current values.
 #[derive(Debug)]
@@ -59,6 +61,26 @@ pub struct AutoParam {
     pub param_type: Type,
     /// Optional lower and upper bounds for numeric resolution.
     pub bounds: Option<(f64, f64)>,
+}
+
+/// The result of a constraint solve attempt.
+#[derive(Debug, Clone)]
+pub enum SolveResult {
+    /// Successfully resolved all auto parameters.
+    Solved {
+        /// Resolved values for auto parameters.
+        values: HashMap<ValueCellId, Value>,
+    },
+    /// The constraints are infeasible — no solution exists.
+    Infeasible {
+        /// Diagnostics explaining why the constraints are infeasible.
+        diagnostics: Vec<Diagnostic>,
+    },
+    /// The solver made no progress (e.g., iteration limit reached).
+    NoProgress {
+        /// Human-readable reason for no progress.
+        reason: String,
+    },
 }
 
 /// A constraint resolution problem — input to the constraint solver.
