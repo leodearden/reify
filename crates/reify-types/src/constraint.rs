@@ -321,4 +321,40 @@ mod tests {
         let d2 = format!("{:?}", result2);
         assert_eq!(d1, d2);
     }
+
+    struct MockSolver;
+
+    impl ConstraintSolver for MockSolver {
+        fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
+            SolveResult::NoProgress {
+                reason: "mock".to_string(),
+            }
+        }
+    }
+
+    #[test]
+    fn constraint_solver_trait_call() {
+        let solver = MockSolver;
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: crate::value::ValueMap::new(),
+            objective: None,
+        };
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::NoProgress { reason } => assert_eq!(reason, "mock"),
+            _ => panic!("expected NoProgress"),
+        }
+    }
+
+    #[test]
+    fn constraint_solver_is_send_sync() {
+        // Verify the trait requires Send + Sync by using it as a trait object
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MockSolver>();
+
+        // Can be used as Box<dyn ConstraintSolver>
+        let _boxed: Box<dyn ConstraintSolver> = Box::new(MockSolver);
+    }
 }
