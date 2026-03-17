@@ -97,4 +97,94 @@ mod tests {
         assert!(!reg.is_demanded(&c0));
         assert!(!reg.is_demanded(&param));
     }
+
+    #[test]
+    fn rebuild_cone_demand_c0_only() {
+        // C0: thickness > 2mm → reads thickness
+        // Demanding only C0 → cone = {C0, thickness}
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+
+        let e = "Bracket";
+        let c0 = NodeId::Constraint(ConstraintNodeId::new(e, 0));
+
+        let mut reg = DemandRegistry::new();
+        reg.add_demand(c0.clone());
+        reg.rebuild_cone(&graph);
+
+        assert!(reg.is_demanded(&c0));
+        assert!(reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "thickness"))));
+        // width, height, fillet_radius, hole_diameter, volume should NOT be in cone
+        assert!(!reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "width"))));
+        assert!(!reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "height"))));
+        assert!(!reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "volume"))));
+        assert!(!reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "fillet_radius"))));
+        assert!(!reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "hole_diameter"))));
+    }
+
+    #[test]
+    fn rebuild_cone_demand_c1_only() {
+        // C1: thickness < width / 4 → reads thickness, width
+        // Demanding only C1 → cone = {C1, thickness, width}
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+
+        let e = "Bracket";
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+
+        let mut reg = DemandRegistry::new();
+        reg.add_demand(c1.clone());
+        reg.rebuild_cone(&graph);
+
+        assert!(reg.is_demanded(&c1));
+        assert!(reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "thickness"))));
+        assert!(reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "width"))));
+        // Others not in cone
+        assert!(!reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "height"))));
+        assert!(!reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "volume"))));
+    }
+
+    #[test]
+    fn rebuild_cone_demand_all_constraints() {
+        // Demand C0, C1, C2 → cone includes all three constraints
+        // plus thickness, width, hole_diameter (params read by constraints).
+        // volume is NOT in cone (no constraint reads it).
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+
+        let e = "Bracket";
+        let c0 = NodeId::Constraint(ConstraintNodeId::new(e, 0));
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+        let c2 = NodeId::Constraint(ConstraintNodeId::new(e, 2));
+
+        let mut reg = DemandRegistry::new();
+        reg.add_demand(c0.clone());
+        reg.add_demand(c1.clone());
+        reg.add_demand(c2.clone());
+        reg.rebuild_cone(&graph);
+
+        // Constraints themselves
+        assert!(reg.is_demanded(&c0));
+        assert!(reg.is_demanded(&c1));
+        assert!(reg.is_demanded(&c2));
+        // Params read by constraints
+        assert!(reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "thickness"))));
+        assert!(reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "width"))));
+        assert!(reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "hole_diameter"))));
+        // volume NOT in cone (not read by any constraint)
+        assert!(!reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "volume"))));
+        // height NOT in cone (not read by any constraint)
+        assert!(!reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "height"))));
+        // fillet_radius NOT in cone
+        assert!(!reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "fillet_radius"))));
+    }
 }
