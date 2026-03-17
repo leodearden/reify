@@ -1,7 +1,10 @@
 // EvaluationGraph: typed graph nodes backed by PersistentMap.
 
 use reify_compiler::{CompiledGeometryOp, ValueCellKind};
-use reify_types::{CompiledExpr, ConstraintNodeId, ContentHash, RealizationNodeId, Type, ValueCellId};
+use reify_types::{
+    CompiledExpr, ConstraintNodeId, ContentHash, PersistentMap, RealizationNodeId, Type,
+    ValueCellId,
+};
 
 /// A value cell node in the evaluation graph.
 /// Corresponds to a param or let binding in the topology.
@@ -30,6 +33,15 @@ pub struct RealizationNodeData {
     pub id: RealizationNodeId,
     pub operations: Vec<CompiledGeometryOp>,
     pub content_hash: ContentHash,
+}
+
+/// The evaluation graph: holds all typed nodes in PersistentMaps
+/// for O(1) clone with structural sharing.
+#[derive(Debug, Clone, Default)]
+pub struct EvaluationGraph {
+    pub value_cells: PersistentMap<ValueCellId, ValueCellNode>,
+    pub constraints: PersistentMap<ConstraintNodeId, ConstraintNodeData>,
+    pub realizations: PersistentMap<RealizationNodeId, RealizationNodeData>,
 }
 
 #[cfg(test)]
