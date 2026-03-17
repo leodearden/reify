@@ -305,7 +305,7 @@ mod tests {
         // Build graph: param a, param b, let c = a + b, constraint C0: c > 0
         // Demanding C0 → cone should include: C0, c, a, b (depth-2 transitive)
         use crate::graph::EvaluationGraph;
-        use reify_test_support::{TopologyTemplateBuilder, gt, literal, value_ref};
+        use reify_test_support::{TopologyTemplateBuilder, gt};
         use reify_types::{BinOp, CompiledExpr, Type, Value};
 
         let e = "T";

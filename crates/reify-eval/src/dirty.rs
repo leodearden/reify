@@ -511,11 +511,9 @@ mod tests {
     #[test]
     fn eval_set_dirty_inside_demand_cone() {
         use crate::demand::DemandRegistry;
-        use crate::deps::DependencyTrace;
         use crate::dirty::compute_eval_set;
         use crate::graph::EvaluationGraph;
         use reify_test_support::bracket_compiled_module;
-        use std::collections::HashMap;
 
         let module = bracket_compiled_module();
         let graph = EvaluationGraph::from_templates(&module.templates);
