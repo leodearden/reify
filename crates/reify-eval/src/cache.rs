@@ -1100,4 +1100,96 @@ mod tests {
             Some(&Value::Int(11)), // 10 + 1, NOT stale 6
         );
     }
+
+    #[test]
+    fn triple_fan_in_dirty_reasons_multiple_independent_reasons() {
+        use reify_test_support::builders::*;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_types::{
+            BinOp, CompiledExpr, CompiledExprKind, ContentHash, ModulePath, Type, VersionId,
+        };
+
+        let e = "T";
+
+        // Build conditional: if a > 0 then 1 else 1 (always 1, reads: [a])
+        let condition = gt(
+            value_ref_typed(e, "a", Type::Int),
+            literal(Value::Int(0)),
+        );
+        let then_branch = literal(Value::Int(1));
+        let else_branch = literal(Value::Int(1));
+        let conditional = CompiledExpr {
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(condition),
+                then_branch: Box::new(then_branch.clone()),
+                else_branch: Box::new(else_branch),
+            },
+            result_type: Type::Int,
+            content_hash: ContentHash::of_str("if_a_gt_0_then_1_else_1"),
+        };
+
+        // let y = (a + b) + x (reads: [a, b, x]) — triple fan-in
+        let y_expr = binop(
+            BinOp::Add,
+            binop(
+                BinOp::Add,
+                value_ref_typed(e, "a", Type::Int),
+                value_ref_typed(e, "b", Type::Int),
+            ),
+            value_ref_typed(e, "x", Type::Int),
+        );
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("T")
+                    .param(e, "a", Type::Int, Some(literal(Value::Int(5))))
+                    .param(e, "b", Type::Int, Some(literal(Value::Int(100))))
+                    .let_binding(e, "x", Type::Int, conditional)
+                    .let_binding(e, "y", Type::Int, y_expr)
+                    .build(),
+            )
+            .build();
+
+        let checker = MockConstraintChecker::new();
+        let mut engine = crate::Engine::new(Box::new(checker), None);
+
+        // First eval: a=5, b=100, x=1, y=5+100+1=106
+        let result1 = engine.eval_cached(&module, VersionId(1));
+        assert_eq!(result1.stats.cache_misses, 4); // a, b, x, y
+        assert_eq!(
+            result1.eval_result.values.get(&ValueCellId::new(e, "y")),
+            Some(&Value::Int(106))
+        );
+
+        // Change only a from 5 to 10. x early-cutoffs.
+        // y reads [a, b, x]. Dirty reason for y: {a}.
+        // x early-cutoff removes x-reason (but x wasn't a reason).
+        // y stays dirty because reason {a} is unresolved.
+        engine.set_param_and_invalidate(
+            &ValueCellId::new(e, "a"),
+            Value::Int(10),
+        );
+
+        let result2 = engine.eval_cached(&module, VersionId(2));
+        assert!(result2.stats.early_cutoffs >= 1, "expected early cutoff for x");
+        // y must be re-evaluated: y = 10 + 100 + 1 = 111
+        assert_eq!(
+            result2.eval_result.values.get(&ValueCellId::new(e, "y")),
+            Some(&Value::Int(111))
+        );
+
+        // Now change b from 100 to 200. x doesn't depend on b.
+        // y reads [a, b, x]. Dirty reason for y: {b}.
+        engine.set_param_and_invalidate(
+            &ValueCellId::new(e, "b"),
+            Value::Int(200),
+        );
+
+        let result3 = engine.eval_cached(&module, VersionId(3));
+        // y must be re-evaluated because of b: y = 10 + 200 + 1 = 211
+        assert_eq!(
+            result3.eval_result.values.get(&ValueCellId::new(e, "y")),
+            Some(&Value::Int(211))
+        );
+    }
 }
