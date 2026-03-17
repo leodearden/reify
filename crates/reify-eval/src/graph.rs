@@ -1,1 +1,60 @@
 // EvaluationGraph: typed graph nodes backed by PersistentMap.
+
+#[cfg(test)]
+mod tests {
+    use reify_compiler::ValueCellKind;
+    use reify_types::{CompiledExpr, ContentHash, Type, Value, ValueCellId};
+
+    use super::*;
+
+    #[test]
+    fn value_cell_node_construction() {
+        let id = ValueCellId::new("Bracket", "width");
+        let node = ValueCellNode {
+            id: id.clone(),
+            kind: ValueCellKind::Param,
+            cell_type: Type::length(),
+            default_expr: Some(CompiledExpr::literal(Value::length(0.08), Type::length())),
+            content_hash: ContentHash::of_str("width"),
+        };
+
+        assert_eq!(node.id, id);
+        assert_eq!(node.kind, ValueCellKind::Param);
+        assert_eq!(node.cell_type, Type::length());
+        assert!(node.default_expr.is_some());
+        assert_eq!(node.content_hash, ContentHash::of_str("width"));
+    }
+
+    #[test]
+    fn value_cell_node_let_kind() {
+        let id = ValueCellId::new("Bracket", "volume");
+        let node = ValueCellNode {
+            id: id.clone(),
+            kind: ValueCellKind::Let,
+            cell_type: Type::Real,
+            default_expr: None,
+            content_hash: ContentHash::of_str("volume"),
+        };
+
+        assert_eq!(node.kind, ValueCellKind::Let);
+        assert!(node.default_expr.is_none());
+    }
+
+    #[test]
+    fn value_cell_node_debug_and_clone() {
+        let node = ValueCellNode {
+            id: ValueCellId::new("Bracket", "width"),
+            kind: ValueCellKind::Param,
+            cell_type: Type::length(),
+            default_expr: None,
+            content_hash: ContentHash::of_str("width"),
+        };
+
+        let debug = format!("{:?}", node);
+        assert!(debug.contains("ValueCellNode"));
+
+        let cloned = node.clone();
+        assert_eq!(cloned.id, node.id);
+        assert_eq!(cloned.kind, node.kind);
+    }
+}
