@@ -41,21 +41,45 @@ impl TraceRecorder {
 pub struct ReverseDependencyIndex {
     /// cell → set of nodes that depend on it
     index: HashMap<ValueCellId, HashSet<NodeId>>,
+    /// node → set of cells it reads (for efficient remove_node)
+    node_reads: HashMap<NodeId, HashSet<ValueCellId>>,
 }
 
 impl ReverseDependencyIndex {
     /// Build a reverse index from a complete set of node traces.
     pub fn build(traces: &HashMap<NodeId, DependencyTrace>) -> Self {
-        let mut index: HashMap<ValueCellId, HashSet<NodeId>> = HashMap::new();
+        let mut result = Self {
+            index: HashMap::new(),
+            node_reads: HashMap::new(),
+        };
         for (node, trace) in traces {
-            for cell in &trace.reads {
-                index
-                    .entry(cell.clone())
-                    .or_default()
-                    .insert(node.clone());
+            result.add_trace(node.clone(), trace);
+        }
+        result
+    }
+
+    /// Add a single node's trace to the index.
+    pub fn add_trace(&mut self, node: NodeId, trace: &DependencyTrace) {
+        let cells = self.node_reads.entry(node.clone()).or_default();
+        for cell in &trace.reads {
+            cells.insert(cell.clone());
+            self.index
+                .entry(cell.clone())
+                .or_default()
+                .insert(node.clone());
+        }
+    }
+
+    /// Remove a node from the index, cleaning up all its cell entries.
+    /// O(number of cells the node reads) rather than O(all cells).
+    pub fn remove_node(&mut self, node: &NodeId) {
+        if let Some(cells) = self.node_reads.remove(node) {
+            for cell in &cells {
+                if let Some(dependents) = self.index.get_mut(cell) {
+                    dependents.remove(node);
+                }
             }
         }
-        Self { index }
     }
 
     /// Return the set of nodes that depend on the given cell.
