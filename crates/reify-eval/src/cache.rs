@@ -684,6 +684,31 @@ mod tests {
         assert_eq!(store.len(), 2);
     }
 
+    #[test]
+    fn cache_store_resolution_result() {
+        use reify_types::{Freshness, ResolutionNodeId, Value, VersionId};
+        use std::collections::HashMap;
+
+        let mut store = CacheStore::new();
+        let res_id = ResolutionNodeId::new("A", 0);
+        let node = NodeId::Resolution(res_id);
+
+        let mut values = HashMap::new();
+        values.insert(ValueCellId::new("A", "x"), Value::Real(1.0));
+        let result = CachedResult::Resolution(values);
+        let expected_hash = result.content_hash();
+
+        let version = VersionId(1);
+        let trace = DependencyTrace { reads: vec![ValueCellId::new("A", "x")] };
+
+        let outcome = store.record_evaluation(node.clone(), result, version, trace);
+        assert_eq!(outcome, EvalOutcome::Changed);
+
+        let entry = store.get(&node).unwrap();
+        assert_eq!(entry.freshness, Freshness::Final);
+        assert_eq!(entry.result_hash, expected_hash);
+    }
+
     // --- EvalOutcome tests ---
 
     #[test]
