@@ -683,4 +683,56 @@ mod tests {
             other => panic!("expected Real, got {:?}", other),
         }
     }
+
+    // --- eval_expr_traced tests ---
+
+    #[test]
+    fn traced_value_ref_calls_callback() {
+        let expr = vref("Bracket", "width", Type::length());
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("Bracket", "width"), mm_val(80.0));
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert!(!result.is_undef());
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0], ValueCellId::new("Bracket", "width"));
+    }
+
+    #[test]
+    fn traced_literal_no_callback() {
+        let expr = lit(Value::Int(42), Type::Int);
+        let values = ValueMap::new();
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(result, Value::Int(42));
+        assert!(reads.is_empty());
+    }
+
+    #[test]
+    fn traced_binop_two_value_refs() {
+        let left = vref("B", "width", Type::length());
+        let right = vref("B", "height", Type::length());
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::length());
+
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "width"), mm_val(80.0));
+        values.insert(ValueCellId::new("B", "height"), mm_val(100.0));
+
+        let mut reads = Vec::new();
+        eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(reads.len(), 2);
+        assert_eq!(reads[0], ValueCellId::new("B", "width"));
+        assert_eq!(reads[1], ValueCellId::new("B", "height"));
+    }
 }
