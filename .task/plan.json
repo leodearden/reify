@@ -1,94 +1,223 @@
 {
-  "task_id": "16",
-  "title": "Add test for consecutive edit_param() calls",
-  "modules": ["crates/reify-eval"],
-  "analysis": "The bracket module has dependency structure: volume reads {width, height, thickness}; C0 reads {thickness}; C1 reads {width, thickness}; C2 reads {hole_diameter, thickness}. When width is edited first, dirty cone = {volume, C1}. When height is edited second, dirty cone = {volume} only (C1 does NOT read height). The engine's edit_param() clones the current snapshot (O(1) via PersistentMap), computes a fresh dirty cone from the changed set against the static reverse_index, intersects with demand, and re-evaluates only affected Value nodes. Consecutive calls should work correctly because: (1) current_snapshot is updated after each edit_param, (2) reverse_index/trace_map are topology-based and stable across edits, (3) cache entries are properly updated with each eval. No implementation changes are expected — this is a test-only task verifying the fundamental incremental use case that was identified as missing during task 14 review. The test follows existing patterns in incremental.rs: bracket fixture, MockConstraintChecker, eval() cold start, edit_param() calls, last_eval_set() inspection, cache_store() freshness checks, and snapshot provenance checks. Expected values: initial volume=4e-5 (0.08*0.10*0.005), after width→0.1: volume=5e-5 (0.1*0.10*0.005), after height→0.12: volume=6e-5 (0.1*0.12*0.005).\n\n**Review feedback (assertion_scope_mismatch):** The assertion at step (6) comparing `pending_transition_count` against `cached_value_count` derived from `last_eval_set()` (= `actual_eval_set`, post-cutoff) is fragile. `pending_transition_count` is incremented in `mark_pending()` for every node in the full pre-cutoff `eval_set`, while `last_eval_set()` stores only the post-cutoff `actual_eval_set`. In the presence of early cutoff, nodes are marked pending (incrementing the counter) then skipped and restored via `restore_final()` which does NOT decrement the counter. The current assertion passes only because the second edit's eval_set has no early cutoff (eval_set == actual_eval_set == {volume}), which is a coincidence of the test fixture rather than a stated invariant. Fix: assert `pending_transition_count` directly against the known constant 1 (only the volume Value node) with a comment documenting the cutoff-free scenario and the semantic mismatch between the counter (scoped to full eval_set) and `last_eval_set()` (scoped to actual_eval_set).",
-  "prerequisites": [],
+  "task_id": "19",
+  "title": "Argmin solver implementation in reify-constraints",
+  "modules": ["crates/reify-constraints"],
+  "analysis": "Task 19 requires implementing a DimensionalSolver in the reify-constraints crate that uses the argmin pure-Rust optimization library to solve for auto parameters satisfying dimensional constraints. The existing crate has SimpleConstraintChecker implementing ConstraintChecker; we now implement ConstraintSolver.\n\nKey types already defined in reify-types: ConstraintSolver trait (fn solve(&self, problem: &ResolutionProblem) -> SolveResult), ResolutionProblem (auto_params, constraints, current_values, objective), AutoParam (id, param_type, bounds), SolveResult (Solved/Infeasible/NoProgress), OptimizationObjective (Minimize/Maximize).\n\nThe solver must: (1) map auto_params to an f64 parameter vector, (2) evaluate constraint expressions using reify_expr::eval_expr by building a ValueMap with trial values, (3) compute a penalty objective (sum of squared violations for feasibility, or augmented objective for optimization), (4) use argmin's Nelder-Mead algorithm (derivative-free, robust for small-dimensional CAD problems), (5) handle bounds by clamping, (6) reconstruct Value::Scalar results with correct dimensions.\n\nThe solver works in SI units internally. AutoParam.param_type tells us the dimension. Value::Scalar stores si_value. eval_expr works on ValueMap with Value::Scalar entries. The bridge function creates a ValueMap from the parameter vector (each f64 maps to a Value::Scalar with the correct dimension from the corresponding AutoParam), evaluates each constraint expression, and computes violation penalties.\n\nNelder-Mead from argmin requires implementing the CostFunction trait with a cost() method. No gradient needed. For feasibility (no objective), the cost is sum of squared constraint violations. For optimization, the cost is: objective_value + penalty_weight * sum_of_squared_violations.\n\nConstraint violation magnitude: For comparison constraints, eval_expr returns Bool(true/false). We need continuous violation magnitude for smooth optimization. Strategy: evaluate each constraint's sub-expressions to get numeric difference. For a constraint like 'x > 2mm', when x=1mm, the violation is (2mm - 1mm) = 0.001 SI. For compound constraints (AND of comparisons), evaluate each sub-constraint individually. For non-decomposable boolean constraints, use a fixed penalty when violated.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add argmin, argmin-math, and ndarray dependencies to crates/reify-constraints/Cargo.toml. Use argmin 0.10, argmin-math 0.4 with ndarray_latest-serde feature, ndarray 0.16. Verify versions compile with `cargo check -p reify-constraints`.",
+      "status": "done",
+      "commit": "4733cc7",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write test `consecutive_edit_param_only_reevaluates_affected_nodes` in crates/reify-eval/tests/incremental.rs. The test performs: (1) Cold-start eval of bracket module, verify volume=4e-5 and all 6 values present. (2) First edit_param: width 0.08→0.1, verify volume recomputed to 5e-5, eval_set contains volume+C1 but NOT height/fillet_radius/hole_diameter/C0/C2, other params unchanged. (3) Second edit_param: height 0.10→0.12, verify volume recomputed to 6e-5, eval_set contains ONLY volume (NOT C1 — the key assertion proving no residual dirty state from first edit), width still 0.1 (preserved from first edit), other params unchanged. (4) Verify snapshot provenance chain: snapshot ID=2, parent=SnapshotId(1), changed={height}. (5) Verify all 6 value cell cache entries have Freshness::Final after both edits. (6) Verify pending_transition_count equals the number of cached Value nodes in the second edit's eval set.",
+      "description": "Write failing test in solver.rs: DimensionalSolver struct exists, implements ConstraintSolver trait, can be used as Box<dyn ConstraintSolver>. Test solve() on empty problem (no auto_params, no constraints) returns SolveResult::Solved with empty values map.",
       "status": "done",
-      "commit": "2d4252c"
+      "commit": "3c0dfa2"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Run the test suite and verify the new test passes. If it passes (expected), this step is a no-op commit. If it fails, diagnose and fix the engine's consecutive edit_param handling — likely in edit_param's snapshot chaining, dirty cone computation, or cache state management between consecutive calls.",
+      "description": "Create crates/reify-constraints/src/solver.rs with DimensionalSolver struct and minimal ConstraintSolver impl. Add `mod solver; pub use solver::DimensionalSolver;` to lib.rs. Implement solve() to handle the trivial case: no auto_params returns Solved { values: empty }.",
       "status": "done",
-      "commit": "2d4252c"
+      "commit": "3fbe633"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Fix the assertion_scope_mismatch in section (6) of the test (lines 650-659). Replace the `cached_value_count` derivation from `eval_set2` (which is `last_eval_set()` = post-cutoff `actual_eval_set`) with a direct assertion against the known constant `1`. The second edit changes only `height`, whose dirty cone intersected with demand yields exactly `{volume}` — one Value node. No early cutoff occurs in this scenario because `volume` is the terminal node (no downstream dependents in the eval set). Add a comment block explaining: (a) `pending_transition_count` counts `mark_pending()` calls over the full pre-cutoff `eval_set`, not the post-cutoff `actual_eval_set` stored in `last_eval_set()`, (b) in the presence of early cutoff these two sets diverge because `restore_final()` does not decrement the counter, (c) the assertion uses a known constant (1) because this test's second edit has no early cutoff (eval_set == actual_eval_set == {volume}), making the distinction moot for this specific case but documenting it for future maintainers.",
+      "description": "Write failing test: build_trial_values helper. Given a base ValueMap, a list of AutoParams with LENGTH dimension, and f64 parameter values, the resulting ValueMap should contain Value::Scalar entries with correct si_value and dimension for each auto param, while preserving non-auto values from the base map.",
       "status": "done",
-      "commit": "2de1c61"
+      "commit": "cccdec8"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Run the full test suite for crates/reify-eval to verify the updated assertion passes and no regressions were introduced. The assertion value (1) should match the previous behavior since eval_set2 contained exactly one Value node (volume).",
+      "description": "Implement build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> ValueMap. Clone base ValueMap (O(1) via PersistentMap), insert each auto param as Value::Scalar { si_value: x[i], dimension from param.param_type }. Also implement extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> to get starting values from current_values or bounds midpoint or 0.01 default.",
       "status": "done",
-      "commit": "2de1c61"
+      "commit": "b64c2bf"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing test: constraint violation computation. Test compute_total_violation() for: (1) single satisfied constraint thickness > 2mm with thickness=5mm returns 0.0, (2) single violated constraint thickness > 2mm with thickness=1mm returns positive value, (3) multiple constraints with mixed satisfaction returns sum of violations from violated constraints only.",
+      "status": "done",
+      "commit": "d0ad0f9"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Implement compute_total_violation(constraints, values: &ValueMap) -> f64. For each constraint, evaluate with eval_expr. If Bool(true), violation=0. If Bool(false), compute violation magnitude by re-evaluating comparison sub-expressions to get numeric difference (for Gt: max(0, rhs - lhs)^2, etc.). For non-decomposable Bool(false), use fixed penalty 1.0. If Undef, use large penalty. Return sum.",
+      "status": "done",
+      "commit": "0ff4495"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing test: single auto param feasibility solving. Problem: auto param 'thickness' (LENGTH, bounds Some((0.001, 0.1))), constraints [thickness > 2mm AND thickness < 20mm]. Expect SolveResult::Solved with thickness si_value between 0.002 and 0.020.",
+      "status": "done",
+      "commit": "7acf2d9"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Implement the argmin Nelder-Mead integration. Define ConstraintCostFunction struct holding problem data, implement argmin::core::CostFunction trait (param type = Vec<f64>, output = f64). Wire DimensionalSolver::solve(): build initial simplex, configure NelderMead, run with max iterations, extract solution. Check residual for feasibility.",
+      "status": "done",
+      "commit": "edc6359"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing test: infeasible constraints. Problem: auto param 'x' (LENGTH), constraints [x > 10mm AND x < 5mm]. These are contradictory. Expect SolveResult::Infeasible with non-empty diagnostics.",
+      "status": "done",
+      "commit": "8de8a5e"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Implement infeasibility detection: after solver converges, if final cost exceeds threshold (e.g., 1e-12), return SolveResult::Infeasible with diagnostic messages listing which constraints remain violated. Re-evaluate each constraint individually to build diagnostics.",
+      "status": "done",
+      "commit": "edc6359"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test: optimization with Minimize objective. Problem: auto param 'thickness' (LENGTH, bounds (0.001, 0.1)), constraints [thickness > 2mm, thickness < 20mm], objective: Minimize(thickness_expr). Expect Solved with thickness close to 2mm (within tolerance, e.g. < 3mm).",
+      "status": "done",
+      "commit": "d4e9f70"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Implement objective optimization in the cost function: when objective is Some, cost = eval_objective(x) + penalty_weight * total_violation. For Minimize(expr), eval_objective returns the expression's f64 value. For Maximize(expr), negate it. Use penalty_weight = 1e6 to strongly enforce constraints while steering toward optimal.",
+      "status": "done",
+      "commit": "97038eb"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test: multi-parameter solving. Problem: auto params [width (LENGTH, bounds (0.01, 1.0)), height (LENGTH, bounds (0.01, 1.0))], constraints [width > 50mm, height > 50mm, width + height < 200mm]. Expect Solved with width > 0.05 and height > 0.05 and width+height < 0.2.",
+      "status": "done",
+      "commit": "6dc9bb6"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Ensure multi-parameter solving works. Verify Nelder-Mead simplex initialization generates N+1 vertices for N parameters. The cost function already handles multiple auto params through the ValueMap bridge. Fix any issues with simplex construction for N>1.",
+      "status": "done",
+      "commit": "6dc9bb6"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test: bounds handling. (1) AutoParam with bounds: solution stays within bounds. (2) AutoParam without bounds but LENGTH dimension: solver assigns default bounds (positive range) and finds a solution. (3) Test that already-satisfied constraints return Solved immediately without optimization.",
+      "status": "done",
+      "commit": "0f959a9"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement default bounds based on dimension: LENGTH -> (1e-6, 10.0), ANGLE -> (-2*PI, 2*PI), DIMENSIONLESS -> (-1e6, 1e6). Implement bounds clamping in cost function evaluation. Add early-exit: if all constraints already satisfied with current_values, return Solved immediately with auto param values from current_values.",
+      "status": "done",
+      "commit": "213a303"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write integration test in tests/solver_integration.rs using reify-test-support helpers. Test: single param feasibility, optimization with Maximize, and Send+Sync verification. Verify DimensionalSolver works through the trait object interface (Box<dyn ConstraintSolver>).",
+      "status": "done",
+      "commit": "a411f6b"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Final verification: run `cargo test --workspace` to ensure no regressions. Fix any compilation or test issues. Verify all exit criteria: feasibility solving, optimization, infeasible detection, multi-param solving.",
+      "status": "done",
+      "commit": "a411f6b"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use the bracket_compiled_module() fixture rather than a custom module",
-      "rationale": "The bracket fixture has the ideal dependency structure: volume depends on both width and height, C1 depends on width but not height. This lets us verify that the second edit's eval set is strictly smaller than the first's — proving that only the newly-changed parameter's dependents are re-evaluated, with no residual dirty state from the first edit."
+      "decision": "Use Nelder-Mead as the default (and only for now) optimization algorithm",
+      "rationale": "Nelder-Mead is derivative-free, robust for small-dimensional problems (1-10 parameters typical in CAD), and handles non-smooth objective functions well. CAD constraint problems are typically low-dimensional, making Nelder-Mead's O(n^2) scaling acceptable. The task description explicitly recommends it."
     },
     {
-      "decision": "Single comprehensive test function rather than multiple small tests",
-      "rationale": "The consecutive-edit scenario is inherently sequential — each edit depends on the state left by the previous one. Splitting into separate tests would either require duplicating setup or lose the ability to verify cross-edit invariants (e.g., snapshot ID=2 with parent=1, width value preserved from first edit into second). The task description explicitly asks for a single test that chains edits."
+      "decision": "Penalty-based approach for constraint handling rather than true constrained optimization",
+      "rationale": "Argmin's Nelder-Mead doesn't natively support constraints. Using sum-of-squared-violations as penalty terms is simple, effective for small problems, and avoids the complexity of augmented Lagrangian methods. For feasibility solving (no objective), the penalty IS the objective. For optimization, we add penalty * weight to the objective."
     },
     {
-      "decision": "Verify eval_set exclusions explicitly (C1 NOT in second eval set)",
-      "rationale": "The most important assertion is that the second edit_param(height) does NOT re-evaluate C1 (which was in the eval set for the first edit_param(width)). This is the core incremental guarantee: each edit computes a fresh dirty cone from just its changed set, not an accumulated dirty set across edits."
+      "decision": "Work entirely in SI units (f64) internally, reconstructing Value::Scalar with dimensions on output",
+      "rationale": "eval_expr already works with SI values internally (Value::Scalar.si_value). The solver parameter vector uses raw f64 SI values. On output, we wrap results back into Value::Scalar with the dimension from AutoParam.param_type. This avoids unit conversion complexity."
     },
     {
-      "decision": "Check snapshot provenance chain across consecutive edits",
-      "rationale": "Verifying that snapshot 2's parent is SnapshotId(1) — not SnapshotId(0) — confirms that edit_param correctly chains from the most recent snapshot rather than always branching from the initial eval(). This is a structural correctness property unique to the consecutive-edit scenario."
+      "decision": "Compute continuous violation magnitude from constraint sub-expressions",
+      "rationale": "Bool(true/false) from eval_expr tells us satisfied/violated but not HOW violated. For gradient-free optimization, we need a smooth cost landscape. For comparison constraints (x > y), we decompose the expression to compute (y - x) when violated, giving the optimizer directional signal. For compound AND/OR constraints, we evaluate sub-constraints individually."
     },
     {
-      "decision": "Verify Freshness::Final for all 6 value cells after both edits",
-      "rationale": "This catches a potential bug where nodes dirtied by the first edit but cleaned up could be left in an inconsistent state after the second edit_param completes. The freshness postcondition (all nodes Final) must hold after every edit_param call, not just the first one."
+      "decision": "Clamp parameters to bounds in cost function rather than penalizing bound violations",
+      "rationale": "Clamping is simpler and ensures the solver never evaluates physically meaningless values (e.g., negative lengths). This is standard practice in CAD solvers. Bounds are hard constraints that should never be violated."
     },
     {
-      "decision": "Edit width first, then height (not the reverse)",
-      "rationale": "Width has more dependents (volume + C1) than height (volume only). By editing the parameter with more dependents first and the one with fewer dependents second, we create the strongest test for the 'no residual dirty state' property: the second edit's eval set must be strictly smaller despite the first edit having touched more nodes."
+      "decision": "Place solver in a separate solver.rs file, keep SimpleConstraintChecker in lib.rs",
+      "rationale": "The solver is substantial code (argmin integration, cost function struct, helpers). Keeping it separate from the checker maintains clean separation. lib.rs re-exports DimensionalSolver."
     },
     {
-      "decision": "Assert pending_transition_count against known constant (1) instead of deriving from last_eval_set()",
-      "rationale": "pending_transition_count is scoped to the full pre-cutoff eval_set (every node passed to mark_pending()), while last_eval_set() returns actual_eval_set (post-cutoff). These coincide in this test because the second edit has no early cutoff, but the derivation from last_eval_set() creates a false equivalence that would silently break if the test fixture changed to include early cutoff scenarios. A hardcoded constant with an explanatory comment is more honest about what the assertion actually verifies and why."
+      "decision": "Early-exit when all constraints are already satisfied",
+      "rationale": "If current_values already satisfy all constraints, running the optimizer is wasteful. The check is cheap (evaluate all constraint expressions) compared to Nelder-Mead iterations. Common case during incremental evaluation where only some values changed."
+    },
+    {
+      "decision": "Infeasibility detection via residual threshold after solver convergence",
+      "rationale": "If the optimizer converges but final cost exceeds a threshold (~1e-12), the constraints are likely infeasible. Pragmatic approach -- proving infeasibility analytically is much harder. The threshold allows for floating-point imprecision."
+    },
+    {
+      "decision": "Default bounds based on dimension type when AutoParam.bounds is None",
+      "rationale": "LENGTH parameters should default to positive values (physical lengths can't be negative). ANGLE parameters have a natural range. This prevents the solver from exploring physically meaningless regions. Defaults are wide enough to not over-constrain."
     }
   ],
   "reuse": [
     {
-      "what": "bracket_compiled_module() fixture",
-      "where": "reify_test_support::fixtures",
-      "how": "Provides 5 params + volume let binding + 3 constraints with known dependency structure. Width and height have different dependent sets, making them ideal for consecutive edit testing."
+      "what": "reify_expr::eval_expr()",
+      "where": "crates/reify-expr/src/lib.rs",
+      "how": "Core expression evaluation function. The solver calls this to evaluate constraint expressions and objective expressions with trial parameter values in a ValueMap."
     },
     {
-      "what": "MockConstraintChecker",
-      "where": "reify_test_support::mocks",
-      "how": "Standard mock for Engine::new() — constraints are tracked in eval set but not evaluated by edit_param, so the mock's behavior doesn't matter."
+      "what": "ValueMap with structural-sharing clone",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "Clone the problem's current_values, insert trial auto-param values, pass to eval_expr. PersistentMap backing makes cloning O(1) which is critical since the solver evaluates many trial points."
     },
     {
-      "what": "Existing test patterns from incremental.rs",
-      "where": "crates/reify-eval/tests/incremental.rs",
-      "how": "Follow identical setup pattern (bracket_compiled_module → MockConstraintChecker → Engine::new → eval → edit_param), assertion patterns (last_eval_set contains/not-contains, cache_store freshness checks, snapshot provenance), and import set. All needed imports already present in the file."
+      "what": "Value::Scalar, Value::as_f64(), Value::is_undef(), Value::length()",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "Construct Value::Scalar from solver f64 + AutoParam dimension. Use as_f64() to extract numeric results from eval_expr. Use is_undef() to detect evaluation failures."
     },
     {
-      "what": "Engine accessor methods for test inspection",
-      "where": "Engine::last_eval_set(), Engine::cache_store(), Engine::snapshot()",
-      "how": "These test-inspection APIs are already exposed and used by existing tests. No new public API or test infrastructure needed."
+      "what": "DimensionVector constants (LENGTH, ANGLE, DIMENSIONLESS, etc.)",
+      "where": "crates/reify-types/src/dimension.rs",
+      "how": "Used to assign default bounds based on dimension type and to construct Value::Scalar results with correct dimensions."
     },
     {
-      "what": "NodeId, Freshness, SnapshotId, SnapshotProvenance types",
-      "where": "reify_eval::cache::NodeId, reify_types::{Freshness, SnapshotId, SnapshotProvenance}",
-      "how": "Already imported at the top of incremental.rs. Used for eval_set membership checks, cache freshness assertions, and snapshot provenance verification."
+      "what": "ConstraintSolver trait, ResolutionProblem, SolveResult, AutoParam, OptimizationObjective",
+      "where": "crates/reify-types/src/constraint.rs",
+      "how": "All type definitions already in reify-types. DimensionalSolver implements ConstraintSolver. Consumes ResolutionProblem, produces SolveResult."
+    },
+    {
+      "what": "Test helpers: mm(), vcid(), cnid(), literal(), gt(), lt(), and(), value_ref()",
+      "where": "crates/reify-test-support/src/values.rs and builders.rs",
+      "how": "Reuse in solver tests to build constraint expressions and expected values, matching patterns used in existing boundary3_checker.rs tests."
+    },
+    {
+      "what": "CompiledExpr::literal(), ::value_ref(), ::binop()",
+      "where": "crates/reify-types/src/expr.rs",
+      "how": "Construct constraint expressions for solver test cases."
+    },
+    {
+      "what": "Diagnostic and Severity types",
+      "where": "crates/reify-types/src/diagnostics.rs",
+      "how": "Used in SolveResult::Infeasible to report which constraints could not be satisfied."
     }
   ]
 }
