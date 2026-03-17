@@ -315,13 +315,48 @@ impl Engine {
                     objective: None,
                 };
 
+                let parent_snap_id = snapshot.id;
+
                 match solver.solve(&problem) {
                     SolveResult::Solved { values: solver_values } => {
                         // Update values map with resolved values
+                        let mut resolved_ids = std::collections::HashSet::new();
                         for (id, val) in &solver_values {
                             values.insert(id.clone(), val.clone());
                             resolved_params.insert(id.clone(), val.clone());
+                            resolved_ids.insert(id.clone());
+
+                            // Update snapshot values with (resolved_val, Determined)
+                            snapshot.values.insert(
+                                id.clone(),
+                                (val.clone(), DeterminacyState::Determined),
+                            );
+
+                            // Update cache
+                            let node_id = NodeId::Value(id.clone());
+                            let trace = DependencyTrace::default();
+                            let cached_result =
+                                CachedResult::Value(val.clone(), DeterminacyState::Determined);
+                            self.cache.record_evaluation(
+                                node_id,
+                                cached_result,
+                                VersionId(version_id),
+                                trace,
+                            );
                         }
+
+                        // Create child snapshot with Resolution provenance
+                        let res_snapshot_id = self.next_snapshot_id;
+                        self.next_snapshot_id += 1;
+                        let res_version_id = self.next_version_id;
+                        self.next_version_id += 1;
+                        snapshot.id = SnapshotId(res_snapshot_id);
+                        snapshot.version = VersionId(res_version_id);
+                        snapshot.provenance = SnapshotProvenance::Resolution {
+                            scope: template.name.clone(),
+                            resolved: resolved_ids,
+                            parent: parent_snap_id,
+                        };
                     }
                     SolveResult::Infeasible { diagnostics: solver_diags } => {
                         diagnostics.extend(solver_diags);
