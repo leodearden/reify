@@ -257,6 +257,12 @@ impl CacheStore {
         }
     }
 
+    /// Get the dirty reasons for a node, if any. Returns None if the node
+    /// is not dirty.
+    pub fn get_dirty_reasons(&self, node: &NodeId) -> Option<&std::collections::HashSet<ValueCellId>> {
+        self.dirty_reasons.get(node)
+    }
+
     /// Version fast path: if the node is cached and its basis_version matches
     /// the current version, return a clone of the cached result without
     /// re-evaluation.
@@ -381,7 +387,7 @@ mod tests {
         );
 
         // Invalidate dependents of a
-        store.invalidate_dependents(&[a]);
+        store.invalidate_dependents(&[a.clone()]);
 
         // x should be marked dirty (depends on a) but entry still exists
         assert!(store.is_dirty(&node_x));
@@ -389,6 +395,14 @@ mod tests {
         // y should NOT be dirty (depends on b, not a)
         assert!(!store.is_dirty(&node_y));
         assert!(store.get(&node_y).is_some());
+
+        // Verify dirty_reasons are correctly populated
+        let x_reasons = store.get_dirty_reasons(&node_x).unwrap();
+        assert!(x_reasons.contains(&a), "x's dirty reasons should include a");
+        assert_eq!(x_reasons.len(), 1, "x should have exactly one dirty reason");
+
+        // y should have no dirty reasons
+        assert!(store.get_dirty_reasons(&node_y).is_none());
     }
 
     // --- record_evaluation tests ---
