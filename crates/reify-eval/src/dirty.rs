@@ -415,4 +415,73 @@ mod tests {
         assert!(c1_pos > w_pos);
         assert!(c1_pos > t_pos);
     }
+
+    #[test]
+    fn eval_set_empty_dirty() {
+        use crate::demand::DemandRegistry;
+        use crate::deps::DependencyTrace;
+        use crate::dirty::compute_eval_set;
+        use std::collections::HashMap;
+
+        let dirty: HashSet<NodeId> = HashSet::new();
+        let demand = DemandRegistry::new();
+        let traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        let eval_set = compute_eval_set(&dirty, &demand, &traces);
+        assert!(eval_set.is_empty());
+    }
+
+    #[test]
+    fn eval_set_dirty_outside_demand_cone() {
+        use crate::demand::DemandRegistry;
+        use crate::deps::DependencyTrace;
+        use crate::dirty::compute_eval_set;
+        use std::collections::HashMap;
+
+        // volume is dirty but not demanded
+        let volume = NodeId::Value(ValueCellId::new("B", "volume"));
+        let mut dirty = HashSet::new();
+        dirty.insert(volume.clone());
+
+        let demand = DemandRegistry::new(); // empty demand cone
+        let mut traces = HashMap::new();
+        traces.insert(volume.clone(), DependencyTrace::default());
+
+        let eval_set = compute_eval_set(&dirty, &demand, &traces);
+        assert!(eval_set.is_empty());
+    }
+
+    #[test]
+    fn eval_set_dirty_inside_demand_cone() {
+        use crate::demand::DemandRegistry;
+        use crate::deps::DependencyTrace;
+        use crate::dirty::compute_eval_set;
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+        use std::collections::HashMap;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+
+        let e = "Bracket";
+        let c0 = NodeId::Constraint(ConstraintNodeId::new(e, 0));
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+
+        // Demand C0 and C1
+        let mut demand = DemandRegistry::new();
+        demand.add_demand(c0.clone());
+        demand.add_demand(c1.clone());
+        demand.rebuild_cone(&graph);
+
+        // Both C0 and C1 are dirty and demanded
+        let mut dirty = HashSet::new();
+        dirty.insert(c0.clone());
+        dirty.insert(c1.clone());
+
+        let traces = crate::deps::build_trace_map(&graph);
+
+        let eval_set = compute_eval_set(&dirty, &demand, &traces);
+        assert_eq!(eval_set.len(), 2);
+        assert!(eval_set.contains(&c0));
+        assert!(eval_set.contains(&c1));
+    }
 }
