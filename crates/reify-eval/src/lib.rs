@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod deps;
 pub mod graph;
 pub mod snapshot;
