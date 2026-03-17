@@ -54,4 +54,44 @@ mod tests {
         trace.reads.push(id.clone());
         assert_eq!(trace.reads.len(), 2);
     }
+
+    // --- TraceRecorder tests ---
+
+    #[test]
+    fn trace_recorder_new_is_empty() {
+        let recorder = super::TraceRecorder::new();
+        let trace = recorder.finish();
+        assert!(trace.reads.is_empty());
+    }
+
+    #[test]
+    fn trace_recorder_record_read_captures_id() {
+        let mut recorder = super::TraceRecorder::new();
+        let id = ValueCellId::new("B", "width");
+        recorder.record_read(id.clone());
+        let trace = recorder.finish();
+        assert_eq!(trace.reads, vec![id]);
+    }
+
+    #[test]
+    fn trace_recorder_finish_returns_reads_in_order() {
+        let mut recorder = super::TraceRecorder::new();
+        recorder.record_read(ValueCellId::new("B", "width"));
+        recorder.record_read(ValueCellId::new("B", "height"));
+        recorder.record_read(ValueCellId::new("B", "thickness"));
+        let trace = recorder.finish();
+        assert_eq!(trace.reads[0], ValueCellId::new("B", "width"));
+        assert_eq!(trace.reads[1], ValueCellId::new("B", "height"));
+        assert_eq!(trace.reads[2], ValueCellId::new("B", "thickness"));
+    }
+
+    #[test]
+    fn trace_recorder_records_duplicates() {
+        let mut recorder = super::TraceRecorder::new();
+        let id = ValueCellId::new("B", "width");
+        recorder.record_read(id.clone());
+        recorder.record_read(id.clone());
+        let trace = recorder.finish();
+        assert_eq!(trace.reads.len(), 2);
+    }
 }
