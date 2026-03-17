@@ -1,3 +1,32 @@
+use reify_types::{ConstraintNodeId, RealizationNodeId, ValueCellId};
+
+/// Unified identifier for any node in the evaluation graph.
+/// Used as the key in the cache store.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum NodeId {
+    Value(ValueCellId),
+    Constraint(ConstraintNodeId),
+    Realization(RealizationNodeId),
+}
+
+impl From<ValueCellId> for NodeId {
+    fn from(id: ValueCellId) -> Self {
+        NodeId::Value(id)
+    }
+}
+
+impl From<ConstraintNodeId> for NodeId {
+    fn from(id: ConstraintNodeId) -> Self {
+        NodeId::Constraint(id)
+    }
+}
+
+impl From<RealizationNodeId> for NodeId {
+    fn from(id: RealizationNodeId) -> Self {
+        NodeId::Realization(id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
