@@ -120,3 +120,23 @@ pub struct SourceNodeId {
 /// Identifies a lexical scope for name resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeId(pub u32);
+
+/// Monotonically increasing version identifier for tracking snapshot lineage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct VersionId(pub u64);
+
+impl fmt::Display for VersionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "v{}", self.0)
+    }
+}
+
+/// Unique identifier for a snapshot in the evaluation history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SnapshotId(pub u64);
+
+impl fmt::Display for SnapshotId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "snap-{}", self.0)
+    }
+}
