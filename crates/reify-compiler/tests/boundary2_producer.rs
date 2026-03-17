@@ -279,3 +279,16 @@ fn constraint_non_bool_produces_warning() {
         compiled.diagnostics
     );
 }
+
+/// Regression: bracket fixture compiles with zero diagnostics.
+/// The dimension and constraint checks must not false-positive on valid expressions.
+#[test]
+fn bracket_compiles_with_zero_diagnostics() {
+    let parsed = bracket_parsed_module();
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "bracket should compile cleanly, but got diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}
