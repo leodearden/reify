@@ -41,6 +41,15 @@ pub enum ConstraintDomain {
     CrossDomain,
 }
 
+/// Optimization objective for constraint resolution.
+#[derive(Debug, Clone)]
+pub enum OptimizationObjective {
+    /// Minimize the value of the expression.
+    Minimize(CompiledExpr),
+    /// Maximize the value of the expression.
+    Maximize(CompiledExpr),
+}
+
 /// An auto parameter to be resolved by the constraint solver.
 #[derive(Debug, Clone)]
 pub struct AutoParam {
