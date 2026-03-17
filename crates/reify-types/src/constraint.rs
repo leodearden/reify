@@ -33,3 +33,49 @@ pub trait ConstraintChecker: Send + Sync {
     /// Check a batch of constraints against current values.
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constraint_domain_all_variants_exist() {
+        let _dimensional = ConstraintDomain::Dimensional;
+        let _geometric = ConstraintDomain::Geometric;
+        let _logical = ConstraintDomain::Logical;
+        let _cross = ConstraintDomain::CrossDomain;
+    }
+
+    #[test]
+    fn constraint_domain_is_copy_clone_eq_hash() {
+        let d = ConstraintDomain::Dimensional;
+        let d2 = d; // Copy
+        assert_eq!(d, d2); // PartialEq + Eq
+
+        let d3 = d.clone(); // Clone
+        assert_eq!(d, d3);
+
+        // Hash: usable as HashMap key
+        use std::collections::HashMap;
+        let mut map = HashMap::new();
+        map.insert(ConstraintDomain::Dimensional, "dim");
+        map.insert(ConstraintDomain::Geometric, "geo");
+        assert_eq!(map.get(&ConstraintDomain::Dimensional), Some(&"dim"));
+    }
+
+    #[test]
+    fn constraint_domain_variants_are_distinct() {
+        assert_ne!(ConstraintDomain::Dimensional, ConstraintDomain::Geometric);
+        assert_ne!(ConstraintDomain::Dimensional, ConstraintDomain::Logical);
+        assert_ne!(ConstraintDomain::Dimensional, ConstraintDomain::CrossDomain);
+        assert_ne!(ConstraintDomain::Geometric, ConstraintDomain::Logical);
+        assert_ne!(ConstraintDomain::Geometric, ConstraintDomain::CrossDomain);
+        assert_ne!(ConstraintDomain::Logical, ConstraintDomain::CrossDomain);
+    }
+
+    #[test]
+    fn constraint_domain_debug() {
+        assert!(format!("{:?}", ConstraintDomain::Dimensional).contains("Dimensional"));
+        assert!(format!("{:?}", ConstraintDomain::CrossDomain).contains("CrossDomain"));
+    }
+}
