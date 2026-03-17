@@ -91,4 +91,36 @@ mod tests {
         assert!(format!("{:?}", ConstraintDomain::Dimensional).contains("Dimensional"));
         assert!(format!("{:?}", ConstraintDomain::CrossDomain).contains("CrossDomain"));
     }
+
+    #[test]
+    fn auto_param_with_bounds() {
+        use crate::identity::ValueCellId;
+        use crate::ty::Type;
+
+        let ap = AutoParam {
+            id: ValueCellId::new("Bracket", "width"),
+            param_type: Type::length(),
+            bounds: Some((0.01, 1.0)),
+        };
+        assert_eq!(ap.id, ValueCellId::new("Bracket", "width"));
+        assert_eq!(ap.param_type, Type::length());
+        assert_eq!(ap.bounds, Some((0.01, 1.0)));
+    }
+
+    #[test]
+    fn auto_param_without_bounds() {
+        use crate::identity::ValueCellId;
+        use crate::ty::Type;
+
+        let ap = AutoParam {
+            id: ValueCellId::new("Bracket", "angle"),
+            param_type: Type::angle(),
+            bounds: None,
+        };
+        assert!(ap.bounds.is_none());
+
+        // Debug works
+        let debug = format!("{:?}", ap);
+        assert!(debug.contains("AutoParam"));
+    }
 }
