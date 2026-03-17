@@ -80,6 +80,87 @@ impl ReverseDependencyIndex {
     pub fn dependents_of(&self, cell: &ValueCellId) -> &HashSet<NodeId> {
         self.index.get(cell).unwrap_or(&EMPTY_SET)
     }
+
+    /// Build a reverse dependency index from an EvaluationGraph.
+    ///
+    /// Iterates all value cells (extracting deps from default_expr),
+    /// constraints (extracting deps from expr), and realizations
+    /// (extracting deps from operation args).
+    pub fn build_from_graph(graph: &crate::graph::EvaluationGraph) -> Self {
+        use reify_compiler::ValueCellKind;
+
+        let mut index = Self::new();
+
+        // Value cells: only Let bindings have dependencies (params are roots)
+        for (_, node) in graph.value_cells.iter() {
+            if node.kind == ValueCellKind::Let {
+                if let Some(ref expr) = node.default_expr {
+                    let trace = extract_dependency_trace(expr);
+                    let node_id = NodeId::Value(node.id.clone());
+                    for cell in &trace.reads {
+                        index.add(cell.clone(), node_id.clone());
+                    }
+                }
+            }
+        }
+
+        // Constraints: extract deps from constraint expression
+        for (_, cnode) in graph.constraints.iter() {
+            let trace = extract_dependency_trace(&cnode.expr);
+            let node_id = NodeId::Constraint(cnode.id.clone());
+            for cell in &trace.reads {
+                index.add(cell.clone(), node_id.clone());
+            }
+        }
+
+        // Realizations: extract deps from operation args
+        for (_, rnode) in graph.realizations.iter() {
+            let trace = extract_realization_dependencies(&rnode.operations);
+            let node_id = NodeId::Realization(rnode.id.clone());
+            for cell in &trace.reads {
+                index.add(cell.clone(), node_id.clone());
+            }
+        }
+
+        index
+    }
+}
+
+/// Build a forward dependency trace map for all nodes in the graph.
+///
+/// Returns a HashMap<NodeId, DependencyTrace> that maps each node to
+/// the set of ValueCellIds it reads. Used by topological sort and demand cone.
+pub fn build_trace_map(
+    graph: &crate::graph::EvaluationGraph,
+) -> HashMap<NodeId, DependencyTrace> {
+    use reify_compiler::ValueCellKind;
+
+    let mut traces = HashMap::new();
+
+    for (_, node) in graph.value_cells.iter() {
+        let trace = if node.kind == ValueCellKind::Let {
+            node.default_expr
+                .as_ref()
+                .map(|e| extract_dependency_trace(e))
+                .unwrap_or_default()
+        } else {
+            // Params are roots with no dependencies
+            DependencyTrace::default()
+        };
+        traces.insert(NodeId::Value(node.id.clone()), trace);
+    }
+
+    for (_, cnode) in graph.constraints.iter() {
+        let trace = extract_dependency_trace(&cnode.expr);
+        traces.insert(NodeId::Constraint(cnode.id.clone()), trace);
+    }
+
+    for (_, rnode) in graph.realizations.iter() {
+        let trace = extract_realization_dependencies(&rnode.operations);
+        traces.insert(NodeId::Realization(rnode.id.clone()), trace);
+    }
+
+    traces
 }
 
 /// Extract dependency ValueCellIds from a CompiledGeometryOp's argument expressions.
