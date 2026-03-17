@@ -358,6 +358,12 @@ impl Engine {
             // (deferred to check()/build())
         }
 
+        // Restore freshness to Final for nodes that were pre-marked Pending
+        // but then skipped by early cutoff (they were never re-evaluated).
+        for node_id in &skipped {
+            self.cache.restore_final(node_id);
+        }
+
         // Store state (actual_eval_set excludes early-cutoff-skipped nodes)
         self.last_eval_set = actual_eval_set;
         self.current_snapshot = Some(new_snapshot);

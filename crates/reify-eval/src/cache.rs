@@ -283,6 +283,20 @@ impl CacheStore {
         }
     }
 
+    /// Restore a node's freshness to Final after early cutoff skips its
+    /// re-evaluation. This handles nodes that were pre-marked Pending but
+    /// then bypassed because an upstream node produced an unchanged result.
+    ///
+    /// Returns `true` if the node was found and restored, `false` if not cached.
+    pub fn restore_final(&mut self, node: &NodeId) -> bool {
+        if let Some(entry) = self.caches.get_mut(node) {
+            entry.freshness = Freshness::Final;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Version fast path: if the node is cached and its basis_version matches
     /// the current version, return a clone of the cached result without
     /// re-evaluation.
