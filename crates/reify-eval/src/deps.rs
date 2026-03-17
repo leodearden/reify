@@ -9,6 +9,30 @@ pub struct DependencyTrace {
     pub reads: Vec<ValueCellId>,
 }
 
+/// Accumulates value cell reads during expression evaluation.
+/// Use with `eval_expr_traced` by calling `record_read` from the callback.
+pub struct TraceRecorder {
+    trace: DependencyTrace,
+}
+
+impl TraceRecorder {
+    pub fn new() -> Self {
+        Self {
+            trace: DependencyTrace::default(),
+        }
+    }
+
+    /// Record a read of the given value cell.
+    pub fn record_read(&mut self, cell: ValueCellId) {
+        self.trace.reads.push(cell);
+    }
+
+    /// Consume the recorder and return the completed trace.
+    pub fn finish(self) -> DependencyTrace {
+        self.trace
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_types::ValueCellId;
