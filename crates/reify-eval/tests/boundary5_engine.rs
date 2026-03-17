@@ -46,3 +46,32 @@ fn engine_reports_violations() {
         .collect();
     assert!(!violated.is_empty(), "should report violations");
 }
+
+/// Engine::eval captures dependency traces for let bindings.
+#[test]
+fn eval_captures_traces_for_let_bindings() {
+    use reify_types::{NodeId, ValueCellId};
+
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // The volume let binding reads width, height, thickness
+    let volume_node = NodeId::ValueCell(ValueCellId::new("Bracket", "volume"));
+    let volume_trace = result.traces.get(&volume_node)
+        .expect("volume node should have a trace");
+
+    assert_eq!(volume_trace.reads.len(), 3);
+    assert_eq!(volume_trace.reads[0], ValueCellId::new("Bracket", "width"));
+    assert_eq!(volume_trace.reads[1], ValueCellId::new("Bracket", "height"));
+    assert_eq!(volume_trace.reads[2], ValueCellId::new("Bracket", "thickness"));
+
+    // Reverse index: width's dependents should include volume
+    let width_deps = result.reverse_deps.dependents_of(&ValueCellId::new("Bracket", "width"));
+    assert!(width_deps.contains(&volume_node));
+
+    // Params have no trace (they're inputs, not computed)
+    let width_node = NodeId::ValueCell(ValueCellId::new("Bracket", "width"));
+    assert!(!result.traces.contains_key(&width_node));
+}
