@@ -1009,4 +1009,147 @@ mod tests {
         assert_eq!(reads.len(), 1);
         assert_eq!(reads[0], ValueCellId::new("B", "height"));
     }
+
+    // --- AND/OR short-circuit tracing tests ---
+
+    #[test]
+    fn traced_and_false_short_circuits() {
+        // false AND vref(X) → short-circuits, on_read NOT called for X
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "x"), Value::Bool(true));
+
+        let left = lit(Value::Bool(false), Type::Bool);
+        let right = vref("B", "x", Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::And, left, right, Type::Bool);
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(result, Value::Bool(false));
+        assert!(reads.is_empty(), "false AND should short-circuit: right side must NOT be traced");
+    }
+
+    #[test]
+    fn traced_and_true_evaluates_right() {
+        // true AND vref(X) → evaluates right, on_read IS called for X
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "x"), Value::Bool(true));
+
+        let left = lit(Value::Bool(true), Type::Bool);
+        let right = vref("B", "x", Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::And, left, right, Type::Bool);
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(result, Value::Bool(true));
+        assert_eq!(reads.len(), 1, "true AND should evaluate right side");
+        assert_eq!(reads[0], ValueCellId::new("B", "x"));
+    }
+
+    #[test]
+    fn traced_or_true_short_circuits() {
+        // true OR vref(X) → short-circuits, on_read NOT called for X
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "x"), Value::Bool(false));
+
+        let left = lit(Value::Bool(true), Type::Bool);
+        let right = vref("B", "x", Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::Or, left, right, Type::Bool);
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(result, Value::Bool(true));
+        assert!(reads.is_empty(), "true OR should short-circuit: right side must NOT be traced");
+    }
+
+    #[test]
+    fn traced_or_false_evaluates_right() {
+        // false OR vref(X) → evaluates right, on_read IS called for X
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "x"), Value::Bool(true));
+
+        let left = lit(Value::Bool(false), Type::Bool);
+        let right = vref("B", "x", Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::Or, left, right, Type::Bool);
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(result, Value::Bool(true));
+        assert_eq!(reads.len(), 1, "false OR should evaluate right side");
+        assert_eq!(reads[0], ValueCellId::new("B", "x"));
+    }
+
+    #[test]
+    fn traced_and_undef_false_both_traced() {
+        // Undef AND vref(X)=false → on_read IS called for X, result is Bool(false)
+        // Kleene: Undef AND false = false (false is absorbing for AND)
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "x"), Value::Bool(false));
+
+        let left = lit(Value::Undef, Type::Bool);
+        let right = vref("B", "x", Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::And, left, right, Type::Bool);
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(result, Value::Bool(false));
+        assert_eq!(reads.len(), 1, "Undef AND should evaluate right side");
+        assert_eq!(reads[0], ValueCellId::new("B", "x"));
+    }
+
+    #[test]
+    fn traced_and_undef_true_both_traced() {
+        // Undef AND vref(X)=true → on_read IS called for X, result is Undef
+        // Kleene: Undef AND true = Undef
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "x"), Value::Bool(true));
+
+        let left = lit(Value::Undef, Type::Bool);
+        let right = vref("B", "x", Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::And, left, right, Type::Bool);
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert!(result.is_undef());
+        assert_eq!(reads.len(), 1, "Undef AND should evaluate right side");
+        assert_eq!(reads[0], ValueCellId::new("B", "x"));
+    }
+
+    #[test]
+    fn traced_or_undef_true_both_traced() {
+        // Undef OR vref(X)=true → on_read IS called for X, result is Bool(true)
+        // Kleene: Undef OR true = true (true is absorbing for OR)
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "x"), Value::Bool(true));
+
+        let left = lit(Value::Undef, Type::Bool);
+        let right = vref("B", "x", Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::Or, left, right, Type::Bool);
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(result, Value::Bool(true));
+        assert_eq!(reads.len(), 1, "Undef OR should evaluate right side");
+        assert_eq!(reads[0], ValueCellId::new("B", "x"));
+    }
 }
