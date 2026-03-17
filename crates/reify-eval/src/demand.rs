@@ -51,6 +51,11 @@ impl DemandRegistry {
         self.demand_cone.contains(node)
     }
 
+    /// Return the number of nodes in the demand cone.
+    pub fn cone_size(&self) -> usize {
+        self.demand_cone.len()
+    }
+
     /// Rebuild the demand cone by BFS backward from always_demanded nodes.
     ///
     /// For each demanded node, extract its dependency ValueCellIds from the graph,
@@ -122,31 +127,76 @@ mod tests {
 
     #[test]
     fn demand_registry_add_demand() {
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::TopologyTemplateBuilder;
+        use reify_types::{CompiledExpr, Type, Value};
+
+        let e = "M";
+        // Build minimal graph: one standalone constraint with literal expr (no deps)
+        let template = TopologyTemplateBuilder::new(e)
+            .constraint(e, 0, None, CompiledExpr::literal(Value::Bool(true), Type::Bool))
+            .build();
+        let graph = EvaluationGraph::from_templates(&[template]);
+
+        let node = NodeId::Constraint(ConstraintNodeId::new(e, 0));
         let mut reg = DemandRegistry::new();
-        let node = NodeId::Constraint(ConstraintNodeId::new("A", 0));
         reg.add_demand(node.clone());
-        // Note: is_demanded checks the demand_cone, which is only populated
-        // after rebuild_cone(). But always_demanded nodes should be in the
-        // cone after a rebuild. For now, just verify add_demand doesn't panic.
-        // The full is_demanded check will be tested after rebuild_cone.
+        reg.rebuild_cone(&graph);
+
+        // After rebuild, the demanded node should be in the cone
+        assert!(reg.is_demanded(&node), "add_demand node should be demanded after rebuild_cone");
     }
 
     #[test]
     fn demand_registry_remove_demand() {
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::TopologyTemplateBuilder;
+        use reify_types::{CompiledExpr, Type, Value};
+
+        let e = "M";
+        let template = TopologyTemplateBuilder::new(e)
+            .constraint(e, 0, None, CompiledExpr::literal(Value::Bool(true), Type::Bool))
+            .build();
+        let graph = EvaluationGraph::from_templates(&[template]);
+
+        let node = NodeId::Constraint(ConstraintNodeId::new(e, 0));
         let mut reg = DemandRegistry::new();
-        let node = NodeId::Constraint(ConstraintNodeId::new("A", 0));
+
+        // Add → rebuild → verify demanded
         reg.add_demand(node.clone());
+        reg.rebuild_cone(&graph);
+        assert!(reg.is_demanded(&node), "node should be demanded after add + rebuild");
+
+        // Remove → rebuild → verify NOT demanded
         reg.remove_demand(&node);
-        // After remove, the node should not be always_demanded
+        reg.rebuild_cone(&graph);
+        assert!(!reg.is_demanded(&node), "node should not be demanded after remove + rebuild");
+        // Cone should be empty (no other demands exist)
+        assert_eq!(reg.cone_size(), 0, "demand cone should be empty after removing only demand");
     }
 
     #[test]
     fn demand_registry_add_demand_idempotent() {
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::TopologyTemplateBuilder;
+        use reify_types::{CompiledExpr, Type, Value};
+
+        let e = "M";
+        let template = TopologyTemplateBuilder::new(e)
+            .constraint(e, 0, None, CompiledExpr::literal(Value::Bool(true), Type::Bool))
+            .build();
+        let graph = EvaluationGraph::from_templates(&[template]);
+
+        let node = NodeId::Constraint(ConstraintNodeId::new(e, 0));
         let mut reg = DemandRegistry::new();
-        let node = NodeId::Constraint(ConstraintNodeId::new("A", 0));
         reg.add_demand(node.clone());
-        reg.add_demand(node.clone());
-        // Adding twice should be fine (idempotent)
+        reg.add_demand(node.clone()); // duplicate add
+        reg.rebuild_cone(&graph);
+
+        assert!(reg.is_demanded(&node), "node should be demanded after duplicate add + rebuild");
+        // Cone should contain exactly 1 node (the constraint with no deps)
+        // Duplicate adds should NOT inflate internal state
+        assert_eq!(reg.cone_size(), 1, "cone should contain exactly 1 node, not inflated by duplicate adds");
     }
 
     #[test]
