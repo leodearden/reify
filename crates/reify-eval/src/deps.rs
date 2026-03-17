@@ -128,6 +128,14 @@ impl ReverseDependencyIndex {
             }
         }
 
+        // Resolutions: auto_params are the static dependencies
+        for (_, res_node) in graph.resolutions.iter() {
+            let node_id = NodeId::Resolution(res_node.id.clone());
+            for param in &res_node.auto_params {
+                index.add(param.clone(), node_id.clone());
+            }
+        }
+
         index
     }
 }
@@ -164,6 +172,13 @@ pub fn build_trace_map(
     for (_, rnode) in graph.realizations.iter() {
         let trace = extract_realization_dependencies(&rnode.operations);
         traces.insert(NodeId::Realization(rnode.id.clone()), trace);
+    }
+
+    for (_, res_node) in graph.resolutions.iter() {
+        let trace = DependencyTrace {
+            reads: res_node.auto_params.clone(),
+        };
+        traces.insert(NodeId::Resolution(res_node.id.clone()), trace);
     }
 
     traces
@@ -251,6 +266,52 @@ mod tests {
         assert!(deps.contains(&node_a));
         assert!(deps.contains(&node_b));
         assert!(deps.contains(&node_c));
+    }
+
+    #[test]
+    fn reverse_index_includes_resolution_deps() {
+        use crate::graph::{EvaluationGraph, ResolutionNodeData, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_types::{ContentHash, ResolutionNodeId, Type};
+
+        let mut graph = EvaluationGraph::default();
+
+        // Add auto param 'a'
+        let a = ValueCellId::new("A", "a");
+        graph.value_cells.insert(a.clone(), ValueCellNode {
+            id: a.clone(),
+            kind: ValueCellKind::Param,
+            cell_type: Type::Real,
+            default_expr: None,
+            content_hash: ContentHash::of_str("a"),
+        });
+
+        // Add constraint C0 (with literal expr, for completeness)
+        let c0_id = ConstraintNodeId::new("A", 0);
+        graph.constraints.insert(c0_id.clone(), crate::graph::ConstraintNodeData {
+            id: c0_id.clone(),
+            expr: reify_types::CompiledExpr::literal(reify_types::Value::Bool(true), reify_types::Type::Bool),
+            content_hash: ContentHash::of_str("c0"),
+        });
+
+        // Add ResolutionNodeData R0 with auto_params=['a']
+        let r0_id = ResolutionNodeId::new("A", 0);
+        graph.resolutions.insert(r0_id.clone(), ResolutionNodeData {
+            id: r0_id.clone(),
+            scope: "A".to_string(),
+            auto_params: vec![a.clone()],
+            constraint_deps: vec![c0_id.clone()],
+            content_hash: ContentHash::of_str("r0"),
+        });
+
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        // Dependents of 'a' should include Resolution(R0)
+        let a_deps = index.dependents_of(&a);
+        assert!(
+            a_deps.contains(&NodeId::Resolution(r0_id)),
+            "dependents_of('a') should include Resolution(R0), got: {:?}", a_deps
+        );
     }
 
     #[test]
