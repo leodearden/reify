@@ -154,6 +154,18 @@ impl CacheStore {
     pub fn clear(&mut self) {
         self.caches.clear();
     }
+
+    /// Version fast path: if the node is cached and its basis_version matches
+    /// the current version, return a clone of the cached result without
+    /// re-evaluation.
+    pub fn try_fast_path(&self, node: &NodeId, current_version: VersionId) -> Option<CachedResult> {
+        let entry = self.caches.get(node)?;
+        if entry.basis_version == current_version {
+            Some(entry.result.clone())
+        } else {
+            None
+        }
+    }
 }
 
 impl Default for CacheStore {
