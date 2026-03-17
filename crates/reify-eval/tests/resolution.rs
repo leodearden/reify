@@ -241,3 +241,77 @@ fn resolve_multiple_auto_params() {
     assert!(result.resolved_params.contains_key(&a_id));
     assert!(result.resolved_params.contains_key(&b_id));
 }
+
+#[test]
+fn solver_infeasible_produces_diagnostics() {
+    use reify_types::Diagnostic;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let solver = MockConstraintSolver::new_infeasible(vec![
+        Diagnostic::error("constraints are infeasible"),
+    ]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "thickness"), literal(mm(2.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    // thickness should remain Undef
+    let thickness_val = result.values.get(&thickness_id).expect("thickness in values");
+    assert!(thickness_val.is_undef(), "expected Undef, got {:?}", thickness_val);
+
+    // diagnostics should contain infeasible message
+    assert!(
+        result.diagnostics.iter().any(|d| d.message.contains("infeasible")),
+        "expected infeasible diagnostic, got {:?}",
+        result.diagnostics
+    );
+
+    // resolved_params should be empty
+    assert!(result.resolved_params.is_empty());
+}
+
+#[test]
+fn solver_no_progress_produces_warning() {
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let solver = MockConstraintSolver::new_no_progress("iteration limit reached");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "thickness"), literal(mm(2.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    // thickness should remain Undef
+    let thickness_val = result.values.get(&thickness_id).expect("thickness in values");
+    assert!(thickness_val.is_undef(), "expected Undef, got {:?}", thickness_val);
+
+    // diagnostics should contain a warning about no progress
+    assert!(
+        result.diagnostics.iter().any(|d| d.message.contains("iteration limit reached")),
+        "expected no-progress warning, got {:?}",
+        result.diagnostics
+    );
+
+    // resolved_params should be empty
+    assert!(result.resolved_params.is_empty());
+}
