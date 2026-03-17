@@ -132,10 +132,10 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 // --- Topology builders ---
 
 use reify_compiler::{
-    CompiledConstraint, CompiledModule, RealizationDecl, TopologyTemplate, ValueCellDecl,
-    ValueCellKind,
+    CompiledConstraint, CompiledGeometryOp, CompiledModule, RealizationDecl, TopologyTemplate,
+    ValueCellDecl, ValueCellKind,
 };
-use reify_types::ConstraintNodeId;
+use reify_types::{ConstraintNodeId, RealizationNodeId};
 
 /// Builder for `TopologyTemplate`.
 pub struct TopologyTemplateBuilder {
@@ -200,6 +200,20 @@ impl TopologyTemplateBuilder {
             id: ConstraintNodeId::new(entity, index),
             label: label.map(String::from),
             expr,
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn realization(
+        mut self,
+        entity: &str,
+        index: u32,
+        operations: Vec<CompiledGeometryOp>,
+    ) -> Self {
+        self.realizations.push(RealizationDecl {
+            id: RealizationNodeId::new(entity, index),
+            operations,
             span: SourceSpan::new(0, 0),
         });
         self

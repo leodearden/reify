@@ -8,6 +8,7 @@ pub mod expr;
 pub mod constraint;
 pub mod geometry;
 pub mod diagnostics;
+pub mod provenance;
 
 pub use identity::*;
 pub use hash::ContentHash;
@@ -24,3 +25,4 @@ pub use geometry::{
 };
 pub use persistent::PersistentMap;
 pub use diagnostics::{Diagnostic, DiagnosticLabel, DiagnosticRef, Severity, SourceSpan};
+pub use provenance::SnapshotProvenance;
