@@ -80,4 +80,73 @@ mod tests {
         assert!(!dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
         assert!(!dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
     }
+
+    #[test]
+    fn dirty_cone_bracket_change_width() {
+        // Change width → dirty = {volume, C1}
+        // Excludes: fillet_radius, C0, C2
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        let e = "Bracket";
+        let mut changed = HashSet::new();
+        changed.insert(ValueCellId::new(e, "width"));
+
+        let dirty = compute_dirty_cone(&changed, &index);
+
+        assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
+        assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
+        assert!(!dirty.contains(&NodeId::Value(ValueCellId::new(e, "fillet_radius"))));
+        assert!(!dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
+        assert!(!dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
+        assert_eq!(dirty.len(), 2);
+    }
+
+    #[test]
+    fn dirty_cone_bracket_change_thickness() {
+        // Change thickness → dirty = {volume, C0, C1, C2}
+        // All constraints read thickness, volume reads thickness
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        let e = "Bracket";
+        let mut changed = HashSet::new();
+        changed.insert(ValueCellId::new(e, "thickness"));
+
+        let dirty = compute_dirty_cone(&changed, &index);
+
+        assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
+        assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
+        assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
+        assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
+        assert!(!dirty.contains(&NodeId::Value(ValueCellId::new(e, "fillet_radius"))));
+        assert_eq!(dirty.len(), 4);
+    }
+
+    #[test]
+    fn dirty_cone_bracket_change_fillet_radius() {
+        // Change fillet_radius → empty dirty cone (nothing reads fillet_radius)
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        let e = "Bracket";
+        let mut changed = HashSet::new();
+        changed.insert(ValueCellId::new(e, "fillet_radius"));
+
+        let dirty = compute_dirty_cone(&changed, &index);
+
+        assert!(dirty.is_empty(), "fillet_radius dirty cone: {:?}", dirty);
+    }
 }
