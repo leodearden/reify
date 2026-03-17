@@ -2,10 +2,18 @@
 
 use std::collections::HashMap;
 
+use argmin::core::{CostFunction, Error as ArgminError, Executor, State};
+use argmin::solver::neldermead::NelderMead;
 use reify_types::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ConstraintSolver,
     DimensionVector, ResolutionProblem, SolveResult, Type, Value, ValueMap,
 };
+
+/// Maximum iterations for Nelder-Mead.
+const MAX_ITERS: u64 = 5000;
+
+/// Residual threshold below which we consider constraints satisfied.
+const FEASIBILITY_THRESHOLD: f64 = 1e-12;
 
 /// Derivative-free constraint solver using Nelder-Mead optimization.
 ///
@@ -169,6 +177,70 @@ fn compute_total_violation(
         .sum()
 }
 
+/// Cost function adapter for argmin's Nelder-Mead solver.
+///
+/// Evaluates constraint violations (and optionally an objective) given
+/// a parameter vector of f64 SI values.
+struct ConstraintCostFunction<'a> {
+    auto_params: &'a [AutoParam],
+    constraints: &'a [(ConstraintNodeId, CompiledExpr)],
+    base_values: &'a ValueMap,
+}
+
+impl CostFunction for ConstraintCostFunction<'_> {
+    type Param = Vec<f64>;
+    type Output = f64;
+
+    fn cost(&self, param: &Self::Param) -> Result<Self::Output, ArgminError> {
+        // Clamp parameters to bounds
+        let clamped: Vec<f64> = param
+            .iter()
+            .zip(self.auto_params.iter())
+            .map(|(&val, ap)| {
+                if let Some((lo, hi)) = ap.bounds {
+                    val.clamp(lo, hi)
+                } else {
+                    val
+                }
+            })
+            .collect();
+
+        let values = build_trial_values(self.base_values, self.auto_params, &clamped);
+        let violation = compute_total_violation(self.constraints, &values);
+        Ok(violation)
+    }
+}
+
+/// Build the initial simplex for N-dimensional Nelder-Mead.
+///
+/// Creates N+1 vertices: the initial point plus N perturbations
+/// (one per dimension), each offset by a fraction of the parameter range.
+fn build_simplex(initial: &[f64], params: &[AutoParam]) -> Vec<Vec<f64>> {
+    let n = initial.len();
+    let mut simplex = Vec::with_capacity(n + 1);
+    simplex.push(initial.to_vec());
+
+    for i in 0..n {
+        let mut vertex = initial.to_vec();
+        // Perturb dimension i
+        let delta = if let Some((lo, hi)) = params[i].bounds {
+            (hi - lo) * 0.1
+        } else if initial[i].abs() > 1e-15 {
+            initial[i].abs() * 0.1
+        } else {
+            0.001
+        };
+        vertex[i] += delta;
+        // Clamp to bounds
+        if let Some((lo, hi)) = params[i].bounds {
+            vertex[i] = vertex[i].clamp(lo, hi);
+        }
+        simplex.push(vertex);
+    }
+
+    simplex
+}
+
 impl ConstraintSolver for DimensionalSolver {
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
         // Trivial case: no auto parameters to solve for
@@ -178,10 +250,83 @@ impl ConstraintSolver for DimensionalSolver {
             };
         }
 
-        // TODO: implement Nelder-Mead solving
-        SolveResult::NoProgress {
-            reason: "not yet implemented".to_string(),
+        let cost_fn = ConstraintCostFunction {
+            auto_params: &problem.auto_params,
+            constraints: &problem.constraints,
+            base_values: &problem.current_values,
+        };
+
+        // Extract initial point and build simplex
+        let initial = extract_initial_point(problem);
+        let simplex = build_simplex(&initial, &problem.auto_params);
+
+        // Configure and run Nelder-Mead
+        let solver: NelderMead<Vec<f64>, f64> = NelderMead::new(simplex)
+            .with_sd_tolerance(1e-15)
+            .unwrap_or_else(|_| NelderMead::new(vec![initial.clone()]));
+
+        let executor = Executor::new(cost_fn, solver)
+            .configure(|state| state.max_iters(MAX_ITERS));
+
+        let result = match executor.run() {
+            Ok(res) => res,
+            Err(e) => {
+                return SolveResult::NoProgress {
+                    reason: format!("solver error: {}", e),
+                };
+            }
+        };
+
+        let best_cost = result.state().get_best_cost();
+        let best_param: Vec<f64> = match result.state().get_best_param() {
+            Some(p) => p.clone(),
+            None => {
+                return SolveResult::NoProgress {
+                    reason: "solver returned no solution".to_string(),
+                };
+            }
+        };
+
+        // Clamp final solution to bounds
+        let clamped: Vec<f64> = best_param
+            .iter()
+            .zip(problem.auto_params.iter())
+            .map(|(val, ap)| {
+                if let Some((lo, hi)) = ap.bounds {
+                    val.clamp(lo, hi)
+                } else {
+                    *val
+                }
+            })
+            .collect();
+
+        // Check feasibility
+        if best_cost > FEASIBILITY_THRESHOLD {
+            return SolveResult::Infeasible {
+                diagnostics: vec![reify_types::Diagnostic {
+                    severity: reify_types::Severity::Error,
+                    message: format!(
+                        "constraints could not be satisfied (residual: {:.2e})",
+                        best_cost
+                    ),
+                    labels: vec![],
+                }],
+            };
         }
+
+        // Build solution values
+        let mut values = HashMap::new();
+        for (param, &val) in problem.auto_params.iter().zip(clamped.iter()) {
+            values.insert(
+                param.id.clone(),
+                Value::Scalar {
+                    si_value: val,
+                    dimension: dimension_of(&param.param_type),
+                },
+            );
+        }
+
+        SolveResult::Solved { values }
     }
 }
 
