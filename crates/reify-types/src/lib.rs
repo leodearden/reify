@@ -17,7 +17,8 @@ pub use ty::Type;
 pub use value::{DeterminacyState, EvalError, Freshness, Satisfaction, Value, ValueMap};
 pub use expr::{BinOp, CompiledExpr, CompiledExprKind, ResolvedFunction, UnOp};
 pub use constraint::{
-    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
+    AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
+    ConstraintResult, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult,
 };
 pub use geometry::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
