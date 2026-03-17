@@ -19,6 +19,12 @@ pub struct DemandRegistry {
     demand_cone: HashSet<NodeId>,
 }
 
+impl Default for DemandRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DemandRegistry {
     /// Create an empty demand registry.
     pub fn new() -> Self {

@@ -81,13 +81,13 @@ pub fn topological_sort(
         // Find all nodes in the set that depend on this node
         if let NodeId::Value(ref vcid) = node {
             for candidate in nodes {
-                if let Some(trace) = traces.get(candidate) {
-                    if trace.reads.contains(vcid) {
-                        let deg = in_degree.get_mut(candidate).unwrap();
-                        *deg -= 1;
-                        if *deg == 0 {
-                            ready.insert(DebugOrd(candidate.clone()));
-                        }
+                if let Some(trace) = traces.get(candidate)
+                    && trace.reads.contains(vcid)
+                {
+                    let deg = in_degree.get_mut(candidate).unwrap();
+                    *deg -= 1;
+                    if *deg == 0 {
+                        ready.insert(DebugOrd(candidate.clone()));
                     }
                 }
             }

@@ -62,6 +62,12 @@ pub struct ReverseDependencyIndex {
 static EMPTY_SET: std::sync::LazyLock<HashSet<NodeId>> =
     std::sync::LazyLock::new(HashSet::new);
 
+impl Default for ReverseDependencyIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ReverseDependencyIndex {
     /// Create an empty reverse dependency index.
     pub fn new() -> Self {
@@ -93,13 +99,13 @@ impl ReverseDependencyIndex {
 
         // Value cells: only Let bindings have dependencies (params are roots)
         for (_, node) in graph.value_cells.iter() {
-            if node.kind == ValueCellKind::Let {
-                if let Some(ref expr) = node.default_expr {
-                    let trace = extract_dependency_trace(expr);
-                    let node_id = NodeId::Value(node.id.clone());
-                    for cell in &trace.reads {
-                        index.add(cell.clone(), node_id.clone());
-                    }
+            if node.kind == ValueCellKind::Let
+                && let Some(ref expr) = node.default_expr
+            {
+                let trace = extract_dependency_trace(expr);
+                let node_id = NodeId::Value(node.id.clone());
+                for cell in &trace.reads {
+                    index.add(cell.clone(), node_id.clone());
                 }
             }
         }
@@ -141,7 +147,7 @@ pub fn build_trace_map(
         let trace = if node.kind == ValueCellKind::Let {
             node.default_expr
                 .as_ref()
-                .map(|e| extract_dependency_trace(e))
+                .map(extract_dependency_trace)
                 .unwrap_or_default()
         } else {
             // Params are roots with no dependencies
