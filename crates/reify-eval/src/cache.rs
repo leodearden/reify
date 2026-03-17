@@ -684,4 +684,55 @@ mod tests {
         assert_ne!(val.content_hash(), geo.content_hash());
         assert_ne!(sat.content_hash(), geo.content_hash());
     }
+
+    // --- Integration tests ---
+
+    #[test]
+    fn cold_start_cache_miss() {
+        use reify_test_support::builders::*;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::values::mm;
+        use reify_types::{BinOp, ModulePath, Type, VersionId};
+
+        let e = "T";
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("T")
+                    .param(e, "a", Type::Int, Some(literal(Value::Int(10))))
+                    .param(e, "b", Type::Int, Some(literal(Value::Int(20))))
+                    .let_binding(
+                        e,
+                        "x",
+                        Type::Int,
+                        binop(
+                            BinOp::Add,
+                            value_ref_typed(e, "a", Type::Int),
+                            literal(Value::Int(1)),
+                        ),
+                    )
+                    .build(),
+            )
+            .build();
+
+        let checker = MockConstraintChecker::new();
+        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let result = engine.eval_cached(&module, VersionId(1));
+
+        // All values computed (no cache hits on first run)
+        assert_eq!(result.stats.cache_misses, 3); // a, b, x
+        assert_eq!(result.stats.cache_hits, 0);
+
+        // Cache should have entries for all 3 value cells
+        assert_eq!(engine.cache_store().len(), 3);
+
+        // Values should be correct
+        assert_eq!(
+            result.eval_result.values.get(&ValueCellId::new(e, "a")),
+            Some(&Value::Int(10))
+        );
+        assert_eq!(
+            result.eval_result.values.get(&ValueCellId::new(e, "x")),
+            Some(&Value::Int(11))
+        );
+    }
 }
