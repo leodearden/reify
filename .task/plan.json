@@ -1,14 +1,14 @@
 {
-  "task_id": "15",
-  "title": "Handle geometry build errors gracefully",
-  "modules": ["crates/reify-eval"],
-  "analysis": "In Engine::build() (lib.rs lines 569-629), when ALL geometry operations fail — either because kernel.execute() returns Err or compile_geometry_op() returns None — the code accumulates per-operation error diagnostics but last_handle remains None. It then falls through to line 608: `let export_handle = last_handle.unwrap_or(GeometryHandleId(0))` and attempts to export a handle that was never created. With a mock kernel (which ignores handle validity), this silently produces bogus geometry_output=Some(data). With a real kernel, export fails and adds an 'export error' diagnostic, but there's no summary message indicating that geometry construction failed entirely.\n\nThe fix: after the geometry operation loop, check if `last_handle.is_none()` AND there were geometry operations to process (`total_ops > 0`). If so, skip the export, push a clear summary diagnostic ('all geometry operations failed; no geometry output produced'), and return geometry_output=None.\n\nThis preserves existing behavior for: (a) modules with no realizations/operations (total_ops == 0, current export-with-handle-0 behavior unchanged), (b) partial failures where at least one op succeeded (last_handle is Some, export proceeds normally).",
+  "task_id": "19",
+  "title": "Argmin solver implementation in reify-constraints",
+  "modules": ["crates/reify-constraints"],
+  "analysis": "Task 19 requires implementing a DimensionalSolver in the reify-constraints crate that uses the argmin pure-Rust optimization library to solve for auto parameters satisfying dimensional constraints. The existing crate has SimpleConstraintChecker implementing ConstraintChecker; we now implement ConstraintSolver.\n\nKey types already defined in reify-types: ConstraintSolver trait (fn solve(&self, problem: &ResolutionProblem) -> SolveResult), ResolutionProblem (auto_params, constraints, current_values, objective), AutoParam (id, param_type, bounds), SolveResult (Solved/Infeasible/NoProgress), OptimizationObjective (Minimize/Maximize).\n\nThe solver must: (1) map auto_params to an f64 parameter vector, (2) evaluate constraint expressions using reify_expr::eval_expr by building a ValueMap with trial values, (3) compute a penalty objective (sum of squared violations for feasibility, or augmented objective for optimization), (4) use argmin's Nelder-Mead algorithm (derivative-free, robust for small-dimensional CAD problems), (5) handle bounds by clamping, (6) reconstruct Value::Scalar results with correct dimensions.\n\nThe solver works in SI units internally. AutoParam.param_type tells us the dimension. Value::Scalar stores si_value. eval_expr works on ValueMap with Value::Scalar entries. The bridge function creates a ValueMap from the parameter vector (each f64 maps to a Value::Scalar with the correct dimension from the corresponding AutoParam), evaluates each constraint expression, and computes violation penalties.\n\nNelder-Mead from argmin requires implementing the CostFunction trait with a cost() method. No gradient needed. For feasibility (no objective), the cost is sum of squared constraint violations. For optimization, the cost is: objective_value + penalty_weight * sum_of_squared_violations.\n\nConstraint violation magnitude: For comparison constraints, eval_expr returns Bool(true/false). We need continuous violation magnitude for smooth optimization. Strategy: evaluate each constraint's sub-expressions to get numeric difference. For a constraint like 'x > 2mm', when x=1mm, the violation is (2mm - 1mm) = 0.001 SI. For compound constraints (AND of comparisons), evaluate each sub-constraint individually. For non-decomposable boolean constraints, use a fixed penalty when violated.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create test file crates/reify-eval/tests/geometry_error_handling.rs with a FailingMockGeometryKernel (execute always returns Err, export/query/tessellate return Ok with dummy data) and a helper function that builds a CompiledModule with one box primitive realization using TopologyTemplateBuilder. The failing mock's export intentionally succeeds to demonstrate the current bug: build() silently produces bogus geometry output when all operations fail.",
+      "description": "Add argmin, argmin-math, and ndarray dependencies to crates/reify-constraints/Cargo.toml. Use argmin 0.10, argmin-math 0.4 with ndarray_latest-serde feature, ndarray 0.16. Verify versions compile with `cargo check -p reify-constraints`.",
       "status": "done",
-      "commit": "deb233d",
+      "commit": "4733cc7",
       "tests": []
     }
   ],
@@ -16,118 +16,208 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `build_returns_no_geometry_when_all_kernel_ops_fail`: builds module with one box realization using FailingMockGeometryKernel, asserts geometry_output.is_none() AND diagnostics contain a message matching 'all geometry operations failed'. Currently fails because (1) export succeeds with bogus handle 0 so geometry_output is Some, and (2) no summary diagnostic exists.",
+      "description": "Write failing test in solver.rs: DimensionalSolver struct exists, implements ConstraintSolver trait, can be used as Box<dyn ConstraintSolver>. Test solve() on empty problem (no auto_params, no constraints) returns SolveResult::Solved with empty values map.",
       "status": "done",
-      "commit": "deb233d"
+      "commit": "3c0dfa2"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix Engine::build() in lib.rs: before the export block (line 607), count total geometry ops across all templates/realizations. After the op loop, if last_handle.is_none() && total_ops > 0, push Diagnostic::error('all geometry operations failed; no geometry output produced') and set geometry_output to None (skip export entirely). Wrap the existing export logic in an else branch.",
+      "description": "Create crates/reify-constraints/src/solver.rs with DimensionalSolver struct and minimal ConstraintSolver impl. Add `mod solver; pub use solver::DimensionalSolver;` to lib.rs. Implement solve() to handle the trivial case: no auto_params returns Solved { values: empty }.",
       "status": "done",
-      "commit": "8ce68ec"
+      "commit": "3fbe633"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `build_returns_no_geometry_when_all_ops_fail_to_compile`: builds module with only a boolean union op referencing GeomRef::Step(0) and Step(1) but no prior primitives, so compile_geometry_op returns None for all ops. Uses standard MockGeometryKernel (kernel.execute never called). Asserts geometry_output.is_none(), diagnostics contain 'failed to compile geometry operation' AND 'all geometry operations failed'. Verifies the compile-failure path also triggers the summary error.",
+      "description": "Write failing test: build_trial_values helper. Given a base ValueMap, a list of AutoParams with LENGTH dimension, and f64 parameter values, the resulting ValueMap should contain Value::Scalar entries with correct si_value and dimension for each auto param, while preserving non-auto values from the base map.",
       "status": "done",
-      "commit": "91e8c5e"
+      "commit": "cccdec8"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Should pass from step-2 fix since both kernel-failure and compile-failure paths leave last_handle=None with total_ops>0. Verify and adjust if needed.",
+      "description": "Implement build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> ValueMap. Clone base ValueMap (O(1) via PersistentMap), insert each auto param as Value::Scalar { si_value: x[i], dimension from param.param_type }. Also implement extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> to get starting values from current_values or bounds midpoint or 0.01 default.",
       "status": "done",
-      "commit": "91e8c5e"
+      "commit": "b64c2bf"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `build_no_export_error_when_all_ops_fail`: uses FailingMockGeometryKernel whose export returns Err, builds module with box realization. Asserts that diagnostics do NOT contain any 'export error' message — proving export was never attempted. This tests a different failing mock (export fails) and confirms the fix skips export entirely rather than attempting it with a bogus handle.",
+      "description": "Write failing test: constraint violation computation. Test compute_total_violation() for: (1) single satisfied constraint thickness > 2mm with thickness=5mm returns 0.0, (2) single violated constraint thickness > 2mm with thickness=1mm returns positive value, (3) multiple constraints with mixed satisfaction returns sum of violations from violated constraints only.",
       "status": "done",
-      "commit": "91e8c5e"
+      "commit": "d0ad0f9"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Should pass from step-2 fix since export is skipped when all ops fail. Verify and adjust if needed.",
+      "description": "Implement compute_total_violation(constraints, values: &ValueMap) -> f64. For each constraint, evaluate with eval_expr. If Bool(true), violation=0. If Bool(false), compute violation magnitude by re-evaluating comparison sub-expressions to get numeric difference (for Gt: max(0, rhs - lhs)^2, etc.). For non-decomposable Bool(false), use fixed penalty 1.0. If Undef, use large penalty. Return sum.",
       "status": "done",
-      "commit": "91e8c5e"
+      "commit": "0ff4495"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write regression test `build_with_no_realizations_still_exports`: uses bracket_compiled_module() (which has no realizations) with MockGeometryKernel. Asserts geometry_output.is_some() — same as existing boundary5_engine::build_with_mock_kernel test but in the new file, confirming the fix didn't regress the no-ops path. (total_ops=0 so the new check doesn't trigger.)",
+      "description": "Write failing test: single auto param feasibility solving. Problem: auto param 'thickness' (LENGTH, bounds Some((0.001, 0.1))), constraints [thickness > 2mm AND thickness < 20mm]. Expect SolveResult::Solved with thickness si_value between 0.002 and 0.020.",
       "status": "done",
-      "commit": "91e8c5e"
+      "commit": "7acf2d9"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Should pass without changes since total_ops=0 for modules with no realizations. Verify and adjust if needed.",
+      "description": "Implement the argmin Nelder-Mead integration. Define ConstraintCostFunction struct holding problem data, implement argmin::core::CostFunction trait (param type = Vec<f64>, output = f64). Wire DimensionalSolver::solve(): build initial simplex, configure NelderMead, run with max iterations, extract solution. Check residual for feasibility.",
       "status": "done",
-      "commit": "91e8c5e"
+      "commit": "edc6359"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing test: infeasible constraints. Problem: auto param 'x' (LENGTH), constraints [x > 10mm AND x < 5mm]. These are contradictory. Expect SolveResult::Infeasible with non-empty diagnostics.",
+      "status": "done",
+      "commit": "8de8a5e"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Implement infeasibility detection: after solver converges, if final cost exceeds threshold (e.g., 1e-12), return SolveResult::Infeasible with diagnostic messages listing which constraints remain violated. Re-evaluate each constraint individually to build diagnostics.",
+      "status": "done",
+      "commit": "edc6359"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test: optimization with Minimize objective. Problem: auto param 'thickness' (LENGTH, bounds (0.001, 0.1)), constraints [thickness > 2mm, thickness < 20mm], objective: Minimize(thickness_expr). Expect Solved with thickness close to 2mm (within tolerance, e.g. < 3mm).",
+      "status": "done",
+      "commit": "d4e9f70"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Implement objective optimization in the cost function: when objective is Some, cost = eval_objective(x) + penalty_weight * total_violation. For Minimize(expr), eval_objective returns the expression's f64 value. For Maximize(expr), negate it. Use penalty_weight = 1e6 to strongly enforce constraints while steering toward optimal.",
+      "status": "done",
+      "commit": "97038eb"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test: multi-parameter solving. Problem: auto params [width (LENGTH, bounds (0.01, 1.0)), height (LENGTH, bounds (0.01, 1.0))], constraints [width > 50mm, height > 50mm, width + height < 200mm]. Expect Solved with width > 0.05 and height > 0.05 and width+height < 0.2.",
+      "status": "done",
+      "commit": "6dc9bb6"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Ensure multi-parameter solving works. Verify Nelder-Mead simplex initialization generates N+1 vertices for N parameters. The cost function already handles multiple auto params through the ValueMap bridge. Fix any issues with simplex construction for N>1.",
+      "status": "done",
+      "commit": "6dc9bb6"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test: bounds handling. (1) AutoParam with bounds: solution stays within bounds. (2) AutoParam without bounds but LENGTH dimension: solver assigns default bounds (positive range) and finds a solution. (3) Test that already-satisfied constraints return Solved immediately without optimization.",
+      "status": "done",
+      "commit": "0f959a9"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement default bounds based on dimension: LENGTH → (1e-6, 10.0), ANGLE → (-2*PI, 2*PI), DIMENSIONLESS → (-1e6, 1e6). Implement bounds clamping in cost function evaluation. Add early-exit: if all constraints already satisfied with current_values, return Solved immediately with auto param values from current_values.",
+      "status": "done",
+      "commit": "213a303"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write integration test in tests/solver_integration.rs using reify-test-support helpers. Test: single param feasibility, optimization with Maximize, and Send+Sync verification. Verify DimensionalSolver works through the trait object interface (Box<dyn ConstraintSolver>).",
+      "status": "done",
+      "commit": "a411f6b"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Final verification: run `cargo test --workspace` to ensure no regressions. Fix any compilation or test issues. Verify all exit criteria: feasibility solving, optimization, infeasible detection, multi-param solving.",
+      "status": "done",
+      "commit": "a411f6b"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Define FailingMockGeometryKernel inline in the test file rather than adding to reify-test-support",
-      "rationale": "Keeps the change scoped to crates/reify-eval. The failing mock is simple (execute returns Err, other methods return Ok) and unlikely to be needed across multiple crates. If reuse is needed later, it can be promoted."
+      "decision": "Use Nelder-Mead as the default (and only for now) optimization algorithm",
+      "rationale": "Nelder-Mead is derivative-free, robust for small-dimensional problems (1-10 parameters typical in CAD), and handles non-smooth objective functions well. CAD constraint problems are typically low-dimensional, making Nelder-Mead's O(n²) scaling acceptable. The task description explicitly recommends it."
     },
     {
-      "decision": "Check total_ops > 0 to distinguish 'all ops failed' from 'no ops existed'",
-      "rationale": "Counting operations is simpler and more reliable than checking diagnostics for geometry-related errors. It correctly handles the case where bracket_compiled_module (no realizations) still uses export with GeometryHandleId(0) — preserving that existing behavior unchanged."
+      "decision": "Penalty-based approach for constraint handling rather than true constrained optimization",
+      "rationale": "Argmin's Nelder-Mead doesn't natively support constraints. Using sum-of-squared-violations as penalty terms is simple, effective for small problems, and avoids the complexity of augmented Lagrangian methods. For feasibility solving (no objective), the penalty IS the objective. For optimization, we add penalty * weight to the objective."
     },
     {
-      "decision": "Add a summary Diagnostic::error rather than changing BuildResult's type or build()'s return type",
-      "rationale": "Minimizes API surface change. BuildResult already has geometry_output: Option<Vec<u8>> and diagnostics: Vec<Diagnostic>. Callers (reify-cli/main.rs, e2e tests) already iterate diagnostics and check geometry_output. Adding a summary diagnostic integrates naturally with existing error reporting without requiring callers to handle a new Result variant."
+      "decision": "Work entirely in SI units (f64) internally, reconstructing Value::Scalar with dimensions on output",
+      "rationale": "eval_expr already works with SI values internally (Value::Scalar.si_value). The solver parameter vector uses raw f64 SI values. On output, we wrap results back into Value::Scalar with the dimension from AutoParam.param_type. This avoids unit conversion complexity."
     },
     {
-      "decision": "Skip export entirely when all ops fail rather than attempting export with GeometryHandleId(0)",
-      "rationale": "Attempting export with a never-created handle is a logic error. With a mock it silently produces bogus data; with a real kernel it produces a confusing 'export error' for handle 0 that obscures the real problem (all geometry ops failed). Skipping export produces a clean error chain: per-op diagnostics + one summary diagnostic."
+      "decision": "Compute continuous violation magnitude from constraint sub-expressions",
+      "rationale": "Bool(true/false) from eval_expr tells us satisfied/violated but not HOW violated. For gradient-free optimization, we need a smooth cost landscape. For comparison constraints (x > y), we decompose the expression to compute (y - x) when violated, giving the optimizer directional signal. For compound AND/OR constraints, we evaluate sub-constraints individually."
+    },
+    {
+      "decision": "Clamp parameters to bounds in cost function rather than penalizing bound violations",
+      "rationale": "Clamping is simpler and ensures the solver never evaluates physically meaningless values (e.g., negative lengths). This is standard practice in CAD solvers. Bounds are hard constraints that should never be violated."
+    },
+    {
+      "decision": "Place solver in a separate solver.rs file, keep SimpleConstraintChecker in lib.rs",
+      "rationale": "The solver is substantial code (argmin integration, cost function struct, helpers). Keeping it separate from the checker maintains clean separation. lib.rs re-exports DimensionalSolver."
+    },
+    {
+      "decision": "Early-exit when all constraints are already satisfied",
+      "rationale": "If current_values already satisfy all constraints, running the optimizer is wasteful. The check is cheap (evaluate all constraint expressions) compared to Nelder-Mead iterations. Common case during incremental evaluation where only some values changed."
+    },
+    {
+      "decision": "Infeasibility detection via residual threshold after solver convergence",
+      "rationale": "If the optimizer converges but final cost exceeds a threshold (~1e-12), the constraints are likely infeasible. Pragmatic approach — proving infeasibility analytically is much harder. The threshold allows for floating-point imprecision."
+    },
+    {
+      "decision": "Default bounds based on dimension type when AutoParam.bounds is None",
+      "rationale": "LENGTH parameters should default to positive values (physical lengths can't be negative). ANGLE parameters have a natural range. This prevents the solver from exploring physically meaningless regions. Defaults are wide enough to not over-constrain."
     }
   ],
   "reuse": [
     {
-      "what": "TopologyTemplateBuilder::realization() and CompiledModuleBuilder",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Build test CompiledModules with geometry realizations containing CompiledGeometryOp::Primitive and Boolean operations"
+      "what": "reify_expr::eval_expr()",
+      "where": "crates/reify-expr/src/lib.rs",
+      "how": "Core expression evaluation function. The solver calls this to evaluate constraint expressions and objective expressions with trial parameter values in a ValueMap."
     },
     {
-      "what": "MockConstraintChecker::new()",
-      "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "Satisfy the constraint_checker parameter of Engine::new() in tests (returns Satisfied for all constraints)"
+      "what": "ValueMap with structural-sharing clone",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "Clone the problem's current_values, insert trial auto-param values, pass to eval_expr. PersistentMap backing makes cloning O(1) which is critical since the solver evaluates many trial points."
     },
     {
-      "what": "MockGeometryKernel::new()",
-      "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "Used in regression test for the no-realizations case, and as reference for implementing FailingMockGeometryKernel"
+      "what": "Value::Scalar, Value::as_f64(), Value::is_undef(), Value::length()",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "Construct Value::Scalar from solver f64 + AutoParam dimension. Use as_f64() to extract numeric results from eval_expr. Use is_undef() to detect evaluation failures."
     },
     {
-      "what": "mm(), vcid() value constructors",
-      "where": "crates/reify-test-support/src/values.rs",
-      "how": "Create Scalar values for geometry op parameters and ValueCellIds for test fixture modules"
+      "what": "DimensionVector constants (LENGTH, ANGLE, DIMENSIONLESS, etc.)",
+      "where": "crates/reify-types/src/dimension.rs",
+      "how": "Used to assign default bounds based on dimension type and to construct Value::Scalar results with correct dimensions."
     },
     {
-      "what": "bracket_compiled_module()",
-      "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "Regression test fixture — module with no realizations, verifying existing no-ops export behavior is unchanged"
+      "what": "ConstraintSolver trait, ResolutionProblem, SolveResult, AutoParam, OptimizationObjective",
+      "where": "crates/reify-types/src/constraint.rs",
+      "how": "All type definitions already in reify-types. DimensionalSolver implements ConstraintSolver. Consumes ResolutionProblem, produces SolveResult."
     },
     {
-      "what": "CompiledGeometryOp, PrimitiveKind, BooleanOp, GeomRef from reify_compiler",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "Construct geometry operations for test realization declarations (box primitives, boolean unions)"
+      "what": "Test helpers: mm(), vcid(), cnid(), literal(), gt(), lt(), and(), value_ref()",
+      "where": "crates/reify-test-support/src/values.rs and builders.rs",
+      "how": "Reuse in solver tests to build constraint expressions and expected values, matching patterns used in existing boundary3_checker.rs tests."
     },
     {
-      "what": "GeometryKernel trait, GeometryError, ExportError, etc. from reify_types",
-      "where": "crates/reify-types/src/geometry.rs",
-      "how": "Implement FailingMockGeometryKernel trait in the test file"
+      "what": "CompiledExpr::literal(), ::value_ref(), ::binop()",
+      "where": "crates/reify-types/src/expr.rs",
+      "how": "Construct constraint expressions for solver test cases."
     },
     {
-      "what": "Diagnostic::error() and Severity enum",
+      "what": "Diagnostic and Severity types",
       "where": "crates/reify-types/src/diagnostics.rs",
-      "how": "Create the summary diagnostic in build() and filter/assert diagnostics by severity in tests"
+      "how": "Used in SolveResult::Infeasible to report which constraints could not be satisfied."
     }
   ]
 }
