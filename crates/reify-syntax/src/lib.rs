@@ -132,6 +132,8 @@ pub enum ExprKind {
         then_branch: Box<Expr>,
         else_branch: Box<Expr>,
     },
+    /// Auto keyword: solver-determined parameter value
+    Auto,
 }
 
 /// A type expression in the AST (e.g., `Scalar`, `Bool`).

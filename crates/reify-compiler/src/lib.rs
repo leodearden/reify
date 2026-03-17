@@ -513,6 +513,12 @@ fn compile_expr(
             );
             CompiledExpr::literal(Value::Undef, Type::Real)
         }
+        reify_syntax::ExprKind::Auto => {
+            // Auto expressions should not appear inside compile_expr — they are
+            // handled at the param compilation level. If we reach here, emit an
+            // Undef literal as a safe fallback.
+            CompiledExpr::literal(Value::Undef, Type::Real)
+        }
         reify_syntax::ExprKind::Conditional {
             condition,
             then_branch,
