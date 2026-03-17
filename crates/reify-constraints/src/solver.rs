@@ -64,10 +64,10 @@ fn extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> {
         .iter()
         .map(|param| {
             // Try current value first
-            if let Some(val) = problem.current_values.get(&param.id) {
-                if let Some(f) = val.as_f64() {
-                    return f;
-                }
+            if let Some(val) = problem.current_values.get(&param.id)
+                && let Some(f) = val.as_f64()
+            {
+                return f;
             }
             // Fall back to bounds midpoint
             if let Some((lo, hi)) = param.bounds {
