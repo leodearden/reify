@@ -237,4 +237,39 @@ mod tests {
         assert_eq!(cloned.value_cells.len(), 2);
         assert!(cloned.value_cells.contains_key(&vcid2));
     }
+
+    #[test]
+    fn evaluation_graph_from_templates() {
+        use reify_test_support::{TopologyTemplateBuilder, gt, lt, literal, value_ref};
+
+        let template = TopologyTemplateBuilder::new("Bracket")
+            .param("Bracket", "width", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
+            .param("Bracket", "height", Type::length(), Some(CompiledExpr::literal(Value::length(0.10), Type::length())))
+            .let_binding("Bracket", "volume", Type::Real, CompiledExpr::literal(Value::Real(0.0), Type::Real))
+            .constraint("Bracket", 0, None, gt(value_ref("Bracket", "width"), literal(Value::length(0.01))))
+            .constraint("Bracket", 1, Some("max_height"), lt(value_ref("Bracket", "height"), literal(Value::length(1.0))))
+            .build();
+
+        let graph = EvaluationGraph::from_templates(&[template]);
+
+        // 2 params + 1 let = 3 value cells
+        assert_eq!(graph.value_cells.len(), 3);
+        assert!(graph.value_cells.get(&ValueCellId::new("Bracket", "width")).is_some());
+        assert!(graph.value_cells.get(&ValueCellId::new("Bracket", "height")).is_some());
+        assert!(graph.value_cells.get(&ValueCellId::new("Bracket", "volume")).is_some());
+
+        // Check kinds
+        let width_node = graph.value_cells.get(&ValueCellId::new("Bracket", "width")).unwrap();
+        assert_eq!(width_node.kind, ValueCellKind::Param);
+        let vol_node = graph.value_cells.get(&ValueCellId::new("Bracket", "volume")).unwrap();
+        assert_eq!(vol_node.kind, ValueCellKind::Let);
+
+        // 2 constraints
+        assert_eq!(graph.constraints.len(), 2);
+        assert!(graph.constraints.get(&ConstraintNodeId::new("Bracket", 0)).is_some());
+        assert!(graph.constraints.get(&ConstraintNodeId::new("Bracket", 1)).is_some());
+
+        // 0 realizations (none added via builder)
+        assert_eq!(graph.realizations.len(), 0);
+    }
 }
