@@ -123,6 +123,8 @@ pub enum DeterminacyState {
     Undetermined,
     /// Value is provisionally determined (may change during solving).
     Provisional,
+    /// Value is marked auto — to be resolved by the constraint solver.
+    Auto,
 }
 
 /// The satisfaction state of a constraint.
@@ -391,6 +393,44 @@ mod tests {
         let h5 = Satisfaction::Indeterminate.content_hash();
         let h6 = Satisfaction::Indeterminate.content_hash();
         assert_eq!(h5, h6);
+    }
+
+    #[test]
+    fn determinacy_state_auto_exists_and_is_distinct() {
+        // Auto variant should exist and be distinct from other variants
+        let auto = DeterminacyState::Auto;
+        let determined = DeterminacyState::Determined;
+        let undetermined = DeterminacyState::Undetermined;
+        let provisional = DeterminacyState::Provisional;
+
+        assert_ne!(auto, determined);
+        assert_ne!(auto, undetermined);
+        assert_ne!(auto, provisional);
+    }
+
+    #[test]
+    fn determinacy_state_auto_is_copy_clone_eq_hash() {
+        let auto = DeterminacyState::Auto;
+        let auto2 = auto; // Copy
+        assert_eq!(auto, auto2); // PartialEq + Eq
+
+        let auto3 = auto.clone(); // Clone
+        assert_eq!(auto, auto3);
+
+        // Hash: usable as HashMap key
+        use std::collections::HashMap;
+        let mut map = HashMap::new();
+        map.insert(auto, "auto");
+        assert_eq!(map.get(&DeterminacyState::Auto), Some(&"auto"));
+    }
+
+    #[test]
+    fn determinacy_state_auto_discriminant_is_3() {
+        // Determined=0, Undetermined=1, Provisional=2, Auto=3
+        assert_eq!(DeterminacyState::Determined as u8, 0);
+        assert_eq!(DeterminacyState::Undetermined as u8, 1);
+        assert_eq!(DeterminacyState::Provisional as u8, 2);
+        assert_eq!(DeterminacyState::Auto as u8, 3);
     }
 
     #[test]
