@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use reify_eval::cache::NodeId;
 use reify_eval::Engine;
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver, TopologyTemplateBuilder,
@@ -403,4 +404,72 @@ fn eval_result_tracks_resolved_params() {
     let build_result = engine3.build(&module, ExportFormat::Step);
     assert_eq!(build_result.resolved_params.len(), 1);
     assert!(build_result.resolved_params.contains_key(&thickness_id));
+}
+
+#[test]
+fn resolution_cache_version_matches_snapshot() {
+    // Build module with auto param x, let binding y = x * 2, constraint x > 2mm
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(x_id.clone(), mm(5.0));
+
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .let_binding(
+            "S",
+            "y",
+            Type::length(),
+            binop(
+                reify_types::BinOp::Mul,
+                value_ref("S", "x"),
+                literal(Value::Real(2.0)),
+            ),
+        )
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(2.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    let _result = engine.eval(&module);
+
+    // Get snapshot version after resolution
+    let snap = engine.snapshot().expect("snapshot should exist");
+    let snap_version = snap.version;
+
+    // Get cache entry for auto param x
+    let x_cache = engine
+        .cache_store()
+        .get(&NodeId::Value(x_id.clone()))
+        .expect("x should be cached");
+
+    // Get cache entry for let binding y
+    let y_cache = engine
+        .cache_store()
+        .get(&NodeId::Value(y_id.clone()))
+        .expect("y should be cached");
+
+    // Both cache entries' basis_version must match the snapshot's version.
+    // This is the invariant that try_fast_path relies on: if basis_version
+    // doesn't match snapshot.version, subsequent edit_param() calls will
+    // never hit the fast path for resolution-phase entries, forcing full
+    // dependency-trace evaluation even for unaffected nodes.
+    assert_eq!(
+        x_cache.basis_version, snap_version,
+        "auto param x cache basis_version ({:?}) should match snapshot version ({:?})",
+        x_cache.basis_version, snap_version
+    );
+    assert_eq!(
+        y_cache.basis_version, snap_version,
+        "let binding y cache basis_version ({:?}) should match snapshot version ({:?})",
+        y_cache.basis_version, snap_version
+    );
 }
