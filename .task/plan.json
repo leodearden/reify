@@ -1,0 +1,126 @@
+{
+  "task_id": "9",
+  "title": "Freshness model + Priority types",
+  "modules": [
+    "crates/reify-types",
+    "crates/reify-runtime"
+  ],
+  "analysis": "The M1 Freshness enum has 3 simple variants (Fresh, Stale, Uncomputed). The spec requires a richer 4-variant model: Final, Intermediate{generation}, Pending{last_substantive}, Failed{error}. Fortunately, Freshness is defined and re-exported but NEVER actually used in runtime code — no code references Freshness::Fresh/Stale/Uncomputed, so the migration is purely a type definition change with no consumer updates needed. The reify-runtime crate exists as a workspace member with a stub lib.rs; it already depends on reify-types. We need to: (1) add an EvalError type to reify-types since the Failed variant needs it; (2) replace the Freshness enum; (3) update the re-export in reify-types/src/lib.rs to include EvalError; (4) add Priority enum and Task struct to reify-runtime; (5) ensure NodeId is available for Task (the task description says NodeId but the codebase uses ValueCellId — we'll create a NodeId enum that wraps the various node ID types, or use ValueCellId directly if simpler). Since the Freshness variants change from Copy-friendly fieldless enum to one with String (via EvalError), we must drop Copy from derives. ContentHash is already available. The Pending variant needs Option<ContentHash> which is in scope. Key design decisions: (a) EvalError will be a simple String-wrapping error type in reify-types, following the pattern of GeometryError; (b) NodeId for Task will be ValueCellId since tasks evaluate value cells; (c) Freshness loses Copy and Hash derives since it now contains String (via EvalError) and Option<ContentHash>.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test in reify-types/src/value.rs: test_eval_error_display — asserts EvalError wrapping a string message displays it. Test won't compile because EvalError doesn't exist yet.",
+      "status": "done",
+      "commit": "26e132f"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Add EvalError type to reify-types/src/value.rs: a simple #[derive(Debug, Clone, PartialEq, Eq)] struct EvalError(pub String) with Display and Error impls. Add EvalError to the pub use in reify-types/src/lib.rs. Test passes.",
+      "status": "done",
+      "commit": "e29cb83"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing tests in reify-types/src/value.rs for the new Freshness variants: test_freshness_final, test_freshness_intermediate, test_freshness_pending_none, test_freshness_pending_some, test_freshness_failed. Each constructs a Freshness variant and asserts basic properties (Debug, Clone, PartialEq). Won't compile because old Freshness has different variants.",
+      "status": "done",
+      "commit": "4ba22aa"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Replace the Freshness enum with 4 new variants: Final, Intermediate{generation: u64}, Pending{last_substantive: Option<ContentHash>}, Failed{error: EvalError}. Derive Debug, Clone, PartialEq, Eq (drop Copy and Hash since EvalError contains String). All Freshness tests pass.",
+      "status": "done",
+      "commit": "dde28f2"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing test in reify-runtime/src/lib.rs: test_priority_ordering — asserts P0Interactive < P1Fast < P1Slow < P3Speculative using derived Ord. Won't compile because Priority doesn't exist.",
+      "status": "done",
+      "commit": "ef3b2df"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Add Priority enum to reify-runtime/src/lib.rs with variants P0Interactive, P1Fast, P1Slow, P3Speculative. Derive Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord. Test passes.",
+      "status": "done",
+      "commit": "afe29e5"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing test in reify-runtime/src/lib.rs: test_task_creation — constructs a Task with a ValueCellId and Priority, asserts fields are accessible. Won't compile because Task doesn't exist.",
+      "status": "done",
+      "commit": "8b56927"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Add Task struct to reify-runtime/src/lib.rs with fields node_id: ValueCellId and priority: Priority. Derive Debug, Clone, PartialEq, Eq. Test passes.",
+      "status": "done",
+      "commit": "0d9acf8"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing test in reify-runtime/src/lib.rs: test_tasks_sort_by_priority — creates a Vec<Task> with mixed priorities, sorts them, asserts P0Interactive comes first. Validates the Ord derive on Priority works for task scheduling.",
+      "status": "done",
+      "commit": "511619e"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "No new production code needed — step-9 test should pass with existing Priority Ord derive. If not, fix accordingly. Run cargo test --workspace to verify all 122+ existing tests still pass and no references to old Freshness variants remain.",
+      "status": "done",
+      "commit": "511619e"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "EvalError is a simple newtype wrapper: struct EvalError(pub String)",
+      "rationale": "Follows the project's existing error patterns (GeometryError, ExportError etc. all use String messages). A richer error type can evolve later but for M2 this is sufficient. The pub inner field allows pattern matching and easy construction."
+    },
+    {
+      "decision": "Task uses ValueCellId instead of a new NodeId type",
+      "rationale": "The task description mentions NodeId but the codebase has no such type — it uses specific ID types (ValueCellId, ConstraintNodeId, RealizationNodeId). Since tasks in the scheduler evaluate value cells, ValueCellId is the natural choice. A NodeId enum wrapping all ID types could be added later if tasks need to address other node kinds."
+    },
+    {
+      "decision": "Freshness loses Copy and Hash derives",
+      "rationale": "The new Failed{error: EvalError} variant contains a String (via EvalError), which is not Copy. Hash is also dropped since EvalError(String) doesn't implement Hash by default, and hashing error messages isn't meaningful. The old enum was never used in HashMaps or as a Copy type in practice."
+    },
+    {
+      "decision": "No consumer migration needed for old Freshness variants",
+      "rationale": "Grep confirms Freshness::Fresh, Freshness::Stale, and Freshness::Uncomputed appear nowhere in the codebase except the enum definition itself. The type was defined speculatively in M1 but never consumed, so there are zero call sites to update."
+    },
+    {
+      "decision": "EvalError placed in reify-types/src/value.rs alongside Freshness",
+      "rationale": "EvalError is intimately tied to Freshness::Failed and the value evaluation pipeline. Placing it in the same file keeps related types together and avoids circular dependency issues. It's re-exported from reify-types/src/lib.rs for external use."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "ContentHash type",
+      "where": "crates/reify-types/src/hash.rs",
+      "how": "Used as Option<ContentHash> in the Pending variant's last_substantive field. Already in scope via crate::hash::ContentHash."
+    },
+    {
+      "what": "Error type patterns (Display + Error impls)",
+      "where": "crates/reify-types/src/geometry.rs lines 114-197",
+      "how": "Follow the same pattern for EvalError: derive Debug/Clone, impl Display, impl std::error::Error."
+    },
+    {
+      "what": "ValueCellId",
+      "where": "crates/reify-types/src/identity.rs line 54",
+      "how": "Used as the node_id field in Task struct. Already depends on reify-types via workspace dependency."
+    },
+    {
+      "what": "Workspace dependency on reify-types",
+      "where": "crates/reify-runtime/Cargo.toml",
+      "how": "reify-runtime already has reify-types.workspace = true, so ValueCellId, ContentHash, and Freshness are all available without adding new dependencies."
+    }
+  ]
+}
