@@ -254,6 +254,60 @@ mod tests {
     }
 
     #[test]
+    fn test_freshness_final() {
+        let f = Freshness::Final;
+        let f2 = f.clone();
+        assert_eq!(f, f2);
+        assert_eq!(format!("{:?}", f), "Final");
+    }
+
+    #[test]
+    fn test_freshness_intermediate() {
+        let f = Freshness::Intermediate { generation: 42 };
+        let f2 = f.clone();
+        assert_eq!(f, f2);
+        match &f {
+            Freshness::Intermediate { generation } => assert_eq!(*generation, 42),
+            _ => panic!("expected Intermediate"),
+        }
+    }
+
+    #[test]
+    fn test_freshness_pending_none() {
+        let f = Freshness::Pending { last_substantive: None };
+        let f2 = f.clone();
+        assert_eq!(f, f2);
+        match &f {
+            Freshness::Pending { last_substantive } => assert!(last_substantive.is_none()),
+            _ => panic!("expected Pending"),
+        }
+    }
+
+    #[test]
+    fn test_freshness_pending_some() {
+        let hash = ContentHash::of(b"test");
+        let f = Freshness::Pending { last_substantive: Some(hash) };
+        let f2 = f.clone();
+        assert_eq!(f, f2);
+        match &f {
+            Freshness::Pending { last_substantive } => assert_eq!(*last_substantive, Some(hash)),
+            _ => panic!("expected Pending"),
+        }
+    }
+
+    #[test]
+    fn test_freshness_failed() {
+        let err = EvalError("type mismatch".to_string());
+        let f = Freshness::Failed { error: err.clone() };
+        let f2 = f.clone();
+        assert_eq!(f, f2);
+        match &f {
+            Freshness::Failed { error } => assert_eq!(error.0, "type mismatch"),
+            _ => panic!("expected Failed"),
+        }
+    }
+
+    #[test]
     fn test_eval_error_display() {
         let err = EvalError("division by zero".to_string());
         assert_eq!(format!("{}", err), "division by zero");
