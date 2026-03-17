@@ -130,4 +130,43 @@ mod tests {
         assert_eq!(cloned.version, snap.version);
         assert_eq!(cloned.provenance, snap.provenance);
     }
+
+    #[test]
+    fn snapshot_clone_structural_sharing() {
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let snap = Snapshot::from_compiled_module(&module);
+
+        // Clone the snapshot (O(1) via PersistentMap)
+        let mut cloned = snap.clone();
+
+        // Modify the clone's values — insert a new value for width
+        let width_id = ValueCellId::new("Bracket", "width");
+        cloned.values.insert(
+            width_id.clone(),
+            (Value::length(0.08), DeterminacyState::Determined),
+        );
+
+        // Also insert a completely new value cell in clone
+        let extra_id = ValueCellId::new("Bracket", "extra");
+        cloned.values.insert(
+            extra_id.clone(),
+            (Value::Int(42), DeterminacyState::Determined),
+        );
+
+        // Original snapshot is unchanged
+        assert_eq!(snap.values.len(), 6);
+        let (orig_val, orig_det) = snap.values.get(&width_id).unwrap();
+        assert!(orig_val.is_undef());
+        assert_eq!(*orig_det, DeterminacyState::Undetermined);
+        assert!(!snap.values.contains_key(&extra_id));
+
+        // Clone has the modified values
+        assert_eq!(cloned.values.len(), 7); // 6 original + 1 extra
+        let (clone_val, clone_det) = cloned.values.get(&width_id).unwrap();
+        assert!(!clone_val.is_undef());
+        assert_eq!(*clone_det, DeterminacyState::Determined);
+        assert!(cloned.values.contains_key(&extra_id));
+    }
 }
