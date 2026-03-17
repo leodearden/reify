@@ -305,6 +305,12 @@ impl Engine {
         // Overwrite with the new param value
         values.insert(cell.clone(), new_value);
 
+        // Mark all nodes in the eval set as Pending before re-evaluation.
+        // This transitions Final → Pending{last_substantive: hash}.
+        for node_id in &eval_set {
+            self.cache.mark_pending(node_id);
+        }
+
         // Evaluate only Value nodes in the eval set (topo-sorted order).
         // Track nodes to skip due to early cutoff of upstream nodes.
         let mut skipped: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
