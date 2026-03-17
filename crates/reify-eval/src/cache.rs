@@ -278,6 +278,53 @@ mod tests {
         assert_eq!(map.get(&NodeId::Constraint(cnid)), Some(&"constraint"));
     }
 
+    // --- invalidate_dependents tests ---
+
+    #[test]
+    fn invalidate_dependents_removes_dependent_nodes() {
+        let mut store = CacheStore::new();
+        let a = ValueCellId::new("Bracket", "a");
+        let b = ValueCellId::new("Bracket", "b");
+        let x_id = ValueCellId::new("Bracket", "x");
+        let y_id = ValueCellId::new("Bracket", "y");
+
+        // x depends on a
+        let node_x = NodeId::Value(x_id.clone());
+        let mut trace_x = DependencyTrace::default();
+        trace_x.reads.push(a.clone());
+        store.put(
+            node_x.clone(),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+                Freshness::Final,
+                trace_x,
+                VersionId(1),
+            ),
+        );
+
+        // y depends on b (not a)
+        let node_y = NodeId::Value(y_id.clone());
+        let mut trace_y = DependencyTrace::default();
+        trace_y.reads.push(b.clone());
+        store.put(
+            node_y.clone(),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(2), DeterminacyState::Determined),
+                Freshness::Final,
+                trace_y,
+                VersionId(1),
+            ),
+        );
+
+        // Invalidate dependents of a
+        store.invalidate_dependents(&[a]);
+
+        // x should be invalidated (depends on a)
+        assert!(store.get(&node_x).is_none());
+        // y should be retained (depends on b, not a)
+        assert!(store.get(&node_y).is_some());
+    }
+
     // --- record_evaluation tests ---
 
     #[test]
