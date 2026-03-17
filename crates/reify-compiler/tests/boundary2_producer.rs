@@ -121,6 +121,84 @@ fn content_hashes_present() {
 /// Type error detection: adding length to mass should fail.
 #[test]
 fn type_error_dimension_mismatch() {
-    // This would test: compile a module where `thickness + 2kg` is used
-    // → should produce a diagnostic about dimension mismatch
+    use reify_syntax::*;
+    use reify_types::*;
+
+    // Build a module with: let bad = thickness + mass_val
+    // where thickness is Scalar(Length) and mass_val is Scalar(Mass)
+    let module = ParsedModule {
+        path: ModulePath::single("dim_mismatch"),
+        declarations: vec![Declaration::Structure(StructureDef {
+            name: "Bad".into(),
+            members: vec![
+                MemberDecl::Param(ParamDecl {
+                    name: "thickness".into(),
+                    type_expr: Some(TypeExpr {
+                        name: "Scalar".into(),
+                        span: SourceSpan::new(0, 6),
+                    }),
+                    default: Some(Expr {
+                        kind: ExprKind::QuantityLiteral {
+                            value: 5.0,
+                            unit: "mm".into(),
+                        },
+                        span: SourceSpan::new(9, 12),
+                    }),
+                    span: SourceSpan::new(0, 12),
+                    content_hash: ContentHash::of_str("param thickness: Scalar = 5mm"),
+                }),
+                MemberDecl::Param(ParamDecl {
+                    name: "mass_val".into(),
+                    type_expr: None,
+                    default: Some(Expr {
+                        kind: ExprKind::QuantityLiteral {
+                            value: 2.0,
+                            unit: "kg".into(),
+                        },
+                        span: SourceSpan::new(20, 23),
+                    }),
+                    span: SourceSpan::new(15, 23),
+                    content_hash: ContentHash::of_str("param mass_val = 2kg"),
+                }),
+                MemberDecl::Let(LetDecl {
+                    name: "bad".into(),
+                    type_expr: None,
+                    value: Expr {
+                        kind: ExprKind::BinOp {
+                            op: "+".into(),
+                            left: Box::new(Expr {
+                                kind: ExprKind::Ident("thickness".into()),
+                                span: SourceSpan::new(30, 39),
+                            }),
+                            right: Box::new(Expr {
+                                kind: ExprKind::Ident("mass_val".into()),
+                                span: SourceSpan::new(42, 50),
+                            }),
+                        },
+                        span: SourceSpan::new(30, 50),
+                    },
+                    span: SourceSpan::new(25, 50),
+                    content_hash: ContentHash::of_str("let bad = thickness + mass_val"),
+                }),
+            ],
+            span: SourceSpan::new(0, 60),
+            content_hash: ContentHash::of_str("structure Bad"),
+        })],
+        errors: vec![],
+        content_hash: ContentHash::of_str("dim_mismatch module"),
+    };
+
+    let compiled = reify_compiler::compile(&module);
+    assert!(
+        !compiled.diagnostics.is_empty(),
+        "should have diagnostics for dimension mismatch (Length + Mass)"
+    );
+    assert!(
+        compiled.diagnostics.iter().any(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("dimension") || msg.contains("mismatch")
+        }),
+        "diagnostics should mention dimension mismatch, got: {:?}",
+        compiled.diagnostics
+    );
 }
