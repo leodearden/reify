@@ -193,6 +193,18 @@ impl CacheStore {
         EvalOutcome::Changed
     }
 
+    /// Invalidate all cached nodes whose dependency trace reads any of the
+    /// changed value cells. Forces those nodes to be re-evaluated next time.
+    pub fn invalidate_dependents(&mut self, changed: &[ValueCellId]) {
+        self.caches.retain(|_node, entry| {
+            !entry
+                .dependency_trace
+                .reads
+                .iter()
+                .any(|read| changed.contains(read))
+        });
+    }
+
     /// Version fast path: if the node is cached and its basis_version matches
     /// the current version, return a clone of the cached result without
     /// re-evaluation.
