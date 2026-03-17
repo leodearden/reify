@@ -247,6 +247,71 @@ impl Engine {
         EvalResult { values, diagnostics }
     }
 
+    /// Incrementally re-evaluate after changing a parameter value.
+    ///
+    /// Requires a prior call to eval() to establish the baseline snapshot
+    /// and dependency structures. Creates a child snapshot with Edit provenance,
+    /// updates the changed cell's value, and re-evaluates all let bindings that
+    /// depend on the changed cell.
+    ///
+    /// Returns EvalResult with all current values (both changed and unchanged).
+    pub fn edit_param(
+        &mut self,
+        cell: ValueCellId,
+        new_value: reify_types::Value,
+    ) -> EvalResult {
+        let snapshot = self.current_snapshot.as_ref()
+            .expect("edit_param requires a prior call to eval()");
+
+        // Clone snapshot (O(1) via PersistentMap)
+        let mut new_snapshot = snapshot.clone();
+
+        // Update snapshot ID and version
+        let snapshot_id = self.next_snapshot_id;
+        self.next_snapshot_id += 1;
+        let version_id = self.next_version_id;
+        self.next_version_id += 1;
+        new_snapshot.id = SnapshotId(snapshot_id);
+        new_snapshot.version = VersionId(version_id);
+
+        // Update the changed cell's value in snapshot
+        new_snapshot.values.insert(
+            cell.clone(),
+            (new_value.clone(), DeterminacyState::Determined),
+        );
+
+        // Build the full ValueMap from snapshot values
+        let mut values = ValueMap::new();
+        for (id, (val, _det)) in new_snapshot.values.iter() {
+            values.insert(id.clone(), val.clone());
+        }
+        // Overwrite with the new param value
+        values.insert(cell.clone(), new_value);
+
+        // Re-evaluate all let bindings that have expressions
+        // (for now: re-evaluate ALL let bindings to keep it simple)
+        for (_, node) in new_snapshot.graph.value_cells.iter() {
+            if node.kind == ValueCellKind::Let {
+                if let Some(ref expr) = node.default_expr {
+                    let val = reify_expr::eval_expr(expr, &values);
+                    values.insert(node.id.clone(), val.clone());
+                    new_snapshot.values.insert(
+                        node.id.clone(),
+                        (val, DeterminacyState::Determined),
+                    );
+                }
+            }
+        }
+
+        // Store the new snapshot
+        self.current_snapshot = Some(new_snapshot);
+
+        EvalResult {
+            values,
+            diagnostics: Vec::new(),
+        }
+    }
+
     /// Evaluate a compiled module with caching and early cutoff.
     ///
     /// On first call (cold start), behaves like eval() but populates the cache.
