@@ -1,14 +1,20 @@
 {
-  "task_id": "15",
-  "title": "Handle geometry build errors gracefully",
-  "modules": ["crates/reify-eval"],
-  "analysis": "In Engine::build() (lib.rs lines 569-629), when ALL geometry operations fail — either because kernel.execute() returns Err or compile_geometry_op() returns None — the code accumulates per-operation error diagnostics but last_handle remains None. It then falls through to line 608: `let export_handle = last_handle.unwrap_or(GeometryHandleId(0))` and attempts to export a handle that was never created. With a mock kernel (which ignores handle validity), this silently produces bogus geometry_output=Some(data). With a real kernel, export fails and adds an 'export error' diagnostic, but there's no summary message indicating that geometry construction failed entirely.\n\nThe fix: after the geometry operation loop, check if `last_handle.is_none()` AND there were geometry operations to process (`total_ops > 0`). If so, skip the export, push a clear summary diagnostic ('all geometry operations failed; no geometry output produced'), and return geometry_output=None.\n\nThis preserves existing behavior for: (a) modules with no realizations/operations (total_ops == 0, current export-with-handle-0 behavior unchanged), (b) partial failures where at least one op succeeded (last_handle is Some, export proceeds normally).",
+  "task_id": "18",
+  "title": "auto keyword — grammar, parser, compiler",
+  "modules": [
+    "tree-sitter-reify",
+    "crates/reify-syntax",
+    "crates/reify-compiler",
+    "crates/reify-eval",
+    "crates/reify-test-support"
+  ],
+  "analysis": "This task threads the `auto` keyword through the full parse→compile→eval pipeline for M3 constraint solving. Key findings from codebase exploration:\n\n1. **Grammar (tree-sitter-reify/grammar.js):** param_declaration uses `optional(seq('=', field('default', $._expression)))`. We add `auto_keyword: $ => 'auto'` and change the default field to `choice($.auto_keyword, $._expression)`. Tree-sitter's lexer will prefer the 'auto' string literal over the identifier regex, effectively reserving `auto` as a keyword. This mirrors the existing bool_literal pattern ('true'/'false').\n\n2. **Parser (crates/reify-syntax/src/ts_parser.rs):** `lower_param()` extracts defaults via `child_by_field_name('default').and_then(|d| self.lower_expr(d))`. For auto, the CST node kind will be 'auto_keyword', which lower_expr doesn't handle → returns None. We must check for 'auto_keyword' before calling lower_expr and produce ExprKind::Auto.\n\n3. **AST (crates/reify-syntax/src/lib.rs):** ExprKind has 10 variants (NumberLiteral, QuantityLiteral, StringLiteral, BoolLiteral, Ident, BinOp, UnOp, FunctionCall, MemberAccess, Conditional). We add ExprKind::Auto — a unit variant with no fields.\n\n4. **Compiler (crates/reify-compiler/src/lib.rs):** ValueCellKind has {Param, Let}. Param compilation (line ~641) calls compile_expr on the default. For ExprKind::Auto, we skip compile_expr and emit ValueCellKind::Auto with default_expr: None.\n\n5. **Eval (crates/reify-eval/src/lib.rs):** Two-pass evaluation: first Params (line 184: `cell.kind == ValueCellKind::Param && let Some(ref expr) = cell.default_expr`), then Lets. Auto cells match neither condition → silently skipped → stay at snapshot initial value. We must add explicit Auto handling in eval() and eval_cached() to set (Undef, DeterminacyState::Auto) and record cache entries.\n\n6. **Snapshot (crates/reify-eval/src/snapshot.rs):** `from_compiled_module` initializes ALL cells to (Undef, Undetermined). We update this to check node.kind and set DeterminacyState::Auto for Auto cells.\n\n7. **Deps (crates/reify-eval/src/deps.rs):** `build_from_graph` and `build_trace_map` filter on `node.kind == ValueCellKind::Let`. Auto cells (like Params) are roots with empty DependencyTrace. The else branch handles them correctly — no changes needed.\n\n8. **Constraints:** SimpleConstraintChecker maps Value::Undef → Satisfaction::Indeterminate (reify-constraints/src/lib.rs line 30-31). Auto params start as Undef, so constraints naturally return Indeterminate.\n\n9. **DeterminacyState::Auto already exists** in reify-types/src/value.rs with full test coverage. No type-layer changes needed.\n\n10. **All ValueCellKind match sites** use equality checks (`cell.kind == ValueCellKind::Param`), not exhaustive match. Adding Auto won't cause compilation errors but requires explicit handling for correct behavior.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create test file crates/reify-eval/tests/geometry_error_handling.rs with a FailingMockGeometryKernel (execute always returns Err, export/query/tessellate return Ok with dummy data) and a helper function that builds a CompiledModule with one box primitive realization using TopologyTemplateBuilder. The failing mock's export intentionally succeeds to demonstrate the current bug: build() silently produces bogus geometry output when all operations fail.",
+      "description": "Update tree-sitter-reify/grammar.js: (1) Add `auto_keyword: $ => 'auto'` rule, (2) Change param_declaration default from `field('default', $._expression)` to `field('default', choice($.auto_keyword, $._expression))`, (3) Regenerate the parser with `cd tree-sitter-reify && npx tree-sitter generate`. This produces updated src/parser.c, src/grammar.json, src/node-types.json.",
       "status": "done",
-      "commit": "deb233d",
+      "commit": "51275fc",
       "tests": []
     }
   ],
@@ -16,118 +22,182 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `build_returns_no_geometry_when_all_kernel_ops_fail`: builds module with one box realization using FailingMockGeometryKernel, asserts geometry_output.is_none() AND diagnostics contain a message matching 'all geometry operations failed'. Currently fails because (1) export succeeds with bogus handle 0 so geometry_output is Some, and (2) no summary diagnostic exists.",
+      "description": "Write failing test `parse_auto_param` in crates/reify-syntax/tests/boundary1_producer.rs: parse source `structure T { param thickness: Scalar = auto }`, assert no parse errors, verify ParamDecl has `default: Some(Expr { kind: ExprKind::Auto, .. })`. Test fails because ExprKind::Auto doesn't exist yet.",
       "status": "done",
-      "commit": "deb233d"
+      "commit": "f04f577"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix Engine::build() in lib.rs: before the export block (line 607), count total geometry ops across all templates/realizations. After the op loop, if last_handle.is_none() && total_ops > 0, push Diagnostic::error('all geometry operations failed; no geometry output produced') and set geometry_output to None (skip export entirely). Wrap the existing export logic in an else branch.",
+      "description": "Add `ExprKind::Auto` variant (unit variant, no fields) to crates/reify-syntax/src/lib.rs. Update `lower_param()` in crates/reify-syntax/src/ts_parser.rs: before calling `lower_expr(d)` for the default node, check `if d.kind() == \"auto_keyword\"` and return `Some(Expr { kind: ExprKind::Auto, span: self.span(d) })` directly. Step-1 test now passes.",
       "status": "done",
-      "commit": "8ce68ec"
+      "commit": "d533555"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `build_returns_no_geometry_when_all_ops_fail_to_compile`: builds module with only a boolean union op referencing GeomRef::Step(0) and Step(1) but no prior primitives, so compile_geometry_op returns None for all ops. Uses standard MockGeometryKernel (kernel.execute never called). Asserts geometry_output.is_none(), diagnostics contain 'failed to compile geometry operation' AND 'all geometry operations failed'. Verifies the compile-failure path also triggers the summary error.",
+      "description": "Write test `parse_mixed_auto_and_normal_params` in crates/reify-syntax/tests/boundary1_producer.rs: parse `structure S { param x: Scalar = 5mm\\n param y: Scalar = auto\\n param z: Scalar }`, verify x has QuantityLiteral default, y has Auto default, z has no default (None). Confirms auto coexists with normal params.",
       "status": "done",
-      "commit": "91e8c5e"
+      "commit": "471e082"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Should pass from step-2 fix since both kernel-failure and compile-failure paths leave last_handle=None with total_ops>0. Verify and adjust if needed.",
-      "status": "done",
-      "commit": "91e8c5e"
+      "description": "Step-3 should pass with step-2 implementation. If not, debug and fix lower_param handling. Verify `auto` in `let x = auto` is either a parse error or parsed differently (not ExprKind::Auto) since grammar restricts auto_keyword to param defaults.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `build_no_export_error_when_all_ops_fail`: uses FailingMockGeometryKernel whose export returns Err, builds module with box realization. Asserts that diagnostics do NOT contain any 'export error' message — proving export was never attempted. This tests a different failing mock (export fails) and confirms the fix skips export entirely rather than attempting it with a bogus handle.",
-      "status": "done",
-      "commit": "91e8c5e"
+      "description": "Write failing test `compile_auto_param` in crates/reify-compiler/tests/boundary2_producer.rs: parse + compile `structure S { param x: Scalar = auto\\n param y: Scalar = 5mm }`, filter value cells, assert x has `kind == ValueCellKind::Auto` and `default_expr == None`, y has `kind == ValueCellKind::Param` and `default_expr.is_some()`. Test fails because ValueCellKind::Auto doesn't exist.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Should pass from step-2 fix since export is skipped when all ops fail. Verify and adjust if needed.",
-      "status": "done",
-      "commit": "91e8c5e"
+      "description": "Add `Auto` variant to ValueCellKind enum in crates/reify-compiler/src/lib.rs. Update doc comment. In `compile_structure()` Param arm (line ~641): check if `param.default` is `Some(Expr { kind: ExprKind::Auto, .. })`. If so, emit ValueCellDecl with `kind: ValueCellKind::Auto, default_expr: None`. Otherwise use existing Param logic.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write regression test `build_with_no_realizations_still_exports`: uses bracket_compiled_module() (which has no realizations) with MockGeometryKernel. Asserts geometry_output.is_some() — same as existing boundary5_engine::build_with_mock_kernel test but in the new file, confirming the fix didn't regress the no-ops path. (total_ops=0 so the new check doesn't trigger.)",
-      "status": "done",
-      "commit": "91e8c5e"
+      "description": "Write failing test `auto_param_builder` in crates/reify-test-support (inline test or in builders.rs tests): call `TopologyTemplateBuilder::new(\"T\").auto_param(\"T\", \"x\", Type::length())`, verify produced ValueCellDecl has `kind == ValueCellKind::Auto`, `default_expr == None`, correct id and type. Fails because auto_param() doesn't exist.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Should pass without changes since total_ops=0 for modules with no realizations. Verify and adjust if needed.",
-      "status": "done",
-      "commit": "91e8c5e"
+      "description": "Add `auto_param(self, entity: &str, member: &str, cell_type: Type) -> Self` method to TopologyTemplateBuilder in crates/reify-test-support/src/builders.rs. Pushes ValueCellDecl with `kind: ValueCellKind::Auto, default_expr: None`. Mirrors existing param() pattern.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing test `eval_auto_param_undef_auto` in crates/reify-eval (tests/ directory): build a CompiledModule via builder with auto_param(\"S\", \"x\", Type::length()) and param(\"S\", \"y\", Type::length(), Some(literal(mm(5.0)))). Run engine.eval(). Assert snapshot has x → (Undef, DeterminacyState::Auto) and y → (evaluated value, Determined). Assert values map has x → Undef. Fails because eval() doesn't handle Auto cells.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Update Snapshot::from_compiled_module() in crates/reify-eval/src/snapshot.rs: when iterating graph.value_cells, check node.kind — if ValueCellKind::Auto, initialize as (Undef, DeterminacyState::Auto) instead of (Undef, Undetermined). Update Engine::eval() in crates/reify-eval/src/lib.rs: in the first pass, add a branch after the Param check: `else if cell.kind == ValueCellKind::Auto { values.insert(cell.id.clone(), Value::Undef); snapshot.values.insert(cell.id.clone(), (Value::Undef, DeterminacyState::Auto)); /* record cache */ }`.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test `eval_cached_auto_param` in crates/reify-eval: same module as step-9, but use engine.eval_cached(). Verify auto param gets (Undef, DeterminacyState::Auto) in values. Also test that setting a param_override for the auto param causes eval_cached to use the override value with Determined state.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Update Engine::eval_cached() in crates/reify-eval/src/lib.rs: in the first pass, after the `if cell.kind == ValueCellKind::Param` block, add `else if cell.kind == ValueCellKind::Auto`. Handle version fast-path, cache reuse, and fallback: without override → (Undef, DeterminacyState::Auto); with override → (override_value, DeterminacyState::Determined). Follow the Param handling pattern for cache recording.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write test `constraint_on_auto_param_indeterminate` in crates/reify-eval: build a module with auto_param(\"S\", \"x\", Type::length()) and a constraint `x > 5mm` (compiled via builders). Run engine.check(). Assert the constraint result has satisfaction == Satisfaction::Indeterminate. This should pass naturally since x is Undef → constraint expression evaluates to Undef → Indeterminate.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Verify step-13 passes with existing Undef→Indeterminate mapping. No constraint checker changes expected. If the test fails, investigate eval_expr Undef propagation for the specific comparison operators used.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write end-to-end integration test `e2e_parse_compile_eval_auto_param`: parse source `structure S {\\n  param x : Scalar = auto\\n  param y : Scalar = 5mm\\n  let z = y * 2\\n  constraint x > 2mm\\n}`, compile, eval, check. Assert: no parse errors, x is ValueCellKind::Auto, x is (Undef, Auto) in snapshot, y is evaluated to 0.005 SI, z = 0.01 SI, constraint on x is Indeterminate.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Verify e2e test passes with all prior implementations. Run `cargo test --workspace` to confirm all existing tests pass with no regressions. Fix any compilation or test failures across the workspace.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Define FailingMockGeometryKernel inline in the test file rather than adding to reify-test-support",
-      "rationale": "Keeps the change scoped to crates/reify-eval. The failing mock is simple (execute returns Err, other methods return Ok) and unlikely to be needed across multiple crates. If reuse is needed later, it can be promoted."
+      "decision": "Add ExprKind::Auto as a variant of ExprKind rather than a separate DefaultValue enum",
+      "rationale": "ParamDecl.default is Option<Expr>. Adding ExprKind::Auto is minimally invasive — preserves existing type structure and all consumer code. A separate DefaultValue enum would require changing ParamDecl, all pattern matches on default, and the lower_param return type. The grammar restricts auto to param defaults, so the type system doesn't need to enforce this."
     },
     {
-      "decision": "Check total_ops > 0 to distinguish 'all ops failed' from 'no ops existed'",
-      "rationale": "Counting operations is simpler and more reliable than checking diagnostics for geometry-related errors. It correctly handles the case where bracket_compiled_module (no realizations) still uses export with GeometryHandleId(0) — preserving that existing behavior unchanged."
+      "decision": "ValueCellKind::Auto as a third variant rather than a flag on Param",
+      "rationale": "Auto params have fundamentally different eval behavior: no default expression, start as Undef, value provided by solver. A separate variant makes eval/eval_cached match arms explicit and prevents accidentally evaluating a non-existent default_expr. Existing code uses equality checks (not exhaustive match), so adding the variant is safe."
     },
     {
-      "decision": "Add a summary Diagnostic::error rather than changing BuildResult's type or build()'s return type",
-      "rationale": "Minimizes API surface change. BuildResult already has geometry_output: Option<Vec<u8>> and diagnostics: Vec<Diagnostic>. Callers (reify-cli/main.rs, e2e tests) already iterate diagnostics and check geometry_output. Adding a summary diagnostic integrates naturally with existing error reporting without requiring callers to handle a new Result variant."
+      "decision": "Auto params get (Value::Undef, DeterminacyState::Auto) — reusing existing DeterminacyState::Auto",
+      "rationale": "DeterminacyState::Auto was added in a prior task (reify-types) with full test coverage. Using Undef as the value is correct since the param has no value until the solver provides one. Undef propagation in reify-expr naturally makes dependent computations Undef and constraints Indeterminate."
     },
     {
-      "decision": "Skip export entirely when all ops fail rather than attempting export with GeometryHandleId(0)",
-      "rationale": "Attempting export with a never-created handle is a logic error. With a mock it silently produces bogus data; with a real kernel it produces a confusing 'export error' for handle 0 that obscures the real problem (all geometry ops failed). Skipping export produces a clean error chain: per-op diagnostics + one summary diagnostic."
+      "decision": "Grammar restricts auto_keyword to param default position only",
+      "rationale": "The language spec requires auto only as a param default value. By adding auto_keyword as a choice alongside _expression in param_declaration (not in _expression itself), the grammar gives clean parse errors for auto in invalid positions. Tree-sitter will lex 'auto' as a keyword token (priority over identifier regex), reserving it language-wide."
+    },
+    {
+      "decision": "No changes needed to deps.rs or constraint checker",
+      "rationale": "deps.rs filters on ValueCellKind::Let; Auto cells are roots like Params with empty DependencyTrace — handled by the else branch. Constraint checker maps Value::Undef to Satisfaction::Indeterminate — auto params naturally produce Indeterminate constraints."
+    },
+    {
+      "decision": "Update both Snapshot::from_compiled_module and Engine::eval for Auto cells",
+      "rationale": "Snapshot initialization sets the baseline state before eval runs. While eval() overwrites values for processed cells, having correct initial determinacy ensures consistency if snapshot is inspected before eval completes. Eval() adds explicit Auto handling for cache recording and value map population."
     }
   ],
   "reuse": [
     {
-      "what": "TopologyTemplateBuilder::realization() and CompiledModuleBuilder",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Build test CompiledModules with geometry realizations containing CompiledGeometryOp::Primitive and Boolean operations"
+      "what": "DeterminacyState::Auto variant",
+      "where": "crates/reify-types/src/value.rs line 127",
+      "how": "Already exists with doc comment, Copy/Clone/Eq/Hash derives, and test coverage. Use directly in snapshot initialization and eval — no type-layer changes needed."
     },
     {
-      "what": "MockConstraintChecker::new()",
-      "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "Satisfy the constraint_checker parameter of Engine::new() in tests (returns Satisfied for all constraints)"
+      "what": "Value::Undef and Undef propagation",
+      "where": "crates/reify-types/src/value.rs (Value enum), crates/reify-expr/src/lib.rs (eval_expr)",
+      "how": "Auto params start as Value::Undef. eval_expr already propagates Undef through all arithmetic and comparison operators. No changes to reify-expr needed."
     },
     {
-      "what": "MockGeometryKernel::new()",
-      "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "Used in regression test for the no-realizations case, and as reference for implementing FailingMockGeometryKernel"
+      "what": "SimpleConstraintChecker Undef→Indeterminate mapping",
+      "where": "crates/reify-constraints/src/lib.rs line 30-31",
+      "how": "Value::Undef constraint result → Satisfaction::Indeterminate. Auto param constraints naturally report Indeterminate without any constraint checker changes."
     },
     {
-      "what": "mm(), vcid() value constructors",
-      "where": "crates/reify-test-support/src/values.rs",
-      "how": "Create Scalar values for geometry op parameters and ValueCellIds for test fixture modules"
+      "what": "TopologyTemplateBuilder pattern",
+      "where": "crates/reify-test-support/src/builders.rs lines 158-173",
+      "how": "auto_param() follows the exact same pattern as param(): push ValueCellDecl with specific kind and default_expr. Only differs in kind=Auto and default_expr=None."
     },
     {
-      "what": "bracket_compiled_module()",
-      "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "Regression test fixture — module with no realizations, verifying existing no-ops export behavior is unchanged"
+      "what": "Cache recording pattern in eval()",
+      "where": "crates/reify-eval/src/lib.rs lines 197-207",
+      "how": "Auto cell cache recording follows the Param pattern: NodeId::Value, DependencyTrace::default() (roots have no deps), CachedResult::Value(val, determinacy), self.cache.record_evaluation()."
     },
     {
-      "what": "CompiledGeometryOp, PrimitiveKind, BooleanOp, GeomRef from reify_compiler",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "Construct geometry operations for test realization declarations (box primitives, boolean unions)"
+      "what": "eval_cached() Param handling structure",
+      "where": "crates/reify-eval/src/lib.rs lines 396-453",
+      "how": "Auto cell handling in eval_cached mirrors Param handling: version fast-path, cache reuse check, param_overrides check, fallback to (Undef, Auto). Same control flow, different determinacy state."
     },
     {
-      "what": "GeometryKernel trait, GeometryError, ExportError, etc. from reify_types",
-      "where": "crates/reify-types/src/geometry.rs",
-      "how": "Implement FailingMockGeometryKernel trait in the test file"
+      "what": "Grammar keyword pattern (bool_literal)",
+      "where": "tree-sitter-reify/grammar.js line 194",
+      "how": "auto_keyword: $ => 'auto' follows the same pattern as bool_literal: $ => choice('true', 'false'). Named rules wrapping string literals is the established convention."
     },
     {
-      "what": "Diagnostic::error() and Severity enum",
-      "where": "crates/reify-types/src/diagnostics.rs",
-      "how": "Create the summary diagnostic in build() and filter/assert diagnostics by severity in tests"
+      "what": "Boundary test organization",
+      "where": "crates/reify-syntax/tests/boundary1_producer.rs, crates/reify-compiler/tests/boundary2_producer.rs",
+      "how": "New tests follow existing conventions: boundary1 for parser output, boundary2 for compiler output, eval tests for runtime behavior."
     }
   ]
 }
