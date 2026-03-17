@@ -248,4 +248,37 @@ mod tests {
         assert!(!map.get_or_undef(&id).is_undef());
         assert!(map.get_or_undef(&ValueCellId::new("Bracket", "missing")).is_undef());
     }
+
+    #[test]
+    fn value_map_clone_structural_sharing() {
+        let mut original = ValueMap::new();
+        let id_width = ValueCellId::new("Bracket", "width");
+        let id_height = ValueCellId::new("Bracket", "height");
+        let id_depth = ValueCellId::new("Bracket", "depth");
+
+        original.insert(id_width.clone(), Value::length(0.08));
+        original.insert(id_height.clone(), Value::length(0.10));
+
+        // Clone the map (O(1) structural sharing via im::HashMap)
+        let mut cloned = original.clone();
+
+        // Insert into the clone
+        cloned.insert(id_depth.clone(), Value::length(0.05));
+
+        // Original is unmodified
+        assert_eq!(original.len(), 2);
+        assert!(!original.contains(&id_depth));
+        assert!(original.contains(&id_width));
+
+        // Clone has all three entries
+        assert_eq!(cloned.len(), 3);
+        assert!(cloned.contains(&id_depth));
+        assert!(cloned.contains(&id_width));
+
+        // Original values are still correct
+        match original.get(&id_width) {
+            Some(Value::Scalar { si_value, .. }) => assert!((si_value - 0.08).abs() < 1e-10),
+            other => panic!("Expected Scalar, got {:?}", other),
+        }
+    }
 }
