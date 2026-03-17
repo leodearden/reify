@@ -172,6 +172,49 @@ mod tests {
     }
 
     #[test]
+    fn resolution_problem_empty() {
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: crate::value::ValueMap::new(),
+            objective: None,
+        };
+        assert!(problem.auto_params.is_empty());
+        assert!(problem.constraints.is_empty());
+        assert!(problem.current_values.is_empty());
+        assert!(problem.objective.is_none());
+    }
+
+    #[test]
+    fn resolution_problem_populated() {
+        use crate::identity::ValueCellId;
+        let mut values = crate::value::ValueMap::new();
+        values.insert(ValueCellId::new("Bracket", "width"), crate::value::Value::length(0.08));
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: ValueCellId::new("Bracket", "width"),
+                param_type: Type::length(),
+                bounds: Some((0.01, 1.0)),
+            }],
+            constraints: vec![(
+                ConstraintNodeId::new("Bracket", 0),
+                make_literal_expr(),
+            )],
+            current_values: values,
+            objective: Some(OptimizationObjective::Minimize(make_literal_expr())),
+        };
+        assert_eq!(problem.auto_params.len(), 1);
+        assert_eq!(problem.constraints.len(), 1);
+        assert!(!problem.current_values.is_empty());
+        assert!(problem.objective.is_some());
+
+        // Debug works
+        let debug = format!("{:?}", problem);
+        assert!(debug.contains("ResolutionProblem"));
+    }
+
+    #[test]
     fn optimization_objective_clone() {
         let expr = make_literal_expr();
         let obj = OptimizationObjective::Minimize(expr);
