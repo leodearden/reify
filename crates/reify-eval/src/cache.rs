@@ -130,6 +130,63 @@ mod tests {
         assert_eq!(map.get(&NodeId::Constraint(cnid)), Some(&"constraint"));
     }
 
+    // --- NodeCache tests ---
+
+    #[test]
+    fn node_cache_construction() {
+        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+        use crate::deps::DependencyTrace;
+
+        let result = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
+        let expected_hash = result.content_hash();
+        let cache = NodeCache::new(
+            result.clone(),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+        );
+
+        assert_eq!(cache.result_hash, expected_hash);
+        assert_eq!(cache.freshness, Freshness::Final);
+        assert_eq!(cache.basis_version, VersionId(1));
+    }
+
+    #[test]
+    fn node_cache_clone_and_debug() {
+        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+        use crate::deps::DependencyTrace;
+
+        let result = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
+        let cache = NodeCache::new(
+            result,
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+        );
+        let cloned = cache.clone();
+        assert_eq!(cache.result_hash, cloned.result_hash);
+        assert_eq!(cache.basis_version, cloned.basis_version);
+
+        let debug = format!("{:?}", cache);
+        assert!(debug.contains("NodeCache"));
+    }
+
+    #[test]
+    fn node_cache_result_hash_matches_content_hash() {
+        use reify_types::{Freshness, Satisfaction, VersionId};
+        use crate::deps::DependencyTrace;
+
+        let result = CachedResult::Satisfaction(Satisfaction::Violated);
+        let expected = result.content_hash();
+        let cache = NodeCache::new(
+            result,
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(5),
+        );
+        assert_eq!(cache.result_hash, expected);
+    }
+
     // --- CachedResult tests ---
 
     #[test]
