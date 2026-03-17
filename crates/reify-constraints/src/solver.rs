@@ -781,4 +781,92 @@ mod tests {
             other => panic!("expected Solved, got {:?}", other),
         }
     }
+
+    #[test]
+    fn multi_param_solving() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
+            ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let width_id = ValueCellId::new("Part", "width");
+        let height_id = ValueCellId::new("Part", "height");
+
+        let width_ref = CompiledExpr::value_ref(width_id.clone(), Type::length());
+        let height_ref = CompiledExpr::value_ref(height_id.clone(), Type::length());
+
+        // width > 50mm
+        let fifty_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.050,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_width = CompiledExpr::binop(BinOp::Gt, width_ref.clone(), fifty_mm.clone(), Type::Bool);
+
+        // height > 50mm
+        let gt_height =
+            CompiledExpr::binop(BinOp::Gt, height_ref.clone(), fifty_mm, Type::Bool);
+
+        // width + height < 200mm
+        let sum = CompiledExpr::binop(BinOp::Add, width_ref, height_ref, Type::length());
+        let two_hundred_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.200,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let lt_sum = CompiledExpr::binop(BinOp::Lt, sum, two_hundred_mm, Type::Bool);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![
+                AutoParam {
+                    id: width_id.clone(),
+                    param_type: Type::length(),
+                    bounds: Some((0.01, 1.0)),
+                },
+                AutoParam {
+                    id: height_id.clone(),
+                    param_type: Type::length(),
+                    bounds: Some((0.01, 1.0)),
+                },
+            ],
+            constraints: vec![
+                (ConstraintNodeId::new("Part", 0), gt_width),
+                (ConstraintNodeId::new("Part", 1), gt_height),
+                (ConstraintNodeId::new("Part", 2), lt_sum),
+            ],
+            current_values: ValueMap::new(),
+            objective: None,
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::Solved { values } => {
+                let w = values
+                    .get(&width_id)
+                    .expect("width should be in solution")
+                    .as_f64()
+                    .unwrap();
+                let h = values
+                    .get(&height_id)
+                    .expect("height should be in solution")
+                    .as_f64()
+                    .unwrap();
+
+                assert!(w > 0.05, "width should be > 50mm, got {} m", w);
+                assert!(h > 0.05, "height should be > 50mm, got {} m", h);
+                assert!(
+                    w + h < 0.2,
+                    "width + height should be < 200mm, got {} m",
+                    w + h
+                );
+            }
+            other => panic!("expected Solved, got {:?}", other),
+        }
+    }
 }
