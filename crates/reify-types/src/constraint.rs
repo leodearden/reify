@@ -135,4 +135,40 @@ mod tests {
         let debug = format!("{:?}", ap);
         assert!(debug.contains("AutoParam"));
     }
+
+    fn make_literal_expr() -> CompiledExpr {
+        use crate::hash::ContentHash;
+        use crate::value::Value;
+        CompiledExpr {
+            kind: crate::expr::CompiledExprKind::Literal(Value::Real(1.0)),
+            result_type: Type::Real,
+            content_hash: ContentHash::of(b"test"),
+        }
+    }
+
+    #[test]
+    fn optimization_objective_minimize() {
+        let expr = make_literal_expr();
+        let obj = OptimizationObjective::Minimize(expr);
+        let debug = format!("{:?}", obj);
+        assert!(debug.contains("Minimize"));
+    }
+
+    #[test]
+    fn optimization_objective_maximize() {
+        let expr = make_literal_expr();
+        let obj = OptimizationObjective::Maximize(expr);
+        let debug = format!("{:?}", obj);
+        assert!(debug.contains("Maximize"));
+    }
+
+    #[test]
+    fn optimization_objective_clone() {
+        let expr = make_literal_expr();
+        let obj = OptimizationObjective::Minimize(expr);
+        let obj2 = obj.clone();
+        let d1 = format!("{:?}", obj);
+        let d2 = format!("{:?}", obj2);
+        assert_eq!(d1, d2);
+    }
 }
