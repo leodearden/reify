@@ -904,4 +904,109 @@ mod tests {
         assert_eq!(reads[0], ValueCellId::new("B", "width"));
         assert_eq!(reads[1], ValueCellId::new("B", "height"));
     }
+
+    #[test]
+    fn traced_volume_three_reads() {
+        // volume = width * height * thickness
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "width"), mm_val(80.0));
+        values.insert(ValueCellId::new("B", "height"), mm_val(100.0));
+        values.insert(ValueCellId::new("B", "thickness"), mm_val(5.0));
+
+        let w = vref("B", "width", Type::length());
+        let h = vref("B", "height", Type::length());
+        let t = vref("B", "thickness", Type::length());
+
+        let wh = CompiledExpr::binop(
+            BinOp::Mul,
+            w,
+            h,
+            Type::Scalar {
+                dimension: DimensionVector::AREA,
+            },
+        );
+        let volume = CompiledExpr::binop(
+            BinOp::Mul,
+            wh,
+            t,
+            Type::Scalar {
+                dimension: DimensionVector::VOLUME,
+            },
+        );
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&volume, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        // Same result as eval_expr
+        let expected = eval_expr(&volume, &values);
+        assert_eq!(result.as_f64().unwrap(), expected.as_f64().unwrap());
+
+        // Exactly 3 reads: width, height, thickness
+        assert_eq!(reads.len(), 3);
+        assert_eq!(reads[0], ValueCellId::new("B", "width"));
+        assert_eq!(reads[1], ValueCellId::new("B", "height"));
+        assert_eq!(reads[2], ValueCellId::new("B", "thickness"));
+    }
+
+    #[test]
+    fn traced_conditional_only_traces_taken_branch() {
+        // if true then width else height
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "width"), mm_val(80.0));
+        values.insert(ValueCellId::new("B", "height"), mm_val(100.0));
+
+        let cond = lit(Value::Bool(true), Type::Bool);
+        let then_branch = vref("B", "width", Type::length());
+        let else_branch = vref("B", "height", Type::length());
+        let expr = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[42]),
+            result_type: Type::length(),
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(cond),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+        };
+
+        let mut reads = Vec::new();
+        eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        // Only the then-branch should be traced (width), not else (height)
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0], ValueCellId::new("B", "width"));
+    }
+
+    #[test]
+    fn traced_conditional_false_traces_else_branch() {
+        // if false then width else height
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "width"), mm_val(80.0));
+        values.insert(ValueCellId::new("B", "height"), mm_val(100.0));
+
+        let cond = lit(Value::Bool(false), Type::Bool);
+        let then_branch = vref("B", "width", Type::length());
+        let else_branch = vref("B", "height", Type::length());
+        let expr = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[43]),
+            result_type: Type::length(),
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(cond),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+        };
+
+        let mut reads = Vec::new();
+        eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        // Only the else-branch should be traced (height), not then (width)
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0], ValueCellId::new("B", "height"));
+    }
 }
