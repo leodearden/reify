@@ -8,7 +8,11 @@ use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_test_support::bracket_compiled_module;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ConstraintNodeId, SnapshotId, SnapshotProvenance, Value, ValueCellId};
+use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use reify_test_support::builders::{literal, value_ref_typed, binop};
+use reify_types::{
+    BinOp, ConstraintNodeId, ModulePath, SnapshotId, SnapshotProvenance, Type, Value, ValueCellId,
+};
 
 /// Canary backward-compatibility test: verifies that cold-start eval()
 /// produces the correct values for the bracket fixture.
@@ -210,5 +214,82 @@ fn edit_param_partial_reeval_only_dirty_demanded() {
     assert!(
         !eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))),
         "C2 should NOT be in eval set (reads hole_diameter and thickness)"
+    );
+}
+
+/// Verify content-hash early cutoff: when a re-evaluated node produces
+/// the same value, its downstream dependents are removed from eval set.
+///
+/// Graph: param a (Real, default 5.0), let x = a - a (always 0.0), let y = x + 1.0
+/// Edit a from 5.0 to 7.0:
+/// - x is dirty (reads a), re-evaluated: still 0.0 → early cutoff
+/// - y depends on x, but x didn't change → y NOT in eval set
+/// - y's value should still be 1.0
+#[test]
+fn content_hash_early_cutoff_prevents_downstream_eval() {
+    let e = "T";
+
+    // let x = a - a (always 0.0 regardless of a)
+    let x_expr = binop(
+        BinOp::Sub,
+        value_ref_typed(e, "a", Type::Real),
+        value_ref_typed(e, "a", Type::Real),
+    );
+    // let y = x + 1.0
+    let y_expr = binop(
+        BinOp::Add,
+        value_ref_typed(e, "x", Type::Real),
+        literal(Value::Real(1.0)),
+    );
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(
+            TopologyTemplateBuilder::new(e)
+                .param(e, "a", Type::Real, Some(literal(Value::Real(5.0))))
+                .let_binding(e, "x", Type::Real, x_expr)
+                .let_binding(e, "y", Type::Real, y_expr)
+                .build(),
+        )
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start eval
+    let initial = engine.eval(&module);
+    assert_eq!(
+        initial.values.get(&ValueCellId::new(e, "x")),
+        Some(&Value::Real(0.0)),
+        "x = a - a should be 0.0"
+    );
+    assert_eq!(
+        initial.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Real(1.0)),
+        "y = x + 1.0 should be 1.0"
+    );
+
+    // Edit a from 5.0 to 7.0
+    let a_id = ValueCellId::new(e, "a");
+    let result = engine.edit_param(a_id, Value::Real(7.0));
+
+    let eval_set = engine.last_eval_set();
+
+    // x IS in eval set (reads a, so x is dirty)
+    assert!(
+        eval_set.contains(&NodeId::Value(ValueCellId::new(e, "x"))),
+        "x should be in eval set (reads a)"
+    );
+
+    // y should NOT be in eval set (x re-evaluated but same hash → early cutoff)
+    assert!(
+        !eval_set.contains(&NodeId::Value(ValueCellId::new(e, "y"))),
+        "y should NOT be in eval set (early cutoff: x didn't change)"
+    );
+
+    // y's value should still be 1.0
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Real(1.0)),
+        "y should still be 1.0 from cache"
     );
 }
