@@ -116,26 +116,6 @@ impl fmt::Display for RealizationNodeId {
     }
 }
 
-/// Unified node identifier for the dependency graph.
-/// Wraps ValueCellId, ConstraintNodeId, or RealizationNodeId to allow
-/// heterogeneous node tracking in the reverse dependency index.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum NodeId {
-    ValueCell(ValueCellId),
-    Constraint(ConstraintNodeId),
-    Realization(RealizationNodeId),
-}
-
-impl fmt::Display for NodeId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            NodeId::ValueCell(id) => write!(f, "{}", id),
-            NodeId::Constraint(id) => write!(f, "{}", id),
-            NodeId::Realization(id) => write!(f, "{}", id),
-        }
-    }
-}
-
 /// Identifies a source node (input from the parser/file).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceNodeId {
@@ -263,86 +243,5 @@ mod tests {
         map.insert(SnapshotId(1), "second");
         assert_eq!(map.get(&SnapshotId(0)), Some(&"first"));
         assert_eq!(map.get(&SnapshotId(2)), None);
-    }
-
-    // --- NodeId tests ---
-
-    #[test]
-    fn node_id_construction_from_value_cell() {
-        let vcid = ValueCellId::new("Bracket", "width");
-        let node = NodeId::ValueCell(vcid.clone());
-        assert_eq!(node, NodeId::ValueCell(vcid));
-    }
-
-    #[test]
-    fn node_id_construction_from_constraint() {
-        let cnid = ConstraintNodeId::new("Bracket", 0);
-        let node = NodeId::Constraint(cnid.clone());
-        assert_eq!(node, NodeId::Constraint(cnid));
-    }
-
-    #[test]
-    fn node_id_construction_from_realization() {
-        let rnid = RealizationNodeId::new("Bracket", 0);
-        let node = NodeId::Realization(rnid.clone());
-        assert_eq!(node, NodeId::Realization(rnid));
-    }
-
-    #[test]
-    fn node_id_equality_same_variant() {
-        let a = NodeId::ValueCell(ValueCellId::new("B", "w"));
-        let b = NodeId::ValueCell(ValueCellId::new("B", "w"));
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn node_id_different_variants_not_equal() {
-        // Same inner data ("Bracket", index/member mapped), but different variant types
-        let vc = NodeId::ValueCell(ValueCellId::new("Bracket", "0"));
-        let cn = NodeId::Constraint(ConstraintNodeId::new("Bracket", 0));
-        assert_ne!(vc, cn);
-    }
-
-    #[test]
-    fn node_id_as_hashmap_key() {
-        let mut map = HashMap::new();
-        let vc = NodeId::ValueCell(ValueCellId::new("B", "width"));
-        let cn = NodeId::Constraint(ConstraintNodeId::new("B", 0));
-        let rn = NodeId::Realization(RealizationNodeId::new("B", 0));
-
-        map.insert(vc.clone(), "value");
-        map.insert(cn.clone(), "constraint");
-        map.insert(rn.clone(), "realization");
-
-        assert_eq!(map.get(&vc), Some(&"value"));
-        assert_eq!(map.get(&cn), Some(&"constraint"));
-        assert_eq!(map.get(&rn), Some(&"realization"));
-        assert_eq!(map.len(), 3);
-    }
-
-    #[test]
-    fn node_id_display() {
-        let vc = NodeId::ValueCell(ValueCellId::new("Bracket", "width"));
-        assert_eq!(format!("{}", vc), "Bracket.width");
-
-        let cn = NodeId::Constraint(ConstraintNodeId::new("Bracket", 0));
-        assert_eq!(format!("{}", cn), "Bracket#constraint[0]");
-
-        let rn = NodeId::Realization(RealizationNodeId::new("Bracket", 0));
-        assert_eq!(format!("{}", rn), "Bracket#realization[0]");
-    }
-
-    #[test]
-    fn node_id_clone() {
-        let original = NodeId::ValueCell(ValueCellId::new("B", "w"));
-        let cloned = original.clone();
-        assert_eq!(original, cloned);
-    }
-
-    #[test]
-    fn node_id_debug() {
-        let node = NodeId::ValueCell(ValueCellId::new("B", "w"));
-        let debug = format!("{:?}", node);
-        assert!(debug.contains("ValueCell"));
     }
 }
