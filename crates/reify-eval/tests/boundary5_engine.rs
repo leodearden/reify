@@ -99,6 +99,13 @@ fn check_captures_constraint_traces() {
     assert!(c1_trace.reads.contains(&ValueCellId::new("Bracket", "thickness")));
     assert!(c1_trace.reads.contains(&ValueCellId::new("Bracket", "width")));
 
+    // Constraint 2: hole_diameter < thickness * 2 → reads hole_diameter, thickness
+    let c2_node = NodeId::Constraint(ConstraintNodeId::new("Bracket", 2));
+    let c2_trace = result.traces.get(&c2_node)
+        .expect("constraint 2 should have a trace");
+    assert!(c2_trace.reads.contains(&ValueCellId::new("Bracket", "hole_diameter")));
+    assert!(c2_trace.reads.contains(&ValueCellId::new("Bracket", "thickness")));
+
     // Reverse deps: thickness should be depended on by volume, c0, c1, c2
     let thickness_deps = result.reverse_deps
         .dependents_of(&ValueCellId::new("Bracket", "thickness"));
@@ -106,4 +113,5 @@ fn check_captures_constraint_traces() {
     assert!(thickness_deps.contains(&volume_node));
     assert!(thickness_deps.contains(&c0_node));
     assert!(thickness_deps.contains(&c1_node));
+    assert!(thickness_deps.contains(&c2_node));
 }
