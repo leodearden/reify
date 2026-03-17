@@ -56,38 +56,41 @@ impl EvaluationGraph {
 
         for template in templates {
             for cell in &template.value_cells {
+                let id_hash = ContentHash::of_str(&format!("{}", cell.id));
+                let expr_hash = cell.default_expr.as_ref()
+                    .map(|e| e.content_hash)
+                    .unwrap_or(ContentHash(0));
                 let node = ValueCellNode {
                     id: cell.id.clone(),
                     kind: cell.kind,
                     cell_type: cell.cell_type.clone(),
                     default_expr: cell.default_expr.clone(),
-                    content_hash: cell.default_expr.as_ref()
-                        .map(|e| e.content_hash)
-                        .unwrap_or_else(|| ContentHash::of_str(&format!("{}", cell.id))),
+                    content_hash: id_hash.combine(expr_hash),
                 };
                 graph.value_cells.insert(cell.id.clone(), node);
             }
 
             for constraint in &template.constraints {
+                let id_hash = ContentHash::of_str(&format!("{}", constraint.id));
                 let node = ConstraintNodeData {
                     id: constraint.id.clone(),
                     expr: constraint.expr.clone(),
-                    content_hash: constraint.expr.content_hash,
+                    content_hash: id_hash.combine(constraint.expr.content_hash),
                 };
                 graph.constraints.insert(constraint.id.clone(), node);
             }
 
             for realization in &template.realizations {
-                let content_hash = ContentHash::combine_all(
+                let id_hash = ContentHash::of_str(&format!("{}", realization.id));
+                let ops_hash = ContentHash::combine_all(
                     realization.operations.iter().map(|op| {
-                        // Hash based on operation debug repr for now
                         ContentHash::of_str(&format!("{:?}", op))
                     }),
                 );
                 let node = RealizationNodeData {
                     id: realization.id.clone(),
                     operations: realization.operations.clone(),
-                    content_hash,
+                    content_hash: id_hash.combine(ops_hash),
                 };
                 graph.realizations.insert(realization.id.clone(), node);
             }
