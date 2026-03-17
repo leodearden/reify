@@ -1,3 +1,6 @@
+pub mod graph;
+pub mod snapshot;
+
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
     ConstraintChecker, ConstraintInput, Diagnostic, ExportFormat, GeometryHandleId,
