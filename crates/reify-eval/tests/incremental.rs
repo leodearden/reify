@@ -11,7 +11,8 @@ use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 use reify_test_support::builders::{literal, value_ref_typed, binop};
 use reify_types::{
-    BinOp, ConstraintNodeId, ModulePath, SnapshotId, SnapshotProvenance, Type, Value, ValueCellId,
+    BinOp, ConstraintNodeId, Freshness, ModulePath, SnapshotId, SnapshotProvenance, Type,
+    Value, ValueCellId,
 };
 
 /// Canary backward-compatibility test: verifies that cold-start eval()
@@ -291,5 +292,78 @@ fn content_hash_early_cutoff_prevents_downstream_eval() {
         result.values.get(&ValueCellId::new(e, "y")),
         Some(&Value::Real(1.0)),
         "y should still be 1.0 from cache"
+    );
+}
+
+/// After cold-start eval(), all value cell nodes should have Freshness::Final in cache.
+#[test]
+fn freshness_final_after_cold_start() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    engine.eval(&module);
+
+    let e = "Bracket";
+    let cache = engine.cache_store();
+
+    // All 6 value cells should have Final freshness
+    for name in ["width", "height", "thickness", "fillet_radius", "hole_diameter", "volume"] {
+        let node_id = NodeId::Value(ValueCellId::new(e, name));
+        let entry = cache.get(&node_id)
+            .unwrap_or_else(|| panic!("{} should be in cache", name));
+        assert_eq!(
+            entry.freshness,
+            Freshness::Final,
+            "{} should have Final freshness after cold start",
+            name
+        );
+    }
+}
+
+/// After edit_param(), re-evaluated nodes should be back to Freshness::Final.
+/// Nodes not in eval set should remain Freshness::Final throughout.
+#[test]
+fn freshness_transitions_during_edit() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let e = "Bracket";
+
+    // Cold-start
+    engine.eval(&module);
+
+    // Edit width from 80mm to 100mm
+    let width_id = ValueCellId::new(e, "width");
+    engine.edit_param(width_id, Value::length(0.1));
+
+    let cache = engine.cache_store();
+
+    // volume was re-evaluated → should be Final
+    let volume_node = NodeId::Value(ValueCellId::new(e, "volume"));
+    let volume_entry = cache.get(&volume_node).expect("volume should be in cache");
+    assert_eq!(
+        volume_entry.freshness,
+        Freshness::Final,
+        "volume should be Final after re-evaluation"
+    );
+
+    // fillet_radius was not in eval set → should still be Final
+    let fillet_node = NodeId::Value(ValueCellId::new(e, "fillet_radius"));
+    let fillet_entry = cache.get(&fillet_node).expect("fillet_radius should be in cache");
+    assert_eq!(
+        fillet_entry.freshness,
+        Freshness::Final,
+        "fillet_radius should remain Final (not in eval set)"
+    );
+
+    // height was not in eval set → should still be Final
+    let height_node = NodeId::Value(ValueCellId::new(e, "height"));
+    let height_entry = cache.get(&height_node).expect("height should be in cache");
+    assert_eq!(
+        height_entry.freshness,
+        Freshness::Final,
+        "height should remain Final (not in eval set)"
     );
 }
