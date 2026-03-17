@@ -410,9 +410,60 @@ impl Engine {
         let mut stats = CacheStats::default();
 
         for template in &module.templates {
-            // First pass: evaluate Param defaults (or use overrides)
+            // First pass: evaluate Param defaults, Auto cells, (or use overrides)
             for cell in &template.value_cells {
-                if cell.kind == ValueCellKind::Param {
+                if cell.kind == ValueCellKind::Auto {
+                    let node_id = NodeId::Value(cell.id.clone());
+
+                    // Check version fast path
+                    if let Some(CachedResult::Value(val, _)) =
+                        self.cache.try_fast_path(&node_id, version)
+                    {
+                        values.insert(cell.id.clone(), val);
+                        stats.cache_hits += 1;
+                        continue;
+                    }
+
+                    // Check cache reuse (not dirty, no override)
+                    if !self.param_overrides.contains_key(&cell.id)
+                        && !self.cache.is_dirty(&node_id)
+                        && let Some(entry) = self.cache.get(&node_id)
+                        && let CachedResult::Value(ref val, _) = entry.result
+                    {
+                        let val = val.clone();
+                        values.insert(cell.id.clone(), val);
+                        let trace = entry.dependency_trace.clone();
+                        let result = entry.result.clone();
+                        self.cache.record_evaluation(
+                            node_id,
+                            result,
+                            version,
+                            trace,
+                        );
+                        stats.cache_hits += 1;
+                        continue;
+                    }
+
+                    stats.cache_misses += 1;
+
+                    // Use override if available, otherwise Undef with Auto determinacy
+                    let (val, det) = if let Some(override_val) = self.param_overrides.get(&cell.id) {
+                        (override_val.clone(), DeterminacyState::Determined)
+                    } else {
+                        (reify_types::Value::Undef, DeterminacyState::Auto)
+                    };
+
+                    let trace = DependencyTrace::default();
+                    let cached_result = CachedResult::Value(val.clone(), det);
+                    let outcome =
+                        self.cache
+                            .record_evaluation(node_id, cached_result, version, trace);
+                    if outcome == EvalOutcome::Unchanged {
+                        stats.early_cutoffs += 1;
+                    }
+
+                    values.insert(cell.id.clone(), val);
+                } else if cell.kind == ValueCellKind::Param {
                     let node_id = NodeId::Value(cell.id.clone());
 
                     // Check version fast path

@@ -70,7 +70,7 @@ fn eval_auto_param_undef_auto() {
 /// eval_cached: auto param gets (Undef, Auto), and override applies Determined.
 #[test]
 fn eval_cached_auto_param() {
-    use reify_types::{CompiledExpr, DeterminacyState, ModulePath, Type, ValueCellId, VersionId};
+    use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId, VersionId};
 
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "x", Type::length())
