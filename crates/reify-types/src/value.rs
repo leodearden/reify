@@ -136,6 +136,18 @@ pub enum Satisfaction {
     Indeterminate,
 }
 
+impl Satisfaction {
+    /// Compute a content hash for incremental caching.
+    /// Domain-separated with tag byte [10] to avoid collisions with Value hashes.
+    pub fn content_hash(&self) -> ContentHash {
+        match self {
+            Satisfaction::Satisfied => ContentHash::of(&[10, 0]),
+            Satisfaction::Violated => ContentHash::of(&[10, 1]),
+            Satisfaction::Indeterminate => ContentHash::of(&[10, 2]),
+        }
+    }
+}
+
 /// An error produced during value evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvalError(pub String);
@@ -363,5 +375,32 @@ mod tests {
             Some(Value::Scalar { si_value, .. }) => assert!((si_value - 0.08).abs() < 1e-10),
             other => panic!("Expected Scalar, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn satisfaction_content_hash_deterministic() {
+        // Same variant produces same hash on repeated calls
+        let h1 = Satisfaction::Satisfied.content_hash();
+        let h2 = Satisfaction::Satisfied.content_hash();
+        assert_eq!(h1, h2);
+
+        let h3 = Satisfaction::Violated.content_hash();
+        let h4 = Satisfaction::Violated.content_hash();
+        assert_eq!(h3, h4);
+
+        let h5 = Satisfaction::Indeterminate.content_hash();
+        let h6 = Satisfaction::Indeterminate.content_hash();
+        assert_eq!(h5, h6);
+    }
+
+    #[test]
+    fn satisfaction_content_hash_distinct_variants() {
+        let satisfied = Satisfaction::Satisfied.content_hash();
+        let violated = Satisfaction::Violated.content_hash();
+        let indeterminate = Satisfaction::Indeterminate.content_hash();
+
+        assert_ne!(satisfied, violated);
+        assert_ne!(satisfied, indeterminate);
+        assert_ne!(violated, indeterminate);
     }
 }
