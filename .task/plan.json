@@ -1,0 +1,332 @@
+{
+  "task_id": "13",
+  "title": "Dirty/demand cone + sequential scheduler",
+  "modules": ["crates/reify-eval", "crates/reify-runtime"],
+  "analysis": "This task implements the core incremental re-evaluation infrastructure: when a parameter changes, only nodes that are both 'dirty' (downstream of the change) AND 'demanded' (upstream of a cared-about output) need re-evaluation. The dirty∩demand intersection is the minimal re-evaluation set.\n\nThe implementation builds on existing foundations:\n- EvaluationGraph (graph.rs, task 10): typed node graph with PersistentMaps for value_cells, constraints, realizations\n- DependencyTrace (deps.rs, task 12): tracks which ValueCellIds a node reads during evaluation\n- CacheStore (cache.rs, task 12): per-node caching with dirty_reasons tracking, content-hash early cutoff, clear_dependents_dirty for diamond dependencies\n- Priority enum (reify-runtime, task 9): P0Interactive through P3Speculative\n- NodeId (cache.rs): unified enum (Value/Constraint/Realization) for cache keys\n\nKey data flow:\n1. User changes a param → engine updates override\n2. ReverseDependencyIndex (ValueCellId → Set<NodeId>) enables forward propagation\n3. compute_dirty_cone: BFS forward from changed cells through reverse index → all transitively affected nodes\n4. DemandRegistry.rebuild_cone: BFS backward from always_demanded nodes through dependency edges → all nodes that feed into demanded outputs\n5. compute_eval_set: dirty ∩ demand_cone, topologically sorted (dependencies first)\n6. SequentialScheduler.execute: iterate eval_set, skip nodes no longer dirty (dynamic cutoff from upstream early cutoffs), delegate evaluation to NodeEvaluator trait\n\nThe work spans two crates:\n- reify-eval: ReverseDependencyIndex in deps.rs (expanded), DemandRegistry in new demand.rs, dirty cone/eval set/topo sort in new dirty.rs\n- reify-runtime: SequentialScheduler with NodeEvaluator trait; adds reify-eval dependency\n\nCritical design note: extract_dependency_trace (currently private in lib.rs) must be moved to deps.rs and made pub, since both ReverseDependencyIndex.build_from_graph and build_trace_map need it. A new extract_realization_dependencies utility handles CompiledGeometryOp arg expressions.\n\nBracket fixture analysis for test design:\n- 5 params: width, height, thickness, fillet_radius, hole_diameter\n- 1 let: volume = width * height * thickness (reads: width, height, thickness)\n- 3 constraints: C0(thickness > 2mm, reads: thickness), C1(thickness < width/4, reads: thickness, width), C2(hole_diameter < thickness*2, reads: hole_diameter, thickness)\n- 0 realizations in bracket_compiled_module() — tests needing realizations must build custom fixtures via TopologyTemplateBuilder\n\nWhen width changes: dirty cone = {volume, C1}. If demanding all constraints: demand cone = {C0, C1, C2, thickness, width, hole_diameter}. Eval set = dirty ∩ demand = {C1} (volume is dirty but not demanded by any constraint).\n\nREVIEW ROUND 1 FIXES:\n- topological_sort has a duplicate-reads bug: when trace.reads contains the same ValueCellId multiple times (e.g. expression `a * a`), in-degree is over-counted during setup (incremented per occurrence) but under-decremented during Kahn's pass (trace.reads.contains() is boolean, returns true only once regardless of multiplicity). This causes nodes with duplicate deps to be silently dropped from the sorted output. Fix: deduplicate reads in both the counting and decrement phases of topological_sort.\n- Three demand registry tests (add_demand, remove_demand, add_demand_idempotent) have zero assertions — they only verify no-panic. They must be strengthened with rebuild_cone + is_demanded checks on minimal graphs to catch silent failures (e.g. add_demand inserting into wrong field, remove_demand being a no-op, duplicate adds inflating internal state).",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add module declarations for `demand` and `dirty` to reify-eval/src/lib.rs. Create empty demand.rs and dirty.rs files with appropriate module-level doc comments.",
+      "status": "done",
+      "commit": "c8efe1b",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Move extract_dependency_trace() and collect_value_refs() from lib.rs to deps.rs as pub functions. Update lib.rs to import from deps. Add extract_realization_dependencies() stub in deps.rs for CompiledGeometryOp handling. Verify cargo check passes.",
+      "status": "done",
+      "commit": "9794ee0",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add reify-eval as a workspace dependency of reify-runtime in Cargo.toml. This enables the scheduler to use NodeId and EvalOutcome from reify-eval::cache. Verify cargo check passes.",
+      "status": "done",
+      "commit": "b84a061",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing tests for ReverseDependencyIndex basic operations in deps.rs: (1) new() creates empty index, (2) dependents_of() returns empty set for unknown cell, (3) add() inserts mapping and dependents_of() returns it, (4) multiple nodes depending on same cell all returned.",
+      "status": "done",
+      "commit": "7e9a4d0"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Implement ReverseDependencyIndex in deps.rs: struct with HashMap<ValueCellId, HashSet<NodeId>>, new() constructor, add(cell: ValueCellId, dependent: NodeId), dependents_of(cell: &ValueCellId) -> &HashSet<NodeId> (returns empty set ref for unknown cells).",
+      "status": "done",
+      "commit": "359cc27"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test for ReverseDependencyIndex::build_from_graph() using bracket topology: verify width maps to {Value(volume), Constraint(C1)}, thickness maps to {Value(volume), Constraint(C0), Constraint(C1), Constraint(C2)}, fillet_radius maps to empty set (nothing reads it in bracket), hole_diameter maps to {Constraint(C2)}.",
+      "status": "done",
+      "commit": "a236d53"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Implement build_from_graph(graph: &EvaluationGraph) -> Self in deps.rs: iterate value_cells (extract deps from default_expr via extract_dependency_trace), constraints (extract deps from expr), and realizations (extract deps from operation args via new extract_realization_dependencies). Also implement build_trace_map(graph: &EvaluationGraph) -> HashMap<NodeId, DependencyTrace> utility that returns forward dependency info for all nodes.",
+      "status": "done",
+      "commit": "506a42e"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing tests for DemandRegistry in demand.rs: (1) new() creates empty registry, is_demanded returns false, (2) add_demand adds node to always_demanded, (3) remove_demand removes it, (4) adding same node twice is idempotent, (5) is_demanded checks demand_cone not just always_demanded.",
+      "status": "done",
+      "commit": "3a963ac"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Implement DemandRegistry struct in demand.rs: always_demanded: HashSet<NodeId>, demand_cone: HashSet<NodeId>. Methods: new(), add_demand(), remove_demand(), is_demanded() checks membership in demand_cone (which includes always_demanded after rebuild).",
+      "status": "done",
+      "commit": "6f8dc4a"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing test for rebuild_cone with bracket graph: (1) demand only C0 → cone includes C0 and NodeId::Value(thickness), (2) demand C1 → cone includes C1, NodeId::Value(thickness), NodeId::Value(width), (3) demand all three constraints → cone is union: {C0, C1, C2, thickness, width, hole_diameter}, volume NOT in cone.",
+      "status": "done",
+      "commit": "b167353"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Implement rebuild_cone(&mut self, graph: &EvaluationGraph): BFS backward from always_demanded nodes. For each node, extract its dependency ValueCellIds (from graph expressions), convert to NodeId::Value, add to cone. For Value nodes that are let bindings, continue BFS through their deps. Use extract_dependency_trace for value cells and constraints, extract_realization_dependencies for realizations.",
+      "status": "done",
+      "commit": "89308da"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing test for rebuild_cone transitive deps: build graph where constraint depends on let binding that depends on params. Demand the constraint → cone includes constraint, let binding, and all params the let reads. Verify depth-2 transitive inclusion.",
+      "status": "done",
+      "commit": "8b1c152"
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Write failing tests for compute_dirty_cone in dirty.rs: (1) empty changed set → empty dirty cone, (2) single changed param 'width' with bracket reverse index → dirty cone contains Value(volume) and Constraint(C1), does NOT contain Value(width) itself (changed cells are not 'dependents').",
+      "status": "done",
+      "commit": "aa48ff8"
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "Implement compute_dirty_cone(changed: &HashSet<ValueCellId>, reverse_index: &ReverseDependencyIndex) -> HashSet<NodeId> in dirty.rs: BFS forward from changed cells through reverse index. For each dependent that is a Value(vcid), add vcid to frontier for further propagation. Constraint and Realization nodes are leaf nodes (no further propagation).",
+      "status": "done",
+      "commit": "bb52c9a"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Write failing bracket dirty cone tests: (1) change width → dirty includes volume and C1, excludes fillet_radius, C0, C2, (2) change thickness → dirty includes volume, C0, C1, C2 (all read thickness), excludes fillet_radius, (3) change fillet_radius → empty dirty cone (nothing reads fillet_radius in bracket). These match exit criteria test 1.",
+      "status": "done",
+      "commit": "280a369"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing tests for topological_sort in dirty.rs: (1) empty set → empty vec, (2) single node → vec of that node, (3) three independent nodes → all present (any order), (4) volume depends on {width, height, thickness} → volume appears after all three in sorted output.",
+      "status": "done",
+      "commit": "bcca94e"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Implement topological_sort(nodes: &HashSet<NodeId>, traces: &HashMap<NodeId, DependencyTrace>) -> Vec<NodeId> using Kahn's algorithm: build in-degree map (only counting edges within the node set), repeatedly emit nodes with zero in-degree. For stable output, use a BTreeSet or sort candidates by NodeId debug repr.",
+      "status": "done",
+      "commit": "8f0fc3a"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing topo sort tests with constraints: (1) constraint C1 depends on width and thickness, both are in set → C1 appears after width and thickness, (2) mixed set {volume, C1, width, thickness} → width and thickness first, then volume and C1 (both depend on width/thickness, either order between them is valid).",
+      "status": "done",
+      "commit": "c09c392"
+    },
+    {
+      "id": "step-16",
+      "type": "test",
+      "description": "Write failing tests for compute_eval_set in dirty.rs: (1) empty dirty set → empty eval set, (2) dirty set fully outside demand cone → empty eval set, (3) dirty set fully inside demand cone → all dirty nodes returned in topo order.",
+      "status": "done",
+      "commit": "4ce0f67"
+    },
+    {
+      "id": "step-17",
+      "type": "impl",
+      "description": "Implement compute_eval_set(dirty: &HashSet<NodeId>, demand: &DemandRegistry, traces: &HashMap<NodeId, DependencyTrace>) -> Vec<NodeId>: compute intersection of dirty and demand_cone (via is_demanded filter), then topological_sort the intersection.",
+      "status": "done",
+      "commit": "39cba35"
+    },
+    {
+      "id": "step-18",
+      "type": "test",
+      "description": "Write failing bracket eval set test (exit criteria): demand all constraints, change width → eval set = {C1} (volume is dirty but not demanded since no constraint reads it). Change thickness → eval set = {C0, C1, C2} (all constraints read thickness). Verify topo order: value cells before constraints.",
+      "status": "done",
+      "commit": "277e836"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing eval set test for demand subset (exit criteria test 2): build graph with bracket + realization node that reads width. Demand only constraints (not realization). Change width → dirty cone includes {volume, C1, Realization(0)}. Eval set should NOT include Realization(0) because it's not demanded.",
+      "status": "done",
+      "commit": "163a7a7"
+    },
+    {
+      "id": "step-20",
+      "type": "test",
+      "description": "Write failing tests for SequentialScheduler in reify-runtime: (1) execute with empty eval set → empty changed set, (2) execute with single node that evaluator marks as changed → returned in changed set.",
+      "status": "done",
+      "commit": "4a3c57f"
+    },
+    {
+      "id": "step-21",
+      "type": "impl",
+      "description": "Implement in reify-runtime: NodeEvaluator trait with is_dirty(&NodeId) -> bool and evaluate(&mut, &NodeId) -> EvalOutcome methods. SequentialScheduler struct with execute(eval_set: Vec<NodeId>, evaluator: &mut dyn NodeEvaluator) -> HashSet<NodeId>: iterate eval_set, skip non-dirty nodes, call evaluate, collect Changed nodes.",
+      "status": "done",
+      "commit": "b6367f7"
+    },
+    {
+      "id": "step-22",
+      "type": "test",
+      "description": "Write failing test for scheduler dynamic early cutoff (exit criteria test 5): eval_set = [A, B] where B depends on A. Mock evaluator: A evaluates as Unchanged (early cutoff), then clears B's dirty flag internally. Scheduler should skip B because is_dirty returns false after A's evaluation. Result should be empty (no changes).",
+      "status": "done",
+      "commit": "be99bf9"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write failing test for scheduler with all nodes changed: eval_set = [width, volume, C1], evaluator returns Changed for all. Verify all three in returned changed set. Validates basic scheduler loop without cutoff.",
+      "status": "done",
+      "commit": "be99bf9"
+    },
+    {
+      "id": "step-24",
+      "type": "test",
+      "description": "Write integration test combining all components with bracket module: (1) build EvaluationGraph from bracket topology, (2) build ReverseDependencyIndex, (3) build DemandRegistry demanding all constraints, rebuild cone, (4) simulate width change via compute_dirty_cone, (5) compute_eval_set, (6) verify eval_set = [C1] in correct order, (7) execute via SequentialScheduler. This validates the full pipeline end-to-end (exit criteria tests 1-5).",
+      "status": "done",
+      "commit": "e64a5ec"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Write failing test in dirty.rs exposing the duplicate-reads bug in topological_sort. Build two nodes: param 'a' and a let-binding 'sq' whose DependencyTrace.reads = [a, a] (simulating expression `a * a`). Include both in the sort set. Assert that sorted output contains both nodes (len == 2) and that 'sq' appears after 'a'. This test FAILS on the current impl because duplicate reads inflate in-degree to 2 but the .contains()-based decrement only subtracts 1, so 'sq' never reaches in_degree 0 and is silently dropped from the output.",
+      "status": "done",
+      "commit": "9cbc0c9"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Fix the duplicate-reads bug in topological_sort (dirty.rs). In the in-degree counting loop (lines 58-65), deduplicate trace.reads before counting: `let unique_deps: HashSet<_> = trace.reads.iter().collect();` then iterate unique_deps instead of trace.reads. Apply the same deduplication in the decrement phase (lines 82-93): for each candidate node, collect unique deps from trace.reads and check membership against those, so both sides are consistent. This ensures expressions like `a * a` get in_degree=1 (one unique dep 'a' in set) and correctly reach 0 when 'a' is processed.",
+      "status": "done",
+      "commit": "301fedb"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Strengthen demand_registry_add_demand test (demand.rs:123-132). Replace the zero-assertion body with: build a minimal graph via TopologyTemplateBuilder containing one standalone constraint with a literal expression (no deps). Call add_demand(node), then rebuild_cone(&graph). Assert reg.is_demanded(&node) returns true. This catches the case where add_demand silently inserts into the wrong field or rebuild_cone fails to include always_demanded nodes.",
+      "status": "done",
+      "commit": "9ce216e"
+    },
+    {
+      "id": "step-28",
+      "type": "test",
+      "description": "Strengthen demand_registry_remove_demand test (demand.rs:134-141). Replace the zero-assertion body with a full lifecycle test on a minimal graph: add_demand(node), rebuild_cone, assert is_demanded(&node) is true. Then remove_demand(&node), rebuild_cone again, assert !is_demanded(&node). Also assert the demand cone is empty after the final rebuild (since no other demands exist). This verifies the complete add→rebuild→remove→rebuild→not_demanded cycle.",
+      "status": "done",
+      "commit": "9ce216e"
+    },
+    {
+      "id": "step-29",
+      "type": "test",
+      "description": "Strengthen demand_registry_add_demand_idempotent test (demand.rs:143-150). Replace the zero-assertion body with: build a minimal graph with one standalone constraint (no deps). Call add_demand(node) twice, then rebuild_cone(&graph). Assert is_demanded(&node) is true. Expose the demand_cone via a new cone_size() method (or count demanded nodes from a known set) and assert the cone contains exactly 1 node, proving that duplicate adds did not inflate internal state.",
+      "status": "done",
+      "commit": "9ce216e"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "ReverseDependencyIndex built from graph structure (expressions), not runtime traces",
+      "rationale": "Enables pre-evaluation planning. Runtime traces (from CacheStore) might differ for conditional expressions, but for M2 static extraction from graph expressions is correct and simpler. The index can be rebuilt when topology changes."
+    },
+    {
+      "decision": "extract_dependency_trace moved from lib.rs to deps.rs as pub function",
+      "rationale": "Both ReverseDependencyIndex.build_from_graph and build_trace_map need dependency extraction. Keeping it in deps.rs (the dependency module) is architecturally clean and avoids cross-module private function access."
+    },
+    {
+      "decision": "compute_eval_set takes additional traces parameter beyond task spec",
+      "rationale": "The task spec shows compute_eval_set(dirty, demand) -> Vec<NodeId> returning topologically sorted results, but topological sort requires dependency info. Adding traces: &HashMap<NodeId, DependencyTrace> parameter provides this. Alternative was embedding traces in DemandRegistry, but that couples demand tracking with dependency data."
+    },
+    {
+      "decision": "reify-runtime depends on reify-eval for NodeId and EvalOutcome types",
+      "rationale": "The scheduler needs NodeId (from cache.rs) and EvalOutcome (from cache.rs) to function. No circular dependency exists since reify-eval does not depend on reify-runtime. If a circular dep arises in future milestones, NodeId and EvalOutcome can be moved to reify-types."
+    },
+    {
+      "decision": "NodeEvaluator trait defined in reify-runtime for scheduler abstraction",
+      "rationale": "The scheduler doesn't need to know HOW nodes are evaluated — just whether they're dirty and what the outcome is. The trait has two methods: is_dirty(&NodeId) -> bool and evaluate(&mut, &NodeId) -> EvalOutcome. The Engine in reify-eval will implement this trait in a future integration step."
+    },
+    {
+      "decision": "Dynamic early cutoff delegated to NodeEvaluator, not scheduler",
+      "rationale": "When a node evaluates as Unchanged, the evaluator (which owns the CacheStore) calls clear_dependents_dirty to resolve dirty reasons for downstream nodes. The scheduler simply checks is_dirty before each evaluation. This keeps the scheduler simple and reuses existing CacheStore dirty-tracking logic."
+    },
+    {
+      "decision": "Dirty cone excludes the changed cells themselves, includes only downstream dependents",
+      "rationale": "Per task spec: 'all nodes that transitively depend on any changed cell.' Changed params are roots handled by the Engine before scheduling. The scheduler operates on downstream nodes only. This matches the existing eval_cached flow where params are always re-evaluated in the first pass."
+    },
+    {
+      "decision": "Demand cone includes always_demanded nodes AND their transitive backward dependencies",
+      "rationale": "If C1 is demanded, everything that feeds into C1 must be up-to-date. The cone includes C1 plus all Value nodes transitively reachable by following dependency edges backward. This ensures the eval set contains all nodes needed to produce correct results for demanded outputs."
+    },
+    {
+      "decision": "Topological sort uses Kahn's algorithm scoped to the input node set",
+      "rationale": "Kahn's algorithm is O(V+E), handles DAGs correctly, and naturally detects cycles (though cycles shouldn't occur in a well-formed evaluation graph). Scoping to only the input set avoids processing the entire graph. Tie-breaking uses sorted NodeId for deterministic output."
+    },
+    {
+      "decision": "rebuild_cone signature takes only graph (not reverse_index) despite task spec suggesting both",
+      "rationale": "The demand cone walks BACKWARD through dependencies (node → what it reads), which is the forward dependency direction stored in DependencyTrace/graph expressions. The reverse_index maps the opposite direction (cell → who reads it) and is not needed for backward traversal. The graph provides all needed dependency information."
+    },
+    {
+      "decision": "Deduplicate reads in topological_sort rather than in collect_value_refs",
+      "rationale": "The duplicate-reads bug is an accounting mismatch within topological_sort itself. Fixing at the topo sort level (dedup reads before counting in-degree, and dedup before decrementing) is a localized, minimal fix. Deduplicating in collect_value_refs would change the DependencyTrace contract and could affect other consumers (e.g., ReverseDependencyIndex.add already uses HashSet<NodeId> which naturally deduplicates). The topo sort should be robust to duplicate entries in its input traces regardless."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "NodeId enum (Value/Constraint/Realization)",
+      "where": "crates/reify-eval/src/cache.rs",
+      "how": "Used as the unified node identifier throughout: ReverseDependencyIndex values, DemandRegistry sets, dirty cone sets, eval set, scheduler input. Already has Hash, Eq, Clone, Debug derives."
+    },
+    {
+      "what": "DependencyTrace struct",
+      "where": "crates/reify-eval/src/deps.rs",
+      "how": "The reads: Vec<ValueCellId> field captures what a node depends on. Used by build_from_graph to populate the reverse index, by rebuild_cone for backward traversal, and by topological_sort for ordering."
+    },
+    {
+      "what": "EvaluationGraph (value_cells, constraints, realizations)",
+      "where": "crates/reify-eval/src/graph.rs",
+      "how": "Source of truth for graph topology. build_from_graph iterates its PersistentMaps to extract dependencies from node expressions. rebuild_cone uses it to walk backward from demanded nodes."
+    },
+    {
+      "what": "EvalOutcome (Changed/Unchanged)",
+      "where": "crates/reify-eval/src/cache.rs",
+      "how": "Returned by NodeEvaluator.evaluate() to signal whether a node's result changed. The scheduler uses this to decide whether to count the node as changed. Already has PartialEq, Eq derives."
+    },
+    {
+      "what": "CacheStore dirty_reasons tracking",
+      "where": "crates/reify-eval/src/cache.rs",
+      "how": "The existing is_dirty(), clear_dirty(), clear_dependents_dirty() methods are used by the NodeEvaluator implementation for dynamic early cutoff. The scheduler calls is_dirty() to skip nodes that became clean during processing."
+    },
+    {
+      "what": "extract_dependency_trace / collect_value_refs",
+      "where": "crates/reify-eval/src/lib.rs (moving to deps.rs)",
+      "how": "Extracts ValueCellId references from CompiledExpr trees. Reused in build_from_graph for value cells and constraints, and in build_trace_map for creating the trace map passed to topological_sort."
+    },
+    {
+      "what": "TopologyTemplateBuilder + CompiledModuleBuilder",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Used in tests to build custom graph topologies: bracket fixtures with added realizations, diamond dependency graphs, multi-level transitive dependency chains. Also used in steps 27-29 to build minimal graphs for strengthened demand registry tests."
+    },
+    {
+      "what": "bracket_compiled_module fixture",
+      "where": "crates/reify-test-support/src/fixtures.rs",
+      "how": "Provides realistic bracket module with 5 params, 1 let (volume), 3 constraints. Used directly in bracket-specific dirty cone and eval set tests. Extended with realization via TopologyTemplateBuilder for realization-exclusion tests."
+    },
+    {
+      "what": "Priority enum",
+      "where": "crates/reify-runtime/src/lib.rs",
+      "how": "Already defined with Ord derive. Available for future priority-aware scheduling. Not directly used by SequentialScheduler in M2 (processes in topo order), but the Task struct pairing node_id with priority is available for later enhancement."
+    },
+    {
+      "what": "vcid() and cnid() test helpers",
+      "where": "crates/reify-test-support/src/values.rs",
+      "how": "Shorthand constructors for ValueCellId and ConstraintNodeId. Used extensively in test assertions for readable node identification."
+    }
+  ]
+}

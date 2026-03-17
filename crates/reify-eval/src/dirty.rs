@@ -1,0 +1,692 @@
+//! Dirty cone computation and evaluation set construction.
+//!
+//! When a parameter changes, the dirty cone is the set of all nodes that
+//! transitively depend on the changed cells. The evaluation set is the
+//! intersection of the dirty cone and the demand cone, topologically sorted
+//! so that dependencies are evaluated before their dependents.
+
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+
+use crate::cache::NodeId;
+use crate::demand::DemandRegistry;
+use crate::deps::{DependencyTrace, ReverseDependencyIndex};
+use reify_types::ValueCellId;
+
+/// Compute the dirty cone: all nodes that transitively depend on any changed cell.
+///
+/// BFS forward from changed cells through the reverse index. For each dependent
+/// that is a Value(vcid), add vcid to the frontier for further propagation.
+/// Constraint and Realization nodes are leaf nodes (no further propagation).
+///
+/// The changed cells themselves are NOT included in the result (they are roots).
+pub fn compute_dirty_cone(
+    changed: &HashSet<ValueCellId>,
+    reverse_index: &ReverseDependencyIndex,
+) -> HashSet<NodeId> {
+    let mut dirty = HashSet::new();
+    let mut frontier: VecDeque<ValueCellId> = changed.iter().cloned().collect();
+
+    while let Some(cell) = frontier.pop_front() {
+        for dependent in reverse_index.dependents_of(&cell) {
+            if dirty.insert(dependent.clone()) {
+                // If the dependent is a Value node, continue propagation
+                if let NodeId::Value(vcid) = dependent {
+                    frontier.push_back(vcid.clone());
+                }
+            }
+        }
+    }
+
+    dirty
+}
+
+/// Topologically sort a set of nodes using Kahn's algorithm.
+///
+/// Only considers edges within the node set (external dependencies are ignored).
+/// Tie-breaking uses Debug representation for deterministic output.
+pub fn topological_sort(
+    nodes: &HashSet<NodeId>,
+    traces: &HashMap<NodeId, DependencyTrace>,
+) -> Vec<NodeId> {
+    if nodes.is_empty() {
+        return Vec::new();
+    }
+
+    // Build in-degree map (only counting edges within the node set)
+    let mut in_degree: HashMap<NodeId, usize> = nodes.iter().map(|n| (n.clone(), 0)).collect();
+
+    for node in nodes {
+        if let Some(trace) = traces.get(node) {
+            // Deduplicate reads to avoid over-counting in-degree
+            // (e.g. expression `a * a` reads 'a' twice but has only 1 unique dep)
+            let unique_deps: HashSet<&ValueCellId> = trace.reads.iter().collect();
+            for dep_cell in unique_deps {
+                let dep_node = NodeId::Value(dep_cell.clone());
+                if nodes.contains(&dep_node) {
+                    *in_degree.get_mut(node).unwrap() += 1;
+                }
+            }
+        }
+    }
+
+    // Use BTreeSet with Debug repr for deterministic tie-breaking
+    let mut ready: BTreeSet<DebugOrd> = in_degree
+        .iter()
+        .filter(|(_, deg)| **deg == 0)
+        .map(|(n, _)| DebugOrd(n.clone()))
+        .collect();
+
+    let mut result = Vec::with_capacity(nodes.len());
+
+    while let Some(DebugOrd(node)) = ready.pop_first() {
+        result.push(node.clone());
+
+        // Find all nodes in the set that depend on this node
+        if let NodeId::Value(ref vcid) = node {
+            for candidate in nodes {
+                if let Some(trace) = traces.get(candidate)
+                    && trace.reads.contains(vcid)
+                {
+                    let deg = in_degree.get_mut(candidate).unwrap();
+                    *deg -= 1;
+                    if *deg == 0 {
+                        ready.insert(DebugOrd(candidate.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Compute the evaluation set: intersection of dirty cone and demand cone,
+/// topologically sorted so dependencies are evaluated before dependents.
+pub fn compute_eval_set(
+    dirty: &HashSet<NodeId>,
+    demand: &DemandRegistry,
+    traces: &HashMap<NodeId, DependencyTrace>,
+) -> Vec<NodeId> {
+    let intersection: HashSet<NodeId> = dirty
+        .iter()
+        .filter(|n| demand.is_demanded(n))
+        .cloned()
+        .collect();
+
+    topological_sort(&intersection, traces)
+}
+
+/// Wrapper for NodeId that implements Ord based on Debug representation.
+/// Used for deterministic tie-breaking in topological sort.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DebugOrd(NodeId);
+
+impl PartialOrd for DebugOrd {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DebugOrd {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        format!("{:?}", self.0).cmp(&format!("{:?}", other.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::cache::NodeId;
+    use crate::deps::ReverseDependencyIndex;
+    use crate::dirty::compute_dirty_cone;
+    use reify_types::{ConstraintNodeId, ValueCellId};
+    use std::collections::HashSet;
+
+    #[test]
+    fn dirty_cone_empty_changed_set() {
+        let index = ReverseDependencyIndex::new();
+        let changed: HashSet<ValueCellId> = HashSet::new();
+        let dirty = compute_dirty_cone(&changed, &index);
+        assert!(dirty.is_empty());
+    }
+
+    #[test]
+    fn dirty_cone_single_changed_param() {
+        // width is read by volume (let) and C1 (constraint)
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        let e = "Bracket";
+        let mut changed = HashSet::new();
+        changed.insert(ValueCellId::new(e, "width"));
+
+        let dirty = compute_dirty_cone(&changed, &index);
+
+        // Dirty should contain volume and C1 (both read width)
+        assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
+        assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
+        // Changed cell itself is NOT in dirty cone
+        assert!(!dirty.contains(&NodeId::Value(ValueCellId::new(e, "width"))));
+        // Other nodes not affected
+        assert!(!dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
+        assert!(!dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
+    }
+
+    #[test]
+    fn dirty_cone_bracket_change_width() {
+        // Change width → dirty = {volume, C1}
+        // Excludes: fillet_radius, C0, C2
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        let e = "Bracket";
+        let mut changed = HashSet::new();
+        changed.insert(ValueCellId::new(e, "width"));
+
+        let dirty = compute_dirty_cone(&changed, &index);
+
+        assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
+        assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
+        assert!(!dirty.contains(&NodeId::Value(ValueCellId::new(e, "fillet_radius"))));
+        assert!(!dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
+        assert!(!dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
+        assert_eq!(dirty.len(), 2);
+    }
+
+    #[test]
+    fn dirty_cone_bracket_change_thickness() {
+        // Change thickness → dirty = {volume, C0, C1, C2}
+        // All constraints read thickness, volume reads thickness
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        let e = "Bracket";
+        let mut changed = HashSet::new();
+        changed.insert(ValueCellId::new(e, "thickness"));
+
+        let dirty = compute_dirty_cone(&changed, &index);
+
+        assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
+        assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
+        assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
+        assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
+        assert!(!dirty.contains(&NodeId::Value(ValueCellId::new(e, "fillet_radius"))));
+        assert_eq!(dirty.len(), 4);
+    }
+
+    #[test]
+    fn dirty_cone_bracket_change_fillet_radius() {
+        // Change fillet_radius → empty dirty cone (nothing reads fillet_radius)
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        let e = "Bracket";
+        let mut changed = HashSet::new();
+        changed.insert(ValueCellId::new(e, "fillet_radius"));
+
+        let dirty = compute_dirty_cone(&changed, &index);
+
+        assert!(dirty.is_empty(), "fillet_radius dirty cone: {:?}", dirty);
+    }
+
+    #[test]
+    fn topo_sort_empty_set() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::topological_sort;
+        use std::collections::HashMap;
+
+        let nodes: HashSet<NodeId> = HashSet::new();
+        let traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        let sorted = topological_sort(&nodes, &traces);
+        assert!(sorted.is_empty());
+    }
+
+    #[test]
+    fn topo_sort_single_node() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::topological_sort;
+        use std::collections::HashMap;
+
+        let node = NodeId::Value(ValueCellId::new("A", "x"));
+        let mut nodes = HashSet::new();
+        nodes.insert(node.clone());
+        let mut traces = HashMap::new();
+        traces.insert(node.clone(), DependencyTrace::default());
+        let sorted = topological_sort(&nodes, &traces);
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(sorted[0], node);
+    }
+
+    #[test]
+    fn topo_sort_independent_nodes() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::topological_sort;
+        use std::collections::HashMap;
+
+        let a = NodeId::Value(ValueCellId::new("A", "a"));
+        let b = NodeId::Value(ValueCellId::new("A", "b"));
+        let c = NodeId::Constraint(ConstraintNodeId::new("A", 0));
+        let mut nodes = HashSet::new();
+        nodes.insert(a.clone());
+        nodes.insert(b.clone());
+        nodes.insert(c.clone());
+        let mut traces = HashMap::new();
+        traces.insert(a.clone(), DependencyTrace::default());
+        traces.insert(b.clone(), DependencyTrace::default());
+        traces.insert(c.clone(), DependencyTrace::default());
+        let sorted = topological_sort(&nodes, &traces);
+        assert_eq!(sorted.len(), 3);
+        // All three present (any order for independent nodes)
+        assert!(sorted.contains(&a));
+        assert!(sorted.contains(&b));
+        assert!(sorted.contains(&c));
+    }
+
+    #[test]
+    fn topo_sort_volume_after_params() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::topological_sort;
+        use std::collections::HashMap;
+
+        let e = "B";
+        let width = NodeId::Value(ValueCellId::new(e, "width"));
+        let height = NodeId::Value(ValueCellId::new(e, "height"));
+        let thickness = NodeId::Value(ValueCellId::new(e, "thickness"));
+        let volume = NodeId::Value(ValueCellId::new(e, "volume"));
+
+        let mut nodes = HashSet::new();
+        nodes.insert(width.clone());
+        nodes.insert(height.clone());
+        nodes.insert(thickness.clone());
+        nodes.insert(volume.clone());
+
+        let mut traces = HashMap::new();
+        traces.insert(width.clone(), DependencyTrace::default());
+        traces.insert(height.clone(), DependencyTrace::default());
+        traces.insert(thickness.clone(), DependencyTrace::default());
+        traces.insert(
+            volume.clone(),
+            DependencyTrace {
+                reads: vec![
+                    ValueCellId::new(e, "width"),
+                    ValueCellId::new(e, "height"),
+                    ValueCellId::new(e, "thickness"),
+                ],
+            },
+        );
+
+        let sorted = topological_sort(&nodes, &traces);
+        assert_eq!(sorted.len(), 4);
+        // volume should appear after all three params
+        let vol_pos = sorted.iter().position(|n| n == &volume).unwrap();
+        let w_pos = sorted.iter().position(|n| n == &width).unwrap();
+        let h_pos = sorted.iter().position(|n| n == &height).unwrap();
+        let t_pos = sorted.iter().position(|n| n == &thickness).unwrap();
+        assert!(vol_pos > w_pos, "volume should appear after width");
+        assert!(vol_pos > h_pos, "volume should appear after height");
+        assert!(vol_pos > t_pos, "volume should appear after thickness");
+    }
+
+    #[test]
+    fn topo_sort_constraint_after_deps() {
+        // C1 depends on width and thickness, both in set → C1 after both
+        use crate::deps::DependencyTrace;
+        use crate::dirty::topological_sort;
+        use std::collections::HashMap;
+
+        let e = "B";
+        let width = NodeId::Value(ValueCellId::new(e, "width"));
+        let thickness = NodeId::Value(ValueCellId::new(e, "thickness"));
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+
+        let mut nodes = HashSet::new();
+        nodes.insert(width.clone());
+        nodes.insert(thickness.clone());
+        nodes.insert(c1.clone());
+
+        let mut traces = HashMap::new();
+        traces.insert(width.clone(), DependencyTrace::default());
+        traces.insert(thickness.clone(), DependencyTrace::default());
+        traces.insert(
+            c1.clone(),
+            DependencyTrace {
+                reads: vec![
+                    ValueCellId::new(e, "width"),
+                    ValueCellId::new(e, "thickness"),
+                ],
+            },
+        );
+
+        let sorted = topological_sort(&nodes, &traces);
+        assert_eq!(sorted.len(), 3);
+        let c1_pos = sorted.iter().position(|n| n == &c1).unwrap();
+        let w_pos = sorted.iter().position(|n| n == &width).unwrap();
+        let t_pos = sorted.iter().position(|n| n == &thickness).unwrap();
+        assert!(c1_pos > w_pos, "C1 should appear after width");
+        assert!(c1_pos > t_pos, "C1 should appear after thickness");
+    }
+
+    #[test]
+    fn topo_sort_mixed_set() {
+        // {volume, C1, width, thickness}: width+thickness first,
+        // then volume and C1 (both depend on width/thickness)
+        use crate::deps::DependencyTrace;
+        use crate::dirty::topological_sort;
+        use std::collections::HashMap;
+
+        let e = "B";
+        let width = NodeId::Value(ValueCellId::new(e, "width"));
+        let thickness = NodeId::Value(ValueCellId::new(e, "thickness"));
+        let volume = NodeId::Value(ValueCellId::new(e, "volume"));
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+
+        let mut nodes = HashSet::new();
+        nodes.insert(width.clone());
+        nodes.insert(thickness.clone());
+        nodes.insert(volume.clone());
+        nodes.insert(c1.clone());
+
+        let mut traces = HashMap::new();
+        traces.insert(width.clone(), DependencyTrace::default());
+        traces.insert(thickness.clone(), DependencyTrace::default());
+        traces.insert(
+            volume.clone(),
+            DependencyTrace {
+                reads: vec![
+                    ValueCellId::new(e, "width"),
+                    ValueCellId::new(e, "thickness"),
+                ],
+            },
+        );
+        traces.insert(
+            c1.clone(),
+            DependencyTrace {
+                reads: vec![
+                    ValueCellId::new(e, "width"),
+                    ValueCellId::new(e, "thickness"),
+                ],
+            },
+        );
+
+        let sorted = topological_sort(&nodes, &traces);
+        assert_eq!(sorted.len(), 4);
+        // width and thickness before volume and C1
+        let w_pos = sorted.iter().position(|n| n == &width).unwrap();
+        let t_pos = sorted.iter().position(|n| n == &thickness).unwrap();
+        let vol_pos = sorted.iter().position(|n| n == &volume).unwrap();
+        let c1_pos = sorted.iter().position(|n| n == &c1).unwrap();
+        assert!(vol_pos > w_pos);
+        assert!(vol_pos > t_pos);
+        assert!(c1_pos > w_pos);
+        assert!(c1_pos > t_pos);
+    }
+
+    #[test]
+    fn topo_sort_duplicate_reads() {
+        // Exposes the duplicate-reads bug: when trace.reads = [a, a] (e.g. `a * a`),
+        // in-degree is over-counted to 2 but only decremented once via .contains(),
+        // causing 'sq' to be silently dropped from the sorted output.
+        use crate::deps::DependencyTrace;
+        use crate::dirty::topological_sort;
+        use std::collections::HashMap;
+
+        let e = "D";
+        let a = NodeId::Value(ValueCellId::new(e, "a"));
+        let sq = NodeId::Value(ValueCellId::new(e, "sq"));
+
+        let mut nodes = HashSet::new();
+        nodes.insert(a.clone());
+        nodes.insert(sq.clone());
+
+        let mut traces = HashMap::new();
+        traces.insert(a.clone(), DependencyTrace::default());
+        // sq reads 'a' twice (simulating expression `a * a`)
+        traces.insert(
+            sq.clone(),
+            DependencyTrace {
+                reads: vec![
+                    ValueCellId::new(e, "a"),
+                    ValueCellId::new(e, "a"),
+                ],
+            },
+        );
+
+        let sorted = topological_sort(&nodes, &traces);
+        assert_eq!(sorted.len(), 2, "both nodes must appear in sorted output, got: {:?}", sorted);
+        // sq must appear after a
+        let a_pos = sorted.iter().position(|n| n == &a).unwrap();
+        let sq_pos = sorted.iter().position(|n| n == &sq).unwrap();
+        assert!(sq_pos > a_pos, "sq should appear after a");
+    }
+
+    #[test]
+    fn eval_set_empty_dirty() {
+        use crate::demand::DemandRegistry;
+        use crate::deps::DependencyTrace;
+        use crate::dirty::compute_eval_set;
+        use std::collections::HashMap;
+
+        let dirty: HashSet<NodeId> = HashSet::new();
+        let demand = DemandRegistry::new();
+        let traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        let eval_set = compute_eval_set(&dirty, &demand, &traces);
+        assert!(eval_set.is_empty());
+    }
+
+    #[test]
+    fn eval_set_dirty_outside_demand_cone() {
+        use crate::demand::DemandRegistry;
+        use crate::deps::DependencyTrace;
+        use crate::dirty::compute_eval_set;
+        use std::collections::HashMap;
+
+        // volume is dirty but not demanded
+        let volume = NodeId::Value(ValueCellId::new("B", "volume"));
+        let mut dirty = HashSet::new();
+        dirty.insert(volume.clone());
+
+        let demand = DemandRegistry::new(); // empty demand cone
+        let mut traces = HashMap::new();
+        traces.insert(volume.clone(), DependencyTrace::default());
+
+        let eval_set = compute_eval_set(&dirty, &demand, &traces);
+        assert!(eval_set.is_empty());
+    }
+
+    #[test]
+    fn eval_set_dirty_inside_demand_cone() {
+        use crate::demand::DemandRegistry;
+        use crate::dirty::compute_eval_set;
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+
+        let e = "Bracket";
+        let c0 = NodeId::Constraint(ConstraintNodeId::new(e, 0));
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+
+        // Demand C0 and C1
+        let mut demand = DemandRegistry::new();
+        demand.add_demand(c0.clone());
+        demand.add_demand(c1.clone());
+        demand.rebuild_cone(&graph);
+
+        // Both C0 and C1 are dirty and demanded
+        let mut dirty = HashSet::new();
+        dirty.insert(c0.clone());
+        dirty.insert(c1.clone());
+
+        let traces = crate::deps::build_trace_map(&graph);
+
+        let eval_set = compute_eval_set(&dirty, &demand, &traces);
+        assert_eq!(eval_set.len(), 2);
+        assert!(eval_set.contains(&c0));
+        assert!(eval_set.contains(&c1));
+    }
+
+    #[test]
+    fn eval_set_bracket_change_width_demand_all_constraints() {
+        // Exit criteria: demand all constraints, change width → eval_set = {C1}
+        // volume is dirty but not demanded (no constraint reads volume)
+        use crate::demand::DemandRegistry;
+        use crate::dirty::compute_eval_set;
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+        let traces = crate::deps::build_trace_map(&graph);
+
+        let e = "Bracket";
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+
+        // Demand all constraints
+        let mut demand = DemandRegistry::new();
+        demand.add_demand(NodeId::Constraint(ConstraintNodeId::new(e, 0)));
+        demand.add_demand(NodeId::Constraint(ConstraintNodeId::new(e, 1)));
+        demand.add_demand(NodeId::Constraint(ConstraintNodeId::new(e, 2)));
+        demand.rebuild_cone(&graph);
+
+        // Change width
+        let mut changed = HashSet::new();
+        changed.insert(ValueCellId::new(e, "width"));
+        let dirty = compute_dirty_cone(&changed, &index);
+
+        let eval_set = compute_eval_set(&dirty, &demand, &traces);
+        assert_eq!(eval_set.len(), 1, "eval_set: {:?}", eval_set);
+        assert_eq!(eval_set[0], c1);
+    }
+
+    #[test]
+    fn eval_set_bracket_change_thickness_demand_all_constraints() {
+        // Change thickness → eval_set = {C0, C1, C2} (all read thickness)
+        use crate::demand::DemandRegistry;
+        use crate::dirty::compute_eval_set;
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+        let traces = crate::deps::build_trace_map(&graph);
+
+        let e = "Bracket";
+
+        // Demand all constraints
+        let mut demand = DemandRegistry::new();
+        demand.add_demand(NodeId::Constraint(ConstraintNodeId::new(e, 0)));
+        demand.add_demand(NodeId::Constraint(ConstraintNodeId::new(e, 1)));
+        demand.add_demand(NodeId::Constraint(ConstraintNodeId::new(e, 2)));
+        demand.rebuild_cone(&graph);
+
+        // Change thickness
+        let mut changed = HashSet::new();
+        changed.insert(ValueCellId::new(e, "thickness"));
+        let dirty = compute_dirty_cone(&changed, &index);
+
+        let eval_set = compute_eval_set(&dirty, &demand, &traces);
+        // volume is dirty but not demanded → excluded
+        // C0, C1, C2 are dirty and demanded → included
+        assert_eq!(eval_set.len(), 3, "eval_set: {:?}", eval_set);
+        assert!(eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
+        assert!(eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
+        assert!(eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
+    }
+
+    #[test]
+    fn eval_set_demand_subset_excludes_realization() {
+        // Build graph with bracket params + realization that reads width.
+        // Demand only constraints (not realization).
+        // Change width → dirty cone includes {volume, C1, Realization(0)}.
+        // Eval set should NOT include Realization(0).
+        use crate::demand::DemandRegistry;
+        use crate::dirty::compute_eval_set;
+        use crate::graph::EvaluationGraph;
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::TopologyTemplateBuilder;
+        use reify_types::{BinOp, CompiledExpr, RealizationNodeId, Type, Value};
+
+        let e = "B";
+        let width_ref = || CompiledExpr::value_ref(ValueCellId::new(e, "width"), Type::length());
+        let thickness_ref =
+            || CompiledExpr::value_ref(ValueCellId::new(e, "thickness"), Type::length());
+        let mm = |v: f64| CompiledExpr::literal(Value::length(v * 0.001), Type::length());
+
+        // constraint: thickness < width / 4
+        let c1_expr = CompiledExpr::binop(
+            BinOp::Lt,
+            thickness_ref(),
+            CompiledExpr::binop(
+                BinOp::Div,
+                width_ref(),
+                CompiledExpr::literal(Value::Int(4), Type::Int),
+                Type::length(),
+            ),
+            Type::Bool,
+        );
+
+        // Realization with a Box primitive that reads width
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".to_string(), width_ref()),
+                ("height".to_string(), mm(100.0)),
+                ("depth".to_string(), mm(5.0)),
+            ],
+        }];
+
+        let template = TopologyTemplateBuilder::new(e)
+            .param(e, "width", Type::length(), Some(mm(80.0)))
+            .param(e, "thickness", Type::length(), Some(mm(5.0)))
+            .constraint(e, 1, None, c1_expr)
+            .realization(e, 0, ops)
+            .build();
+
+        let graph = EvaluationGraph::from_templates(&[template]);
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+        let traces = crate::deps::build_trace_map(&graph);
+
+        // Demand only constraints (not realization)
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+        let mut demand = DemandRegistry::new();
+        demand.add_demand(c1.clone());
+        demand.rebuild_cone(&graph);
+
+        // Change width
+        let mut changed = HashSet::new();
+        changed.insert(ValueCellId::new(e, "width"));
+        let dirty = compute_dirty_cone(&changed, &index);
+
+        // Dirty should include C1 and Realization(0)
+        assert!(dirty.contains(&c1));
+        assert!(dirty.contains(&NodeId::Realization(RealizationNodeId::new(e, 0))));
+
+        // Eval set should include only C1 (realization not demanded)
+        let eval_set = compute_eval_set(&dirty, &demand, &traces);
+        assert_eq!(eval_set.len(), 1, "eval_set: {:?}", eval_set);
+        assert_eq!(eval_set[0], c1);
+        assert!(
+            !eval_set.contains(&NodeId::Realization(RealizationNodeId::new(e, 0))),
+            "realization should not be in eval_set"
+        );
+    }
+
+}
