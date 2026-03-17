@@ -155,6 +155,44 @@ impl CacheStore {
         self.caches.clear();
     }
 
+    /// Record an evaluation result and determine if it changed (early cutoff).
+    ///
+    /// Compares the new result's content hash with the existing cache entry.
+    /// - If same hash: updates basis_version only (early cutoff), returns Unchanged.
+    /// - If different or no prior cache: updates full cache entry, returns Changed.
+    pub fn record_evaluation(
+        &mut self,
+        node: NodeId,
+        new_result: CachedResult,
+        version: VersionId,
+        trace: DependencyTrace,
+    ) -> EvalOutcome {
+        let new_hash = new_result.content_hash();
+
+        if let Some(existing) = self.caches.get_mut(&node) {
+            if existing.result_hash == new_hash {
+                // Early cutoff: result unchanged, just update version
+                existing.basis_version = version;
+                existing.dependency_trace = trace;
+                existing.freshness = Freshness::Final;
+                return EvalOutcome::Unchanged;
+            }
+        }
+
+        // Changed or cold start: store full entry
+        self.caches.insert(
+            node,
+            NodeCache {
+                result: new_result,
+                result_hash: new_hash,
+                freshness: Freshness::Final,
+                dependency_trace: trace,
+                basis_version: version,
+            },
+        );
+        EvalOutcome::Changed
+    }
+
     /// Version fast path: if the node is cached and its basis_version matches
     /// the current version, return a clone of the cached result without
     /// re-evaluation.
