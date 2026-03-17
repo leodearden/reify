@@ -434,6 +434,44 @@ mod tests {
     }
 
     #[test]
+    fn topo_sort_duplicate_reads() {
+        // Exposes the duplicate-reads bug: when trace.reads = [a, a] (e.g. `a * a`),
+        // in-degree is over-counted to 2 but only decremented once via .contains(),
+        // causing 'sq' to be silently dropped from the sorted output.
+        use crate::deps::DependencyTrace;
+        use crate::dirty::topological_sort;
+        use std::collections::HashMap;
+
+        let e = "D";
+        let a = NodeId::Value(ValueCellId::new(e, "a"));
+        let sq = NodeId::Value(ValueCellId::new(e, "sq"));
+
+        let mut nodes = HashSet::new();
+        nodes.insert(a.clone());
+        nodes.insert(sq.clone());
+
+        let mut traces = HashMap::new();
+        traces.insert(a.clone(), DependencyTrace::default());
+        // sq reads 'a' twice (simulating expression `a * a`)
+        traces.insert(
+            sq.clone(),
+            DependencyTrace {
+                reads: vec![
+                    ValueCellId::new(e, "a"),
+                    ValueCellId::new(e, "a"),
+                ],
+            },
+        );
+
+        let sorted = topological_sort(&nodes, &traces);
+        assert_eq!(sorted.len(), 2, "both nodes must appear in sorted output, got: {:?}", sorted);
+        // sq must appear after a
+        let a_pos = sorted.iter().position(|n| n == &a).unwrap();
+        let sq_pos = sorted.iter().position(|n| n == &sq).unwrap();
+        assert!(sq_pos > a_pos, "sq should appear after a");
+    }
+
+    #[test]
     fn eval_set_empty_dirty() {
         use crate::demand::DemandRegistry;
         use crate::deps::DependencyTrace;
