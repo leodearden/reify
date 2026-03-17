@@ -4,7 +4,7 @@
 //! diagnostic when all geometry operations fail, rather than attempting to
 //! export with a bogus handle.
 
-use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 use reify_test_support::*;
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
@@ -116,5 +116,142 @@ fn build_returns_no_geometry_when_all_kernel_ops_fail() {
         has_summary,
         "expected a summary diagnostic about all geometry operations failing, got: {:?}",
         result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// When all ops fail to compile (compile_geometry_op returns None for all),
+/// build() should also return geometry_output=None with appropriate diagnostics.
+#[test]
+fn build_returns_no_geometry_when_all_ops_fail_to_compile() {
+    use reify_types::Type;
+
+    // Boolean union referencing Step(0) and Step(1) but no prior primitives,
+    // so compile_geometry_op returns None (last_handle is None, resolve_ref fails).
+    let union_op = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(0),
+        right: GeomRef::Step(1),
+    };
+
+    let e = "TestShape";
+    let mm_literal =
+        |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    let template = TopologyTemplateBuilder::new("TestShape")
+        .param(e, "width", Type::length(), Some(mm_literal(10.0)))
+        .realization(e, 0, vec![union_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_compile_fail"))
+        .template(template)
+        .build();
+
+    // Use standard MockGeometryKernel — kernel.execute() should never be called
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine =
+        reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when all ops fail to compile"
+    );
+
+    let has_compile_error = result.diagnostics.iter().any(|d| {
+        d.message.contains("failed to compile geometry operation")
+    });
+    assert!(
+        has_compile_error,
+        "expected per-op compile failure diagnostic"
+    );
+
+    let has_summary = result.diagnostics.iter().any(|d| {
+        d.message.contains("all geometry operations failed")
+    });
+    assert!(
+        has_summary,
+        "expected summary diagnostic about all geometry operations failing"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// FailingExportMockGeometryKernel — execute AND export both return Err
+// ---------------------------------------------------------------------------
+
+/// A mock whose execute() fails and export() also fails.
+/// Used to verify that export is never attempted when all ops fail.
+struct FailingExportMockGeometryKernel;
+
+impl GeometryKernel for FailingExportMockGeometryKernel {
+    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(
+            "simulated kernel failure".into(),
+        ))
+    }
+
+    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+        Ok(Value::Real(0.0))
+    }
+
+    fn export(
+        &self,
+        _handle: GeometryHandleId,
+        _format: ExportFormat,
+        _writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        Err(ExportError::InvalidHandle(GeometryHandleId(0)))
+    }
+
+    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+        Ok(Mesh {
+            vertices: vec![],
+            indices: vec![],
+            normals: None,
+        })
+    }
+}
+
+/// When all ops fail, export should never be attempted — so there should be
+/// NO 'export error' diagnostic even if the kernel's export would fail.
+#[test]
+fn build_no_export_error_when_all_ops_fail() {
+    let module = module_with_box_realization();
+    let checker = MockConstraintChecker::new();
+    let kernel = FailingExportMockGeometryKernel;
+    let mut engine =
+        reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // Export should not have been attempted
+    let has_export_error = result.diagnostics.iter().any(|d| {
+        d.message.contains("export error")
+    });
+    assert!(
+        !has_export_error,
+        "export should not be attempted when all ops fail, but got an export error diagnostic"
+    );
+
+    // Should still have the summary diagnostic
+    let has_summary = result.diagnostics.iter().any(|d| {
+        d.message.contains("all geometry operations failed")
+    });
+    assert!(has_summary, "expected summary diagnostic");
+}
+
+/// Regression: modules with no realizations (total_ops=0) should still
+/// export successfully, same as the existing build_with_mock_kernel test.
+#[test]
+fn build_with_no_realizations_still_exports() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine =
+        reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert!(
+        result.geometry_output.is_some(),
+        "modules with no realizations should still produce geometry output"
     );
 }
