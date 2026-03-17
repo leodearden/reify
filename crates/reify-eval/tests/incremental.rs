@@ -5,9 +5,10 @@
 //! early cutoff, and freshness transitions.
 
 use reify_eval::Engine;
+use reify_eval::cache::NodeId;
 use reify_test_support::bracket_compiled_module;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{SnapshotId, SnapshotProvenance, Value, ValueCellId};
+use reify_types::{ConstraintNodeId, SnapshotId, SnapshotProvenance, Value, ValueCellId};
 
 /// Canary backward-compatibility test: verifies that cold-start eval()
 /// produces the correct values for the bracket fixture.
@@ -150,5 +151,64 @@ fn edit_param_snapshot_provenance() {
             changed: expected_changed,
             parent: SnapshotId(0),
         }
+    );
+}
+
+/// Verify that edit_param() only re-evaluates the dirty∩demanded intersection.
+/// When width changes with all constraints+values demanded:
+/// - volume and C1 are in the eval set (they read width)
+/// - fillet_radius, hole_diameter, C0, C2 are NOT in the eval set
+#[test]
+fn edit_param_partial_reeval_only_dirty_demanded() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let e = "Bracket";
+
+    // Cold-start eval (demands all value cells, constraints, realizations)
+    engine.eval(&module);
+
+    // Edit width from 80mm to 100mm
+    let width_id = ValueCellId::new(e, "width");
+    engine.edit_param(width_id, Value::length(0.1));
+
+    let eval_set = engine.last_eval_set();
+
+    // volume IS in eval set (reads width)
+    let volume_id = ValueCellId::new(e, "volume");
+    assert!(
+        eval_set.contains(&NodeId::Value(volume_id)),
+        "volume should be in eval set (reads width)"
+    );
+
+    // C1 IS in eval set (reads width and thickness)
+    assert!(
+        eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))),
+        "C1 should be in eval set (reads width)"
+    );
+
+    // fillet_radius NOT in eval set (nothing reads fillet_radius, but also it doesn't read width)
+    assert!(
+        !eval_set.contains(&NodeId::Value(ValueCellId::new(e, "fillet_radius"))),
+        "fillet_radius should NOT be in eval set"
+    );
+
+    // hole_diameter NOT in eval set (doesn't read width)
+    assert!(
+        !eval_set.contains(&NodeId::Value(ValueCellId::new(e, "hole_diameter"))),
+        "hole_diameter should NOT be in eval set"
+    );
+
+    // C0 NOT in eval set (only reads thickness)
+    assert!(
+        !eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))),
+        "C0 should NOT be in eval set (only reads thickness)"
+    );
+
+    // C2 NOT in eval set (reads hole_diameter and thickness, not width)
+    assert!(
+        !eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))),
+        "C2 should NOT be in eval set (reads hole_diameter and thickness)"
     );
 }
