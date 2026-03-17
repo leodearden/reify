@@ -47,11 +47,40 @@ pub fn collect_value_refs(expr: &CompiledExpr, out: &mut Vec<ValueCellId>) {
     }
 }
 
+use std::collections::{HashMap, HashSet};
+use crate::cache::NodeId;
+
 /// Reverse dependency index: maps ValueCellId → set of NodeIds that depend on it.
 ///
 /// This enables forward propagation: when a cell changes, look up which nodes
 /// need to be re-evaluated. Built from graph structure (expressions), not runtime traces.
-pub struct ReverseDependencyIndex;
+pub struct ReverseDependencyIndex {
+    index: HashMap<ValueCellId, HashSet<NodeId>>,
+}
+
+/// Empty set constant for returning references to unknown cells.
+static EMPTY_SET: std::sync::LazyLock<HashSet<NodeId>> =
+    std::sync::LazyLock::new(HashSet::new);
+
+impl ReverseDependencyIndex {
+    /// Create an empty reverse dependency index.
+    pub fn new() -> Self {
+        Self {
+            index: HashMap::new(),
+        }
+    }
+
+    /// Add a mapping: `cell` is read by `dependent`.
+    pub fn add(&mut self, cell: ValueCellId, dependent: NodeId) {
+        self.index.entry(cell).or_default().insert(dependent);
+    }
+
+    /// Return the set of NodeIds that depend on the given cell.
+    /// Returns an empty set for unknown cells.
+    pub fn dependents_of(&self, cell: &ValueCellId) -> &HashSet<NodeId> {
+        self.index.get(cell).unwrap_or(&EMPTY_SET)
+    }
+}
 
 /// Extract dependency ValueCellIds from a CompiledGeometryOp's argument expressions.
 ///
