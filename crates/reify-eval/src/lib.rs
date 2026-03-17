@@ -5,14 +5,19 @@ pub mod dirty;
 pub mod graph;
 pub mod snapshot;
 
+use std::collections::HashMap;
+
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
     ConstraintChecker, ConstraintInput, DeterminacyState, Diagnostic, ExportFormat,
-    GeometryHandleId, GeometryKernel, Satisfaction, ValueCellId, ValueMap, VersionId,
+    GeometryHandleId, GeometryKernel, Satisfaction, SnapshotId, SnapshotProvenance,
+    ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
-use crate::deps::{extract_dependency_trace, DependencyTrace};
+use crate::demand::DemandRegistry;
+use crate::deps::{extract_dependency_trace, DependencyTrace, ReverseDependencyIndex};
+use crate::snapshot::Snapshot;
 
 /// The engine facade — main entry point for evaluation.
 pub struct Engine {
@@ -21,6 +26,20 @@ pub struct Engine {
     cache: CacheStore,
     /// Overridden param values (set by set_param_and_invalidate).
     param_overrides: std::collections::HashMap<ValueCellId, reify_types::Value>,
+    /// Current snapshot from last eval() or edit_param().
+    current_snapshot: Option<Snapshot>,
+    /// Reverse dependency index for dirty cone computation.
+    reverse_index: Option<ReverseDependencyIndex>,
+    /// Forward dependency trace map for topological sort.
+    trace_map: Option<HashMap<NodeId, DependencyTrace>>,
+    /// Demand registry tracking which nodes are demanded.
+    demand: DemandRegistry,
+    /// Counter for snapshot IDs.
+    next_snapshot_id: u64,
+    /// Counter for version IDs.
+    next_version_id: u64,
+    /// The eval set from the last edit_param() or eval() call.
+    last_eval_set: Vec<NodeId>,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
@@ -80,12 +99,29 @@ impl Engine {
             geometry_kernel,
             cache: CacheStore::new(),
             param_overrides: std::collections::HashMap::new(),
+            current_snapshot: None,
+            reverse_index: None,
+            trace_map: None,
+            demand: DemandRegistry::new(),
+            next_snapshot_id: 0,
+            next_version_id: 0,
+            last_eval_set: Vec::new(),
         }
     }
 
     /// Access the cache store (for testing/inspection).
     pub fn cache_store(&self) -> &CacheStore {
         &self.cache
+    }
+
+    /// Access the current snapshot (for testing/inspection).
+    pub fn snapshot(&self) -> Option<&Snapshot> {
+        self.current_snapshot.as_ref()
+    }
+
+    /// Access the eval set from the last eval() or edit_param() call.
+    pub fn last_eval_set(&self) -> &[NodeId] {
+        &self.last_eval_set
     }
 
     /// Set a parameter override and invalidate cache entries that depend on it.
@@ -103,6 +139,10 @@ impl Engine {
     }
 
     /// Evaluate a compiled module, returning computed values.
+    ///
+    /// This is a cold-start evaluation that builds a new Snapshot and
+    /// dependency structures. Subsequent calls to edit_param() can perform
+    /// incremental re-evaluation using these structures.
     pub fn eval(
         &mut self,
         module: &CompiledModule,
@@ -110,6 +150,35 @@ impl Engine {
         let mut values = ValueMap::new();
         let diagnostics = Vec::new();
 
+        // Build Snapshot from CompiledModule (creates EvaluationGraph internally)
+        let snapshot_id = self.next_snapshot_id;
+        self.next_snapshot_id += 1;
+        let version_id = self.next_version_id;
+        self.next_version_id += 1;
+
+        let mut snapshot = Snapshot::from_compiled_module(module);
+        snapshot.id = SnapshotId(snapshot_id);
+        snapshot.version = VersionId(version_id);
+        snapshot.provenance = SnapshotProvenance::Initial;
+
+        // Build dependency structures from the graph
+        let reverse_index = ReverseDependencyIndex::build_from_graph(&snapshot.graph);
+        let trace_map = crate::deps::build_trace_map(&snapshot.graph);
+
+        // Set up demand registry: demand all value cells, constraints, and realizations
+        let mut demand = DemandRegistry::new();
+        for (_, node) in snapshot.graph.value_cells.iter() {
+            demand.add_demand(NodeId::Value(node.id.clone()));
+        }
+        for (_, cnode) in snapshot.graph.constraints.iter() {
+            demand.add_demand(NodeId::Constraint(cnode.id.clone()));
+        }
+        for (_, rnode) in snapshot.graph.realizations.iter() {
+            demand.add_demand(NodeId::Realization(rnode.id.clone()));
+        }
+        demand.rebuild_cone(&snapshot.graph);
+
+        // Two-pass evaluation (same logic as before)
         for template in &module.templates {
             // First pass: evaluate Param defaults to populate the value map
             for cell in &template.value_cells {
@@ -117,7 +186,25 @@ impl Engine {
                     && let Some(ref expr) = cell.default_expr
                 {
                     let val = reify_expr::eval_expr(expr, &values);
-                    values.insert(cell.id.clone(), val);
+                    values.insert(cell.id.clone(), val.clone());
+
+                    // Update snapshot values
+                    snapshot.values.insert(
+                        cell.id.clone(),
+                        (val.clone(), DeterminacyState::Determined),
+                    );
+
+                    // Record in cache
+                    let node_id = NodeId::Value(cell.id.clone());
+                    let trace = DependencyTrace::default();
+                    let cached_result =
+                        CachedResult::Value(val, DeterminacyState::Determined);
+                    self.cache.record_evaluation(
+                        node_id,
+                        cached_result,
+                        VersionId(version_id),
+                        trace,
+                    );
                 }
             }
 
@@ -127,10 +214,35 @@ impl Engine {
                     && let Some(ref expr) = cell.default_expr
                 {
                     let val = reify_expr::eval_expr(expr, &values);
-                    values.insert(cell.id.clone(), val);
+                    values.insert(cell.id.clone(), val.clone());
+
+                    // Update snapshot values
+                    snapshot.values.insert(
+                        cell.id.clone(),
+                        (val.clone(), DeterminacyState::Determined),
+                    );
+
+                    // Record in cache with dependency trace
+                    let node_id = NodeId::Value(cell.id.clone());
+                    let trace = extract_dependency_trace(expr);
+                    let cached_result =
+                        CachedResult::Value(val, DeterminacyState::Determined);
+                    self.cache.record_evaluation(
+                        node_id,
+                        cached_result,
+                        VersionId(version_id),
+                        trace,
+                    );
                 }
             }
         }
+
+        // Store internal state for incremental evaluation
+        self.current_snapshot = Some(snapshot);
+        self.reverse_index = Some(reverse_index);
+        self.trace_map = Some(trace_map);
+        self.demand = demand;
+        self.last_eval_set = Vec::new(); // Cold start: no incremental eval set
 
         EvalResult { values, diagnostics }
     }
