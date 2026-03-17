@@ -2,6 +2,7 @@ pub mod identity;
 pub mod hash;
 pub mod dimension;
 pub mod ty;
+pub mod persistent;
 pub mod value;
 pub mod expr;
 pub mod constraint;
@@ -21,4 +22,5 @@ pub use geometry::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, Mesh, QueryError, ReprKind, TessError,
 };
+pub use persistent::PersistentMap;
 pub use diagnostics::{Diagnostic, DiagnosticLabel, DiagnosticRef, Severity, SourceSpan};

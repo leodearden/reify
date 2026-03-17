@@ -6,4 +6,5 @@ license.workspace = true
 description = "Shared type vocabulary and trait definitions for Reify"
 
 [dependencies]
+im.workspace = true
 xxhash-rust.workspace = true

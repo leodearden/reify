@@ -1,0 +1,68 @@
+# Orchestrator configuration for Reify project
+# Rust workspace — Milestone 1 "Hello Bracket"
+
+# Concurrency — serialize within each crate to avoid merge conflicts
+max_concurrent_tasks: 5
+max_per_module: 1
+module_overrides:
+  reify-test-support: 2
+
+# Iteration limits
+max_execute_iterations: 10
+max_verify_attempts: 5
+max_review_cycles: 2
+
+# Models per role
+models:
+  architect: "opus"
+  implementer: "opus"
+  debugger: "opus"
+  reviewer: "sonnet"
+  merger: "opus"
+
+# Budget per invocation (USD)
+budgets:
+  architect: 5.0
+  implementer: 10.0
+  debugger: 5.0
+  reviewer: 2.0
+  merger: 5.0
+
+# Turn limits per invocation
+max_turns:
+  architect: 50
+  implementer: 80
+  debugger: 50
+  reviewer: 30
+  merger: 50
+
+# Verification commands (Rust toolchain)
+test_command: ". ~/.cargo/env && cargo test"
+lint_command: ". ~/.cargo/env && cargo clippy -- -D warnings"
+type_check_command: ". ~/.cargo/env && cargo check"
+
+# Fused memory HTTP server (absolute paths since project_root is reify, not dark-factory)
+fused_memory:
+  url: "http://localhost:8000"
+  project_id: "reify"
+  config_path: "/home/leo/src/reify/fused-memory-config.yaml"
+  server_command:
+    - "uv"
+    - "run"
+    - "--project"
+    - "/home/leo/src/dark-factory/fused-memory"
+    - "python"
+    - "-m"
+    - "fused_memory.server.main"
+    - "--transport"
+    - "http"
+
+# Git
+git:
+  main_branch: "main"
+  branch_prefix: "task/"
+  remote: "origin"
+  worktree_dir: "../worktrees"
+
+# Project root
+project_root: "/home/leo/src/reify"
