@@ -1,5 +1,8 @@
 // Stub — M1 implementation pending
 
+use std::collections::HashSet;
+
+use reify_eval::cache::{EvalOutcome, NodeId};
 use reify_types::ValueCellId;
 
 /// Task scheduling priority.
@@ -27,6 +30,52 @@ pub struct Task {
     pub node_id: ValueCellId,
     /// Scheduling priority for this task.
     pub priority: Priority,
+}
+
+/// Trait for evaluating individual nodes during scheduling.
+///
+/// The scheduler doesn't need to know HOW nodes are evaluated — just
+/// whether they're dirty and what the evaluation outcome is. The Engine
+/// in reify-eval will implement this trait in a future integration step.
+pub trait NodeEvaluator {
+    /// Check if a node is still dirty (may have been cleared by upstream early cutoff).
+    fn is_dirty(&self, node: &NodeId) -> bool;
+
+    /// Evaluate a node and return whether its result changed.
+    fn evaluate(&mut self, node: &NodeId) -> EvalOutcome;
+}
+
+/// Sequential scheduler: iterates eval_set in order, skips non-dirty nodes,
+/// delegates evaluation to NodeEvaluator, collects changed nodes.
+pub struct SequentialScheduler;
+
+impl SequentialScheduler {
+    /// Execute the eval set sequentially.
+    ///
+    /// For each node in the eval set:
+    /// - Skip if no longer dirty (dynamic cutoff from upstream early cutoffs)
+    /// - Call evaluator.evaluate() and collect nodes that returned Changed
+    pub fn execute(
+        &self,
+        eval_set: Vec<NodeId>,
+        evaluator: &mut dyn NodeEvaluator,
+    ) -> HashSet<NodeId> {
+        let mut changed = HashSet::new();
+
+        for node in eval_set {
+            if !evaluator.is_dirty(&node) {
+                // Skip: upstream early cutoff cleared this node's dirty flag
+                continue;
+            }
+
+            let outcome = evaluator.evaluate(&node);
+            if outcome == EvalOutcome::Changed {
+                changed.insert(node);
+            }
+        }
+
+        changed
+    }
 }
 
 #[cfg(test)]
