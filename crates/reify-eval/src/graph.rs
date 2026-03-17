@@ -325,4 +325,74 @@ mod tests {
         // 0 realizations (none added via builder)
         assert_eq!(graph.realizations.len(), 0);
     }
+
+    #[test]
+    fn topology_fingerprint_same_structure_same_hash() {
+        use reify_test_support::{TopologyTemplateBuilder, gt, literal, value_ref};
+
+        let template1 = TopologyTemplateBuilder::new("A")
+            .param("A", "x", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
+            .constraint("A", 0, None, gt(value_ref("A", "x"), literal(Value::length(0.0))))
+            .build();
+        let template2 = TopologyTemplateBuilder::new("A")
+            .param("A", "x", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
+            .constraint("A", 0, None, gt(value_ref("A", "x"), literal(Value::length(0.0))))
+            .build();
+
+        let g1 = EvaluationGraph::from_templates(&[template1]);
+        let g2 = EvaluationGraph::from_templates(&[template2]);
+
+        assert_eq!(g1.topology_fingerprint(), g2.topology_fingerprint());
+    }
+
+    #[test]
+    fn topology_fingerprint_different_structure_different_hash() {
+        use reify_test_support::{TopologyTemplateBuilder, gt, literal, value_ref};
+
+        let template1 = TopologyTemplateBuilder::new("A")
+            .param("A", "x", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
+            .build();
+        let template2 = TopologyTemplateBuilder::new("A")
+            .param("A", "x", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
+            .constraint("A", 0, None, gt(value_ref("A", "x"), literal(Value::length(0.0))))
+            .build();
+
+        let g1 = EvaluationGraph::from_templates(&[template1]);
+        let g2 = EvaluationGraph::from_templates(&[template2]);
+
+        assert_ne!(g1.topology_fingerprint(), g2.topology_fingerprint());
+    }
+
+    #[test]
+    fn topology_fingerprint_order_independent() {
+        // Insert same nodes in different order, should produce same fingerprint
+        let mut g1 = EvaluationGraph::default();
+        let mut g2 = EvaluationGraph::default();
+
+        let a = ValueCellId::new("X", "a");
+        let b = ValueCellId::new("X", "b");
+        let node_a = ValueCellNode {
+            id: a.clone(),
+            kind: ValueCellKind::Param,
+            cell_type: Type::length(),
+            default_expr: None,
+            content_hash: ContentHash::of_str("a"),
+        };
+        let node_b = ValueCellNode {
+            id: b.clone(),
+            kind: ValueCellKind::Param,
+            cell_type: Type::length(),
+            default_expr: None,
+            content_hash: ContentHash::of_str("b"),
+        };
+
+        // Different insertion order
+        g1.value_cells.insert(a.clone(), node_a.clone());
+        g1.value_cells.insert(b.clone(), node_b.clone());
+
+        g2.value_cells.insert(b.clone(), node_b);
+        g2.value_cells.insert(a.clone(), node_a);
+
+        assert_eq!(g1.topology_fingerprint(), g2.topology_fingerprint());
+    }
 }
