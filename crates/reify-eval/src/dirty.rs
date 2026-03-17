@@ -571,4 +571,82 @@ mod tests {
         assert!(eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
         assert!(eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
     }
+
+    #[test]
+    fn eval_set_demand_subset_excludes_realization() {
+        // Build graph with bracket params + realization that reads width.
+        // Demand only constraints (not realization).
+        // Change width → dirty cone includes {volume, C1, Realization(0)}.
+        // Eval set should NOT include Realization(0).
+        use crate::demand::DemandRegistry;
+        use crate::dirty::compute_eval_set;
+        use crate::graph::EvaluationGraph;
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::TopologyTemplateBuilder;
+        use reify_types::{BinOp, CompiledExpr, RealizationNodeId, Type, Value};
+
+        let e = "B";
+        let width_ref = || CompiledExpr::value_ref(ValueCellId::new(e, "width"), Type::length());
+        let thickness_ref =
+            || CompiledExpr::value_ref(ValueCellId::new(e, "thickness"), Type::length());
+        let mm = |v: f64| CompiledExpr::literal(Value::length(v * 0.001), Type::length());
+
+        // constraint: thickness < width / 4
+        let c1_expr = CompiledExpr::binop(
+            BinOp::Lt,
+            thickness_ref(),
+            CompiledExpr::binop(
+                BinOp::Div,
+                width_ref(),
+                CompiledExpr::literal(Value::Int(4), Type::Int),
+                Type::length(),
+            ),
+            Type::Bool,
+        );
+
+        // Realization with a Box primitive that reads width
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".to_string(), width_ref()),
+                ("height".to_string(), mm(100.0)),
+                ("depth".to_string(), mm(5.0)),
+            ],
+        }];
+
+        let template = TopologyTemplateBuilder::new(e)
+            .param(e, "width", Type::length(), Some(mm(80.0)))
+            .param(e, "thickness", Type::length(), Some(mm(5.0)))
+            .constraint(e, 1, None, c1_expr)
+            .realization(e, 0, ops)
+            .build();
+
+        let graph = EvaluationGraph::from_templates(&[template]);
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+        let traces = crate::deps::build_trace_map(&graph);
+
+        // Demand only constraints (not realization)
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+        let mut demand = DemandRegistry::new();
+        demand.add_demand(c1.clone());
+        demand.rebuild_cone(&graph);
+
+        // Change width
+        let mut changed = HashSet::new();
+        changed.insert(ValueCellId::new(e, "width"));
+        let dirty = compute_dirty_cone(&changed, &index);
+
+        // Dirty should include C1 and Realization(0)
+        assert!(dirty.contains(&c1));
+        assert!(dirty.contains(&NodeId::Realization(RealizationNodeId::new(e, 0))));
+
+        // Eval set should include only C1 (realization not demanded)
+        let eval_set = compute_eval_set(&dirty, &demand, &traces);
+        assert_eq!(eval_set.len(), 1, "eval_set: {:?}", eval_set);
+        assert_eq!(eval_set[0], c1);
+        assert!(
+            !eval_set.contains(&NodeId::Realization(RealizationNodeId::new(e, 0))),
+            "realization should not be in eval_set"
+        );
+    }
 }
