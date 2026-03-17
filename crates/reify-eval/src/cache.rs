@@ -115,9 +115,10 @@ impl NodeCache {
 /// Store managing per-node cache entries for incremental evaluation.
 pub struct CacheStore {
     caches: HashMap<NodeId, NodeCache>,
-    /// Nodes that need re-evaluation (but whose old entries are kept for
-    /// early cutoff comparison).
-    dirty: std::collections::HashSet<NodeId>,
+    /// Nodes that need re-evaluation, with the set of changed ValueCellIds
+    /// that caused them to be dirty. A node stays dirty until ALL its dirty
+    /// reasons have been resolved (e.g., by early cutoffs on upstream nodes).
+    dirty_reasons: HashMap<NodeId, std::collections::HashSet<ValueCellId>>,
 }
 
 impl CacheStore {
@@ -125,7 +126,7 @@ impl CacheStore {
     pub fn new() -> Self {
         Self {
             caches: HashMap::new(),
-            dirty: std::collections::HashSet::new(),
+            dirty_reasons: HashMap::new(),
         }
     }
 
@@ -200,46 +201,59 @@ impl CacheStore {
     /// Mark all cached nodes whose dependency trace reads any of the changed
     /// value cells as dirty. They keep their old entries for early cutoff
     /// comparison but will be re-evaluated on the next eval_cached() call.
+    ///
+    /// Each node's dirty reasons track which specific changed cells caused it
+    /// to become dirty. A node only becomes clean when ALL its reasons are
+    /// resolved.
     pub fn invalidate_dependents(&mut self, changed: &[ValueCellId]) {
         for (node, entry) in &self.caches {
-            if entry
+            let matching_reasons: std::collections::HashSet<ValueCellId> = entry
                 .dependency_trace
                 .reads
                 .iter()
-                .any(|read| changed.contains(read))
-            {
-                self.dirty.insert(node.clone());
+                .filter(|read| changed.contains(read))
+                .cloned()
+                .collect();
+            if !matching_reasons.is_empty() {
+                self.dirty_reasons
+                    .entry(node.clone())
+                    .or_default()
+                    .extend(matching_reasons);
             }
         }
     }
 
     /// Check if a node is marked as dirty (needs re-evaluation).
     pub fn is_dirty(&self, node: &NodeId) -> bool {
-        self.dirty.contains(node)
+        self.dirty_reasons.contains_key(node)
     }
 
     /// Clear the dirty flag for a node after re-evaluation.
     pub fn clear_dirty(&mut self, node: &NodeId) {
-        self.dirty.remove(node);
+        self.dirty_reasons.remove(node);
     }
 
-    /// Clear dirty flags for nodes whose dependency traces read the given
-    /// value cell. Used after early cutoff: if a node's result didn't change,
-    /// its dependents don't need re-evaluation.
+    /// Remove a specific dirty reason from nodes whose dependency traces read
+    /// the given value cell. Used after early cutoff: if a node's result didn't
+    /// change, the `cell` reason is resolved for its dependents. A node is only
+    /// fully cleared from dirty when ALL its reasons have been resolved.
     pub fn clear_dependents_dirty(&mut self, cell: &ValueCellId) {
-        let to_clear: Vec<NodeId> = self
-            .dirty
-            .iter()
-            .filter(|node| {
-                self.caches
-                    .get(node)
-                    .map(|entry| entry.dependency_trace.reads.contains(cell))
-                    .unwrap_or(false)
-            })
-            .cloned()
-            .collect();
-        for node in to_clear {
-            self.dirty.remove(&node);
+        let mut to_fully_clear = Vec::new();
+        for (node, reasons) in self.dirty_reasons.iter_mut() {
+            if self
+                .caches
+                .get(node)
+                .map(|entry| entry.dependency_trace.reads.contains(cell))
+                .unwrap_or(false)
+            {
+                reasons.remove(cell);
+                if reasons.is_empty() {
+                    to_fully_clear.push(node.clone());
+                }
+            }
+        }
+        for node in to_fully_clear {
+            self.dirty_reasons.remove(&node);
         }
     }
 
