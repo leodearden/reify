@@ -1,20 +1,21 @@
 {
-  "task_id": "18",
-  "title": "auto keyword — grammar, parser, compiler",
-  "modules": [
-    "tree-sitter-reify",
-    "crates/reify-syntax",
-    "crates/reify-compiler",
-    "crates/reify-eval",
-    "crates/reify-test-support"
-  ],
-  "analysis": "This task threads the `auto` keyword through the full parse→compile→eval pipeline for M3 constraint solving. Key findings from codebase exploration:\n\n1. **Grammar (tree-sitter-reify/grammar.js):** param_declaration uses `optional(seq('=', field('default', $._expression)))`. We add `auto_keyword: $ => 'auto'` and change the default field to `choice($.auto_keyword, $._expression)`. Tree-sitter's lexer will prefer the 'auto' string literal over the identifier regex, effectively reserving `auto` as a keyword. This mirrors the existing bool_literal pattern ('true'/'false').\n\n2. **Parser (crates/reify-syntax/src/ts_parser.rs):** `lower_param()` extracts defaults via `child_by_field_name('default').and_then(|d| self.lower_expr(d))`. For auto, the CST node kind will be 'auto_keyword', which lower_expr doesn't handle → returns None. We must check for 'auto_keyword' before calling lower_expr and produce ExprKind::Auto.\n\n3. **AST (crates/reify-syntax/src/lib.rs):** ExprKind has 10 variants (NumberLiteral, QuantityLiteral, StringLiteral, BoolLiteral, Ident, BinOp, UnOp, FunctionCall, MemberAccess, Conditional). We add ExprKind::Auto — a unit variant with no fields.\n\n4. **Compiler (crates/reify-compiler/src/lib.rs):** ValueCellKind has {Param, Let}. Param compilation (line ~641) calls compile_expr on the default. For ExprKind::Auto, we skip compile_expr and emit ValueCellKind::Auto with default_expr: None.\n\n5. **Eval (crates/reify-eval/src/lib.rs):** Two-pass evaluation: first Params (line 184: `cell.kind == ValueCellKind::Param && let Some(ref expr) = cell.default_expr`), then Lets. Auto cells match neither condition → silently skipped → stay at snapshot initial value. We must add explicit Auto handling in eval() and eval_cached() to set (Undef, DeterminacyState::Auto) and record cache entries.\n\n6. **Snapshot (crates/reify-eval/src/snapshot.rs):** `from_compiled_module` initializes ALL cells to (Undef, Undetermined). We update this to check node.kind and set DeterminacyState::Auto for Auto cells.\n\n7. **Deps (crates/reify-eval/src/deps.rs):** `build_from_graph` and `build_trace_map` filter on `node.kind == ValueCellKind::Let`. Auto cells (like Params) are roots with empty DependencyTrace. The else branch handles them correctly — no changes needed.\n\n8. **Constraints:** SimpleConstraintChecker maps Value::Undef → Satisfaction::Indeterminate (reify-constraints/src/lib.rs line 30-31). Auto params start as Undef, so constraints naturally return Indeterminate.\n\n9. **DeterminacyState::Auto already exists** in reify-types/src/value.rs with full test coverage. No type-layer changes needed.\n\n10. **All ValueCellKind match sites** use equality checks (`cell.kind == ValueCellKind::Param`), not exhaustive match. Adding Auto won't cause compilation errors but requires explicit handling for correct behavior.",
+  "task_id": "21",
+  "title": "Resolution engine — wire solver into eval pipeline",
+  "modules": ["crates/reify-eval", "crates/reify-test-support"],
+  "analysis": "The Engine in reify-eval/src/lib.rs currently has eval(), check(), and build() methods. eval() does two-pass evaluation: Pass 1 evaluates Param defaults and Auto cells (Auto cells become (Undef, Auto)), Pass 2 evaluates Let bindings. check() calls eval() then runs constraints through ConstraintChecker. build() calls check() then does geometry.\n\nThe ConstraintSolver trait, ResolutionProblem, AutoParam, and SolveResult types are already defined in reify-types/src/constraint.rs and re-exported from reify_types. The DimensionalSolver in reify-constraints implements ConstraintSolver. ResolutionNodeData, NodeId::Resolution, CachedResult::Resolution variants, and demand/dep support for Resolution nodes all exist from task 20. The EvaluationGraph has a resolutions PersistentMap but from_templates() does not populate it.\n\nApproach: (1) Add Option<Box<dyn ConstraintSolver>> to Engine via with_solver() builder. (2) Add resolution phase at end of eval() after two-pass evaluation. Resolution scans template value_cells for Auto kind, finds constraints whose dependency traces reference auto params, builds ResolutionProblem, calls solver. On Solved: updates values map and snapshot values to (resolved_val, Determined), creates child snapshot with SnapshotProvenance::Resolution provenance, re-evaluates let bindings. (3) check() naturally sees resolved values since it calls eval(). (4) Handle Infeasible/NoProgress with diagnostics. (5) Add resolved_params tracking to EvalResult/CheckResult/BuildResult.\n\nResolutionNodes in the graph are NOT populated by from_templates in this task — the resolution phase scans value cells and constraints directly. Incremental resolution support can be added later.\n\nKey files: lib.rs (Engine, eval, check, build, result types), snapshot.rs (Snapshot), deps.rs (extract_dependency_trace), cache.rs (CachedResult::Resolution), mocks.rs (MockConstraintSolver).",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Update tree-sitter-reify/grammar.js: (1) Add `auto_keyword: $ => 'auto'` rule, (2) Change param_declaration default from `field('default', $._expression)` to `field('default', choice($.auto_keyword, $._expression))`, (3) Regenerate the parser with `cd tree-sitter-reify && npx tree-sitter generate`. This produces updated src/parser.c, src/grammar.json, src/node-types.json.",
+      "description": "Add MockConstraintSolver to reify-test-support/src/mocks.rs. Three constructors: new_solved(HashMap<ValueCellId, Value>) for Solved, new_infeasible(Vec<Diagnostic>) for Infeasible, new_no_progress(String) for NoProgress. Implements ConstraintSolver trait by returning cloned predetermined result. Include unit tests for each constructor. Follows existing MockConstraintChecker pattern.",
       "status": "done",
-      "commit": "51275fc",
+      "commit": "1bef41d",
+      "tests": ["mock_constraint_solver_solved", "mock_constraint_solver_infeasible", "mock_constraint_solver_no_progress", "mock_constraint_solver_is_send_sync"]
+    },
+    {
+      "id": "pre-2",
+      "description": "Add resolved_params: std::collections::HashMap<ValueCellId, reify_types::Value> field to EvalResult, CheckResult, and BuildResult in reify-eval/src/lib.rs. Initialize to HashMap::new() in all existing construction sites: eval() line 266, edit_param() line 391, eval_cached() line 588, check() line 631, build() line 703. Non-behavioral change — all existing tests pass with empty resolved_params.",
+      "status": "done",
+      "commit": "efc194f",
       "tests": []
     }
   ],
@@ -22,182 +23,228 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `parse_auto_param` in crates/reify-syntax/tests/boundary1_producer.rs: parse source `structure T { param thickness: Scalar = auto }`, assert no parse errors, verify ParamDecl has `default: Some(Expr { kind: ExprKind::Auto, .. })`. Test fails because ExprKind::Auto doesn't exist yet.",
+      "description": "Write failing test `engine_with_solver_accepts_solver` in new file crates/reify-eval/tests/resolution.rs: Create Engine::new(MockConstraintChecker, None).with_solver(MockConstraintSolver::new_solved(...)). Build module with auto_param('S','x',Type::length()) via TopologyTemplateBuilder. Call eval(). Assert no panic, x is in values (may still be Undef — solver integration comes later).",
       "status": "done",
-      "commit": "f04f577"
+      "commit": "2e7be14"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `ExprKind::Auto` variant (unit variant, no fields) to crates/reify-syntax/src/lib.rs. Update `lower_param()` in crates/reify-syntax/src/ts_parser.rs: before calling `lower_expr(d)` for the default node, check `if d.kind() == \"auto_keyword\"` and return `Some(Expr { kind: ExprKind::Auto, span: self.span(d) })` directly. Step-1 test now passes.",
+      "description": "Add `solver: Option<Box<dyn ConstraintSolver>>` field to Engine struct. Add `pub fn with_solver(mut self, solver: Box<dyn ConstraintSolver>) -> Self` that sets the field and returns self. Update Engine::new() to init solver: None. Add import for ConstraintSolver from reify_types.",
       "status": "done",
-      "commit": "d533555"
+      "commit": "2e7be14"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `parse_mixed_auto_and_normal_params` in crates/reify-syntax/tests/boundary1_producer.rs: parse `structure S { param x: Scalar = 5mm\\n param y: Scalar = auto\\n param z: Scalar }`, verify x has QuantityLiteral default, y has Auto default, z has no default (None). Confirms auto coexists with normal params.",
+      "description": "Write failing test `resolve_single_auto_param`: Build module with auto_param('S','thickness',Type::length()), constraint 'thickness > 2mm' (gt(value_ref('S','thickness'), literal(mm(2.0)))), constraint 'thickness < 20mm' (lt(value_ref('S','thickness'), literal(mm(20.0)))). Create Engine with MockConstraintSolver::new_solved({thickness: mm(5.0)}). Call eval(). Assert thickness value == mm(5.0) (not Undef).",
       "status": "done",
-      "commit": "471e082"
+      "commit": "15168cc"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Step-3 should pass with step-2 implementation. If not, debug and fix lower_param handling. Verify `auto` in `let x = auto` is either a parse error or parsed differently (not ExprKind::Auto) since grammar restricts auto_keyword to param defaults.",
+      "description": "Add resolution phase to eval() after pass 2 (let bindings). For each template: (1) collect auto_ids = value_cells where kind==Auto as HashSet<ValueCellId>, (2) skip if empty or solver is None, (3) find constraints whose extract_dependency_trace reads intersect auto_ids, (4) build Vec<AutoParam> from graph nodes (id, cell_type, bounds=None), (5) build ResolutionProblem { auto_params, constraints: filtered_pairs, current_values: values.clone(), objective: None }, (6) call solver.solve(&problem), (7) on Solved: insert resolved values into values map. Import AutoParam, ResolutionProblem, SolveResult, ConstraintSolver from reify_types.",
       "status": "done",
-      "commit": "2f97788"
+      "commit": "15168cc"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test `compile_auto_param` in crates/reify-compiler/tests/boundary2_producer.rs: parse + compile `structure S { param x: Scalar = auto\\n param y: Scalar = 5mm }`, filter value cells, assert x has `kind == ValueCellKind::Auto` and `default_expr == None`, y has `kind == ValueCellKind::Param` and `default_expr.is_some()`. Test fails because ValueCellKind::Auto doesn't exist.",
+      "description": "Write failing test `resolved_param_determinacy_and_provenance`: Same module setup as step-3. After eval(), get engine.snapshot(). Assert snapshot.values has thickness → (mm(5.0), DeterminacyState::Determined). Assert snapshot.provenance matches SnapshotProvenance::Resolution { scope: 'S', resolved: {thickness_id}, parent: SnapshotId(0) }.",
       "status": "done",
-      "commit": "3be60a1"
+      "commit": "2ae5544"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add `Auto` variant to ValueCellKind enum in crates/reify-compiler/src/lib.rs. Update doc comment. In `compile_structure()` Param arm (line ~641): check if `param.default` is `Some(Expr { kind: ExprKind::Auto, .. })`. If so, emit ValueCellDecl with `kind: ValueCellKind::Auto, default_expr: None`. Otherwise use existing Param logic.",
+      "description": "In resolution phase Solved branch: (1) update snapshot.values with (resolved_val, Determined) for each resolved param, (2) allocate new snapshot_id and version_id, (3) set snapshot.provenance = SnapshotProvenance::Resolution { scope: template.name.clone(), resolved: resolved_ids_set, parent: parent_snapshot_id }, (4) record CachedResult::Value(val, Determined) in cache for each resolved param node.",
       "status": "done",
-      "commit": "06502e2"
+      "commit": "2ae5544"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test `auto_param_builder` in crates/reify-test-support (inline test or in builders.rs tests): call `TopologyTemplateBuilder::new(\"T\").auto_param(\"T\", \"x\", Type::length())`, verify produced ValueCellDecl has `kind == ValueCellKind::Auto`, `default_expr == None`, correct id and type. Fails because auto_param() doesn't exist.",
+      "description": "Write failing test `let_binding_re_evaluated_after_resolution`: Build module with auto_param('S','x',Type::length()), let_binding('S','y',Type::length(), BinOp::Mul(value_ref('S','x'), literal(Value::Real(2.0)))), constraint 'x > 2mm'. MockConstraintSolver returns x=mm(10.0). After eval(), assert y value ≈ 0.02 (10mm * 2 in SI). This fails until let re-evaluation is added.",
       "status": "done",
-      "commit": "1ed3cee"
+      "commit": "4a40bfe"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add `auto_param(self, entity: &str, member: &str, cell_type: Type) -> Self` method to TopologyTemplateBuilder in crates/reify-test-support/src/builders.rs. Pushes ValueCellDecl with `kind: ValueCellKind::Auto, default_expr: None`. Mirrors existing param() pattern.",
+      "description": "After Solved branch updates values map, re-run pass 2 (let binding evaluation): iterate template.value_cells for Let kind with default_expr, re-evaluate expr against updated values, update snapshot.values and cache entries. This is idempotent for lets not depending on resolved params. Update cache with new dependency traces and CachedResult.",
       "status": "done",
-      "commit": "9b9abf7"
+      "commit": "4a40bfe"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test `eval_auto_param_undef_auto` in crates/reify-eval (tests/ directory): build a CompiledModule via builder with auto_param(\"S\", \"x\", Type::length()) and param(\"S\", \"y\", Type::length(), Some(literal(mm(5.0)))). Run engine.eval(). Assert snapshot has x → (Undef, DeterminacyState::Auto) and y → (evaluated value, Determined). Assert values map has x → Undef. Fails because eval() doesn't handle Auto cells.",
+      "description": "Write failing test `check_reports_satisfied_after_resolution`: Build module with auto_param('S','thickness',Type::length()), constraint gt(value_ref, literal(mm(2.0))). Use SimpleConstraintChecker (real checker) and MockConstraintSolver returning thickness=mm(5.0). Call engine.check(). Assert constraint_results[0].satisfaction == Satisfied. Verifies check() integration with resolution.",
       "status": "done",
-      "commit": "4e67dc1"
+      "commit": "d977faf"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Update Snapshot::from_compiled_module() in crates/reify-eval/src/snapshot.rs: when iterating graph.value_cells, check node.kind — if ValueCellKind::Auto, initialize as (Undef, DeterminacyState::Auto) instead of (Undef, Undetermined). Update Engine::eval() in crates/reify-eval/src/lib.rs: in the first pass, add a branch after the Param check: `else if cell.kind == ValueCellKind::Auto { values.insert(cell.id.clone(), Value::Undef); snapshot.values.insert(cell.id.clone(), (Value::Undef, DeterminacyState::Auto)); /* record cache */ }`.",
+      "description": "Verify check() integration works. check() calls eval() which now resolves, then passes resolved values to constraint_checker.check(). SimpleConstraintChecker evaluates 0.005 > 0.002 → true → Satisfied. Propagate resolved_params from eval_result into CheckResult.resolved_params. May need no changes beyond resolved_params propagation.",
       "status": "done",
-      "commit": "0bf7bb3"
+      "commit": "d977faf"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test `eval_cached_auto_param` in crates/reify-eval: same module as step-9, but use engine.eval_cached(). Verify auto param gets (Undef, DeterminacyState::Auto) in values. Also test that setting a param_override for the auto param causes eval_cached to use the override value with Determined state.",
+      "description": "Write failing test `resolve_multiple_auto_params`: Build module with auto_param('S','a',Type::length()), auto_param('S','b',Type::length()), constraint gt(value_ref('S','a'), literal(mm(1.0))), constraint gt(value_ref('S','b'), literal(mm(2.0))). MockConstraintSolver returns {a:mm(5.0), b:mm(10.0)}. After eval(), assert a==mm(5.0), b==mm(10.0). Assert resolved_params has 2 entries.",
       "status": "done",
-      "commit": "9d057a8"
+      "commit": "cec5e49"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Update Engine::eval_cached() in crates/reify-eval/src/lib.rs: in the first pass, after the `if cell.kind == ValueCellKind::Param` block, add `else if cell.kind == ValueCellKind::Auto`. Handle version fast-path, cache reuse, and fallback: without override → (Undef, DeterminacyState::Auto); with override → (override_value, DeterminacyState::Determined). Follow the Param handling pattern for cache recording.",
+      "description": "Verify multi-param resolution works with existing implementation. Step-4 impl collects ALL auto params per template into a single ResolutionProblem. MockConstraintSolver returns all values. Should work without changes. Fix any issues found.",
       "status": "done",
-      "commit": "57c3a15"
+      "commit": "cec5e49"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write test `constraint_on_auto_param_indeterminate` in crates/reify-eval: build a module with auto_param(\"S\", \"x\", Type::length()) and a constraint `x > 5mm` (compiled via builders). Run engine.check(). Assert the constraint result has satisfaction == Satisfaction::Indeterminate. This should pass naturally since x is Undef → constraint expression evaluates to Undef → Indeterminate.",
+      "description": "Write failing test `solver_infeasible_produces_diagnostics`: Build module with auto_param and constraint. MockConstraintSolver::new_infeasible(vec![Diagnostic::error('constraints are infeasible')]). After eval(), assert thickness is Undef. Assert diagnostics contains message 'constraints are infeasible'. Assert resolved_params is empty.",
       "status": "done",
-      "commit": "ede0cf8"
+      "commit": "ef4c736"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Verify step-13 passes with existing Undef→Indeterminate mapping. No constraint checker changes expected. If the test fails, investigate eval_expr Undef propagation for the specific comparison operators used.",
+      "description": "In resolution phase, handle SolveResult::Infeasible { diagnostics: solver_diags }: extend eval diagnostics with solver_diags. Auto params remain (Undef, Auto) in snapshot. resolved_params stays empty. Snapshot provenance stays Initial (no Resolution provenance on failure).",
       "status": "done",
-      "commit": "ede0cf8"
+      "commit": "ef4c736"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write end-to-end integration test `e2e_parse_compile_eval_auto_param`: parse source `structure S {\\n  param x : Scalar = auto\\n  param y : Scalar = 5mm\\n  let z = y * 2\\n  constraint x > 2mm\\n}`, compile, eval, check. Assert: no parse errors, x is ValueCellKind::Auto, x is (Undef, Auto) in snapshot, y is evaluated to 0.005 SI, z = 0.01 SI, constraint on x is Indeterminate.",
+      "description": "Write failing test `solver_no_progress_produces_warning`: Build module with auto_param and constraint. MockConstraintSolver::new_no_progress('iteration limit reached'). After eval(), assert auto param is Undef. Assert diagnostics contains a warning with text containing 'iteration limit reached'. Assert resolved_params is empty.",
       "status": "done",
-      "commit": "844cf4a"
+      "commit": "ef4c736"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Verify e2e test passes with all prior implementations. Run `cargo test --workspace` to confirm all existing tests pass with no regressions. Fix any compilation or test failures across the workspace.",
+      "description": "In resolution phase, handle SolveResult::NoProgress { reason }: push Diagnostic::warning(format!('Constraint solver made no progress: {}', reason)) to eval diagnostics. Auto params remain (Undef, Auto). resolved_params stays empty.",
       "status": "done",
-      "commit": "844cf4a"
+      "commit": "ef4c736"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write test `no_solver_backward_compatible`: Build module with auto_param('S','x',Type::length()) and constraint. Create Engine WITHOUT with_solver() (solver is None). Call eval(). Assert x is Undef with Auto determinacy in snapshot. Assert diagnostics is empty. Assert resolved_params is empty. Confirms backward compatibility.",
+      "status": "done",
+      "commit": "aed5ef8"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Verify no-solver case works. Resolution phase is guarded by solver.is_some() check, so it's skipped when solver is None. Auto params remain (Undef, Auto). No changes expected — this step confirms existing behavior.",
+      "status": "done",
+      "commit": "aed5ef8"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write test `eval_result_tracks_resolved_params`: Same setup as step-3 (single auto param resolved). Assert eval_result.resolved_params == {thickness_id: mm(5.0)}. Call check() and assert check_result.resolved_params matches. Call build() with MockGeometryKernel and assert build_result.resolved_params matches. Verifies resolved_params propagation through all result types.",
+      "status": "done",
+      "commit": "325c704"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "In eval() Solved branch: set resolved_params = solver_values.clone() (the HashMap from SolveResult::Solved). Return EvalResult { values, diagnostics, resolved_params }. In check(): copy eval_result.resolved_params to CheckResult. In build(): copy check_result.resolved_params to BuildResult. Ensure edit_param() and eval_cached() return empty resolved_params.",
+      "status": "done",
+      "commit": "325c704"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add ExprKind::Auto as a variant of ExprKind rather than a separate DefaultValue enum",
-      "rationale": "ParamDecl.default is Option<Expr>. Adding ExprKind::Auto is minimally invasive — preserves existing type structure and all consumer code. A separate DefaultValue enum would require changing ParamDecl, all pattern matches on default, and the lower_param return type. The grammar restricts auto to param defaults, so the type system doesn't need to enforce this."
+      "decision": "Embed resolution phase in eval(), not check() or build()",
+      "rationale": "eval() returns fully-resolved values so check() and build() naturally see resolved values. This maintains the existing layering: eval() → check() → build(). Constraints are checked against already-resolved values in check(), producing a single constraint check that reports the final state (Satisfied). The task pseudocode shows resolution before geometry, which this achieves."
     },
     {
-      "decision": "ValueCellKind::Auto as a third variant rather than a flag on Param",
-      "rationale": "Auto params have fundamentally different eval behavior: no default expression, start as Undef, value provided by solver. A separate variant makes eval/eval_cached match arms explicit and prevents accidentally evaluating a non-existent default_expr. Existing code uses equality checks (not exhaustive match), so adding the variant is safe."
+      "decision": "with_solver() builder method rather than new constructor parameter",
+      "rationale": "Backward compatible — existing Engine::new(checker, kernel) callers need no changes. Solver is optional (most tests don't need it). Builder pattern (self-consuming method returning Self) is idiomatic Rust for optional configuration. Matches how geometry_kernel is already optional."
     },
     {
-      "decision": "Auto params get (Value::Undef, DeterminacyState::Auto) — reusing existing DeterminacyState::Auto",
-      "rationale": "DeterminacyState::Auto was added in a prior task (reify-types) with full test coverage. Using Undef as the value is correct since the param has no value until the solver provides one. Undef propagation in reify-expr naturally makes dependent computations Undef and constraints Indeterminate."
+      "decision": "Resolution phase scans graph directly instead of populating ResolutionNodes from from_templates",
+      "rationale": "from_templates() doesn't currently populate ResolutionNodes and adding that introduces complexity not needed for this task. The resolution phase can scan value_cells for Auto kind and constraint dependency traces for references to auto params. The ResolutionNode infrastructure from task 20 is available for future incremental resolution (edit_param triggering re-resolution). Keeps this task focused on core wiring."
     },
     {
-      "decision": "Grammar restricts auto_keyword to param default position only",
-      "rationale": "The language spec requires auto only as a param default value. By adding auto_keyword as a choice alongside _expression in param_declaration (not in _expression itself), the grammar gives clean parse errors for auto in invalid positions. Tree-sitter will lex 'auto' as a keyword token (priority over identifier regex), reserving it language-wide."
+      "decision": "Re-run entire let binding loop after resolution rather than selective re-evaluation",
+      "rationale": "For cold-start eval(), re-running all let bindings is simple, correct, and the performance cost is negligible (only evaluated in initial eval, not incremental). Using dirty/demand infrastructure for selective re-evaluation is designed for incremental (edit_param) scenarios. The re-run is idempotent for let bindings not depending on resolved params."
     },
     {
-      "decision": "No changes needed to deps.rs or constraint checker",
-      "rationale": "deps.rs filters on ValueCellKind::Let; Auto cells are roots like Params with empty DependencyTrace — handled by the else branch. Constraint checker maps Value::Undef to Satisfaction::Indeterminate — auto params naturally produce Indeterminate constraints."
+      "decision": "Only include constraints that directly reference auto params in ResolutionProblem",
+      "rationale": "Constraints referencing let bindings that transitively depend on auto params are excluded because the DimensionalSolver substitutes auto param values in current_values but doesn't propagate through let binding expressions. Direct constraints cover the v0.1 use case ('param thickness = auto, constraint thickness > 2mm'). Transitive resolution can be added in M5 when the language supports more complex dependency patterns."
     },
     {
-      "decision": "Update both Snapshot::from_compiled_module and Engine::eval for Auto cells",
-      "rationale": "Snapshot initialization sets the baseline state before eval runs. While eval() overwrites values for processed cells, having correct initial determinacy ensures consistency if snapshot is inspected before eval completes. Eval() adds explicit Auto handling for cache recording and value map population."
+      "decision": "Per-template resolution with scope tracking",
+      "rationale": "Auto params and constraints are per-template in the compiler output. ResolutionProblem is built per-template, and SnapshotProvenance::Resolution carries the template name as scope. Multiple templates with auto params produce separate solve calls, which is correct since their auto params are independent. The scope field in provenance enables debugging and audit."
+    },
+    {
+      "decision": "Resolution creates child snapshot with new ID/version (not in-place mutation)",
+      "rationale": "Follows the existing edit_param() pattern: clone snapshot (O(1) via PersistentMap structural sharing), update values and provenance. Preserves the provenance chain for undo/redo and audit trails. The parent snapshot ID links back to the Initial snapshot. If multiple templates resolve, each produces a new child snapshot."
+    },
+    {
+      "decision": "Solver failure (Infeasible/NoProgress) is non-fatal — diagnostics emitted, eval continues",
+      "rationale": "The task explicitly requires 'Solver failure produces diagnostics, not panics'. Auto params remain (Undef, Auto) on failure. Constraints referencing unresolved autos evaluate to Indeterminate (existing behavior via SimpleConstraintChecker Undef→Indeterminate mapping). Geometry realization can still proceed with Undef values, producing degraded output rather than crashing."
     }
   ],
   "reuse": [
     {
-      "what": "DeterminacyState::Auto variant",
-      "where": "crates/reify-types/src/value.rs line 127",
-      "how": "Already exists with doc comment, Copy/Clone/Eq/Hash derives, and test coverage. Use directly in snapshot initialization and eval — no type-layer changes needed."
+      "what": "edit_param() snapshot pattern",
+      "where": "crates/reify-eval/src/lib.rs lines 278-395",
+      "how": "Clone current snapshot (O(1)), assign new snapshot_id/version_id, set SnapshotProvenance::Resolution. Same structural sharing via PersistentMap. Follow the exact pattern: clone → update values → update provenance → store."
     },
     {
-      "what": "Value::Undef and Undef propagation",
-      "where": "crates/reify-types/src/value.rs (Value enum), crates/reify-expr/src/lib.rs (eval_expr)",
-      "how": "Auto params start as Value::Undef. eval_expr already propagates Undef through all arithmetic and comparison operators. No changes to reify-expr needed."
+      "what": "extract_dependency_trace()",
+      "where": "crates/reify-eval/src/deps.rs line 13",
+      "how": "Use to determine which constraints reference auto params. Call extract_dependency_trace(&constraint.expr) and check if any reads are in the auto_param_ids HashSet."
     },
     {
-      "what": "SimpleConstraintChecker Undef→Indeterminate mapping",
-      "where": "crates/reify-constraints/src/lib.rs line 30-31",
-      "how": "Value::Undef constraint result → Satisfaction::Indeterminate. Auto param constraints naturally report Indeterminate without any constraint checker changes."
+      "what": "MockConstraintChecker pattern",
+      "where": "crates/reify-test-support/src/mocks.rs lines 11-58",
+      "how": "Follow same pattern for MockConstraintSolver: predetermined result, builder constructors (new_solved, new_infeasible, new_no_progress), implement ConstraintSolver trait returning cloned result."
     },
     {
-      "what": "TopologyTemplateBuilder pattern",
-      "where": "crates/reify-test-support/src/builders.rs lines 158-173",
-      "how": "auto_param() follows the exact same pattern as param(): push ValueCellDecl with specific kind and default_expr. Only differs in kind=Auto and default_expr=None."
+      "what": "TopologyTemplateBuilder.auto_param()",
+      "where": "crates/reify-test-support/src/builders.rs lines 175-189",
+      "how": "Already exists. Build test modules with auto params. Combine with .constraint() and expression builders (gt, lt, and, value_ref, literal) for test module construction."
     },
     {
-      "what": "Cache recording pattern in eval()",
-      "where": "crates/reify-eval/src/lib.rs lines 197-207",
-      "how": "Auto cell cache recording follows the Param pattern: NodeId::Value, DependencyTrace::default() (roots have no deps), CachedResult::Value(val, determinacy), self.cache.record_evaluation()."
+      "what": "Expression builders (gt, lt, and, value_ref, literal, binop)",
+      "where": "crates/reify-test-support/src/builders.rs lines 6-130",
+      "how": "Build constraint expressions in tests: gt(value_ref('S','x'), literal(mm(2.0))). Also BinOp::Mul via CompiledExpr::binop() for let binding expressions referencing auto params."
     },
     {
-      "what": "eval_cached() Param handling structure",
-      "where": "crates/reify-eval/src/lib.rs lines 396-453",
-      "how": "Auto cell handling in eval_cached mirrors Param handling: version fast-path, cache reuse check, param_overrides check, fallback to (Undef, Auto). Same control flow, different determinacy state."
+      "what": "Value constructors (mm)",
+      "where": "crates/reify-test-support/src/values.rs",
+      "how": "mm(5.0) creates Value::Scalar with LENGTH dimension and SI value 0.005. Use for solver mock return values and expected value assertions."
     },
     {
-      "what": "Grammar keyword pattern (bool_literal)",
-      "where": "tree-sitter-reify/grammar.js line 194",
-      "how": "auto_keyword: $ => 'auto' follows the same pattern as bool_literal: $ => choice('true', 'false'). Named rules wrapping string literals is the established convention."
+      "what": "SnapshotProvenance::Resolution variant",
+      "where": "crates/reify-types/src/provenance.rs lines 21-25",
+      "how": "Already defined with { scope: String, resolved: HashSet<ValueCellId>, parent: SnapshotId }. Use directly when creating resolution snapshot provenance."
     },
     {
-      "what": "Boundary test organization",
-      "where": "crates/reify-syntax/tests/boundary1_producer.rs, crates/reify-compiler/tests/boundary2_producer.rs",
-      "how": "New tests follow existing conventions: boundary1 for parser output, boundary2 for compiler output, eval tests for runtime behavior."
+      "what": "CachedResult::Resolution variant",
+      "where": "crates/reify-eval/src/cache.rs line 54",
+      "how": "Already defined as Resolution(HashMap<ValueCellId, Value>). Use for recording resolution results in the cache store."
+    },
+    {
+      "what": "Diagnostic::error() and Diagnostic::warning()",
+      "where": "crates/reify-types/src/diagnostics.rs lines 72, 80",
+      "how": "Use Diagnostic::error() for infeasible diagnostics, Diagnostic::warning() for no-progress warnings. Both take impl Into<String>."
+    },
+    {
+      "what": "SimpleConstraintChecker",
+      "where": "crates/reify-constraints/src/lib.rs",
+      "how": "Use as real constraint checker in integration test (step-9) to verify constraints evaluate to Satisfied after resolution. Evaluates constraint expressions against current values and maps bool results to Satisfaction."
     }
   ]
 }
