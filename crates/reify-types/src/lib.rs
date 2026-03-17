@@ -22,4 +22,5 @@ pub use geometry::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, Mesh, QueryError, ReprKind, TessError,
 };
+pub use persistent::PersistentMap;
 pub use diagnostics::{Diagnostic, DiagnosticLabel, DiagnosticRef, Severity, SourceSpan};

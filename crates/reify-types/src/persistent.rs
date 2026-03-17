@@ -1,57 +1,78 @@
-/// PersistentMap: a persistent (structural-sharing) hash map.
+/// PersistentMap: a persistent (structural-sharing) hash map backed by im::HashMap.
 ///
-/// Will be backed by im::HashMap for O(1) clone via structural sharing,
-/// with O(log n) get/insert/remove.
+/// Provides O(1) clone via structural sharing, with O(log n) get/insert/remove.
+/// Used internally by ValueMap for efficient snapshot cloning.
+use im::HashMap as ImHashMap;
+use std::fmt;
 use std::hash::Hash;
 
 /// A persistent hash map with structural sharing on clone.
+///
+/// Wraps `im::HashMap<K, V>` in a newtype to encapsulate the backing
+/// implementation and expose a controlled API surface.
 pub struct PersistentMap<K: Clone + Hash + Eq, V: Clone> {
-    _phantom: std::marker::PhantomData<(K, V)>,
+    inner: ImHashMap<K, V>,
 }
 
 impl<K: Clone + Hash + Eq, V: Clone> PersistentMap<K, V> {
+    /// Create an empty PersistentMap.
     pub fn new() -> Self {
-        todo!()
+        Self {
+            inner: ImHashMap::new(),
+        }
     }
 
-    pub fn get(&self, _key: &K) -> Option<&V> {
-        todo!()
+    /// Look up a value by key.
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.inner.get(key)
     }
 
-    pub fn insert(&mut self, _key: K, _value: V) {
-        todo!()
+    /// Insert a key-value pair, mutating in place (but sharing structure on clone).
+    pub fn insert(&mut self, key: K, value: V) {
+        self.inner.insert(key, value);
     }
 
-    pub fn insert_functional(&self, _key: K, _value: V) -> Self {
-        todo!()
+    /// Functional insert: returns a new map with the key-value pair added.
+    /// The original map is not modified.
+    pub fn insert_functional(&self, key: K, value: V) -> Self {
+        Self {
+            inner: self.inner.update(key, value),
+        }
     }
 
-    pub fn remove(&mut self, _key: &K) {
-        todo!()
+    /// Remove a key, mutating in place.
+    pub fn remove(&mut self, key: &K) {
+        self.inner.remove(key);
     }
 
-    pub fn contains_key(&self, _key: &K) -> bool {
-        todo!()
+    /// Check if the map contains a key.
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.inner.contains_key(key)
     }
 
+    /// Number of entries.
     pub fn len(&self) -> usize {
-        todo!()
+        self.inner.len()
     }
 
+    /// Is the map empty?
     pub fn is_empty(&self) -> bool {
-        todo!()
+        self.inner.is_empty()
     }
 
+    /// Iterate over key-value pairs.
     pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
-        std::iter::empty()
+        self.inner.iter()
     }
 
+    /// Iterate over keys.
     pub fn keys(&self) -> impl Iterator<Item = &K> {
-        std::iter::empty()
+        self.inner.keys()
     }
 
+    /// Iterate over values.
     pub fn values(&self) -> impl Iterator<Item = &V> {
-        std::iter::empty()
+        self.inner.values()
     }
 }
 
@@ -61,38 +82,42 @@ impl<K: Clone + Hash + Eq, V: Clone> Default for PersistentMap<K, V> {
     }
 }
 
-impl<K: Clone + Hash + Eq + std::fmt::Debug, V: Clone + std::fmt::Debug> std::fmt::Debug
+impl<K: Clone + Hash + Eq + fmt::Debug, V: Clone + fmt::Debug> fmt::Debug
     for PersistentMap<K, V>
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PersistentMap").finish()
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map().entries(self.inner.iter()).finish()
     }
 }
 
 impl<K: Clone + Hash + Eq, V: Clone + PartialEq> PartialEq for PersistentMap<K, V> {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
     }
 }
 
 impl<K: Clone + Hash + Eq, V: Clone> Clone for PersistentMap<K, V> {
     fn clone(&self) -> Self {
-        todo!()
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
 impl<K: Clone + Hash + Eq, V: Clone> FromIterator<(K, V)> for PersistentMap<K, V> {
-    fn from_iter<I: IntoIterator<Item = (K, V)>>(_iter: I) -> Self {
-        todo!()
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
+        Self {
+            inner: iter.into_iter().collect(),
+        }
     }
 }
 
 impl<K: Clone + Hash + Eq, V: Clone> IntoIterator for PersistentMap<K, V> {
     type Item = (K, V);
-    type IntoIter = std::vec::IntoIter<(K, V)>;
+    type IntoIter = im::hashmap::ConsumingIter<(K, V)>;
 
     fn into_iter(self) -> Self::IntoIter {
-        todo!()
+        self.inner.into_iter()
     }
 }
 
