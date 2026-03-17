@@ -134,8 +134,13 @@ impl EvaluationGraph {
             hashes.sort_by_key(|h| h.0);
             ContentHash::combine_all(hashes)
         };
+        let res_hash = {
+            let mut hashes: Vec<ContentHash> = self.resolutions.iter().map(|(_, n)| n.content_hash).collect();
+            hashes.sort_by_key(|h| h.0);
+            ContentHash::combine_all(hashes)
+        };
 
-        ContentHash::combine_all([vc_hash, cn_hash, real_hash])
+        ContentHash::combine_all([vc_hash, cn_hash, real_hash, res_hash])
     }
 }
 
@@ -653,5 +658,87 @@ mod tests {
         assert_ne!(fp_a, fp_b, "value_cell vs constraint fingerprints must differ");
         assert_ne!(fp_a, fp_c, "value_cell vs realization fingerprints must differ");
         assert_ne!(fp_b, fp_c, "constraint vs realization fingerprints must differ");
+    }
+
+    #[test]
+    fn topology_fingerprint_includes_resolutions() {
+        use reify_test_support::TopologyTemplateBuilder;
+        use reify_types::{CompiledExpr, ResolutionNodeId, Type, Value};
+
+        // Build two identical graphs from same template
+        let template1 = TopologyTemplateBuilder::new("A")
+            .param("A", "x", Type::Real, Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)))
+            .build();
+        let template2 = TopologyTemplateBuilder::new("A")
+            .param("A", "x", Type::Real, Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)))
+            .build();
+
+        let g1 = EvaluationGraph::from_templates(&[template1]);
+        let mut g2 = EvaluationGraph::from_templates(&[template2]);
+
+        // Before adding resolution, fingerprints should be equal
+        assert_eq!(g1.topology_fingerprint(), g2.topology_fingerprint());
+
+        // Add a ResolutionNodeData to g2
+        let r0_id = ResolutionNodeId::new("A", 0);
+        g2.resolutions.insert(r0_id.clone(), ResolutionNodeData {
+            id: r0_id,
+            scope: "A".to_string(),
+            auto_params: vec![ValueCellId::new("A", "x")],
+            constraint_deps: vec![],
+            content_hash: ContentHash::of_str("r0"),
+        });
+
+        // After adding resolution, fingerprints must differ
+        assert_ne!(g1.topology_fingerprint(), g2.topology_fingerprint(),
+            "fingerprint must change when resolution node is added");
+
+        // Two graphs with identical resolutions should have same fingerprint
+        let mut g3 = g1.clone();
+        let r0_id2 = ResolutionNodeId::new("A", 0);
+        g3.resolutions.insert(r0_id2.clone(), ResolutionNodeData {
+            id: r0_id2,
+            scope: "A".to_string(),
+            auto_params: vec![ValueCellId::new("A", "x")],
+            constraint_deps: vec![],
+            content_hash: ContentHash::of_str("r0"),
+        });
+        assert_eq!(g2.topology_fingerprint(), g3.topology_fingerprint());
+    }
+
+    #[test]
+    fn fingerprint_domain_separates_resolution_from_others() {
+        let hash_h = ContentHash::of_str("same");
+        use reify_types::ResolutionNodeId;
+
+        let mut graph_a = EvaluationGraph::default();
+        graph_a.value_cells.insert(
+            ValueCellId::new("X", "a"),
+            ValueCellNode {
+                id: ValueCellId::new("X", "a"),
+                kind: ValueCellKind::Param,
+                cell_type: Type::length(),
+                default_expr: None,
+                content_hash: hash_h,
+            },
+        );
+
+        let mut graph_d = EvaluationGraph::default();
+        graph_d.resolutions.insert(
+            ResolutionNodeId::new("X", 0),
+            ResolutionNodeData {
+                id: ResolutionNodeId::new("X", 0),
+                scope: "X".to_string(),
+                auto_params: vec![],
+                constraint_deps: vec![],
+                content_hash: hash_h,
+            },
+        );
+
+        assert_ne!(
+            graph_a.topology_fingerprint(),
+            graph_d.topology_fingerprint(),
+            "fingerprint must domain-separate value_cells from resolutions"
+        );
     }
 }
