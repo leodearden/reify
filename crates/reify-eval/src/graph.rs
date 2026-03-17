@@ -1,6 +1,6 @@
 // EvaluationGraph: typed graph nodes backed by PersistentMap.
 
-use reify_compiler::{CompiledGeometryOp, ValueCellKind};
+use reify_compiler::{CompiledGeometryOp, TopologyTemplate, ValueCellKind};
 use reify_types::{
     CompiledExpr, ConstraintNodeId, ContentHash, PersistentMap, RealizationNodeId, Type,
     ValueCellId,
@@ -42,6 +42,59 @@ pub struct EvaluationGraph {
     pub value_cells: PersistentMap<ValueCellId, ValueCellNode>,
     pub constraints: PersistentMap<ConstraintNodeId, ConstraintNodeData>,
     pub realizations: PersistentMap<RealizationNodeId, RealizationNodeData>,
+}
+
+impl EvaluationGraph {
+    /// Build an EvaluationGraph from compiled topology templates.
+    ///
+    /// Converts each template's declarations into typed graph nodes:
+    /// - ValueCellDecl → ValueCellNode
+    /// - CompiledConstraint → ConstraintNodeData
+    /// - RealizationDecl → RealizationNodeData
+    pub fn from_templates(templates: &[TopologyTemplate]) -> Self {
+        let mut graph = EvaluationGraph::default();
+
+        for template in templates {
+            for cell in &template.value_cells {
+                let node = ValueCellNode {
+                    id: cell.id.clone(),
+                    kind: cell.kind,
+                    cell_type: cell.cell_type.clone(),
+                    default_expr: cell.default_expr.clone(),
+                    content_hash: cell.default_expr.as_ref()
+                        .map(|e| e.content_hash)
+                        .unwrap_or_else(|| ContentHash::of_str(&format!("{}", cell.id))),
+                };
+                graph.value_cells.insert(cell.id.clone(), node);
+            }
+
+            for constraint in &template.constraints {
+                let node = ConstraintNodeData {
+                    id: constraint.id.clone(),
+                    expr: constraint.expr.clone(),
+                    content_hash: constraint.expr.content_hash,
+                };
+                graph.constraints.insert(constraint.id.clone(), node);
+            }
+
+            for realization in &template.realizations {
+                let content_hash = ContentHash::combine_all(
+                    realization.operations.iter().map(|op| {
+                        // Hash based on operation debug repr for now
+                        ContentHash::of_str(&format!("{:?}", op))
+                    }),
+                );
+                let node = RealizationNodeData {
+                    id: realization.id.clone(),
+                    operations: realization.operations.clone(),
+                    content_hash,
+                };
+                graph.realizations.insert(realization.id.clone(), node);
+            }
+        }
+
+        graph
+    }
 }
 
 #[cfg(test)]
