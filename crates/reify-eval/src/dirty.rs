@@ -8,6 +8,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use crate::cache::NodeId;
+use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex};
 use reify_types::ValueCellId;
 
@@ -94,6 +95,22 @@ pub fn topological_sort(
     }
 
     result
+}
+
+/// Compute the evaluation set: intersection of dirty cone and demand cone,
+/// topologically sorted so dependencies are evaluated before dependents.
+pub fn compute_eval_set(
+    dirty: &HashSet<NodeId>,
+    demand: &DemandRegistry,
+    traces: &HashMap<NodeId, DependencyTrace>,
+) -> Vec<NodeId> {
+    let intersection: HashSet<NodeId> = dirty
+        .iter()
+        .filter(|n| demand.is_demanded(n))
+        .cloned()
+        .collect();
+
+    topological_sort(&intersection, traces)
 }
 
 /// Wrapper for NodeId that implements Ord based on Debug representation.
