@@ -240,6 +240,74 @@ mod tests {
         assert_eq!(map.get(&NodeId::Constraint(cnid)), Some(&"constraint"));
     }
 
+    // --- record_evaluation tests ---
+
+    #[test]
+    fn record_evaluation_early_cutoff_same_hash() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("Bracket", "x"));
+
+        // First evaluation: cold start
+        let result1 = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
+        let outcome1 = store.record_evaluation(
+            node.clone(),
+            result1,
+            VersionId(1),
+            DependencyTrace::default(),
+        );
+        assert_eq!(outcome1, EvalOutcome::Changed);
+
+        // Second evaluation: same result, new version -> early cutoff
+        let result2 = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
+        let outcome2 = store.record_evaluation(
+            node.clone(),
+            result2,
+            VersionId(2),
+            DependencyTrace::default(),
+        );
+        assert_eq!(outcome2, EvalOutcome::Unchanged);
+
+        // basis_version should be updated even though result unchanged
+        assert_eq!(store.get(&node).unwrap().basis_version, VersionId(2));
+    }
+
+    #[test]
+    fn record_evaluation_changed_when_different_hash() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("Bracket", "x"));
+
+        // First evaluation
+        let result1 = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
+        store.record_evaluation(node.clone(), result1, VersionId(1), DependencyTrace::default());
+
+        // Second evaluation: different result
+        let result2 = CachedResult::Value(Value::Int(99), DeterminacyState::Determined);
+        let outcome = store.record_evaluation(
+            node.clone(),
+            result2,
+            VersionId(2),
+            DependencyTrace::default(),
+        );
+        assert_eq!(outcome, EvalOutcome::Changed);
+        assert_eq!(store.get(&node).unwrap().basis_version, VersionId(2));
+    }
+
+    #[test]
+    fn record_evaluation_cold_start_is_changed() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("Bracket", "x"));
+
+        let result = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
+        let outcome = store.record_evaluation(
+            node.clone(),
+            result,
+            VersionId(1),
+            DependencyTrace::default(),
+        );
+        assert_eq!(outcome, EvalOutcome::Changed);
+        assert!(store.get(&node).is_some());
+    }
+
     // --- Version fast path tests ---
 
     #[test]
