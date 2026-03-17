@@ -123,6 +123,8 @@ pub enum DeterminacyState {
     Undetermined,
     /// Value is provisionally determined (may change during solving).
     Provisional,
+    /// Value is marked auto — to be resolved by the constraint solver.
+    Auto,
 }
 
 /// The satisfaction state of a constraint.
