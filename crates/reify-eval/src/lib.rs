@@ -2,11 +2,15 @@ pub mod deps;
 pub mod graph;
 pub mod snapshot;
 
+use std::collections::HashMap;
+
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
     ConstraintChecker, ConstraintInput, Diagnostic, ExportFormat, GeometryHandleId,
-    GeometryKernel, Satisfaction, ValueMap,
+    GeometryKernel, NodeId, Satisfaction, ValueMap,
 };
+
+use crate::deps::{DependencyTrace, ReverseDependencyIndex, TraceRecorder};
 
 /// The engine facade — main entry point for evaluation.
 pub struct Engine {
@@ -18,6 +22,8 @@ pub struct Engine {
 #[derive(Debug)]
 pub struct EvalResult {
     pub values: ValueMap,
+    pub traces: HashMap<NodeId, DependencyTrace>,
+    pub reverse_deps: ReverseDependencyIndex,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -63,6 +69,7 @@ impl Engine {
         module: &CompiledModule,
     ) -> EvalResult {
         let mut values = ValueMap::new();
+        let mut traces = HashMap::new();
         let diagnostics = Vec::new();
 
         for template in &module.templates {
@@ -76,18 +83,24 @@ impl Engine {
                 }
             }
 
-            // Second pass: evaluate Let bindings (which may reference params)
+            // Second pass: evaluate Let bindings with tracing
             for cell in &template.value_cells {
                 if cell.kind == ValueCellKind::Let
                     && let Some(ref expr) = cell.default_expr
                 {
-                    let val = reify_expr::eval_expr(expr, &values);
+                    let mut recorder = TraceRecorder::new();
+                    let val = reify_expr::eval_expr_traced(expr, &values, &mut |id| {
+                        recorder.record_read(id.clone());
+                    });
                     values.insert(cell.id.clone(), val);
+                    let node = NodeId::ValueCell(cell.id.clone());
+                    traces.insert(node, recorder.finish());
                 }
             }
         }
 
-        EvalResult { values, diagnostics }
+        let reverse_deps = ReverseDependencyIndex::build(&traces);
+        EvalResult { values, traces, reverse_deps, diagnostics }
     }
 
     /// Evaluate and check constraints.
