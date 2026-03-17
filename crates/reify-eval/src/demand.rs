@@ -4,9 +4,10 @@
 //! or feeds into an always-demanded node transitively. The demand cone is the set
 //! of all such nodes, computed via backward BFS from always-demanded roots.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use crate::cache::NodeId;
+use crate::deps::{extract_dependency_trace, extract_realization_dependencies};
 
 /// Tracks which nodes are demanded and maintains the demand cone.
 ///
@@ -42,6 +43,61 @@ impl DemandRegistry {
     /// Returns true only after `rebuild_cone()` has been called.
     pub fn is_demanded(&self, node: &NodeId) -> bool {
         self.demand_cone.contains(node)
+    }
+
+    /// Rebuild the demand cone by BFS backward from always_demanded nodes.
+    ///
+    /// For each demanded node, extract its dependency ValueCellIds from the graph,
+    /// convert them to NodeId::Value, and add them to the cone. For Value nodes
+    /// that are let bindings, continue BFS through their dependencies.
+    pub fn rebuild_cone(&mut self, graph: &crate::graph::EvaluationGraph) {
+        self.demand_cone.clear();
+
+        let mut queue: VecDeque<NodeId> = self.always_demanded.iter().cloned().collect();
+
+        while let Some(node) = queue.pop_front() {
+            if !self.demand_cone.insert(node.clone()) {
+                // Already visited
+                continue;
+            }
+
+            // Extract dependencies for this node and add them to the cone
+            let deps = match &node {
+                NodeId::Value(vcid) => {
+                    if let Some(cell_node) = graph.value_cells.get(vcid) {
+                        cell_node
+                            .default_expr
+                            .as_ref()
+                            .map(|e| extract_dependency_trace(e).reads)
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    }
+                }
+                NodeId::Constraint(cnid) => {
+                    if let Some(cnode) = graph.constraints.get(cnid) {
+                        extract_dependency_trace(&cnode.expr).reads
+                    } else {
+                        Vec::new()
+                    }
+                }
+                NodeId::Realization(rnid) => {
+                    if let Some(rnode) = graph.realizations.get(rnid) {
+                        extract_realization_dependencies(&rnode.operations).reads
+                    } else {
+                        Vec::new()
+                    }
+                }
+            };
+
+            // Convert dependencies to NodeId::Value and enqueue
+            for cell_id in deps {
+                let value_node = NodeId::Value(cell_id);
+                if !self.demand_cone.contains(&value_node) {
+                    queue.push_back(value_node);
+                }
+            }
+        }
     }
 }
 
