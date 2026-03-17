@@ -432,3 +432,40 @@ fn early_cutoff_skipped_nodes_have_final_freshness() {
         "y should be Final after edit_param (not stuck in Pending from pre-marking)"
     );
 }
+
+/// Verify that mark_pending() is actually called during edit_param() for
+/// each node in the eval set. This proves the Pending intermediate state
+/// exists during evaluation, even though it's not externally observable
+/// (edit_param is synchronous). Without this test, removing mark_pending()
+/// would not cause any test to fail.
+///
+/// Addresses test_does_not_test_what_it_claims: freshness_transitions_during_edit.
+#[test]
+fn mark_pending_is_called_for_eval_set_nodes() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let e = "Bracket";
+
+    // Cold-start eval
+    engine.eval(&module);
+
+    // Edit width from 80mm to 100mm
+    let width_id = ValueCellId::new(e, "width");
+    engine.edit_param(width_id, Value::length(0.1));
+
+    // pending_transition_count should equal the eval_set length:
+    // the dirty∩demand intersection when width changes includes
+    // volume (Value), C1 (Constraint) = 2 nodes in eval set.
+    let eval_set_len = engine.last_eval_set().len();
+    assert!(
+        eval_set_len > 0,
+        "eval set should be non-empty after editing width"
+    );
+    assert_eq!(
+        engine.cache_store().pending_transition_count(),
+        eval_set_len,
+        "mark_pending should have been called once for each node in the eval set"
+    );
+}
