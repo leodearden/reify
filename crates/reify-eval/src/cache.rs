@@ -66,6 +66,16 @@ impl CachedResult {
     }
 }
 
+/// Signal indicating whether a node's result changed after re-evaluation.
+/// Used to control dirty propagation (early cutoff).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvalOutcome {
+    /// The result changed compared to the previous cached value.
+    Changed,
+    /// The result is the same as the previous cached value (early cutoff).
+    Unchanged,
+}
+
 /// Per-node cache entry storing the evaluation result and metadata.
 #[derive(Clone, Debug)]
 pub struct NodeCache {
