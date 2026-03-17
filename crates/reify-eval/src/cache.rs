@@ -1,7 +1,9 @@
 use reify_types::{
-    ConstraintNodeId, ContentHash, DeterminacyState, GeometryHandleId, RealizationNodeId,
-    Satisfaction, Value, ValueCellId,
+    ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId,
+    RealizationNodeId, Satisfaction, Value, ValueCellId, VersionId,
 };
+
+use crate::deps::DependencyTrace;
 
 /// Unified identifier for any node in the evaluation graph.
 /// Used as the key in the cache store.
@@ -60,6 +62,40 @@ impl CachedResult {
                 let tag = ContentHash::of(&[22]);
                 tag.combine(handle_id.content_hash())
             }
+        }
+    }
+}
+
+/// Per-node cache entry storing the evaluation result and metadata.
+#[derive(Clone, Debug)]
+pub struct NodeCache {
+    /// The cached evaluation result.
+    pub result: CachedResult,
+    /// Content hash of the result, for early cutoff comparison.
+    pub result_hash: ContentHash,
+    /// Freshness of the cached value.
+    pub freshness: Freshness,
+    /// Which value cells were read during evaluation of this node.
+    pub dependency_trace: DependencyTrace,
+    /// The version at which this cache entry was last validated.
+    pub basis_version: VersionId,
+}
+
+impl NodeCache {
+    /// Create a new cache entry, automatically computing the result hash.
+    pub fn new(
+        result: CachedResult,
+        freshness: Freshness,
+        dependency_trace: DependencyTrace,
+        basis_version: VersionId,
+    ) -> Self {
+        let result_hash = result.content_hash();
+        Self {
+            result,
+            result_hash,
+            freshness,
+            dependency_trace,
+            basis_version,
         }
     }
 }
