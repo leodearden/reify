@@ -1,6 +1,8 @@
 // Dependency tracking for incremental re-evaluation.
 
-use reify_types::ValueCellId;
+use std::collections::{HashMap, HashSet};
+
+use reify_types::{NodeId, ValueCellId};
 
 /// Records which value cells were read during expression evaluation.
 /// Duplicate reads are preserved to reflect the actual evaluation trace.
@@ -30,6 +32,38 @@ impl TraceRecorder {
     /// Consume the recorder and return the completed trace.
     pub fn finish(self) -> DependencyTrace {
         self.trace
+    }
+}
+
+/// Inverted index mapping each value cell to the set of nodes that read it.
+/// Enables O(1) lookup of which nodes need re-evaluation when a cell changes.
+#[derive(Debug, Clone, Default)]
+pub struct ReverseDependencyIndex {
+    /// cell → set of nodes that depend on it
+    index: HashMap<ValueCellId, HashSet<NodeId>>,
+}
+
+impl ReverseDependencyIndex {
+    /// Build a reverse index from a complete set of node traces.
+    pub fn build(traces: &HashMap<NodeId, DependencyTrace>) -> Self {
+        let mut index: HashMap<ValueCellId, HashSet<NodeId>> = HashMap::new();
+        for (node, trace) in traces {
+            for cell in &trace.reads {
+                index
+                    .entry(cell.clone())
+                    .or_default()
+                    .insert(node.clone());
+            }
+        }
+        Self { index }
+    }
+
+    /// Return the set of nodes that depend on the given cell.
+    /// Returns an empty set if no nodes depend on it.
+    pub fn dependents_of(&self, cell: &ValueCellId) -> &HashSet<NodeId> {
+        static EMPTY: std::sync::LazyLock<HashSet<NodeId>> =
+            std::sync::LazyLock::new(HashSet::new);
+        self.index.get(cell).unwrap_or(&EMPTY)
     }
 }
 
