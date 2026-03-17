@@ -67,6 +67,36 @@ fn eval_auto_param_undef_auto() {
     assert_eq!(*y_det, DeterminacyState::Determined, "snapshot y determinacy should be Determined");
 }
 
+/// eval_cached: auto param gets (Undef, Auto), and override applies Determined.
+#[test]
+fn eval_cached_auto_param() {
+    use reify_types::{CompiledExpr, DeterminacyState, ModulePath, Type, ValueCellId, VersionId};
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .param("S", "y", Type::length(), Some(CompiledExpr::literal(mm(5.0), Type::length())))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+    // First eval_cached: auto param should be (Undef, Auto)
+    let result = engine.eval_cached(&module, VersionId(1));
+    let x_id = ValueCellId::new("S", "x");
+    let x_val = result.eval_result.values.get(&x_id).expect("x should be in values");
+    assert!(x_val.is_undef(), "auto param x should be Undef on cold start");
+
+    // Now set an override for the auto param and re-evaluate
+    engine.set_param_and_invalidate(&x_id, mm(10.0));
+    let result2 = engine.eval_cached(&module, VersionId(2));
+    let x_val2 = result2.eval_result.values.get(&x_id).expect("x should be in values");
+    assert!(!x_val2.is_undef(), "auto param x should have override value");
+}
+
 /// Engine with predetermined constraint results → reports violations.
 #[test]
 
