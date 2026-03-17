@@ -147,57 +147,57 @@
       "id": "step-17",
       "type": "test",
       "description": "Write failing integration test: cold start cache miss. Build a simple CompiledModule with 2 params and 1 let using TopologyTemplateBuilder. Call Engine::eval_cached() with version 1. Verify all values are computed (no cache hits on first run). Verify CacheStore has entries for all 3 value cells after evaluation.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "7e2c256"
     },
     {
       "id": "step-18",
       "type": "impl",
       "description": "Add CacheStore field to Engine (initialized empty in Engine::new). Implement Engine::eval_cached(&mut self, module: &CompiledModule, version: VersionId) -> CachedEvalResult that evaluates all nodes, recording each result in the cache via record_evaluation(). CachedEvalResult wraps EvalResult plus a stats struct (cache_hits: usize, cache_misses: usize, early_cutoffs: usize).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "7b6cd14"
     },
     {
       "id": "step-19",
       "type": "test",
       "description": "Write failing integration test: version fast path. Evaluate a module with eval_cached(version=1). Then call eval_cached(version=1) again (same version). Verify second call has 100% cache hits (all nodes served from cache via version fast path). Verify results are identical.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "342c98b"
     },
     {
       "id": "step-20",
       "type": "impl",
       "description": "Integrate version fast path into Engine::eval_cached(). Before evaluating each value cell, call cache.try_fast_path(node_id, version). If hit, use cached result directly (increment cache_hits counter). Otherwise evaluate and record.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "342c98b"
     },
     {
       "id": "step-21",
       "type": "test",
       "description": "Write failing integration test: selective re-evaluation on param change. Build module: param a = 10, param b = 20, let x = a + 1, let y = b + 1. Evaluate with version 1 (populates cache). Change param a to 15 (insert new value), bump version to 2, invalidate dependents of a. Call eval_cached(version=2). Verify x is re-evaluated (new result), y is served from cache (not dependent on a). Verify result correctness.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "e232c0e"
     },
     {
       "id": "step-22",
       "type": "impl",
       "description": "Add Engine::set_param_and_invalidate(&mut self, param: &ValueCellId, value: Value) that updates the engine's override values and calls cache.invalidate_dependents() for the changed param. Ensure eval_cached respects overridden param values. Wire dependency traces into cache entries during evaluation.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "e232c0e"
     },
     {
       "id": "step-23",
       "type": "test",
       "description": "Write failing integration test: early cutoff prevents downstream re-evaluation. Build module: param a (Int) = 5, let x (Int) = if a > 0 then 1 else 1 (always evaluates to 1 regardless of a), let y (Int) = x + 100. Evaluate with version 1 (all computed). Change a from 5 to 10 (still > 0), bump version to 2. Verify x is re-evaluated but result_hash unchanged (early cutoff). Verify y is NOT re-evaluated (served from cache because x didn't change). Check stats: early_cutoffs >= 1.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "6361288"
     },
     {
       "id": "step-24",
       "type": "impl",
       "description": "Complete early cutoff integration in eval_cached(). After re-evaluating a node, call record_evaluation(). If outcome is Unchanged, do NOT invalidate dependents of that node (early cutoff). If outcome is Changed, mark dependents as needing re-evaluation. This requires a two-phase approach: first mark dirty nodes, then evaluate in dependency order, pruning the dirty set when early cutoff occurs.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "2bc0ece"
     }
   ],
   "design_decisions": [
