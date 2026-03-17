@@ -124,8 +124,8 @@ fn type_error_dimension_mismatch() {
     use reify_syntax::*;
     use reify_types::*;
 
-    // Build a module with: let bad = thickness + mass_val
-    // where thickness is Scalar(Length) and mass_val is Scalar(Mass)
+    // Build a module with: let bad = thickness + 2kg
+    // thickness is Scalar(Length) via type_expr, 2kg is Scalar(Mass) literal
     let module = ParsedModule {
         path: ModulePath::single("dim_mismatch"),
         declarations: vec![Declaration::Structure(StructureDef {
@@ -147,19 +147,6 @@ fn type_error_dimension_mismatch() {
                     span: SourceSpan::new(0, 12),
                     content_hash: ContentHash::of_str("param thickness: Scalar = 5mm"),
                 }),
-                MemberDecl::Param(ParamDecl {
-                    name: "mass_val".into(),
-                    type_expr: None,
-                    default: Some(Expr {
-                        kind: ExprKind::QuantityLiteral {
-                            value: 2.0,
-                            unit: "kg".into(),
-                        },
-                        span: SourceSpan::new(20, 23),
-                    }),
-                    span: SourceSpan::new(15, 23),
-                    content_hash: ContentHash::of_str("param mass_val = 2kg"),
-                }),
                 MemberDecl::Let(LetDecl {
                     name: "bad".into(),
                     type_expr: None,
@@ -171,17 +158,20 @@ fn type_error_dimension_mismatch() {
                                 span: SourceSpan::new(30, 39),
                             }),
                             right: Box::new(Expr {
-                                kind: ExprKind::Ident("mass_val".into()),
-                                span: SourceSpan::new(42, 50),
+                                kind: ExprKind::QuantityLiteral {
+                                    value: 2.0,
+                                    unit: "kg".into(),
+                                },
+                                span: SourceSpan::new(42, 45),
                             }),
                         },
-                        span: SourceSpan::new(30, 50),
+                        span: SourceSpan::new(30, 45),
                     },
-                    span: SourceSpan::new(25, 50),
-                    content_hash: ContentHash::of_str("let bad = thickness + mass_val"),
+                    span: SourceSpan::new(25, 45),
+                    content_hash: ContentHash::of_str("let bad = thickness + 2kg"),
                 }),
             ],
-            span: SourceSpan::new(0, 60),
+            span: SourceSpan::new(0, 55),
             content_hash: ContentHash::of_str("structure Bad"),
         })],
         errors: vec![],

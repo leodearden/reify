@@ -388,6 +388,31 @@ fn compile_expr(
                         &compiled_left.result_type,
                         &compiled_right.result_type,
                     );
+
+                    // Dimension compatibility check for Add/Sub
+                    if matches!(bin_op, BinOp::Add | BinOp::Sub) {
+                        match (&compiled_left.result_type, &compiled_right.result_type) {
+                            (
+                                Type::Scalar { dimension: ld },
+                                Type::Scalar { dimension: rd },
+                            ) if ld != rd => {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "dimension mismatch in {}: {} vs {}",
+                                        if bin_op == BinOp::Add { "addition" } else { "subtraction" },
+                                        compiled_left.result_type,
+                                        compiled_right.result_type,
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        "incompatible dimensions",
+                                    )),
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+
                     CompiledExpr::binop(bin_op, compiled_left, compiled_right, result_type)
                 }
                 None => {
