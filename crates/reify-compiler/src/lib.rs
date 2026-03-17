@@ -36,11 +36,14 @@ pub struct ValueCellDecl {
     pub span: SourceSpan,
 }
 
-/// Whether a value cell is a parameter (externally settable) or a let (computed).
+/// Whether a value cell is a parameter (externally settable), a let (computed),
+/// or an auto parameter (solver-determined).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValueCellKind {
     Param,
     Let,
+    /// Solver-determined parameter: starts as Undef, value provided by constraint solver.
+    Auto,
 }
 
 /// A compiled constraint.
@@ -651,18 +654,34 @@ fn compile_structure(
                     .map(|(_, ty)| ty.clone())
                     .unwrap_or(Type::Real);
 
-                let default_expr = param
-                    .default
-                    .as_ref()
-                    .map(|expr| compile_expr(expr, &scope, diagnostics));
+                // Check if the default is ExprKind::Auto
+                let is_auto = matches!(
+                    param.default.as_ref(),
+                    Some(reify_syntax::Expr { kind: reify_syntax::ExprKind::Auto, .. })
+                );
 
-                value_cells.push(ValueCellDecl {
-                    id,
-                    kind: ValueCellKind::Param,
-                    cell_type,
-                    default_expr,
-                    span: SourceSpan::new(0, 0),
-                });
+                if is_auto {
+                    value_cells.push(ValueCellDecl {
+                        id,
+                        kind: ValueCellKind::Auto,
+                        cell_type,
+                        default_expr: None,
+                        span: SourceSpan::new(0, 0),
+                    });
+                } else {
+                    let default_expr = param
+                        .default
+                        .as_ref()
+                        .map(|expr| compile_expr(expr, &scope, diagnostics));
+
+                    value_cells.push(ValueCellDecl {
+                        id,
+                        kind: ValueCellKind::Param,
+                        cell_type,
+                        default_expr,
+                        span: SourceSpan::new(0, 0),
+                    });
+                }
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
                 // Skip geometry-producing function calls
