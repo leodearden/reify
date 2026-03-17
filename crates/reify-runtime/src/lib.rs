@@ -21,6 +21,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_task_creation() {
+        let id = reify_types::ValueCellId::new("Bracket", "width");
+        let task = Task {
+            node_id: id.clone(),
+            priority: Priority::P1Fast,
+        };
+        assert_eq!(task.node_id, id);
+        assert_eq!(task.priority, Priority::P1Fast);
+
+        // Verify Clone and Debug
+        let task2 = task.clone();
+        assert_eq!(task, task2);
+        let _ = format!("{:?}", task);
+    }
+
+    #[test]
     fn test_priority_ordering() {
         assert!(Priority::P0Interactive < Priority::P1Fast);
         assert!(Priority::P1Fast < Priority::P1Slow);
