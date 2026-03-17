@@ -6,9 +6,10 @@
     "crates/reify-types/src/lib.rs",
     "crates/reify-expr/src/lib.rs",
     "crates/reify-eval/src/deps.rs",
-    "crates/reify-eval/src/lib.rs"
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/tests/boundary5_engine.rs"
   ],
-  "analysis": "This task implements Adapton-style dynamic dependency tracing for incremental re-evaluation. The key challenge is the crate layering: reify-types (shared vocab) → reify-expr (expression evaluator) → reify-eval (engine). DependencyTrace/TraceRecorder/ReverseDependencyIndex live in reify-eval, but eval_expr lives in reify-expr. To avoid circular dependencies, we use a callback approach: reify-expr gets a new eval_expr_traced() that takes &mut dyn FnMut(&ValueCellId) invoked on every ValueRef read. reify-eval's TraceRecorder implements this by capturing reads into a DependencyTrace. NodeId (enum unifying ValueCellId, ConstraintNodeId, RealizationNodeId) goes in reify-types since it's a shared vocabulary type. The ReverseDependencyIndex inverts traces into a HashMap<ValueCellId, HashSet<NodeId>> for O(1) dirty propagation lookups. Engine integration adds traced evaluation and stores per-node traces plus the reverse index in EvalResult.",
+  "analysis": "This task implements Adapton-style dynamic dependency tracing for incremental re-evaluation. The key challenge is the crate layering: reify-types (shared vocab) → reify-expr (expression evaluator) → reify-eval (engine). DependencyTrace/TraceRecorder/ReverseDependencyIndex live in reify-eval, but eval_expr lives in reify-expr. To avoid circular dependencies, we use a callback approach: reify-expr gets a new eval_expr_traced() that takes &mut dyn FnMut(&ValueCellId) invoked on every ValueRef read. reify-eval's TraceRecorder implements this by capturing reads into a DependencyTrace. NodeId (enum unifying ValueCellId, ConstraintNodeId, RealizationNodeId) goes in reify-types since it's a shared vocabulary type. The ReverseDependencyIndex inverts traces into a HashMap<ValueCellId, HashSet<NodeId>> for O(1) dirty propagation lookups. Engine integration adds traced evaluation and stores per-node traces plus the reverse index in EvalResult.\n\nReview feedback identified two blocking issues: (1) eval_and_traced and eval_or_traced implement Kleene three-valued logic with short-circuit tracing semantics (6+ execution paths each) but have zero test coverage for tracing behavior — a bug where `false AND <ref>` incorrectly traces the right side, or `true OR <ref>` incorrectly traces the right side, would silently cause under- or over-invalidation and pass the entire existing test suite. (2) The check_captures_constraint_traces test's comment claims to verify c2 is in thickness's dependents but the assertion is missing — constraint c2 is `hole_diameter < thickness * 2` which reads thickness. Steps 23-26 address these gaps.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -172,6 +173,34 @@
       "description": "Fix any regressions found in step-21. Ensure backward compatibility: eval_expr unchanged, EvalResult field additions are non-breaking (new fields with defaults).",
       "status": "done",
       "commit": "eed8f89"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Add tests in reify-expr/src/lib.rs (mod tests) for eval_and_traced and eval_or_traced short-circuit tracing behavior. These test the core invariant that short-circuited branches must NOT contribute reads to the dependency trace, while non-short-circuited branches must. Use ValueRef expressions for operands so the on_read callback can detect whether evaluation reached them. Seven tests:\n(1) traced_and_false_short_circuits: `false AND vref(X)` → on_read NOT called for X, result is Bool(false). Verifies left=false causes AND to short-circuit without tracing right.\n(2) traced_and_true_evaluates_right: `true AND vref(X)` → on_read IS called for X. Verifies left=true causes AND to evaluate and trace right.\n(3) traced_or_true_short_circuits: `true OR vref(X)` → on_read NOT called for X, result is Bool(true). Verifies left=true causes OR to short-circuit without tracing right.\n(4) traced_or_false_evaluates_right: `false OR vref(X)` → on_read IS called for X. Verifies left=false causes OR to evaluate and trace right.\n(5) traced_and_undef_false_both_traced: `Undef AND vref(X)=false` → on_read IS called for X (Undef doesn't short-circuit), result is Bool(false) per Kleene logic.\n(6) traced_and_undef_true_both_traced: `Undef AND vref(X)=true` → on_read IS called for X, result is Undef per Kleene logic.\n(7) traced_or_undef_true_both_traced: `Undef OR vref(X)=true` → on_read IS called for X, result is Bool(true) per Kleene logic.\nUse existing test helpers lit() and vref() with Bool values in the ValueMap.",
+      "status": "done",
+      "commit": "e8d19a4"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Fix any bugs in eval_and_traced or eval_or_traced discovered by the step-23 tests. The current implementation appears correct based on code review (false AND short-circuits at line 140, true OR short-circuits at line 168, Undef falls through to evaluate right at lines 149-155 and 177-183), so this step is likely a no-op sharing the commit with step-23. If bugs are found, fix and re-run.",
+      "status": "done",
+      "commit": "e8d19a4"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Fix the check_captures_constraint_traces test in crates/reify-eval/tests/boundary5_engine.rs to add the missing c2_node assertion. The comment on line 102 claims 'thickness should be depended on by volume, c0, c1, c2' but c2 is never asserted. Constraint c2 is `hole_diameter < thickness * 2` (from bracket_compiled_module fixture at constraint index 2) which reads thickness. Add:\n  let c2_node = NodeId::Constraint(ConstraintNodeId::new(\"Bracket\", 2));\n  assert!(thickness_deps.contains(&c2_node));\nafter the existing c1_node assertion on line 108.",
+      "status": "done",
+      "commit": "ab6eba9"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Fix any bugs discovered by step-25. The Engine::check implementation should already trace all constraints including c2, so the reverse index should already contain c2 in thickness's dependents. If the assertion fails, investigate whether constraint 2's expression trace is being captured correctly in Engine::check. This step is likely a no-op sharing the commit with step-25.",
+      "status": "done",
+      "commit": "ab6eba9"
     }
   ],
   "design_decisions": [
@@ -202,6 +231,10 @@
     {
       "decision": "Store traces in EvalResult (value type) rather than Engine (stateful)",
       "rationale": "EvalResult is the output of evaluation. Traces are a product of evaluation, not engine state. This keeps Engine stateless between evaluations (aside from injected checkers/kernels) and makes traces available to callers without reaching into the engine."
+    },
+    {
+      "decision": "AND/OR tracing tests use ValueRef operands to detect short-circuit behavior",
+      "rationale": "The only way to verify short-circuit tracing is to check whether the on_read callback fires for operands that should/shouldn't be evaluated. Using ValueRef expressions (not literals) for the right-hand operand lets the test observe via the callback whether the right side was actually evaluated. This directly tests the core invariant: short-circuited branches must NOT contribute reads to the dependency trace, preventing silent over- or under-invalidation."
     }
   ],
   "reuse": [
@@ -239,6 +272,11 @@
       "what": "PersistentMap (im::HashMap)",
       "where": "reify-types/src/persistent.rs",
       "how": "Could use for traces HashMap in EvalResult if structural sharing is desired, but std HashMap is fine for initial implementation."
+    },
+    {
+      "what": "Existing test helpers (lit, vref, mm_val) in reify-expr tests",
+      "where": "reify-expr/src/lib.rs mod tests",
+      "how": "Reuse the existing lit(), vref(), and mm_val() helpers for the new AND/OR tracing tests. These helpers already construct CompiledExpr values suitable for testing traced evaluation."
     }
   ]
 }
