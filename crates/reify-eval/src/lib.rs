@@ -322,36 +322,35 @@ impl Engine {
             }
             actual_eval_set.push(node_id.clone());
 
-            if let NodeId::Value(vcid) = node_id {
-                if let Some(node) = new_snapshot.graph.value_cells.get(vcid) {
-                    if let Some(ref expr) = node.default_expr {
-                        let val = reify_expr::eval_expr(expr, &values);
-                        values.insert(vcid.clone(), val.clone());
-                        new_snapshot.values.insert(
-                            vcid.clone(),
-                            (val.clone(), DeterminacyState::Determined),
-                        );
+            if let NodeId::Value(vcid) = node_id
+                && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
+                && let Some(ref expr) = node.default_expr
+            {
+                let val = reify_expr::eval_expr(expr, &values);
+                values.insert(vcid.clone(), val.clone());
+                new_snapshot.values.insert(
+                    vcid.clone(),
+                    (val.clone(), DeterminacyState::Determined),
+                );
 
-                        // Record in cache and check for early cutoff
-                        let trace = extract_dependency_trace(expr);
-                        let cached_result =
-                            CachedResult::Value(val, DeterminacyState::Determined);
-                        let outcome = self.cache.record_evaluation(
-                            node_id.clone(),
-                            cached_result,
-                            VersionId(version_id),
-                            trace,
-                        );
+                // Record in cache and check for early cutoff
+                let trace = extract_dependency_trace(expr);
+                let cached_result =
+                    CachedResult::Value(val, DeterminacyState::Determined);
+                let outcome = self.cache.record_evaluation(
+                    node_id.clone(),
+                    cached_result,
+                    VersionId(version_id),
+                    trace,
+                );
 
-                        // Early cutoff: if result unchanged, remove downstream
-                        // dependents from remaining eval set
-                        if outcome == EvalOutcome::Unchanged {
-                            if let Some(rev_idx) = &self.reverse_index {
-                                for dependent in rev_idx.dependents_of(vcid) {
-                                    skipped.insert(dependent.clone());
-                                }
-                            }
-                        }
+                // Early cutoff: if result unchanged, remove downstream
+                // dependents from remaining eval set
+                if outcome == EvalOutcome::Unchanged
+                    && let Some(rev_idx) = &self.reverse_index
+                {
+                    for dependent in rev_idx.dependents_of(vcid) {
+                        skipped.insert(dependent.clone());
                     }
                 }
             }
