@@ -99,6 +99,13 @@ impl DemandRegistry {
                         Vec::new()
                     }
                 }
+                NodeId::Resolution(res_id) => {
+                    if let Some(res_node) = graph.resolutions.get(res_id) {
+                        res_node.auto_params.clone()
+                    } else {
+                        Vec::new()
+                    }
+                }
             };
 
             // Convert dependencies to NodeId::Value and enqueue
@@ -298,6 +305,58 @@ mod tests {
         assert!(!reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "height"))));
         // fillet_radius NOT in cone
         assert!(!reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "fillet_radius"))));
+    }
+
+    #[test]
+    fn rebuild_cone_includes_resolution_and_deps() {
+        use crate::graph::{EvaluationGraph, ResolutionNodeData, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_types::{CompiledExpr, ContentHash, ResolutionNodeId, Type, Value};
+
+        let mut graph = EvaluationGraph::default();
+        let e = "R";
+
+        // Param 'a' (auto) and param 'b' (regular)
+        for name in &["a", "b"] {
+            let id = ValueCellId::new(e, *name);
+            graph.value_cells.insert(id.clone(), ValueCellNode {
+                id: id.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)),
+                content_hash: ContentHash::of_str(*name),
+            });
+        }
+
+        // Constraint C0 reading 'a'
+        let c0_id = ConstraintNodeId::new(e, 0);
+        graph.constraints.insert(c0_id.clone(), crate::graph::ConstraintNodeData {
+            id: c0_id.clone(),
+            expr: CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real),
+            content_hash: ContentHash::of_str("c0"),
+        });
+
+        // Resolution R0 with auto_params=['a']
+        let r0_id = ResolutionNodeId::new(e, 0);
+        graph.resolutions.insert(r0_id.clone(), ResolutionNodeData {
+            id: r0_id.clone(),
+            scope: e.to_string(),
+            auto_params: vec![ValueCellId::new(e, "a")],
+            constraint_deps: vec![c0_id],
+            content_hash: ContentHash::of_str("r0"),
+        });
+
+        let r0_node = NodeId::Resolution(r0_id);
+        let mut reg = DemandRegistry::new();
+        reg.add_demand(r0_node.clone());
+        reg.rebuild_cone(&graph);
+
+        // R0 is demanded
+        assert!(reg.is_demanded(&r0_node));
+        // 'a' is demanded (auto_param of R0)
+        assert!(reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "a"))));
+        // 'b' is NOT demanded
+        assert!(!reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "b"))));
     }
 
     #[test]

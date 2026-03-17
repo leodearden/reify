@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use reify_types::{
     ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId,
-    RealizationNodeId, Satisfaction, Value, ValueCellId, VersionId,
+    RealizationNodeId, ResolutionNodeId, Satisfaction, Value, ValueCellId, VersionId,
 };
 
 use crate::deps::DependencyTrace;
@@ -14,6 +14,7 @@ pub enum NodeId {
     Value(ValueCellId),
     Constraint(ConstraintNodeId),
     Realization(RealizationNodeId),
+    Resolution(ResolutionNodeId),
 }
 
 impl From<ValueCellId> for NodeId {
@@ -34,6 +35,12 @@ impl From<RealizationNodeId> for NodeId {
     }
 }
 
+impl From<ResolutionNodeId> for NodeId {
+    fn from(id: ResolutionNodeId) -> Self {
+        NodeId::Resolution(id)
+    }
+}
+
 /// Stores different kinds of evaluation results in the cache.
 #[derive(Clone, Debug)]
 pub enum CachedResult {
@@ -43,6 +50,8 @@ pub enum CachedResult {
     Satisfaction(Satisfaction),
     /// A geometry handle result (proxy for the actual shape).
     GeometryHandle(GeometryHandleId),
+    /// A resolution result: resolved auto parameter values.
+    Resolution(HashMap<ValueCellId, Value>),
 }
 
 impl CachedResult {
@@ -63,6 +72,18 @@ impl CachedResult {
             CachedResult::GeometryHandle(handle_id) => {
                 let tag = ContentHash::of(&[22]);
                 tag.combine(handle_id.content_hash())
+            }
+            CachedResult::Resolution(values) => {
+                let tag = ContentHash::of(&[23]);
+                // Sort entries by ValueCellId Debug repr for deterministic hashing
+                let mut entries: Vec<_> = values.iter().collect();
+                entries.sort_by_key(|(k, _)| format!("{:?}", k));
+                let combined = ContentHash::combine_all(entries.iter().map(|(k, v)| {
+                    let key_hash = ContentHash::of_str(&format!("{:?}", k));
+                    let val_hash = v.content_hash();
+                    key_hash.combine(val_hash)
+                }));
+                tag.combine(combined)
             }
         }
     }
@@ -359,6 +380,26 @@ mod tests {
     }
 
     #[test]
+    fn node_id_resolution_variant() {
+        use reify_types::ResolutionNodeId;
+
+        let res_id = ResolutionNodeId::new("A", 0);
+        let res_node = NodeId::Resolution(res_id.clone());
+
+        // Equality with itself
+        assert_eq!(res_node, NodeId::Resolution(ResolutionNodeId::new("A", 0)));
+
+        // Differs from other variants
+        assert_ne!(res_node, NodeId::Value(ValueCellId::new("A", "x")));
+        assert_ne!(res_node, NodeId::Constraint(ConstraintNodeId::new("A", 0)));
+        assert_ne!(res_node, NodeId::Realization(RealizationNodeId::new("A", 0)));
+
+        // From<ResolutionNodeId> conversion
+        let from_node: NodeId = NodeId::from(res_id.clone());
+        assert_eq!(from_node, res_node);
+    }
+
+    #[test]
     fn node_id_variants_not_equal_even_with_overlapping_strings() {
         let vcid = ValueCellId::new("Bracket", "width");
         let cnid = ConstraintNodeId::new("Bracket", 0);
@@ -643,6 +684,31 @@ mod tests {
         assert_eq!(store.len(), 2);
     }
 
+    #[test]
+    fn cache_store_resolution_result() {
+        use reify_types::{Freshness, ResolutionNodeId, Value, VersionId};
+        use std::collections::HashMap;
+
+        let mut store = CacheStore::new();
+        let res_id = ResolutionNodeId::new("A", 0);
+        let node = NodeId::Resolution(res_id);
+
+        let mut values = HashMap::new();
+        values.insert(ValueCellId::new("A", "x"), Value::Real(1.0));
+        let result = CachedResult::Resolution(values);
+        let expected_hash = result.content_hash();
+
+        let version = VersionId(1);
+        let trace = DependencyTrace { reads: vec![ValueCellId::new("A", "x")] };
+
+        let outcome = store.record_evaluation(node.clone(), result, version, trace);
+        assert_eq!(outcome, EvalOutcome::Changed);
+
+        let entry = store.get(&node).unwrap();
+        assert_eq!(entry.freshness, Freshness::Final);
+        assert_eq!(entry.result_hash, expected_hash);
+    }
+
     // --- EvalOutcome tests ---
 
     #[test]
@@ -791,6 +857,29 @@ mod tests {
 
         let r3 = CachedResult::GeometryHandle(GeometryHandleId(8));
         assert_ne!(r1.content_hash(), r3.content_hash());
+    }
+
+    #[test]
+    fn cached_result_resolution_variant() {
+        use std::collections::HashMap;
+        use reify_types::Value;
+
+        let mut values1 = HashMap::new();
+        values1.insert(ValueCellId::new("A", "x"), Value::Real(1.0));
+        let r1 = CachedResult::Resolution(values1.clone());
+
+        let hash1 = r1.content_hash();
+        assert_ne!(hash1, ContentHash(0), "resolution hash should be non-zero");
+
+        // Same content → same hash
+        let r1b = CachedResult::Resolution(values1);
+        assert_eq!(r1.content_hash(), r1b.content_hash());
+
+        // Tag byte [23] — verified by domain separation
+        let mut values2 = HashMap::new();
+        values2.insert(ValueCellId::new("A", "x"), Value::Real(2.0));
+        let r2 = CachedResult::Resolution(values2);
+        assert_ne!(r1.content_hash(), r2.content_hash(), "different values → different hash");
     }
 
     #[test]

@@ -245,6 +245,46 @@ mod tests {
     }
 
     #[test]
+    fn dirty_cone_includes_resolution_node() {
+        use crate::graph::{EvaluationGraph, ResolutionNodeData, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_types::{ContentHash, ResolutionNodeId, Type};
+
+        let mut graph = EvaluationGraph::default();
+
+        // Param 'a'
+        let a = ValueCellId::new("A", "a");
+        graph.value_cells.insert(a.clone(), ValueCellNode {
+            id: a.clone(),
+            kind: ValueCellKind::Param,
+            cell_type: Type::Real,
+            default_expr: None,
+            content_hash: ContentHash::of_str("a"),
+        });
+
+        // Resolution R0 with auto_params=['a']
+        let r0_id = ResolutionNodeId::new("A", 0);
+        graph.resolutions.insert(r0_id.clone(), ResolutionNodeData {
+            id: r0_id.clone(),
+            scope: "A".to_string(),
+            auto_params: vec![a.clone()],
+            constraint_deps: vec![],
+            content_hash: ContentHash::of_str("r0"),
+        });
+
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        let mut changed = HashSet::new();
+        changed.insert(a.clone());
+        let dirty = compute_dirty_cone(&changed, &index);
+
+        assert!(
+            dirty.contains(&NodeId::Resolution(r0_id)),
+            "dirty cone should include Resolution(R0) when 'a' changes, got: {:?}", dirty
+        );
+    }
+
+    #[test]
     fn topo_sort_empty_set() {
         use crate::deps::DependencyTrace;
         use crate::dirty::topological_sort;

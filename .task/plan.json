@@ -1,14 +1,14 @@
 {
-  "task_id": "19",
-  "title": "Argmin solver implementation in reify-constraints",
-  "modules": ["crates/reify-constraints"],
-  "analysis": "Task 19 requires implementing a DimensionalSolver in the reify-constraints crate that uses the argmin pure-Rust optimization library to solve for auto parameters satisfying dimensional constraints. The existing crate has SimpleConstraintChecker implementing ConstraintChecker; we now implement ConstraintSolver.\n\nKey types already defined in reify-types: ConstraintSolver trait (fn solve(&self, problem: &ResolutionProblem) -> SolveResult), ResolutionProblem (auto_params, constraints, current_values, objective), AutoParam (id, param_type, bounds), SolveResult (Solved/Infeasible/NoProgress), OptimizationObjective (Minimize/Maximize).\n\nThe solver must: (1) map auto_params to an f64 parameter vector, (2) evaluate constraint expressions using reify_expr::eval_expr by building a ValueMap with trial values, (3) compute a penalty objective (sum of squared violations for feasibility, or augmented objective for optimization), (4) use argmin's Nelder-Mead algorithm (derivative-free, robust for small-dimensional CAD problems), (5) handle bounds by clamping, (6) reconstruct Value::Scalar results with correct dimensions.\n\nThe solver works in SI units internally. AutoParam.param_type tells us the dimension. Value::Scalar stores si_value. eval_expr works on ValueMap with Value::Scalar entries. The bridge function creates a ValueMap from the parameter vector (each f64 maps to a Value::Scalar with the correct dimension from the corresponding AutoParam), evaluates each constraint expression, and computes violation penalties.\n\nNelder-Mead from argmin requires implementing the CostFunction trait with a cost() method. No gradient needed. For feasibility (no objective), the cost is sum of squared constraint violations. For optimization, the cost is: objective_value + penalty_weight * sum_of_squared_violations.\n\nConstraint violation magnitude: For comparison constraints, eval_expr returns Bool(true/false). We need continuous violation magnitude for smooth optimization. Strategy: evaluate each constraint's sub-expressions to get numeric difference. For a constraint like 'x > 2mm', when x=1mm, the violation is (2mm - 1mm) = 0.001 SI. For compound constraints (AND of comparisons), evaluate each sub-constraint individually. For non-decomposable boolean constraints, use a fixed penalty when violated.",
+  "task_id": "20",
+  "title": "ResolutionNode in evaluation graph",
+  "modules": ["crates/reify-eval"],
+  "analysis": "The evaluation graph currently has 3 node types (ValueCell, Constraint, Realization) with a NodeId enum in cache.rs that unifies them. Task 20 adds a 4th: ResolutionNode. ResolutionNodeId already exists in reify-types/src/identity.rs (entity: String, index: u32). NodeId is defined in crates/reify-eval/src/cache.rs (NOT reify-types/identity.rs as the task description suggests). The NodeId enum is used in: cache.rs (definition + From impls + CachedResult content_hash), deps.rs (ReverseDependencyIndex build_from_graph, build_trace_map), dirty.rs (compute_dirty_cone match on NodeId::Value for propagation), demand.rs (rebuild_cone with explicit match arms per variant), lib.rs (Engine eval/edit_param constructing NodeIds), and runtime/lib.rs (test-only NodeId construction, no match arms). Key patterns: (1) NodeId has From<T> impls for each ID type; (2) CachedResult has domain-separated content_hash with tag bytes [20],[21],[22]; (3) dirty cone BFS only propagates through Value nodes (others are leaf); (4) demand cone BFS has explicit match arms extracting deps per node type; (5) topology_fingerprint sorts hashes per-type then combines in fixed order; (6) build_from_graph and build_trace_map iterate all graph maps explicitly. The from_templates() method currently processes value_cells, constraints, and realizations from TopologyTemplate. TopologyTemplate has no resolutions field yet, and adding it is out of scope for this task (requires compiler changes). ResolutionNodes will be constructed manually in tests. The demand cone match in demand.rs needs a new arm for Resolution that returns auto_params as ValueCellId reads. Dirty cone propagation treats Resolution nodes as leaf nodes (like Constraint/Realization) since the only propagation is through Value nodes.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add argmin, argmin-math, and ndarray dependencies to crates/reify-constraints/Cargo.toml. Use argmin 0.10, argmin-math 0.4 with ndarray_latest-serde feature, ndarray 0.16. Verify versions compile with `cargo check -p reify-constraints`.",
+      "description": "Verify existing tests pass with `cargo test -p reify-eval` before making any changes",
       "status": "done",
-      "commit": "4733cc7",
+      "commit": "6075abb",
       "tests": []
     }
   ],
@@ -16,208 +16,251 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in solver.rs: DimensionalSolver struct exists, implements ConstraintSolver trait, can be used as Box<dyn ConstraintSolver>. Test solve() on empty problem (no auto_params, no constraints) returns SolveResult::Solved with empty values map.",
+      "description": "Write failing test in graph.rs: `resolution_node_data_construction`. Create a ResolutionNodeData with id=ResolutionNodeId::new('Bracket', 0), scope='Bracket', auto_params=[ValueCellId::new('Bracket','x')], constraint_deps=[ConstraintNodeId::new('Bracket',0)], content_hash=ContentHash::of_str('res0'). Assert all fields. Also test Debug and Clone derives. Fails because ResolutionNodeData doesn't exist.",
       "status": "done",
-      "commit": "3c0dfa2"
+      "commit": "6075abb"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Create crates/reify-constraints/src/solver.rs with DimensionalSolver struct and minimal ConstraintSolver impl. Add `mod solver; pub use solver::DimensionalSolver;` to lib.rs. Implement solve() to handle the trivial case: no auto_params returns Solved { values: empty }.",
+      "description": "Add ResolutionNodeData struct to graph.rs: `pub struct ResolutionNodeData { pub id: ResolutionNodeId, pub scope: String, pub auto_params: Vec<ValueCellId>, pub constraint_deps: Vec<ConstraintNodeId>, pub content_hash: ContentHash }` with #[derive(Debug, Clone)]. Add ResolutionNodeId to imports from reify_types.",
       "status": "done",
-      "commit": "3fbe633"
+      "commit": "6075abb"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: build_trial_values helper. Given a base ValueMap, a list of AutoParams with LENGTH dimension, and f64 parameter values, the resulting ValueMap should contain Value::Scalar entries with correct si_value and dimension for each auto param, while preserving non-auto values from the base map.",
+      "description": "Write failing test in graph.rs: `evaluation_graph_has_resolutions_map`. Create EvaluationGraph::default(), assert graph.resolutions.is_empty() and graph.resolutions.len() == 0. Fails because resolutions field doesn't exist on EvaluationGraph.",
       "status": "done",
-      "commit": "cccdec8"
+      "commit": "2410414"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> ValueMap. Clone base ValueMap (O(1) via PersistentMap), insert each auto param as Value::Scalar { si_value: x[i], dimension from param.param_type }. Also implement extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> to get starting values from current_values or bounds midpoint or 0.01 default.",
+      "description": "Add `pub resolutions: PersistentMap<ResolutionNodeId, ResolutionNodeData>` field to EvaluationGraph struct. The existing #[derive(Default)] handles initialization to empty. Update the existing `evaluation_graph_empty` test to also assert resolutions.is_empty().",
       "status": "done",
-      "commit": "b64c2bf"
+      "commit": "2410414"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: constraint violation computation. Test compute_total_violation() for: (1) single satisfied constraint thickness > 2mm with thickness=5mm returns 0.0, (2) single violated constraint thickness > 2mm with thickness=1mm returns positive value, (3) multiple constraints with mixed satisfaction returns sum of violations from violated constraints only.",
+      "description": "Write failing test in cache.rs: `node_id_resolution_variant`. Create NodeId::Resolution(ResolutionNodeId::new('A', 0)), assert it equals itself, differs from NodeId::Value/Constraint/Realization. Test From<ResolutionNodeId> for NodeId conversion. Fails because NodeId has no Resolution variant.",
       "status": "done",
-      "commit": "d0ad0f9"
+      "commit": "59f62a4"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement compute_total_violation(constraints, values: &ValueMap) -> f64. For each constraint, evaluate with eval_expr. If Bool(true), violation=0. If Bool(false), compute violation magnitude by re-evaluating comparison sub-expressions to get numeric difference (for Gt: max(0, rhs - lhs)^2, etc.). For non-decomposable Bool(false), use fixed penalty 1.0. If Undef, use large penalty. Return sum.",
+      "description": "Add Resolution(ResolutionNodeId) variant to NodeId enum in cache.rs. Add `impl From<ResolutionNodeId> for NodeId`. Add ResolutionNodeId to the reify_types use statement. Fix all match-arm exhaustiveness errors: (1) demand.rs rebuild_cone: add `NodeId::Resolution(res_id) => { ... }` arm that looks up graph.resolutions.get(res_id) and returns auto_params as reads; (2) dirty.rs compute_dirty_cone: no change needed (only matches NodeId::Value for propagation, others fall through); (3) topological_sort: no change needed (only matches NodeId::Value(ref vcid) for edge propagation).",
       "status": "done",
-      "commit": "0ff4495"
+      "commit": "59f62a4"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test: single auto param feasibility solving. Problem: auto param 'thickness' (LENGTH, bounds Some((0.001, 0.1))), constraints [thickness > 2mm AND thickness < 20mm]. Expect SolveResult::Solved with thickness si_value between 0.002 and 0.020.",
+      "description": "Write failing test in cache.rs: `cached_result_resolution_variant`. Create CachedResult::Resolution with HashMap{ValueCellId::new('A','x') => Value::Real(1.0)}. Call content_hash() and assert non-zero, uses tag [23]. Create a second with different values, assert different hash. Fails because CachedResult has no Resolution variant.",
       "status": "done",
-      "commit": "7acf2d9"
+      "commit": "142e2b4"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement the argmin Nelder-Mead integration. Define ConstraintCostFunction struct holding problem data, implement argmin::core::CostFunction trait (param type = Vec<f64>, output = f64). Wire DimensionalSolver::solve(): build initial simplex, configure NelderMead, run with max iterations, extract solution. Check residual for feasibility.",
+      "description": "Add `Resolution(HashMap<ValueCellId, Value>)` variant to CachedResult enum. Add match arm in content_hash(): tag [23], sort entries by ValueCellId Debug repr for determinism, combine key and value hashes. Ensure HashMap is imported (std::collections::HashMap already imported at top of cache.rs).",
       "status": "done",
-      "commit": "edc6359"
+      "commit": "142e2b4"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test: infeasible constraints. Problem: auto param 'x' (LENGTH), constraints [x > 10mm AND x < 5mm]. These are contradictory. Expect SolveResult::Infeasible with non-empty diagnostics.",
+      "description": "Write test in cache.rs: `cache_store_resolution_result`. Create CacheStore, record_evaluation with NodeId::Resolution(ResolutionNodeId::new('A',0)) and CachedResult::Resolution(HashMap), verify get() returns the entry, freshness is Final, result_hash matches content_hash.",
       "status": "done",
-      "commit": "8de8a5e"
+      "commit": "13c5384"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement infeasibility detection: after solver converges, if final cost exceeds threshold (e.g., 1e-12), return SolveResult::Infeasible with diagnostic messages listing which constraints remain violated. Re-evaluate each constraint individually to build diagnostics.",
+      "description": "Verify test passes — CacheStore is generic over NodeId/CachedResult variants. Fix any issues. This step should be a no-op since the existing CacheStore HashMap<NodeId, NodeCache> handles any NodeId variant.",
       "status": "done",
-      "commit": "edc6359"
+      "commit": "13c5384"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test: optimization with Minimize objective. Problem: auto param 'thickness' (LENGTH, bounds (0.001, 0.1)), constraints [thickness > 2mm, thickness < 20mm], objective: Minimize(thickness_expr). Expect Solved with thickness close to 2mm (within tolerance, e.g. < 3mm).",
+      "description": "Write failing test in deps.rs: `reverse_index_includes_resolution_deps`. Build EvaluationGraph manually with: param 'a' (auto), constraint C0, and ResolutionNodeData R0 with auto_params=['a']. Call build_from_graph. Assert dependents_of('a') includes NodeId::Resolution(R0). Fails because build_from_graph doesn't iterate resolutions.",
       "status": "done",
-      "commit": "d4e9f70"
+      "commit": "47e9a39"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement objective optimization in the cost function: when objective is Some, cost = eval_objective(x) + penalty_weight * total_violation. For Minimize(expr), eval_objective returns the expression's f64 value. For Maximize(expr), negate it. Use penalty_weight = 1e6 to strongly enforce constraints while steering toward optimal.",
+      "description": "Add resolution iteration to ReverseDependencyIndex::build_from_graph(): iterate graph.resolutions, for each resolution node create NodeId::Resolution(rnode.id.clone()), register each auto_param as a dependency. Also add resolution iteration to build_trace_map(): for each resolution node, create DependencyTrace with reads = auto_params.clone().",
       "status": "done",
-      "commit": "97038eb"
+      "commit": "47e9a39"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test: multi-parameter solving. Problem: auto params [width (LENGTH, bounds (0.01, 1.0)), height (LENGTH, bounds (0.01, 1.0))], constraints [width > 50mm, height > 50mm, width + height < 200mm]. Expect Solved with width > 0.05 and height > 0.05 and width+height < 0.2.",
+      "description": "Write test in deps.rs: `build_trace_map_includes_resolution`. Build graph with param 'a', 'b' and ResolutionNodeData R0 with auto_params=['a','b']. Call build_trace_map. Assert traces contains NodeId::Resolution(R0) with reads=['a','b'].",
       "status": "done",
-      "commit": "6dc9bb6"
+      "commit": "fe3805b"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Ensure multi-parameter solving works. Verify Nelder-Mead simplex initialization generates N+1 vertices for N parameters. The cost function already handles multiple auto params through the ValueMap bridge. Fix any issues with simplex construction for N>1.",
+      "description": "Should pass from step 12. Verify and fix if needed.",
       "status": "done",
-      "commit": "6dc9bb6"
+      "commit": "fe3805b"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test: bounds handling. (1) AutoParam with bounds: solution stays within bounds. (2) AutoParam without bounds but LENGTH dimension: solver assigns default bounds (positive range) and finds a solution. (3) Test that already-satisfied constraints return Solved immediately without optimization.",
+      "description": "Write test in demand.rs: `rebuild_cone_includes_resolution_and_deps`. Build graph with: param 'a' (auto), param 'b', constraint C0 reading 'a', ResolutionNodeData R0 with auto_params=['a']. Demand R0, rebuild_cone. Assert R0 is demanded and param 'a' is demanded (transitive through resolution). Assert param 'b' is NOT demanded.",
       "status": "done",
-      "commit": "0f959a9"
+      "commit": "d6ba3cf"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement default bounds based on dimension: LENGTH -> (1e-6, 10.0), ANGLE -> (-2*PI, 2*PI), DIMENSIONLESS -> (-1e6, 1e6). Implement bounds clamping in cost function evaluation. Add early-exit: if all constraints already satisfied with current_values, return Solved immediately with auto param values from current_values.",
+      "description": "Should pass from step 6's demand.rs match arm addition. Verify the NodeId::Resolution arm in rebuild_cone correctly extracts auto_params and enqueues them. Fix if needed.",
       "status": "done",
-      "commit": "213a303"
+      "commit": "d6ba3cf"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write integration test in tests/solver_integration.rs using reify-test-support helpers. Test: single param feasibility, optimization with Maximize, and Send+Sync verification. Verify DimensionalSolver works through the trait object interface (Box<dyn ConstraintSolver>).",
+      "description": "Write test in dirty.rs: `dirty_cone_includes_resolution_node`. Build graph with: param 'a', ResolutionNodeData R0 with auto_params=['a']. Build reverse index. Change 'a'. Assert dirty cone contains NodeId::Resolution(R0).",
       "status": "done",
-      "commit": "a411f6b"
+      "commit": "3103702"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Final verification: run `cargo test --workspace` to ensure no regressions. Fix any compilation or test issues. Verify all exit criteria: feasibility solving, optimization, infeasible detection, multi-param solving.",
+      "description": "Should pass from step 12 (build_from_graph registers reverse edges from auto_params to Resolution nodes). Dirty cone BFS propagates from changed 'a' → dependents include Resolution(R0). Verify and fix if needed.",
       "status": "done",
-      "commit": "a411f6b"
+      "commit": "3103702"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing test in graph.rs: `topology_fingerprint_includes_resolutions`. Build two graphs from same templates. Add a ResolutionNodeData to one. Assert fingerprints differ. Also build two graphs with identical ResolutionNodeData, assert fingerprints equal. Fails because topology_fingerprint doesn't hash resolutions.",
+      "status": "done",
+      "commit": "2cf7c14"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Add resolution hash computation to topology_fingerprint(): `let res_hash = { let mut hashes: Vec<ContentHash> = self.resolutions.iter().map(|(_, n)| n.content_hash).collect(); hashes.sort_by_key(|h| h.0); ContentHash::combine_all(hashes) };` Update final combine to: `ContentHash::combine_all([vc_hash, cn_hash, real_hash, res_hash])`.",
+      "status": "done",
+      "commit": "2cf7c14"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write test in graph.rs: `fingerprint_domain_separates_resolution_from_others`. Create graph_a with value_cell of hash H, graph_d with resolution of hash H. Assert fingerprints differ. Extends existing domain separation test pattern.",
+      "status": "done",
+      "commit": "2cf7c14"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Should pass from step 20 since resolution hashes occupy their own slot in combine_all. Verify.",
+      "status": "done",
+      "commit": "2cf7c14"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write test in graph.rs: `evaluation_graph_resolution_clone_independence`. Insert ResolutionNodeData into graph.resolutions, clone, insert another into clone, verify original has 1 resolution and clone has 2. Matches existing clone_independence test pattern.",
+      "status": "done",
+      "commit": "cfc863c"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Should pass from step 4 since PersistentMap provides structural sharing. Verify.",
+      "status": "done",
+      "commit": "cfc863c"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Run `cargo test --workspace` to verify all 315+ existing tests pass and all new tests pass. No regressions from NodeId variant addition.",
+      "status": "done",
+      "commit": "cfc863c"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Fix any remaining compilation errors or test failures across the workspace. The runtime crate only constructs NodeId variants in tests (no match arms), so it should compile without changes. Any other crates referencing NodeId will need inspection.",
+      "status": "done",
+      "commit": "cfc863c"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use Nelder-Mead as the default (and only for now) optimization algorithm",
-      "rationale": "Nelder-Mead is derivative-free, robust for small-dimensional problems (1-10 parameters typical in CAD), and handles non-smooth objective functions well. CAD constraint problems are typically low-dimensional, making Nelder-Mead's O(n^2) scaling acceptable. The task description explicitly recommends it."
+      "decision": "NodeId stays in cache.rs rather than moving to reify-types",
+      "rationale": "The task description mentions extending NodeId in reify-types/identity.rs, but NodeId is actually defined in reify-eval/src/cache.rs. Moving it would be a larger refactor outside this task's scope. We extend it in place."
     },
     {
-      "decision": "Penalty-based approach for constraint handling rather than true constrained optimization",
-      "rationale": "Argmin's Nelder-Mead doesn't natively support constraints. Using sum-of-squared-violations as penalty terms is simple, effective for small problems, and avoids the complexity of augmented Lagrangian methods. For feasibility solving (no objective), the penalty IS the objective. For optimization, we add penalty * weight to the objective."
+      "decision": "ResolutionNodeData stores auto_params as Vec<ValueCellId> and constraint_deps as Vec<ConstraintNodeId> (static, not runtime-traced)",
+      "rationale": "Per task description: 'These dependencies are static (from the template), not dynamically traced.' This is simpler and matches the template-driven design."
     },
     {
-      "decision": "Work entirely in SI units (f64) internally, reconstructing Value::Scalar with dimensions on output",
-      "rationale": "eval_expr already works with SI values internally (Value::Scalar.si_value). The solver parameter vector uses raw f64 SI values. On output, we wrap results back into Value::Scalar with the dimension from AutoParam.param_type. This avoids unit conversion complexity."
+      "decision": "CachedResult::Resolution uses HashMap<ValueCellId, Value>",
+      "rationale": "A resolution node resolves multiple auto parameters simultaneously. The cache result holds all resolved values keyed by ValueCellId, matching the SolveResult::Solved{values} type in reify-types."
     },
     {
-      "decision": "Compute continuous violation magnitude from constraint sub-expressions",
-      "rationale": "Bool(true/false) from eval_expr tells us satisfied/violated but not HOW violated. For gradient-free optimization, we need a smooth cost landscape. For comparison constraints (x > y), we decompose the expression to compute (y - x) when violated, giving the optimizer directional signal. For compound AND/OR constraints, we evaluate sub-constraints individually."
+      "decision": "Content hash tag byte [23] for Resolution CachedResult",
+      "rationale": "Existing tags are [20] Value, [21] Satisfaction, [22] GeometryHandle. Next sequential is [23], maintaining domain separation."
     },
     {
-      "decision": "Clamp parameters to bounds in cost function rather than penalizing bound violations",
-      "rationale": "Clamping is simpler and ensures the solver never evaluates physically meaningless values (e.g., negative lengths). This is standard practice in CAD solvers. Bounds are hard constraints that should never be violated."
+      "decision": "Resolution nodes are leaf nodes in dirty cone propagation",
+      "rationale": "Like Constraint and Realization nodes, Resolution nodes don't propagate further in the dirty BFS. The resolved values are written back to auto param ValueCells by the engine (not through the dependency graph edges). The dirty.rs compute_dirty_cone only propagates through NodeId::Value, so Resolution nodes naturally become leaves."
     },
     {
-      "decision": "Place solver in a separate solver.rs file, keep SimpleConstraintChecker in lib.rs",
-      "rationale": "The solver is substantial code (argmin integration, cost function struct, helpers). Keeping it separate from the checker maintains clean separation. lib.rs re-exports DimensionalSolver."
+      "decision": "from_templates() does not create ResolutionNodes yet",
+      "rationale": "TopologyTemplate has no auto_params/resolution fields. Compiler changes to detect auto params and emit resolution data in TopologyTemplate are out of scope. Tests construct ResolutionNodes manually by inserting into graph.resolutions."
     },
     {
-      "decision": "Early-exit when all constraints are already satisfied",
-      "rationale": "If current_values already satisfy all constraints, running the optimizer is wasteful. The check is cheap (evaluate all constraint expressions) compared to Nelder-Mead iterations. Common case during incremental evaluation where only some values changed."
-    },
-    {
-      "decision": "Infeasibility detection via residual threshold after solver convergence",
-      "rationale": "If the optimizer converges but final cost exceeds a threshold (~1e-12), the constraints are likely infeasible. Pragmatic approach -- proving infeasibility analytically is much harder. The threshold allows for floating-point imprecision."
-    },
-    {
-      "decision": "Default bounds based on dimension type when AutoParam.bounds is None",
-      "rationale": "LENGTH parameters should default to positive values (physical lengths can't be negative). ANGLE parameters have a natural range. This prevents the solver from exploring physically meaningless regions. Defaults are wide enough to not over-constrain."
+      "decision": "DemandRegistry::rebuild_cone Resolution arm uses auto_params as dependency reads",
+      "rationale": "A ResolutionNode's backward dependencies for demand cone BFS are its auto_param ValueCells. These are the inputs the solver reads. Constraint deps (ConstraintNodeId) could also be added as NodeId::Constraint entries to the demand cone queue, but since the demand cone BFS only enqueues NodeId::Value entries for continued traversal, constraint deps would just be inserted as demanded without further propagation — which may be handled later when resolution is fully integrated."
     }
   ],
   "reuse": [
     {
-      "what": "reify_expr::eval_expr()",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Core expression evaluation function. The solver calls this to evaluate constraint expressions and objective expressions with trial parameter values in a ValueMap."
+      "what": "ResolutionNodeId type",
+      "where": "crates/reify-types/src/identity.rs:119-139",
+      "how": "Already defined with new(), Display, Clone, PartialEq, Eq, Hash. Import and use directly via reify_types::ResolutionNodeId."
     },
     {
-      "what": "ValueMap with structural-sharing clone",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Clone the problem's current_values, insert trial auto-param values, pass to eval_expr. PersistentMap backing makes cloning O(1) which is critical since the solver evaluates many trial points."
+      "what": "PersistentMap<K,V> for O(1) clone",
+      "where": "reify_types (re-exported from im crate)",
+      "how": "Use PersistentMap<ResolutionNodeId, ResolutionNodeData> for the new resolutions field, matching existing value_cells/constraints/realizations pattern."
     },
     {
-      "what": "Value::Scalar, Value::as_f64(), Value::is_undef(), Value::length()",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Construct Value::Scalar from solver f64 + AutoParam dimension. Use as_f64() to extract numeric results from eval_expr. Use is_undef() to detect evaluation failures."
+      "what": "ContentHash domain separation pattern",
+      "where": "crates/reify-eval/src/cache.rs:48-68 and graph.rs:108-126",
+      "how": "Follow exact pattern: tag byte + combine for CachedResult; sorted hashes + combine_all for topology_fingerprint."
     },
     {
-      "what": "DimensionVector constants (LENGTH, ANGLE, DIMENSIONLESS, etc.)",
-      "where": "crates/reify-types/src/dimension.rs",
-      "how": "Used to assign default bounds based on dimension type and to construct Value::Scalar results with correct dimensions."
+      "what": "From<T> for NodeId pattern",
+      "where": "crates/reify-eval/src/cache.rs:19-35",
+      "how": "Add identical From<ResolutionNodeId> impl following the three existing implementations."
     },
     {
-      "what": "ConstraintSolver trait, ResolutionProblem, SolveResult, AutoParam, OptimizationObjective",
-      "where": "crates/reify-types/src/constraint.rs",
-      "how": "All type definitions already in reify-types. DimensionalSolver implements ConstraintSolver. Consumes ResolutionProblem, produces SolveResult."
+      "what": "ReverseDependencyIndex build_from_graph iteration pattern",
+      "where": "crates/reify-eval/src/deps.rs:95-132",
+      "how": "Add 4th iteration block for graph.resolutions following constraints/realizations pattern but using auto_params directly instead of extract_dependency_trace."
     },
     {
-      "what": "Test helpers: mm(), vcid(), cnid(), literal(), gt(), lt(), and(), value_ref()",
-      "where": "crates/reify-test-support/src/values.rs and builders.rs",
-      "how": "Reuse in solver tests to build constraint expressions and expected values, matching patterns used in existing boundary3_checker.rs tests."
+      "what": "TopologyTemplateBuilder for test graph construction",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Use existing builder for params/constraints, then manually insert ResolutionNodeData into the graph.resolutions map for tests."
     },
     {
-      "what": "CompiledExpr::literal(), ::value_ref(), ::binop()",
-      "where": "crates/reify-types/src/expr.rs",
-      "how": "Construct constraint expressions for solver test cases."
-    },
-    {
-      "what": "Diagnostic and Severity types",
-      "where": "crates/reify-types/src/diagnostics.rs",
-      "how": "Used in SolveResult::Infeasible to report which constraints could not be satisfied."
+      "what": "Existing test patterns (construction, clone independence, domain separation)",
+      "where": "crates/reify-eval/src/graph.rs tests module",
+      "how": "Follow identical test structure for ResolutionNodeData: field access tests, graph insert/get, clone independence, fingerprint domain separation."
     }
   ]
 }
