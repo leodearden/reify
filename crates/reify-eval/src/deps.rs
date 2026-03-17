@@ -47,6 +47,12 @@ pub fn collect_value_refs(expr: &CompiledExpr, out: &mut Vec<ValueCellId>) {
     }
 }
 
+/// Reverse dependency index: maps ValueCellId → set of NodeIds that depend on it.
+///
+/// This enables forward propagation: when a cell changes, look up which nodes
+/// need to be re-evaluated. Built from graph structure (expressions), not runtime traces.
+pub struct ReverseDependencyIndex;
+
 /// Extract dependency ValueCellIds from a CompiledGeometryOp's argument expressions.
 ///
 /// Walks all expression arguments in Primitive, Modify, and Transform ops.
@@ -78,4 +84,56 @@ pub fn extract_realization_dependencies(
         }
     }
     DependencyTrace { reads }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::NodeId;
+    use reify_types::{ConstraintNodeId, ValueCellId};
+
+    #[test]
+    fn reverse_index_new_is_empty() {
+        let index = ReverseDependencyIndex::new();
+        let cell = ValueCellId::new("A", "x");
+        assert!(index.dependents_of(&cell).is_empty());
+    }
+
+    #[test]
+    fn reverse_index_dependents_of_unknown_cell_is_empty() {
+        let index = ReverseDependencyIndex::new();
+        let unknown = ValueCellId::new("Z", "unknown");
+        let deps = index.dependents_of(&unknown);
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn reverse_index_add_inserts_mapping() {
+        let mut index = ReverseDependencyIndex::new();
+        let cell = ValueCellId::new("A", "x");
+        let node = NodeId::Constraint(ConstraintNodeId::new("A", 0));
+        index.add(cell.clone(), node.clone());
+
+        let deps = index.dependents_of(&cell);
+        assert_eq!(deps.len(), 1);
+        assert!(deps.contains(&node));
+    }
+
+    #[test]
+    fn reverse_index_multiple_dependents_of_same_cell() {
+        let mut index = ReverseDependencyIndex::new();
+        let cell = ValueCellId::new("A", "x");
+        let node_a = NodeId::Constraint(ConstraintNodeId::new("A", 0));
+        let node_b = NodeId::Constraint(ConstraintNodeId::new("A", 1));
+        let node_c = NodeId::Value(ValueCellId::new("A", "volume"));
+        index.add(cell.clone(), node_a.clone());
+        index.add(cell.clone(), node_b.clone());
+        index.add(cell.clone(), node_c.clone());
+
+        let deps = index.dependents_of(&cell);
+        assert_eq!(deps.len(), 3);
+        assert!(deps.contains(&node_a));
+        assert!(deps.contains(&node_b));
+        assert!(deps.contains(&node_c));
+    }
 }
