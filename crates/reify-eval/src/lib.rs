@@ -357,6 +357,32 @@ impl Engine {
                             resolved: resolved_ids,
                             parent: parent_snap_id,
                         };
+
+                        // Re-run let binding evaluation with resolved values
+                        for cell in &template.value_cells {
+                            if cell.kind == ValueCellKind::Let
+                                && let Some(ref expr) = cell.default_expr
+                            {
+                                let val = reify_expr::eval_expr(expr, &values);
+                                values.insert(cell.id.clone(), val.clone());
+
+                                snapshot.values.insert(
+                                    cell.id.clone(),
+                                    (val.clone(), DeterminacyState::Determined),
+                                );
+
+                                let node_id = NodeId::Value(cell.id.clone());
+                                let trace = extract_dependency_trace(expr);
+                                let cached_result =
+                                    CachedResult::Value(val, DeterminacyState::Determined);
+                                self.cache.record_evaluation(
+                                    node_id,
+                                    cached_result,
+                                    VersionId(version_id),
+                                    trace,
+                                );
+                            }
+                        }
                     }
                     SolveResult::Infeasible { diagnostics: solver_diags } => {
                         diagnostics.extend(solver_diags);
