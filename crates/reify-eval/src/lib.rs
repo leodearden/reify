@@ -31,6 +31,8 @@ pub struct EvalResult {
 #[derive(Debug)]
 pub struct CheckResult {
     pub values: ValueMap,
+    pub traces: HashMap<NodeId, DependencyTrace>,
+    pub reverse_deps: ReverseDependencyIndex,
     pub constraint_results: Vec<ConstraintCheckEntry>,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -47,6 +49,8 @@ pub struct ConstraintCheckEntry {
 #[derive(Debug)]
 pub struct BuildResult {
     pub values: ValueMap,
+    pub traces: HashMap<NodeId, DependencyTrace>,
+    pub reverse_deps: ReverseDependencyIndex,
     pub constraint_results: Vec<ConstraintCheckEntry>,
     pub geometry_output: Option<Vec<u8>>,
     pub diagnostics: Vec<Diagnostic>,
@@ -109,12 +113,23 @@ impl Engine {
         module: &CompiledModule,
     ) -> CheckResult {
         let eval_result = self.eval(module);
+        let mut traces = eval_result.traces;
         let mut constraint_results = Vec::new();
         let mut diagnostics = eval_result.diagnostics;
 
         for template in &module.templates {
             if template.constraints.is_empty() {
                 continue;
+            }
+
+            // Trace constraint expression reads before delegating to checker
+            for c in &template.constraints {
+                let mut recorder = TraceRecorder::new();
+                let _val = reify_expr::eval_expr_traced(&c.expr, &eval_result.values, &mut |id| {
+                    recorder.record_read(id.clone());
+                });
+                let node = NodeId::Constraint(c.id.clone());
+                traces.insert(node, recorder.finish());
             }
 
             // Build ConstraintInput batch for this template
@@ -141,8 +156,11 @@ impl Engine {
             }
         }
 
+        let reverse_deps = ReverseDependencyIndex::build(&traces);
         CheckResult {
             values: eval_result.values,
+            traces,
+            reverse_deps,
             constraint_results,
             diagnostics,
         }
@@ -205,6 +223,8 @@ impl Engine {
 
         BuildResult {
             values: check_result.values,
+            traces: check_result.traces,
+            reverse_deps: check_result.reverse_deps,
             constraint_results: check_result.constraint_results,
             geometry_output,
             diagnostics,
