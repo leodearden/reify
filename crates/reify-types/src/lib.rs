@@ -12,7 +12,7 @@ pub use identity::*;
 pub use hash::ContentHash;
 pub use dimension::{DimensionVector, Rational};
 pub use ty::Type;
-pub use value::{DeterminacyState, Freshness, Satisfaction, Value, ValueMap};
+pub use value::{DeterminacyState, EvalError, Freshness, Satisfaction, Value, ValueMap};
 pub use expr::{BinOp, CompiledExpr, CompiledExprKind, ResolvedFunction, UnOp};
 pub use constraint::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult,

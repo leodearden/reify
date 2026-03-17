@@ -137,6 +137,18 @@ pub enum Satisfaction {
     Indeterminate,
 }
 
+/// An error produced during value evaluation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalError(pub String);
+
+impl std::fmt::Display for EvalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for EvalError {}
+
 /// Freshness of a cached value (for incremental evaluation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Freshness {
