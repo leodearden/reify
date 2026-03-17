@@ -5,10 +5,10 @@
 //! intersection of the dirty cone and the demand cone, topologically sorted
 //! so that dependencies are evaluated before their dependents.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use crate::cache::NodeId;
-use crate::deps::ReverseDependencyIndex;
+use crate::deps::{DependencyTrace, ReverseDependencyIndex};
 use reify_types::ValueCellId;
 
 /// Compute the dirty cone: all nodes that transitively depend on any changed cell.
@@ -37,6 +37,80 @@ pub fn compute_dirty_cone(
     }
 
     dirty
+}
+
+/// Topologically sort a set of nodes using Kahn's algorithm.
+///
+/// Only considers edges within the node set (external dependencies are ignored).
+/// Tie-breaking uses Debug representation for deterministic output.
+pub fn topological_sort(
+    nodes: &HashSet<NodeId>,
+    traces: &HashMap<NodeId, DependencyTrace>,
+) -> Vec<NodeId> {
+    if nodes.is_empty() {
+        return Vec::new();
+    }
+
+    // Build in-degree map (only counting edges within the node set)
+    let mut in_degree: HashMap<NodeId, usize> = nodes.iter().map(|n| (n.clone(), 0)).collect();
+
+    for node in nodes {
+        if let Some(trace) = traces.get(node) {
+            for dep_cell in &trace.reads {
+                let dep_node = NodeId::Value(dep_cell.clone());
+                if nodes.contains(&dep_node) {
+                    *in_degree.get_mut(node).unwrap() += 1;
+                }
+            }
+        }
+    }
+
+    // Use BTreeSet with Debug repr for deterministic tie-breaking
+    let mut ready: BTreeSet<DebugOrd> = in_degree
+        .iter()
+        .filter(|(_, deg)| **deg == 0)
+        .map(|(n, _)| DebugOrd(n.clone()))
+        .collect();
+
+    let mut result = Vec::with_capacity(nodes.len());
+
+    while let Some(DebugOrd(node)) = ready.pop_first() {
+        result.push(node.clone());
+
+        // Find all nodes in the set that depend on this node
+        if let NodeId::Value(ref vcid) = node {
+            for candidate in nodes {
+                if let Some(trace) = traces.get(candidate) {
+                    if trace.reads.contains(vcid) {
+                        let deg = in_degree.get_mut(candidate).unwrap();
+                        *deg -= 1;
+                        if *deg == 0 {
+                            ready.insert(DebugOrd(candidate.clone()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Wrapper for NodeId that implements Ord based on Debug representation.
+/// Used for deterministic tie-breaking in topological sort.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DebugOrd(NodeId);
+
+impl PartialOrd for DebugOrd {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DebugOrd {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        format!("{:?}", self.0).cmp(&format!("{:?}", other.0))
+    }
 }
 
 #[cfg(test)]
