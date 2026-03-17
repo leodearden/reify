@@ -61,6 +61,19 @@ pub struct AutoParam {
     pub bounds: Option<(f64, f64)>,
 }
 
+/// A constraint resolution problem — input to the constraint solver.
+#[derive(Debug, Clone)]
+pub struct ResolutionProblem {
+    /// The auto parameters to resolve.
+    pub auto_params: Vec<AutoParam>,
+    /// Constraints to satisfy, each paired with its compiled expression.
+    pub constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
+    /// Current values of all cells referenced by constraints.
+    pub current_values: ValueMap,
+    /// Optional optimization objective.
+    pub objective: Option<OptimizationObjective>,
+}
+
 /// Trait for constraint checking. Lives in reify-types for dependency inversion —
 /// implemented in reify-constraints, consumed by reify-eval.
 pub trait ConstraintChecker: Send + Sync {
