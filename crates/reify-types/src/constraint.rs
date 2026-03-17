@@ -236,4 +236,67 @@ mod tests {
         let d2 = format!("{:?}", obj2);
         assert_eq!(d1, d2);
     }
+
+    #[test]
+    fn solve_result_solved() {
+        use crate::identity::ValueCellId;
+        use crate::value::Value;
+        use std::collections::HashMap;
+
+        let mut values = HashMap::new();
+        values.insert(ValueCellId::new("Bracket", "width"), Value::length(0.05));
+
+        let result = SolveResult::Solved { values };
+        match &result {
+            SolveResult::Solved { values } => {
+                assert_eq!(values.len(), 1);
+                assert!(values.contains_key(&ValueCellId::new("Bracket", "width")));
+            }
+            _ => panic!("expected Solved"),
+        }
+    }
+
+    #[test]
+    fn solve_result_infeasible() {
+        use crate::diagnostics::{Diagnostic, Severity};
+
+        let result = SolveResult::Infeasible {
+            diagnostics: vec![Diagnostic {
+                message: "constraint unsatisfiable".to_string(),
+                severity: Severity::Error,
+                labels: vec![],
+            }],
+        };
+        match &result {
+            SolveResult::Infeasible { diagnostics } => {
+                assert_eq!(diagnostics.len(), 1);
+                assert!(diagnostics[0].message.contains("unsatisfiable"));
+            }
+            _ => panic!("expected Infeasible"),
+        }
+    }
+
+    #[test]
+    fn solve_result_no_progress() {
+        let result = SolveResult::NoProgress {
+            reason: "iteration limit reached".to_string(),
+        };
+        match &result {
+            SolveResult::NoProgress { reason } => {
+                assert_eq!(reason, "iteration limit reached");
+            }
+            _ => panic!("expected NoProgress"),
+        }
+    }
+
+    #[test]
+    fn solve_result_clone() {
+        let result = SolveResult::NoProgress {
+            reason: "test".to_string(),
+        };
+        let result2 = result.clone();
+        let d1 = format!("{:?}", result);
+        let d2 = format!("{:?}", result2);
+        assert_eq!(d1, d2);
+    }
 }
