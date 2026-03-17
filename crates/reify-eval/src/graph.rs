@@ -661,6 +661,40 @@ mod tests {
     }
 
     #[test]
+    fn evaluation_graph_resolution_clone_independence() {
+        use reify_types::ResolutionNodeId;
+
+        let mut graph = EvaluationGraph::default();
+        let r0_id = ResolutionNodeId::new("A", 0);
+        graph.resolutions.insert(r0_id.clone(), ResolutionNodeData {
+            id: r0_id.clone(),
+            scope: "A".to_string(),
+            auto_params: vec![ValueCellId::new("A", "x")],
+            constraint_deps: vec![],
+            content_hash: ContentHash::of_str("r0"),
+        });
+
+        let mut cloned = graph.clone();
+        let r1_id = ResolutionNodeId::new("A", 1);
+        cloned.resolutions.insert(r1_id.clone(), ResolutionNodeData {
+            id: r1_id.clone(),
+            scope: "A".to_string(),
+            auto_params: vec![ValueCellId::new("A", "y")],
+            constraint_deps: vec![],
+            content_hash: ContentHash::of_str("r1"),
+        });
+
+        // Original unchanged
+        assert_eq!(graph.resolutions.len(), 1);
+        assert!(!graph.resolutions.contains_key(&r1_id));
+
+        // Clone has both
+        assert_eq!(cloned.resolutions.len(), 2);
+        assert!(cloned.resolutions.contains_key(&r0_id));
+        assert!(cloned.resolutions.contains_key(&r1_id));
+    }
+
+    #[test]
     fn topology_fingerprint_includes_resolutions() {
         use reify_test_support::TopologyTemplateBuilder;
         use reify_types::{CompiledExpr, ResolutionNodeId, Type, Value};
