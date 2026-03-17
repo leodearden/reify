@@ -186,4 +186,82 @@ mod tests {
         assert_eq!(changed.len(), 1);
         assert!(changed.contains(&node));
     }
+
+    #[test]
+    fn scheduler_dynamic_early_cutoff() {
+        // eval_set = [A, B] where B depends on A.
+        // A evaluates as Unchanged, then clears B's dirty flag internally.
+        // Scheduler should skip B because is_dirty returns false.
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use std::cell::RefCell;
+
+        struct CutoffEvaluator {
+            // Track which node is "still dirty" — B starts dirty, gets cleared after A evaluates
+            b_dirty: RefCell<bool>,
+            a_node: NodeId,
+        }
+
+        impl NodeEvaluator for CutoffEvaluator {
+            fn is_dirty(&self, node: &NodeId) -> bool {
+                if *node == self.a_node {
+                    true
+                } else {
+                    *self.b_dirty.borrow()
+                }
+            }
+            fn evaluate(&mut self, node: &NodeId) -> EvalOutcome {
+                if *node == self.a_node {
+                    // A evaluates as Unchanged, clearing B's dirty flag
+                    *self.b_dirty.borrow_mut() = false;
+                    EvalOutcome::Unchanged
+                } else {
+                    panic!("B should not be evaluated");
+                }
+            }
+        }
+
+        let a = NodeId::Value(reify_types::ValueCellId::new("X", "a"));
+        let b = NodeId::Constraint(reify_types::ConstraintNodeId::new("X", 0));
+
+        let scheduler = SequentialScheduler;
+        let mut evaluator = CutoffEvaluator {
+            b_dirty: RefCell::new(true),
+            a_node: a.clone(),
+        };
+
+        let eval_set = vec![a.clone(), b.clone()];
+        let changed = scheduler.execute(eval_set, &mut evaluator);
+        // A was Unchanged, B was skipped → no changes
+        assert!(changed.is_empty(), "changed: {:?}", changed);
+    }
+
+    #[test]
+    fn scheduler_all_nodes_changed() {
+        // eval_set = [width, volume, C1], evaluator returns Changed for all
+        use reify_eval::cache::{EvalOutcome, NodeId};
+
+        struct AllChanged;
+        impl NodeEvaluator for AllChanged {
+            fn is_dirty(&self, _node: &NodeId) -> bool {
+                true
+            }
+            fn evaluate(&mut self, _node: &NodeId) -> EvalOutcome {
+                EvalOutcome::Changed
+            }
+        }
+
+        let width = NodeId::Value(reify_types::ValueCellId::new("B", "width"));
+        let volume = NodeId::Value(reify_types::ValueCellId::new("B", "volume"));
+        let c1 = NodeId::Constraint(reify_types::ConstraintNodeId::new("B", 1));
+
+        let scheduler = SequentialScheduler;
+        let mut evaluator = AllChanged;
+        let eval_set = vec![width.clone(), volume.clone(), c1.clone()];
+        let changed = scheduler.execute(eval_set, &mut evaluator);
+
+        assert_eq!(changed.len(), 3);
+        assert!(changed.contains(&width));
+        assert!(changed.contains(&volume));
+        assert!(changed.contains(&c1));
+    }
 }
