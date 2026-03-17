@@ -473,3 +473,103 @@ fn resolution_cache_version_matches_snapshot() {
         y_cache.basis_version, snap_version
     );
 }
+
+#[test]
+fn incremental_fast_path_works_after_resolution() {
+    // Module: auto x, param z (default mm(1.0)), let y = x*2, let w = z*3,
+    // constraint x > 2mm.  Solver returns x = mm(5.0).
+    let x_id = ValueCellId::new("S", "x");
+    let z_id = ValueCellId::new("S", "z");
+    let y_id = ValueCellId::new("S", "y");
+    let w_id = ValueCellId::new("S", "w");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(x_id.clone(), mm(5.0));
+
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .param("S", "z", Type::length(), Some(literal(mm(1.0))))
+        // y = x * 2
+        .let_binding(
+            "S",
+            "y",
+            Type::length(),
+            binop(
+                reify_types::BinOp::Mul,
+                value_ref("S", "x"),
+                literal(Value::Real(2.0)),
+            ),
+        )
+        // w = z * 3
+        .let_binding(
+            "S",
+            "w",
+            Type::length(),
+            binop(
+                reify_types::BinOp::Mul,
+                value_ref("S", "z"),
+                literal(Value::Real(3.0)),
+            ),
+        )
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(2.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    // Cold-start eval: x resolved to mm(5.0), y = 0.01, z = mm(1.0), w = 0.003
+    let result = engine.eval(&module);
+    let y_val = result.values.get(&y_id).expect("y in values");
+    assert!(
+        matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-10),
+        "expected y ≈ 0.01 (mm(5.0)*2), got {:?}",
+        y_val
+    );
+    let w_val = result.values.get(&w_id).expect("w in values");
+    assert!(
+        matches!(w_val, Value::Scalar { si_value, .. } if (*si_value - 0.003).abs() < 1e-10),
+        "expected w ≈ 0.003 (mm(1.0)*3), got {:?}",
+        w_val
+    );
+
+    // Capture snapshot version after resolution for later comparison
+    let resolution_snap_version = engine.snapshot().unwrap().version;
+
+    // Incremental edit: change z to mm(2.0)
+    let result2 = engine.edit_param(z_id.clone(), mm(2.0));
+
+    // w should be updated: mm(2.0) * 3 = 0.006 SI
+    let w_val2 = result2.values.get(&w_id).expect("w in values after edit");
+    assert!(
+        matches!(w_val2, Value::Scalar { si_value, .. } if (*si_value - 0.006).abs() < 1e-10),
+        "expected w ≈ 0.006 (mm(2.0)*3) after edit, got {:?}",
+        w_val2
+    );
+
+    // y should be unchanged: still x*2 = mm(5.0)*2 = 0.01 SI
+    let y_val2 = result2.values.get(&y_id).expect("y in values after edit");
+    assert!(
+        matches!(y_val2, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-10),
+        "expected y ≈ 0.01 (unchanged after edit_param(z)), got {:?}",
+        y_val2
+    );
+
+    // Verify y's cache entry still has the resolution-phase basis_version,
+    // confirming the fast path was usable (y was NOT in the dirty cone for z).
+    let y_cache = engine
+        .cache_store()
+        .get(&NodeId::Value(y_id.clone()))
+        .expect("y should be cached");
+    assert_eq!(
+        y_cache.basis_version, resolution_snap_version,
+        "y's cache basis_version ({:?}) should still be the resolution version ({:?}), \
+         confirming it was not re-evaluated during edit_param(z)",
+        y_cache.basis_version, resolution_snap_version
+    );
+}
