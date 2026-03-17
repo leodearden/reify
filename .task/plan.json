@@ -1,0 +1,251 @@
+{
+  "task_id": "10",
+  "title": "Snapshot + EvaluationGraph + node data types",
+  "modules": [
+    "crates/reify-types/src",
+    "crates/reify-eval/src",
+    "crates/reify-eval/tests"
+  ],
+  "analysis": "This task builds the core M2 evaluation data structures: typed graph nodes, an EvaluationGraph backed by PersistentMap, and a Snapshot with provenance tracking. The codebase already has all prerequisite types: ValueCellId/ConstraintNodeId/RealizationNodeId in reify-types/identity.rs, PersistentMap in reify-types/persistent.rs, ContentHash in reify-types/hash.rs, CompiledExpr in reify-types/expr.rs, and CompiledGeometryOp/ValueCellKind/TopologyTemplate in reify-compiler. The M1 evaluator (reify-eval/src/lib.rs) uses flat ValueMap; this task adds the graph layer alongside it without disrupting existing evaluation. New files: reify-types/src/provenance.rs (SnapshotProvenance), reify-eval/src/graph.rs (node types + EvaluationGraph), reify-eval/src/snapshot.rs (Snapshot). ValueCellKind lives in reify-compiler and will be referenced from reify-eval (which already depends on reify-compiler). SourceNodeId already exists in identity.rs with struct fields; the task spec's u64 newtype version is aspirational for later milestones, so we skip changing it. ComputeNodeId is also deferred since ComputeNode is not needed for M2.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add VersionId and SnapshotId types to crates/reify-types/src/identity.rs with derive(Clone, Copy, Debug, PartialEq, Eq, Hash) and PartialOrd/Ord for VersionId. Re-export from lib.rs.",
+      "status": "done",
+      "commit": "2002b49",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Create crates/reify-types/src/provenance.rs with SnapshotProvenance enum (Initial, Edit{changed, parent}, Elaboration{parent}, Resolution{scope, resolved, parent}). Add module declaration and re-export in lib.rs.",
+      "status": "done",
+      "commit": "4eba0eb",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Create empty crates/reify-eval/src/graph.rs and crates/reify-eval/src/snapshot.rs files with module declarations in lib.rs. Ensure cargo check passes.",
+      "status": "done",
+      "commit": "3a0bf4a",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write unit tests for VersionId and SnapshotId in identity.rs: construction, equality, copy semantics, Debug format, VersionId ordering (PartialOrd/Ord), and use as HashMap keys.",
+      "status": "done",
+      "commit": "70573ed"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Implement VersionId(pub u64) and SnapshotId(pub u64) in identity.rs. VersionId derives PartialOrd+Ord. Both derive Clone+Copy+Debug+PartialEq+Eq+Hash. Add Display impls. Re-export from lib.rs. Tests from step-1 should pass.",
+      "status": "done",
+      "commit": "2002b49"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write unit tests for SnapshotProvenance in provenance.rs: construct each variant (Initial, Edit with changed set + parent, Elaboration with parent, Resolution with scope + resolved + parent). Test Debug, Clone, PartialEq.",
+      "status": "done",
+      "commit": "668a944"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Implement SnapshotProvenance enum in provenance.rs with Clone+Debug+PartialEq derives. Uses HashSet<ValueCellId> for changed/resolved sets and SnapshotId for parent references. Re-export from lib.rs. Tests from step-3 should pass.",
+      "status": "done",
+      "commit": "4eba0eb"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write unit tests for ValueCellNode in graph.rs: construct with id, kind (Param/Let), cell_type, optional default_expr, content_hash. Verify all fields accessible. Test Debug and Clone.",
+      "status": "done",
+      "commit": "da1dd5d"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Implement ValueCellNode struct in graph.rs with fields: id (ValueCellId), kind (ValueCellKind from reify-compiler), cell_type (Type), default_expr (Option<CompiledExpr>), content_hash (ContentHash). Derive Clone+Debug.",
+      "status": "done",
+      "commit": "b681ecd"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write unit tests for ConstraintNodeData and RealizationNodeData in graph.rs: construct each with their respective fields (id, expr/operations, content_hash). Verify field access, Debug, Clone.",
+      "status": "done",
+      "commit": "f487b3a"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Implement ConstraintNodeData (id: ConstraintNodeId, expr: CompiledExpr, content_hash: ContentHash) and RealizationNodeData (id: RealizationNodeId, operations: Vec<CompiledGeometryOp>, content_hash: ContentHash) in graph.rs. Derive Clone+Debug.",
+      "status": "done",
+      "commit": "c947d4c"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write unit tests for EvaluationGraph in graph.rs: create empty graph, insert nodes into value_cells/constraints/realizations PersistentMaps, get nodes back, verify len/is_empty. Test clone produces independent copy (insert into clone, original unchanged).",
+      "status": "done",
+      "commit": "cb4220e"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Implement EvaluationGraph struct with three PersistentMap fields: value_cells (ValueCellId→ValueCellNode), constraints (ConstraintNodeId→ConstraintNodeData), realizations (RealizationNodeId→RealizationNodeData). Derive Clone+Debug+Default. Tests from step-9 should pass.",
+      "status": "done",
+      "commit": "c03191c"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write tests for EvaluationGraph::from_templates: build a TopologyTemplate with params, lets, constraints, and realizations using TopologyTemplateBuilder. Call from_templates and verify all nodes are populated in the correct PersistentMaps with correct ids and content hashes.",
+      "status": "done",
+      "commit": "80d7eda"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Implement EvaluationGraph::from_templates(templates: &[TopologyTemplate]) -> EvaluationGraph. Iterates templates, converts ValueCellDecl→ValueCellNode, CompiledConstraint→ConstraintNodeData, RealizationDecl→RealizationNodeData, inserting each into the appropriate PersistentMap.",
+      "status": "done",
+      "commit": "7527dd8"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write tests for EvaluationGraph::topology_fingerprint(): same graph structure produces same fingerprint, adding a node changes fingerprint, order-independent (same nodes inserted in different order produce same fingerprint).",
+      "status": "done",
+      "commit": "6c1364c"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Implement EvaluationGraph::topology_fingerprint(&self) -> ContentHash. Collects content hashes from all node maps, sorts for determinism, combines via ContentHash::combine_all. from_templates should also return the fingerprint or store it.",
+      "status": "done",
+      "commit": "3bdaafa"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write tests for Snapshot: construct with id, version, graph, values, topology_fingerprint, provenance. Test Snapshot::from_compiled_module using a CompiledModuleBuilder — verify graph nodes populated, values initialized to (Undef, Undetermined), provenance is Initial, version/snapshot ids start at 0.",
+      "status": "done",
+      "commit": "86bbc9a"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement Snapshot struct in snapshot.rs with fields: id (SnapshotId), version (VersionId), graph (EvaluationGraph), values (PersistentMap<ValueCellId, (Value, DeterminacyState)>), topology_fingerprint (ContentHash), provenance (SnapshotProvenance). Implement Snapshot::from_compiled_module(&CompiledModule) -> Snapshot. Derive Clone+Debug.",
+      "status": "done",
+      "commit": "03d3561"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write tests for Snapshot O(1) clone and structural sharing: clone a snapshot, modify the clone's values map (insert a new value), verify original snapshot is unchanged (different len, original values intact). This validates PersistentMap structural sharing at the Snapshot level.",
+      "status": "done",
+      "commit": "c6701dc"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Ensure Snapshot derives Clone (leveraging PersistentMap's O(1) clone). No additional implementation needed if step-16 is correct — this step validates the structural sharing guarantee and fixes any issues found.",
+      "status": "done",
+      "commit": "03d3561"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write integration test in crates/reify-eval/tests/snapshot_graph.rs: use bracket_compiled_module() fixture to create Snapshot via from_compiled_module. Verify: 6 value_cells (5 params + 1 let for volume, body is realization not value cell), 3 constraints, 1 realization. Verify provenance is Initial. Clone snapshot, modify clone, verify original unchanged.",
+      "status": "done",
+      "commit": "0fc2507"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Fix any issues found in the integration test. Ensure cargo test --workspace passes with all new tests. Wire up pub exports from reify-eval/src/lib.rs for graph and snapshot modules.",
+      "status": "done",
+      "commit": "0fc2507"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Put SnapshotProvenance in reify-types (not reify-eval)",
+      "rationale": "SnapshotProvenance references only types from reify-types (ValueCellId, SnapshotId). Keeping it in reify-types avoids circular dependencies and allows other crates to reference provenance without depending on reify-eval."
+    },
+    {
+      "decision": "Keep ValueCellKind in reify-compiler, reference from reify-eval",
+      "rationale": "ValueCellKind is already defined in reify-compiler and used throughout. Moving it to reify-types would be cleaner long-term but is out of scope. reify-eval already depends on reify-compiler, so the reference is safe."
+    },
+    {
+      "decision": "Skip SourceNodeId(u64) and ComputeNodeId(u64) newtype additions",
+      "rationale": "SourceNodeId already exists in identity.rs with struct fields (module, declaration_index). The task description says SourceNode and ComputeNode come in later milestones. Changing SourceNodeId shape would break existing code for no M2 benefit."
+    },
+    {
+      "decision": "Node data types in reify-eval, not reify-types",
+      "rationale": "ValueCellNode, ConstraintNodeData, RealizationNodeData reference CompiledExpr (reify-types) AND CompiledGeometryOp/ValueCellKind (reify-compiler). They cannot live in reify-types without introducing a reify-compiler dependency. reify-eval depends on both, making it the natural home."
+    },
+    {
+      "decision": "Snapshot values map uses (Value, DeterminacyState) tuple",
+      "rationale": "Per the task spec, values in the snapshot track both the value and its determinacy state. Using a PersistentMap<ValueCellId, (Value, DeterminacyState)> keeps it simple and leverages existing structural sharing."
+    },
+    {
+      "decision": "topology_fingerprint computed from sorted content hashes for determinism",
+      "rationale": "PersistentMap iteration order is not guaranteed. Sorting hashes before combining ensures the fingerprint is deterministic regardless of insertion order, which is critical for cache invalidation."
+    },
+    {
+      "decision": "Initial snapshot values are (Undef, Undetermined) for all value cells",
+      "rationale": "from_compiled_module creates the graph structure but does NOT evaluate expressions. Evaluation is a separate concern handled by the Engine. Values start as Undef/Undetermined and get populated during evaluation passes."
+    },
+    {
+      "decision": "Provenance uses std::collections::HashSet (not a persistent set)",
+      "rationale": "The changed/resolved sets in SnapshotProvenance are small and created once per snapshot transition. They don't need structural sharing — regular HashSet is simpler and sufficient."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "PersistentMap<K,V>",
+      "where": "crates/reify-types/src/persistent.rs",
+      "how": "Used as the backing store for all EvaluationGraph node maps and Snapshot values map. Provides O(1) clone via structural sharing."
+    },
+    {
+      "what": "ContentHash",
+      "where": "crates/reify-types/src/hash.rs",
+      "how": "Used for topology_fingerprint computation and content_hash fields on all node data types. ContentHash::combine_all for fingerprint aggregation."
+    },
+    {
+      "what": "ValueCellId, ConstraintNodeId, RealizationNodeId",
+      "where": "crates/reify-types/src/identity.rs",
+      "how": "Used as keys in EvaluationGraph PersistentMaps and as identifiers in node data types."
+    },
+    {
+      "what": "CompiledExpr, Value, DeterminacyState, Type",
+      "where": "crates/reify-types/src/",
+      "how": "CompiledExpr stored in node data types. Value+DeterminacyState in Snapshot values map. Type in ValueCellNode."
+    },
+    {
+      "what": "TopologyTemplate, ValueCellDecl, CompiledConstraint, RealizationDecl, ValueCellKind, CompiledGeometryOp",
+      "where": "crates/reify-compiler/src/lib.rs",
+      "how": "Input to EvaluationGraph::from_templates. ValueCellDecl fields mapped to ValueCellNode fields. CompiledConstraint to ConstraintNodeData. RealizationDecl to RealizationNodeData."
+    },
+    {
+      "what": "TopologyTemplateBuilder, CompiledModuleBuilder",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Used in tests to construct TopologyTemplate and CompiledModule fixtures for from_templates and from_compiled_module tests."
+    },
+    {
+      "what": "bracket_compiled_module() fixture",
+      "where": "crates/reify-test-support/src/fixtures.rs",
+      "how": "Used in integration test (step-19) to verify Snapshot creation from a realistic compiled module."
+    },
+    {
+      "what": "Expression builder helpers (literal, value_ref, gt, lt)",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Used to construct CompiledExpr values for test node data types and template builders."
+    }
+  ]
+}
