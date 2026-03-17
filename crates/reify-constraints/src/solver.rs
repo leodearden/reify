@@ -616,4 +616,62 @@ mod tests {
             other => panic!("expected Solved, got {:?}", other),
         }
     }
+
+    #[test]
+    fn infeasible_constraints() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
+            ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // x > 10mm
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let ten_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.010,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), ten_mm, Type::Bool);
+
+        // x < 5mm — contradicts x > 10mm
+        let five_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let lt_expr = CompiledExpr::binop(BinOp::Lt, x_ref, five_mm, Type::Bool);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            }],
+            constraints: vec![
+                (ConstraintNodeId::new("Part", 0), gt_expr),
+                (ConstraintNodeId::new("Part", 1), lt_expr),
+            ],
+            current_values: ValueMap::new(),
+            objective: None,
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::Infeasible { diagnostics } => {
+                assert!(
+                    !diagnostics.is_empty(),
+                    "infeasible result should have diagnostics"
+                );
+            }
+            other => panic!("expected Infeasible, got {:?}", other),
+        }
+    }
 }
