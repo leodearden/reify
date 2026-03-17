@@ -783,4 +783,82 @@ mod tests {
             Some(&Value::Int(11))
         );
     }
+
+    #[test]
+    fn selective_re_evaluation_on_param_change() {
+        use reify_test_support::builders::*;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_types::{BinOp, ModulePath, Type, VersionId};
+
+        let e = "T";
+        // param a = 10, param b = 20, let x = a + 1, let y = b + 1
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("T")
+                    .param(e, "a", Type::Int, Some(literal(Value::Int(10))))
+                    .param(e, "b", Type::Int, Some(literal(Value::Int(20))))
+                    .let_binding(
+                        e,
+                        "x",
+                        Type::Int,
+                        binop(
+                            BinOp::Add,
+                            value_ref_typed(e, "a", Type::Int),
+                            literal(Value::Int(1)),
+                        ),
+                    )
+                    .let_binding(
+                        e,
+                        "y",
+                        Type::Int,
+                        binop(
+                            BinOp::Add,
+                            value_ref_typed(e, "b", Type::Int),
+                            literal(Value::Int(1)),
+                        ),
+                    )
+                    .build(),
+            )
+            .build();
+
+        let checker = MockConstraintChecker::new();
+        let mut engine = crate::Engine::new(Box::new(checker), None);
+
+        // First eval: populate cache
+        let result1 = engine.eval_cached(&module, VersionId(1));
+        assert_eq!(result1.stats.cache_misses, 4); // a, b, x, y
+
+        // Change param a -> invalidate its dependents
+        engine.set_param_and_invalidate(
+            &ValueCellId::new(e, "a"),
+            Value::Int(15),
+        );
+
+        // Re-evaluate with new version
+        let result2 = engine.eval_cached(&module, VersionId(2));
+
+        // a should be re-evaluated (always, since param), x should be
+        // re-evaluated (depends on a, was invalidated)
+        // b and y should be served from cache (not dependent on a)
+        assert!(result2.stats.cache_hits >= 2); // b and y from cache
+        assert!(result2.stats.cache_misses >= 2); // a and x re-evaluated
+
+        // Results should be correct
+        assert_eq!(
+            result2.eval_result.values.get(&ValueCellId::new(e, "a")),
+            Some(&Value::Int(15))
+        );
+        assert_eq!(
+            result2.eval_result.values.get(&ValueCellId::new(e, "x")),
+            Some(&Value::Int(16)) // 15 + 1
+        );
+        assert_eq!(
+            result2.eval_result.values.get(&ValueCellId::new(e, "b")),
+            Some(&Value::Int(20))
+        );
+        assert_eq!(
+            result2.eval_result.values.get(&ValueCellId::new(e, "y")),
+            Some(&Value::Int(21))
+        );
+    }
 }
