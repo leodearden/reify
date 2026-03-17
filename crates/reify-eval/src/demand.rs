@@ -4,10 +4,46 @@
 //! or feeds into an always-demanded node transitively. The demand cone is the set
 //! of all such nodes, computed via backward BFS from always-demanded roots.
 
+use std::collections::HashSet;
+
 use crate::cache::NodeId;
 
-/// Placeholder struct — methods will be implemented in step-6.
-pub struct DemandRegistry;
+/// Tracks which nodes are demanded and maintains the demand cone.
+///
+/// `always_demanded` is the set of nodes explicitly requested (e.g., constraints
+/// the UI is displaying). `demand_cone` is the full set of demanded nodes
+/// including transitive backward dependencies, populated by `rebuild_cone()`.
+pub struct DemandRegistry {
+    always_demanded: HashSet<NodeId>,
+    demand_cone: HashSet<NodeId>,
+}
+
+impl DemandRegistry {
+    /// Create an empty demand registry.
+    pub fn new() -> Self {
+        Self {
+            always_demanded: HashSet::new(),
+            demand_cone: HashSet::new(),
+        }
+    }
+
+    /// Add a node to the always-demanded set.
+    pub fn add_demand(&mut self, node: NodeId) {
+        self.always_demanded.insert(node);
+    }
+
+    /// Remove a node from the always-demanded set.
+    pub fn remove_demand(&mut self, node: &NodeId) {
+        self.always_demanded.remove(node);
+    }
+
+    /// Check if a node is in the demand cone.
+    ///
+    /// Returns true only after `rebuild_cone()` has been called.
+    pub fn is_demanded(&self, node: &NodeId) -> bool {
+        self.demand_cone.contains(node)
+    }
+}
 
 #[cfg(test)]
 mod tests {
