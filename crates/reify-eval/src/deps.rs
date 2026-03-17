@@ -168,4 +168,61 @@ mod tests {
         let trace = recorder.finish();
         assert_eq!(trace.reads, vec![width_id, height_id, thickness_id]);
     }
+
+    // --- ReverseDependencyIndex::build tests ---
+
+    #[test]
+    fn reverse_index_build_from_traces() {
+        use std::collections::{HashMap, HashSet};
+        use reify_types::{ConstraintNodeId, NodeId};
+
+        let width = ValueCellId::new("B", "width");
+        let height = ValueCellId::new("B", "height");
+        let thickness = ValueCellId::new("B", "thickness");
+
+        let volume_node = NodeId::ValueCell(ValueCellId::new("B", "volume"));
+        let constraint_node = NodeId::Constraint(ConstraintNodeId::new("B", 0));
+
+        let mut traces = HashMap::new();
+
+        // volume reads width, height, thickness
+        let mut vol_trace = super::DependencyTrace::default();
+        vol_trace.reads.push(width.clone());
+        vol_trace.reads.push(height.clone());
+        vol_trace.reads.push(thickness.clone());
+        traces.insert(volume_node.clone(), vol_trace);
+
+        // constraint reads thickness
+        let mut con_trace = super::DependencyTrace::default();
+        con_trace.reads.push(thickness.clone());
+        traces.insert(constraint_node.clone(), con_trace);
+
+        let index = super::ReverseDependencyIndex::build(&traces);
+
+        // dependents_of(width) = {volume_node}
+        let width_deps = index.dependents_of(&width);
+        assert_eq!(width_deps, &HashSet::from([volume_node.clone()]));
+
+        // dependents_of(height) = {volume_node}
+        let height_deps = index.dependents_of(&height);
+        assert_eq!(height_deps, &HashSet::from([volume_node.clone()]));
+
+        // dependents_of(thickness) = {volume_node, constraint_node}
+        let thickness_deps = index.dependents_of(&thickness);
+        assert_eq!(
+            thickness_deps,
+            &HashSet::from([volume_node.clone(), constraint_node.clone()])
+        );
+    }
+
+    #[test]
+    fn reverse_index_empty_traces() {
+        use std::collections::HashMap;
+
+        let traces = HashMap::new();
+        let index = super::ReverseDependencyIndex::build(&traces);
+
+        let unknown = ValueCellId::new("X", "y");
+        assert!(index.dependents_of(&unknown).is_empty());
+    }
 }
