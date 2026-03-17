@@ -861,4 +861,94 @@ mod tests {
             Some(&Value::Int(21))
         );
     }
+
+    #[test]
+    fn early_cutoff_prevents_downstream_re_evaluation() {
+        use reify_test_support::builders::*;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_types::{
+            BinOp, CompiledExpr, CompiledExprKind, ContentHash, ModulePath, Type, VersionId,
+        };
+
+        let e = "T";
+
+        // Build conditional: if a > 0 then 1 else 1 (always 1)
+        let condition = gt(
+            value_ref_typed(e, "a", Type::Int),
+            literal(Value::Int(0)),
+        );
+        let then_branch = literal(Value::Int(1));
+        let else_branch = literal(Value::Int(1));
+        let conditional = CompiledExpr {
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(condition),
+                then_branch: Box::new(then_branch.clone()),
+                else_branch: Box::new(else_branch),
+            },
+            result_type: Type::Int,
+            content_hash: ContentHash::of_str("if_a_gt_0_then_1_else_1"),
+        };
+
+        // let y = x + 100
+        let y_expr = binop(
+            BinOp::Add,
+            value_ref_typed(e, "x", Type::Int),
+            literal(Value::Int(100)),
+        );
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("T")
+                    .param(e, "a", Type::Int, Some(literal(Value::Int(5))))
+                    .let_binding(e, "x", Type::Int, conditional)
+                    .let_binding(e, "y", Type::Int, y_expr)
+                    .build(),
+            )
+            .build();
+
+        let checker = MockConstraintChecker::new();
+        let mut engine = crate::Engine::new(Box::new(checker), None);
+
+        // First eval: all computed
+        let result1 = engine.eval_cached(&module, VersionId(1));
+        assert_eq!(result1.stats.cache_misses, 3); // a, x, y
+        assert_eq!(
+            result1.eval_result.values.get(&ValueCellId::new(e, "x")),
+            Some(&Value::Int(1))
+        );
+        assert_eq!(
+            result1.eval_result.values.get(&ValueCellId::new(e, "y")),
+            Some(&Value::Int(101))
+        );
+
+        // Change a from 5 to 10 (still > 0, so x still = 1)
+        engine.set_param_and_invalidate(
+            &ValueCellId::new(e, "a"),
+            Value::Int(10),
+        );
+
+        // Re-evaluate
+        let result2 = engine.eval_cached(&module, VersionId(2));
+
+        // x should be re-evaluated but result unchanged (early cutoff)
+        assert!(result2.stats.early_cutoffs >= 1, "expected early cutoff for x");
+
+        // y should NOT be re-evaluated (served from cache because x didn't change)
+        // The total cache_hits should include y
+        assert!(result2.stats.cache_hits >= 1, "expected y served from cache");
+
+        // Results still correct
+        assert_eq!(
+            result2.eval_result.values.get(&ValueCellId::new(e, "a")),
+            Some(&Value::Int(10))
+        );
+        assert_eq!(
+            result2.eval_result.values.get(&ValueCellId::new(e, "x")),
+            Some(&Value::Int(1))
+        );
+        assert_eq!(
+            result2.eval_result.values.get(&ValueCellId::new(e, "y")),
+            Some(&Value::Int(101))
+        );
+    }
 }
