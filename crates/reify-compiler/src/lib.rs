@@ -663,6 +663,21 @@ fn compile_structure(
             }
             reify_syntax::MemberDecl::Constraint(constraint) => {
                 let compiled_expr = compile_expr(&constraint.expr, &scope, diagnostics);
+
+                // Check that the constraint expression produces Bool
+                if compiled_expr.result_type != Type::Bool {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "constraint expression has type {}, expected Bool",
+                            compiled_expr.result_type,
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            constraint.expr.span,
+                            "expected Bool",
+                        )),
+                    );
+                }
+
                 let id = ConstraintNodeId::new(entity_name, constraint_index);
                 constraints.push(CompiledConstraint {
                     id,
