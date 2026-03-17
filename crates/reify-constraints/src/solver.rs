@@ -1,5 +1,33 @@
 // DimensionalSolver: Nelder-Mead based constraint solver for auto parameters.
 
+use std::collections::HashMap;
+
+use reify_types::{ConstraintSolver, ResolutionProblem, SolveResult};
+
+/// Derivative-free constraint solver using Nelder-Mead optimization.
+///
+/// Solves for auto parameters by minimizing a penalty function that
+/// encodes constraint violations. For pure feasibility (no objective),
+/// the cost is the sum of squared constraint violations. For optimization,
+/// the cost combines the objective value with a weighted penalty term.
+pub struct DimensionalSolver;
+
+impl ConstraintSolver for DimensionalSolver {
+    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+        // Trivial case: no auto parameters to solve for
+        if problem.auto_params.is_empty() {
+            return SolveResult::Solved {
+                values: HashMap::new(),
+            };
+        }
+
+        // TODO: implement Nelder-Mead solving
+        SolveResult::NoProgress {
+            reason: "not yet implemented".to_string(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_types::{

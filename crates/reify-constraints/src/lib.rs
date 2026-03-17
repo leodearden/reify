@@ -1,4 +1,5 @@
 mod solver;
+pub use solver::DimensionalSolver;
 
 use reify_types::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Diagnostic,
