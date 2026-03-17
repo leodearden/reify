@@ -734,4 +734,53 @@ mod tests {
             Some(&Value::Int(11))
         );
     }
+
+    #[test]
+    fn version_fast_path_100_percent_hits() {
+        use reify_test_support::builders::*;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_types::{BinOp, ModulePath, Type, VersionId};
+
+        let e = "T";
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("T")
+                    .param(e, "a", Type::Int, Some(literal(Value::Int(10))))
+                    .param(e, "b", Type::Int, Some(literal(Value::Int(20))))
+                    .let_binding(
+                        e,
+                        "x",
+                        Type::Int,
+                        binop(
+                            BinOp::Add,
+                            value_ref_typed(e, "a", Type::Int),
+                            literal(Value::Int(1)),
+                        ),
+                    )
+                    .build(),
+            )
+            .build();
+
+        let checker = MockConstraintChecker::new();
+        let mut engine = crate::Engine::new(Box::new(checker), None);
+
+        // First call: populates cache
+        let result1 = engine.eval_cached(&module, VersionId(1));
+        assert_eq!(result1.stats.cache_misses, 3);
+
+        // Second call with same version: 100% cache hits
+        let result2 = engine.eval_cached(&module, VersionId(1));
+        assert_eq!(result2.stats.cache_hits, 3);
+        assert_eq!(result2.stats.cache_misses, 0);
+
+        // Results should be identical
+        assert_eq!(
+            result2.eval_result.values.get(&ValueCellId::new(e, "a")),
+            Some(&Value::Int(10))
+        );
+        assert_eq!(
+            result2.eval_result.values.get(&ValueCellId::new(e, "x")),
+            Some(&Value::Int(11))
+        );
+    }
 }
