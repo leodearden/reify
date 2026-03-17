@@ -1,4 +1,4 @@
-use reify_types::{BinOp, CompiledExpr, CompiledExprKind, UnOp, Value, ValueMap};
+use reify_types::{BinOp, CompiledExpr, CompiledExprKind, UnOp, Value, ValueCellId, ValueMap};
 
 /// Evaluate a compiled expression against a set of values.
 ///
@@ -40,6 +40,175 @@ pub fn eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value {
                 _ => Value::Undef, // type error: condition is not bool
             }
         }
+    }
+}
+
+/// Evaluate a compiled expression with dependency tracing.
+///
+/// Identical to `eval_expr` but calls `on_read(id)` for every ValueRef read,
+/// enabling the caller to record which value cells contribute to the result.
+/// Only actually-evaluated branches are traced (e.g., in conditionals, only
+/// the taken branch is traced).
+pub fn eval_expr_traced(
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    on_read: &mut dyn FnMut(&ValueCellId),
+) -> Value {
+    match &expr.kind {
+        CompiledExprKind::Literal(v) => v.clone(),
+
+        CompiledExprKind::ValueRef(id) => {
+            on_read(id);
+            values.get_or_undef(id)
+        }
+
+        CompiledExprKind::BinOp { op, left, right } => {
+            eval_binop_traced(*op, left, right, values, on_read)
+        }
+
+        CompiledExprKind::UnOp { op, operand } => {
+            eval_unop_traced(*op, operand, values, on_read)
+        }
+
+        CompiledExprKind::FunctionCall { function, args } => {
+            let _ = function;
+            let _ = args;
+            Value::Undef
+        }
+
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            let cond = eval_expr_traced(condition, values, on_read);
+            match cond {
+                Value::Bool(true) => eval_expr_traced(then_branch, values, on_read),
+                Value::Bool(false) => eval_expr_traced(else_branch, values, on_read),
+                Value::Undef => Value::Undef,
+                _ => Value::Undef,
+            }
+        }
+    }
+}
+
+fn eval_binop_traced(
+    op: BinOp,
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    values: &ValueMap,
+    on_read: &mut dyn FnMut(&ValueCellId),
+) -> Value {
+    match op {
+        BinOp::And => return eval_and_traced(left, right, values, on_read),
+        BinOp::Or => return eval_or_traced(left, right, values, on_read),
+        _ => {}
+    }
+
+    let lv = eval_expr_traced(left, values, on_read);
+    let rv = eval_expr_traced(right, values, on_read);
+
+    if lv.is_undef() || rv.is_undef() {
+        return Value::Undef;
+    }
+
+    match op {
+        BinOp::Add => eval_add(&lv, &rv),
+        BinOp::Sub => eval_sub(&lv, &rv),
+        BinOp::Mul => eval_mul(&lv, &rv),
+        BinOp::Div => eval_div(&lv, &rv),
+        BinOp::Mod => eval_mod(&lv, &rv),
+        BinOp::Pow => eval_pow(&lv, &rv),
+        BinOp::Eq => eval_eq(&lv, &rv),
+        BinOp::Ne => eval_ne(&lv, &rv),
+        BinOp::Lt => eval_cmp(&lv, &rv, |a, b| a < b),
+        BinOp::Le => eval_cmp(&lv, &rv, |a, b| a <= b),
+        BinOp::Gt => eval_cmp(&lv, &rv, |a, b| a > b),
+        BinOp::Ge => eval_cmp(&lv, &rv, |a, b| a >= b),
+        BinOp::And | BinOp::Or => unreachable!(),
+    }
+}
+
+fn eval_and_traced(
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    values: &ValueMap,
+    on_read: &mut dyn FnMut(&ValueCellId),
+) -> Value {
+    let lv = eval_expr_traced(left, values, on_read);
+    match lv {
+        Value::Bool(false) => Value::Bool(false),
+        Value::Bool(true) => {
+            let rv = eval_expr_traced(right, values, on_read);
+            match rv {
+                Value::Bool(b) => Value::Bool(b),
+                Value::Undef => Value::Undef,
+                _ => Value::Undef,
+            }
+        }
+        Value::Undef => {
+            let rv = eval_expr_traced(right, values, on_read);
+            match rv {
+                Value::Bool(false) => Value::Bool(false),
+                _ => Value::Undef,
+            }
+        }
+        _ => Value::Undef,
+    }
+}
+
+fn eval_or_traced(
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    values: &ValueMap,
+    on_read: &mut dyn FnMut(&ValueCellId),
+) -> Value {
+    let lv = eval_expr_traced(left, values, on_read);
+    match lv {
+        Value::Bool(true) => Value::Bool(true),
+        Value::Bool(false) => {
+            let rv = eval_expr_traced(right, values, on_read);
+            match rv {
+                Value::Bool(b) => Value::Bool(b),
+                Value::Undef => Value::Undef,
+                _ => Value::Undef,
+            }
+        }
+        Value::Undef => {
+            let rv = eval_expr_traced(right, values, on_read);
+            match rv {
+                Value::Bool(true) => Value::Bool(true),
+                _ => Value::Undef,
+            }
+        }
+        _ => Value::Undef,
+    }
+}
+
+fn eval_unop_traced(
+    op: UnOp,
+    operand: &CompiledExpr,
+    values: &ValueMap,
+    on_read: &mut dyn FnMut(&ValueCellId),
+) -> Value {
+    let v = eval_expr_traced(operand, values, on_read);
+    if v.is_undef() {
+        return Value::Undef;
+    }
+    match op {
+        UnOp::Neg => match v {
+            Value::Int(i) => Value::Int(-i),
+            Value::Real(r) => Value::Real(-r),
+            Value::Scalar { si_value, dimension } => Value::Scalar {
+                si_value: -si_value,
+                dimension,
+            },
+            _ => Value::Undef,
+        },
+        UnOp::Not => match v {
+            Value::Bool(b) => Value::Bool(!b),
+            _ => Value::Undef,
+        },
     }
 }
 
