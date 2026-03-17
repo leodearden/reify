@@ -116,6 +116,26 @@ impl fmt::Display for RealizationNodeId {
     }
 }
 
+/// Unified node identifier for the dependency graph.
+/// Wraps ValueCellId, ConstraintNodeId, or RealizationNodeId to allow
+/// heterogeneous node tracking in the reverse dependency index.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum NodeId {
+    ValueCell(ValueCellId),
+    Constraint(ConstraintNodeId),
+    Realization(RealizationNodeId),
+}
+
+impl fmt::Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NodeId::ValueCell(id) => write!(f, "{}", id),
+            NodeId::Constraint(id) => write!(f, "{}", id),
+            NodeId::Realization(id) => write!(f, "{}", id),
+        }
+    }
+}
+
 /// Identifies a source node (input from the parser/file).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceNodeId {
