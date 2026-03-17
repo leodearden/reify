@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use reify_types::{
-    AutoParam, ConstraintSolver, DimensionVector, ResolutionProblem, SolveResult, Type, Value,
-    ValueMap,
+    AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ConstraintSolver,
+    DimensionVector, ResolutionProblem, SolveResult, Type, Value, ValueMap,
 };
 
 /// Derivative-free constraint solver using Nelder-Mead optimization.
@@ -64,6 +64,109 @@ fn extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> {
             0.01
         })
         .collect()
+}
+
+/// Compute the violation magnitude for a single comparison expression.
+///
+/// For comparison operators (Gt, Ge, Lt, Le), evaluates the left and right
+/// sub-expressions to get numeric values and computes a continuous violation.
+/// Returns 0.0 if satisfied. For non-decomposable boolean constraints,
+/// uses a fixed penalty when violated.
+fn comparison_violation(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap) -> f64 {
+    let lhs = reify_expr::eval_expr(left, values).as_f64();
+    let rhs = reify_expr::eval_expr(right, values).as_f64();
+
+    match (lhs, rhs) {
+        (Some(l), Some(r)) => match op {
+            // For l > r: violation when l <= r, magnitude = (r - l)
+            BinOp::Gt => {
+                if l > r { 0.0 } else { (r - l + 1e-12).powi(2) }
+            }
+            // For l >= r: violation when l < r
+            BinOp::Ge => {
+                if l >= r { 0.0 } else { (r - l + 1e-12).powi(2) }
+            }
+            // For l < r: violation when l >= r, magnitude = (l - r)
+            BinOp::Lt => {
+                if l < r { 0.0 } else { (l - r + 1e-12).powi(2) }
+            }
+            // For l <= r: violation when l > r
+            BinOp::Le => {
+                if l <= r { 0.0 } else { (l - r + 1e-12).powi(2) }
+            }
+            // For equality: distance squared
+            BinOp::Eq => {
+                let d = l - r;
+                if d.abs() < 1e-15 { 0.0 } else { d.powi(2) }
+            }
+            BinOp::Ne => {
+                if (l - r).abs() > 1e-15 { 0.0 } else { 1.0 }
+            }
+            // Not a comparison
+            _ => 1.0,
+        },
+        // Can't decompose numerically; use fixed penalty
+        _ => 1.0,
+    }
+}
+
+/// Compute the violation for a single constraint expression.
+///
+/// Tries to decompose comparison expressions for continuous violation.
+/// Falls back to binary penalty for non-decomposable expressions.
+fn constraint_violation(expr: &CompiledExpr, values: &ValueMap) -> f64 {
+    // First try decomposing into a comparison
+    match &expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            match op {
+                BinOp::Gt | BinOp::Ge | BinOp::Lt | BinOp::Le | BinOp::Eq | BinOp::Ne => {
+                    comparison_violation(*op, left, right, values)
+                }
+                BinOp::And => {
+                    // AND: sum violations of both sides
+                    constraint_violation(left, values) + constraint_violation(right, values)
+                }
+                BinOp::Or => {
+                    // OR: minimum violation of both sides
+                    let lv = constraint_violation(left, values);
+                    let rv = constraint_violation(right, values);
+                    lv.min(rv)
+                }
+                _ => {
+                    // Not a logical/comparison op; evaluate as boolean
+                    match reify_expr::eval_expr(expr, values) {
+                        Value::Bool(true) => 0.0,
+                        Value::Bool(false) => 1.0,
+                        Value::Undef => 10.0,
+                        _ => 1.0,
+                    }
+                }
+            }
+        }
+        _ => {
+            // Non-binop expression (e.g., literal bool, function call)
+            match reify_expr::eval_expr(expr, values) {
+                Value::Bool(true) => 0.0,
+                Value::Bool(false) => 1.0,
+                Value::Undef => 10.0,
+                _ => 1.0,
+            }
+        }
+    }
+}
+
+/// Compute the total violation across all constraints.
+///
+/// Returns the sum of squared violations. Zero means all constraints
+/// are satisfied.
+fn compute_total_violation(
+    constraints: &[(ConstraintNodeId, CompiledExpr)],
+    values: &ValueMap,
+) -> f64 {
+    constraints
+        .iter()
+        .map(|(_, expr)| constraint_violation(expr, values))
+        .sum()
 }
 
 impl ConstraintSolver for DimensionalSolver {
