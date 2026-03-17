@@ -176,6 +176,91 @@ mod tests {
         assert_eq!(map.get(&NodeId::Constraint(cnid)), Some(&"constraint"));
     }
 
+    // --- CacheStore tests ---
+
+    fn make_test_node_cache(val: i64, version: u64) -> NodeCache {
+        NodeCache::new(
+            CachedResult::Value(Value::Int(val), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(version),
+        )
+    }
+
+    #[test]
+    fn cache_store_new_is_empty() {
+        let store = CacheStore::new();
+        assert!(store.is_empty());
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn cache_store_put_and_get() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("Bracket", "width"));
+        let cache = make_test_node_cache(42, 1);
+        store.put(node.clone(), cache);
+
+        assert!(!store.is_empty());
+        assert_eq!(store.len(), 1);
+        assert!(store.get(&node).is_some());
+        assert_eq!(store.get(&node).unwrap().basis_version, VersionId(1));
+    }
+
+    #[test]
+    fn cache_store_get_missing() {
+        let store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("Bracket", "width"));
+        assert!(store.get(&node).is_none());
+    }
+
+    #[test]
+    fn cache_store_invalidate() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("Bracket", "width"));
+        store.put(node.clone(), make_test_node_cache(42, 1));
+        assert!(store.get(&node).is_some());
+
+        store.invalidate(&node);
+        assert!(store.get(&node).is_none());
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn cache_store_invalidate_missing_is_noop() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("Bracket", "width"));
+        store.invalidate(&node); // no panic
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn cache_store_put_overwrites() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("Bracket", "width"));
+        store.put(node.clone(), make_test_node_cache(42, 1));
+        store.put(node.clone(), make_test_node_cache(99, 2));
+
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.get(&node).unwrap().basis_version, VersionId(2));
+    }
+
+    #[test]
+    fn cache_store_len_and_is_empty() {
+        let mut store = CacheStore::new();
+        assert!(store.is_empty());
+        assert_eq!(store.len(), 0);
+
+        let node1 = NodeId::Value(ValueCellId::new("Bracket", "width"));
+        let node2 = NodeId::Value(ValueCellId::new("Bracket", "height"));
+        store.put(node1, make_test_node_cache(42, 1));
+        assert_eq!(store.len(), 1);
+        assert!(!store.is_empty());
+
+        store.put(node2, make_test_node_cache(99, 1));
+        assert_eq!(store.len(), 2);
+    }
+
     // --- EvalOutcome tests ---
 
     #[test]
