@@ -7,7 +7,7 @@
 use reify_eval::Engine;
 use reify_test_support::bracket_compiled_module;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{Value, ValueCellId};
+use reify_types::{SnapshotId, SnapshotProvenance, Value, ValueCellId};
 
 /// Canary backward-compatibility test: verifies that cold-start eval()
 /// produces the correct values for the bracket fixture.
@@ -118,5 +118,37 @@ fn edit_param_returns_updated_values() {
         result.values.get(&ValueCellId::new(e, "hole_diameter")),
         initial.values.get(&ValueCellId::new(e, "hole_diameter")),
         "hole_diameter should be unchanged"
+    );
+}
+
+/// Verify snapshot provenance and IDs after eval() and edit_param().
+#[test]
+fn edit_param_snapshot_provenance() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let e = "Bracket";
+
+    // After eval(): provenance should be Initial, ID = 0
+    engine.eval(&module);
+    let snap = engine.snapshot().expect("snapshot should exist after eval");
+    assert_eq!(snap.provenance, SnapshotProvenance::Initial);
+    assert_eq!(snap.id, SnapshotId(0));
+
+    // After edit_param(): provenance should be Edit, ID = 1
+    let width_id = ValueCellId::new(e, "width");
+    engine.edit_param(width_id.clone(), Value::length(0.1));
+    let snap = engine.snapshot().expect("snapshot should exist after edit_param");
+    assert_eq!(snap.id, SnapshotId(1));
+
+    let mut expected_changed = std::collections::HashSet::new();
+    expected_changed.insert(width_id);
+    assert_eq!(
+        snap.provenance,
+        SnapshotProvenance::Edit {
+            changed: expected_changed,
+            parent: SnapshotId(0),
+        }
     );
 }
