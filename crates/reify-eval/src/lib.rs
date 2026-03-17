@@ -1,5 +1,7 @@
 pub mod cache;
+pub mod demand;
 pub mod deps;
+pub mod dirty;
 pub mod graph;
 pub mod snapshot;
 
