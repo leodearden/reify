@@ -119,6 +119,10 @@ pub struct CacheStore {
     /// that caused them to be dirty. A node stays dirty until ALL its dirty
     /// reasons have been resolved (e.g., by early cutoffs on upstream nodes).
     dirty_reasons: HashMap<NodeId, std::collections::HashSet<ValueCellId>>,
+    /// Count of successful mark_pending() calls since last reset.
+    /// Used to verify that Pending intermediate state is actually applied
+    /// during edit_param() evaluation.
+    pending_transition_count: usize,
 }
 
 impl CacheStore {
@@ -127,6 +131,7 @@ impl CacheStore {
         Self {
             caches: HashMap::new(),
             dirty_reasons: HashMap::new(),
+            pending_transition_count: 0,
         }
     }
 
@@ -263,6 +268,49 @@ impl CacheStore {
     /// is not dirty.
     pub fn get_dirty_reasons(&self, node: &NodeId) -> Option<&std::collections::HashSet<ValueCellId>> {
         self.dirty_reasons.get(node)
+    }
+
+    /// Mark a node as Pending before re-evaluation during incremental evaluation.
+    ///
+    /// Sets the node's freshness to `Pending { last_substantive: Some(result_hash) }`
+    /// where `result_hash` is the current cached content hash. This preserves the
+    /// previous result for comparison while signaling that re-evaluation is in progress.
+    ///
+    /// Returns `true` if the node was found and marked, `false` if not cached.
+    pub fn mark_pending(&mut self, node: &NodeId) -> bool {
+        if let Some(entry) = self.caches.get_mut(node) {
+            entry.freshness = Freshness::Pending {
+                last_substantive: Some(entry.result_hash),
+            };
+            self.pending_transition_count += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Restore a node's freshness to Final after early cutoff skips its
+    /// re-evaluation. This handles nodes that were pre-marked Pending but
+    /// then bypassed because an upstream node produced an unchanged result.
+    ///
+    /// Returns `true` if the node was found and restored, `false` if not cached.
+    pub fn restore_final(&mut self, node: &NodeId) -> bool {
+        if let Some(entry) = self.caches.get_mut(node) {
+            entry.freshness = Freshness::Final;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the number of successful mark_pending() calls since last reset.
+    pub fn pending_transition_count(&self) -> usize {
+        self.pending_transition_count
+    }
+
+    /// Reset the pending transition counter to 0.
+    pub fn reset_pending_transition_count(&mut self) {
+        self.pending_transition_count = 0;
     }
 
     /// Version fast path: if the node is cached and its basis_version matches
@@ -1207,5 +1255,59 @@ mod tests {
             result3.eval_result.values.get(&ValueCellId::new(e, "y")),
             Some(&Value::Int(211))
         );
+    }
+
+    // --- mark_pending tests ---
+
+    #[test]
+    fn cache_mark_pending_sets_freshness() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        let cache = make_test_node_cache(42, 1);
+        let original_hash = cache.result_hash;
+        store.put(node.clone(), cache);
+
+        // Verify initially Final
+        assert_eq!(store.get(&node).unwrap().freshness, Freshness::Final);
+
+        // Mark pending
+        let marked = store.mark_pending(&node);
+        assert!(marked);
+
+        // Freshness should now be Pending with last_substantive
+        let entry = store.get(&node).unwrap();
+        assert_eq!(
+            entry.freshness,
+            Freshness::Pending {
+                last_substantive: Some(original_hash)
+            }
+        );
+    }
+
+    #[test]
+    fn cache_mark_pending_preserves_result() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        let cache = make_test_node_cache(42, 1);
+        store.put(node.clone(), cache);
+
+        store.mark_pending(&node);
+
+        // Result, result_hash, dependency_trace, and basis_version should be unchanged
+        let entry = store.get(&node).unwrap();
+        if let CachedResult::Value(val, _) = &entry.result {
+            assert_eq!(*val, Value::Int(42));
+        } else {
+            panic!("expected Value variant");
+        }
+        assert_eq!(entry.basis_version, VersionId(1));
+    }
+
+    #[test]
+    fn cache_mark_pending_uncached_returns_false() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "missing"));
+        let marked = store.mark_pending(&node);
+        assert!(!marked);
     }
 }
