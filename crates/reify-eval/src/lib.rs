@@ -62,6 +62,7 @@ pub struct CachedEvalResult {
 pub struct EvalResult {
     pub values: ValueMap,
     pub diagnostics: Vec<Diagnostic>,
+    pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
 }
 
 /// Result of checking constraints.
@@ -70,6 +71,7 @@ pub struct CheckResult {
     pub values: ValueMap,
     pub constraint_results: Vec<ConstraintCheckEntry>,
     pub diagnostics: Vec<Diagnostic>,
+    pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
 }
 
 /// A single constraint's check result.
@@ -87,6 +89,7 @@ pub struct BuildResult {
     pub constraint_results: Vec<ConstraintCheckEntry>,
     pub geometry_output: Option<Vec<u8>>,
     pub diagnostics: Vec<Diagnostic>,
+    pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
 }
 
 impl Engine {
@@ -263,7 +266,7 @@ impl Engine {
         self.demand = demand;
         self.last_eval_set = Vec::new(); // Cold start: no incremental eval set
 
-        EvalResult { values, diagnostics }
+        EvalResult { values, diagnostics, resolved_params: HashMap::new() }
     }
 
     /// Incrementally re-evaluate after changing a parameter value.
@@ -391,6 +394,7 @@ impl Engine {
         EvalResult {
             values,
             diagnostics: Vec::new(),
+            resolved_params: HashMap::new(),
         }
     }
 
@@ -585,7 +589,7 @@ impl Engine {
         }
 
         CachedEvalResult {
-            eval_result: EvalResult { values, diagnostics },
+            eval_result: EvalResult { values, diagnostics, resolved_params: HashMap::new() },
             stats,
         }
     }
@@ -632,6 +636,7 @@ impl Engine {
             values: eval_result.values,
             constraint_results,
             diagnostics,
+            resolved_params: eval_result.resolved_params,
         }
     }
 
@@ -705,6 +710,7 @@ impl Engine {
             constraint_results: check_result.constraint_results,
             geometry_output,
             diagnostics,
+            resolved_params: check_result.resolved_params,
         }
     }
 }
