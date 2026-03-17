@@ -150,14 +150,20 @@ impl std::fmt::Display for EvalError {
 impl std::error::Error for EvalError {}
 
 /// Freshness of a cached value (for incremental evaluation).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// M2 model: tracks evaluation lifecycle with richer state than M1's
+/// simple Fresh/Stale/Uncomputed.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Freshness {
-    /// Value is up-to-date with current inputs.
-    Fresh,
-    /// Value may be stale (inputs have changed).
-    Stale,
-    /// Value has never been computed.
-    Uncomputed,
+    /// Value is fully computed and up-to-date.
+    Final,
+    /// Value is a provisional result from an in-progress evaluation pass.
+    Intermediate { generation: u64 },
+    /// Value has been requested but not yet computed.
+    /// `last_substantive` holds the content hash of the last known-good value, if any.
+    Pending { last_substantive: Option<ContentHash> },
+    /// Evaluation failed with an error.
+    Failed { error: EvalError },
 }
 
 /// Map from ValueCellId to Value. M1 implementation uses HashMap;
