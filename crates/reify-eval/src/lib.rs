@@ -251,8 +251,9 @@ impl Engine {
     ///
     /// Requires a prior call to eval() to establish the baseline snapshot
     /// and dependency structures. Creates a child snapshot with Edit provenance,
-    /// updates the changed cell's value, and re-evaluates all let bindings that
-    /// depend on the changed cell.
+    /// computes dirty∩demand cone intersection, evaluates only Value nodes in
+    /// the eval set (topologically sorted). Constraint/Realization nodes are
+    /// tracked in the eval set but not evaluated (deferred to check()/build()).
     ///
     /// Returns EvalResult with all current values (both changed and unchanged).
     pub fn edit_param(
@@ -262,6 +263,10 @@ impl Engine {
     ) -> EvalResult {
         let snapshot = self.current_snapshot.as_ref()
             .expect("edit_param requires a prior call to eval()");
+        let reverse_index = self.reverse_index.as_ref()
+            .expect("edit_param requires reverse_index from eval()");
+        let trace_map = self.trace_map.as_ref()
+            .expect("edit_param requires trace_map from eval()");
 
         // Clone snapshot (O(1) via PersistentMap)
         let parent_id = snapshot.id;
@@ -275,10 +280,10 @@ impl Engine {
         new_snapshot.id = SnapshotId(snapshot_id);
         new_snapshot.version = VersionId(version_id);
 
-        let mut changed = std::collections::HashSet::new();
-        changed.insert(cell.clone());
+        let mut changed_set = std::collections::HashSet::new();
+        changed_set.insert(cell.clone());
         new_snapshot.provenance = SnapshotProvenance::Edit {
-            changed,
+            changed: changed_set.clone(),
             parent: parent_id,
         };
 
@@ -288,6 +293,10 @@ impl Engine {
             (new_value.clone(), DeterminacyState::Determined),
         );
 
+        // Compute dirty cone and eval set
+        let dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, reverse_index);
+        let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, trace_map);
+
         // Build the full ValueMap from snapshot values
         let mut values = ValueMap::new();
         for (id, (val, _det)) in new_snapshot.values.iter() {
@@ -296,22 +305,37 @@ impl Engine {
         // Overwrite with the new param value
         values.insert(cell.clone(), new_value);
 
-        // Re-evaluate all let bindings that have expressions
-        // (for now: re-evaluate ALL let bindings to keep it simple)
-        for (_, node) in new_snapshot.graph.value_cells.iter() {
-            if node.kind == ValueCellKind::Let {
-                if let Some(ref expr) = node.default_expr {
-                    let val = reify_expr::eval_expr(expr, &values);
-                    values.insert(node.id.clone(), val.clone());
-                    new_snapshot.values.insert(
-                        node.id.clone(),
-                        (val, DeterminacyState::Determined),
-                    );
+        // Evaluate only Value nodes in the eval set (topo-sorted order)
+        for node_id in &eval_set {
+            if let NodeId::Value(vcid) = node_id {
+                if let Some(node) = new_snapshot.graph.value_cells.get(vcid) {
+                    if let Some(ref expr) = node.default_expr {
+                        let val = reify_expr::eval_expr(expr, &values);
+                        values.insert(vcid.clone(), val.clone());
+                        new_snapshot.values.insert(
+                            vcid.clone(),
+                            (val.clone(), DeterminacyState::Determined),
+                        );
+
+                        // Record in cache
+                        let trace = extract_dependency_trace(expr);
+                        let cached_result =
+                            CachedResult::Value(val, DeterminacyState::Determined);
+                        self.cache.record_evaluation(
+                            node_id.clone(),
+                            cached_result,
+                            VersionId(version_id),
+                            trace,
+                        );
+                    }
                 }
             }
+            // Constraint/Realization nodes: tracked in eval set but not evaluated
+            // (deferred to check()/build())
         }
 
-        // Store the new snapshot
+        // Store state
+        self.last_eval_set = eval_set;
         self.current_snapshot = Some(new_snapshot);
 
         EvalResult {
