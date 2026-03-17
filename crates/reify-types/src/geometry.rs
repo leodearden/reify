@@ -1,10 +1,23 @@
 use std::fmt;
 
+use crate::hash::ContentHash;
 use crate::value::Value;
 
 /// Unique identifier for a geometry handle within a kernel session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GeometryHandleId(pub u64);
+
+impl GeometryHandleId {
+    /// Compute a content hash for incremental caching.
+    /// Domain-separated with tag byte [11] followed by the id as le_bytes.
+    /// This serves as a proxy hash since OCCT shapes can't be hashed directly.
+    pub fn content_hash(&self) -> ContentHash {
+        let mut buf = [0u8; 9];
+        buf[0] = 11;
+        buf[1..].copy_from_slice(&self.0.to_le_bytes());
+        ContentHash::of(&buf)
+    }
+}
 
 /// An opaque handle to a geometry object managed by a kernel.
 #[derive(Debug, Clone)]
@@ -219,4 +232,31 @@ pub trait GeometryKernel: Send + Sync {
         handle: GeometryHandleId,
         tolerance: f64,
     ) -> Result<Mesh, TessError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn geometry_handle_id_content_hash_deterministic() {
+        let h1 = GeometryHandleId(42).content_hash();
+        let h2 = GeometryHandleId(42).content_hash();
+        assert_eq!(h1, h2);
+
+        let h3 = GeometryHandleId(0).content_hash();
+        let h4 = GeometryHandleId(0).content_hash();
+        assert_eq!(h3, h4);
+    }
+
+    #[test]
+    fn geometry_handle_id_content_hash_distinct() {
+        let h1 = GeometryHandleId(0).content_hash();
+        let h2 = GeometryHandleId(1).content_hash();
+        let h3 = GeometryHandleId(u64::MAX).content_hash();
+
+        assert_ne!(h1, h2);
+        assert_ne!(h1, h3);
+        assert_ne!(h2, h3);
+    }
 }
