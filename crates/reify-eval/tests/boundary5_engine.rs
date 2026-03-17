@@ -130,6 +130,70 @@ fn constraint_on_auto_param_indeterminate() {
     );
 }
 
+/// End-to-end: parse → compile → eval → check with auto param.
+#[test]
+fn e2e_parse_compile_eval_auto_param() {
+    use reify_compiler::ValueCellKind;
+    use reify_types::{DeterminacyState, ModulePath, Satisfaction, ValueCellId};
+
+    let source = r#"structure S {
+    param x : Scalar = auto
+    param y : Scalar = 5mm
+    let z = y * 2
+    constraint x > 2mm
+}"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("e2e_auto"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    // Check that x is ValueCellKind::Auto
+    let template = &compiled.templates[0];
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id == ValueCellId::new("S", "x"))
+        .expect("x cell not found");
+    assert_eq!(x_cell.kind, ValueCellKind::Auto);
+
+    // Evaluate and check
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.check(&compiled);
+
+    // x should be Undef
+    let x_id = ValueCellId::new("S", "x");
+    let x_val = result.values.get(&x_id).expect("x should be in values");
+    assert!(x_val.is_undef(), "auto param x should be Undef, got {:?}", x_val);
+
+    // y should be ~0.005 SI (5mm)
+    let y_id = ValueCellId::new("S", "y");
+    let y_val = result.values.get(&y_id).expect("y should be in values");
+    let y_f64 = y_val.as_f64().expect("y should be a number");
+    assert!((y_f64 - 0.005).abs() < 1e-10, "y should be 0.005 SI, got {}", y_f64);
+
+    // z = y * 2 ≈ 0.01 SI
+    let z_id = ValueCellId::new("S", "z");
+    let z_val = result.values.get(&z_id).expect("z should be in values");
+    let z_f64 = z_val.as_f64().expect("z should be a number");
+    assert!((z_f64 - 0.01).abs() < 1e-10, "z should be 0.01 SI, got {}", z_f64);
+
+    // Constraint on x should be Indeterminate
+    assert_eq!(result.constraint_results.len(), 1);
+    assert_eq!(
+        result.constraint_results[0].satisfaction,
+        Satisfaction::Indeterminate,
+        "constraint on auto param x should be Indeterminate"
+    );
+
+    // Check snapshot determinacy
+    let snapshot = engine.snapshot().expect("snapshot should exist");
+    let (_, x_det) = snapshot.values.get(&x_id).expect("x in snapshot");
+    assert_eq!(*x_det, DeterminacyState::Auto);
+
+    let (_, y_det) = snapshot.values.get(&y_id).expect("y in snapshot");
+    assert_eq!(*y_det, DeterminacyState::Determined);
+}
+
 /// Engine with predetermined constraint results → reports violations.
 #[test]
 
