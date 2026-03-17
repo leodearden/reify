@@ -32,7 +32,7 @@ fn build_with_mock_kernel() {
 /// Auto param evaluates to (Undef, DeterminacyState::Auto) in snapshot.
 #[test]
 fn eval_auto_param_undef_auto() {
-    use reify_types::{CompiledExpr, DeterminacyState, ModulePath, Type, Value, ValueCellId};
+    use reify_types::{CompiledExpr, DeterminacyState, ModulePath, Type, ValueCellId};
 
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "x", Type::length())

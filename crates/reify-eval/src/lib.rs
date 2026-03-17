@@ -180,9 +180,28 @@ impl Engine {
 
         // Two-pass evaluation (same logic as before)
         for template in &module.templates {
-            // First pass: evaluate Param defaults to populate the value map
+            // First pass: evaluate Param defaults and Auto cells to populate the value map
             for cell in &template.value_cells {
-                if cell.kind == ValueCellKind::Param
+                if cell.kind == ValueCellKind::Auto {
+                    // Auto cells: Undef with DeterminacyState::Auto
+                    values.insert(cell.id.clone(), reify_types::Value::Undef);
+                    snapshot.values.insert(
+                        cell.id.clone(),
+                        (reify_types::Value::Undef, DeterminacyState::Auto),
+                    );
+
+                    // Record in cache
+                    let node_id = NodeId::Value(cell.id.clone());
+                    let trace = DependencyTrace::default();
+                    let cached_result =
+                        CachedResult::Value(reify_types::Value::Undef, DeterminacyState::Auto);
+                    self.cache.record_evaluation(
+                        node_id,
+                        cached_result,
+                        VersionId(version_id),
+                        trace,
+                    );
+                } else if cell.kind == ValueCellKind::Param
                     && let Some(ref expr) = cell.default_expr
                 {
                     let val = reify_expr::eval_expr(expr, &values);

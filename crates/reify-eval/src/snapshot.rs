@@ -1,6 +1,6 @@
 // Snapshot: immutable evaluation state with provenance tracking.
 
-use reify_compiler::CompiledModule;
+use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
     ContentHash, DeterminacyState, PersistentMap, SnapshotId, SnapshotProvenance, Value,
     ValueCellId, VersionId,
@@ -33,10 +33,16 @@ impl Snapshot {
         let graph = EvaluationGraph::from_templates(&module.templates);
         let topology_fingerprint = graph.topology_fingerprint();
 
-        // Initialize all value cells to (Undef, Undetermined)
+        // Initialize all value cells: Auto cells get (Undef, Auto),
+        // all others get (Undef, Undetermined).
         let mut values = PersistentMap::new();
-        for (id, _node) in graph.value_cells.iter() {
-            values.insert(id.clone(), (Value::Undef, DeterminacyState::Undetermined));
+        for (id, node) in graph.value_cells.iter() {
+            let det = if node.kind == ValueCellKind::Auto {
+                DeterminacyState::Auto
+            } else {
+                DeterminacyState::Undetermined
+            };
+            values.insert(id.clone(), (Value::Undef, det));
         }
 
         Snapshot {
