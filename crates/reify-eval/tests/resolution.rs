@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use reify_eval::Engine;
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver, TopologyTemplateBuilder,
-    gt, lt, literal, value_ref, mm,
+    binop, gt, lt, literal, value_ref, mm,
 };
 use reify_types::{DeterminacyState, ModulePath, SnapshotId, SnapshotProvenance, Type, Value, ValueCellId};
 
@@ -111,5 +111,50 @@ fn resolved_param_determinacy_and_provenance() {
             resolved: resolved_set,
             parent: SnapshotId(0),
         }
+    );
+}
+
+#[test]
+fn let_binding_re_evaluated_after_resolution() {
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(x_id.clone(), mm(10.0)); // 0.01 m SI
+
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        // y = x * 2.0
+        .let_binding(
+            "S",
+            "y",
+            Type::length(),
+            binop(
+                reify_types::BinOp::Mul,
+                value_ref("S", "x"),
+                literal(Value::Real(2.0)),
+            ),
+        )
+        // constraint: x > 2mm
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(2.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    // y = x * 2.0 = 0.01 * 2.0 = 0.02 m SI
+    let y_val = result.values.get(&y_id).expect("y should be in values");
+    assert!(
+        matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
+        "expected y ≈ 0.02 SI (10mm * 2), got {:?}",
+        y_val
     );
 }
