@@ -1,4 +1,7 @@
-use reify_types::{ConstraintNodeId, RealizationNodeId, ValueCellId};
+use reify_types::{
+    ConstraintNodeId, ContentHash, DeterminacyState, GeometryHandleId, RealizationNodeId,
+    Satisfaction, Value, ValueCellId,
+};
 
 /// Unified identifier for any node in the evaluation graph.
 /// Used as the key in the cache store.
@@ -24,6 +27,40 @@ impl From<ConstraintNodeId> for NodeId {
 impl From<RealizationNodeId> for NodeId {
     fn from(id: RealizationNodeId) -> Self {
         NodeId::Realization(id)
+    }
+}
+
+/// Stores different kinds of evaluation results in the cache.
+#[derive(Clone, Debug)]
+pub enum CachedResult {
+    /// A value cell result with its determinacy state.
+    Value(Value, DeterminacyState),
+    /// A constraint satisfaction result.
+    Satisfaction(Satisfaction),
+    /// A geometry handle result (proxy for the actual shape).
+    GeometryHandle(GeometryHandleId),
+}
+
+impl CachedResult {
+    /// Compute a content hash for early cutoff comparison.
+    /// Domain-separated with tag bytes [20], [21], [22] per variant.
+    pub fn content_hash(&self) -> ContentHash {
+        match self {
+            CachedResult::Value(val, det) => {
+                let tag = ContentHash::of(&[20]);
+                let val_hash = val.content_hash();
+                let det_hash = ContentHash::of(&[*det as u8]);
+                tag.combine(val_hash).combine(det_hash)
+            }
+            CachedResult::Satisfaction(sat) => {
+                let tag = ContentHash::of(&[21]);
+                tag.combine(sat.content_hash())
+            }
+            CachedResult::GeometryHandle(handle_id) => {
+                let tag = ContentHash::of(&[22]);
+                tag.combine(handle_id.content_hash())
+            }
+        }
     }
 }
 
