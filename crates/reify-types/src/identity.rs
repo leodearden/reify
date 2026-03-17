@@ -244,4 +244,43 @@ mod tests {
         assert_eq!(map.get(&SnapshotId(0)), Some(&"first"));
         assert_eq!(map.get(&SnapshotId(2)), None);
     }
+
+    #[test]
+    fn resolution_node_id_construction() {
+        let id = ResolutionNodeId::new("Bracket", 0);
+        assert_eq!(id.entity, "Bracket");
+        assert_eq!(id.index, 0);
+    }
+
+    #[test]
+    fn resolution_node_id_display() {
+        let id = ResolutionNodeId::new("Bracket", 0);
+        assert_eq!(format!("{}", id), "Bracket#resolution[0]");
+
+        let id2 = ResolutionNodeId::new("Flange", 3);
+        assert_eq!(format!("{}", id2), "Flange#resolution[3]");
+    }
+
+    #[test]
+    fn resolution_node_id_equality() {
+        let a = ResolutionNodeId::new("Bracket", 0);
+        let b = ResolutionNodeId::new("Bracket", 0);
+        let c = ResolutionNodeId::new("Bracket", 1);
+        let d = ResolutionNodeId::new("Flange", 0);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, d);
+    }
+
+    #[test]
+    fn resolution_node_id_as_hashmap_key() {
+        let mut map = HashMap::new();
+        let id1 = ResolutionNodeId::new("Bracket", 0);
+        let id2 = ResolutionNodeId::new("Bracket", 1);
+        map.insert(id1.clone(), "first");
+        map.insert(id2.clone(), "second");
+        assert_eq!(map.get(&id1), Some(&"first"));
+        assert_eq!(map.get(&id2), Some(&"second"));
+        assert_eq!(map.get(&ResolutionNodeId::new("Missing", 0)), None);
+    }
 }
