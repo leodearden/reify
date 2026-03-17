@@ -647,14 +647,26 @@ fn consecutive_edit_param_only_reevaluates_affected_nodes() {
         );
     }
 
-    // ── (6) pending_transition_count matches cached Value nodes ──────
-    let cached_value_count = eval_set2
-        .iter()
-        .filter(|n| matches!(n, NodeId::Value(_)))
-        .count();
+    // ── (6) pending_transition_count ────────────────────────────────
+    //
+    // `pending_transition_count` counts `mark_pending()` calls over the
+    // full pre-cutoff `eval_set`, NOT the post-cutoff `actual_eval_set`
+    // returned by `last_eval_set()`. In the presence of early cutoff the
+    // two sets diverge: nodes are marked pending (incrementing the
+    // counter) then skipped and restored via `restore_final()`, which
+    // does NOT decrement the counter.
+    //
+    // For this test's second edit (height → 0.12) there is no early
+    // cutoff — the dirty cone intersected with demand yields exactly
+    // {volume}, a terminal Value node with no downstream dependents in
+    // the eval set. Therefore eval_set == actual_eval_set == {volume},
+    // making the distinction moot here. We assert the known constant
+    // directly rather than deriving it from `last_eval_set()` to avoid
+    // creating a false equivalence that would silently break if the
+    // fixture were extended with early-cutoff scenarios.
     assert_eq!(
         cache.pending_transition_count(),
-        cached_value_count,
-        "pending_transition_count should equal cached Value nodes in second edit's eval set"
+        1,
+        "second edit's eval_set has exactly one Value node (volume), no early cutoff"
     );
 }
