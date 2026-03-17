@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use reify_types::{
     ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId,
     RealizationNodeId, Satisfaction, Value, ValueCellId, VersionId,
@@ -107,6 +109,56 @@ impl NodeCache {
             dependency_trace,
             basis_version,
         }
+    }
+}
+
+/// Store managing per-node cache entries for incremental evaluation.
+pub struct CacheStore {
+    caches: HashMap<NodeId, NodeCache>,
+}
+
+impl CacheStore {
+    /// Create an empty cache store.
+    pub fn new() -> Self {
+        Self {
+            caches: HashMap::new(),
+        }
+    }
+
+    /// Look up a cached entry by node id.
+    pub fn get(&self, node: &NodeId) -> Option<&NodeCache> {
+        self.caches.get(node)
+    }
+
+    /// Store or overwrite a cache entry.
+    pub fn put(&mut self, node: NodeId, cache: NodeCache) {
+        self.caches.insert(node, cache);
+    }
+
+    /// Remove a cached entry.
+    pub fn invalidate(&mut self, node: &NodeId) {
+        self.caches.remove(node);
+    }
+
+    /// Number of cached entries.
+    pub fn len(&self) -> usize {
+        self.caches.len()
+    }
+
+    /// Whether the store has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.caches.is_empty()
+    }
+
+    /// Remove all cached entries.
+    pub fn clear(&mut self) {
+        self.caches.clear();
+    }
+}
+
+impl Default for CacheStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
