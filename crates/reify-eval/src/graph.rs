@@ -101,26 +101,28 @@ impl EvaluationGraph {
 
     /// Compute a deterministic fingerprint of the graph topology.
     ///
-    /// Collects content hashes from all nodes, sorts them for determinism
-    /// (since PersistentMap iteration order is not guaranteed), and combines
-    /// them into a single ContentHash.
+    /// Computes three per-type sub-hashes (value_cells, constraints, realizations)
+    /// independently, then combines them in fixed order. This ensures:
+    /// - Determinism regardless of PersistentMap iteration order (via sorting)
+    /// - Domain separation: a value_cell with hash H won't alias with a constraint of hash H
     pub fn topology_fingerprint(&self) -> ContentHash {
-        let mut hashes: Vec<ContentHash> = Vec::new();
+        let vc_hash = {
+            let mut hashes: Vec<ContentHash> = self.value_cells.iter().map(|(_, n)| n.content_hash).collect();
+            hashes.sort_by_key(|h| h.0);
+            ContentHash::combine_all(hashes)
+        };
+        let cn_hash = {
+            let mut hashes: Vec<ContentHash> = self.constraints.iter().map(|(_, n)| n.content_hash).collect();
+            hashes.sort_by_key(|h| h.0);
+            ContentHash::combine_all(hashes)
+        };
+        let real_hash = {
+            let mut hashes: Vec<ContentHash> = self.realizations.iter().map(|(_, n)| n.content_hash).collect();
+            hashes.sort_by_key(|h| h.0);
+            ContentHash::combine_all(hashes)
+        };
 
-        for (_, node) in self.value_cells.iter() {
-            hashes.push(node.content_hash);
-        }
-        for (_, node) in self.constraints.iter() {
-            hashes.push(node.content_hash);
-        }
-        for (_, node) in self.realizations.iter() {
-            hashes.push(node.content_hash);
-        }
-
-        // Sort for determinism regardless of insertion order
-        hashes.sort_by_key(|h| h.0);
-
-        ContentHash::combine_all(hashes)
+        ContentHash::combine_all([vc_hash, cn_hash, real_hash])
     }
 }
 
