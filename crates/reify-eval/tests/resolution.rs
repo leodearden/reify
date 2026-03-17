@@ -315,3 +315,37 @@ fn solver_no_progress_produces_warning() {
     // resolved_params should be empty
     assert!(result.resolved_params.is_empty());
 }
+
+#[test]
+fn no_solver_backward_compatible() {
+    let x_id = ValueCellId::new("S", "x");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(2.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Engine WITHOUT with_solver() — solver is None
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+    let result = engine.eval(&module);
+
+    // x should be Undef with Auto determinacy in snapshot
+    let x_val = result.values.get(&x_id).expect("x in values");
+    assert!(x_val.is_undef(), "expected Undef without solver, got {:?}", x_val);
+
+    let snap = engine.snapshot().expect("snapshot should exist");
+    let (val, det) = snap.values.get(&x_id).expect("x in snapshot");
+    assert!(val.is_undef());
+    assert_eq!(*det, DeterminacyState::Auto);
+
+    // No diagnostics
+    assert!(result.diagnostics.is_empty());
+
+    // No resolved params
+    assert!(result.resolved_params.is_empty());
+}
