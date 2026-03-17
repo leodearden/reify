@@ -27,6 +27,19 @@ pub struct ConstraintDiagnostics {
     pub messages: Vec<Diagnostic>,
 }
 
+/// The domain of a constraint, determining which solver handles it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConstraintDomain {
+    /// Dimensional constraints (e.g., length ratios, unit conversions).
+    Dimensional,
+    /// Geometric constraints (e.g., parallelism, tangency).
+    Geometric,
+    /// Logical constraints (e.g., boolean conditions).
+    Logical,
+    /// Cross-domain constraints spanning multiple domains.
+    CrossDomain,
+}
+
 /// Trait for constraint checking. Lives in reify-types for dependency inversion —
 /// implemented in reify-constraints, consumed by reify-eval.
 pub trait ConstraintChecker: Send + Sync {
