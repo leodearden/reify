@@ -516,4 +516,84 @@ mod tests {
         assert_eq!(r_node.content_hash, expected_hash, "realization content_hash should be id_hash.combine(ops_hash)");
         assert_ne!(r_node.content_hash, ContentHash(0));
     }
+
+    #[test]
+    fn fingerprint_domain_separates_node_types() {
+        // graph_a has a value_cell with hash H, graph_b has a constraint with hash H
+        let hash_h = ContentHash::of_str("same");
+
+        let mut graph_a = EvaluationGraph::default();
+        graph_a.value_cells.insert(
+            ValueCellId::new("X", "a"),
+            ValueCellNode {
+                id: ValueCellId::new("X", "a"),
+                kind: ValueCellKind::Param,
+                cell_type: Type::length(),
+                default_expr: None,
+                content_hash: hash_h,
+            },
+        );
+
+        let mut graph_b = EvaluationGraph::default();
+        graph_b.constraints.insert(
+            ConstraintNodeId::new("X", 0),
+            ConstraintNodeData {
+                id: ConstraintNodeId::new("X", 0),
+                expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                content_hash: hash_h,
+            },
+        );
+
+        assert_ne!(
+            graph_a.topology_fingerprint(),
+            graph_b.topology_fingerprint(),
+            "fingerprint must domain-separate value_cells from constraints"
+        );
+    }
+
+    #[test]
+    fn fingerprint_domain_separates_all_three_types() {
+        let hash_h = ContentHash::of_str("same");
+
+        let mut graph_a = EvaluationGraph::default();
+        graph_a.value_cells.insert(
+            ValueCellId::new("X", "a"),
+            ValueCellNode {
+                id: ValueCellId::new("X", "a"),
+                kind: ValueCellKind::Param,
+                cell_type: Type::length(),
+                default_expr: None,
+                content_hash: hash_h,
+            },
+        );
+
+        let mut graph_b = EvaluationGraph::default();
+        graph_b.constraints.insert(
+            ConstraintNodeId::new("X", 0),
+            ConstraintNodeData {
+                id: ConstraintNodeId::new("X", 0),
+                expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                content_hash: hash_h,
+            },
+        );
+
+        let mut graph_c = EvaluationGraph::default();
+        graph_c.realizations.insert(
+            RealizationNodeId::new("X", 0),
+            RealizationNodeData {
+                id: RealizationNodeId::new("X", 0),
+                operations: vec![],
+                content_hash: hash_h,
+            },
+        );
+
+        let fp_a = graph_a.topology_fingerprint();
+        let fp_b = graph_b.topology_fingerprint();
+        let fp_c = graph_c.topology_fingerprint();
+
+        // All three must be pairwise distinct
+        assert_ne!(fp_a, fp_b, "value_cell vs constraint fingerprints must differ");
+        assert_ne!(fp_a, fp_c, "value_cell vs realization fingerprints must differ");
+        assert_ne!(fp_b, fp_c, "constraint vs realization fingerprints must differ");
+    }
 }
