@@ -99,6 +99,13 @@ impl DemandRegistry {
                         Vec::new()
                     }
                 }
+                NodeId::Resolution(res_id) => {
+                    if let Some(res_node) = graph.resolutions.get(res_id) {
+                        res_node.auto_params.clone()
+                    } else {
+                        Vec::new()
+                    }
+                }
             };
 
             // Convert dependencies to NodeId::Value and enqueue

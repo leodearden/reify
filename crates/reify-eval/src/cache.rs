@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use reify_types::{
     ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId,
-    RealizationNodeId, Satisfaction, Value, ValueCellId, VersionId,
+    RealizationNodeId, ResolutionNodeId, Satisfaction, Value, ValueCellId, VersionId,
 };
 
 use crate::deps::DependencyTrace;
@@ -14,6 +14,7 @@ pub enum NodeId {
     Value(ValueCellId),
     Constraint(ConstraintNodeId),
     Realization(RealizationNodeId),
+    Resolution(ResolutionNodeId),
 }
 
 impl From<ValueCellId> for NodeId {
@@ -31,6 +32,12 @@ impl From<ConstraintNodeId> for NodeId {
 impl From<RealizationNodeId> for NodeId {
     fn from(id: RealizationNodeId) -> Self {
         NodeId::Realization(id)
+    }
+}
+
+impl From<ResolutionNodeId> for NodeId {
+    fn from(id: ResolutionNodeId) -> Self {
+        NodeId::Resolution(id)
     }
 }
 
@@ -356,6 +363,26 @@ mod tests {
         let rnid = RealizationNodeId::new("Bracket", 0);
         let node: NodeId = NodeId::from(rnid.clone());
         assert_eq!(node, NodeId::Realization(rnid));
+    }
+
+    #[test]
+    fn node_id_resolution_variant() {
+        use reify_types::ResolutionNodeId;
+
+        let res_id = ResolutionNodeId::new("A", 0);
+        let res_node = NodeId::Resolution(res_id.clone());
+
+        // Equality with itself
+        assert_eq!(res_node, NodeId::Resolution(ResolutionNodeId::new("A", 0)));
+
+        // Differs from other variants
+        assert_ne!(res_node, NodeId::Value(ValueCellId::new("A", "x")));
+        assert_ne!(res_node, NodeId::Constraint(ConstraintNodeId::new("A", 0)));
+        assert_ne!(res_node, NodeId::Realization(RealizationNodeId::new("A", 0)));
+
+        // From<ResolutionNodeId> conversion
+        let from_node: NodeId = NodeId::from(res_id.clone());
+        assert_eq!(from_node, res_node);
     }
 
     #[test]
