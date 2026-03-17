@@ -158,3 +158,40 @@ fn let_binding_re_evaluated_after_resolution() {
         y_val
     );
 }
+
+#[test]
+fn check_reports_satisfied_after_resolution() {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_types::Satisfaction;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        // constraint: thickness > 2mm
+        .constraint("S", 0, None, gt(value_ref("S", "thickness"), literal(mm(2.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None)
+        .with_solver(Box::new(solver));
+
+    let result = engine.check(&module);
+
+    // After resolution, thickness=5mm > 2mm → Satisfied
+    assert_eq!(result.constraint_results.len(), 1);
+    assert_eq!(
+        result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "constraint should be satisfied after resolution, got {:?}",
+        result.constraint_results[0].satisfaction
+    );
+}
