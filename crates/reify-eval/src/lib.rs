@@ -9,9 +9,9 @@ use std::collections::HashMap;
 
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
-    ConstraintChecker, ConstraintInput, DeterminacyState, Diagnostic, ExportFormat,
-    GeometryHandleId, GeometryKernel, Satisfaction, SnapshotId, SnapshotProvenance,
-    ValueCellId, ValueMap, VersionId,
+    ConstraintChecker, ConstraintInput, ConstraintSolver, DeterminacyState, Diagnostic,
+    ExportFormat, GeometryHandleId, GeometryKernel, Satisfaction, SnapshotId,
+    SnapshotProvenance, ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
@@ -23,6 +23,7 @@ use crate::snapshot::Snapshot;
 pub struct Engine {
     constraint_checker: Box<dyn ConstraintChecker>,
     geometry_kernel: Option<Box<dyn GeometryKernel>>,
+    solver: Option<Box<dyn ConstraintSolver>>,
     cache: CacheStore,
     /// Overridden param values (set by set_param_and_invalidate).
     param_overrides: std::collections::HashMap<ValueCellId, reify_types::Value>,
@@ -100,6 +101,7 @@ impl Engine {
         Self {
             constraint_checker,
             geometry_kernel,
+            solver: None,
             cache: CacheStore::new(),
             param_overrides: std::collections::HashMap::new(),
             current_snapshot: None,
@@ -110,6 +112,12 @@ impl Engine {
             next_version_id: 0,
             last_eval_set: Vec::new(),
         }
+    }
+
+    /// Set the constraint solver for resolving auto parameters.
+    pub fn with_solver(mut self, solver: Box<dyn ConstraintSolver>) -> Self {
+        self.solver = Some(solver);
+        self
     }
 
     /// Access the cache store (for testing/inspection).

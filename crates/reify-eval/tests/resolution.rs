@@ -20,7 +20,7 @@ fn engine_with_solver_accepts_solver() {
         .auto_param("S", "x", Type::length())
         .build();
 
-    let module = CompiledModuleBuilder::new(ModulePath::new("test"))
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(template)
         .build();
 
@@ -29,5 +29,5 @@ fn engine_with_solver_accepts_solver() {
 
     let result = engine.eval(&module);
     // No panic, x is in values (may still be Undef until resolution phase is added)
-    assert!(result.values.contains_key(&ValueCellId::new("S", "x")));
+    assert!(result.values.get(&ValueCellId::new("S", "x")).is_some());
 }
