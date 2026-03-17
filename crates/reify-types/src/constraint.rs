@@ -103,6 +103,13 @@ pub trait ConstraintChecker: Send + Sync {
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult>;
 }
 
+/// Trait for constraint solving. Lives in reify-types for dependency inversion —
+/// implemented in reify-constraints, consumed by reify-eval.
+pub trait ConstraintSolver: Send + Sync {
+    /// Attempt to resolve auto parameters to satisfy constraints.
+    fn solve(&self, problem: &ResolutionProblem) -> SolveResult;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
