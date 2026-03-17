@@ -93,9 +93,10 @@ impl Engine {
         value: reify_types::Value,
     ) {
         self.param_overrides.insert(param.clone(), value);
-        // Invalidate the param's own cache entry
-        self.cache.invalidate(&NodeId::Value(param.clone()));
-        // Invalidate all nodes that depend on this param
+        // Mark the param's own cache entry as dirty
+        let param_node = NodeId::Value(param.clone());
+        self.cache.invalidate(&param_node);
+        // Mark all nodes that depend on this param as dirty
         self.cache.invalidate_dependents(&[param.clone()]);
     }
 
@@ -162,9 +163,9 @@ impl Engine {
                         }
                     }
 
-                    // Check if cache entry still exists (not invalidated).
+                    // Check if cache entry still exists and is not dirty.
                     // For params without overrides, we can reuse cached values.
-                    if !self.param_overrides.contains_key(&cell.id) {
+                    if !self.param_overrides.contains_key(&cell.id) && !self.cache.is_dirty(&node_id) {
                         if let Some(entry) = self.cache.get(&node_id) {
                             if let CachedResult::Value(ref val, _) = entry.result {
                                 let val = val.clone();
@@ -226,28 +227,30 @@ impl Engine {
                         }
                     }
 
-                    // Check if cache entry still exists (not invalidated).
+                    // Check if cache entry still exists and is not dirty.
                     // If so, the node's dependencies haven't changed, so we
                     // can reuse the cached result and update its basis_version.
-                    if let Some(entry) = self.cache.get(&node_id) {
-                        if let CachedResult::Value(ref val, _) = entry.result {
-                            let val = val.clone();
-                            values.insert(cell.id.clone(), val);
-                            // Update basis_version to current so fast path works next time
-                            let trace = entry.dependency_trace.clone();
-                            let result = entry.result.clone();
-                            self.cache.record_evaluation(
-                                node_id,
-                                result,
-                                version,
-                                trace,
-                            );
-                            stats.cache_hits += 1;
-                            continue;
+                    if !self.cache.is_dirty(&node_id) {
+                        if let Some(entry) = self.cache.get(&node_id) {
+                            if let CachedResult::Value(ref val, _) = entry.result {
+                                let val = val.clone();
+                                values.insert(cell.id.clone(), val);
+                                let trace = entry.dependency_trace.clone();
+                                let result = entry.result.clone();
+                                self.cache.record_evaluation(
+                                    node_id,
+                                    result,
+                                    version,
+                                    trace,
+                                );
+                                stats.cache_hits += 1;
+                                continue;
+                            }
                         }
                     }
 
                     stats.cache_misses += 1;
+                    self.cache.clear_dirty(&node_id);
                     let val = reify_expr::eval_expr(expr, &values);
 
                     // Build dependency trace from expression refs
@@ -260,6 +263,9 @@ impl Engine {
                             .record_evaluation(node_id, cached_result, version, trace);
                     if outcome == EvalOutcome::Unchanged {
                         stats.early_cutoffs += 1;
+                        // Early cutoff: clear dirty flags on nodes that
+                        // depend on this cell, since its result hasn't changed.
+                        self.cache.clear_dependents_dirty(&cell.id);
                     }
 
                     values.insert(cell.id.clone(), val);

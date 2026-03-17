@@ -115,6 +115,9 @@ impl NodeCache {
 /// Store managing per-node cache entries for incremental evaluation.
 pub struct CacheStore {
     caches: HashMap<NodeId, NodeCache>,
+    /// Nodes that need re-evaluation (but whose old entries are kept for
+    /// early cutoff comparison).
+    dirty: std::collections::HashSet<NodeId>,
 }
 
 impl CacheStore {
@@ -122,6 +125,7 @@ impl CacheStore {
     pub fn new() -> Self {
         Self {
             caches: HashMap::new(),
+            dirty: std::collections::HashSet::new(),
         }
     }
 
@@ -193,16 +197,50 @@ impl CacheStore {
         EvalOutcome::Changed
     }
 
-    /// Invalidate all cached nodes whose dependency trace reads any of the
-    /// changed value cells. Forces those nodes to be re-evaluated next time.
+    /// Mark all cached nodes whose dependency trace reads any of the changed
+    /// value cells as dirty. They keep their old entries for early cutoff
+    /// comparison but will be re-evaluated on the next eval_cached() call.
     pub fn invalidate_dependents(&mut self, changed: &[ValueCellId]) {
-        self.caches.retain(|_node, entry| {
-            !entry
+        for (node, entry) in &self.caches {
+            if entry
                 .dependency_trace
                 .reads
                 .iter()
                 .any(|read| changed.contains(read))
-        });
+            {
+                self.dirty.insert(node.clone());
+            }
+        }
+    }
+
+    /// Check if a node is marked as dirty (needs re-evaluation).
+    pub fn is_dirty(&self, node: &NodeId) -> bool {
+        self.dirty.contains(node)
+    }
+
+    /// Clear the dirty flag for a node after re-evaluation.
+    pub fn clear_dirty(&mut self, node: &NodeId) {
+        self.dirty.remove(node);
+    }
+
+    /// Clear dirty flags for nodes whose dependency traces read the given
+    /// value cell. Used after early cutoff: if a node's result didn't change,
+    /// its dependents don't need re-evaluation.
+    pub fn clear_dependents_dirty(&mut self, cell: &ValueCellId) {
+        let to_clear: Vec<NodeId> = self
+            .dirty
+            .iter()
+            .filter(|node| {
+                self.caches
+                    .get(node)
+                    .map(|entry| entry.dependency_trace.reads.contains(cell))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        for node in to_clear {
+            self.dirty.remove(&node);
+        }
     }
 
     /// Version fast path: if the node is cached and its basis_version matches
@@ -331,9 +369,11 @@ mod tests {
         // Invalidate dependents of a
         store.invalidate_dependents(&[a]);
 
-        // x should be invalidated (depends on a)
-        assert!(store.get(&node_x).is_none());
-        // y should be retained (depends on b, not a)
+        // x should be marked dirty (depends on a) but entry still exists
+        assert!(store.is_dirty(&node_x));
+        assert!(store.get(&node_x).is_some()); // entry kept for early cutoff
+        // y should NOT be dirty (depends on b, not a)
+        assert!(!store.is_dirty(&node_y));
         assert!(store.get(&node_y).is_some());
     }
 
