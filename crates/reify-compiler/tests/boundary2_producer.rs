@@ -292,3 +292,105 @@ fn bracket_compiles_with_zero_diagnostics() {
         compiled.diagnostics
     );
 }
+
+/// Mul/Div with different Scalar dimensions should compile cleanly (no diagnostics).
+/// Length * Length → Area, Length / Length → dimensionless Real.
+#[test]
+fn mul_div_different_dimensions_no_diagnostic() {
+    use reify_syntax::*;
+    use reify_types::*;
+
+    let module = ParsedModule {
+        path: ModulePath::single("mul_div_dims"),
+        declarations: vec![Declaration::Structure(StructureDef {
+            name: "Good".into(),
+            members: vec![
+                MemberDecl::Param(ParamDecl {
+                    name: "width".into(),
+                    type_expr: Some(TypeExpr {
+                        name: "Scalar".into(),
+                        span: SourceSpan::new(0, 6),
+                    }),
+                    default: Some(Expr {
+                        kind: ExprKind::QuantityLiteral {
+                            value: 80.0,
+                            unit: "mm".into(),
+                        },
+                        span: SourceSpan::new(9, 13),
+                    }),
+                    span: SourceSpan::new(0, 13),
+                    content_hash: ContentHash::of_str("param width: Scalar = 80mm"),
+                }),
+                MemberDecl::Param(ParamDecl {
+                    name: "height".into(),
+                    type_expr: Some(TypeExpr {
+                        name: "Scalar".into(),
+                        span: SourceSpan::new(20, 26),
+                    }),
+                    default: Some(Expr {
+                        kind: ExprKind::QuantityLiteral {
+                            value: 100.0,
+                            unit: "mm".into(),
+                        },
+                        span: SourceSpan::new(29, 34),
+                    }),
+                    span: SourceSpan::new(18, 34),
+                    content_hash: ContentHash::of_str("param height: Scalar = 100mm"),
+                }),
+                // let area = width * height (Length * Length → Area)
+                MemberDecl::Let(LetDecl {
+                    name: "area".into(),
+                    type_expr: None,
+                    value: Expr {
+                        kind: ExprKind::BinOp {
+                            op: "*".into(),
+                            left: Box::new(Expr {
+                                kind: ExprKind::Ident("width".into()),
+                                span: SourceSpan::new(50, 55),
+                            }),
+                            right: Box::new(Expr {
+                                kind: ExprKind::Ident("height".into()),
+                                span: SourceSpan::new(58, 64),
+                            }),
+                        },
+                        span: SourceSpan::new(50, 64),
+                    },
+                    span: SourceSpan::new(39, 64),
+                    content_hash: ContentHash::of_str("let area = width * height"),
+                }),
+                // let ratio = width / height (Length / Length → dimensionless Real)
+                MemberDecl::Let(LetDecl {
+                    name: "ratio".into(),
+                    type_expr: None,
+                    value: Expr {
+                        kind: ExprKind::BinOp {
+                            op: "/".into(),
+                            left: Box::new(Expr {
+                                kind: ExprKind::Ident("width".into()),
+                                span: SourceSpan::new(80, 85),
+                            }),
+                            right: Box::new(Expr {
+                                kind: ExprKind::Ident("height".into()),
+                                span: SourceSpan::new(88, 94),
+                            }),
+                        },
+                        span: SourceSpan::new(80, 94),
+                    },
+                    span: SourceSpan::new(70, 94),
+                    content_hash: ContentHash::of_str("let ratio = width / height"),
+                }),
+            ],
+            span: SourceSpan::new(0, 100),
+            content_hash: ContentHash::of_str("structure Good mul_div"),
+        })],
+        errors: vec![],
+        content_hash: ContentHash::of_str("mul_div_dims module"),
+    };
+
+    let compiled = reify_compiler::compile(&module);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "Mul/Div with different Scalar dimensions should produce no diagnostics, got: {:?}",
+        compiled.diagnostics
+    );
+}
