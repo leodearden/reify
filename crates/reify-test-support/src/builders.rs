@@ -172,6 +172,22 @@ impl TopologyTemplateBuilder {
         self
     }
 
+    pub fn auto_param(
+        mut self,
+        entity: &str,
+        member: &str,
+        cell_type: Type,
+    ) -> Self {
+        self.value_cells.push(ValueCellDecl {
+            id: ValueCellId::new(entity, member),
+            kind: ValueCellKind::Auto,
+            cell_type,
+            default_expr: None,
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
     pub fn let_binding(
         mut self,
         entity: &str,
