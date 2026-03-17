@@ -1,5 +1,19 @@
 // EvaluationGraph: typed graph nodes backed by PersistentMap.
 
+use reify_compiler::ValueCellKind;
+use reify_types::{CompiledExpr, ContentHash, Type, ValueCellId};
+
+/// A value cell node in the evaluation graph.
+/// Corresponds to a param or let binding in the topology.
+#[derive(Debug, Clone)]
+pub struct ValueCellNode {
+    pub id: ValueCellId,
+    pub kind: ValueCellKind,
+    pub cell_type: Type,
+    pub default_expr: Option<CompiledExpr>,
+    pub content_hash: ContentHash,
+}
+
 #[cfg(test)]
 mod tests {
     use reify_compiler::ValueCellKind;
