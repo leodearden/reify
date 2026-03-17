@@ -272,4 +272,37 @@ mod tests {
         assert_eq!(map1, map2);
         assert_ne!(map1, map3);
     }
+
+    #[test]
+    fn works_with_value_cell_id_and_value() {
+        use crate::identity::ValueCellId;
+        use crate::value::Value;
+
+        let mut map: PersistentMap<ValueCellId, Value> = PersistentMap::new();
+        let id_width = ValueCellId::new("Bracket", "width");
+        let id_height = ValueCellId::new("Bracket", "height");
+
+        map.insert(id_width.clone(), Value::length(0.08));
+        map.insert(id_height.clone(), Value::length(0.10));
+
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key(&id_width));
+        assert!(map.contains_key(&id_height));
+
+        // Verify get returns the correct values
+        match map.get(&id_width) {
+            Some(Value::Scalar { si_value, .. }) => assert!((si_value - 0.08).abs() < 1e-10),
+            other => panic!("Expected Scalar, got {:?}", other),
+        }
+
+        // Verify clone + insert doesn't affect original
+        let mut cloned = map.clone();
+        let id_depth = ValueCellId::new("Bracket", "depth");
+        cloned.insert(id_depth.clone(), Value::length(0.05));
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(cloned.len(), 3);
+        assert!(!map.contains_key(&id_depth));
+        assert!(cloned.contains_key(&id_depth));
+    }
 }
