@@ -50,6 +50,36 @@ mod tests {
     }
 
     #[test]
+    fn test_tasks_sort_by_priority() {
+        let tasks = vec![
+            Task {
+                node_id: reify_types::ValueCellId::new("B", "z"),
+                priority: Priority::P3Speculative,
+            },
+            Task {
+                node_id: reify_types::ValueCellId::new("B", "y"),
+                priority: Priority::P0Interactive,
+            },
+            Task {
+                node_id: reify_types::ValueCellId::new("B", "x"),
+                priority: Priority::P1Slow,
+            },
+            Task {
+                node_id: reify_types::ValueCellId::new("B", "w"),
+                priority: Priority::P1Fast,
+            },
+        ];
+
+        let mut sorted = tasks;
+        sorted.sort_by_key(|t| t.priority);
+
+        assert_eq!(sorted[0].priority, Priority::P0Interactive);
+        assert_eq!(sorted[1].priority, Priority::P1Fast);
+        assert_eq!(sorted[2].priority, Priority::P1Slow);
+        assert_eq!(sorted[3].priority, Priority::P3Speculative);
+    }
+
+    #[test]
     fn test_priority_ordering() {
         assert!(Priority::P0Interactive < Priority::P1Fast);
         assert!(Priority::P1Fast < Priority::P1Slow);
