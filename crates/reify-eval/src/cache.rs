@@ -995,4 +995,95 @@ mod tests {
             Some(&Value::Int(101))
         );
     }
+
+    #[test]
+    fn diamond_dependency_early_cutoff_correctness() {
+        use reify_test_support::builders::*;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_types::{
+            BinOp, CompiledExpr, CompiledExprKind, ContentHash, ModulePath, Type, VersionId,
+        };
+
+        let e = "T";
+
+        // Build conditional: if a > 0 then 1 else 1 (always 1, reads: [a])
+        let condition = gt(
+            value_ref_typed(e, "a", Type::Int),
+            literal(Value::Int(0)),
+        );
+        let then_branch = literal(Value::Int(1));
+        let else_branch = literal(Value::Int(1));
+        let conditional = CompiledExpr {
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(condition),
+                then_branch: Box::new(then_branch.clone()),
+                else_branch: Box::new(else_branch),
+            },
+            result_type: Type::Int,
+            content_hash: ContentHash::of_str("if_a_gt_0_then_1_else_1"),
+        };
+
+        // let y = a + x (reads: [a, x]) — diamond dependency
+        let y_expr = binop(
+            BinOp::Add,
+            value_ref_typed(e, "a", Type::Int),
+            value_ref_typed(e, "x", Type::Int),
+        );
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("T")
+                    .param(e, "a", Type::Int, Some(literal(Value::Int(5))))
+                    .let_binding(e, "x", Type::Int, conditional)
+                    .let_binding(e, "y", Type::Int, y_expr)
+                    .build(),
+            )
+            .build();
+
+        let checker = MockConstraintChecker::new();
+        let mut engine = crate::Engine::new(Box::new(checker), None);
+
+        // First eval: all computed. a=5, x=1, y=5+1=6
+        let result1 = engine.eval_cached(&module, VersionId(1));
+        assert_eq!(result1.stats.cache_misses, 3); // a, x, y
+        assert_eq!(
+            result1.eval_result.values.get(&ValueCellId::new(e, "a")),
+            Some(&Value::Int(5))
+        );
+        assert_eq!(
+            result1.eval_result.values.get(&ValueCellId::new(e, "x")),
+            Some(&Value::Int(1))
+        );
+        assert_eq!(
+            result1.eval_result.values.get(&ValueCellId::new(e, "y")),
+            Some(&Value::Int(6))
+        );
+
+        // Change a from 5 to 10 (still > 0, so x still = 1)
+        engine.set_param_and_invalidate(
+            &ValueCellId::new(e, "a"),
+            Value::Int(10),
+        );
+
+        // Re-evaluate
+        let result2 = engine.eval_cached(&module, VersionId(2));
+
+        // x should early-cutoff (result unchanged: still 1)
+        assert!(result2.stats.early_cutoffs >= 1, "expected early cutoff for x");
+
+        // CRITICAL: y MUST be re-evaluated because it reads a directly,
+        // even though x early-cutoff'd. y = 10 + 1 = 11 (not stale 6).
+        assert_eq!(
+            result2.eval_result.values.get(&ValueCellId::new(e, "a")),
+            Some(&Value::Int(10))
+        );
+        assert_eq!(
+            result2.eval_result.values.get(&ValueCellId::new(e, "x")),
+            Some(&Value::Int(1))
+        );
+        assert_eq!(
+            result2.eval_result.values.get(&ValueCellId::new(e, "y")),
+            Some(&Value::Int(11)), // 10 + 1, NOT stale 6
+        );
+    }
 }
