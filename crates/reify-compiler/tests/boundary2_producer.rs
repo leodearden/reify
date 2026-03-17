@@ -394,3 +394,74 @@ fn mul_div_different_dimensions_no_diagnostic() {
         compiled.diagnostics
     );
 }
+
+/// Scalar + Int is a type error: adding dimensioned and dimensionless values.
+#[test]
+fn scalar_plus_int_type_error() {
+    use reify_syntax::*;
+    use reify_types::*;
+
+    let module = ParsedModule {
+        path: ModulePath::single("scalar_plus_int"),
+        declarations: vec![Declaration::Structure(StructureDef {
+            name: "Bad".into(),
+            members: vec![
+                MemberDecl::Param(ParamDecl {
+                    name: "width".into(),
+                    type_expr: Some(TypeExpr {
+                        name: "Scalar".into(),
+                        span: SourceSpan::new(0, 6),
+                    }),
+                    default: Some(Expr {
+                        kind: ExprKind::QuantityLiteral {
+                            value: 80.0,
+                            unit: "mm".into(),
+                        },
+                        span: SourceSpan::new(9, 13),
+                    }),
+                    span: SourceSpan::new(0, 13),
+                    content_hash: ContentHash::of_str("param width: Scalar = 80mm"),
+                }),
+                // let bad = width + 5
+                MemberDecl::Let(LetDecl {
+                    name: "bad".into(),
+                    type_expr: None,
+                    value: Expr {
+                        kind: ExprKind::BinOp {
+                            op: "+".into(),
+                            left: Box::new(Expr {
+                                kind: ExprKind::Ident("width".into()),
+                                span: SourceSpan::new(30, 35),
+                            }),
+                            right: Box::new(Expr {
+                                kind: ExprKind::NumberLiteral(5.0),
+                                span: SourceSpan::new(38, 39),
+                            }),
+                        },
+                        span: SourceSpan::new(30, 39),
+                    },
+                    span: SourceSpan::new(20, 39),
+                    content_hash: ContentHash::of_str("let bad = width + 5"),
+                }),
+            ],
+            span: SourceSpan::new(0, 45),
+            content_hash: ContentHash::of_str("structure Bad scalar_plus_int"),
+        })],
+        errors: vec![],
+        content_hash: ContentHash::of_str("scalar_plus_int module"),
+    };
+
+    let compiled = reify_compiler::compile(&module);
+    assert!(
+        !compiled.diagnostics.is_empty(),
+        "should have diagnostics for Scalar + Int (dimensioned + dimensionless)"
+    );
+    assert!(
+        compiled.diagnostics.iter().any(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("dimension") || msg.contains("incompatible") || msg.contains("mismatch")
+        }),
+        "diagnostics should mention type incompatibility, got: {:?}",
+        compiled.diagnostics
+    );
+}
