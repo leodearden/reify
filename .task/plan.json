@@ -2,7 +2,7 @@
   "task_id": "21",
   "title": "Resolution engine — wire solver into eval pipeline",
   "modules": ["crates/reify-eval", "crates/reify-test-support"],
-  "analysis": "The Engine in reify-eval/src/lib.rs currently has eval(), check(), and build() methods. eval() does two-pass evaluation: Pass 1 evaluates Param defaults and Auto cells (Auto cells become (Undef, Auto)), Pass 2 evaluates Let bindings. check() calls eval() then runs constraints through ConstraintChecker. build() calls check() then does geometry.\n\nThe ConstraintSolver trait, ResolutionProblem, AutoParam, and SolveResult types are already defined in reify-types/src/constraint.rs and re-exported from reify_types. The DimensionalSolver in reify-constraints implements ConstraintSolver. ResolutionNodeData, NodeId::Resolution, CachedResult::Resolution variants, and demand/dep support for Resolution nodes all exist from task 20. The EvaluationGraph has a resolutions PersistentMap but from_templates() does not populate it.\n\nApproach: (1) Add Option<Box<dyn ConstraintSolver>> to Engine via with_solver() builder. (2) Add resolution phase at end of eval() after two-pass evaluation. Resolution scans template value_cells for Auto kind, finds constraints whose dependency traces reference auto params, builds ResolutionProblem, calls solver. On Solved: updates values map and snapshot values to (resolved_val, Determined), creates child snapshot with SnapshotProvenance::Resolution provenance, re-evaluates let bindings. (3) check() naturally sees resolved values since it calls eval(). (4) Handle Infeasible/NoProgress with diagnostics. (5) Add resolved_params tracking to EvalResult/CheckResult/BuildResult.\n\nResolutionNodes in the graph are NOT populated by from_templates in this task — the resolution phase scans value cells and constraints directly. Incremental resolution support can be added later.\n\nKey files: lib.rs (Engine, eval, check, build, result types), snapshot.rs (Snapshot), deps.rs (extract_dependency_trace), cache.rs (CachedResult::Resolution), mocks.rs (MockConstraintSolver).",
+  "analysis": "The Engine in reify-eval/src/lib.rs currently has eval(), check(), and build() methods. eval() does two-pass evaluation: Pass 1 evaluates Param defaults and Auto cells (Auto cells become (Undef, Auto)), Pass 2 evaluates Let bindings. check() calls eval() then runs constraints through ConstraintChecker. build() calls check() then does geometry.\n\nThe ConstraintSolver trait, ResolutionProblem, AutoParam, and SolveResult types are already defined in reify-types/src/constraint.rs and re-exported from reify_types. The DimensionalSolver in reify-constraints implements ConstraintSolver. ResolutionNodeData, NodeId::Resolution, CachedResult::Resolution variants, and demand/dep support for Resolution nodes all exist from task 20. The EvaluationGraph has a resolutions PersistentMap but from_templates() does not populate it.\n\nApproach: (1) Add Option<Box<dyn ConstraintSolver>> to Engine via with_solver() builder. (2) Add resolution phase at end of eval() after two-pass evaluation. Resolution scans template value_cells for Auto kind, finds constraints whose dependency traces reference auto params, builds ResolutionProblem, calls solver. On Solved: updates values map and snapshot values to (resolved_val, Determined), creates child snapshot with SnapshotProvenance::Resolution provenance, re-evaluates let bindings. (3) check() naturally sees resolved values since it calls eval(). (4) Handle Infeasible/NoProgress with diagnostics. (5) Add resolved_params tracking to EvalResult/CheckResult/BuildResult.\n\nResolutionNodes in the graph are NOT populated by from_templates in this task — the resolution phase scans value cells and constraints directly. Incremental resolution support can be added later.\n\nKey files: lib.rs (Engine, eval, check, build, result types), snapshot.rs (Snapshot), deps.rs (extract_dependency_trace), cache.rs (CachedResult::Resolution), mocks.rs (MockConstraintSolver).\n\n--- REVIEW FIX ANALYSIS ---\nReview found two blocking issues (same root cause): In the Solved branch of the resolution phase (lib.rs lines 320-385), all record_evaluation() calls use VersionId(version_id) — the pre-resolution version allocated at eval() start (line 156). But the snapshot's version is updated to VersionId(res_version_id) — a freshly allocated post-resolution version (line 354). This creates a mismatch: snapshot.version = N+1 but all cache entries have basis_version = N. The try_fast_path() in CacheStore checks basis_version == current_version (strict equality), so on any subsequent edit_param() call (which allocates version N+2), the fast-path check for resolution-phase entries becomes N != N+2, forcing ALL let bindings through the full dependency-trace path regardless of whether they depend on the changed param. This completely negates incremental evaluation for post-resolution modules.\n\nFix: Move res_version_id allocation BEFORE the auto-param and let-binding cache recording loops, and use VersionId(res_version_id) in ALL record_evaluation() calls within the Solved branch. This ensures cache entries are stamped with the same version as the snapshot, allowing the fast-path to succeed on subsequent edit_param() calls when the edited param doesn't affect those cached nodes.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -159,6 +159,34 @@
       "description": "In eval() Solved branch: set resolved_params = solver_values.clone() (the HashMap from SolveResult::Solved). Return EvalResult { values, diagnostics, resolved_params }. In check(): copy eval_result.resolved_params to CheckResult. In build(): copy check_result.resolved_params to BuildResult. Ensure edit_param() and eval_cached() return empty resolved_params.",
       "status": "done",
       "commit": "325c704"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing test `resolution_cache_version_matches_snapshot` in crates/reify-eval/tests/resolution.rs: Build module with auto_param('S','x',Type::length()), let_binding('S','y',Type::length(), x*2), constraint gt(x, mm(2.0)). MockConstraintSolver returns x=mm(5.0). Call eval(). Then inspect: (1) get snapshot version via engine.snapshot().unwrap().version, (2) get cache entry for auto param x via engine.cache_store().get(&NodeId::Value(x_id)), (3) get cache entry for let binding y via engine.cache_store().get(&NodeId::Value(y_id)). Assert both cache entries' basis_version == snapshot.version. This test exposes the bug where resolution-phase cache entries are stamped with the pre-resolution version_id while the snapshot uses res_version_id, creating a phantom version gap that breaks the fast-path invariant.",
+      "status": "done",
+      "commit": "67a45be"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Fix cache version consistency in the Solved branch of eval()'s resolution phase (lib.rs lines 320-385). The bug: res_snapshot_id/res_version_id are allocated at lines 349-352 (AFTER the auto-param cache recording loop at lines 340-345), and the let-binding re-eval loop at lines 378-383 also uses VersionId(version_id). Fix: (1) Move the res_snapshot_id/res_version_id allocation to immediately after 'let mut resolved_ids = ...' (BEFORE the auto-param loop), (2) set snapshot.id/version/provenance immediately after allocation, (3) change the record_evaluation call at line 343 (auto-param loop) to use VersionId(res_version_id), (4) change the record_evaluation call at line 381 (let-binding re-eval loop) to use VersionId(res_version_id). This ensures all cache entries from the resolution phase have basis_version == snapshot.version == VersionId(res_version_id), restoring the invariant that try_fast_path relies on.",
+      "status": "done",
+      "commit": "066cf5a"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write test `incremental_fast_path_works_after_resolution` in crates/reify-eval/tests/resolution.rs: Build module with auto_param('S','x',Type::length()), param('S','z',Type::length(), default=mm(1.0)), let_binding('S','y',Type::length(), x*2), let_binding('S','w',Type::length(), z*3), constraint gt(x, mm(2.0)). MockConstraintSolver returns x=mm(5.0). Call eval(). Then call edit_param(z_id, mm(2.0)). Assert w value == mm(2.0)*3 = 0.006 SI (updated). Assert y value == mm(5.0)*2 = 0.01 SI (unchanged — still uses resolved x). Also verify that the cache entry for y has basis_version == snapshot.version from the resolution phase (not the edit_param version), confirming the fast-path was usable. This test validates the practical impact: incremental evaluation correctly skips unaffected let bindings after resolution.",
+      "status": "done",
+      "commit": "be45391"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Verify that step-23's test passes with the fix from step-22. The edit_param() fast-path check for y's cache entry now succeeds: y's basis_version (res_version_id from eval) won't match edit_param's new version_id, BUT y is not in the dirty cone (y depends on x, not z), so it's not in the eval_set and its cached value is simply read from the snapshot. The key correctness property is that w (which depends on z) IS re-evaluated while y (which depends only on resolved x) is NOT. No additional code changes expected — this step confirms the fix from step-22 restores correct incremental behavior.",
+      "status": "done",
+      "commit": "be45391"
     }
   ],
   "design_decisions": [
@@ -193,6 +221,10 @@
     {
       "decision": "Solver failure (Infeasible/NoProgress) is non-fatal — diagnostics emitted, eval continues",
       "rationale": "The task explicitly requires 'Solver failure produces diagnostics, not panics'. Auto params remain (Undef, Auto) on failure. Constraints referencing unresolved autos evaluate to Indeterminate (existing behavior via SimpleConstraintChecker Undef→Indeterminate mapping). Geometry realization can still proceed with Undef values, producing degraded output rather than crashing."
+    },
+    {
+      "decision": "Allocate res_version_id BEFORE recording resolution-phase cache entries, not after",
+      "rationale": "Review found that the original implementation allocated res_version_id after recording auto-param cache entries with the pre-resolution version_id, and the let-binding re-eval loop also used the pre-resolution version_id. This created a version mismatch: snapshot.version = res_version_id but all cache entries had basis_version = version_id. The try_fast_path check (basis_version == current_version) would never match for resolution-phase entries, forcing all let bindings through the full dependency-trace path on every subsequent edit_param(), completely negating incremental evaluation. Fix: allocate res_version_id first, use it in all record_evaluation calls within the Solved branch."
     }
   ],
   "reuse": [
@@ -245,6 +277,11 @@
       "what": "SimpleConstraintChecker",
       "where": "crates/reify-constraints/src/lib.rs",
       "how": "Use as real constraint checker in integration test (step-9) to verify constraints evaluate to Satisfied after resolution. Evaluates constraint expressions against current values and maps bool results to Satisfaction."
+    },
+    {
+      "what": "Engine::cache_store() and CacheStore::get()",
+      "where": "crates/reify-eval/src/lib.rs line 125, crates/reify-eval/src/cache.rs line 160",
+      "how": "Use engine.cache_store().get(&NodeId::Value(id)) to inspect NodeCache entries in tests. NodeCache.basis_version can be compared against snapshot.version to verify the cache version invariant."
     }
   ]
 }
