@@ -95,6 +95,30 @@ impl EvaluationGraph {
 
         graph
     }
+
+    /// Compute a deterministic fingerprint of the graph topology.
+    ///
+    /// Collects content hashes from all nodes, sorts them for determinism
+    /// (since PersistentMap iteration order is not guaranteed), and combines
+    /// them into a single ContentHash.
+    pub fn topology_fingerprint(&self) -> ContentHash {
+        let mut hashes: Vec<ContentHash> = Vec::new();
+
+        for (_, node) in self.value_cells.iter() {
+            hashes.push(node.content_hash);
+        }
+        for (_, node) in self.constraints.iter() {
+            hashes.push(node.content_hash);
+        }
+        for (_, node) in self.realizations.iter() {
+            hashes.push(node.content_hash);
+        }
+
+        // Sort for determinism regardless of insertion order
+        hashes.sort_by_key(|h| h.0);
+
+        ContentHash::combine_all(hashes)
+    }
 }
 
 #[cfg(test)]
