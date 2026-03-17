@@ -501,4 +501,74 @@ mod tests {
         assert!(eval_set.contains(&c0));
         assert!(eval_set.contains(&c1));
     }
+
+    #[test]
+    fn eval_set_bracket_change_width_demand_all_constraints() {
+        // Exit criteria: demand all constraints, change width → eval_set = {C1}
+        // volume is dirty but not demanded (no constraint reads volume)
+        use crate::demand::DemandRegistry;
+        use crate::dirty::compute_eval_set;
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+        let traces = crate::deps::build_trace_map(&graph);
+
+        let e = "Bracket";
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+
+        // Demand all constraints
+        let mut demand = DemandRegistry::new();
+        demand.add_demand(NodeId::Constraint(ConstraintNodeId::new(e, 0)));
+        demand.add_demand(NodeId::Constraint(ConstraintNodeId::new(e, 1)));
+        demand.add_demand(NodeId::Constraint(ConstraintNodeId::new(e, 2)));
+        demand.rebuild_cone(&graph);
+
+        // Change width
+        let mut changed = HashSet::new();
+        changed.insert(ValueCellId::new(e, "width"));
+        let dirty = compute_dirty_cone(&changed, &index);
+
+        let eval_set = compute_eval_set(&dirty, &demand, &traces);
+        assert_eq!(eval_set.len(), 1, "eval_set: {:?}", eval_set);
+        assert_eq!(eval_set[0], c1);
+    }
+
+    #[test]
+    fn eval_set_bracket_change_thickness_demand_all_constraints() {
+        // Change thickness → eval_set = {C0, C1, C2} (all read thickness)
+        use crate::demand::DemandRegistry;
+        use crate::dirty::compute_eval_set;
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::bracket_compiled_module;
+
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+        let traces = crate::deps::build_trace_map(&graph);
+
+        let e = "Bracket";
+
+        // Demand all constraints
+        let mut demand = DemandRegistry::new();
+        demand.add_demand(NodeId::Constraint(ConstraintNodeId::new(e, 0)));
+        demand.add_demand(NodeId::Constraint(ConstraintNodeId::new(e, 1)));
+        demand.add_demand(NodeId::Constraint(ConstraintNodeId::new(e, 2)));
+        demand.rebuild_cone(&graph);
+
+        // Change thickness
+        let mut changed = HashSet::new();
+        changed.insert(ValueCellId::new(e, "thickness"));
+        let dirty = compute_dirty_cone(&changed, &index);
+
+        let eval_set = compute_eval_set(&dirty, &demand, &traces);
+        // volume is dirty but not demanded → excluded
+        // C0, C1, C2 are dirty and demanded → included
+        assert_eq!(eval_set.len(), 3, "eval_set: {:?}", eval_set);
+        assert!(eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
+        assert!(eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
+        assert!(eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
+    }
 }
