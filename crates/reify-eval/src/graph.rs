@@ -54,6 +54,7 @@ pub struct EvaluationGraph {
     pub value_cells: PersistentMap<ValueCellId, ValueCellNode>,
     pub constraints: PersistentMap<ConstraintNodeId, ConstraintNodeData>,
     pub realizations: PersistentMap<RealizationNodeId, RealizationNodeData>,
+    pub resolutions: PersistentMap<ResolutionNodeId, ResolutionNodeData>,
 }
 
 impl EvaluationGraph {
@@ -287,11 +288,19 @@ mod tests {
     }
 
     #[test]
+    fn evaluation_graph_has_resolutions_map() {
+        let graph = EvaluationGraph::default();
+        assert!(graph.resolutions.is_empty());
+        assert_eq!(graph.resolutions.len(), 0);
+    }
+
+    #[test]
     fn evaluation_graph_empty() {
         let graph = EvaluationGraph::default();
         assert!(graph.value_cells.is_empty());
         assert!(graph.constraints.is_empty());
         assert!(graph.realizations.is_empty());
+        assert!(graph.resolutions.is_empty());
         assert_eq!(graph.value_cells.len(), 0);
     }
 
