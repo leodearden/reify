@@ -2,7 +2,7 @@
   "task_id": "13",
   "title": "Dirty/demand cone + sequential scheduler",
   "modules": ["crates/reify-eval", "crates/reify-runtime"],
-  "analysis": "This task implements the core incremental re-evaluation infrastructure: when a parameter changes, only nodes that are both 'dirty' (downstream of the change) AND 'demanded' (upstream of a cared-about output) need re-evaluation. The dirty∩demand intersection is the minimal re-evaluation set.\n\nThe implementation builds on existing foundations:\n- EvaluationGraph (graph.rs, task 10): typed node graph with PersistentMaps for value_cells, constraints, realizations\n- DependencyTrace (deps.rs, task 12): tracks which ValueCellIds a node reads during evaluation\n- CacheStore (cache.rs, task 12): per-node caching with dirty_reasons tracking, content-hash early cutoff, clear_dependents_dirty for diamond dependencies\n- Priority enum (reify-runtime, task 9): P0Interactive through P3Speculative\n- NodeId (cache.rs): unified enum (Value/Constraint/Realization) for cache keys\n\nKey data flow:\n1. User changes a param → engine updates override\n2. ReverseDependencyIndex (ValueCellId → Set<NodeId>) enables forward propagation\n3. compute_dirty_cone: BFS forward from changed cells through reverse index → all transitively affected nodes\n4. DemandRegistry.rebuild_cone: BFS backward from always_demanded nodes through dependency edges → all nodes that feed into demanded outputs\n5. compute_eval_set: dirty ∩ demand_cone, topologically sorted (dependencies first)\n6. SequentialScheduler.execute: iterate eval_set, skip nodes no longer dirty (dynamic cutoff from upstream early cutoffs), delegate evaluation to NodeEvaluator trait\n\nThe work spans two crates:\n- reify-eval: ReverseDependencyIndex in deps.rs (expanded), DemandRegistry in new demand.rs, dirty cone/eval set/topo sort in new dirty.rs\n- reify-runtime: SequentialScheduler with NodeEvaluator trait; adds reify-eval dependency\n\nCritical design note: extract_dependency_trace (currently private in lib.rs) must be moved to deps.rs and made pub, since both ReverseDependencyIndex.build_from_graph and build_trace_map need it. A new extract_realization_dependencies utility handles CompiledGeometryOp arg expressions.\n\nBracket fixture analysis for test design:\n- 5 params: width, height, thickness, fillet_radius, hole_diameter\n- 1 let: volume = width * height * thickness (reads: width, height, thickness)\n- 3 constraints: C0(thickness > 2mm, reads: thickness), C1(thickness < width/4, reads: thickness, width), C2(hole_diameter < thickness*2, reads: hole_diameter, thickness)\n- 0 realizations in bracket_compiled_module() — tests needing realizations must build custom fixtures via TopologyTemplateBuilder\n\nWhen width changes: dirty cone = {volume, C1}. If demanding all constraints: demand cone = {C0, C1, C2, thickness, width, hole_diameter}. Eval set = dirty ∩ demand = {C1} (volume is dirty but not demanded by any constraint).",
+  "analysis": "This task implements the core incremental re-evaluation infrastructure: when a parameter changes, only nodes that are both 'dirty' (downstream of the change) AND 'demanded' (upstream of a cared-about output) need re-evaluation. The dirty∩demand intersection is the minimal re-evaluation set.\n\nThe implementation builds on existing foundations:\n- EvaluationGraph (graph.rs, task 10): typed node graph with PersistentMaps for value_cells, constraints, realizations\n- DependencyTrace (deps.rs, task 12): tracks which ValueCellIds a node reads during evaluation\n- CacheStore (cache.rs, task 12): per-node caching with dirty_reasons tracking, content-hash early cutoff, clear_dependents_dirty for diamond dependencies\n- Priority enum (reify-runtime, task 9): P0Interactive through P3Speculative\n- NodeId (cache.rs): unified enum (Value/Constraint/Realization) for cache keys\n\nKey data flow:\n1. User changes a param → engine updates override\n2. ReverseDependencyIndex (ValueCellId → Set<NodeId>) enables forward propagation\n3. compute_dirty_cone: BFS forward from changed cells through reverse index → all transitively affected nodes\n4. DemandRegistry.rebuild_cone: BFS backward from always_demanded nodes through dependency edges → all nodes that feed into demanded outputs\n5. compute_eval_set: dirty ∩ demand_cone, topologically sorted (dependencies first)\n6. SequentialScheduler.execute: iterate eval_set, skip nodes no longer dirty (dynamic cutoff from upstream early cutoffs), delegate evaluation to NodeEvaluator trait\n\nThe work spans two crates:\n- reify-eval: ReverseDependencyIndex in deps.rs (expanded), DemandRegistry in new demand.rs, dirty cone/eval set/topo sort in new dirty.rs\n- reify-runtime: SequentialScheduler with NodeEvaluator trait; adds reify-eval dependency\n\nCritical design note: extract_dependency_trace (currently private in lib.rs) must be moved to deps.rs and made pub, since both ReverseDependencyIndex.build_from_graph and build_trace_map need it. A new extract_realization_dependencies utility handles CompiledGeometryOp arg expressions.\n\nBracket fixture analysis for test design:\n- 5 params: width, height, thickness, fillet_radius, hole_diameter\n- 1 let: volume = width * height * thickness (reads: width, height, thickness)\n- 3 constraints: C0(thickness > 2mm, reads: thickness), C1(thickness < width/4, reads: thickness, width), C2(hole_diameter < thickness*2, reads: hole_diameter, thickness)\n- 0 realizations in bracket_compiled_module() — tests needing realizations must build custom fixtures via TopologyTemplateBuilder\n\nWhen width changes: dirty cone = {volume, C1}. If demanding all constraints: demand cone = {C0, C1, C2, thickness, width, hole_diameter}. Eval set = dirty ∩ demand = {C1} (volume is dirty but not demanded by any constraint).\n\nREVIEW ROUND 1 FIXES:\n- topological_sort has a duplicate-reads bug: when trace.reads contains the same ValueCellId multiple times (e.g. expression `a * a`), in-degree is over-counted during setup (incremented per occurrence) but under-decremented during Kahn's pass (trace.reads.contains() is boolean, returns true only once regardless of multiplicity). This causes nodes with duplicate deps to be silently dropped from the sorted output. Fix: deduplicate reads in both the counting and decrement phases of topological_sort.\n- Three demand registry tests (add_demand, remove_demand, add_demand_idempotent) have zero assertions — they only verify no-panic. They must be strengthened with rebuild_cone + is_demanded checks on minimal graphs to catch silent failures (e.g. add_demand inserting into wrong field, remove_demand being a no-op, duplicate adds inflating internal state).",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -194,6 +194,41 @@
       "description": "Write integration test combining all components with bracket module: (1) build EvaluationGraph from bracket topology, (2) build ReverseDependencyIndex, (3) build DemandRegistry demanding all constraints, rebuild cone, (4) simulate width change via compute_dirty_cone, (5) compute_eval_set, (6) verify eval_set = [C1] in correct order, (7) execute via SequentialScheduler. This validates the full pipeline end-to-end (exit criteria tests 1-5).",
       "status": "done",
       "commit": "e64a5ec"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Write failing test in dirty.rs exposing the duplicate-reads bug in topological_sort. Build two nodes: param 'a' and a let-binding 'sq' whose DependencyTrace.reads = [a, a] (simulating expression `a * a`). Include both in the sort set. Assert that sorted output contains both nodes (len == 2) and that 'sq' appears after 'a'. This test FAILS on the current impl because duplicate reads inflate in-degree to 2 but the .contains()-based decrement only subtracts 1, so 'sq' never reaches in_degree 0 and is silently dropped from the output.",
+      "status": "done",
+      "commit": "9cbc0c9"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Fix the duplicate-reads bug in topological_sort (dirty.rs). In the in-degree counting loop (lines 58-65), deduplicate trace.reads before counting: `let unique_deps: HashSet<_> = trace.reads.iter().collect();` then iterate unique_deps instead of trace.reads. Apply the same deduplication in the decrement phase (lines 82-93): for each candidate node, collect unique deps from trace.reads and check membership against those, so both sides are consistent. This ensures expressions like `a * a` get in_degree=1 (one unique dep 'a' in set) and correctly reach 0 when 'a' is processed.",
+      "status": "done",
+      "commit": "301fedb"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Strengthen demand_registry_add_demand test (demand.rs:123-132). Replace the zero-assertion body with: build a minimal graph via TopologyTemplateBuilder containing one standalone constraint with a literal expression (no deps). Call add_demand(node), then rebuild_cone(&graph). Assert reg.is_demanded(&node) returns true. This catches the case where add_demand silently inserts into the wrong field or rebuild_cone fails to include always_demanded nodes.",
+      "status": "done",
+      "commit": "9ce216e"
+    },
+    {
+      "id": "step-28",
+      "type": "test",
+      "description": "Strengthen demand_registry_remove_demand test (demand.rs:134-141). Replace the zero-assertion body with a full lifecycle test on a minimal graph: add_demand(node), rebuild_cone, assert is_demanded(&node) is true. Then remove_demand(&node), rebuild_cone again, assert !is_demanded(&node). Also assert the demand cone is empty after the final rebuild (since no other demands exist). This verifies the complete add→rebuild→remove→rebuild→not_demanded cycle.",
+      "status": "done",
+      "commit": "9ce216e"
+    },
+    {
+      "id": "step-29",
+      "type": "test",
+      "description": "Strengthen demand_registry_add_demand_idempotent test (demand.rs:143-150). Replace the zero-assertion body with: build a minimal graph with one standalone constraint (no deps). Call add_demand(node) twice, then rebuild_cone(&graph). Assert is_demanded(&node) is true. Expose the demand_cone via a new cone_size() method (or count demanded nodes from a known set) and assert the cone contains exactly 1 node, proving that duplicate adds did not inflate internal state.",
+      "status": "done",
+      "commit": "9ce216e"
     }
   ],
   "design_decisions": [
@@ -236,6 +271,10 @@
     {
       "decision": "rebuild_cone signature takes only graph (not reverse_index) despite task spec suggesting both",
       "rationale": "The demand cone walks BACKWARD through dependencies (node → what it reads), which is the forward dependency direction stored in DependencyTrace/graph expressions. The reverse_index maps the opposite direction (cell → who reads it) and is not needed for backward traversal. The graph provides all needed dependency information."
+    },
+    {
+      "decision": "Deduplicate reads in topological_sort rather than in collect_value_refs",
+      "rationale": "The duplicate-reads bug is an accounting mismatch within topological_sort itself. Fixing at the topo sort level (dedup reads before counting in-degree, and dedup before decrementing) is a localized, minimal fix. Deduplicating in collect_value_refs would change the DependencyTrace contract and could affect other consumers (e.g., ReverseDependencyIndex.add already uses HashSet<NodeId> which naturally deduplicates). The topo sort should be robust to duplicate entries in its input traces regardless."
     }
   ],
   "reuse": [
@@ -272,7 +311,7 @@
     {
       "what": "TopologyTemplateBuilder + CompiledModuleBuilder",
       "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Used in tests to build custom graph topologies: bracket fixtures with added realizations, diamond dependency graphs, multi-level transitive dependency chains."
+      "how": "Used in tests to build custom graph topologies: bracket fixtures with added realizations, diamond dependency graphs, multi-level transitive dependency chains. Also used in steps 27-29 to build minimal graphs for strengthened demand registry tests."
     },
     {
       "what": "bracket_compiled_module fixture",
