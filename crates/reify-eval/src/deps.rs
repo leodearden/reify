@@ -315,6 +315,49 @@ mod tests {
     }
 
     #[test]
+    fn build_trace_map_includes_resolution() {
+        use crate::graph::{EvaluationGraph, ResolutionNodeData, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_types::{ContentHash, ResolutionNodeId, Type};
+
+        let mut graph = EvaluationGraph::default();
+
+        // Add params 'a' and 'b'
+        for name in &["a", "b"] {
+            let id = ValueCellId::new("A", *name);
+            graph.value_cells.insert(id.clone(), ValueCellNode {
+                id: id.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str(*name),
+            });
+        }
+
+        // Add ResolutionNodeData R0 with auto_params=['a','b']
+        let r0_id = ResolutionNodeId::new("A", 0);
+        graph.resolutions.insert(r0_id.clone(), ResolutionNodeData {
+            id: r0_id.clone(),
+            scope: "A".to_string(),
+            auto_params: vec![
+                ValueCellId::new("A", "a"),
+                ValueCellId::new("A", "b"),
+            ],
+            constraint_deps: vec![],
+            content_hash: ContentHash::of_str("r0"),
+        });
+
+        let traces = build_trace_map(&graph);
+
+        let res_node = NodeId::Resolution(r0_id);
+        assert!(traces.contains_key(&res_node), "trace_map should contain Resolution(R0)");
+        let trace = &traces[&res_node];
+        assert_eq!(trace.reads.len(), 2);
+        assert!(trace.reads.contains(&ValueCellId::new("A", "a")));
+        assert!(trace.reads.contains(&ValueCellId::new("A", "b")));
+    }
+
+    #[test]
     fn build_from_graph_bracket_topology() {
         use crate::graph::EvaluationGraph;
         use reify_test_support::bracket_compiled_module;
