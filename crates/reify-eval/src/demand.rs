@@ -243,4 +243,51 @@ mod tests {
         // fillet_radius NOT in cone
         assert!(!reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "fillet_radius"))));
     }
+
+    #[test]
+    fn rebuild_cone_transitive_through_let_binding() {
+        // Build graph: param a, param b, let c = a + b, constraint C0: c > 0
+        // Demanding C0 → cone should include: C0, c, a, b (depth-2 transitive)
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::{TopologyTemplateBuilder, gt, literal, value_ref};
+        use reify_types::{BinOp, CompiledExpr, Type, Value};
+
+        let e = "T";
+
+        // let c = a + b
+        let c_expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real),
+            CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::Real),
+            Type::Real,
+        );
+
+        // constraint: c > 0
+        let c0_expr = gt(
+            CompiledExpr::value_ref(ValueCellId::new(e, "c"), Type::Real),
+            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+        );
+
+        let template = TopologyTemplateBuilder::new(e)
+            .param(e, "a", Type::Real, Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)))
+            .param(e, "b", Type::Real, Some(CompiledExpr::literal(Value::Real(2.0), Type::Real)))
+            .let_binding(e, "c", Type::Real, c_expr)
+            .constraint(e, 0, None, c0_expr)
+            .build();
+
+        let graph = EvaluationGraph::from_templates(&[template]);
+
+        let c0 = NodeId::Constraint(ConstraintNodeId::new(e, 0));
+        let mut reg = DemandRegistry::new();
+        reg.add_demand(c0.clone());
+        reg.rebuild_cone(&graph);
+
+        // C0 is demanded
+        assert!(reg.is_demanded(&c0));
+        // C0 reads c → c is demanded
+        assert!(reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "c"))));
+        // c reads a and b → both are demanded (depth-2 transitive)
+        assert!(reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "a"))));
+        assert!(reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "b"))));
+    }
 }
