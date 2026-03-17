@@ -1,0 +1,293 @@
+{
+  "task_id": "12",
+  "title": "Content-hash caching + early cutoff",
+  "modules": [
+    "crates/reify-eval",
+    "crates/reify-types",
+    "crates/reify-test-support"
+  ],
+  "analysis": "The task requires adding content-hash caching with early cutoff to the evaluation engine. The existing codebase has strong foundations: ContentHash (XXH3-128) infrastructure in reify-types/src/hash.rs, Value::content_hash() with proper NaN/-0 normalization in value.rs, Freshness enum for cache state tracking, VersionId for snapshot lineage, and PersistentMap for efficient structural sharing.\n\nKey components to build: (1) NodeId - unified identifier for any graph node (value cell, constraint, realization) since cache needs to key on any node type; (2) CachedResult - enum storing different evaluation result kinds (Value+DeterminacyState, Satisfaction, GeometryHandleId); (3) NodeCache - per-node cache entry with result, result_hash, freshness, dependency_trace, basis_version; (4) CacheStore - HashMap-backed store managing all node caches with get/put/invalidate; (5) EvalOutcome - Changed vs Unchanged signal controlling dirty propagation; (6) Content hashing for Satisfaction and GeometryHandleId results; (7) Integration via Engine::eval_cached() method using cache with version fast path and early cutoff.\n\nDependencyTrace (from task 11) is referenced in NodeCache. Since task 11 is a prerequisite, I'll define a minimal stub in deps.rs if it doesn't exist. The current Engine::eval() evaluates all nodes unconditionally in two passes (params then lets). The cached version needs to: check cache before each node, compare result hashes after evaluation, and return Changed/Unchanged to control propagation. The early cutoff test scenario (e.g., 'let x = if a > 0 then 1 else 1') requires that when 'a' changes but 'x' evaluates to the same result, downstream nodes of 'x' are not re-evaluated.\n\nThe integration requires adding a CacheStore field to Engine and a new eval_cached() method that accepts a VersionId. The original eval() remains unchanged for backward compatibility. Tests will use the TopologyTemplateBuilder and CompiledModuleBuilder patterns from reify-test-support.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Create crates/reify-eval/src/deps.rs with minimal DependencyTrace stub (task 11 dependency). DependencyTrace tracks which ValueCellIds a node read during evaluation. Define: pub struct DependencyTrace { pub reads: Vec<ValueCellId> } with Clone, Debug, Default derives. Register as pub mod deps in lib.rs.",
+      "status": "done",
+      "commit": "493419e",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add content_hash() method to Satisfaction enum in crates/reify-types/src/value.rs. Domain-separate the three variants: Satisfied -> [10, 0], Violated -> [10, 1], Indeterminate -> [10, 2]. This follows the existing Value::content_hash() pattern with tag bytes.",
+      "status": "done",
+      "commit": "005af98",
+      "tests": ["satisfaction_content_hash_deterministic", "satisfaction_content_hash_distinct_variants"]
+    },
+    {
+      "id": "pre-3",
+      "description": "Add content_hash() method to GeometryHandleId in crates/reify-types/src/geometry.rs. Hash the u64 id with a domain-separation tag byte [11] followed by the id as le_bytes. This serves as a proxy hash for geometry results (we can't hash OCCT shapes directly).",
+      "status": "done",
+      "commit": "8740a19",
+      "tests": ["geometry_handle_id_content_hash_deterministic", "geometry_handle_id_content_hash_distinct"]
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing tests for NodeId enum in cache.rs: construction from ValueCellId, ConstraintNodeId, RealizationNodeId via From impls; PartialEq across variants; Debug/Clone/Hash derives for use as HashMap key. Test that NodeId::Value(vcid) != NodeId::Constraint(cnid) even if underlying strings overlap.",
+      "status": "done",
+      "commit": "9368b7d"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Define NodeId enum in crates/reify-eval/src/cache.rs with three variants: Value(ValueCellId), Constraint(ConstraintNodeId), Realization(RealizationNodeId). Derive Clone, Debug, PartialEq, Eq, Hash. Implement From<ValueCellId>, From<ConstraintNodeId>, From<RealizationNodeId>. Register pub mod cache in lib.rs.",
+      "status": "done",
+      "commit": "672042c"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing tests for CachedResult enum: construction of Value variant with (Value, DeterminacyState), Satisfaction variant, GeometryHandle variant. Test Clone and Debug. Test CachedResult::content_hash() returns correct hash for each variant - Value variant delegates to Value::content_hash() combined with DeterminacyState hash, Satisfaction variant delegates to Satisfaction::content_hash(), GeometryHandle variant uses GeometryHandleId::content_hash().",
+      "status": "done",
+      "commit": "770899e"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Define CachedResult enum with three variants: Value(Value, DeterminacyState), Satisfaction(Satisfaction), GeometryHandle(GeometryHandleId). Derive Clone, Debug. Implement content_hash() method that domain-separates each variant (tag bytes [20], [21], [22]) and combines with the inner value's content hash. For DeterminacyState, hash the discriminant as a byte.",
+      "status": "done",
+      "commit": "4a04340"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing tests for NodeCache struct: construction with all fields (result, result_hash, freshness, dependency_trace, basis_version); verify result_hash matches CachedResult::content_hash() of the result; Clone and Debug work correctly.",
+      "status": "done",
+      "commit": "2ef4c94"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Define NodeCache struct with fields: result: CachedResult, result_hash: ContentHash, freshness: Freshness, dependency_trace: DependencyTrace, basis_version: VersionId. Derive Clone, Debug. Add NodeCache::new() constructor that computes result_hash from result.content_hash().",
+      "status": "done",
+      "commit": "513f853"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing tests for EvalOutcome enum: Changed and Unchanged variants; pattern matching works correctly. Test Display or Debug format.",
+      "status": "done",
+      "commit": "a91f0c1"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Define EvalOutcome enum with two variants: Changed and Unchanged. Derive Clone, Copy, Debug, PartialEq, Eq.",
+      "status": "done",
+      "commit": "9e387da"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing tests for CacheStore: (1) new() creates empty store; (2) put() stores a NodeCache, get() retrieves it by NodeId; (3) get() returns None for missing NodeId; (4) invalidate() removes a cached entry; (5) invalidate() on missing key is a no-op; (6) put() overwrites existing entry; (7) len() and is_empty() report correct counts.",
+      "status": "done",
+      "commit": "a2e9797"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Define CacheStore struct with caches: HashMap<NodeId, NodeCache>. Implement new(), get(&NodeId) -> Option<&NodeCache>, put(NodeId, NodeCache), invalidate(&NodeId), len(), is_empty(), clear(). Use std::collections::HashMap since cache doesn't need structural sharing.",
+      "status": "done",
+      "commit": "0df3bd6"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing tests for version fast path: (1) CacheStore::try_fast_path(node, current_version) returns Some(cached_result.clone()) when cache.basis_version == current_version; (2) returns None when basis_version < current_version; (3) returns None when node is not in cache (miss).",
+      "status": "done",
+      "commit": "12ff761"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Implement CacheStore::try_fast_path(&self, node: &NodeId, current_version: VersionId) -> Option<CachedResult>. Looks up node in cache, compares basis_version with current_version, returns cloned result if they match, None otherwise.",
+      "status": "done",
+      "commit": "192b346"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing tests for early cutoff via CacheStore::record_evaluation(): (1) When new result has same content hash as cached result -> returns EvalOutcome::Unchanged, updates basis_version but keeps old result; (2) When new result has different content hash -> returns EvalOutcome::Changed, updates both result and basis_version; (3) When node has no prior cache (cold start) -> returns EvalOutcome::Changed, creates new cache entry.",
+      "status": "done",
+      "commit": "6a889b7"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Implement CacheStore::record_evaluation(&mut self, node: NodeId, new_result: CachedResult, version: VersionId, trace: DependencyTrace) -> EvalOutcome. Compute new content hash, compare with existing cache entry's hash. If same hash: update basis_version only (early cutoff), return Unchanged. If different or no prior cache: update full cache entry, return Changed.",
+      "status": "done",
+      "commit": "f7b4d6d"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test for CacheStore::invalidate_dependents(): given a set of changed NodeIds, invalidate all cached nodes whose DependencyTrace.reads includes any of the changed ValueCellIds. Verify that nodes not depending on changed nodes retain their cache entries.",
+      "status": "done",
+      "commit": "777d8a2"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement CacheStore::invalidate_dependents(&mut self, changed: &[ValueCellId]). Iterate all cached nodes; for each, check if dependency_trace.reads intersects with changed set. If so, remove from cache (forcing re-evaluation on next access).",
+      "status": "done",
+      "commit": "03b4069"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing integration test: cold start cache miss. Build a simple CompiledModule with 2 params and 1 let using TopologyTemplateBuilder. Call Engine::eval_cached() with version 1. Verify all values are computed (no cache hits on first run). Verify CacheStore has entries for all 3 value cells after evaluation.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Add CacheStore field to Engine (initialized empty in Engine::new). Implement Engine::eval_cached(&mut self, module: &CompiledModule, version: VersionId) -> CachedEvalResult that evaluates all nodes, recording each result in the cache via record_evaluation(). CachedEvalResult wraps EvalResult plus a stats struct (cache_hits: usize, cache_misses: usize, early_cutoffs: usize).",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing integration test: version fast path. Evaluate a module with eval_cached(version=1). Then call eval_cached(version=1) again (same version). Verify second call has 100% cache hits (all nodes served from cache via version fast path). Verify results are identical.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Integrate version fast path into Engine::eval_cached(). Before evaluating each value cell, call cache.try_fast_path(node_id, version). If hit, use cached result directly (increment cache_hits counter). Otherwise evaluate and record.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing integration test: selective re-evaluation on param change. Build module: param a = 10, param b = 20, let x = a + 1, let y = b + 1. Evaluate with version 1 (populates cache). Change param a to 15 (insert new value), bump version to 2, invalidate dependents of a. Call eval_cached(version=2). Verify x is re-evaluated (new result), y is served from cache (not dependent on a). Verify result correctness.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Add Engine::set_param_and_invalidate(&mut self, param: &ValueCellId, value: Value) that updates the engine's override values and calls cache.invalidate_dependents() for the changed param. Ensure eval_cached respects overridden param values. Wire dependency traces into cache entries during evaluation.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write failing integration test: early cutoff prevents downstream re-evaluation. Build module: param a (Int) = 5, let x (Int) = if a > 0 then 1 else 1 (always evaluates to 1 regardless of a), let y (Int) = x + 100. Evaluate with version 1 (all computed). Change a from 5 to 10 (still > 0), bump version to 2. Verify x is re-evaluated but result_hash unchanged (early cutoff). Verify y is NOT re-evaluated (served from cache because x didn't change). Check stats: early_cutoffs >= 1.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Complete early cutoff integration in eval_cached(). After re-evaluating a node, call record_evaluation(). If outcome is Unchanged, do NOT invalidate dependents of that node (early cutoff). If outcome is Changed, mark dependents as needing re-evaluation. This requires a two-phase approach: first mark dirty nodes, then evaluate in dependency order, pruning the dirty set when early cutoff occurs.",
+      "status": "pending",
+      "commit": null
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "NodeId is an enum in reify-eval, not reify-types",
+      "rationale": "The individual ID types (ValueCellId, ConstraintNodeId, RealizationNodeId) live in reify-types as they're shared vocabulary. NodeId is a cache-specific unification that's only needed by the eval engine, so it belongs in reify-eval/src/cache.rs to avoid polluting the shared types crate."
+    },
+    {
+      "decision": "CacheStore uses std::collections::HashMap, not PersistentMap",
+      "rationale": "The cache is mutable engine-internal state, not snapshot state. It doesn't need structural sharing or O(1) clone. A standard HashMap provides better single-threaded mutation performance and simpler API."
+    },
+    {
+      "decision": "Add eval_cached() as a new method rather than modifying eval()",
+      "rationale": "Preserves backward compatibility with all existing tests. The original eval() is a simple, correct baseline. eval_cached() adds the incremental optimization. Callers opt in to caching by providing a VersionId."
+    },
+    {
+      "decision": "DependencyTrace is a minimal stub until task 11 fully materializes",
+      "rationale": "Task 11 is listed as a dependency but deps.rs doesn't exist in this worktree. A minimal struct with reads: Vec<ValueCellId> is sufficient for cache invalidation. The full DependencyTrace from task 11 can replace it later without changing the cache API."
+    },
+    {
+      "decision": "CachedResult::content_hash() uses domain-separation tags",
+      "rationale": "Following the existing pattern in Value::content_hash() where each variant has a unique tag byte prefix. This prevents hash collisions between e.g. a Value result and a Satisfaction result that happen to have similar underlying data."
+    },
+    {
+      "decision": "GeometryHandleId content hash uses the id as proxy, not the actual shape",
+      "rationale": "OCCT shapes can't be hashed directly (opaque C++ objects). The handle id serves as a stable proxy. If the same operations produce the same handle id pattern, the hash will match. This is noted in the task description as an acceptable approach."
+    },
+    {
+      "decision": "Early cutoff uses two-phase mark-then-evaluate approach",
+      "rationale": "Phase 1: mark all transitive dependents of changed params as dirty. Phase 2: evaluate dirty nodes in dependency order. After each evaluation, if result hash unchanged (early cutoff), remove that node's dependents from the dirty set. This prevents unnecessary cascading while ensuring correctness."
+    },
+    {
+      "decision": "CachedEvalResult includes stats (cache_hits, cache_misses, early_cutoffs)",
+      "rationale": "Stats are essential for testing that caching actually works (e.g., asserting cache_hits == N after second evaluation). They also provide observability for debugging and performance monitoring in production."
+    },
+    {
+      "decision": "Conditional expression 'if a > 0 then 1 else 1' for early cutoff test",
+      "rationale": "This is the canonical test case from the task description. Both branches produce the same value, so changing 'a' triggers re-evaluation of the let but the result hash is unchanged, demonstrating early cutoff preventing propagation to downstream nodes."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "ContentHash infrastructure",
+      "where": "crates/reify-types/src/hash.rs",
+      "how": "Use ContentHash::of(), of_str(), combine() for all result hashing. The existing 128-bit XXH3 implementation provides speed and collision resistance."
+    },
+    {
+      "what": "Value::content_hash()",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "Already implements deterministic hashing with NaN canonicalization and -0/+0 normalization for all Value variants. CachedResult::Value delegates directly to this."
+    },
+    {
+      "what": "Freshness enum",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "NodeCache uses Freshness to track evaluation lifecycle (Final, Intermediate, Pending, Failed). Already defined with Clone, Debug, PartialEq, Eq."
+    },
+    {
+      "what": "VersionId",
+      "where": "crates/reify-types/src/identity.rs",
+      "how": "NodeCache::basis_version uses VersionId for version fast path. Already has Copy, Ord, Hash derives."
+    },
+    {
+      "what": "TopologyTemplateBuilder and CompiledModuleBuilder",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Build test fixtures for integration tests. The builder pattern allows constructing modules with specific param/let/constraint topologies for testing cache behavior."
+    },
+    {
+      "what": "MockConstraintChecker",
+      "where": "crates/reify-test-support/src/mocks.rs",
+      "how": "Engine::new() requires a ConstraintChecker. MockConstraintChecker provides predetermined results for integration tests."
+    },
+    {
+      "what": "Value constructors (mm, meters, vcid, cnid)",
+      "where": "crates/reify-test-support/src/values.rs",
+      "how": "Convenient test value construction. Use mm() for dimensioned scalars, vcid() for ValueCellId creation in tests."
+    },
+    {
+      "what": "reify_expr::eval_expr()",
+      "where": "crates/reify-expr/src/lib.rs",
+      "how": "The pure expression evaluator is called within eval_cached() for each node that needs (re-)evaluation. It computes the Value from a CompiledExpr and ValueMap."
+    },
+    {
+      "what": "CompiledExpr::Conditional",
+      "where": "crates/reify-types/src/expr.rs + crates/reify-expr/src/lib.rs",
+      "how": "Used in the early cutoff test: 'if a > 0 then 1 else 1' is a Conditional expression where both branches are literals. Already fully implemented in eval_expr."
+    },
+    {
+      "what": "DeterminacyState enum",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "CachedResult::Value stores (Value, DeterminacyState) pairs, matching the Snapshot::values map pattern."
+    }
+  ]
+}
