@@ -44,6 +44,62 @@ mod tests {
     }
 
     #[test]
+    fn build_trial_values_inserts_auto_params() {
+        use super::build_trial_values;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let thickness_id = ValueCellId::new("Bracket", "thickness");
+        let width_id = ValueCellId::new("Bracket", "width");
+
+        // Base map has width=80mm
+        let mut base = ValueMap::new();
+        base.insert(
+            width_id.clone(),
+            Value::Scalar {
+                si_value: 0.080,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let params = vec![AutoParam {
+            id: thickness_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+        }];
+
+        let trial = build_trial_values(&base, &params, &[0.005]);
+
+        // Auto param should be inserted with correct dimension
+        let thickness = trial.get(&thickness_id).expect("thickness should exist");
+        match thickness {
+            &Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 0.005).abs() < 1e-15,
+                    "si_value should be 0.005, got {}",
+                    si_value
+                );
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar, got {:?}", other),
+        }
+
+        // Non-auto value should be preserved
+        let width = trial.get(&width_id).expect("width should be preserved");
+        match width {
+            &Value::Scalar { si_value, .. } => {
+                assert!(
+                    (si_value - 0.080).abs() < 1e-15,
+                    "width should be 0.080"
+                );
+            }
+            other => panic!("expected Scalar, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn empty_problem_returns_solved() {
         use crate::DimensionalSolver;
 
