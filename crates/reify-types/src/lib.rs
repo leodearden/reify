@@ -2,6 +2,7 @@ pub mod identity;
 pub mod hash;
 pub mod dimension;
 pub mod ty;
+pub mod persistent;
 pub mod value;
 pub mod expr;
 pub mod constraint;
