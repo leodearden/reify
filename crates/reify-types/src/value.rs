@@ -1,8 +1,7 @@
-use std::collections::HashMap;
-
 use crate::dimension::DimensionVector;
 use crate::hash::ContentHash;
 use crate::identity::ValueCellId;
+use crate::persistent::PersistentMap;
 
 /// Runtime values in Reify (M1 subset).
 #[derive(Debug, Clone)]
@@ -148,11 +147,11 @@ pub enum Freshness {
     Uncomputed,
 }
 
-/// Map from ValueCellId to Value. M1 implementation uses HashMap;
-/// will migrate to HAMT in M2 for structural sharing.
+/// Map from ValueCellId to Value. Uses PersistentMap (im::HashMap) for
+/// O(1) structural-sharing clones.
 #[derive(Debug, Clone, Default)]
 pub struct ValueMap {
-    inner: HashMap<ValueCellId, Value>,
+    inner: PersistentMap<ValueCellId, Value>,
 }
 
 impl ValueMap {
