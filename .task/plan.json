@@ -44,92 +44,92 @@
       "id": "step-4",
       "type": "impl",
       "description": "Step-3 should pass with step-2 implementation. If not, debug and fix lower_param handling. Verify `auto` in `let x = auto` is either a parse error or parsed differently (not ExprKind::Auto) since grammar restricts auto_keyword to param defaults.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "2f97788"
     },
     {
       "id": "step-5",
       "type": "test",
       "description": "Write failing test `compile_auto_param` in crates/reify-compiler/tests/boundary2_producer.rs: parse + compile `structure S { param x: Scalar = auto\\n param y: Scalar = 5mm }`, filter value cells, assert x has `kind == ValueCellKind::Auto` and `default_expr == None`, y has `kind == ValueCellKind::Param` and `default_expr.is_some()`. Test fails because ValueCellKind::Auto doesn't exist.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "3be60a1"
     },
     {
       "id": "step-6",
       "type": "impl",
       "description": "Add `Auto` variant to ValueCellKind enum in crates/reify-compiler/src/lib.rs. Update doc comment. In `compile_structure()` Param arm (line ~641): check if `param.default` is `Some(Expr { kind: ExprKind::Auto, .. })`. If so, emit ValueCellDecl with `kind: ValueCellKind::Auto, default_expr: None`. Otherwise use existing Param logic.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "06502e2"
     },
     {
       "id": "step-7",
       "type": "test",
       "description": "Write failing test `auto_param_builder` in crates/reify-test-support (inline test or in builders.rs tests): call `TopologyTemplateBuilder::new(\"T\").auto_param(\"T\", \"x\", Type::length())`, verify produced ValueCellDecl has `kind == ValueCellKind::Auto`, `default_expr == None`, correct id and type. Fails because auto_param() doesn't exist.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1ed3cee"
     },
     {
       "id": "step-8",
       "type": "impl",
       "description": "Add `auto_param(self, entity: &str, member: &str, cell_type: Type) -> Self` method to TopologyTemplateBuilder in crates/reify-test-support/src/builders.rs. Pushes ValueCellDecl with `kind: ValueCellKind::Auto, default_expr: None`. Mirrors existing param() pattern.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "9b9abf7"
     },
     {
       "id": "step-9",
       "type": "test",
       "description": "Write failing test `eval_auto_param_undef_auto` in crates/reify-eval (tests/ directory): build a CompiledModule via builder with auto_param(\"S\", \"x\", Type::length()) and param(\"S\", \"y\", Type::length(), Some(literal(mm(5.0)))). Run engine.eval(). Assert snapshot has x → (Undef, DeterminacyState::Auto) and y → (evaluated value, Determined). Assert values map has x → Undef. Fails because eval() doesn't handle Auto cells.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "4e67dc1"
     },
     {
       "id": "step-10",
       "type": "impl",
       "description": "Update Snapshot::from_compiled_module() in crates/reify-eval/src/snapshot.rs: when iterating graph.value_cells, check node.kind — if ValueCellKind::Auto, initialize as (Undef, DeterminacyState::Auto) instead of (Undef, Undetermined). Update Engine::eval() in crates/reify-eval/src/lib.rs: in the first pass, add a branch after the Param check: `else if cell.kind == ValueCellKind::Auto { values.insert(cell.id.clone(), Value::Undef); snapshot.values.insert(cell.id.clone(), (Value::Undef, DeterminacyState::Auto)); /* record cache */ }`.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "0bf7bb3"
     },
     {
       "id": "step-11",
       "type": "test",
       "description": "Write failing test `eval_cached_auto_param` in crates/reify-eval: same module as step-9, but use engine.eval_cached(). Verify auto param gets (Undef, DeterminacyState::Auto) in values. Also test that setting a param_override for the auto param causes eval_cached to use the override value with Determined state.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "9d057a8"
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "Update Engine::eval_cached() in crates/reify-eval/src/lib.rs: in the first pass, after the `if cell.kind == ValueCellKind::Param` block, add `else if cell.kind == ValueCellKind::Auto`. Handle version fast-path, cache reuse, and fallback: without override → (Undef, DeterminacyState::Auto); with override → (override_value, DeterminacyState::Determined). Follow the Param handling pattern for cache recording.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "57c3a15"
     },
     {
       "id": "step-13",
       "type": "test",
       "description": "Write test `constraint_on_auto_param_indeterminate` in crates/reify-eval: build a module with auto_param(\"S\", \"x\", Type::length()) and a constraint `x > 5mm` (compiled via builders). Run engine.check(). Assert the constraint result has satisfaction == Satisfaction::Indeterminate. This should pass naturally since x is Undef → constraint expression evaluates to Undef → Indeterminate.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "ede0cf8"
     },
     {
       "id": "step-14",
       "type": "impl",
       "description": "Verify step-13 passes with existing Undef→Indeterminate mapping. No constraint checker changes expected. If the test fails, investigate eval_expr Undef propagation for the specific comparison operators used.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "ede0cf8"
     },
     {
       "id": "step-15",
       "type": "test",
       "description": "Write end-to-end integration test `e2e_parse_compile_eval_auto_param`: parse source `structure S {\\n  param x : Scalar = auto\\n  param y : Scalar = 5mm\\n  let z = y * 2\\n  constraint x > 2mm\\n}`, compile, eval, check. Assert: no parse errors, x is ValueCellKind::Auto, x is (Undef, Auto) in snapshot, y is evaluated to 0.005 SI, z = 0.01 SI, constraint on x is Indeterminate.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "844cf4a"
     },
     {
       "id": "step-16",
       "type": "impl",
       "description": "Verify e2e test passes with all prior implementations. Run `cargo test --workspace` to confirm all existing tests pass with no regressions. Fix any compilation or test failures across the workspace.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "844cf4a"
     }
   ],
   "design_decisions": [
