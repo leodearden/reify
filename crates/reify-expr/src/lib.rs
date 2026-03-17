@@ -1,4 +1,4 @@
-use reify_types::{BinOp, CompiledExpr, CompiledExprKind, UnOp, Value, ValueMap};
+use reify_types::{BinOp, CompiledExpr, CompiledExprKind, UnOp, Value, ValueCellId, ValueMap};
 
 /// Evaluate a compiled expression against a set of values.
 ///
@@ -40,6 +40,175 @@ pub fn eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value {
                 _ => Value::Undef, // type error: condition is not bool
             }
         }
+    }
+}
+
+/// Evaluate a compiled expression with dependency tracing.
+///
+/// Identical to `eval_expr` but calls `on_read(id)` for every ValueRef read,
+/// enabling the caller to record which value cells contribute to the result.
+/// Only actually-evaluated branches are traced (e.g., in conditionals, only
+/// the taken branch is traced).
+pub fn eval_expr_traced(
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    on_read: &mut dyn FnMut(&ValueCellId),
+) -> Value {
+    match &expr.kind {
+        CompiledExprKind::Literal(v) => v.clone(),
+
+        CompiledExprKind::ValueRef(id) => {
+            on_read(id);
+            values.get_or_undef(id)
+        }
+
+        CompiledExprKind::BinOp { op, left, right } => {
+            eval_binop_traced(*op, left, right, values, on_read)
+        }
+
+        CompiledExprKind::UnOp { op, operand } => {
+            eval_unop_traced(*op, operand, values, on_read)
+        }
+
+        CompiledExprKind::FunctionCall { function, args } => {
+            let _ = function;
+            let _ = args;
+            Value::Undef
+        }
+
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            let cond = eval_expr_traced(condition, values, on_read);
+            match cond {
+                Value::Bool(true) => eval_expr_traced(then_branch, values, on_read),
+                Value::Bool(false) => eval_expr_traced(else_branch, values, on_read),
+                Value::Undef => Value::Undef,
+                _ => Value::Undef,
+            }
+        }
+    }
+}
+
+fn eval_binop_traced(
+    op: BinOp,
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    values: &ValueMap,
+    on_read: &mut dyn FnMut(&ValueCellId),
+) -> Value {
+    match op {
+        BinOp::And => return eval_and_traced(left, right, values, on_read),
+        BinOp::Or => return eval_or_traced(left, right, values, on_read),
+        _ => {}
+    }
+
+    let lv = eval_expr_traced(left, values, on_read);
+    let rv = eval_expr_traced(right, values, on_read);
+
+    if lv.is_undef() || rv.is_undef() {
+        return Value::Undef;
+    }
+
+    match op {
+        BinOp::Add => eval_add(&lv, &rv),
+        BinOp::Sub => eval_sub(&lv, &rv),
+        BinOp::Mul => eval_mul(&lv, &rv),
+        BinOp::Div => eval_div(&lv, &rv),
+        BinOp::Mod => eval_mod(&lv, &rv),
+        BinOp::Pow => eval_pow(&lv, &rv),
+        BinOp::Eq => eval_eq(&lv, &rv),
+        BinOp::Ne => eval_ne(&lv, &rv),
+        BinOp::Lt => eval_cmp(&lv, &rv, |a, b| a < b),
+        BinOp::Le => eval_cmp(&lv, &rv, |a, b| a <= b),
+        BinOp::Gt => eval_cmp(&lv, &rv, |a, b| a > b),
+        BinOp::Ge => eval_cmp(&lv, &rv, |a, b| a >= b),
+        BinOp::And | BinOp::Or => unreachable!(),
+    }
+}
+
+fn eval_and_traced(
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    values: &ValueMap,
+    on_read: &mut dyn FnMut(&ValueCellId),
+) -> Value {
+    let lv = eval_expr_traced(left, values, on_read);
+    match lv {
+        Value::Bool(false) => Value::Bool(false),
+        Value::Bool(true) => {
+            let rv = eval_expr_traced(right, values, on_read);
+            match rv {
+                Value::Bool(b) => Value::Bool(b),
+                Value::Undef => Value::Undef,
+                _ => Value::Undef,
+            }
+        }
+        Value::Undef => {
+            let rv = eval_expr_traced(right, values, on_read);
+            match rv {
+                Value::Bool(false) => Value::Bool(false),
+                _ => Value::Undef,
+            }
+        }
+        _ => Value::Undef,
+    }
+}
+
+fn eval_or_traced(
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    values: &ValueMap,
+    on_read: &mut dyn FnMut(&ValueCellId),
+) -> Value {
+    let lv = eval_expr_traced(left, values, on_read);
+    match lv {
+        Value::Bool(true) => Value::Bool(true),
+        Value::Bool(false) => {
+            let rv = eval_expr_traced(right, values, on_read);
+            match rv {
+                Value::Bool(b) => Value::Bool(b),
+                Value::Undef => Value::Undef,
+                _ => Value::Undef,
+            }
+        }
+        Value::Undef => {
+            let rv = eval_expr_traced(right, values, on_read);
+            match rv {
+                Value::Bool(true) => Value::Bool(true),
+                _ => Value::Undef,
+            }
+        }
+        _ => Value::Undef,
+    }
+}
+
+fn eval_unop_traced(
+    op: UnOp,
+    operand: &CompiledExpr,
+    values: &ValueMap,
+    on_read: &mut dyn FnMut(&ValueCellId),
+) -> Value {
+    let v = eval_expr_traced(operand, values, on_read);
+    if v.is_undef() {
+        return Value::Undef;
+    }
+    match op {
+        UnOp::Neg => match v {
+            Value::Int(i) => Value::Int(-i),
+            Value::Real(r) => Value::Real(-r),
+            Value::Scalar { si_value, dimension } => Value::Scalar {
+                si_value: -si_value,
+                dimension,
+            },
+            _ => Value::Undef,
+        },
+        UnOp::Not => match v {
+            Value::Bool(b) => Value::Bool(!b),
+            _ => Value::Undef,
+        },
     }
 }
 
@@ -682,5 +851,305 @@ mod tests {
             Value::Real(v) => assert!((v - 4.0).abs() < 1e-12),
             other => panic!("expected Real, got {:?}", other),
         }
+    }
+
+    // --- eval_expr_traced tests ---
+
+    #[test]
+    fn traced_value_ref_calls_callback() {
+        let expr = vref("Bracket", "width", Type::length());
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("Bracket", "width"), mm_val(80.0));
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert!(!result.is_undef());
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0], ValueCellId::new("Bracket", "width"));
+    }
+
+    #[test]
+    fn traced_literal_no_callback() {
+        let expr = lit(Value::Int(42), Type::Int);
+        let values = ValueMap::new();
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(result, Value::Int(42));
+        assert!(reads.is_empty());
+    }
+
+    #[test]
+    fn traced_binop_two_value_refs() {
+        let left = vref("B", "width", Type::length());
+        let right = vref("B", "height", Type::length());
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::length());
+
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "width"), mm_val(80.0));
+        values.insert(ValueCellId::new("B", "height"), mm_val(100.0));
+
+        let mut reads = Vec::new();
+        eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(reads.len(), 2);
+        assert_eq!(reads[0], ValueCellId::new("B", "width"));
+        assert_eq!(reads[1], ValueCellId::new("B", "height"));
+    }
+
+    #[test]
+    fn traced_volume_three_reads() {
+        // volume = width * height * thickness
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "width"), mm_val(80.0));
+        values.insert(ValueCellId::new("B", "height"), mm_val(100.0));
+        values.insert(ValueCellId::new("B", "thickness"), mm_val(5.0));
+
+        let w = vref("B", "width", Type::length());
+        let h = vref("B", "height", Type::length());
+        let t = vref("B", "thickness", Type::length());
+
+        let wh = CompiledExpr::binop(
+            BinOp::Mul,
+            w,
+            h,
+            Type::Scalar {
+                dimension: DimensionVector::AREA,
+            },
+        );
+        let volume = CompiledExpr::binop(
+            BinOp::Mul,
+            wh,
+            t,
+            Type::Scalar {
+                dimension: DimensionVector::VOLUME,
+            },
+        );
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&volume, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        // Same result as eval_expr
+        let expected = eval_expr(&volume, &values);
+        assert_eq!(result.as_f64().unwrap(), expected.as_f64().unwrap());
+
+        // Exactly 3 reads: width, height, thickness
+        assert_eq!(reads.len(), 3);
+        assert_eq!(reads[0], ValueCellId::new("B", "width"));
+        assert_eq!(reads[1], ValueCellId::new("B", "height"));
+        assert_eq!(reads[2], ValueCellId::new("B", "thickness"));
+    }
+
+    #[test]
+    fn traced_conditional_only_traces_taken_branch() {
+        // if true then width else height
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "width"), mm_val(80.0));
+        values.insert(ValueCellId::new("B", "height"), mm_val(100.0));
+
+        let cond = lit(Value::Bool(true), Type::Bool);
+        let then_branch = vref("B", "width", Type::length());
+        let else_branch = vref("B", "height", Type::length());
+        let expr = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[42]),
+            result_type: Type::length(),
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(cond),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+        };
+
+        let mut reads = Vec::new();
+        eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        // Only the then-branch should be traced (width), not else (height)
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0], ValueCellId::new("B", "width"));
+    }
+
+    #[test]
+    fn traced_conditional_false_traces_else_branch() {
+        // if false then width else height
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "width"), mm_val(80.0));
+        values.insert(ValueCellId::new("B", "height"), mm_val(100.0));
+
+        let cond = lit(Value::Bool(false), Type::Bool);
+        let then_branch = vref("B", "width", Type::length());
+        let else_branch = vref("B", "height", Type::length());
+        let expr = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[43]),
+            result_type: Type::length(),
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(cond),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+        };
+
+        let mut reads = Vec::new();
+        eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        // Only the else-branch should be traced (height), not then (width)
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0], ValueCellId::new("B", "height"));
+    }
+
+    // --- AND/OR short-circuit tracing tests ---
+
+    #[test]
+    fn traced_and_false_short_circuits() {
+        // false AND vref(X) → short-circuits, on_read NOT called for X
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "x"), Value::Bool(true));
+
+        let left = lit(Value::Bool(false), Type::Bool);
+        let right = vref("B", "x", Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::And, left, right, Type::Bool);
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(result, Value::Bool(false));
+        assert!(reads.is_empty(), "false AND should short-circuit: right side must NOT be traced");
+    }
+
+    #[test]
+    fn traced_and_true_evaluates_right() {
+        // true AND vref(X) → evaluates right, on_read IS called for X
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "x"), Value::Bool(true));
+
+        let left = lit(Value::Bool(true), Type::Bool);
+        let right = vref("B", "x", Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::And, left, right, Type::Bool);
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(result, Value::Bool(true));
+        assert_eq!(reads.len(), 1, "true AND should evaluate right side");
+        assert_eq!(reads[0], ValueCellId::new("B", "x"));
+    }
+
+    #[test]
+    fn traced_or_true_short_circuits() {
+        // true OR vref(X) → short-circuits, on_read NOT called for X
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "x"), Value::Bool(false));
+
+        let left = lit(Value::Bool(true), Type::Bool);
+        let right = vref("B", "x", Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::Or, left, right, Type::Bool);
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(result, Value::Bool(true));
+        assert!(reads.is_empty(), "true OR should short-circuit: right side must NOT be traced");
+    }
+
+    #[test]
+    fn traced_or_false_evaluates_right() {
+        // false OR vref(X) → evaluates right, on_read IS called for X
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "x"), Value::Bool(true));
+
+        let left = lit(Value::Bool(false), Type::Bool);
+        let right = vref("B", "x", Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::Or, left, right, Type::Bool);
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(result, Value::Bool(true));
+        assert_eq!(reads.len(), 1, "false OR should evaluate right side");
+        assert_eq!(reads[0], ValueCellId::new("B", "x"));
+    }
+
+    #[test]
+    fn traced_and_undef_false_both_traced() {
+        // Undef AND vref(X)=false → on_read IS called for X, result is Bool(false)
+        // Kleene: Undef AND false = false (false is absorbing for AND)
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "x"), Value::Bool(false));
+
+        let left = lit(Value::Undef, Type::Bool);
+        let right = vref("B", "x", Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::And, left, right, Type::Bool);
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(result, Value::Bool(false));
+        assert_eq!(reads.len(), 1, "Undef AND should evaluate right side");
+        assert_eq!(reads[0], ValueCellId::new("B", "x"));
+    }
+
+    #[test]
+    fn traced_and_undef_true_both_traced() {
+        // Undef AND vref(X)=true → on_read IS called for X, result is Undef
+        // Kleene: Undef AND true = Undef
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "x"), Value::Bool(true));
+
+        let left = lit(Value::Undef, Type::Bool);
+        let right = vref("B", "x", Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::And, left, right, Type::Bool);
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert!(result.is_undef());
+        assert_eq!(reads.len(), 1, "Undef AND should evaluate right side");
+        assert_eq!(reads[0], ValueCellId::new("B", "x"));
+    }
+
+    #[test]
+    fn traced_or_undef_true_both_traced() {
+        // Undef OR vref(X)=true → on_read IS called for X, result is Bool(true)
+        // Kleene: Undef OR true = true (true is absorbing for OR)
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("B", "x"), Value::Bool(true));
+
+        let left = lit(Value::Undef, Type::Bool);
+        let right = vref("B", "x", Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::Or, left, right, Type::Bool);
+
+        let mut reads = Vec::new();
+        let result = eval_expr_traced(&expr, &values, &mut |id: &ValueCellId| {
+            reads.push(id.clone());
+        });
+
+        assert_eq!(result, Value::Bool(true));
+        assert_eq!(reads.len(), 1, "Undef OR should evaluate right side");
+        assert_eq!(reads[0], ValueCellId::new("B", "x"));
     }
 }
