@@ -2,8 +2,8 @@
 
 use reify_compiler::{CompiledGeometryOp, TopologyTemplate, ValueCellKind};
 use reify_types::{
-    CompiledExpr, ConstraintNodeId, ContentHash, PersistentMap, RealizationNodeId, Type,
-    ValueCellId,
+    CompiledExpr, ConstraintNodeId, ContentHash, PersistentMap, RealizationNodeId,
+    ResolutionNodeId, Type, ValueCellId,
 };
 
 /// A value cell node in the evaluation graph.
@@ -32,6 +32,18 @@ pub struct ConstraintNodeData {
 pub struct RealizationNodeData {
     pub id: RealizationNodeId,
     pub operations: Vec<CompiledGeometryOp>,
+    pub content_hash: ContentHash,
+}
+
+/// A resolution node in the evaluation graph.
+/// Holds references to auto parameters and constraint dependencies
+/// for constraint resolution (solving). Dependencies are static (from the template).
+#[derive(Debug, Clone)]
+pub struct ResolutionNodeData {
+    pub id: ResolutionNodeId,
+    pub scope: String,
+    pub auto_params: Vec<ValueCellId>,
+    pub constraint_deps: Vec<ConstraintNodeId>,
     pub content_hash: ContentHash,
 }
 
@@ -237,6 +249,41 @@ mod tests {
         let cloned = node.clone();
         assert_eq!(cloned.id, node.id);
         assert_eq!(cloned.operations.len(), 1);
+    }
+
+    #[test]
+    fn resolution_node_data_construction() {
+        use reify_types::ResolutionNodeId;
+
+        let id = ResolutionNodeId::new("Bracket", 0);
+        let auto_params = vec![ValueCellId::new("Bracket", "x")];
+        let constraint_deps = vec![ConstraintNodeId::new("Bracket", 0)];
+        let hash = ContentHash::of_str("res0");
+
+        let node = ResolutionNodeData {
+            id: id.clone(),
+            scope: "Bracket".to_string(),
+            auto_params: auto_params.clone(),
+            constraint_deps: constraint_deps.clone(),
+            content_hash: hash,
+        };
+
+        assert_eq!(node.id, id);
+        assert_eq!(node.scope, "Bracket");
+        assert_eq!(node.auto_params, auto_params);
+        assert_eq!(node.constraint_deps, constraint_deps);
+        assert_eq!(node.content_hash, hash);
+
+        // Test Debug derive
+        let debug = format!("{:?}", node);
+        assert!(debug.contains("ResolutionNodeData"));
+
+        // Test Clone derive
+        let cloned = node.clone();
+        assert_eq!(cloned.id, node.id);
+        assert_eq!(cloned.scope, node.scope);
+        assert_eq!(cloned.auto_params, node.auto_params);
+        assert_eq!(cloned.constraint_deps, node.constraint_deps);
     }
 
     #[test]
