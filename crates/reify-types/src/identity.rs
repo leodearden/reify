@@ -140,3 +140,102 @@ impl fmt::Display for SnapshotId {
         write!(f, "snap-{}", self.0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn version_id_construction_and_equality() {
+        let v1 = VersionId(0);
+        let v2 = VersionId(0);
+        let v3 = VersionId(1);
+        assert_eq!(v1, v2);
+        assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn version_id_copy_semantics() {
+        let v1 = VersionId(42);
+        let v2 = v1; // Copy
+        assert_eq!(v1, v2); // v1 still usable
+    }
+
+    #[test]
+    fn version_id_debug_format() {
+        let v = VersionId(7);
+        let debug = format!("{:?}", v);
+        assert!(debug.contains("VersionId"));
+        assert!(debug.contains("7"));
+    }
+
+    #[test]
+    fn version_id_display() {
+        assert_eq!(format!("{}", VersionId(0)), "v0");
+        assert_eq!(format!("{}", VersionId(42)), "v42");
+    }
+
+    #[test]
+    fn version_id_ordering() {
+        let v0 = VersionId(0);
+        let v1 = VersionId(1);
+        let v2 = VersionId(2);
+        assert!(v0 < v1);
+        assert!(v1 < v2);
+        assert!(v0 < v2);
+
+        let mut versions = vec![v2, v0, v1];
+        versions.sort();
+        assert_eq!(versions, vec![v0, v1, v2]);
+    }
+
+    #[test]
+    fn version_id_as_hashmap_key() {
+        let mut map = HashMap::new();
+        map.insert(VersionId(0), "initial");
+        map.insert(VersionId(1), "edit");
+        assert_eq!(map.get(&VersionId(0)), Some(&"initial"));
+        assert_eq!(map.get(&VersionId(1)), Some(&"edit"));
+        assert_eq!(map.get(&VersionId(2)), None);
+    }
+
+    #[test]
+    fn snapshot_id_construction_and_equality() {
+        let s1 = SnapshotId(0);
+        let s2 = SnapshotId(0);
+        let s3 = SnapshotId(1);
+        assert_eq!(s1, s2);
+        assert_ne!(s1, s3);
+    }
+
+    #[test]
+    fn snapshot_id_copy_semantics() {
+        let s1 = SnapshotId(99);
+        let s2 = s1; // Copy
+        assert_eq!(s1, s2); // s1 still usable
+    }
+
+    #[test]
+    fn snapshot_id_debug_format() {
+        let s = SnapshotId(3);
+        let debug = format!("{:?}", s);
+        assert!(debug.contains("SnapshotId"));
+        assert!(debug.contains("3"));
+    }
+
+    #[test]
+    fn snapshot_id_display() {
+        assert_eq!(format!("{}", SnapshotId(0)), "snap-0");
+        assert_eq!(format!("{}", SnapshotId(5)), "snap-5");
+    }
+
+    #[test]
+    fn snapshot_id_as_hashmap_key() {
+        let mut map = HashMap::new();
+        map.insert(SnapshotId(0), "first");
+        map.insert(SnapshotId(1), "second");
+        assert_eq!(map.get(&SnapshotId(0)), Some(&"first"));
+        assert_eq!(map.get(&SnapshotId(2)), None);
+    }
+}
