@@ -259,4 +259,104 @@ mod tests {
         let unknown = ValueCellId::new("X", "y");
         assert!(index.dependents_of(&unknown).is_empty());
     }
+
+    // --- ReverseDependencyIndex::add_trace and remove_node tests ---
+
+    #[test]
+    fn reverse_index_add_trace() {
+        use std::collections::HashSet;
+        use reify_types::NodeId;
+
+        let width = ValueCellId::new("B", "width");
+        let volume_node = NodeId::ValueCell(ValueCellId::new("B", "volume"));
+
+        let mut index = super::ReverseDependencyIndex::default();
+
+        let mut trace = super::DependencyTrace::default();
+        trace.reads.push(width.clone());
+        index.add_trace(volume_node.clone(), &trace);
+
+        assert_eq!(
+            index.dependents_of(&width),
+            &HashSet::from([volume_node])
+        );
+    }
+
+    #[test]
+    fn reverse_index_remove_node() {
+        use std::collections::HashSet;
+        use reify_types::{ConstraintNodeId, NodeId};
+
+        let width = ValueCellId::new("B", "width");
+        let thickness = ValueCellId::new("B", "thickness");
+        let volume_node = NodeId::ValueCell(ValueCellId::new("B", "volume"));
+        let constraint_node = NodeId::Constraint(ConstraintNodeId::new("B", 0));
+
+        let mut index = super::ReverseDependencyIndex::default();
+
+        // volume reads width, thickness
+        let mut vol_trace = super::DependencyTrace::default();
+        vol_trace.reads.push(width.clone());
+        vol_trace.reads.push(thickness.clone());
+        index.add_trace(volume_node.clone(), &vol_trace);
+
+        // constraint reads thickness
+        let mut con_trace = super::DependencyTrace::default();
+        con_trace.reads.push(thickness.clone());
+        index.add_trace(constraint_node.clone(), &con_trace);
+
+        // Before removal: thickness has both dependents
+        assert_eq!(
+            index.dependents_of(&thickness),
+            &HashSet::from([volume_node.clone(), constraint_node.clone()])
+        );
+
+        // Remove constraint node
+        index.remove_node(&constraint_node);
+
+        // After removal: thickness only has volume_node
+        assert_eq!(
+            index.dependents_of(&thickness),
+            &HashSet::from([volume_node.clone()])
+        );
+
+        // width still has volume_node (unaffected)
+        assert_eq!(
+            index.dependents_of(&width),
+            &HashSet::from([volume_node])
+        );
+    }
+
+    #[test]
+    fn reverse_index_remove_node_no_cross_contamination() {
+        use std::collections::HashSet;
+        use reify_types::NodeId;
+
+        let a = ValueCellId::new("X", "a");
+        let b = ValueCellId::new("X", "b");
+        let node1 = NodeId::ValueCell(ValueCellId::new("X", "n1"));
+        let node2 = NodeId::ValueCell(ValueCellId::new("X", "n2"));
+
+        let mut index = super::ReverseDependencyIndex::default();
+
+        // node1 reads a
+        let mut t1 = super::DependencyTrace::default();
+        t1.reads.push(a.clone());
+        index.add_trace(node1.clone(), &t1);
+
+        // node2 reads b
+        let mut t2 = super::DependencyTrace::default();
+        t2.reads.push(b.clone());
+        index.add_trace(node2.clone(), &t2);
+
+        // Remove node1
+        index.remove_node(&node1);
+
+        // a should be empty, b should still have node2
+        assert!(index.dependents_of(&a).is_empty());
+        assert_eq!(
+            index.dependents_of(&b),
+            &HashSet::from([node2])
+        );
+    }
 }
