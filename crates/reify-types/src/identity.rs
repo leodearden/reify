@@ -110,6 +110,12 @@ impl RealizationNodeId {
     }
 }
 
+impl fmt::Display for RealizationNodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}#realization[{}]", self.entity, self.index)
+    }
+}
+
 /// Identifies a source node (input from the parser/file).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceNodeId {
