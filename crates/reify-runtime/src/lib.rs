@@ -93,4 +93,48 @@ mod tests {
         let p2 = p;
         assert_eq!(p, p2);
     }
+
+    #[test]
+    fn scheduler_empty_eval_set() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+
+        struct NoopEvaluator;
+        impl NodeEvaluator for NoopEvaluator {
+            fn is_dirty(&self, _node: &NodeId) -> bool {
+                false
+            }
+            fn evaluate(&mut self, _node: &NodeId) -> EvalOutcome {
+                EvalOutcome::Unchanged
+            }
+        }
+
+        let scheduler = SequentialScheduler;
+        let mut evaluator = NoopEvaluator;
+        let eval_set = vec![];
+        let changed = scheduler.execute(eval_set, &mut evaluator);
+        assert!(changed.is_empty());
+    }
+
+    #[test]
+    fn scheduler_single_changed_node() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+
+        struct AlwaysChanged;
+        impl NodeEvaluator for AlwaysChanged {
+            fn is_dirty(&self, _node: &NodeId) -> bool {
+                true
+            }
+            fn evaluate(&mut self, _node: &NodeId) -> EvalOutcome {
+                EvalOutcome::Changed
+            }
+        }
+
+        let scheduler = SequentialScheduler;
+        let mut evaluator = AlwaysChanged;
+        let node = NodeId::Value(reify_types::ValueCellId::new("A", "x"));
+        let eval_set = vec![node.clone()];
+        let changed = scheduler.execute(eval_set, &mut evaluator);
+        assert_eq!(changed.len(), 1);
+        assert!(changed.contains(&node));
+    }
 }
