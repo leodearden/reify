@@ -116,6 +116,28 @@ impl fmt::Display for RealizationNodeId {
     }
 }
 
+/// Identifies a resolution node (constraint solver group) in the topology graph.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ResolutionNodeId {
+    pub entity: String,
+    pub index: u32,
+}
+
+impl ResolutionNodeId {
+    pub fn new(entity: impl Into<String>, index: u32) -> Self {
+        Self {
+            entity: entity.into(),
+            index,
+        }
+    }
+}
+
+impl fmt::Display for ResolutionNodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}#resolution[{}]", self.entity, self.index)
+    }
+}
+
 /// Identifies a source node (input from the parser/file).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceNodeId {
