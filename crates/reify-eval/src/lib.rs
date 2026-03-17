@@ -264,15 +264,23 @@ impl Engine {
             .expect("edit_param requires a prior call to eval()");
 
         // Clone snapshot (O(1) via PersistentMap)
+        let parent_id = snapshot.id;
         let mut new_snapshot = snapshot.clone();
 
-        // Update snapshot ID and version
+        // Update snapshot ID, version, and provenance
         let snapshot_id = self.next_snapshot_id;
         self.next_snapshot_id += 1;
         let version_id = self.next_version_id;
         self.next_version_id += 1;
         new_snapshot.id = SnapshotId(snapshot_id);
         new_snapshot.version = VersionId(version_id);
+
+        let mut changed = std::collections::HashSet::new();
+        changed.insert(cell.clone());
+        new_snapshot.provenance = SnapshotProvenance::Edit {
+            changed,
+            parent: parent_id,
+        };
 
         // Update the changed cell's value in snapshot
         new_snapshot.values.insert(
