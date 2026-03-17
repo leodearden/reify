@@ -9,9 +9,10 @@ use std::collections::HashMap;
 
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
-    ConstraintChecker, ConstraintInput, ConstraintSolver, DeterminacyState, Diagnostic,
-    ExportFormat, GeometryHandleId, GeometryKernel, Satisfaction, SnapshotId,
-    SnapshotProvenance, ValueCellId, ValueMap, VersionId,
+    AutoParam, ConstraintChecker, ConstraintInput, ConstraintSolver, DeterminacyState,
+    Diagnostic, ExportFormat, GeometryHandleId, GeometryKernel, ResolutionProblem,
+    Satisfaction, SnapshotId, SnapshotProvenance, SolveResult, ValueCellId, ValueMap,
+    VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
@@ -159,7 +160,7 @@ impl Engine {
         module: &CompiledModule,
     ) -> EvalResult {
         let mut values = ValueMap::new();
-        let diagnostics = Vec::new();
+        let mut diagnostics = Vec::new();
 
         // Build Snapshot from CompiledModule (creates EvaluationGraph internally)
         let snapshot_id = self.next_snapshot_id;
@@ -267,6 +268,74 @@ impl Engine {
             }
         }
 
+        // Resolution phase: resolve auto params using the constraint solver.
+        let mut resolved_params = HashMap::new();
+        if let Some(ref solver) = self.solver {
+            for template in &module.templates {
+                // Collect auto param IDs for this template
+                let auto_ids: std::collections::HashSet<ValueCellId> = template
+                    .value_cells
+                    .iter()
+                    .filter(|cell| cell.kind == ValueCellKind::Auto)
+                    .map(|cell| cell.id.clone())
+                    .collect();
+
+                if auto_ids.is_empty() {
+                    continue;
+                }
+
+                // Find constraints whose dependency traces reference auto params
+                let filtered_constraints: Vec<_> = template
+                    .constraints
+                    .iter()
+                    .filter(|c| {
+                        let trace = extract_dependency_trace(&c.expr);
+                        trace.reads.iter().any(|r| auto_ids.contains(r))
+                    })
+                    .map(|c| (c.id.clone(), c.expr.clone()))
+                    .collect();
+
+                // Build AutoParam list from template value cells
+                let auto_param_list: Vec<AutoParam> = template
+                    .value_cells
+                    .iter()
+                    .filter(|cell| cell.kind == ValueCellKind::Auto)
+                    .map(|cell| AutoParam {
+                        id: cell.id.clone(),
+                        param_type: cell.cell_type.clone(),
+                        bounds: None,
+                    })
+                    .collect();
+
+                // Build ResolutionProblem
+                let problem = ResolutionProblem {
+                    auto_params: auto_param_list,
+                    constraints: filtered_constraints,
+                    current_values: values.clone(),
+                    objective: None,
+                };
+
+                match solver.solve(&problem) {
+                    SolveResult::Solved { values: solver_values } => {
+                        // Update values map with resolved values
+                        for (id, val) in &solver_values {
+                            values.insert(id.clone(), val.clone());
+                            resolved_params.insert(id.clone(), val.clone());
+                        }
+                    }
+                    SolveResult::Infeasible { diagnostics: solver_diags } => {
+                        diagnostics.extend(solver_diags);
+                    }
+                    SolveResult::NoProgress { reason } => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "Constraint solver made no progress: {}",
+                            reason
+                        )));
+                    }
+                }
+            }
+        }
+
         // Store internal state for incremental evaluation
         self.current_snapshot = Some(snapshot);
         self.reverse_index = Some(reverse_index);
@@ -274,7 +343,7 @@ impl Engine {
         self.demand = demand;
         self.last_eval_set = Vec::new(); // Cold start: no incremental eval set
 
-        EvalResult { values, diagnostics, resolved_params: HashMap::new() }
+        EvalResult { values, diagnostics, resolved_params }
     }
 
     /// Incrementally re-evaluate after changing a parameter value.
