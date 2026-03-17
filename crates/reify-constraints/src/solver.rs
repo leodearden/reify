@@ -869,4 +869,170 @@ mod tests {
             other => panic!("expected Solved, got {:?}", other),
         }
     }
+
+    #[test]
+    fn solution_stays_within_bounds() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
+            ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // x > 5mm
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let five_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref, five_mm, Type::Bool);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.050)), // bounds: 1mm to 50mm
+            }],
+            constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
+            current_values: ValueMap::new(),
+            objective: None,
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::Solved { values } => {
+                let x = values.get(&x_id).unwrap().as_f64().unwrap();
+                assert!(
+                    x >= 0.001 && x <= 0.050,
+                    "solution should be within bounds [1mm, 50mm], got {} m",
+                    x
+                );
+                assert!(x > 0.005, "x should satisfy x > 5mm, got {} m", x);
+            }
+            other => panic!("expected Solved, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn no_bounds_length_param() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
+            ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // x > 5mm
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let five_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), five_mm, Type::Bool);
+
+        // x < 50mm
+        let fifty_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.050,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let lt_expr = CompiledExpr::binop(BinOp::Lt, x_ref, fifty_mm, Type::Bool);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: None, // No explicit bounds
+            }],
+            constraints: vec![
+                (ConstraintNodeId::new("Part", 0), gt_expr),
+                (ConstraintNodeId::new("Part", 1), lt_expr),
+            ],
+            current_values: ValueMap::new(),
+            objective: None,
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::Solved { values } => {
+                let x = values.get(&x_id).unwrap().as_f64().unwrap();
+                assert!(
+                    x > 0.005 && x < 0.050,
+                    "should find feasible point, got {} m",
+                    x
+                );
+            }
+            other => panic!("expected Solved, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn already_satisfied_returns_solved_immediately() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
+            ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // x > 5mm
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let five_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref, five_mm, Type::Bool);
+
+        // Current value already satisfies: x = 10mm
+        let mut current = ValueMap::new();
+        current.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.010,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            }],
+            constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
+            current_values: current,
+            objective: None,
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::Solved { values } => {
+                let x = values.get(&x_id).unwrap().as_f64().unwrap();
+                // Should return current value since already satisfied
+                assert!(
+                    (x - 0.010).abs() < 0.001,
+                    "already-satisfied should return value close to current, got {} m",
+                    x
+                );
+            }
+            other => panic!("expected Solved, got {:?}", other),
+        }
+    }
 }
