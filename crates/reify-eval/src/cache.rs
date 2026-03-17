@@ -228,6 +228,37 @@ mod tests {
         assert_eq!(map.get(&NodeId::Constraint(cnid)), Some(&"constraint"));
     }
 
+    // --- Version fast path tests ---
+
+    #[test]
+    fn try_fast_path_hit_when_same_version() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("Bracket", "width"));
+        store.put(node.clone(), make_test_node_cache(42, 1));
+
+        let result = store.try_fast_path(&node, VersionId(1));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn try_fast_path_miss_when_different_version() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("Bracket", "width"));
+        store.put(node.clone(), make_test_node_cache(42, 1));
+
+        let result = store.try_fast_path(&node, VersionId(2));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn try_fast_path_miss_when_not_cached() {
+        let store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("Bracket", "width"));
+
+        let result = store.try_fast_path(&node, VersionId(1));
+        assert!(result.is_none());
+    }
+
     // --- CacheStore tests ---
 
     fn make_test_node_cache(val: i64, version: u64) -> NodeCache {
