@@ -5,6 +5,40 @@
 //! intersection of the dirty cone and the demand cone, topologically sorted
 //! so that dependencies are evaluated before their dependents.
 
+use std::collections::{HashSet, VecDeque};
+
+use crate::cache::NodeId;
+use crate::deps::ReverseDependencyIndex;
+use reify_types::ValueCellId;
+
+/// Compute the dirty cone: all nodes that transitively depend on any changed cell.
+///
+/// BFS forward from changed cells through the reverse index. For each dependent
+/// that is a Value(vcid), add vcid to the frontier for further propagation.
+/// Constraint and Realization nodes are leaf nodes (no further propagation).
+///
+/// The changed cells themselves are NOT included in the result (they are roots).
+pub fn compute_dirty_cone(
+    changed: &HashSet<ValueCellId>,
+    reverse_index: &ReverseDependencyIndex,
+) -> HashSet<NodeId> {
+    let mut dirty = HashSet::new();
+    let mut frontier: VecDeque<ValueCellId> = changed.iter().cloned().collect();
+
+    while let Some(cell) = frontier.pop_front() {
+        for dependent in reverse_index.dependents_of(&cell) {
+            if dirty.insert(dependent.clone()) {
+                // If the dependent is a Value node, continue propagation
+                if let NodeId::Value(vcid) = dependent {
+                    frontier.push_back(vcid.clone());
+                }
+            }
+        }
+    }
+
+    dirty
+}
+
 #[cfg(test)]
 mod tests {
     use crate::cache::NodeId;
