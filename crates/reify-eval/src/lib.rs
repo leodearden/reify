@@ -12,7 +12,7 @@ use reify_types::{
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
-use crate::deps::DependencyTrace;
+use crate::deps::{extract_dependency_trace, DependencyTrace};
 
 /// The engine facade — main entry point for evaluation.
 pub struct Engine {
@@ -501,40 +501,3 @@ fn compile_geometry_op(
     }
 }
 
-/// Extract a dependency trace from a compiled expression by collecting all ValueRef ids.
-fn extract_dependency_trace(expr: &reify_types::CompiledExpr) -> DependencyTrace {
-    let mut reads = Vec::new();
-    collect_value_refs(expr, &mut reads);
-    DependencyTrace { reads }
-}
-
-fn collect_value_refs(expr: &reify_types::CompiledExpr, out: &mut Vec<ValueCellId>) {
-    use reify_types::CompiledExprKind;
-    match &expr.kind {
-        CompiledExprKind::Literal(_) => {}
-        CompiledExprKind::ValueRef(id) => {
-            out.push(id.clone());
-        }
-        CompiledExprKind::BinOp { left, right, .. } => {
-            collect_value_refs(left, out);
-            collect_value_refs(right, out);
-        }
-        CompiledExprKind::UnOp { operand, .. } => {
-            collect_value_refs(operand, out);
-        }
-        CompiledExprKind::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_value_refs(arg, out);
-            }
-        }
-        CompiledExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            collect_value_refs(condition, out);
-            collect_value_refs(then_branch, out);
-            collect_value_refs(else_branch, out);
-        }
-    }
-}
