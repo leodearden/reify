@@ -211,16 +211,13 @@ impl CostFunction for ConstraintCostFunction<'_> {
     type Output = f64;
 
     fn cost(&self, param: &Self::Param) -> Result<Self::Output, ArgminError> {
-        // Clamp parameters to bounds
+        // Clamp parameters to effective bounds
         let clamped: Vec<f64> = param
             .iter()
             .zip(self.auto_params.iter())
             .map(|(&val, ap)| {
-                if let Some((lo, hi)) = ap.bounds {
-                    val.clamp(lo, hi)
-                } else {
-                    val
-                }
+                let (lo, hi) = effective_bounds(ap);
+                val.clamp(lo, hi)
             })
             .collect();
 
@@ -253,23 +250,32 @@ fn build_simplex(initial: &[f64], params: &[AutoParam]) -> Vec<Vec<f64>> {
 
     for i in 0..n {
         let mut vertex = initial.to_vec();
-        // Perturb dimension i
-        let delta = if let Some((lo, hi)) = params[i].bounds {
-            (hi - lo) * 0.1
-        } else if initial[i].abs() > 1e-15 {
-            initial[i].abs() * 0.1
-        } else {
-            0.001
-        };
+        // Perturb dimension i by a fraction of the effective range
+        let (lo, hi) = effective_bounds(&params[i]);
+        let delta = (hi - lo) * 0.1;
         vertex[i] += delta;
-        // Clamp to bounds
-        if let Some((lo, hi)) = params[i].bounds {
-            vertex[i] = vertex[i].clamp(lo, hi);
-        }
+        vertex[i] = vertex[i].clamp(lo, hi);
         simplex.push(vertex);
     }
 
     simplex
+}
+
+/// Get default bounds based on dimension type when AutoParam.bounds is None.
+fn default_bounds_for(ty: &Type) -> (f64, f64) {
+    let dim = dimension_of(ty);
+    if dim == DimensionVector::LENGTH {
+        (1e-6, 10.0) // 1 micron to 10 meters
+    } else if dim == DimensionVector::ANGLE {
+        (-std::f64::consts::TAU, std::f64::consts::TAU) // -2π to 2π
+    } else {
+        (-1e6, 1e6) // dimensionless or other
+    }
+}
+
+/// Get effective bounds for an AutoParam, falling back to dimension-based defaults.
+fn effective_bounds(param: &AutoParam) -> (f64, f64) {
+    param.bounds.unwrap_or_else(|| default_bounds_for(&param.param_type))
 }
 
 impl ConstraintSolver for DimensionalSolver {
@@ -279,6 +285,31 @@ impl ConstraintSolver for DimensionalSolver {
             return SolveResult::Solved {
                 values: HashMap::new(),
             };
+        }
+
+        // Early-exit: if all constraints are already satisfied with current values,
+        // return current auto param values without running the optimizer
+        if problem.objective.is_none() {
+            let initial = extract_initial_point(problem);
+            let trial_values = build_trial_values(
+                &problem.current_values,
+                &problem.auto_params,
+                &initial,
+            );
+            let violation = compute_total_violation(&problem.constraints, &trial_values);
+            if violation <= FEASIBILITY_THRESHOLD {
+                let mut values = HashMap::new();
+                for (param, &val) in problem.auto_params.iter().zip(initial.iter()) {
+                    values.insert(
+                        param.id.clone(),
+                        Value::Scalar {
+                            si_value: val,
+                            dimension: dimension_of(&param.param_type),
+                        },
+                    );
+                }
+                return SolveResult::Solved { values };
+            }
         }
 
         let cost_fn = ConstraintCostFunction {
@@ -319,16 +350,13 @@ impl ConstraintSolver for DimensionalSolver {
             }
         };
 
-        // Clamp final solution to bounds
+        // Clamp final solution to effective bounds
         let clamped: Vec<f64> = best_param
             .iter()
             .zip(problem.auto_params.iter())
             .map(|(val, ap)| {
-                if let Some((lo, hi)) = ap.bounds {
-                    val.clamp(lo, hi)
-                } else {
-                    *val
-                }
+                let (lo, hi) = effective_bounds(ap);
+                val.clamp(lo, hi)
             })
             .collect();
 
