@@ -6,7 +6,7 @@
     "crates/reify-types",
     "crates/reify-test-support"
   ],
-  "analysis": "The task requires adding content-hash caching with early cutoff to the evaluation engine. The existing codebase has strong foundations: ContentHash (XXH3-128) infrastructure in reify-types/src/hash.rs, Value::content_hash() with proper NaN/-0 normalization in value.rs, Freshness enum for cache state tracking, VersionId for snapshot lineage, and PersistentMap for efficient structural sharing.\n\nKey components to build: (1) NodeId - unified identifier for any graph node (value cell, constraint, realization) since cache needs to key on any node type; (2) CachedResult - enum storing different evaluation result kinds (Value+DeterminacyState, Satisfaction, GeometryHandleId); (3) NodeCache - per-node cache entry with result, result_hash, freshness, dependency_trace, basis_version; (4) CacheStore - HashMap-backed store managing all node caches with get/put/invalidate; (5) EvalOutcome - Changed vs Unchanged signal controlling dirty propagation; (6) Content hashing for Satisfaction and GeometryHandleId results; (7) Integration via Engine::eval_cached() method using cache with version fast path and early cutoff.\n\nDependencyTrace (from task 11) is referenced in NodeCache. Since task 11 is a prerequisite, I'll define a minimal stub in deps.rs if it doesn't exist. The current Engine::eval() evaluates all nodes unconditionally in two passes (params then lets). The cached version needs to: check cache before each node, compare result hashes after evaluation, and return Changed/Unchanged to control propagation. The early cutoff test scenario (e.g., 'let x = if a > 0 then 1 else 1') requires that when 'a' changes but 'x' evaluates to the same result, downstream nodes of 'x' are not re-evaluated.\n\nThe integration requires adding a CacheStore field to Engine and a new eval_cached() method that accepts a VersionId. The original eval() remains unchanged for backward compatibility. Tests will use the TopologyTemplateBuilder and CompiledModuleBuilder patterns from reify-test-support.",
+  "analysis": "The task requires adding content-hash caching with early cutoff to the evaluation engine. The existing codebase has strong foundations: ContentHash (XXH3-128) infrastructure in reify-types/src/hash.rs, Value::content_hash() with proper NaN/-0 normalization in value.rs, Freshness enum for cache state tracking, VersionId for snapshot lineage, and PersistentMap for efficient structural sharing.\n\nKey components to build: (1) NodeId - unified identifier for any graph node (value cell, constraint, realization) since cache needs to key on any node type; (2) CachedResult - enum storing different evaluation result kinds (Value+DeterminacyState, Satisfaction, GeometryHandleId); (3) NodeCache - per-node cache entry with result, result_hash, freshness, dependency_trace, basis_version; (4) CacheStore - HashMap-backed store managing all node caches with get/put/invalidate; (5) EvalOutcome - Changed vs Unchanged signal controlling dirty propagation; (6) Content hashing for Satisfaction and GeometryHandleId results; (7) Integration via Engine::eval_cached() method using cache with version fast path and early cutoff.\n\nDependencyTrace (from task 11) is referenced in NodeCache. Since task 11 is a prerequisite, I'll define a minimal stub in deps.rs if it doesn't exist. The current Engine::eval() evaluates all nodes unconditionally in two passes (params then lets). The cached version needs to: check cache before each node, compare result hashes after evaluation, and return Changed/Unchanged to control propagation. The early cutoff test scenario (e.g., 'let x = if a > 0 then 1 else 1') requires that when 'a' changes but 'x' evaluates to the same result, downstream nodes of 'x' are not re-evaluated.\n\nThe integration requires adding a CacheStore field to Engine and a new eval_cached() method that accepts a VersionId. The original eval() remains unchanged for backward compatibility. Tests will use the TopologyTemplateBuilder and CompiledModuleBuilder patterns from reify-test-support.\n\n--- POST-REVIEW AMENDMENT ---\nTwo blocking issues were identified:\n1. try_fast_path_hit_when_same_version test only asserts result.is_some() but never verifies the returned value matches what was stored. A bug returning a wrong CachedResult would pass silently.\n2. clear_dependents_dirty(cell) unconditionally removes a node from dirty if it reads `cell`, but doesn't verify that `cell` is the ONLY reason the node is dirty. In a diamond-dependency graph (e.g., y reads both a and x), when x early-cutoffs, y gets incorrectly cleared from dirty even though it also directly reads a (which DID change). Fix: track per-node dirty reasons as a set of ValueCellIds; only clear a node from dirty when ALL its reasons have been resolved by early cutoffs.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -20,14 +20,20 @@
       "description": "Add content_hash() method to Satisfaction enum in crates/reify-types/src/value.rs. Domain-separate the three variants: Satisfied -> [10, 0], Violated -> [10, 1], Indeterminate -> [10, 2]. This follows the existing Value::content_hash() pattern with tag bytes.",
       "status": "done",
       "commit": "005af98",
-      "tests": ["satisfaction_content_hash_deterministic", "satisfaction_content_hash_distinct_variants"]
+      "tests": [
+        "satisfaction_content_hash_deterministic",
+        "satisfaction_content_hash_distinct_variants"
+      ]
     },
     {
       "id": "pre-3",
       "description": "Add content_hash() method to GeometryHandleId in crates/reify-types/src/geometry.rs. Hash the u64 id with a domain-separation tag byte [11] followed by the id as le_bytes. This serves as a proxy hash for geometry results (we can't hash OCCT shapes directly).",
       "status": "done",
       "commit": "8740a19",
-      "tests": ["geometry_handle_id_content_hash_deterministic", "geometry_handle_id_content_hash_distinct"]
+      "tests": [
+        "geometry_handle_id_content_hash_deterministic",
+        "geometry_handle_id_content_hash_distinct"
+      ]
     }
   ],
   "steps": [
@@ -198,6 +204,41 @@
       "description": "Complete early cutoff integration in eval_cached(). After re-evaluating a node, call record_evaluation(). If outcome is Unchanged, do NOT invalidate dependents of that node (early cutoff). If outcome is Changed, mark dependents as needing re-evaluation. This requires a two-phase approach: first mark dirty nodes, then evaluate in dependency order, pruning the dirty set when early cutoff occurs.",
       "status": "done",
       "commit": "2bc0ece"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Fix incomplete assertion in try_fast_path_hit_when_same_version test (reviewer_test_analyst issue). The existing test only asserts result.is_some() but never checks the returned value. Replace the assertion with: if let Some(CachedResult::Value(v, _)) = result { assert_eq!(v, Value::Int(42)); } else { panic!(\"expected Value variant with Int(42)\"); }. This ensures the fast path returns the correct cached result, not merely some value.",
+      "status": "done",
+      "commit": "5964022"
+    },
+    {
+      "id": "step-26",
+      "type": "test",
+      "description": "Write failing test for diamond-dependency early cutoff correctness bug (reviewer_robustness issue). Build a diamond: param a, let x = if a > 0 then 1 else 1 (reads: [a]), let y = a + x (reads: [a, x]). Evaluate with version 1 (all computed, a=5, x=1, y=6). Change a from 5 to 10, bump to version 2. x early-cutoffs (result still 1). The BUG: clear_dependents_dirty(x_id) removes y from dirty even though y ALSO reads a (which DID change). Assert y is re-evaluated and produces the CORRECT value y = 10 + 1 = 11 (not the stale cached y = 6). This test should FAIL against the current clear_dependents_dirty implementation, proving the bug.",
+      "status": "done",
+      "commit": "4561e03"
+    },
+    {
+      "id": "step-27",
+      "type": "impl",
+      "description": "Fix clear_dependents_dirty correctness bug by switching to dirty-reasons tracking. Change CacheStore::dirty from HashSet<NodeId> to HashMap<NodeId, HashSet<ValueCellId>> where the set tracks which changed ValueCellIds caused the node to be dirty. (1) invalidate_dependents: for each node whose reads intersect changed, insert into dirty_reasons[node] the specific changed cells that appear in reads. (2) clear_dependents_dirty(cell): for each dirty node that reads cell, remove cell from that node's reason set; only remove the node from dirty_reasons entirely when its reason set becomes empty. (3) is_dirty: check dirty_reasons.contains_key(node). (4) clear_dirty: remove the node from dirty_reasons entirely. This ensures a node stays dirty as long as ANY of its dirty reasons remain unresolved.",
+      "status": "done",
+      "commit": "9c2bc12"
+    },
+    {
+      "id": "step-28",
+      "type": "test",
+      "description": "Write additional diamond-dependency test with triple fan-in: param a, param b, let x = if a > 0 then 1 else 1 (reads: [a]), let y = a + b + x (reads: [a, b, x]). Change only a. x early-cutoffs. Verify y is still re-evaluated because y reads a directly (dirty reason a remains). Also verify that if we then change b and x early-cutoffs again, y is re-evaluated because of b. Ensures the dirty-reasons approach handles multiple independent dirty reasons correctly.",
+      "status": "done",
+      "commit": "8600dba"
+    },
+    {
+      "id": "step-29",
+      "type": "impl",
+      "description": "Update the invalidate_dependents unit test (step-15, invalidate_dependents_removes_dependent_nodes) to verify dirty_reasons are correctly populated. After invalidating dependents of a, assert that node_x's dirty reasons include a, and node_y (if it read a) includes a. Also verify the existing early_cutoff_prevents_downstream_re_evaluation integration test still passes — y (which only reads x, not a directly) should have its sole dirty reason (x) cleared by early cutoff, confirming existing non-diamond behavior is preserved.",
+      "status": "done",
+      "commit": "25297a6"
     }
   ],
   "design_decisions": [
@@ -236,6 +277,10 @@
     {
       "decision": "Conditional expression 'if a > 0 then 1 else 1' for early cutoff test",
       "rationale": "This is the canonical test case from the task description. Both branches produce the same value, so changing 'a' triggers re-evaluation of the let but the result hash is unchanged, demonstrating early cutoff preventing propagation to downstream nodes."
+    },
+    {
+      "decision": "Dirty reasons tracked as HashMap<NodeId, HashSet<ValueCellId>> instead of HashSet<NodeId>",
+      "rationale": "The original HashSet<NodeId> dirty set loses information about WHY a node is dirty. In a diamond-dependency graph where y reads both a and x, an early cutoff on x would incorrectly clear y from dirty even though a (which DID change) is also a reason y is dirty. Tracking per-node dirty reasons as a set of ValueCellIds ensures a node stays dirty until ALL of its dirty reasons have been resolved by early cutoffs. This is the minimal correct fix — the alternative (re-checking all reads at evaluation time) would be less efficient for large graphs."
     }
   ],
   "reuse": [
