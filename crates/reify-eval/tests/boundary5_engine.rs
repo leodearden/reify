@@ -97,6 +97,39 @@ fn eval_cached_auto_param() {
     assert!(!x_val2.is_undef(), "auto param x should have override value");
 }
 
+/// Constraint on auto param → Indeterminate (Undef propagates).
+#[test]
+fn constraint_on_auto_param_indeterminate() {
+    use reify_types::{ModulePath, Type, ValueCellId};
+
+    // Build module with auto param x and constraint x > 5mm
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(5.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.check(&module);
+
+    // x should be Undef
+    let x_id = ValueCellId::new("S", "x");
+    let x_val = result.values.get(&x_id).expect("x should be in values");
+    assert!(x_val.is_undef(), "auto param x should be Undef");
+
+    // Constraint should be Indeterminate (Undef propagation)
+    assert_eq!(result.constraint_results.len(), 1);
+    assert_eq!(
+        result.constraint_results[0].satisfaction,
+        reify_types::Satisfaction::Indeterminate,
+        "constraint on auto param should be Indeterminate"
+    );
+}
+
 /// Engine with predetermined constraint results → reports violations.
 #[test]
 
