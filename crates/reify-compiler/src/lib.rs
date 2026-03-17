@@ -391,7 +391,9 @@ fn compile_expr(
 
                     // Dimension compatibility check for Add/Sub
                     if matches!(bin_op, BinOp::Add | BinOp::Sub) {
+                        let op_name = if bin_op == BinOp::Add { "addition" } else { "subtraction" };
                         match (&compiled_left.result_type, &compiled_right.result_type) {
+                            // Scalar + Scalar with different dimensions
                             (
                                 Type::Scalar { dimension: ld },
                                 Type::Scalar { dimension: rd },
@@ -399,13 +401,29 @@ fn compile_expr(
                                 diagnostics.push(
                                     Diagnostic::error(format!(
                                         "dimension mismatch in {}: {} vs {}",
-                                        if bin_op == BinOp::Add { "addition" } else { "subtraction" },
+                                        op_name,
                                         compiled_left.result_type,
                                         compiled_right.result_type,
                                     ))
                                     .with_label(DiagnosticLabel::new(
                                         expr.span,
                                         "incompatible dimensions",
+                                    )),
+                                );
+                            }
+                            // Scalar + Int/Real or Int/Real + Scalar (dimensioned + dimensionless)
+                            (Type::Scalar { .. }, Type::Int | Type::Real)
+                            | (Type::Int | Type::Real, Type::Scalar { .. }) => {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "incompatible types in {}: {} vs {}",
+                                        op_name,
+                                        compiled_left.result_type,
+                                        compiled_right.result_type,
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        "dimensioned + dimensionless",
                                     )),
                                 );
                             }
