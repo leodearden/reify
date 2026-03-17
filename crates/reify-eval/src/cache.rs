@@ -166,6 +166,31 @@ mod tests {
         assert_eq!(map.get(&NodeId::Constraint(cnid)), Some(&"constraint"));
     }
 
+    // --- EvalOutcome tests ---
+
+    #[test]
+    fn eval_outcome_changed_variant() {
+        let outcome = EvalOutcome::Changed;
+        assert_eq!(outcome, EvalOutcome::Changed);
+        assert_ne!(outcome, EvalOutcome::Unchanged);
+    }
+
+    #[test]
+    fn eval_outcome_unchanged_variant() {
+        let outcome = EvalOutcome::Unchanged;
+        assert_eq!(outcome, EvalOutcome::Unchanged);
+        assert_ne!(outcome, EvalOutcome::Changed);
+    }
+
+    #[test]
+    fn eval_outcome_debug_and_copy() {
+        let outcome = EvalOutcome::Changed;
+        let copied = outcome; // Copy
+        assert_eq!(outcome, copied); // original still usable
+        let debug = format!("{:?}", outcome);
+        assert!(debug.contains("Changed"));
+    }
+
     // --- NodeCache tests ---
 
     #[test]
