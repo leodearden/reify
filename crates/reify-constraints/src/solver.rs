@@ -408,4 +408,67 @@ mod tests {
             other => panic!("expected Solved, got {:?}", other),
         }
     }
+
+    #[test]
+    fn single_param_feasibility() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
+            ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let thickness_id = ValueCellId::new("Bracket", "thickness");
+
+        // thickness > 2mm
+        let thickness_ref = CompiledExpr::value_ref(thickness_id.clone(), Type::length());
+        let two_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.002,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, thickness_ref.clone(), two_mm, Type::Bool);
+
+        // thickness < 20mm
+        let twenty_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.020,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let lt_expr = CompiledExpr::binop(BinOp::Lt, thickness_ref, twenty_mm, Type::Bool);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: thickness_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            }],
+            constraints: vec![
+                (ConstraintNodeId::new("Bracket", 0), gt_expr),
+                (ConstraintNodeId::new("Bracket", 1), lt_expr),
+            ],
+            current_values: ValueMap::new(),
+            objective: None,
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::Solved { values } => {
+                let thickness = values
+                    .get(&thickness_id)
+                    .expect("thickness should be in solution");
+                let si = thickness.as_f64().expect("should be numeric");
+                assert!(
+                    si > 0.002 && si < 0.020,
+                    "thickness should be between 2mm and 20mm, got {} m",
+                    si
+                );
+            }
+            other => panic!("expected Solved, got {:?}", other),
+        }
+    }
 }
