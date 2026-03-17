@@ -321,10 +321,10 @@ fn freshness_final_after_cold_start() {
     }
 }
 
-/// After edit_param(), re-evaluated nodes should be back to Freshness::Final.
-/// Nodes not in eval set should remain Freshness::Final throughout.
+/// After edit_param(), all re-evaluated nodes end up Final and all non-dirty
+/// nodes remain Final. Verifies the freshness postcondition of edit_param().
 #[test]
-fn freshness_transitions_during_edit() {
+fn freshness_all_final_after_edit_param() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::new(Box::new(checker), None);
@@ -365,5 +365,70 @@ fn freshness_transitions_during_edit() {
         height_entry.freshness,
         Freshness::Final,
         "height should remain Final (not in eval set)"
+    );
+}
+
+/// Verify that early-cutoff-skipped nodes have Freshness::Final after edit_param(),
+/// NOT stuck in Pending. Uses the a-x-y fixture where x = a - a (always 0.0)
+/// and y = x + 1.0. When a changes, x is dirty but produces the same hash →
+/// early cutoff skips y. However, y was pre-marked Pending before the eval loop.
+/// The postcondition requires y to be Final after edit_param returns.
+///
+/// Addresses invariant_violation: early-cutoff-skipped nodes stuck in Pending.
+#[test]
+fn early_cutoff_skipped_nodes_have_final_freshness() {
+    let e = "T";
+
+    // let x = a - a (always 0.0 regardless of a)
+    let x_expr = binop(
+        BinOp::Sub,
+        value_ref_typed(e, "a", Type::Real),
+        value_ref_typed(e, "a", Type::Real),
+    );
+    // let y = x + 1.0
+    let y_expr = binop(
+        BinOp::Add,
+        value_ref_typed(e, "x", Type::Real),
+        literal(Value::Real(1.0)),
+    );
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(
+            TopologyTemplateBuilder::new(e)
+                .param(e, "a", Type::Real, Some(literal(Value::Real(5.0))))
+                .let_binding(e, "x", Type::Real, x_expr)
+                .let_binding(e, "y", Type::Real, y_expr)
+                .build(),
+        )
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start eval
+    engine.eval(&module);
+
+    // Edit a from 5.0 to 7.0: x re-evals to 0.0 (unchanged), early cutoff skips y
+    let a_id = ValueCellId::new(e, "a");
+    engine.edit_param(a_id, Value::Real(7.0));
+
+    let cache = engine.cache_store();
+
+    // x was re-evaluated → should be Final
+    let x_node = NodeId::Value(ValueCellId::new(e, "x"));
+    let x_entry = cache.get(&x_node).expect("x should be in cache");
+    assert_eq!(
+        x_entry.freshness,
+        Freshness::Final,
+        "x should be Final after re-evaluation"
+    );
+
+    // y was skipped by early cutoff → MUST be Final (not stuck in Pending)
+    let y_node = NodeId::Value(ValueCellId::new(e, "y"));
+    let y_entry = cache.get(&y_node).expect("y should be in cache");
+    assert_eq!(
+        y_entry.freshness,
+        Freshness::Final,
+        "y should be Final after edit_param (not stuck in Pending from pre-marking)"
     );
 }
