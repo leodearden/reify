@@ -142,8 +142,17 @@
                   "type": "FIELD",
                   "name": "default",
                   "content": {
-                    "type": "SYMBOL",
-                    "name": "_expression"
+                    "type": "CHOICE",
+                    "members": [
+                      {
+                        "type": "SYMBOL",
+                        "name": "auto_keyword"
+                      },
+                      {
+                        "type": "SYMBOL",
+                        "name": "_expression"
+                      }
+                    ]
                   }
                 }
               ]
@@ -154,6 +163,10 @@
           ]
         }
       ]
+    },
+    "auto_keyword": {
+      "type": "STRING",
+      "value": "auto"
     },
     "let_declaration": {
       "type": "SEQ",
@@ -1149,6 +1162,5 @@
   "precedences": [],
   "externals": [],
   "inline": [],
-  "supertypes": [],
-  "reserved": {}
+  "supertypes": []
 }

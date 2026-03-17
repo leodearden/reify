@@ -704,6 +704,10 @@
         "required": false,
         "types": [
           {
+            "type": "auto_keyword",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -1104,6 +1108,10 @@
     "named": false
   },
   {
+    "type": "auto_keyword",
+    "named": true
+  },
+  {
     "type": "constraint",
     "named": false
   },
@@ -1133,8 +1141,7 @@
   },
   {
     "type": "line_comment",
-    "named": true,
-    "extra": true
+    "named": true
   },
   {
     "type": "number_literal",
