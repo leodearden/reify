@@ -57,7 +57,10 @@ pub fn topological_sort(
 
     for node in nodes {
         if let Some(trace) = traces.get(node) {
-            for dep_cell in &trace.reads {
+            // Deduplicate reads to avoid over-counting in-degree
+            // (e.g. expression `a * a` reads 'a' twice but has only 1 unique dep)
+            let unique_deps: HashSet<&ValueCellId> = trace.reads.iter().collect();
+            for dep_cell in unique_deps {
                 let dep_node = NodeId::Value(dep_cell.clone());
                 if nodes.contains(&dep_node) {
                     *in_degree.get_mut(node).unwrap() += 1;
