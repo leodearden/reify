@@ -1,133 +1,94 @@
 {
-  "task_id": "15",
-  "title": "Handle geometry build errors gracefully",
+  "task_id": "16",
+  "title": "Add test for consecutive edit_param() calls",
   "modules": ["crates/reify-eval"],
-  "analysis": "In Engine::build() (lib.rs lines 569-629), when ALL geometry operations fail — either because kernel.execute() returns Err or compile_geometry_op() returns None — the code accumulates per-operation error diagnostics but last_handle remains None. It then falls through to line 608: `let export_handle = last_handle.unwrap_or(GeometryHandleId(0))` and attempts to export a handle that was never created. With a mock kernel (which ignores handle validity), this silently produces bogus geometry_output=Some(data). With a real kernel, export fails and adds an 'export error' diagnostic, but there's no summary message indicating that geometry construction failed entirely.\n\nThe fix: after the geometry operation loop, check if `last_handle.is_none()` AND there were geometry operations to process (`total_ops > 0`). If so, skip the export, push a clear summary diagnostic ('all geometry operations failed; no geometry output produced'), and return geometry_output=None.\n\nThis preserves existing behavior for: (a) modules with no realizations/operations (total_ops == 0, current export-with-handle-0 behavior unchanged), (b) partial failures where at least one op succeeded (last_handle is Some, export proceeds normally).",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Create test file crates/reify-eval/tests/geometry_error_handling.rs with a FailingMockGeometryKernel (execute always returns Err, export/query/tessellate return Ok with dummy data) and a helper function that builds a CompiledModule with one box primitive realization using TopologyTemplateBuilder. The failing mock's export intentionally succeeds to demonstrate the current bug: build() silently produces bogus geometry output when all operations fail.",
-      "status": "done",
-      "commit": "deb233d",
-      "tests": []
-    }
-  ],
+  "analysis": "The bracket module has dependency structure: volume reads {width, height, thickness}; C0 reads {thickness}; C1 reads {width, thickness}; C2 reads {hole_diameter, thickness}. When width is edited first, dirty cone = {volume, C1}. When height is edited second, dirty cone = {volume} only (C1 does NOT read height). The engine's edit_param() clones the current snapshot (O(1) via PersistentMap), computes a fresh dirty cone from the changed set against the static reverse_index, intersects with demand, and re-evaluates only affected Value nodes. Consecutive calls should work correctly because: (1) current_snapshot is updated after each edit_param, (2) reverse_index/trace_map are topology-based and stable across edits, (3) cache entries are properly updated with each eval. No implementation changes are expected — this is a test-only task verifying the fundamental incremental use case that was identified as missing during task 14 review. The test follows existing patterns in incremental.rs: bracket fixture, MockConstraintChecker, eval() cold start, edit_param() calls, last_eval_set() inspection, cache_store() freshness checks, and snapshot provenance checks. Expected values: initial volume=4e-5 (0.08*0.10*0.005), after width→0.1: volume=5e-5 (0.1*0.10*0.005), after height→0.12: volume=6e-5 (0.1*0.12*0.005).\n\n**Review feedback (assertion_scope_mismatch):** The assertion at step (6) comparing `pending_transition_count` against `cached_value_count` derived from `last_eval_set()` (= `actual_eval_set`, post-cutoff) is fragile. `pending_transition_count` is incremented in `mark_pending()` for every node in the full pre-cutoff `eval_set`, while `last_eval_set()` stores only the post-cutoff `actual_eval_set`. In the presence of early cutoff, nodes are marked pending (incrementing the counter) then skipped and restored via `restore_final()` which does NOT decrement the counter. The current assertion passes only because the second edit's eval_set has no early cutoff (eval_set == actual_eval_set == {volume}), which is a coincidence of the test fixture rather than a stated invariant. Fix: assert `pending_transition_count` directly against the known constant 1 (only the volume Value node) with a comment documenting the cutoff-free scenario and the semantic mismatch between the counter (scoped to full eval_set) and `last_eval_set()` (scoped to actual_eval_set).",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `build_returns_no_geometry_when_all_kernel_ops_fail`: builds module with one box realization using FailingMockGeometryKernel, asserts geometry_output.is_none() AND diagnostics contain a message matching 'all geometry operations failed'. Currently fails because (1) export succeeds with bogus handle 0 so geometry_output is Some, and (2) no summary diagnostic exists.",
+      "description": "Write test `consecutive_edit_param_only_reevaluates_affected_nodes` in crates/reify-eval/tests/incremental.rs. The test performs: (1) Cold-start eval of bracket module, verify volume=4e-5 and all 6 values present. (2) First edit_param: width 0.08→0.1, verify volume recomputed to 5e-5, eval_set contains volume+C1 but NOT height/fillet_radius/hole_diameter/C0/C2, other params unchanged. (3) Second edit_param: height 0.10→0.12, verify volume recomputed to 6e-5, eval_set contains ONLY volume (NOT C1 — the key assertion proving no residual dirty state from first edit), width still 0.1 (preserved from first edit), other params unchanged. (4) Verify snapshot provenance chain: snapshot ID=2, parent=SnapshotId(1), changed={height}. (5) Verify all 6 value cell cache entries have Freshness::Final after both edits. (6) Verify pending_transition_count equals the number of cached Value nodes in the second edit's eval set.",
       "status": "done",
-      "commit": "deb233d"
+      "commit": "2d4252c"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix Engine::build() in lib.rs: before the export block (line 607), count total geometry ops across all templates/realizations. After the op loop, if last_handle.is_none() && total_ops > 0, push Diagnostic::error('all geometry operations failed; no geometry output produced') and set geometry_output to None (skip export entirely). Wrap the existing export logic in an else branch.",
+      "description": "Run the test suite and verify the new test passes. If it passes (expected), this step is a no-op commit. If it fails, diagnose and fix the engine's consecutive edit_param handling — likely in edit_param's snapshot chaining, dirty cone computation, or cache state management between consecutive calls.",
       "status": "done",
-      "commit": "8ce68ec"
+      "commit": "2d4252c"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `build_returns_no_geometry_when_all_ops_fail_to_compile`: builds module with only a boolean union op referencing GeomRef::Step(0) and Step(1) but no prior primitives, so compile_geometry_op returns None for all ops. Uses standard MockGeometryKernel (kernel.execute never called). Asserts geometry_output.is_none(), diagnostics contain 'failed to compile geometry operation' AND 'all geometry operations failed'. Verifies the compile-failure path also triggers the summary error.",
+      "description": "Fix the assertion_scope_mismatch in section (6) of the test (lines 650-659). Replace the `cached_value_count` derivation from `eval_set2` (which is `last_eval_set()` = post-cutoff `actual_eval_set`) with a direct assertion against the known constant `1`. The second edit changes only `height`, whose dirty cone intersected with demand yields exactly `{volume}` — one Value node. No early cutoff occurs in this scenario because `volume` is the terminal node (no downstream dependents in the eval set). Add a comment block explaining: (a) `pending_transition_count` counts `mark_pending()` calls over the full pre-cutoff `eval_set`, not the post-cutoff `actual_eval_set` stored in `last_eval_set()`, (b) in the presence of early cutoff these two sets diverge because `restore_final()` does not decrement the counter, (c) the assertion uses a known constant (1) because this test's second edit has no early cutoff (eval_set == actual_eval_set == {volume}), making the distinction moot for this specific case but documenting it for future maintainers.",
       "status": "done",
-      "commit": "91e8c5e"
+      "commit": "2de1c61"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Should pass from step-2 fix since both kernel-failure and compile-failure paths leave last_handle=None with total_ops>0. Verify and adjust if needed.",
+      "description": "Run the full test suite for crates/reify-eval to verify the updated assertion passes and no regressions were introduced. The assertion value (1) should match the previous behavior since eval_set2 contained exactly one Value node (volume).",
       "status": "done",
-      "commit": "91e8c5e"
-    },
-    {
-      "id": "step-5",
-      "type": "test",
-      "description": "Write test `build_no_export_error_when_all_ops_fail`: uses FailingMockGeometryKernel whose export returns Err, builds module with box realization. Asserts that diagnostics do NOT contain any 'export error' message — proving export was never attempted. This tests a different failing mock (export fails) and confirms the fix skips export entirely rather than attempting it with a bogus handle.",
-      "status": "done",
-      "commit": "91e8c5e"
-    },
-    {
-      "id": "step-6",
-      "type": "impl",
-      "description": "Should pass from step-2 fix since export is skipped when all ops fail. Verify and adjust if needed.",
-      "status": "done",
-      "commit": "91e8c5e"
-    },
-    {
-      "id": "step-7",
-      "type": "test",
-      "description": "Write regression test `build_with_no_realizations_still_exports`: uses bracket_compiled_module() (which has no realizations) with MockGeometryKernel. Asserts geometry_output.is_some() — same as existing boundary5_engine::build_with_mock_kernel test but in the new file, confirming the fix didn't regress the no-ops path. (total_ops=0 so the new check doesn't trigger.)",
-      "status": "done",
-      "commit": "91e8c5e"
-    },
-    {
-      "id": "step-8",
-      "type": "impl",
-      "description": "Should pass without changes since total_ops=0 for modules with no realizations. Verify and adjust if needed.",
-      "status": "done",
-      "commit": "91e8c5e"
+      "commit": "2de1c61"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Define FailingMockGeometryKernel inline in the test file rather than adding to reify-test-support",
-      "rationale": "Keeps the change scoped to crates/reify-eval. The failing mock is simple (execute returns Err, other methods return Ok) and unlikely to be needed across multiple crates. If reuse is needed later, it can be promoted."
+      "decision": "Use the bracket_compiled_module() fixture rather than a custom module",
+      "rationale": "The bracket fixture has the ideal dependency structure: volume depends on both width and height, C1 depends on width but not height. This lets us verify that the second edit's eval set is strictly smaller than the first's — proving that only the newly-changed parameter's dependents are re-evaluated, with no residual dirty state from the first edit."
     },
     {
-      "decision": "Check total_ops > 0 to distinguish 'all ops failed' from 'no ops existed'",
-      "rationale": "Counting operations is simpler and more reliable than checking diagnostics for geometry-related errors. It correctly handles the case where bracket_compiled_module (no realizations) still uses export with GeometryHandleId(0) — preserving that existing behavior unchanged."
+      "decision": "Single comprehensive test function rather than multiple small tests",
+      "rationale": "The consecutive-edit scenario is inherently sequential — each edit depends on the state left by the previous one. Splitting into separate tests would either require duplicating setup or lose the ability to verify cross-edit invariants (e.g., snapshot ID=2 with parent=1, width value preserved from first edit into second). The task description explicitly asks for a single test that chains edits."
     },
     {
-      "decision": "Add a summary Diagnostic::error rather than changing BuildResult's type or build()'s return type",
-      "rationale": "Minimizes API surface change. BuildResult already has geometry_output: Option<Vec<u8>> and diagnostics: Vec<Diagnostic>. Callers (reify-cli/main.rs, e2e tests) already iterate diagnostics and check geometry_output. Adding a summary diagnostic integrates naturally with existing error reporting without requiring callers to handle a new Result variant."
+      "decision": "Verify eval_set exclusions explicitly (C1 NOT in second eval set)",
+      "rationale": "The most important assertion is that the second edit_param(height) does NOT re-evaluate C1 (which was in the eval set for the first edit_param(width)). This is the core incremental guarantee: each edit computes a fresh dirty cone from just its changed set, not an accumulated dirty set across edits."
     },
     {
-      "decision": "Skip export entirely when all ops fail rather than attempting export with GeometryHandleId(0)",
-      "rationale": "Attempting export with a never-created handle is a logic error. With a mock it silently produces bogus data; with a real kernel it produces a confusing 'export error' for handle 0 that obscures the real problem (all geometry ops failed). Skipping export produces a clean error chain: per-op diagnostics + one summary diagnostic."
+      "decision": "Check snapshot provenance chain across consecutive edits",
+      "rationale": "Verifying that snapshot 2's parent is SnapshotId(1) — not SnapshotId(0) — confirms that edit_param correctly chains from the most recent snapshot rather than always branching from the initial eval(). This is a structural correctness property unique to the consecutive-edit scenario."
+    },
+    {
+      "decision": "Verify Freshness::Final for all 6 value cells after both edits",
+      "rationale": "This catches a potential bug where nodes dirtied by the first edit but cleaned up could be left in an inconsistent state after the second edit_param completes. The freshness postcondition (all nodes Final) must hold after every edit_param call, not just the first one."
+    },
+    {
+      "decision": "Edit width first, then height (not the reverse)",
+      "rationale": "Width has more dependents (volume + C1) than height (volume only). By editing the parameter with more dependents first and the one with fewer dependents second, we create the strongest test for the 'no residual dirty state' property: the second edit's eval set must be strictly smaller despite the first edit having touched more nodes."
+    },
+    {
+      "decision": "Assert pending_transition_count against known constant (1) instead of deriving from last_eval_set()",
+      "rationale": "pending_transition_count is scoped to the full pre-cutoff eval_set (every node passed to mark_pending()), while last_eval_set() returns actual_eval_set (post-cutoff). These coincide in this test because the second edit has no early cutoff, but the derivation from last_eval_set() creates a false equivalence that would silently break if the test fixture changed to include early cutoff scenarios. A hardcoded constant with an explanatory comment is more honest about what the assertion actually verifies and why."
     }
   ],
   "reuse": [
     {
-      "what": "TopologyTemplateBuilder::realization() and CompiledModuleBuilder",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Build test CompiledModules with geometry realizations containing CompiledGeometryOp::Primitive and Boolean operations"
+      "what": "bracket_compiled_module() fixture",
+      "where": "reify_test_support::fixtures",
+      "how": "Provides 5 params + volume let binding + 3 constraints with known dependency structure. Width and height have different dependent sets, making them ideal for consecutive edit testing."
     },
     {
-      "what": "MockConstraintChecker::new()",
-      "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "Satisfy the constraint_checker parameter of Engine::new() in tests (returns Satisfied for all constraints)"
+      "what": "MockConstraintChecker",
+      "where": "reify_test_support::mocks",
+      "how": "Standard mock for Engine::new() — constraints are tracked in eval set but not evaluated by edit_param, so the mock's behavior doesn't matter."
     },
     {
-      "what": "MockGeometryKernel::new()",
-      "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "Used in regression test for the no-realizations case, and as reference for implementing FailingMockGeometryKernel"
+      "what": "Existing test patterns from incremental.rs",
+      "where": "crates/reify-eval/tests/incremental.rs",
+      "how": "Follow identical setup pattern (bracket_compiled_module → MockConstraintChecker → Engine::new → eval → edit_param), assertion patterns (last_eval_set contains/not-contains, cache_store freshness checks, snapshot provenance), and import set. All needed imports already present in the file."
     },
     {
-      "what": "mm(), vcid() value constructors",
-      "where": "crates/reify-test-support/src/values.rs",
-      "how": "Create Scalar values for geometry op parameters and ValueCellIds for test fixture modules"
+      "what": "Engine accessor methods for test inspection",
+      "where": "Engine::last_eval_set(), Engine::cache_store(), Engine::snapshot()",
+      "how": "These test-inspection APIs are already exposed and used by existing tests. No new public API or test infrastructure needed."
     },
     {
-      "what": "bracket_compiled_module()",
-      "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "Regression test fixture — module with no realizations, verifying existing no-ops export behavior is unchanged"
-    },
-    {
-      "what": "CompiledGeometryOp, PrimitiveKind, BooleanOp, GeomRef from reify_compiler",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "Construct geometry operations for test realization declarations (box primitives, boolean unions)"
-    },
-    {
-      "what": "GeometryKernel trait, GeometryError, ExportError, etc. from reify_types",
-      "where": "crates/reify-types/src/geometry.rs",
-      "how": "Implement FailingMockGeometryKernel trait in the test file"
-    },
-    {
-      "what": "Diagnostic::error() and Severity enum",
-      "where": "crates/reify-types/src/diagnostics.rs",
-      "how": "Create the summary diagnostic in build() and filter/assert diagnostics by severity in tests"
+      "what": "NodeId, Freshness, SnapshotId, SnapshotProvenance types",
+      "where": "reify_eval::cache::NodeId, reify_types::{Freshness, SnapshotId, SnapshotProvenance}",
+      "how": "Already imported at the top of incremental.rs. Used for eval_set membership checks, cache freshness assertions, and snapshot provenance verification."
     }
   ]
 }
