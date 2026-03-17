@@ -2,7 +2,10 @@
 
 use std::collections::HashMap;
 
-use reify_types::{ConstraintSolver, ResolutionProblem, SolveResult};
+use reify_types::{
+    AutoParam, ConstraintSolver, DimensionVector, ResolutionProblem, SolveResult, Type, Value,
+    ValueMap,
+};
 
 /// Derivative-free constraint solver using Nelder-Mead optimization.
 ///
@@ -11,6 +14,57 @@ use reify_types::{ConstraintSolver, ResolutionProblem, SolveResult};
 /// the cost is the sum of squared constraint violations. For optimization,
 /// the cost combines the objective value with a weighted penalty term.
 pub struct DimensionalSolver;
+
+/// Extract the DimensionVector from a Type, defaulting to DIMENSIONLESS.
+fn dimension_of(ty: &Type) -> DimensionVector {
+    match ty {
+        Type::Scalar { dimension } => *dimension,
+        _ => DimensionVector::DIMENSIONLESS,
+    }
+}
+
+/// Build a ValueMap from a base map with trial auto-param values inserted.
+///
+/// Clones the base map (O(1) via PersistentMap structural sharing) and
+/// inserts each auto param as a Value::Scalar with the correct dimension.
+fn build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> ValueMap {
+    let mut values = base.clone();
+    for (param, &val) in params.iter().zip(x.iter()) {
+        values.insert(
+            param.id.clone(),
+            Value::Scalar {
+                si_value: val,
+                dimension: dimension_of(&param.param_type),
+            },
+        );
+    }
+    values
+}
+
+/// Extract initial parameter values from the problem.
+///
+/// For each auto param, uses the current value if available, otherwise
+/// the midpoint of bounds, otherwise a small default (0.01 for lengths).
+fn extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> {
+    problem
+        .auto_params
+        .iter()
+        .map(|param| {
+            // Try current value first
+            if let Some(val) = problem.current_values.get(&param.id) {
+                if let Some(f) = val.as_f64() {
+                    return f;
+                }
+            }
+            // Fall back to bounds midpoint
+            if let Some((lo, hi)) = param.bounds {
+                return (lo + hi) / 2.0;
+            }
+            // Default based on dimension
+            0.01
+        })
+        .collect()
+}
 
 impl ConstraintSolver for DimensionalSolver {
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
