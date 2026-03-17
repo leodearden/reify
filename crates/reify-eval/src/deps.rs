@@ -118,4 +118,54 @@ mod tests {
         let trace = recorder.finish();
         assert_eq!(trace.reads.len(), 2);
     }
+
+    // --- TraceRecorder + eval_expr_traced integration ---
+
+    #[test]
+    fn trace_recorder_with_eval_expr_traced_volume() {
+        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value, ValueMap};
+
+        let mut values = ValueMap::new();
+        let width_id = ValueCellId::new("B", "width");
+        let height_id = ValueCellId::new("B", "height");
+        let thickness_id = ValueCellId::new("B", "thickness");
+
+        let mm = |v: f64| Value::Scalar {
+            si_value: v * 0.001,
+            dimension: DimensionVector::LENGTH,
+        };
+
+        values.insert(width_id.clone(), mm(80.0));
+        values.insert(height_id.clone(), mm(100.0));
+        values.insert(thickness_id.clone(), mm(5.0));
+
+        let w = CompiledExpr::value_ref(width_id.clone(), Type::length());
+        let h = CompiledExpr::value_ref(height_id.clone(), Type::length());
+        let t = CompiledExpr::value_ref(thickness_id.clone(), Type::length());
+
+        let wh = CompiledExpr::binop(
+            BinOp::Mul,
+            w,
+            h,
+            Type::Scalar {
+                dimension: DimensionVector::AREA,
+            },
+        );
+        let volume = CompiledExpr::binop(
+            BinOp::Mul,
+            wh,
+            t,
+            Type::Scalar {
+                dimension: DimensionVector::VOLUME,
+            },
+        );
+
+        let mut recorder = super::TraceRecorder::new();
+        let _result = reify_expr::eval_expr_traced(&volume, &values, &mut |id| {
+            recorder.record_read(id.clone());
+        });
+
+        let trace = recorder.finish();
+        assert_eq!(trace.reads, vec![width_id, height_id, thickness_id]);
+    }
 }
