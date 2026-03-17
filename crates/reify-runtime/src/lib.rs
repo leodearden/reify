@@ -1,5 +1,7 @@
 // Stub — M1 implementation pending
 
+use reify_types::ValueCellId;
+
 /// Task scheduling priority.
 ///
 /// Variants are ordered from highest priority (P0Interactive) to lowest
@@ -14,6 +16,17 @@ pub enum Priority {
     P1Slow,
     /// Speculative: pre-computation that may be discarded.
     P3Speculative,
+}
+
+/// A unit of work for the evaluation scheduler.
+///
+/// Each task targets a single value cell and carries a scheduling priority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Task {
+    /// The value cell to evaluate.
+    pub node_id: ValueCellId,
+    /// Scheduling priority for this task.
+    pub priority: Priority,
 }
 
 #[cfg(test)]
