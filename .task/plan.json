@@ -1,15 +1,20 @@
 {
   "task_id": "14",
   "title": "Integration: incremental evaluator pipeline",
-  "modules": ["crates/reify-eval"],
-  "analysis": "This task integrates all M2 incremental evaluation components (Snapshot, EvaluationGraph, CacheStore, dependency tracking, dirty/demand cones) into the Engine, replacing the M1 simple evaluator while maintaining full backward compatibility.\n\n## Current State\n\nEngine (lib.rs) has four evaluation methods:\n- eval(): Two-pass stateless evaluation (params first, then let bindings)\n- eval_cached(): Version-based caching with early cutoff\n- check(): Calls eval() then runs ConstraintChecker\n- build(): Calls check() then runs GeometryKernel\n\nEngine holds: constraint_checker, geometry_kernel, cache (CacheStore), param_overrides.\n\nAll M2 incremental components are fully implemented in separate modules:\n- snapshot.rs: Snapshot with provenance, O(1) clone via PersistentMap\n- graph.rs: EvaluationGraph with typed nodes (ValueCellNode, ConstraintNodeData, RealizationNodeData)\n- deps.rs: DependencyTrace, ReverseDependencyIndex, build_trace_map()\n- demand.rs: DemandRegistry with always_demanded + demand_cone\n- dirty.rs: compute_dirty_cone(), compute_eval_set(), topological_sort()\n- cache.rs: CacheStore with record_evaluation (early cutoff), dirty_reasons, freshness\n\n## Integration Approach\n\n### Phase 1: Refactor Engine internals\nAdd Snapshot + dependency structures as Engine fields. eval() builds Snapshot from CompiledModule, evaluates all values (same results), stores internal state. check()/build() continue to work identically. The Snapshot stores evaluated values with determinacy state. eval_cached() and set_param_and_invalidate() remain untouched for backward compat.\n\n### Phase 2: Add edit_param()\nNew method creates child snapshot with Edit provenance, computes dirty cone from changed cells, intersects with demand cone, evaluates only the intersection in topological order. Returns EvalResult with updated values.\n\n### Phase 3: Early cutoff in incremental path\nWhen re-evaluating a node produces an unchanged content hash, remove its downstream dependents from the remaining eval set. This prevents unnecessary re-computation.\n\n### Phase 4: Freshness propagation\nDirty nodes transition to Pending before re-evaluation, then back to Final. Non-dirty nodes remain Final.\n\n## Bracket Fixture Analysis\n- 5 params: width(80mm), height(100mm), thickness(5mm), fillet_radius(3mm), hole_diameter(6mm)\n- 1 let: volume = width * height * thickness (reads: width, height, thickness)\n- 3 constraints: C0(thickness > 2mm), C1(thickness < width/4), C2(hole_diameter < thickness*2)\n- 0 realizations in the test fixture\n\nWhen width changes: dirty_cone = {volume, C1}. With all constraints demanded: eval_set = {C1} (volume dirty but not demanded). With all values+constraints demanded: eval_set = {volume, C1}.\n\nWhen fillet_radius changes: dirty_cone = {} (nothing reads fillet_radius).\n\n## Key Constraint: OCCT Thread Safety\nGeometry evaluation remains sequential. e2e_bracket test still requires --test-threads=1. No concurrent kernel access introduced.",
+  "modules": [
+    "crates/reify-eval"
+  ],
+  "analysis": "This task integrates all M2 incremental evaluation components (Snapshot, EvaluationGraph, CacheStore, dependency tracking, dirty/demand cones) into the Engine, replacing the M1 simple evaluator while maintaining full backward compatibility.\n\n## Current State\n\nEngine (lib.rs) has four evaluation methods:\n- eval(): Two-pass stateless evaluation (params first, then let bindings)\n- eval_cached(): Version-based caching with early cutoff\n- check(): Calls eval() then runs ConstraintChecker\n- build(): Calls check() then runs GeometryKernel\n\nEngine holds: constraint_checker, geometry_kernel, cache (CacheStore), param_overrides.\n\nAll M2 incremental components are fully implemented in separate modules:\n- snapshot.rs: Snapshot with provenance, O(1) clone via PersistentMap\n- graph.rs: EvaluationGraph with typed nodes (ValueCellNode, ConstraintNodeData, RealizationNodeData)\n- deps.rs: DependencyTrace, ReverseDependencyIndex, build_trace_map()\n- demand.rs: DemandRegistry with always_demanded + demand_cone\n- dirty.rs: compute_dirty_cone(), compute_eval_set(), topological_sort()\n- cache.rs: CacheStore with record_evaluation (early cutoff), dirty_reasons, freshness\n\n## Integration Approach\n\n### Phase 1: Refactor Engine internals\nAdd Snapshot + dependency structures as Engine fields. eval() builds Snapshot from CompiledModule, evaluates all values (same results), stores internal state. check()/build() continue to work identically. The Snapshot stores evaluated values with determinacy state. eval_cached() and set_param_and_invalidate() remain untouched for backward compat.\n\n### Phase 2: Add edit_param()\nNew method creates child snapshot with Edit provenance, computes dirty cone from changed cells, intersects with demand cone, evaluates only the intersection in topological order. Returns EvalResult with updated values.\n\n### Phase 3: Early cutoff in incremental path\nWhen re-evaluating a node produces an unchanged content hash, remove its downstream dependents from the remaining eval set. This prevents unnecessary re-computation.\n\n### Phase 4: Freshness propagation\nDirty nodes transition to Pending before re-evaluation, then back to Final. Non-dirty nodes remain Final.\n\n## Bracket Fixture Analysis\n- 5 params: width(80mm), height(100mm), thickness(5mm), fillet_radius(3mm), hole_diameter(6mm)\n- 1 let: volume = width * height * thickness (reads: width, height, thickness)\n- 3 constraints: C0(thickness > 2mm), C1(thickness < width/4), C2(hole_diameter < thickness*2)\n- 0 realizations in the test fixture\n\nWhen width changes: dirty_cone = {volume, C1}. With all constraints demanded: eval_set = {C1} (volume dirty but not demanded). With all values+constraints demanded: eval_set = {volume, C1}.\n\nWhen fillet_radius changes: dirty_cone = {} (nothing reads fillet_radius).\n\n## Key Constraint: OCCT Thread Safety\nGeometry evaluation remains sequential. e2e_bracket test still requires --test-threads=1. No concurrent kernel access introduced.\n\n## Post-Review Fixes (blocking issues)\n\n### Issue 1: invariant_violation — early-cutoff-skipped nodes stuck in Pending\nIn edit_param(), ALL nodes in eval_set are marked Pending before the evaluation loop (lines 310-312). When early cutoff skips downstream nodes, they were already marked Pending but record_evaluation() is never called for them. They remain permanently Pending, violating the postcondition that all nodes should be Final after edit_param returns. Fix: after the evaluation loop, restore freshness to Final for nodes that were in the original eval_set but ended up in the skipped set.\n\n### Issue 2: test_does_not_test_what_it_claims — freshness_transitions_during_edit\nThe test claims to verify Pending state is observable before edit_param evaluates, but edit_param() is synchronous — the Pending state is never externally visible. The test only checks Final state after the call completes, which would pass even if mark_pending() were removed. Fix: rewrite the test to only claim verifiable postconditions, and add a separate test that verifies mark_pending is actually called by tracking invocation counts in CacheStore.",
   "prerequisites": [
     {
       "id": "pre-1",
       "description": "Add `mark_pending()` method to CacheStore in cache.rs for freshness state transitions during incremental evaluation. This sets a node's freshness to Pending{last_substantive: Some(result_hash)} before re-evaluation.",
       "status": "done",
       "commit": "6ca2a50",
-      "tests": ["cache_mark_pending_sets_freshness", "cache_mark_pending_preserves_result"]
+      "tests": [
+        "cache_mark_pending_sets_freshness",
+        "cache_mark_pending_preserves_result"
+      ]
     }
   ],
   "steps": [
@@ -96,6 +101,34 @@
       "description": "Ensure freshness propagation in eval() and edit_param(). In eval() cold start: record_evaluation already sets Final. In edit_param(): before the evaluation loop, call cache.mark_pending() on all nodes in the eval set (transitions them to Pending with last_substantive hash). During evaluation loop: record_evaluation sets them back to Final. After loop: verify non-evaluated cached nodes retain Final. This ensures the full lifecycle: Final → Pending → Final for re-evaluated nodes.",
       "status": "done",
       "commit": "70df118"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test `early_cutoff_skipped_nodes_have_final_freshness` in tests/incremental.rs. Uses the same a-x-y early cutoff fixture as content_hash_early_cutoff_prevents_downstream_eval: param a (Real, default 5.0), let x = a - a (always 0.0), let y = x + 1.0. After cold-start eval, edit a from 5.0 to 7.0 (x re-evaluates to 0.0, unchanged → early cutoff skips y). Assert that y's freshness in cache is Freshness::Final (NOT Pending). This test will FAIL on the current code because y was pre-marked Pending (line 310-312 of lib.rs) but record_evaluation() is never called for y since it's skipped by early cutoff — y remains stuck in Pending{last_substantive: Some(hash)} state. Also assert x's freshness is Final (x was re-evaluated, so record_evaluation restored it to Final). Addresses reviewer_robustness invariant_violation.",
+      "status": "done",
+      "commit": "db89cb2"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Fix the invariant violation: restore freshness to Final for early-cutoff-skipped nodes. Add a `restore_final(node: &NodeId) -> bool` method to CacheStore that sets entry.freshness = Freshness::Final if the node exists in cache, returning true if found. In edit_param(), after the evaluation loop completes, iterate all nodes in the `skipped` set and call `self.cache.restore_final(node_id)` for each. This ensures nodes that were pre-marked Pending but then bypassed by early cutoff are restored to their correct Final state. The postcondition is now satisfied: after edit_param returns, ALL cached nodes are Freshness::Final — re-evaluated nodes via record_evaluation(), skipped nodes via restore_final(), and non-dirty nodes were never touched.",
+      "status": "done",
+      "commit": "4be8f3a"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Fix the misleading test from step-11. Rewrite `freshness_transitions_during_edit` doc comment and name to `freshness_all_final_after_edit_param`. Remove any claim about observing Pending state mid-call. The test body keeps its existing correct assertions (volume is Final after edit, fillet_radius is Final, height is Final) — only the doc comment changes to accurately state: 'After edit_param(), all re-evaluated nodes end up Final and all non-dirty nodes remain Final.' Then write a NEW test `mark_pending_is_called_for_eval_set_nodes` that proves mark_pending() is actually invoked during edit_param: after cold-start eval, call engine.edit_param(width, 100mm), then assert engine.cache_store().pending_transition_count() equals the eval_set length (the number of nodes that were marked Pending). This test will fail to compile initially because pending_transition_count() doesn't exist yet. Addresses reviewer_test_analyst test_does_not_test_what_it_claims.",
+      "status": "done",
+      "commit": "da8228b"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Add pending transition tracking to CacheStore to make step-15's test pass. Add field `pending_transition_count: usize` to CacheStore, initialized to 0 in new(). In mark_pending(), increment the counter each time a node is successfully marked (when the method returns true). Add pub fn `pending_transition_count(&self) -> usize` accessor. Add pub fn `reset_pending_transition_count(&mut self)` to reset the counter to 0. In edit_param() in lib.rs, call `self.cache.reset_pending_transition_count()` immediately before the mark_pending loop so the count reflects only the current edit_param invocation. This makes the test from step-15 pass: after edit_param, pending_transition_count() equals the number of nodes in the eval_set that were marked Pending before evaluation began.",
+      "status": "done",
+      "commit": "6b1b3db"
     }
   ],
   "design_decisions": [
@@ -130,6 +163,14 @@
     {
       "decision": "Constraint and Realization nodes in the eval set are tracked but not evaluated by edit_param()",
       "rationale": "edit_param() returns EvalResult (values only). Constraint evaluation requires the ConstraintChecker trait (batch API). Realization evaluation requires the GeometryKernel. These are evaluated when check()/build() are called. The eval set still includes these node types so that last_eval_set() accurately reflects what WOULD need re-evaluation."
+    },
+    {
+      "decision": "Use restore_final() rather than record_evaluation() for early-cutoff-skipped nodes",
+      "rationale": "Skipped nodes were not actually re-evaluated, so calling record_evaluation() with stale data would be semantically misleading and could update basis_version incorrectly. A dedicated restore_final() method clearly communicates intent: the node was pre-marked Pending but the evaluation was cancelled due to early cutoff upstream, so we simply restore the freshness flag without touching other cache fields (result, result_hash, dependency_trace, basis_version all remain unchanged)."
+    },
+    {
+      "decision": "Use pending_transition_count counter to verify mark_pending is called, rather than a callback/hook or splitting edit_param into phases",
+      "rationale": "A simple counter is the least invasive approach to make the Pending intermediate state testable. Callbacks or phase-splitting would add complexity to the production code path for test-only concerns. The counter is cheap (single usize), reset at the start of each edit_param call, and provides a clear, deterministic assertion: count == eval_set.len(). This satisfies reviewer_test_analyst's concern that removing mark_pending() would not cause any test to fail."
     }
   ],
   "reuse": [
@@ -192,6 +233,11 @@
       "what": "Snapshot O(1) clone via PersistentMap",
       "where": "crates/reify-types (PersistentMap) + crates/reify-eval/src/snapshot.rs",
       "how": "edit_param() clones the current snapshot to create a child. O(1) structural sharing means no copying of the graph or values map until mutation."
+    },
+    {
+      "what": "CacheStore::mark_pending()",
+      "where": "crates/reify-eval/src/cache.rs",
+      "how": "Called in edit_param() before the evaluation loop to transition eval_set nodes from Final to Pending. The new restore_final() method (step-14) is the counterpart for nodes that get skipped by early cutoff."
     }
   ]
 }
