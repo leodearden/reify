@@ -1,14 +1,20 @@
 {
-  "task_id": "20",
-  "title": "ResolutionNode in evaluation graph",
-  "modules": ["crates/reify-eval"],
-  "analysis": "The evaluation graph currently has 3 node types (ValueCell, Constraint, Realization) with a NodeId enum in cache.rs that unifies them. Task 20 adds a 4th: ResolutionNode. ResolutionNodeId already exists in reify-types/src/identity.rs (entity: String, index: u32). NodeId is defined in crates/reify-eval/src/cache.rs (NOT reify-types/identity.rs as the task description suggests). The NodeId enum is used in: cache.rs (definition + From impls + CachedResult content_hash), deps.rs (ReverseDependencyIndex build_from_graph, build_trace_map), dirty.rs (compute_dirty_cone match on NodeId::Value for propagation), demand.rs (rebuild_cone with explicit match arms per variant), lib.rs (Engine eval/edit_param constructing NodeIds), and runtime/lib.rs (test-only NodeId construction, no match arms). Key patterns: (1) NodeId has From<T> impls for each ID type; (2) CachedResult has domain-separated content_hash with tag bytes [20],[21],[22]; (3) dirty cone BFS only propagates through Value nodes (others are leaf); (4) demand cone BFS has explicit match arms extracting deps per node type; (5) topology_fingerprint sorts hashes per-type then combines in fixed order; (6) build_from_graph and build_trace_map iterate all graph maps explicitly. The from_templates() method currently processes value_cells, constraints, and realizations from TopologyTemplate. TopologyTemplate has no resolutions field yet, and adding it is out of scope for this task (requires compiler changes). ResolutionNodes will be constructed manually in tests. The demand cone match in demand.rs needs a new arm for Resolution that returns auto_params as ValueCellId reads. Dirty cone propagation treats Resolution nodes as leaf nodes (like Constraint/Realization) since the only propagation is through Value nodes.",
+  "task_id": "18",
+  "title": "auto keyword — grammar, parser, compiler",
+  "modules": [
+    "tree-sitter-reify",
+    "crates/reify-syntax",
+    "crates/reify-compiler",
+    "crates/reify-eval",
+    "crates/reify-test-support"
+  ],
+  "analysis": "This task threads the `auto` keyword through the full parse→compile→eval pipeline for M3 constraint solving. Key findings from codebase exploration:\n\n1. **Grammar (tree-sitter-reify/grammar.js):** param_declaration uses `optional(seq('=', field('default', $._expression)))`. We add `auto_keyword: $ => 'auto'` and change the default field to `choice($.auto_keyword, $._expression)`. Tree-sitter's lexer will prefer the 'auto' string literal over the identifier regex, effectively reserving `auto` as a keyword. This mirrors the existing bool_literal pattern ('true'/'false').\n\n2. **Parser (crates/reify-syntax/src/ts_parser.rs):** `lower_param()` extracts defaults via `child_by_field_name('default').and_then(|d| self.lower_expr(d))`. For auto, the CST node kind will be 'auto_keyword', which lower_expr doesn't handle → returns None. We must check for 'auto_keyword' before calling lower_expr and produce ExprKind::Auto.\n\n3. **AST (crates/reify-syntax/src/lib.rs):** ExprKind has 10 variants (NumberLiteral, QuantityLiteral, StringLiteral, BoolLiteral, Ident, BinOp, UnOp, FunctionCall, MemberAccess, Conditional). We add ExprKind::Auto — a unit variant with no fields.\n\n4. **Compiler (crates/reify-compiler/src/lib.rs):** ValueCellKind has {Param, Let}. Param compilation (line ~641) calls compile_expr on the default. For ExprKind::Auto, we skip compile_expr and emit ValueCellKind::Auto with default_expr: None.\n\n5. **Eval (crates/reify-eval/src/lib.rs):** Two-pass evaluation: first Params (line 184: `cell.kind == ValueCellKind::Param && let Some(ref expr) = cell.default_expr`), then Lets. Auto cells match neither condition → silently skipped → stay at snapshot initial value. We must add explicit Auto handling in eval() and eval_cached() to set (Undef, DeterminacyState::Auto) and record cache entries.\n\n6. **Snapshot (crates/reify-eval/src/snapshot.rs):** `from_compiled_module` initializes ALL cells to (Undef, Undetermined). We update this to check node.kind and set DeterminacyState::Auto for Auto cells.\n\n7. **Deps (crates/reify-eval/src/deps.rs):** `build_from_graph` and `build_trace_map` filter on `node.kind == ValueCellKind::Let`. Auto cells (like Params) are roots with empty DependencyTrace. The else branch handles them correctly — no changes needed.\n\n8. **Constraints:** SimpleConstraintChecker maps Value::Undef → Satisfaction::Indeterminate (reify-constraints/src/lib.rs line 30-31). Auto params start as Undef, so constraints naturally return Indeterminate.\n\n9. **DeterminacyState::Auto already exists** in reify-types/src/value.rs with full test coverage. No type-layer changes needed.\n\n10. **All ValueCellKind match sites** use equality checks (`cell.kind == ValueCellKind::Param`), not exhaustive match. Adding Auto won't cause compilation errors but requires explicit handling for correct behavior.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Verify existing tests pass with `cargo test -p reify-eval` before making any changes",
+      "description": "Update tree-sitter-reify/grammar.js: (1) Add `auto_keyword: $ => 'auto'` rule, (2) Change param_declaration default from `field('default', $._expression)` to `field('default', choice($.auto_keyword, $._expression))`, (3) Regenerate the parser with `cd tree-sitter-reify && npx tree-sitter generate`. This produces updated src/parser.c, src/grammar.json, src/node-types.json.",
       "status": "done",
-      "commit": "6075abb",
+      "commit": "51275fc",
       "tests": []
     }
   ],
@@ -16,251 +22,182 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in graph.rs: `resolution_node_data_construction`. Create a ResolutionNodeData with id=ResolutionNodeId::new('Bracket', 0), scope='Bracket', auto_params=[ValueCellId::new('Bracket','x')], constraint_deps=[ConstraintNodeId::new('Bracket',0)], content_hash=ContentHash::of_str('res0'). Assert all fields. Also test Debug and Clone derives. Fails because ResolutionNodeData doesn't exist.",
+      "description": "Write failing test `parse_auto_param` in crates/reify-syntax/tests/boundary1_producer.rs: parse source `structure T { param thickness: Scalar = auto }`, assert no parse errors, verify ParamDecl has `default: Some(Expr { kind: ExprKind::Auto, .. })`. Test fails because ExprKind::Auto doesn't exist yet.",
       "status": "done",
-      "commit": "6075abb"
+      "commit": "f04f577"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add ResolutionNodeData struct to graph.rs: `pub struct ResolutionNodeData { pub id: ResolutionNodeId, pub scope: String, pub auto_params: Vec<ValueCellId>, pub constraint_deps: Vec<ConstraintNodeId>, pub content_hash: ContentHash }` with #[derive(Debug, Clone)]. Add ResolutionNodeId to imports from reify_types.",
+      "description": "Add `ExprKind::Auto` variant (unit variant, no fields) to crates/reify-syntax/src/lib.rs. Update `lower_param()` in crates/reify-syntax/src/ts_parser.rs: before calling `lower_expr(d)` for the default node, check `if d.kind() == \"auto_keyword\"` and return `Some(Expr { kind: ExprKind::Auto, span: self.span(d) })` directly. Step-1 test now passes.",
       "status": "done",
-      "commit": "6075abb"
+      "commit": "d533555"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test in graph.rs: `evaluation_graph_has_resolutions_map`. Create EvaluationGraph::default(), assert graph.resolutions.is_empty() and graph.resolutions.len() == 0. Fails because resolutions field doesn't exist on EvaluationGraph.",
+      "description": "Write test `parse_mixed_auto_and_normal_params` in crates/reify-syntax/tests/boundary1_producer.rs: parse `structure S { param x: Scalar = 5mm\\n param y: Scalar = auto\\n param z: Scalar }`, verify x has QuantityLiteral default, y has Auto default, z has no default (None). Confirms auto coexists with normal params.",
       "status": "done",
-      "commit": "2410414"
+      "commit": "471e082"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add `pub resolutions: PersistentMap<ResolutionNodeId, ResolutionNodeData>` field to EvaluationGraph struct. The existing #[derive(Default)] handles initialization to empty. Update the existing `evaluation_graph_empty` test to also assert resolutions.is_empty().",
+      "description": "Step-3 should pass with step-2 implementation. If not, debug and fix lower_param handling. Verify `auto` in `let x = auto` is either a parse error or parsed differently (not ExprKind::Auto) since grammar restricts auto_keyword to param defaults.",
       "status": "done",
-      "commit": "2410414"
+      "commit": "2f97788"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test in cache.rs: `node_id_resolution_variant`. Create NodeId::Resolution(ResolutionNodeId::new('A', 0)), assert it equals itself, differs from NodeId::Value/Constraint/Realization. Test From<ResolutionNodeId> for NodeId conversion. Fails because NodeId has no Resolution variant.",
+      "description": "Write failing test `compile_auto_param` in crates/reify-compiler/tests/boundary2_producer.rs: parse + compile `structure S { param x: Scalar = auto\\n param y: Scalar = 5mm }`, filter value cells, assert x has `kind == ValueCellKind::Auto` and `default_expr == None`, y has `kind == ValueCellKind::Param` and `default_expr.is_some()`. Test fails because ValueCellKind::Auto doesn't exist.",
       "status": "done",
-      "commit": "59f62a4"
+      "commit": "3be60a1"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add Resolution(ResolutionNodeId) variant to NodeId enum in cache.rs. Add `impl From<ResolutionNodeId> for NodeId`. Add ResolutionNodeId to the reify_types use statement. Fix all match-arm exhaustiveness errors: (1) demand.rs rebuild_cone: add `NodeId::Resolution(res_id) => { ... }` arm that looks up graph.resolutions.get(res_id) and returns auto_params as reads; (2) dirty.rs compute_dirty_cone: no change needed (only matches NodeId::Value for propagation, others fall through); (3) topological_sort: no change needed (only matches NodeId::Value(ref vcid) for edge propagation).",
+      "description": "Add `Auto` variant to ValueCellKind enum in crates/reify-compiler/src/lib.rs. Update doc comment. In `compile_structure()` Param arm (line ~641): check if `param.default` is `Some(Expr { kind: ExprKind::Auto, .. })`. If so, emit ValueCellDecl with `kind: ValueCellKind::Auto, default_expr: None`. Otherwise use existing Param logic.",
       "status": "done",
-      "commit": "59f62a4"
+      "commit": "06502e2"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test in cache.rs: `cached_result_resolution_variant`. Create CachedResult::Resolution with HashMap{ValueCellId::new('A','x') => Value::Real(1.0)}. Call content_hash() and assert non-zero, uses tag [23]. Create a second with different values, assert different hash. Fails because CachedResult has no Resolution variant.",
+      "description": "Write failing test `auto_param_builder` in crates/reify-test-support (inline test or in builders.rs tests): call `TopologyTemplateBuilder::new(\"T\").auto_param(\"T\", \"x\", Type::length())`, verify produced ValueCellDecl has `kind == ValueCellKind::Auto`, `default_expr == None`, correct id and type. Fails because auto_param() doesn't exist.",
       "status": "done",
-      "commit": "142e2b4"
+      "commit": "1ed3cee"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add `Resolution(HashMap<ValueCellId, Value>)` variant to CachedResult enum. Add match arm in content_hash(): tag [23], sort entries by ValueCellId Debug repr for determinism, combine key and value hashes. Ensure HashMap is imported (std::collections::HashMap already imported at top of cache.rs).",
+      "description": "Add `auto_param(self, entity: &str, member: &str, cell_type: Type) -> Self` method to TopologyTemplateBuilder in crates/reify-test-support/src/builders.rs. Pushes ValueCellDecl with `kind: ValueCellKind::Auto, default_expr: None`. Mirrors existing param() pattern.",
       "status": "done",
-      "commit": "142e2b4"
+      "commit": "9b9abf7"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test in cache.rs: `cache_store_resolution_result`. Create CacheStore, record_evaluation with NodeId::Resolution(ResolutionNodeId::new('A',0)) and CachedResult::Resolution(HashMap), verify get() returns the entry, freshness is Final, result_hash matches content_hash.",
+      "description": "Write failing test `eval_auto_param_undef_auto` in crates/reify-eval (tests/ directory): build a CompiledModule via builder with auto_param(\"S\", \"x\", Type::length()) and param(\"S\", \"y\", Type::length(), Some(literal(mm(5.0)))). Run engine.eval(). Assert snapshot has x → (Undef, DeterminacyState::Auto) and y → (evaluated value, Determined). Assert values map has x → Undef. Fails because eval() doesn't handle Auto cells.",
       "status": "done",
-      "commit": "13c5384"
+      "commit": "4e67dc1"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify test passes — CacheStore is generic over NodeId/CachedResult variants. Fix any issues. This step should be a no-op since the existing CacheStore HashMap<NodeId, NodeCache> handles any NodeId variant.",
+      "description": "Update Snapshot::from_compiled_module() in crates/reify-eval/src/snapshot.rs: when iterating graph.value_cells, check node.kind — if ValueCellKind::Auto, initialize as (Undef, DeterminacyState::Auto) instead of (Undef, Undetermined). Update Engine::eval() in crates/reify-eval/src/lib.rs: in the first pass, add a branch after the Param check: `else if cell.kind == ValueCellKind::Auto { values.insert(cell.id.clone(), Value::Undef); snapshot.values.insert(cell.id.clone(), (Value::Undef, DeterminacyState::Auto)); /* record cache */ }`.",
       "status": "done",
-      "commit": "13c5384"
+      "commit": "0bf7bb3"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test in deps.rs: `reverse_index_includes_resolution_deps`. Build EvaluationGraph manually with: param 'a' (auto), constraint C0, and ResolutionNodeData R0 with auto_params=['a']. Call build_from_graph. Assert dependents_of('a') includes NodeId::Resolution(R0). Fails because build_from_graph doesn't iterate resolutions.",
+      "description": "Write failing test `eval_cached_auto_param` in crates/reify-eval: same module as step-9, but use engine.eval_cached(). Verify auto param gets (Undef, DeterminacyState::Auto) in values. Also test that setting a param_override for the auto param causes eval_cached to use the override value with Determined state.",
       "status": "done",
-      "commit": "47e9a39"
+      "commit": "9d057a8"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Add resolution iteration to ReverseDependencyIndex::build_from_graph(): iterate graph.resolutions, for each resolution node create NodeId::Resolution(rnode.id.clone()), register each auto_param as a dependency. Also add resolution iteration to build_trace_map(): for each resolution node, create DependencyTrace with reads = auto_params.clone().",
+      "description": "Update Engine::eval_cached() in crates/reify-eval/src/lib.rs: in the first pass, after the `if cell.kind == ValueCellKind::Param` block, add `else if cell.kind == ValueCellKind::Auto`. Handle version fast-path, cache reuse, and fallback: without override → (Undef, DeterminacyState::Auto); with override → (override_value, DeterminacyState::Determined). Follow the Param handling pattern for cache recording.",
       "status": "done",
-      "commit": "47e9a39"
+      "commit": "57c3a15"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write test in deps.rs: `build_trace_map_includes_resolution`. Build graph with param 'a', 'b' and ResolutionNodeData R0 with auto_params=['a','b']. Call build_trace_map. Assert traces contains NodeId::Resolution(R0) with reads=['a','b'].",
+      "description": "Write test `constraint_on_auto_param_indeterminate` in crates/reify-eval: build a module with auto_param(\"S\", \"x\", Type::length()) and a constraint `x > 5mm` (compiled via builders). Run engine.check(). Assert the constraint result has satisfaction == Satisfaction::Indeterminate. This should pass naturally since x is Undef → constraint expression evaluates to Undef → Indeterminate.",
       "status": "done",
-      "commit": "fe3805b"
+      "commit": "ede0cf8"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Should pass from step 12. Verify and fix if needed.",
+      "description": "Verify step-13 passes with existing Undef→Indeterminate mapping. No constraint checker changes expected. If the test fails, investigate eval_expr Undef propagation for the specific comparison operators used.",
       "status": "done",
-      "commit": "fe3805b"
+      "commit": "ede0cf8"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write test in demand.rs: `rebuild_cone_includes_resolution_and_deps`. Build graph with: param 'a' (auto), param 'b', constraint C0 reading 'a', ResolutionNodeData R0 with auto_params=['a']. Demand R0, rebuild_cone. Assert R0 is demanded and param 'a' is demanded (transitive through resolution). Assert param 'b' is NOT demanded.",
+      "description": "Write end-to-end integration test `e2e_parse_compile_eval_auto_param`: parse source `structure S {\\n  param x : Scalar = auto\\n  param y : Scalar = 5mm\\n  let z = y * 2\\n  constraint x > 2mm\\n}`, compile, eval, check. Assert: no parse errors, x is ValueCellKind::Auto, x is (Undef, Auto) in snapshot, y is evaluated to 0.005 SI, z = 0.01 SI, constraint on x is Indeterminate.",
       "status": "done",
-      "commit": "d6ba3cf"
+      "commit": "844cf4a"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Should pass from step 6's demand.rs match arm addition. Verify the NodeId::Resolution arm in rebuild_cone correctly extracts auto_params and enqueues them. Fix if needed.",
+      "description": "Verify e2e test passes with all prior implementations. Run `cargo test --workspace` to confirm all existing tests pass with no regressions. Fix any compilation or test failures across the workspace.",
       "status": "done",
-      "commit": "d6ba3cf"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write test in dirty.rs: `dirty_cone_includes_resolution_node`. Build graph with: param 'a', ResolutionNodeData R0 with auto_params=['a']. Build reverse index. Change 'a'. Assert dirty cone contains NodeId::Resolution(R0).",
-      "status": "done",
-      "commit": "3103702"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Should pass from step 12 (build_from_graph registers reverse edges from auto_params to Resolution nodes). Dirty cone BFS propagates from changed 'a' → dependents include Resolution(R0). Verify and fix if needed.",
-      "status": "done",
-      "commit": "3103702"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write failing test in graph.rs: `topology_fingerprint_includes_resolutions`. Build two graphs from same templates. Add a ResolutionNodeData to one. Assert fingerprints differ. Also build two graphs with identical ResolutionNodeData, assert fingerprints equal. Fails because topology_fingerprint doesn't hash resolutions.",
-      "status": "done",
-      "commit": "2cf7c14"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Add resolution hash computation to topology_fingerprint(): `let res_hash = { let mut hashes: Vec<ContentHash> = self.resolutions.iter().map(|(_, n)| n.content_hash).collect(); hashes.sort_by_key(|h| h.0); ContentHash::combine_all(hashes) };` Update final combine to: `ContentHash::combine_all([vc_hash, cn_hash, real_hash, res_hash])`.",
-      "status": "done",
-      "commit": "2cf7c14"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write test in graph.rs: `fingerprint_domain_separates_resolution_from_others`. Create graph_a with value_cell of hash H, graph_d with resolution of hash H. Assert fingerprints differ. Extends existing domain separation test pattern.",
-      "status": "done",
-      "commit": "2cf7c14"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Should pass from step 20 since resolution hashes occupy their own slot in combine_all. Verify.",
-      "status": "done",
-      "commit": "2cf7c14"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write test in graph.rs: `evaluation_graph_resolution_clone_independence`. Insert ResolutionNodeData into graph.resolutions, clone, insert another into clone, verify original has 1 resolution and clone has 2. Matches existing clone_independence test pattern.",
-      "status": "done",
-      "commit": "cfc863c"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Should pass from step 4 since PersistentMap provides structural sharing. Verify.",
-      "status": "done",
-      "commit": "cfc863c"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Run `cargo test --workspace` to verify all 315+ existing tests pass and all new tests pass. No regressions from NodeId variant addition.",
-      "status": "done",
-      "commit": "cfc863c"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "Fix any remaining compilation errors or test failures across the workspace. The runtime crate only constructs NodeId variants in tests (no match arms), so it should compile without changes. Any other crates referencing NodeId will need inspection.",
-      "status": "done",
-      "commit": "cfc863c"
+      "commit": "844cf4a"
     }
   ],
   "design_decisions": [
     {
-      "decision": "NodeId stays in cache.rs rather than moving to reify-types",
-      "rationale": "The task description mentions extending NodeId in reify-types/identity.rs, but NodeId is actually defined in reify-eval/src/cache.rs. Moving it would be a larger refactor outside this task's scope. We extend it in place."
+      "decision": "Add ExprKind::Auto as a variant of ExprKind rather than a separate DefaultValue enum",
+      "rationale": "ParamDecl.default is Option<Expr>. Adding ExprKind::Auto is minimally invasive — preserves existing type structure and all consumer code. A separate DefaultValue enum would require changing ParamDecl, all pattern matches on default, and the lower_param return type. The grammar restricts auto to param defaults, so the type system doesn't need to enforce this."
     },
     {
-      "decision": "ResolutionNodeData stores auto_params as Vec<ValueCellId> and constraint_deps as Vec<ConstraintNodeId> (static, not runtime-traced)",
-      "rationale": "Per task description: 'These dependencies are static (from the template), not dynamically traced.' This is simpler and matches the template-driven design."
+      "decision": "ValueCellKind::Auto as a third variant rather than a flag on Param",
+      "rationale": "Auto params have fundamentally different eval behavior: no default expression, start as Undef, value provided by solver. A separate variant makes eval/eval_cached match arms explicit and prevents accidentally evaluating a non-existent default_expr. Existing code uses equality checks (not exhaustive match), so adding the variant is safe."
     },
     {
-      "decision": "CachedResult::Resolution uses HashMap<ValueCellId, Value>",
-      "rationale": "A resolution node resolves multiple auto parameters simultaneously. The cache result holds all resolved values keyed by ValueCellId, matching the SolveResult::Solved{values} type in reify-types."
+      "decision": "Auto params get (Value::Undef, DeterminacyState::Auto) — reusing existing DeterminacyState::Auto",
+      "rationale": "DeterminacyState::Auto was added in a prior task (reify-types) with full test coverage. Using Undef as the value is correct since the param has no value until the solver provides one. Undef propagation in reify-expr naturally makes dependent computations Undef and constraints Indeterminate."
     },
     {
-      "decision": "Content hash tag byte [23] for Resolution CachedResult",
-      "rationale": "Existing tags are [20] Value, [21] Satisfaction, [22] GeometryHandle. Next sequential is [23], maintaining domain separation."
+      "decision": "Grammar restricts auto_keyword to param default position only",
+      "rationale": "The language spec requires auto only as a param default value. By adding auto_keyword as a choice alongside _expression in param_declaration (not in _expression itself), the grammar gives clean parse errors for auto in invalid positions. Tree-sitter will lex 'auto' as a keyword token (priority over identifier regex), reserving it language-wide."
     },
     {
-      "decision": "Resolution nodes are leaf nodes in dirty cone propagation",
-      "rationale": "Like Constraint and Realization nodes, Resolution nodes don't propagate further in the dirty BFS. The resolved values are written back to auto param ValueCells by the engine (not through the dependency graph edges). The dirty.rs compute_dirty_cone only propagates through NodeId::Value, so Resolution nodes naturally become leaves."
+      "decision": "No changes needed to deps.rs or constraint checker",
+      "rationale": "deps.rs filters on ValueCellKind::Let; Auto cells are roots like Params with empty DependencyTrace — handled by the else branch. Constraint checker maps Value::Undef to Satisfaction::Indeterminate — auto params naturally produce Indeterminate constraints."
     },
     {
-      "decision": "from_templates() does not create ResolutionNodes yet",
-      "rationale": "TopologyTemplate has no auto_params/resolution fields. Compiler changes to detect auto params and emit resolution data in TopologyTemplate are out of scope. Tests construct ResolutionNodes manually by inserting into graph.resolutions."
-    },
-    {
-      "decision": "DemandRegistry::rebuild_cone Resolution arm uses auto_params as dependency reads",
-      "rationale": "A ResolutionNode's backward dependencies for demand cone BFS are its auto_param ValueCells. These are the inputs the solver reads. Constraint deps (ConstraintNodeId) could also be added as NodeId::Constraint entries to the demand cone queue, but since the demand cone BFS only enqueues NodeId::Value entries for continued traversal, constraint deps would just be inserted as demanded without further propagation — which may be handled later when resolution is fully integrated."
+      "decision": "Update both Snapshot::from_compiled_module and Engine::eval for Auto cells",
+      "rationale": "Snapshot initialization sets the baseline state before eval runs. While eval() overwrites values for processed cells, having correct initial determinacy ensures consistency if snapshot is inspected before eval completes. Eval() adds explicit Auto handling for cache recording and value map population."
     }
   ],
   "reuse": [
     {
-      "what": "ResolutionNodeId type",
-      "where": "crates/reify-types/src/identity.rs:119-139",
-      "how": "Already defined with new(), Display, Clone, PartialEq, Eq, Hash. Import and use directly via reify_types::ResolutionNodeId."
+      "what": "DeterminacyState::Auto variant",
+      "where": "crates/reify-types/src/value.rs line 127",
+      "how": "Already exists with doc comment, Copy/Clone/Eq/Hash derives, and test coverage. Use directly in snapshot initialization and eval — no type-layer changes needed."
     },
     {
-      "what": "PersistentMap<K,V> for O(1) clone",
-      "where": "reify_types (re-exported from im crate)",
-      "how": "Use PersistentMap<ResolutionNodeId, ResolutionNodeData> for the new resolutions field, matching existing value_cells/constraints/realizations pattern."
+      "what": "Value::Undef and Undef propagation",
+      "where": "crates/reify-types/src/value.rs (Value enum), crates/reify-expr/src/lib.rs (eval_expr)",
+      "how": "Auto params start as Value::Undef. eval_expr already propagates Undef through all arithmetic and comparison operators. No changes to reify-expr needed."
     },
     {
-      "what": "ContentHash domain separation pattern",
-      "where": "crates/reify-eval/src/cache.rs:48-68 and graph.rs:108-126",
-      "how": "Follow exact pattern: tag byte + combine for CachedResult; sorted hashes + combine_all for topology_fingerprint."
+      "what": "SimpleConstraintChecker Undef→Indeterminate mapping",
+      "where": "crates/reify-constraints/src/lib.rs line 30-31",
+      "how": "Value::Undef constraint result → Satisfaction::Indeterminate. Auto param constraints naturally report Indeterminate without any constraint checker changes."
     },
     {
-      "what": "From<T> for NodeId pattern",
-      "where": "crates/reify-eval/src/cache.rs:19-35",
-      "how": "Add identical From<ResolutionNodeId> impl following the three existing implementations."
+      "what": "TopologyTemplateBuilder pattern",
+      "where": "crates/reify-test-support/src/builders.rs lines 158-173",
+      "how": "auto_param() follows the exact same pattern as param(): push ValueCellDecl with specific kind and default_expr. Only differs in kind=Auto and default_expr=None."
     },
     {
-      "what": "ReverseDependencyIndex build_from_graph iteration pattern",
-      "where": "crates/reify-eval/src/deps.rs:95-132",
-      "how": "Add 4th iteration block for graph.resolutions following constraints/realizations pattern but using auto_params directly instead of extract_dependency_trace."
+      "what": "Cache recording pattern in eval()",
+      "where": "crates/reify-eval/src/lib.rs lines 197-207",
+      "how": "Auto cell cache recording follows the Param pattern: NodeId::Value, DependencyTrace::default() (roots have no deps), CachedResult::Value(val, determinacy), self.cache.record_evaluation()."
     },
     {
-      "what": "TopologyTemplateBuilder for test graph construction",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Use existing builder for params/constraints, then manually insert ResolutionNodeData into the graph.resolutions map for tests."
+      "what": "eval_cached() Param handling structure",
+      "where": "crates/reify-eval/src/lib.rs lines 396-453",
+      "how": "Auto cell handling in eval_cached mirrors Param handling: version fast-path, cache reuse check, param_overrides check, fallback to (Undef, Auto). Same control flow, different determinacy state."
     },
     {
-      "what": "Existing test patterns (construction, clone independence, domain separation)",
-      "where": "crates/reify-eval/src/graph.rs tests module",
-      "how": "Follow identical test structure for ResolutionNodeData: field access tests, graph insert/get, clone independence, fingerprint domain separation."
+      "what": "Grammar keyword pattern (bool_literal)",
+      "where": "tree-sitter-reify/grammar.js line 194",
+      "how": "auto_keyword: $ => 'auto' follows the same pattern as bool_literal: $ => choice('true', 'false'). Named rules wrapping string literals is the established convention."
+    },
+    {
+      "what": "Boundary test organization",
+      "where": "crates/reify-syntax/tests/boundary1_producer.rs, crates/reify-compiler/tests/boundary2_producer.rs",
+      "how": "New tests follow existing conventions: boundary1 for parser output, boundary2 for compiler output, eval tests for runtime behavior."
     }
   ]
 }

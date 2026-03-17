@@ -192,7 +192,13 @@ impl<'a> Lowering<'a> {
         });
 
         let default = node.child_by_field_name("default")
-            .and_then(|d| self.lower_expr(d));
+            .and_then(|d| {
+                if d.kind() == "auto_keyword" {
+                    Some(Expr { kind: ExprKind::Auto, span: self.span(d) })
+                } else {
+                    self.lower_expr(d)
+                }
+            });
 
         Some(ParamDecl {
             name,

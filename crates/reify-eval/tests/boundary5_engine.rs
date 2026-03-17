@@ -29,6 +29,171 @@ fn build_with_mock_kernel() {
     assert!(result.geometry_output.is_some());
 }
 
+/// Auto param evaluates to (Undef, DeterminacyState::Auto) in snapshot.
+#[test]
+fn eval_auto_param_undef_auto() {
+    use reify_types::{CompiledExpr, DeterminacyState, ModulePath, Type, ValueCellId};
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .param("S", "y", Type::length(), Some(CompiledExpr::literal(mm(5.0), Type::length())))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // x should be Undef in the values map
+    let x_id = ValueCellId::new("S", "x");
+    let x_val = result.values.get(&x_id).expect("x should be in values");
+    assert!(x_val.is_undef(), "auto param x should be Undef, got {:?}", x_val);
+
+    // y should be evaluated to 0.005 (5mm in SI)
+    let y_id = ValueCellId::new("S", "y");
+    let y_val = result.values.get(&y_id).expect("y should be in values");
+    assert!(!y_val.is_undef(), "normal param y should not be Undef");
+
+    // Check snapshot determinacy
+    let snapshot = engine.snapshot().expect("snapshot should exist after eval");
+    let (x_snap_val, x_det) = snapshot.values.get(&x_id).expect("x in snapshot");
+    assert!(x_snap_val.is_undef(), "snapshot x should be Undef");
+    assert_eq!(*x_det, DeterminacyState::Auto, "snapshot x determinacy should be Auto");
+
+    let (_, y_det) = snapshot.values.get(&y_id).expect("y in snapshot");
+    assert_eq!(*y_det, DeterminacyState::Determined, "snapshot y determinacy should be Determined");
+}
+
+/// eval_cached: auto param gets (Undef, Auto), and override applies Determined.
+#[test]
+fn eval_cached_auto_param() {
+    use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId, VersionId};
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .param("S", "y", Type::length(), Some(CompiledExpr::literal(mm(5.0), Type::length())))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+    // First eval_cached: auto param should be (Undef, Auto)
+    let result = engine.eval_cached(&module, VersionId(1));
+    let x_id = ValueCellId::new("S", "x");
+    let x_val = result.eval_result.values.get(&x_id).expect("x should be in values");
+    assert!(x_val.is_undef(), "auto param x should be Undef on cold start");
+
+    // Now set an override for the auto param and re-evaluate
+    engine.set_param_and_invalidate(&x_id, mm(10.0));
+    let result2 = engine.eval_cached(&module, VersionId(2));
+    let x_val2 = result2.eval_result.values.get(&x_id).expect("x should be in values");
+    assert!(!x_val2.is_undef(), "auto param x should have override value");
+}
+
+/// Constraint on auto param → Indeterminate (Undef propagates).
+#[test]
+fn constraint_on_auto_param_indeterminate() {
+    use reify_types::{ModulePath, Type, ValueCellId};
+
+    // Build module with auto param x and constraint x > 5mm
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(5.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.check(&module);
+
+    // x should be Undef
+    let x_id = ValueCellId::new("S", "x");
+    let x_val = result.values.get(&x_id).expect("x should be in values");
+    assert!(x_val.is_undef(), "auto param x should be Undef");
+
+    // Constraint should be Indeterminate (Undef propagation)
+    assert_eq!(result.constraint_results.len(), 1);
+    assert_eq!(
+        result.constraint_results[0].satisfaction,
+        reify_types::Satisfaction::Indeterminate,
+        "constraint on auto param should be Indeterminate"
+    );
+}
+
+/// End-to-end: parse → compile → eval → check with auto param.
+#[test]
+fn e2e_parse_compile_eval_auto_param() {
+    use reify_compiler::ValueCellKind;
+    use reify_types::{DeterminacyState, ModulePath, Satisfaction, ValueCellId};
+
+    let source = r#"structure S {
+    param x : Scalar = auto
+    param y : Scalar = 5mm
+    let z = y * 2
+    constraint x > 2mm
+}"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("e2e_auto"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    // Check that x is ValueCellKind::Auto
+    let template = &compiled.templates[0];
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id == ValueCellId::new("S", "x"))
+        .expect("x cell not found");
+    assert_eq!(x_cell.kind, ValueCellKind::Auto);
+
+    // Evaluate and check
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.check(&compiled);
+
+    // x should be Undef
+    let x_id = ValueCellId::new("S", "x");
+    let x_val = result.values.get(&x_id).expect("x should be in values");
+    assert!(x_val.is_undef(), "auto param x should be Undef, got {:?}", x_val);
+
+    // y should be ~0.005 SI (5mm)
+    let y_id = ValueCellId::new("S", "y");
+    let y_val = result.values.get(&y_id).expect("y should be in values");
+    let y_f64 = y_val.as_f64().expect("y should be a number");
+    assert!((y_f64 - 0.005).abs() < 1e-10, "y should be 0.005 SI, got {}", y_f64);
+
+    // z = y * 2 ≈ 0.01 SI
+    let z_id = ValueCellId::new("S", "z");
+    let z_val = result.values.get(&z_id).expect("z should be in values");
+    let z_f64 = z_val.as_f64().expect("z should be a number");
+    assert!((z_f64 - 0.01).abs() < 1e-10, "z should be 0.01 SI, got {}", z_f64);
+
+    // Constraint on x should be Indeterminate
+    assert_eq!(result.constraint_results.len(), 1);
+    assert_eq!(
+        result.constraint_results[0].satisfaction,
+        Satisfaction::Indeterminate,
+        "constraint on auto param x should be Indeterminate"
+    );
+
+    // Check snapshot determinacy
+    let snapshot = engine.snapshot().expect("snapshot should exist");
+    let (_, x_det) = snapshot.values.get(&x_id).expect("x in snapshot");
+    assert_eq!(*x_det, DeterminacyState::Auto);
+
+    let (_, y_det) = snapshot.values.get(&y_id).expect("y in snapshot");
+    assert_eq!(*y_det, DeterminacyState::Determined);
+}
+
 /// Engine with predetermined constraint results → reports violations.
 #[test]
 

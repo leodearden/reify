@@ -280,6 +280,35 @@ fn constraint_non_bool_produces_warning() {
     );
 }
 
+/// Compile auto param → ValueCellKind::Auto, default_expr: None.
+#[test]
+fn compile_auto_param() {
+    let source = r#"structure S {
+    param x: Scalar = auto
+    param y: Scalar = 5mm
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(compiled.diagnostics.is_empty(), "compile diagnostics: {:?}", compiled.diagnostics);
+
+    let template = &compiled.templates[0];
+    assert_eq!(template.value_cells.len(), 2);
+
+    // x should be Auto with no default_expr
+    let x = &template.value_cells[0];
+    assert_eq!(x.id, reify_types::ValueCellId::new("S", "x"));
+    assert_eq!(x.kind, ValueCellKind::Auto);
+    assert!(x.default_expr.is_none(), "auto param should have no default_expr");
+
+    // y should be Param with a default_expr
+    let y = &template.value_cells[1];
+    assert_eq!(y.id, reify_types::ValueCellId::new("S", "y"));
+    assert_eq!(y.kind, ValueCellKind::Param);
+    assert!(y.default_expr.is_some(), "normal param should have default_expr");
+}
+
 /// Regression: bracket fixture compiles with zero diagnostics.
 /// The dimension and constraint checks must not false-positive on valid expressions.
 #[test]

@@ -172,6 +172,22 @@ impl TopologyTemplateBuilder {
         self
     }
 
+    pub fn auto_param(
+        mut self,
+        entity: &str,
+        member: &str,
+        cell_type: Type,
+    ) -> Self {
+        self.value_cells.push(ValueCellDecl {
+            id: ValueCellId::new(entity, member),
+            kind: ValueCellKind::Auto,
+            cell_type,
+            default_expr: None,
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
     pub fn let_binding(
         mut self,
         entity: &str,
@@ -228,6 +244,25 @@ impl TopologyTemplateBuilder {
             realizations: self.realizations,
             content_hash,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_param_builder() {
+        let template = TopologyTemplateBuilder::new("T")
+            .auto_param("T", "x", Type::length())
+            .build();
+
+        assert_eq!(template.value_cells.len(), 1);
+        let cell = &template.value_cells[0];
+        assert_eq!(cell.id, ValueCellId::new("T", "x"));
+        assert_eq!(cell.kind, ValueCellKind::Auto);
+        assert!(cell.default_expr.is_none());
+        assert_eq!(cell.cell_type, Type::length());
     }
 }
 

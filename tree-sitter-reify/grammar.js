@@ -44,8 +44,11 @@ module.exports = grammar({
       'param',
       field('name', $.identifier),
       optional(seq(':', field('type', $.type_expr))),
-      optional(seq('=', field('default', $._expression))),
+      optional(seq('=', field('default', choice($.auto_keyword, $._expression)))),
     ),
+
+    // ── Auto keyword (for solver-determined params) ───────
+    auto_keyword: $ => 'auto',
 
     // ── Let ─────────────────────────────────────────────────
     let_declaration: $ => seq(
