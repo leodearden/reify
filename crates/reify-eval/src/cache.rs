@@ -140,9 +140,10 @@ impl CacheStore {
         self.caches.insert(node, cache);
     }
 
-    /// Remove a cached entry.
+    /// Remove a cached entry and its dirty state.
     pub fn invalidate(&mut self, node: &NodeId) {
         self.caches.remove(node);
+        self.dirty_reasons.remove(node);
     }
 
     /// Number of cached entries.
@@ -155,9 +156,10 @@ impl CacheStore {
         self.caches.is_empty()
     }
 
-    /// Remove all cached entries.
+    /// Remove all cached entries and dirty state.
     pub fn clear(&mut self) {
         self.caches.clear();
+        self.dirty_reasons.clear();
     }
 
     /// Record an evaluation result and determine if it changed (early cutoff).
