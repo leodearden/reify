@@ -136,15 +136,33 @@ pub enum Satisfaction {
     Indeterminate,
 }
 
+/// An error produced during value evaluation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalError(pub String);
+
+impl std::fmt::Display for EvalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for EvalError {}
+
 /// Freshness of a cached value (for incremental evaluation).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// M2 model: tracks evaluation lifecycle with richer state than M1's
+/// simple Fresh/Stale/Uncomputed.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Freshness {
-    /// Value is up-to-date with current inputs.
-    Fresh,
-    /// Value may be stale (inputs have changed).
-    Stale,
-    /// Value has never been computed.
-    Uncomputed,
+    /// Value is fully computed and up-to-date.
+    Final,
+    /// Value is a provisional result from an in-progress evaluation pass.
+    Intermediate { generation: u64 },
+    /// Value has been requested but not yet computed.
+    /// `last_substantive` holds the content hash of the last known-good value, if any.
+    Pending { last_substantive: Option<ContentHash> },
+    /// Evaluation failed with an error.
+    Failed { error: EvalError },
 }
 
 /// Map from ValueCellId to Value. Uses PersistentMap (im::HashMap) for
@@ -238,6 +256,71 @@ mod tests {
             dimension: DimensionVector::MASS,
         };
         assert_ne!(len.content_hash(), mass.content_hash());
+    }
+
+    #[test]
+    fn test_freshness_final() {
+        let f = Freshness::Final;
+        let f2 = f.clone();
+        assert_eq!(f, f2);
+        assert_eq!(format!("{:?}", f), "Final");
+    }
+
+    #[test]
+    fn test_freshness_intermediate() {
+        let f = Freshness::Intermediate { generation: 42 };
+        let f2 = f.clone();
+        assert_eq!(f, f2);
+        match &f {
+            Freshness::Intermediate { generation } => assert_eq!(*generation, 42),
+            _ => panic!("expected Intermediate"),
+        }
+    }
+
+    #[test]
+    fn test_freshness_pending_none() {
+        let f = Freshness::Pending { last_substantive: None };
+        let f2 = f.clone();
+        assert_eq!(f, f2);
+        match &f {
+            Freshness::Pending { last_substantive } => assert!(last_substantive.is_none()),
+            _ => panic!("expected Pending"),
+        }
+    }
+
+    #[test]
+    fn test_freshness_pending_some() {
+        let hash = ContentHash::of(b"test");
+        let f = Freshness::Pending { last_substantive: Some(hash) };
+        let f2 = f.clone();
+        assert_eq!(f, f2);
+        match &f {
+            Freshness::Pending { last_substantive } => assert_eq!(*last_substantive, Some(hash)),
+            _ => panic!("expected Pending"),
+        }
+    }
+
+    #[test]
+    fn test_freshness_failed() {
+        let err = EvalError("type mismatch".to_string());
+        let f = Freshness::Failed { error: err.clone() };
+        let f2 = f.clone();
+        assert_eq!(f, f2);
+        match &f {
+            Freshness::Failed { error } => assert_eq!(error.0, "type mismatch"),
+            _ => panic!("expected Failed"),
+        }
+    }
+
+    #[test]
+    fn test_eval_error_display() {
+        let err = EvalError("division by zero".to_string());
+        assert_eq!(format!("{}", err), "division by zero");
+        assert_eq!(err.0, "division by zero");
+
+        // Verify Clone and PartialEq
+        let err2 = err.clone();
+        assert_eq!(err, err2);
     }
 
     #[test]
