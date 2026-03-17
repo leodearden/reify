@@ -349,3 +349,58 @@ fn no_solver_backward_compatible() {
     // No resolved params
     assert!(result.resolved_params.is_empty());
 }
+
+#[test]
+fn eval_result_tracks_resolved_params() {
+    use reify_test_support::MockGeometryKernel;
+    use reify_types::ExportFormat;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "thickness"), literal(mm(2.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Test eval() resolved_params
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(MockConstraintSolver::new_solved({
+            let mut m = HashMap::new();
+            m.insert(thickness_id.clone(), mm(5.0));
+            m
+        })));
+    let eval_result = engine.eval(&module);
+    assert_eq!(eval_result.resolved_params.len(), 1);
+    assert!(eval_result.resolved_params.contains_key(&thickness_id));
+
+    // Test check() resolved_params
+    let mut engine2 = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(MockConstraintSolver::new_solved({
+            let mut m = HashMap::new();
+            m.insert(thickness_id.clone(), mm(5.0));
+            m
+        })));
+    let check_result = engine2.check(&module);
+    assert_eq!(check_result.resolved_params.len(), 1);
+    assert!(check_result.resolved_params.contains_key(&thickness_id));
+
+    // Test build() resolved_params
+    let mut engine3 = Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(MockGeometryKernel::new())),
+    ).with_solver(Box::new(MockConstraintSolver::new_solved({
+        let mut m = HashMap::new();
+        m.insert(thickness_id.clone(), mm(5.0));
+        m
+    })));
+    let build_result = engine3.build(&module, ExportFormat::Step);
+    assert_eq!(build_result.resolved_params.len(), 1);
+    assert!(build_result.resolved_params.contains_key(&thickness_id));
+}
