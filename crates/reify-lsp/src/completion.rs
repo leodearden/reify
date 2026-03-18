@@ -1,16 +1,92 @@
-use tower_lsp::lsp_types::{CompletionItem, Position, Url};
+use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position, Url};
+
+use crate::analysis::AnalysisContext;
 
 /// Compute completion items for the given position.
 ///
 /// Returns a flat list of all available completions (keywords, identifiers,
 /// types, built-in functions, structure names). Client-side filtering applies.
-pub fn compute_completions(
-    _source: &str,
-    _uri: &Url,
-    _position: Position,
-) -> Vec<CompletionItem> {
-    vec![] // TODO: implement
+pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+
+    // (a) Keywords
+    for kw in KEYWORDS {
+        items.push(CompletionItem {
+            label: kw.to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            ..Default::default()
+        });
+    }
+
+    // (b) Built-in functions
+    for func in BUILTIN_FUNCTIONS {
+        items.push(CompletionItem {
+            label: func.to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            ..Default::default()
+        });
+    }
+
+    // (c) Type names
+    for ty in TYPE_NAMES {
+        items.push(CompletionItem {
+            label: ty.to_string(),
+            kind: Some(CompletionItemKind::CLASS),
+            ..Default::default()
+        });
+    }
+
+    // Context-dependent items from the source
+    let ctx = AnalysisContext::new(source, uri);
+
+    // (d) Value cell members as variables with type detail
+    for (name, _kind, cell_type) in ctx.member_names() {
+        items.push(CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::VARIABLE),
+            detail: Some(cell_type.to_string()),
+            ..Default::default()
+        });
+    }
+
+    // (e) Structure names
+    for (name, _params, _lets, _constraints) in ctx.structure_names() {
+        items.push(CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::STRUCT),
+            ..Default::default()
+        });
+    }
+
+    items
 }
+
+/// Reify language keywords.
+const KEYWORDS: &[&str] = &[
+    "structure",
+    "param",
+    "let",
+    "constraint",
+    "sub",
+    "import",
+    "if",
+    "then",
+    "else",
+    "and",
+    "or",
+    "not",
+    "true",
+    "false",
+    "auto",
+];
+
+/// Built-in geometry and math functions.
+const BUILTIN_FUNCTIONS: &[&str] = &[
+    "box", "cylinder", "sphere", "sin", "cos", "tan", "sqrt", "abs", "min", "max",
+];
+
+/// Built-in type names.
+const TYPE_NAMES: &[&str] = &["Scalar", "Bool", "Int", "Real", "String"];
 
 #[cfg(test)]
 mod tests {
