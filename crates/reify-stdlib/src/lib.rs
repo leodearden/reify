@@ -1,11 +1,96 @@
-use reify_types::Value;
+use reify_types::{DimensionVector, Value};
 
 /// Evaluate a built-in stdlib function by name.
 ///
 /// Returns `Value::Undef` for unknown functions or wrong argument types/counts.
-pub fn eval_builtin(_name: &str, _args: &[Value]) -> Value {
-    // Stub — implementation in step-2
-    Value::Undef
+pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
+    match name {
+        // --- Single-arg numeric functions ---
+        "abs" => unary(args, |v| match v {
+            Value::Int(i) => Value::Int(i.abs()),
+            Value::Real(r) => Value::Real(r.abs()),
+            Value::Scalar { si_value, dimension } => Value::Scalar {
+                si_value: si_value.abs(),
+                dimension: *dimension,
+            },
+            _ => Value::Undef,
+        }),
+        "sqrt" => unary_f64(args, |x| Value::Real(x.sqrt())),
+        "floor" => unary_f64(args, |x| Value::Int(x.floor() as i64)),
+        "ceil" => unary_f64(args, |x| Value::Int(x.ceil() as i64)),
+        "round" => unary_f64(args, |x| Value::Int(x.round() as i64)),
+        "sign" => unary_f64(args, |x| Value::Real(x.signum())),
+        "log" => unary_f64(args, |x| Value::Real(x.ln())),
+        "log10" => unary_f64(args, |x| Value::Real(x.log10())),
+        "exp" => unary_f64(args, |x| Value::Real(x.exp())),
+
+        // --- Two-arg numeric functions ---
+        "min" => binary(args, |a, b| match (a, b) {
+            (Value::Int(x), Value::Int(y)) => Value::Int(*x.min(y)),
+            (Value::Real(x), Value::Real(y)) => Value::Real(x.min(*y)),
+            _ => {
+                match (a.as_f64(), b.as_f64()) {
+                    (Some(x), Some(y)) => Value::Real(x.min(y)),
+                    _ => Value::Undef,
+                }
+            }
+        }),
+        "max" => binary(args, |a, b| match (a, b) {
+            (Value::Int(x), Value::Int(y)) => Value::Int(*x.max(y)),
+            (Value::Real(x), Value::Real(y)) => Value::Real(x.max(*y)),
+            _ => {
+                match (a.as_f64(), b.as_f64()) {
+                    (Some(x), Some(y)) => Value::Real(x.max(y)),
+                    _ => Value::Undef,
+                }
+            }
+        }),
+        "pow" => binary_f64(args, |x, y| Value::Real(x.powf(y))),
+
+        // --- Trig functions (implemented in step-4) ---
+        "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2"
+        | "sinh" | "cosh" | "tanh" => Value::Undef, // placeholder for step-4
+
+        _ => Value::Undef,
+    }
+}
+
+/// Apply a function to a single argument (by reference, for pattern matching).
+fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    f(&args[0])
+}
+
+/// Apply a function to a single f64 argument (extracted from any numeric Value).
+fn unary_f64(args: &[Value], f: impl FnOnce(f64) -> Value) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    match args[0].as_f64() {
+        Some(x) => f(x),
+        None => Value::Undef,
+    }
+}
+
+/// Apply a function to two arguments (by reference).
+fn binary(args: &[Value], f: impl FnOnce(&Value, &Value) -> Value) -> Value {
+    if args.len() != 2 {
+        return Value::Undef;
+    }
+    f(&args[0], &args[1])
+}
+
+/// Apply a function to two f64 arguments.
+fn binary_f64(args: &[Value], f: impl FnOnce(f64, f64) -> Value) -> Value {
+    if args.len() != 2 {
+        return Value::Undef;
+    }
+    match (args[0].as_f64(), args[1].as_f64()) {
+        (Some(x), Some(y)) => f(x, y),
+        _ => Value::Undef,
+    }
 }
 
 #[cfg(test)]
