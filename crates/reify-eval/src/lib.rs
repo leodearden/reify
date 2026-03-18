@@ -1202,6 +1202,64 @@ impl Engine {
         }
     }
 
+    /// Check constraints using the current snapshot values, without re-calling eval().
+    ///
+    /// Returns `None` if no snapshot exists (i.e. eval() hasn't been called yet).
+    /// Otherwise builds a ValueMap from the snapshot, runs constraint checking,
+    /// and returns constraint results. This is the incremental companion to check():
+    /// after edit_param() updates values, call check_snapshot() to see constraint
+    /// status without destroying the incremental state.
+    pub fn check_snapshot(
+        &self,
+        module: &CompiledModule,
+    ) -> Option<CheckResult> {
+        let snapshot = self.current_snapshot.as_ref()?;
+
+        // Build ValueMap from snapshot values
+        let mut values = ValueMap::new();
+        for (id, (val, _det)) in snapshot.values.iter() {
+            values.insert(id.clone(), val.clone());
+        }
+
+        let mut constraint_results = Vec::new();
+        let mut diagnostics = Vec::new();
+
+        for template in &module.templates {
+            if template.constraints.is_empty() {
+                continue;
+            }
+
+            let constraint_pairs: Vec<_> = template
+                .constraints
+                .iter()
+                .map(|c| (c.id.clone(), &c.expr))
+                .collect();
+
+            let input = ConstraintInput {
+                constraints: constraint_pairs,
+                values: &values,
+            };
+
+            let results = self.constraint_checker.check(&input);
+
+            for (result, compiled) in results.into_iter().zip(template.constraints.iter()) {
+                diagnostics.extend(result.diagnostics.messages);
+                constraint_results.push(ConstraintCheckEntry {
+                    id: result.id,
+                    label: compiled.label.clone(),
+                    satisfaction: result.satisfaction,
+                });
+            }
+        }
+
+        Some(CheckResult {
+            values,
+            constraint_results,
+            diagnostics,
+            resolved_params: HashMap::new(),
+        })
+    }
+
     /// Evaluate and check constraints.
     pub fn check(
         &mut self,
