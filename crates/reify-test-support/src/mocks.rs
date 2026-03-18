@@ -115,14 +115,13 @@ impl SequencedMockConstraintSolver {
 impl ConstraintSolver for SequencedMockConstraintSolver {
     fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
         let mut results = self.results.lock().unwrap();
-        let result = if results.is_empty() {
+        if results.is_empty() {
             self.last.lock().unwrap().clone().expect("no results configured")
         } else {
             let r = results.remove(0);
             *self.last.lock().unwrap() = Some(r.clone());
             r
-        };
-        result
+        }
     }
 }
 
