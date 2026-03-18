@@ -174,6 +174,19 @@ impl OcctKernelHandle {
     }
 }
 
+impl Drop for OcctKernelHandle {
+    fn drop(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            // Replace tx with a dummy sender, dropping the original. This closes
+            // the channel, causing the kernel thread's recv loop to exit.
+            let (dummy_tx, _) = mpsc::channel::<OcctRequest>(1);
+            let _ = std::mem::replace(&mut self.tx, dummy_tx);
+            // Join the thread to ensure OCCT resources are freed before returning.
+            let _ = thread.join();
+        }
+    }
+}
+
 impl GeometryKernel for OcctKernelHandle {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         // Delegate to inherent method (which only needs &self).
