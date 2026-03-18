@@ -201,4 +201,70 @@ mod tests {
         // Should not panic; may or may not produce diagnostics
         let _ = diags;
     }
+
+    // --- compute_diagnostics_with_state unit tests (step-25) ---
+
+    #[test]
+    fn eval_state_new_starts_with_version_counter_zero() {
+        let state = EvalState::new();
+        assert_eq!(state.version_counter, 0);
+    }
+
+    #[test]
+    fn stateful_diagnostics_three_phase_lifecycle() {
+        let mut state = EvalState::new();
+        let uri = test_uri();
+
+        // Phase 1: valid source — no ERROR diagnostics
+        let source_valid = reify_test_support::bracket_source();
+        let result1 = compute_diagnostics_with_state(&mut state, source_valid, &uri);
+        let errors1: Vec<_> = result1
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors1.is_empty(),
+            "Phase 1: valid source should produce no errors, got: {errors1:?}"
+        );
+
+        // Phase 2: violating source — at least one constraint violation ERROR
+        let source_violating = reify_test_support::bracket_source_violating();
+        let result2 = compute_diagnostics_with_state(&mut state, &source_violating, &uri);
+        let errors2: Vec<_> = result2
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            !errors2.is_empty(),
+            "Phase 2: violating source should produce at least one ERROR"
+        );
+        let has_constraint_violation = errors2.iter().any(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("constraint") && msg.contains("violated")
+        });
+        assert!(
+            has_constraint_violation,
+            "Phase 2: should have a 'constraint violated' diagnostic, got: {errors2:?}"
+        );
+
+        // Phase 3: back to valid source — violations should clear
+        let result3 = compute_diagnostics_with_state(&mut state, source_valid, &uri);
+        let errors3: Vec<_> = result3
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors3.is_empty(),
+            "Phase 3: valid source should clear violations, got: {errors3:?}"
+        );
+
+        // Verify version_counter persistence: 3 calls = version_counter 3
+        assert_eq!(
+            state.version_counter, 3,
+            "version_counter should be 3 after three calls"
+        );
+    }
 }
