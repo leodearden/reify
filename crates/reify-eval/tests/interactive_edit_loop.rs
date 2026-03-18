@@ -4,6 +4,8 @@
 //! Uses MockConstraintChecker/MockGeometryKernel so tests run fast and in parallel.
 
 use reify_eval::Engine;
+use reify_eval::cache::NodeId;
+use reify_eval::journal::EventKind;
 use reify_test_support::{bracket_compiled_module, cnid, vcid};
 use reify_test_support::mocks::{MockConstraintChecker, MockGeometryKernel};
 use reify_constraints::SimpleConstraintChecker;
@@ -229,4 +231,56 @@ fn edit_param_then_build_snapshot_updates_geometry() {
         }
         other => panic!("expected Box op, got {:?}", other),
     }
+}
+
+#[test]
+fn journal_records_full_edit_cycle_events() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start eval
+    let _eval_result = engine.eval(&module);
+    let events_after_eval = engine.journal().all_events().len();
+
+    // Edit width: 80mm → 100mm
+    let _edit_result = engine.edit_param(vcid("Bracket", "width"), Value::length(0.1));
+    let events_after_edit = engine.journal().all_events().len();
+
+    // edit_param should have added new events
+    assert!(
+        events_after_edit > events_after_eval,
+        "edit_param should record events: after_edit={events_after_edit}, after_eval={events_after_eval}"
+    );
+
+    // Volume depends on width → should have been re-evaluated during edit_param
+    let volume_node = NodeId::Value(vcid("Bracket", "volume"));
+    let volume_events = engine.journal().events_for_node(&volume_node);
+    let volume_started = volume_events.iter()
+        .filter(|e| matches!(e.kind, EventKind::Started))
+        .count();
+    assert!(
+        volume_started >= 2,
+        "volume should have at least 2 Started events (eval + edit_param): got {volume_started}"
+    );
+
+    // Width is the changed param — it was evaluated during eval(), but NOT re-evaluated
+    // during edit_param (it's the changed cell, updated directly, not re-evaluated)
+    let width_node = NodeId::Value(vcid("Bracket", "width"));
+    let width_events = engine.journal().events_for_node(&width_node);
+    let width_started = width_events.iter()
+        .filter(|e| matches!(e.kind, EventKind::Started))
+        .count();
+    assert_eq!(
+        width_started, 1,
+        "width should have exactly 1 Started event (from eval only): got {width_started}"
+    );
+
+    // Verify incrementality: edit_param events are fewer than eval events
+    // (edit_param only evaluates dirty∩demand nodes, not all nodes)
+    let edit_events_count = events_after_edit - events_after_eval;
+    assert!(
+        edit_events_count < events_after_eval,
+        "edit_param should generate fewer events than eval: edit={edit_events_count}, eval={events_after_eval}"
+    );
 }
