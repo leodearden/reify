@@ -1,14 +1,14 @@
 {
-  "task_id": "35",
-  "title": "Reproduce and fix mixed fan-in early-cutoff invalidation",
-  "modules": ["crates/reify-eval", "crates/reify-runtime"],
-  "analysis": "## Bug Analysis\n\nThe incremental evaluation engine has two code paths for early cutoff that propagate 'unchanged' signals incorrectly in mixed fan-in graphs.\n\n### Root Cause\n\nIn `edit_param` (lib.rs:855-863), when a Value node evaluates to `Unchanged`, ALL its dependents are unconditionally added to the `skipped` set via `reverse_index.dependents_of(vcid)`. The same pattern exists in `ConcurrentEvalAdapter::evaluate` (concurrent_eval.rs:202-210). This is incorrect when a dependent reads BOTH an unchanged intermediary AND a changed param directly (mixed fan-in).\n\nExample: param `a`, let `x = if a > 0 then 1 else 1` (reads a, always produces 1), let `y = a + x` (reads both a and x). When `a` changes from 5 to 10: x is dirty, re-evaluates, produces same value → Unchanged. y is added to `skipped` because x is Unchanged. But y also reads `a` directly, and `a` changed! y should re-evaluate to 10 + 1 = 11 but incorrectly returns the stale cached value of 6.\n\n### Why eval_cached Is Correct (But edit_param Is Not)\n\nThe `eval_cached` path uses `clear_dependents_dirty(&cell.id)` which tracks per-reason dirty state. It only removes the specific unchanged cell as a dirty reason, and a node becomes clean only when ALL its reasons are resolved. The diamond_dependency_early_cutoff_correctness test in cache.rs confirms this works for eval_cached. But no equivalent test exists for `edit_param`.\n\n### Fix Strategy\n\nTrack which eval-set nodes have at least one Changed parent via a `has_changed_parent: HashSet<NodeId>`. Seed it with all dependents of the originally changed param (since the param's value was explicitly overwritten — it IS a change). When a node evaluates to Changed, add its dependents to has_changed_parent and remove from skipped. When Unchanged, only add dependents to skipped if they're NOT in has_changed_parent.\n\nFor the concurrent path, use a combined `Mutex<SkipState>` to avoid TOCTOU races between concurrent tasks at the same topological level that could otherwise interleave the has_changed_parent check and skipped insert.\n\n### Correctness Argument\n\nThe fix is correct regardless of evaluation order among same-level nodes:\n- If Changed parent processed first: dependent added to has_changed_parent, later Unchanged parent sees it there and does NOT add to skipped.\n- If Unchanged parent processed first: dependent added to skipped, but later Changed parent removes it from skipped and adds to has_changed_parent.\n- If ALL parents Unchanged: dependent stays in skipped (correct — no input changed).\n- Seeding with changed-param dependents ensures direct readers are never incorrectly skipped even if only eval-set parents are Unchanged.",
+  "task_id": "36",
+  "title": "Reproduce and fix interactive edit-loop staleness after parameter edits",
+  "modules": ["crates/reify-eval", "crates/reify-test-support", "crates/reify-runtime"],
+  "analysis": "## Gap Analysis\n\n`Engine::edit_param()` (lib.rs:749-910) has three critical gaps that make the interactive edit loop incomplete:\n\n### 1. Constraints not evaluated\nLine 891-892 explicitly says: \"Constraint/Realization nodes: tracked in eval set but not evaluated (deferred to check()/build())\". Constraint nodes ARE in the eval_set (dirty cone includes them since ReverseDependencyIndex tracks constraint→value_cell edges), but edit_param only processes `NodeId::Value` nodes. It returns `diagnostics: Vec::new()` unconditionally.\n\n### 2. Auto-resolution never re-runs\nedit_param returns `resolved_params: HashMap::new()` unconditionally. When a param change affects constraints that govern auto parameters, the solver should re-run. Currently it only runs during cold-start `eval()`. The Engine has `self.solver` and the EvaluationGraph has `ConstraintNodeData.expr` — all infrastructure exists, it's just not wired.\n\n### 3. No incremental check/build\n`check()` always cold-starts via `eval()`. There's no `edit_check()` method that performs incremental constraint checking after `edit_param()`. Similarly, `build()` cold-starts via `check()` with no incremental path.\n\n### Data availability in edit_param\nedit_param works from the snapshot's EvaluationGraph (not the CompiledModule). The graph contains:\n- `value_cells` with `kind==Auto` → identifies auto params\n- `constraints` with `expr` → constraint expressions for re-evaluation\n- Constraint expressions → via `extract_dependency_trace()` can determine which constraints reference auto params\n- ValueCellId has entity/scope → can group auto params by scope for solver\n\nEngine already holds `constraint_checker` and `solver`. CachedResult already supports `Satisfaction` and `Resolution` variants. All infrastructure exists.\n\n### Resolution node gap\n`EvaluationGraph::from_templates()` does NOT populate `graph.resolutions` (despite the field existing and deps.rs/dirty.rs/demand.rs all having code to handle them). This means resolution nodes aren't tracked in the reverse index or dirty cone during production. For this task we don't need to fix this — edit_param can detect re-resolution need by checking if auto params exist and if their governing constraints are in the dirty cone, using the same pattern as eval().\n\n### Propagation after re-resolution\nWhen the solver produces new auto param values, let bindings depending on those auto params need re-evaluation. These let bindings may NOT be in the original dirty cone (which only propagated from the changed regular param). After re-resolution, a second propagation wave is needed: compute dirty cone from changed auto params, evaluate affected let bindings.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Verify existing test suite passes before making changes (cargo test in reify-eval and reify-runtime)",
-      "status": "done",
-      "commit": "b505b94",
+      "description": "Verify existing test suite passes (cargo test in reify-eval and reify-runtime)",
+      "status": "pending",
+      "commit": null,
       "tests": []
     }
   ],
@@ -16,113 +16,171 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `mixed_fan_in_edit_param_unchanged_upstream_does_not_skip_shared_downstream` in crates/reify-eval/tests/incremental.rs. Graph: param a, let x = if a>0 then 1 else 1 (reads a, always 1), let y = a + x (reads a AND x). Cold start a=5 → x=1, y=6. Edit a to 10 → x still 1 (Unchanged), but y should re-evaluate to 10+1=11. Assert y IS in eval_set and y == 11.",
-      "status": "done",
+      "description": "Write failing test `edit_param_re_resolves_auto_params_when_constraints_dirty` in crates/reify-eval/tests/incremental.rs. Module: param `a` (default mm(3.0)), auto `x`, constraint `x > a`. MockConstraintSolver returns x=mm(5.0). Cold eval → solver resolves x to mm(5.0), resolved_params contains x. Edit `a` to mm(8.0) — constraint `x > a` is in dirty cone (depends on `a`). Assert: (1) result.resolved_params is non-empty, (2) result.resolved_params contains x with mm(5.0), (3) values[x] == mm(5.0). Currently FAILS because edit_param returns resolved_params: HashMap::new().",
+      "status": "pending",
       "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix edit_param early-cutoff in crates/reify-eval/src/lib.rs. Add `has_changed_parent: HashSet<NodeId>` seeded with `reverse_index.dependents_of(&cell)` (the changed param's direct dependents). In the eval loop: on Unchanged, only add dependents to skipped if NOT in has_changed_parent; on Changed, add dependents to has_changed_parent AND remove from skipped.",
-      "status": "done",
-      "commit": "ddb7e27"
+      "description": "Add auto-resolution re-run to edit_param(). After the value-node evaluation loop (line 893), add resolution phase: (1) Iterate graph.value_cells to find auto params grouped by scope (entity name). (2) For each scope with auto params, find constraints from graph.constraints that reference auto params (via extract_dependency_trace). (3) Check if any of those constraints are in the dirty_cone. (4) If yes, build ResolutionProblem from graph data and call self.solver.solve(). (5) On SolveResult::Solved: update values map, snapshot values (with Determined state), param_overrides, and resolved_params. (6) On Infeasible/NoProgress: add diagnostics.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test `mixed_fan_in_concurrent_unchanged_upstream_does_not_skip_shared_downstream` in crates/reify-runtime/tests/concurrent_eval.rs. Same diamond topology as step-1 but via edit_param_concurrent. Assert y is in actual_eval_set and y == 11.",
-      "status": "done",
-      "commit": "454bbeb"
+      "description": "Write failing test `edit_param_let_binding_re_evaluates_after_re_resolution` in crates/reify-eval/tests/incremental.rs. Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`, constraint `x > a`. Solver returns x=mm(5.0). Cold eval → y = mm(5.0)*2 = 0.01 SI. Edit `a` to mm(8.0) → solver re-resolves x (still mm(5.0) from fixed mock). Assert y is re-evaluated to 0.01 SI (confirming let binding was re-run with resolved auto param, not stale Undef). To make this test more discriminating, use a solver that returns a different value: create a second variant where solver returns x=mm(10.0). Cold eval x=mm(10.0), y=0.02. Edit a → re-resolve → y should still be 0.02. Currently FAILS because let bindings depending on auto params are not re-evaluated after re-resolution in edit_param.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix ConcurrentEvalAdapter in crates/reify-runtime/src/concurrent_eval.rs. Replace `skipped: Arc<RwLock<HashSet<NodeId>>>` with `skip_state: Arc<Mutex<SkipState>>` where `SkipState { skipped: HashSet<NodeId>, has_changed_parent: HashSet<NodeId> }`. In from_setup(), seed has_changed_parent from setup.changed_cells + setup.reverse_index. In evaluate(), acquire Mutex for atomic skip logic: Unchanged → add to skipped only if not in has_changed_parent; Changed → add to has_changed_parent + remove from skipped. Update is_dirty(), skipped(), build_result_shared(), and into_result() to use skip_state.",
-      "status": "done",
-      "commit": "fd478a0"
+      "description": "After solver re-resolution in edit_param(), propagate auto param changes: (1) Compute a second dirty cone from the set of re-resolved auto param IDs using the reverse_index. (2) Compute eval set for this second cone (intersect with demand, topologically sort). (3) Evaluate value nodes in this second eval set with updated values (including resolved auto params). (4) Update snapshot values and cache entries for these re-evaluated nodes.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `triple_fan_in_mixed_changed_unchanged_edit_param` in crates/reify-eval/tests/incremental.rs. Graph: param a, let x = if a>0 then 1 else 1 (unchanged), let z = if a>0 then 2 else 2 (unchanged), let y = a + x + z (reads a, x, z). Edit a from 5 to 10 → x=1, z=2 (both Unchanged), but y must re-evaluate to 10+1+2=13. Verify y IS in eval_set.",
-      "status": "done",
-      "commit": "671f2d9"
+      "description": "Write failing test `edit_param_solver_diagnostics_propagated` in crates/reify-eval/tests/incremental.rs. Module: param `a` (default mm(1.0)), auto `x`, constraint `x > a`. MockConstraintSolver returns Infeasible with diagnostic 'constraints are infeasible'. Cold eval → diagnostics from solver. Edit `a` to mm(5.0) (constraint still in dirty cone). Assert result.diagnostics is non-empty and contains 'infeasible'. Currently FAILS because edit_param returns diagnostics: Vec::new().",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write test `freshness_all_final_after_mixed_fan_in_edit_param` in crates/reify-eval/tests/incremental.rs. Same diamond graph as step-1. After edit_param, assert ALL nodes (a, x, y) have Freshness::Final — no node left in Pending state.",
-      "status": "done",
-      "commit": "d366e0b"
+      "type": "impl",
+      "description": "Ensure solver diagnostic propagation works in edit_param. This should already be handled by step-2's implementation (Infeasible/NoProgress branches add diagnostics). If step-5 still fails, wire up the diagnostic collection from the resolution phase.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `linear_chain_early_cutoff_still_skips_after_fix` in crates/reify-eval/tests/incremental.rs. Regression guard: linear chain a → x = a-a → y = x+1. Edit a → x Unchanged → y correctly skipped. Confirms the fix didn't break the valid early-cutoff case. (Should pass immediately after step-2 fix.)",
-      "status": "done",
-      "commit": "379319e"
+      "description": "Write failing test `edit_check_returns_incremental_constraint_satisfaction` in crates/reify-eval/tests/incremental.rs. Uses SimpleConstraintChecker (real checker). Module: param `width` (default mm(10.0)), constraint `width > mm(5.0)`. Cold check() → Satisfied. Call new method edit_check(width_id, mm(2.0)). Assert: (1) CheckResult.constraint_results[0].satisfaction == Violated, (2) values[width] == mm(2.0). Currently FAILS because edit_check() doesn't exist.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-8",
+      "type": "impl",
+      "description": "Add `edit_check(&mut self, cell: ValueCellId, new_value: Value) -> CheckResult` method to Engine. Implementation: (1) Call edit_param(cell, new_value) to get updated EvalResult. (2) Evaluate ALL constraint nodes in the graph (not just dirty ones) against updated values using self.constraint_checker, mirroring the check() pattern but using graph.constraints instead of module.templates.constraints. (3) Combine into CheckResult with constraint_results, merged diagnostics, resolved_params.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-9",
       "type": "test",
-      "description": "Write test `concurrent_triple_fan_in_mixed_early_cutoff` in crates/reify-runtime/tests/concurrent_eval.rs. Same triple fan-in as step-5 but via concurrent path. Verify y is in actual_eval_set and y == 13. Regression guard for concurrent early-cutoff fix.",
-      "status": "done",
-      "commit": "aa9bcef"
+      "description": "Write test `edit_check_constraint_transitions_satisfied_to_violated_and_back` in crates/reify-eval/tests/incremental.rs. Uses SimpleConstraintChecker. Module: param `width` (default mm(10.0)), constraint `width > mm(5.0)`. Cold check → Satisfied. edit_check(width, mm(2.0)) → Violated. edit_check(width, mm(8.0)) → Satisfied again. Assert correct satisfaction at each step. Verifies the edit loop handles multiple consecutive edits correctly.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Write test `edit_param_no_re_resolution_when_auto_constraints_not_dirty` in crates/reify-eval/tests/incremental.rs. Regression guard. Module: param `a` (default mm(1.0)), param `b` (default mm(2.0)), auto `x`, let `y = b * 2.0`, constraint `x > a`. Solver returns x=mm(5.0). Cold eval → x resolved. Edit `b` to mm(3.0) — constraint `x > a` is NOT in dirty cone (doesn't depend on `b`). Assert: (1) result.resolved_params is empty (solver not re-run), (2) y = mm(3.0) * 2.0 = 0.006 SI (re-evaluated), (3) x remains mm(5.0) in values. Confirms solver is only called when governing constraints are actually dirty.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write test `edit_param_snapshot_updated_after_re_resolution` in crates/reify-eval/tests/incremental.rs. Module: param `a`, auto `x`, let `y = x * 2.0`, constraint `x > a`. Solver returns x=mm(5.0). Cold eval. Edit `a`. Assert: (1) snapshot exists, (2) snapshot.values contains x with resolved value (not Undef), (3) snapshot.values contains y with re-evaluated value, (4) snapshot provenance is Edit (not Initial).",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Write test `edit_param_concurrent_re_resolves_auto_params` in crates/reify-runtime/tests/concurrent_eval.rs. Same module as step-1 but via edit_param_concurrent. Cold eval, then concurrent edit of param `a`. Assert resolved values are correct in the ConcurrentEditResult. This may require extending prepare_concurrent_edit/apply_concurrent_edit to handle resolution, or extending edit_param_concurrent to include a resolution phase.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-13",
+      "type": "impl",
+      "description": "Extend the concurrent edit path to support re-resolution. Options: (1) Run resolution as a post-processing step in edit_param_concurrent after ConcurrentScheduler completes but before apply_concurrent_edit, or (2) add resolution handling inside apply_concurrent_edit. The sequential solver call is acceptable since NLopt is single-threaded. Update apply_concurrent_edit to propagate resolved values and re-evaluate affected let bindings.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use has_changed_parent set seeded from changed param's dependents rather than per-node dirty-reason tracking",
-      "rationale": "The eval_cached path already uses per-reason dirty tracking (invalidate_dependents + clear_dependents_dirty). Porting that approach to edit_param would require significant restructuring. The has_changed_parent approach achieves the same correctness with minimal code change: seed with reverse_index.dependents_of(changed_cell), then propagate Changed signals forward through the eval loop. This is O(E) where E = edges in eval subgraph."
+      "decision": "Re-resolution in edit_param uses same pattern as eval() — iterate graph.value_cells/constraints to find auto params and governing constraints rather than relying on graph.resolutions",
+      "rationale": "EvaluationGraph.from_templates() does not populate the resolutions map in production. Rather than fixing that (which would be a prerequisite and scope expansion), we replicate the eval() pattern: find Auto cells by kind, find constraints referencing them via extract_dependency_trace, group by scope. This is self-contained within edit_param and doesn't require graph schema changes."
     },
     {
-      "decision": "Use Mutex<SkipState> instead of two separate RwLocks for concurrent path",
-      "rationale": "Two concurrent tasks at the same topological level could race: task X (Unchanged) reads has_changed_parent (Y absent), then task A (Changed) writes has_changed_parent (Y present) + removes Y from skipped, then task X writes Y to skipped. Result: Y incorrectly skipped. A single Mutex wrapping both HashSets makes the check-and-modify atomic. The lock is held only for HashSet operations (microseconds), so contention is negligible."
+      "decision": "Two-wave propagation after re-resolution: first dirty cone from edited param, then second dirty cone from re-resolved auto params",
+      "rationale": "Let bindings depending on auto params may not be in the original dirty cone (the changed regular param may not be an ancestor of those let bindings). After the solver updates auto param values, we need a second propagation pass to update their dependents. This is conceptually a second edit_param for the auto params, but we inline it for efficiency."
     },
     {
-      "decision": "Seed has_changed_parent from the original changed param, not just from eval-set parents",
-      "rationale": "The changed param is NOT in the eval_set (it's the edit target, not a downstream node). But dependents that read it directly have a genuine 'changed input'. Without seeding, a dependent reading both the changed param and an Unchanged intermediary would be incorrectly skipped because its only eval-set parent (the intermediary) was Unchanged. Seeding ensures direct readers are never skipped."
+      "decision": "edit_check() evaluates ALL constraints (not just dirty ones) to produce complete CheckResult",
+      "rationale": "Constraint satisfaction for non-dirty constraints doesn't change, but the caller expects a complete picture. Re-evaluating all constraints is cheap (expression evaluation is microseconds) and avoids complex caching of per-constraint satisfaction state. This mirrors how check() evaluates all constraints after eval()."
     },
     {
-      "decision": "Changed nodes propagate to has_changed_parent (not just the seed)",
-      "rationale": "For multi-hop chains like a → b → c → d where b changes, c and d should not be skipped. When b evaluates to Changed, c is added to has_changed_parent. When c evaluates (possibly to Changed), d is added. This propagation handles arbitrarily deep graphs correctly."
+      "decision": "edit_param() handles resolution and diagnostics; edit_check() adds constraint satisfaction",
+      "rationale": "This mirrors the eval()/check() separation: eval() runs the solver and reports solver diagnostics, check() adds constraint satisfaction results. edit_param() fills in the EvalResult fields that eval() already fills (resolved_params, diagnostics). edit_check() wraps edit_param() and adds constraint_results, returning CheckResult."
+    },
+    {
+      "decision": "MockConstraintSolver with fixed results is sufficient for testing the pipeline wiring",
+      "rationale": "The tests verify that the solver IS called during edit_param (resolved_params non-empty) and that its results are propagated (auto param values and dependent let bindings updated). Solver correctness is tested separately in reify-constraints. The fixed mock proves the pipeline is complete without needing a stateful solver."
+    },
+    {
+      "decision": "Concurrent resolution runs solver synchronously after ConcurrentScheduler completes, before apply_concurrent_edit",
+      "rationale": "NLopt (the production solver) is single-threaded. Running the solver as a post-processing step after concurrent value evaluation is architecturally clean: the concurrent scheduler handles parallelizable value evaluation, then the solver runs sequentially with all values finalized. This avoids mixing async and sync concerns."
     }
   ],
   "reuse": [
     {
-      "what": "TopologyTemplateBuilder + CompiledModuleBuilder from reify-test-support",
+      "what": "TopologyTemplateBuilder + CompiledModuleBuilder + expression helpers",
       "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Construct diamond/fan-in test graphs with .param(), .let_binding(), expression builders (binop, value_ref_typed, literal, gt, conditional)"
+      "how": "Build test modules with .param(), .auto_param(), .let_binding(), .constraint() and expression builders (binop, value_ref, literal, gt, lt). Exact same pattern used in resolution.rs tests."
     },
     {
-      "what": "MockConstraintChecker from reify-test-support",
+      "what": "MockConstraintChecker and MockConstraintSolver",
       "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "No-op constraint checker for Engine construction in tests"
+      "how": "MockConstraintChecker for Engine construction, MockConstraintSolver::new_solved/new_infeasible for solver result injection. Used throughout resolution.rs tests."
     },
     {
-      "what": "Existing conditional expression pattern from diamond_dependency_early_cutoff_correctness",
-      "where": "crates/reify-eval/src/cache.rs:1216-1231",
-      "how": "Reuse the `if a > 0 then 1 else 1` pattern (CompiledExprKind::Conditional with both branches returning same literal) as the 'always unchanged' expression for test nodes"
+      "what": "SimpleConstraintChecker (real checker)",
+      "where": "crates/reify-constraints/src/lib.rs",
+      "how": "For edit_check tests that need actual constraint evaluation (not mock results). Already used in resolution.rs::check_reports_satisfied_after_resolution."
     },
     {
-      "what": "ConcurrentEditSetup.changed_cells field",
-      "where": "crates/reify-eval/src/lib.rs:132",
-      "how": "Already contains the changed ValueCellIds — use to seed has_changed_parent in ConcurrentEvalAdapter::from_setup()"
+      "what": "mm() value helper",
+      "where": "crates/reify-test-support/src/values.rs",
+      "how": "Create length values in millimeters (converted to SI internally). mm(5.0) = 0.005 SI."
     },
     {
-      "what": "edit_param_concurrent helper function",
-      "where": "crates/reify-runtime/src/concurrent_eval.rs:239",
-      "how": "Reuse in concurrent tests — handles prepare/execute/apply lifecycle"
+      "what": "extract_dependency_trace() for identifying constraint→auto_param relationships",
+      "where": "crates/reify-eval/src/deps.rs:13",
+      "how": "In the edit_param resolution phase, extract dependency traces from constraint expressions to determine if they reference auto params. Same pattern used in eval()'s resolution phase (lib.rs:583-584)."
     },
     {
-      "what": "CancellationToken::new() for concurrent test setup",
-      "where": "crates/reify-runtime/src/concurrent.rs",
-      "how": "Create non-cancelled token for normal concurrent test execution"
+      "what": "compute_dirty_cone() for second propagation wave",
+      "where": "crates/reify-eval/src/dirty.rs:22",
+      "how": "After re-resolution, compute a second dirty cone from the set of re-resolved auto param ValueCellIds to find let bindings that need re-evaluation."
     },
     {
-      "what": "ReverseDependencyIndex.dependents_of()",
-      "where": "crates/reify-eval/src/deps.rs:87",
-      "how": "Use in the fix to seed has_changed_parent from the changed param's direct dependents"
+      "what": "compute_eval_set() for topological ordering of second wave",
+      "where": "crates/reify-eval/src/dirty.rs",
+      "how": "Topologically sort the second-wave dirty∩demand nodes for correct evaluation order."
+    },
+    {
+      "what": "edit_param_concurrent() helper function",
+      "where": "crates/reify-runtime/src/concurrent_eval.rs",
+      "how": "For the concurrent resolution test (step-12), reuse the existing async wrapper that handles prepare/execute/apply lifecycle."
+    },
+    {
+      "what": "EvalResult, CheckResult, ConstraintCheckEntry types",
+      "where": "crates/reify-eval/src/lib.rs:68-90",
+      "how": "edit_param returns EvalResult (existing), edit_check returns CheckResult (existing type). No new result types needed."
+    },
+    {
+      "what": "Existing incremental_fast_path_works_after_resolution test pattern",
+      "where": "crates/reify-eval/tests/resolution.rs:478",
+      "how": "This test demonstrates the pattern: cold eval with solver, then edit_param. It verifies let bindings and cache state. Our tests extend this pattern to verify that edit_param itself runs re-resolution (which this test doesn't check — it edits a param that doesn't affect auto constraints)."
     }
   ]
 }
