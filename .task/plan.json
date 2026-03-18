@@ -2,13 +2,20 @@
   "task_id": "26",
   "title": "OCCT dedicated kernel thread",
   "modules": ["crates/reify-kernel-occt", "crates/reify-eval", "crates/reify-cli"],
-  "analysis": "OcctKernel (lib.rs:22-31) has an unsound `unsafe impl Send + Sync` that works only because nothing currently shares the kernel across threads. OCCT uses process-global state (memory allocators, shape naming tables, Standard_Failure exception state, STEP writer state) making concurrent access UB. M4's concurrent evaluation will spawn multiple async tasks that could access the kernel simultaneously.\n\nThe fix is a dedicated-thread actor pattern. OcctKernelHandle holds a tokio::sync::mpsc::Sender<OcctRequest> to communicate with a std::thread that owns the real OcctKernel. Each GeometryKernel method sends a request with a oneshot reply channel and awaits the response via blocking_recv. OcctKernelHandle is naturally Send+Sync (Sender<T> is Send+Sync when T: Send).\n\nKey complications: (1) export() takes `&mut dyn Write` which is !Send — the kernel thread exports to Vec<u8>, sends bytes back, handle writes to caller's writer. (2) After removing unsafe impls, OcctKernel can't satisfy GeometryKernel's Send+Sync supertraits (cxx::UniquePtr<OcctShape> is !Send), so method bodies become inherent methods. (3) Three external call sites (cli/main.rs:134, e2e_bracket.rs:42, boundary4_geometry.rs occt_tests with 9 instances) must migrate to OcctKernelHandle.\n\nThe implementation uses std::thread::spawn (not tokio::spawn) because OCCT operations are blocking CPU-bound FFI calls that would starve the tokio runtime. Channel shutdown is signaled by dropping the Sender (idiomatic Rust — no explicit Shutdown variant needed). All existing OcctKernel method bodies are preserved verbatim as inherent methods.\n\nAll types crossing the channel (GeometryOp, GeometryQuery, GeometryHandle, Value, Mesh, all error types) are already Send. GeometryOp and GeometryQuery are Clone (needed for channel send). tokio is already a workspace dep with the 'sync' feature providing mpsc and oneshot channels.",
+  "analysis": "OcctKernel (lib.rs:22-31) has an unsound `unsafe impl Send + Sync` that works only because nothing currently shares the kernel across threads. OCCT uses process-global state (memory allocators, shape naming tables, Standard_Failure exception state, STEP writer state) making concurrent access UB. M4's concurrent evaluation will spawn multiple async tasks that could access the kernel simultaneously.\n\nThe fix is a dedicated-thread actor pattern. OcctKernelHandle holds a tokio::sync::mpsc::Sender<OcctRequest> to communicate with a std::thread that owns the real OcctKernel. Each GeometryKernel method sends a request with a oneshot reply channel and awaits the response via blocking_recv. OcctKernelHandle is naturally Send+Sync (Sender<T> is Send+Sync when T: Send).\n\nKey complications: (1) export() takes `&mut dyn Write` which is !Send — the kernel thread exports to Vec<u8>, sends bytes back, handle writes to caller's writer. (2) After removing unsafe impls, OcctKernel can't satisfy GeometryKernel's Send+Sync supertraits (cxx::UniquePtr<OcctShape> is !Send), so method bodies become inherent methods. (3) Three external call sites (cli/main.rs:134, e2e_bracket.rs:42, boundary4_geometry.rs occt_tests with 9 instances) must migrate to OcctKernelHandle.\n\nThe implementation uses std::thread::spawn (not tokio::spawn) because OCCT operations are blocking CPU-bound FFI calls that would starve the tokio runtime. Channel shutdown is signaled by dropping the Sender (idiomatic Rust — no explicit Shutdown variant needed). All existing OcctKernel method bodies are preserved verbatim as inherent methods.\n\nAll types crossing the channel (GeometryOp, GeometryQuery, GeometryHandle, Value, Mesh, all error types) are already Send. GeometryOp and GeometryQuery are Clone (needed for channel send). tokio is already a workspace dep with the 'sync' feature providing mpsc and oneshot channels.\n\n--- POST-REVIEW ADDITIONS ---\n\nReview identified two blocking robustness issues:\n\n(1) async_context_panic: All four dispatch methods (execute, query, export, tessellate) use tokio::sync::mpsc::Sender::blocking_send and tokio::sync::oneshot::Receiver::blocking_recv, both of which panic unconditionally when called from within an async execution context. M4's concurrent evaluation will spawn async tasks via ConcurrentScheduler (reify-runtime/src/concurrent.rs) that use tokio::spawn — any call to the sync GeometryKernel methods from these tasks panics at runtime with no compile-time warning.\n\nFix: Add async companion methods (execute_async, query_async, export_async, tessellate_async) that use tx.send().await + reply_rx.await. These are safe to call from any async context. The sync methods remain for non-async callers but get prominent # Panics documentation. The async methods are inherent on OcctKernelHandle (not on the GeometryKernel trait, which is sync-only). export_async returns Result<Vec<u8>, ExportError> instead of taking &mut dyn Write, because writer references cannot be held across await points and would make the future !Send.\n\n(2) blocking_in_async_drop: Drop::drop calls thread.join(), which blocks the calling thread. If OcctKernelHandle is dropped inside an async task (guaranteed in M4 during cancellation or engine teardown), this blocks a tokio worker thread for the duration of whatever OCCT operation is in flight — a well-known deadlock/starvation vector.\n\nFix: In Drop, check tokio::runtime::Handle::try_current(). If inside async context, drop the sender (closing the channel so the kernel thread exits naturally) but do NOT join — detach the thread instead. If outside async context, preserve existing behavior (drop sender, then join). Additionally, provide pub async fn shutdown(self) that drops the sender then uses tokio::task::spawn_blocking to join the thread, giving async callers an explicit clean-shutdown path. Requires adding 'rt' feature to tokio dep for Handle::try_current().",
   "prerequisites": [
     {
       "id": "pre-1",
       "description": "Add tokio = { workspace = true } dependency to crates/reify-kernel-occt/Cargo.toml. Tokio is already a workspace dep with 'sync' feature (Cargo.toml:43) which provides mpsc and oneshot channels.",
       "status": "done",
       "commit": "4051883",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Ensure tokio dependency in crates/reify-kernel-occt/Cargo.toml includes the 'rt' feature (needed for tokio::runtime::Handle::try_current() in the async-safe Drop). Also ensure 'macros' and 'rt-multi-thread' are available as dev-dependencies for #[tokio::test]. If the workspace dep already includes these features, no change needed; otherwise add features = [\"rt\"] to the dependency specification.",
+      "status": "done",
+      "commit": "no-op",
       "tests": []
     }
   ],
@@ -152,6 +159,34 @@
       "description": "Final cleanup: add module-level documentation to handle.rs explaining the dedicated-thread pattern and why it's needed. Export OcctKernelHandle prominently from lib.rs. Add doc comment to OcctKernel noting it is !Send+!Sync and should be used via OcctKernelHandle for cross-thread scenarios. Run full test suite to verify no regressions.",
       "status": "done",
       "commit": "a50b1f9"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "[async_context_panic fix] Write #[tokio::test] tests for all four async companion methods on OcctKernelHandle. (1) execute_async: create a box, verify GeometryHandle has id=GeometryHandleId(1) and repr=Solid — confirms execute works from within async context without panic. (2) query_async: create box, query Volume, verify Value::Real with correct volume (~6000); also test query on invalid handle returns QueryError::InvalidHandle. (3) export_async: create box, call export_async (returns Result<Vec<u8>, ExportError>), verify returned bytes contain ISO-10303-21 header; test export of invalid handle returns ExportError::InvalidHandle. (4) tessellate_async: create box, tessellate, verify mesh has vertices (non-empty), indices (non-empty, divisible by 3), and normals. (5) async_multi_op_sequence: full pipeline via async methods — create box, cylinder, union, fillet via execute_async, query volume via query_async, tessellate via tessellate_async, export via export_async. All tests run inside #[tokio::test] proving the async methods are safe in async context.",
+      "status": "done",
+      "commit": "1ff64ee"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "[async_context_panic fix] Implement four async companion methods on OcctKernelHandle. (1) pub async fn execute_async(&self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError>: clones op, creates oneshot, uses self.tx.send().await + reply_rx.await. (2) pub async fn query_async(&self, query: &GeometryQuery) -> Result<Value, QueryError>: clones query, same pattern. (3) pub async fn export_async(&self, handle: GeometryHandleId, format: ExportFormat) -> Result<Vec<u8>, ExportError>: returns Vec<u8> directly (no &mut dyn Write — writer references cannot be held across await points and would make the future !Send). (4) pub async fn tessellate_async(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError>: handle and tolerance are Copy, straightforward. All channel errors map to domain errors with 'kernel thread died' message, matching the sync methods. Add # Panics doc section on each of the four sync methods (execute, query, export, tessellate) stating: 'Panics if called from within a tokio async execution context. Use the _async variant instead.' Addresses reviewer issue async_context_panic.",
+      "status": "done",
+      "commit": "6851b03"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "[blocking_in_async_drop fix] Write #[tokio::test] test that creates OcctKernelHandle, runs an async op (execute_async), then drops the handle inside the async context — must complete without blocking the tokio worker thread or panicking. Write #[tokio::test] test for pub async fn shutdown(self): create handle, execute_async an op, call handle.shutdown().await, verify it completes cleanly and the kernel thread has exited (subsequent spawn creates a fresh kernel). Write #[test] (non-async) verifying the sync Drop path still joins the thread (existing behavior preserved): create handle, execute op, drop, no panic.",
+      "status": "done",
+      "commit": "6ce0bdb"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "[blocking_in_async_drop fix] Modify Drop::drop to be async-context-safe. Use tokio::runtime::Handle::try_current() to detect if running inside an async executor. If inside async context: drop the sender (replace with dummy to close channel, signaling kernel thread to exit via recv returning None) but do NOT call thread.join() — the thread is detached and will exit naturally when its recv loop sees the closed channel. If outside async context: preserve existing behavior (drop sender, then join thread for deterministic cleanup). Add pub async fn shutdown(self) method: explicitly drops the sender, then calls tokio::task::spawn_blocking(move || thread.join()) to await thread exit without blocking the async worker. This gives async callers an explicit clean-shutdown path when they need deterministic resource cleanup. Document the async drop behavior in the struct-level doc comment. Addresses reviewer issue blocking_in_async_drop.",
+      "status": "done",
+      "commit": "f1fc3bf"
     }
   ],
   "design_decisions": [
@@ -186,13 +221,25 @@
     {
       "decision": "Migrate external call sites (boundary4, e2e_bracket, CLI) to OcctKernelHandle",
       "rationale": "Since OcctKernel no longer implements GeometryKernel (missing Send+Sync bounds), it can't be passed as Box<dyn GeometryKernel> to Engine. All external sites that create OcctKernel for use with Engine must switch to OcctKernelHandle::spawn(). This is a mechanical change: replace `OcctKernel::new()` with `OcctKernelHandle::spawn()`."
+    },
+    {
+      "decision": "Async companion methods are inherent on OcctKernelHandle, not on the GeometryKernel trait",
+      "rationale": "The GeometryKernel trait is synchronous (fn, not async fn) and used across the codebase. Adding async methods would require modifying the trait in reify-types, affecting all consumers. Instead, the async methods (execute_async, query_async, export_async, tessellate_async) are inherent methods on OcctKernelHandle. M4's async tasks will call these directly on OcctKernelHandle (via Arc or reference) rather than through Box<dyn GeometryKernel>. A future AsyncGeometryKernel trait could be added if needed."
+    },
+    {
+      "decision": "export_async returns Result<Vec<u8>, ExportError> instead of taking &mut dyn Write",
+      "rationale": "In async context, &mut dyn Write cannot be held across await points (it is not necessarily Send, making the future !Send and incompatible with tokio::spawn). The sync export already gets Vec<u8> from the kernel thread internally then writes to the caller's writer. The async version simply returns the Vec<u8> directly — callers write the bytes themselves after awaiting. This keeps the future Send and is a cleaner API for async callers."
+    },
+    {
+      "decision": "Drop detects async context via Handle::try_current() and detaches thread instead of joining",
+      "rationale": "thread.join() in Drop blocks the calling thread. If dropped inside an async task (M4 cancellation, engine teardown), this blocks a tokio worker thread — a deadlock/starvation vector. When Handle::try_current() succeeds (async context), Drop drops the sender (closing the channel so the kernel thread exits naturally via recv returning None) but detaches the thread instead of joining. The thread is guaranteed to exit because its recv loop will see the closed channel. OCCT resources are still freed — just asynchronously when the thread exits. For callers needing deterministic cleanup from async code, shutdown() is provided."
     }
   ],
   "reuse": [
     {
       "what": "tokio::sync::mpsc and tokio::sync::oneshot channels",
       "where": "Workspace dependency (Cargo.toml:43), already used in crates/reify-runtime for concurrent scheduling",
-      "how": "Add `tokio = { workspace = true }` to reify-kernel-occt/Cargo.toml. Use mpsc::channel(32) for request stream, oneshot::channel() for per-request replies. Use blocking_send/blocking_recv for sync GeometryKernel trait methods."
+      "how": "Add `tokio = { workspace = true }` to reify-kernel-occt/Cargo.toml. Use mpsc::channel(32) for request stream, oneshot::channel() for per-request replies. Use blocking_send/blocking_recv for sync GeometryKernel trait methods. Use send().await/recv().await for async companion methods."
     },
     {
       "what": "GeometryKernel trait definition and all error types",
@@ -213,6 +260,11 @@
       "what": "Test patterns from boundary4_geometry.rs and reify-geometry tests",
       "where": "crates/reify-eval/tests/boundary4_geometry.rs, crates/reify-geometry/src/lib.rs tests",
       "how": "Follow same structure: create kernel handle, execute ops, verify handles/results, test error paths. The OcctKernelHandle tests mirror these patterns through the channel layer."
+    },
+    {
+      "what": "tokio::runtime::Handle::try_current() for async context detection",
+      "where": "tokio crate ('rt' feature), standard pattern documented in tokio docs",
+      "how": "In Drop::drop, call Handle::try_current(). Ok(_) means we're inside an async executor — must not block. Err(_) means sync context — safe to join. This is the idiomatic tokio pattern for runtime-aware Drop implementations."
     }
   ]
 }
