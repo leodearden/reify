@@ -1,28 +1,21 @@
 {
-  "task_id": "32",
-  "title": "LSP server — core infrastructure",
-  "modules": ["crates/reify-lsp", "crates/reify-cli", "Cargo.toml"],
-  "analysis": "The reify-lsp crate is currently a stub containing only a comment. Task 32 requires building core LSP infrastructure: initialization, document sync (didOpen/didChange/didClose), and diagnostics publishing. The architecture doc (section 3.9) mandates tower-lsp. The existing pipeline is: source → reify_syntax::parse() → reify_compiler::compile() → reify_eval::Engine::check(). Diagnostics come from three layers: ParseError (with SourceSpan), compiler Diagnostic (with DiagnosticLabel/SourceSpan), and eval CheckResult diagnostics. All use byte-offset SourceSpan which must be converted to LSP line/column Positions. The Engine is not Send (holds Box<dyn ConstraintChecker> etc.), so it must be managed behind a tokio Mutex or on a dedicated task. For initial LSP, we only need check (no geometry kernel), so Engine::new(checker, None) suffices. The CLI already has check/build commands and needs a new 'lsp' subcommand that starts the server on stdio. Key integration points: reify-test-support provides bracket_source(), MockConstraintChecker for testing the pipeline without real geometry.\n\nPOST-REVIEW UPDATE: Reviewer identified a blocking panic in offset_to_position when byte offsets land mid-character in multi-byte UTF-8 sequences. Tree-sitter error-recovery spans routinely produce such offsets. Steps 21-22 added to fix this with TDD.",
+  "task_id": "31",
+  "title": "Commitment policy + priority promotion",
+  "modules": ["crates/reify-runtime"],
+  "analysis": "This task implements two distinct but related features for the M4 'Living Design' milestone:\n\n1. **Commitment Policy**: Controls when speculative/intermediate evaluation results become 'committed' (run to completion regardless of subsequent edits). Per the architecture docs (§7.3), this is a dual-threshold system: `always_commit_after` (default 120s) commits unconditionally after elapsed time, and `commit_when_proportion_done` (default 0.5) commits based on estimated progress. Per-node overrides allow: 'commit if slow' (default), 'always cancel when stale', and 'only run on final inputs'. The commitment policy checker takes a running task's metadata (elapsed time, estimated progress, per-node override) and returns a CommitmentDecision (NotYet, Committed, NeverCommit).\n\n2. **Priority Promotion**: When a higher-priority task (e.g. P1-slow demanded node) depends on a lower-priority in-flight task (e.g. P3 speculative), the lower-priority task should be promoted. Per the design (§8.2), 'if a P1-slow task depends on a P3 task already in-flight, the P3 task is promoted to P1-slow.'\n\nBoth features are purely within reify-runtime. The commitment policy is a data structure + decision function. Priority promotion is a registry/tracker that maps running tasks to their current effective priority and supports promote operations.\n\nExisting code provides: Priority enum (4 levels with Ord), Task struct, ConcurrentScheduler, CancellationToken, WarmStatePool, ConcurrentEvalAdapter, event journal (in reify-eval). The new code introduces CommitmentPolicy config, CommitmentStatus tracking per-task, a check_commitment() decision function, and a PriorityPromoter that tracks effective priorities and promotes dependencies.\n\nKey design constraints:\n- Commitment policy is project-level configuration with per-node overrides (not hardcoded)\n- Progress estimation uses reported progress or elapsed/previous_runtime fallback\n- Committed tasks in dirty cone run to completion; uncommitted ones cancel\n- No parallel evaluations of same node\n- Priority promotion is transitive through dependency chains",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add tower-lsp and serde_json workspace dependencies to root Cargo.toml. Add tower-lsp = { version = \"0.20\", features = [\"proposed\"] } and serde_json = \"1\" to [workspace.dependencies].",
+      "description": "Create commitment.rs module file and register in lib.rs",
       "status": "done",
-      "commit": "a4276b7",
+      "commit": "57029dd",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Update crates/reify-lsp/Cargo.toml: add dependencies on reify-types, reify-syntax, reify-compiler, reify-eval, reify-constraints (for SimpleConstraintChecker), tower-lsp, tokio, serde_json. Add [dev-dependencies] on reify-test-support.",
+      "description": "Create priority_promotion.rs module file and register in lib.rs",
       "status": "done",
-      "commit": "f668949",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Update crates/reify-cli/Cargo.toml: add dependencies on reify-lsp and tokio (for async main in lsp subcommand).",
-      "status": "done",
-      "commit": "3a0ccb1",
+      "commit": "57029dd",
       "tests": []
     }
   ],
@@ -30,242 +23,204 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for byte-offset SourceSpan → LSP Position conversion. Test cases: (1) offset 0 in empty string → Position(0,0), (2) offset within first line → correct column, (3) offset on second line → line 1 with correct column, (4) offset at newline character, (5) multi-line source with bracket_source() fixture verifying known span positions. Place tests in crates/reify-lsp/src/convert.rs as #[cfg(test)] mod tests.",
+      "description": "Write tests for CommitmentPolicy struct with default thresholds: always_commit_after=120s, commit_when_proportion_done=0.5. Test Default impl, custom construction, and field access.",
       "status": "done",
-      "commit": "91dbd88"
+      "commit": "9b70c20"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement convert module: fn offset_to_position(source: &str, offset: u32) -> lsp_types::Position and fn span_to_range(source: &str, span: SourceSpan) -> lsp_types::Range. Iterate source bytes counting newlines to derive line/character. Handle UTF-16 offset encoding per LSP spec (tower-lsp default).",
+      "description": "Implement CommitmentPolicy struct with always_commit_after (Duration), commit_when_proportion_done (f64), Default trait impl, and builder/constructor methods.",
       "status": "done",
-      "commit": "8d0480f"
+      "commit": "95d2802"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for Reify Diagnostic → LSP Diagnostic conversion. Test cases: (1) Severity::Error → DiagnosticSeverity::ERROR, (2) Severity::Warning → WARNING, (3) Severity::Info → INFORMATION, (4) Diagnostic with no labels → range at (0,0), (5) Diagnostic with one label → range from label's span, (6) Diagnostic with multiple labels → primary span from first label, related info from rest. Use a sample source string for position resolution.",
+      "description": "Write tests for NodeCommitmentOverride enum with three variants: CommitIfSlow (default dual-threshold), AlwaysCancelWhenStale (never commit), OnlyRunOnFinalInputs (skip intermediate inputs). Test Default is CommitIfSlow.",
       "status": "done",
-      "commit": "ceaa1f4"
+      "commit": "9d83375"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement fn convert_diagnostic(diag: &reify_types::Diagnostic, source: &str, uri: &lsp_types::Url) -> lsp_types::Diagnostic. Maps severity, extracts range from first label span, converts remaining labels to DiagnosticRelatedInformation. Also implement fn convert_parse_error(err: &ParseError, source: &str, uri: &Url) -> lsp_types::Diagnostic for parse errors.",
+      "description": "Implement NodeCommitmentOverride enum with CommitIfSlow, AlwaysCancelWhenStale, OnlyRunOnFinalInputs variants and Default trait.",
       "status": "done",
-      "commit": "cfa5b4c"
+      "commit": "9100592"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for DocumentStore: (1) open_document stores text and URI, (2) get_document returns text after open, (3) update_document replaces text (full sync), (4) close_document removes entry, (5) get_document returns None after close, (6) open two documents independently. Place in crates/reify-lsp/src/document.rs.",
+      "description": "Write tests for TaskProgress struct capturing elapsed time, optional reported progress (0.0-1.0), and optional previous_runtime for estimation. Test progress_estimate() method: returns reported_progress if available, else elapsed/previous_runtime, else None.",
       "status": "done",
-      "commit": "7642fe6"
+      "commit": "9c261c6"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement DocumentStore struct with HashMap<Url, DocumentState>. DocumentState holds { text: String, version: i32 }. Methods: open(uri, text, version), update(uri, text, version), close(uri), get(uri) -> Option<&DocumentState>. Pure data structure, no async.",
+      "description": "Implement TaskProgress struct with elapsed (Duration), reported_progress (Option<f64>), previous_runtime (Option<Duration>), and progress_estimate() method.",
       "status": "done",
-      "commit": "8b6e43a"
+      "commit": "eae7fd9"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for the diagnostics pipeline function. Test cases: (1) valid bracket source → no error-severity diagnostics, (2) source with syntax error (e.g., 'structure {') → at least one parse error diagnostic, (3) source with unknown identifier → unresolved name diagnostic, (4) empty source → no crash, returns empty diagnostics. Use MockConstraintChecker from reify-test-support.",
+      "description": "Write tests for CommitmentDecision enum (NotYet, Committed, NeverCommit) and the check_commitment() function. Cases: (1) AlwaysCancelWhenStale override returns NeverCommit regardless of progress, (2) elapsed > always_commit_after returns Committed, (3) estimated progress > commit_when_proportion_done returns Committed, (4) below both thresholds returns NotYet, (5) OnlyRunOnFinalInputs with intermediate inputs returns NeverCommit, (6) OnlyRunOnFinalInputs with final inputs falls through to dual-threshold.",
       "status": "done",
-      "commit": "5180315"
+      "commit": "e4ce746"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic>. Internally: parse source with reify_syntax::parse, compile with reify_compiler::compile, run engine.check() with SimpleConstraintChecker, collect all parse errors + compiler diagnostics + eval diagnostics, convert each via convert module. Return collected LSP diagnostics.",
+      "description": "Implement CommitmentDecision enum and check_commitment(policy, override, progress, has_intermediate_inputs) -> CommitmentDecision function implementing the dual-threshold logic with per-node override handling.",
       "status": "done",
-      "commit": "cbf77ab"
+      "commit": "be60da6"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test for LSP server initialization. Create a ReifyLanguageServer, call initialize() with an InitializeParams, verify the returned InitializeResult includes: TextDocumentSyncKind::FULL in capabilities, diagnostic provider capability is set. Use tower-lsp test utilities or direct struct construction.",
+      "description": "Write tests for CommitmentTracker that manages per-node commitment status. Tests: (1) new tracker has no committed nodes, (2) update_status() transitions from NotYet to Committed when thresholds met, (3) is_committed(node_id) returns correct status, (4) committed task in dirty cone returns true for should_continue(), (5) uncommitted task in dirty cone returns false for should_continue(), (6) registering and removing tasks.",
       "status": "done",
-      "commit": "98d108b"
+      "commit": "7159e31"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement ReifyLanguageServer struct holding Arc<tokio::sync::RwLock<ServerState>> where ServerState contains DocumentStore. Implement LanguageServer trait initialize() returning ServerCapabilities with text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)) and diagnostic_provider. Also implement initialized() and shutdown().",
+      "description": "Implement CommitmentTracker struct with HashMap<NodeId, CommitmentState> tracking per-node status (start_time, decision, override). Methods: register_task(), update_status(), is_committed(), should_continue(node_id, in_dirty_cone), remove_task().",
       "status": "done",
-      "commit": "dba6854"
+      "commit": "d3269d4"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test for did_open handler: opening a document with valid bracket source triggers publish_diagnostics with the document URI and a diagnostics list. Use a mock/spy client or verify DocumentStore state after did_open. Verify parse-compile-check pipeline ran and diagnostics were computed.",
+      "description": "Write tests for commitment event integration: when a task transitions to Committed, a commitment_acquired event should be recordable. Test that CommitmentTracker::update_status returns the transition (e.g., Option<CommitmentTransition>) so callers can emit journal events.",
       "status": "done",
-      "commit": "ffa667c"
+      "commit": "1f0bffa"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement LanguageServer::did_open(): extract URI and text from DidOpenTextDocumentParams, store in DocumentStore, spawn compute_diagnostics on a tokio task, publish results via self.client.publish_diagnostics(uri, diagnostics, version).",
+      "description": "Add CommitmentTransition enum (Unchanged, BecameCommitted) as return type from update_status(), enabling callers to emit journal events on transition.",
       "status": "done",
-      "commit": "06667ad"
+      "commit": "8ab8850"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test for did_change handler: after opening a document, changing its content triggers a new diagnostics computation. Change from valid source to source with an error and verify new diagnostics are published. Also test that DocumentStore reflects the updated text.",
+      "description": "Write tests for PriorityPromoter: (1) register a task with initial priority, (2) effective_priority returns initial priority when no promotion, (3) promote(node_id, new_priority) raises priority (lower enum = higher priority), (4) promote with same-or-lower priority is a no-op, (5) remove_task cleans up.",
       "status": "done",
-      "commit": "062e18b"
+      "commit": "3b6104a"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement LanguageServer::did_change(): extract URI and new text from DidChangeTextDocumentParams (full sync — take last content change), update DocumentStore, recompute and publish diagnostics.",
+      "description": "Implement PriorityPromoter struct with HashMap<NodeId, Priority> tracking effective priority per in-flight task. Methods: register(node_id, priority), effective_priority(node_id), promote(node_id, new_priority), remove(node_id).",
       "status": "done",
-      "commit": "6569dc0"
+      "commit": "d327b56"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test for did_close handler: after closing a document, DocumentStore no longer has the entry. Verify that publish_diagnostics is called with empty diagnostics list to clear editor squiggles.",
+      "description": "Write tests for demand-driven priority promotion: promote_for_demand(demanded_node, dependency_map) promotes all in-flight dependencies of a demanded node. Cases: (1) P3 dependency of P1Slow demanded node promoted to P1Slow, (2) transitive promotion through chain A(P1Slow) -> B(P3) -> C(P3), both B and C promoted, (3) already-higher-priority dependency not demoted, (4) dependency not in-flight is ignored.",
       "status": "done",
-      "commit": "c286109"
+      "commit": "e65025c"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement LanguageServer::did_close(): remove document from DocumentStore, publish empty diagnostics to clear the editor's diagnostic display for the closed file.",
+      "description": "Implement promote_for_demand() method on PriorityPromoter that walks dependency edges from a demanded node and promotes all in-flight lower-priority tasks to the demanded node's priority level.",
       "status": "done",
-      "commit": "6e95114"
+      "commit": "6327522"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write failing test for CLI 'reify lsp' subcommand: verify that the main() function recognizes 'lsp' as a valid command (does not return 'Unknown command'). This can be tested by checking the match arm exists. Also verify the help text includes the lsp command.",
+      "description": "Write tests for concurrent-safe PriorityPromoter wrapper (using Arc<Mutex<PriorityPromoter>> or similar) that can be shared across async tasks. Test promote from one task, read from another.",
       "status": "done",
-      "commit": "db8b712"
+      "commit": "7c43ca2"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Add 'lsp' command to reify-cli main.rs: match 'lsp' arm that calls reify_lsp::run_server() (or similar). Implement pub async fn run_server() in reify-lsp/src/lib.rs that creates the ReifyLanguageServer, builds the tower-lsp Service, and serves over stdin/stdout via Server::new(stdin, stdout, socket).serve(service). The CLI wraps this in a tokio::runtime::Runtime::new().block_on() call.",
+      "description": "Wrap PriorityPromoter internals with Mutex for thread-safe concurrent access, matching the pattern used by ConcurrentEvalAdapter's skip_state.",
       "status": "done",
-      "commit": "aa94315"
+      "commit": "1a05a4e"
     },
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write integration test in crates/reify-lsp/tests/ that exercises the full LSP lifecycle: initialize → did_open with bracket source → verify diagnostics → did_change with broken source → verify error diagnostics → did_close. Use tower-lsp's test client or simulate JSON-RPC messages.",
+      "description": "Write integration test combining commitment + priority promotion: a scenario with multiple nodes at different priorities where (1) a P3 speculative node gets promoted when a demanded P1Slow node needs it, and (2) a long-running committed node continues despite dirty cone intersection while an uncommitted one would not.",
       "status": "done",
-      "commit": "d5f6e21"
+      "commit": "5326b9e"
     },
     {
       "id": "step-20",
       "type": "impl",
-      "description": "Fix any issues found in integration testing. Wire up the public API in lib.rs: pub mod convert, pub mod document, pub mod server. Export run_server as the main entry point. Ensure cargo test passes for all crates, cargo clippy is clean.",
+      "description": "Wire integration: ensure CommitmentTracker and PriorityPromoter are re-exported from lib.rs with proper public API. Verify all edge cases in the integration test pass.",
       "status": "done",
-      "commit": "b28eacd"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing tests for UTF-8 boundary safety in offset_to_position (review fix: panic_on_invalid_utf8_slice). In crates/reify-lsp/src/convert.rs #[cfg(test)] mod tests, add: (1) offset_mid_multibyte_2byte: source contains a 2-byte char (e.g., \"a\\u{00E9}b\" = \"aéb\"), pass offset pointing to the continuation byte (byte index 2, which is 0x80..0xBF) — must not panic, should snap forward to the next char boundary and return a valid Position. (2) offset_mid_multibyte_3byte: source \"a\\u{4E16}b\" (\"a世b\"), offset at byte 2 and byte 3 (middle of the 3-byte 世) — must not panic. (3) offset_mid_multibyte_4byte: source with a 4-byte emoji \"a\\u{1F600}b\" (\"a😀b\"), offsets at bytes 2, 3, 4 — must not panic. (4) offset_at_exact_char_boundary: source \"aéb\", offset at byte 0, 1, 3, 4 (all valid boundaries) — returns correct positions, confirming no regression. (5) offset_mid_char_in_second_line: source \"x\\n\\u{00E9}y\", offset pointing mid-é on line 2 — must not panic, line number must be 1. (6) span_to_range_mid_multibyte: a SourceSpan where start or end lands mid-character — must not panic, range should be valid. These tests should panic/fail against the current implementation, proving the bug exists.",
-      "status": "done",
-      "commit": "ff58677"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Fix offset_to_position in crates/reify-lsp/src/convert.rs to handle byte offsets that land mid-character in multi-byte UTF-8 sequences. After computing `clamped = offset.min(bytes.len())`, snap `clamped` forward to the next valid UTF-8 character boundary: `while clamped < bytes.len() && !source.is_char_boundary(clamped) { clamped += 1; }`. Apply the same snapping to `line_start` for defensive safety (though `line_start` is always after a `\\n` byte, which is a valid boundary). The line_slice `&source[line_start..clamped]` is now guaranteed to be valid UTF-8. Also snap `line_start` forward if it somehow lands mid-char (defensive). This ensures Tree-sitter error-recovery spans pointing to mid-character byte positions never crash the LSP server. All step-21 tests must pass, and all existing tests must continue to pass with no regressions.",
-      "status": "done",
-      "commit": "42e543c"
+      "commit": "5b78f7a"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use full document sync (TextDocumentSyncKind::FULL) instead of incremental",
-      "rationale": "Simpler to implement and correct. Incremental sync requires tracking edits and applying patches to stored text. Full sync means we always have the complete source text. Performance is fine for typical .ri files (small files). Can upgrade to incremental sync later if needed."
+      "decision": "Commitment policy and priority promotion are separate modules (commitment.rs, priority_promotion.rs) rather than merged into one",
+      "rationale": "They are orthogonal concerns: commitment decides whether a running task runs to completion; priority promotion changes scheduling order. Separate modules follow SRP and make each independently testable and reusable."
     },
     {
-      "decision": "Run diagnostics computation synchronously within the LSP handler (no background debounce)",
-      "rationale": "The parse → compile → check pipeline is fast for single-file .ri files (sub-millisecond for small files). A debounce mechanism adds complexity. We can add debouncing in task 33 or a follow-up if latency becomes an issue."
+      "decision": "CommitmentPolicy is a plain config struct, not a trait",
+      "rationale": "The architecture docs specify commitment policy as 'project configuration, not source code logic.' A struct with threshold fields matches this: callers pass it to check_commitment() as data. A trait would over-abstract for what is essentially a pair of thresholds."
     },
     {
-      "decision": "Use Engine::check() without geometry kernel for LSP diagnostics",
-      "rationale": "LSP diagnostics only need parse errors, compile diagnostics, and constraint satisfaction status. Geometry realization is expensive and not needed for editor feedback. Engine::new(checker, None) skips geometry entirely."
+      "decision": "check_commitment is a free function taking (policy, override, progress, has_intermediate_inputs) rather than a method on CommitmentTracker",
+      "rationale": "Pure function with explicit inputs is easier to unit test, composes well, and separates the decision logic from the stateful tracking. CommitmentTracker calls check_commitment internally."
     },
     {
-      "decision": "Create a fresh Engine per diagnostics computation rather than maintaining a persistent one",
-      "rationale": "Simplifies state management — no need to worry about Engine state accumulating across edits. The Engine's incremental evaluation (edit_param) is designed for parameter tweaks within a stable topology. Source text changes require full re-parse/compile anyway, invalidating the entire eval graph. Persistent Engine with incremental re-eval can be added in a future task."
+      "decision": "PriorityPromoter uses interior Mutex for thread safety rather than RwLock",
+      "rationale": "Priority promotion operations (promote, read) are extremely fast (HashMap lookups). Mutex avoids the overhead of reader-writer distinction and matches the SkipState pattern in ConcurrentEvalAdapter."
     },
     {
-      "decision": "ServerState behind Arc<tokio::sync::RwLock<>> for interior mutability",
-      "rationale": "tower-lsp requires the LanguageServer to be Send + Sync. RwLock allows concurrent reads (e.g., multiple hover requests) and exclusive writes (document updates). tokio::sync::RwLock is used over std because tower-lsp handlers are async."
+      "decision": "Priority promotion is tracked via effective_priority rather than mutating the original Task struct",
+      "rationale": "The Task struct represents the initial scheduling intent. The PriorityPromoter tracks the dynamic effective priority separately, allowing introspection of both original and promoted priority (useful for UI display and debugging)."
     },
     {
-      "decision": "Place conversion utilities in a separate convert module",
-      "rationale": "Byte-offset → Position conversion and Diagnostic conversion are pure functions with no dependencies on server state. Separating them enables thorough unit testing without needing LSP server infrastructure."
+      "decision": "promote_for_demand walks dependency edges rather than using the reverse dependency index",
+      "rationale": "Priority promotion goes in the forward dependency direction: 'I need X, so X's dependencies should also be high priority.' This is a forward walk from demanded node through its reads, not a reverse walk. The DependencyTrace (reads field) provides the needed edges."
     },
     {
-      "decision": "CLI uses synchronous tokio Runtime::new().block_on() for lsp subcommand",
-      "rationale": "The existing CLI main() is synchronous. Rather than converting the entire CLI to async, only the lsp subcommand needs async. block_on() bridges sync → async cleanly. The other commands (check, build) remain synchronous."
-    },
-    {
-      "decision": "Snap mid-character byte offsets forward to next char boundary (not backward)",
-      "rationale": "When a byte offset falls inside a continuation bytes of a multi-byte UTF-8 sequence, we snap forward to the next character boundary rather than backward. Forward-snapping is simpler (just advance while !is_char_boundary) and avoids the risk of snapping backward past a newline, which would corrupt line counting. Using str::is_char_boundary() is the idiomatic Rust approach and handles all UTF-8 sequence lengths (2/3/4 byte) uniformly. This matches the reviewer's suggestion of advancing past continuation bytes (bytes matching 0x80..0xBF pattern)."
+      "decision": "CommitmentTracker.update_status returns a CommitmentTransition to signal state changes",
+      "rationale": "Callers need to know when a task transitions to Committed to emit journal events (commitment_acquired EventKind). A return value is cleaner than a callback and avoids coupling the tracker to the journal."
     }
   ],
   "reuse": [
     {
-      "what": "reify_syntax::parse()",
-      "where": "crates/reify-syntax/src/lib.rs",
-      "how": "Call parse(source, ModulePath::single(name)) to get ParsedModule with errors and declarations from source text. Same API used by CLI."
+      "what": "Priority enum (P0Interactive, P1Fast, P1Slow, P3Speculative)",
+      "where": "crates/reify-runtime/src/lib.rs:16-26",
+      "how": "Reuse directly for PriorityPromoter's tracking and comparison. The derived Ord gives natural 'higher priority = smaller enum value' semantics needed for promotion (promote = min(current, requested))."
     },
     {
-      "what": "reify_compiler::compile()",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "Call compile(&parsed_module) to get CompiledModule with diagnostics. Same API used by CLI."
+      "what": "NodeId type for identifying nodes",
+      "where": "crates/reify-eval/src/cache.rs",
+      "how": "Use as keys in CommitmentTracker and PriorityPromoter HashMaps, consistent with all existing runtime code."
     },
     {
-      "what": "reify_eval::Engine::check()",
-      "where": "crates/reify-eval/src/lib.rs",
-      "how": "Create Engine::new(checker, None), call check(&compiled) to get CheckResult with values, constraint_results, and diagnostics. Same pattern as CLI cmd_check."
+      "what": "DependencyTrace.reads for dependency walking",
+      "where": "crates/reify-eval/src/deps.rs",
+      "how": "PriorityPromoter.promote_for_demand() uses DependencyTrace reads to walk forward dependencies for transitive promotion."
     },
     {
-      "what": "reify_constraints::SimpleConstraintChecker",
-      "where": "crates/reify-constraints/",
-      "how": "Use as the ConstraintChecker implementation for the LSP engine, same as CLI."
+      "what": "EventKind pattern for journal integration",
+      "where": "crates/reify-eval/src/journal.rs",
+      "how": "CommitmentTransition signals are designed to map to existing EventKind variants (commitment_acquired is mentioned in the design docs as an event kind). The caller emits the event, keeping commitment.rs decoupled from the journal."
     },
     {
-      "what": "reify_types::Diagnostic, SourceSpan, Severity",
-      "where": "crates/reify-types/src/diagnostics.rs",
-      "how": "These are the internal diagnostic types that the convert module translates to lsp_types::Diagnostic. SourceSpan byte offsets are converted to LSP line/column positions."
+      "what": "Arc<Mutex<T>> interior mutability pattern",
+      "where": "crates/reify-runtime/src/concurrent_eval.rs:53 (SkipState)",
+      "how": "Same pattern for PriorityPromoter's thread-safe wrapper: Mutex for atomic check-and-modify, Arc for sharing across spawned tasks."
     },
     {
-      "what": "reify_syntax::ParseError",
-      "where": "crates/reify-syntax/src/lib.rs",
-      "how": "ParsedModule.errors contains parse errors with SourceSpan. Convert these to LSP diagnostics alongside compiler diagnostics."
-    },
-    {
-      "what": "bracket_source() fixture",
-      "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "Use in LSP tests as a known-good .ri source to verify the diagnostics pipeline produces no errors for valid code."
-    },
-    {
-      "what": "MockConstraintChecker",
-      "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "Use in unit tests for the diagnostics pipeline to avoid depending on SimpleConstraintChecker behavior."
-    },
-    {
-      "what": "CLI parse_and_compile pattern",
-      "where": "crates/reify-cli/src/main.rs lines 29-58",
-      "how": "The LSP diagnostics pipeline follows the same parse → compile → engine pattern. Reuse the same sequencing: parse source, forward parse errors, compile, collect diagnostics."
-    },
-    {
-      "what": "str::is_char_boundary()",
-      "where": "Rust std library",
-      "how": "Use in the UTF-8 boundary fix to test whether a byte index is a valid character boundary. More idiomatic and robust than manually checking continuation byte patterns (0x80..0xBF)."
+      "what": "Test patterns with ValueCellId::new and NodeId::Value",
+      "where": "crates/reify-runtime/src/lib.rs tests, warm_pool.rs tests",
+      "how": "Follow same test helper patterns for creating test node IDs, keeping test style consistent."
     }
   ]
 }
