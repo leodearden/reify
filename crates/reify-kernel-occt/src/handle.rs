@@ -274,6 +274,21 @@ mod tests {
     }
 
     #[test]
+    fn handle_implements_geometry_kernel_trait() {
+        use reify_types::GeometryKernel;
+        let mut handle = super::OcctKernelHandle::spawn();
+        // Use it through the trait interface as Box<dyn GeometryKernel>
+        let kernel: &mut dyn GeometryKernel = &mut handle;
+        let op = GeometryOp::Box {
+            width: Value::Real(5.0),
+            height: Value::Real(5.0),
+            depth: Value::Real(5.0),
+        };
+        let gh = kernel.execute(&op).unwrap();
+        assert_eq!(gh.id, GeometryHandleId(1));
+    }
+
+    #[test]
     fn tessellate_returns_valid_mesh() {
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
