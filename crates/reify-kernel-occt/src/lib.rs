@@ -269,6 +269,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn warm_state_returns_none_on_fresh_kernel() {
+        let kernel = OcctKernel::new();
+        assert!(kernel.warm_state().is_none(), "fresh kernel should have no warm state");
+    }
+
+    #[test]
     fn brep_serialization_roundtrip() {
         // Create a box shape
         let shape = ffi::ffi::make_box(10.0, 20.0, 30.0).unwrap();
