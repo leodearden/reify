@@ -20,14 +20,27 @@ pub struct ReifyLanguageServer {
 
 impl ReifyLanguageServer {
     pub fn new(client: Client) -> Self {
-        todo!()
+        Self {
+            client,
+            state: Arc::new(RwLock::new(ServerState {
+                documents: DocumentStore::new(),
+            })),
+        }
     }
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for ReifyLanguageServer {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
-        todo!()
+        Ok(InitializeResult {
+            capabilities: ServerCapabilities {
+                text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                    TextDocumentSyncKind::FULL,
+                )),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
     }
 
     async fn initialized(&self, _: InitializedParams) {}
