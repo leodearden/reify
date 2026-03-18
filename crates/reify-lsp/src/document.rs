@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use tower_lsp::lsp_types::Url;
 
 /// State of a single open document.
@@ -7,27 +8,34 @@ pub struct DocumentState {
 }
 
 /// Stores open document contents, keyed by URI.
-pub struct DocumentStore;
+pub struct DocumentStore {
+    documents: HashMap<Url, DocumentState>,
+}
 
 impl DocumentStore {
     pub fn new() -> Self {
-        todo!()
+        Self {
+            documents: HashMap::new(),
+        }
     }
 
-    pub fn open(&mut self, _uri: Url, _text: String, _version: i32) {
-        todo!()
+    pub fn open(&mut self, uri: Url, text: String, version: i32) {
+        self.documents.insert(uri, DocumentState { text, version });
     }
 
-    pub fn update(&mut self, _uri: &Url, _text: String, _version: i32) {
-        todo!()
+    pub fn update(&mut self, uri: &Url, text: String, version: i32) {
+        if let Some(doc) = self.documents.get_mut(uri) {
+            doc.text = text;
+            doc.version = version;
+        }
     }
 
-    pub fn close(&mut self, _uri: &Url) {
-        todo!()
+    pub fn close(&mut self, uri: &Url) {
+        self.documents.remove(uri);
     }
 
-    pub fn get(&self, _uri: &Url) -> Option<&DocumentState> {
-        todo!()
+    pub fn get(&self, uri: &Url) -> Option<&DocumentState> {
+        self.documents.get(uri)
     }
 }
 
