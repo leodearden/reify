@@ -227,6 +227,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_captures_published_diagnostics() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+        let uri = test_uri();
+        let source = reify_test_support::bracket_source();
+
+        // Open with valid bracket source
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: source.to_string(),
+                },
+            })
+            .await;
+
+        // Read captured diagnostics from server state
+        let state = server.state().read().await;
+        let captured = state
+            .last_diagnostics_for(&uri)
+            .expect("diagnostics should be captured after did_open");
+
+        // Valid bracket source should have no ERROR-severity diagnostics
+        let errors: Vec<_> = captured
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "valid bracket source should have no errors in captured diagnostics, got: {errors:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn did_close_removes_document_from_store() {
         let (service, _socket) = LspService::new(ReifyLanguageServer::new);
         let server = service.inner();
