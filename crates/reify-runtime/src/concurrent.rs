@@ -275,6 +275,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_scheduler_skips_non_dirty() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let dirty_node = NodeId::Value(reify_types::ValueCellId::new("A", "a"));
+        let clean_node = NodeId::Value(reify_types::ValueCellId::new("A", "b"));
+
+        struct SelectiveDirty {
+            dirty_node: NodeId,
+        }
+
+        impl AsyncNodeEvaluator for SelectiveDirty {
+            fn is_dirty(&self, node: &NodeId) -> bool {
+                *node == self.dirty_node
+            }
+
+            async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+                EvalOutcome::Changed
+            }
+        }
+
+        let evaluator = Arc::new(SelectiveDirty {
+            dirty_node: dirty_node.clone(),
+        });
+        let eval_set = vec![dirty_node.clone(), clean_node.clone()];
+        let mut traces = HashMap::new();
+        traces.insert(dirty_node.clone(), DependencyTrace::default());
+        traces.insert(clean_node.clone(), DependencyTrace::default());
+        let cancel = CancellationToken::new();
+
+        let scheduler = ConcurrentScheduler;
+        let changed = scheduler
+            .execute(eval_set, evaluator, &traces, &cancel)
+            .await;
+
+        assert_eq!(changed.len(), 1);
+        assert!(changed.contains(&dirty_node));
+        assert!(!changed.contains(&clean_node));
+    }
+
+    #[tokio::test]
     async fn concurrent_scheduler_multi_level_ordering() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
