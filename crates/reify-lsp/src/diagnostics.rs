@@ -11,7 +11,7 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
     // Derive a module name from the URI
     let module_name = uri
         .path_segments()
-        .and_then(|segs| segs.last())
+        .and_then(|mut segs| segs.next_back())
         .and_then(|name| name.strip_suffix(".ri"))
         .unwrap_or("unnamed");
 

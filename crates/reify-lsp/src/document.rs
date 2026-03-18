@@ -8,15 +8,14 @@ pub struct DocumentState {
 }
 
 /// Stores open document contents, keyed by URI.
+#[derive(Default)]
 pub struct DocumentStore {
     documents: HashMap<Url, DocumentState>,
 }
 
 impl DocumentStore {
     pub fn new() -> Self {
-        Self {
-            documents: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub fn open(&mut self, uri: Url, text: String, version: i32) {

@@ -13,8 +13,8 @@ pub fn offset_to_position(source: &str, offset: u32) -> Position {
     let mut line = 0u32;
     let mut line_start = 0usize;
 
-    for i in 0..clamped {
-        if bytes[i] == b'\n' {
+    for (i, &byte) in bytes.iter().enumerate().take(clamped) {
+        if byte == b'\n' {
             line += 1;
             line_start = i + 1;
         }
