@@ -267,4 +267,53 @@ mod tests {
             "version_counter should be 3 after three calls"
         );
     }
+
+    // --- check_snapshot fallback robustness tests (step-27) ---
+
+    #[test]
+    fn fresh_engine_check_snapshot_returns_none() {
+        // A fresh Engine (without prior eval) should have no snapshot
+        let checker = SimpleConstraintChecker;
+        let engine = reify_eval::Engine::new(Box::new(checker), None);
+        let source = reify_test_support::bracket_source();
+        let parsed = reify_syntax::parse(source, ModulePath::single("bracket"));
+        let compiled = reify_compiler::compile(&parsed);
+        let result = engine.check_snapshot(&compiled);
+        assert!(
+            result.is_none(),
+            "fresh Engine without eval should return None from check_snapshot"
+        );
+    }
+
+    #[test]
+    fn stateful_violating_source_always_produces_constraint_violation() {
+        // Regression guard: constraint violations must never be silently skipped
+        let mut state = EvalState::new();
+        let uri = test_uri();
+        let source_violating = reify_test_support::bracket_source_violating();
+        let result = compute_diagnostics_with_state(&mut state, &source_violating, &uri);
+        let constraint_errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.to_lowercase().contains("constraint")
+                    && d.message.to_lowercase().contains("violated")
+            })
+            .collect();
+        assert!(
+            !constraint_errors.is_empty(),
+            "violating source must always produce at least one constraint violation ERROR, got diagnostics: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn stateful_empty_source_does_not_panic() {
+        let mut state = EvalState::new();
+        let uri = test_uri();
+        let result = compute_diagnostics_with_state(&mut state, "", &uri);
+        // Should not panic; result may contain parse errors but should be valid
+        let _ = result;
+    }
 }
