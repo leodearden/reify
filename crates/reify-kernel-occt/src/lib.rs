@@ -1,15 +1,26 @@
 //! OpenCASCADE geometry kernel implementation for Reify.
 //!
-//! Implements the `GeometryKernel` trait from `reify-types` using OCCT via cxx FFI.
+//! Provides two public types:
+//!
+//! - [`OcctKernel`] — the raw kernel, `!Send + !Sync` (contains `cxx::UniquePtr`).
+//!   Useful for single-threaded test scenarios where channel overhead is unwanted.
+//!
+//! - [`OcctKernelHandle`] — a `Send + Sync` handle that communicates with a
+//!   dedicated OS thread owning an `OcctKernel`. Implements [`GeometryKernel`]
+//!   and is the recommended API for all production and cross-thread usage.
+//!
+//! [`GeometryKernel`]: reify_types::GeometryKernel
 
 #[allow(dead_code)]
 mod ffi;
+mod handle;
+pub use handle::OcctKernelHandle;
 
 use std::collections::HashMap;
 
 use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, QueryError, ReprKind, TessError, Value,
+    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp,
+    GeometryQuery, Mesh, QueryError, ReprKind, TessError, Value,
 };
 
 /// Extract an f64 from a Value (Int, Real, or Scalar → SI value).
@@ -18,17 +29,19 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
         .ok_or_else(|| GeometryError::OperationFailed("expected numeric value".into()))
 }
 
-/// OpenCASCADE geometry kernel.
+/// OpenCASCADE geometry kernel (raw, `!Send + !Sync`).
+///
+/// Contains `cxx::UniquePtr<OcctShape>` handles which are `!Send`, so the
+/// kernel cannot cross thread boundaries. For cross-thread usage, use
+/// [`OcctKernelHandle`] which runs the kernel on a dedicated OS thread.
 pub struct OcctKernel {
     shapes: HashMap<u64, cxx::UniquePtr<ffi::ffi::OcctShape>>,
     next_id: u64,
 }
 
-// SAFETY: OcctKernel is only accessed via &mut self for mutation (execute) and
-// &self for read-only queries. The underlying OCCT shapes are not shared across
-// threads — the kernel instance is owned by a single thread at a time.
-unsafe impl Send for OcctKernel {}
-unsafe impl Sync for OcctKernel {}
+// Note: OcctKernel is !Send + !Sync because cxx::UniquePtr<OcctShape> is !Send.
+// Use OcctKernelHandle for cross-thread usage — it communicates with a dedicated
+// OS thread that owns the kernel.
 
 impl OcctKernel {
     pub fn new() -> Self {
@@ -64,8 +77,10 @@ impl Default for OcctKernel {
     }
 }
 
-impl GeometryKernel for OcctKernel {
-    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+/// Inherent methods — same bodies as the former `GeometryKernel` impl.
+/// Called directly by the kernel thread in `OcctKernelHandle`.
+impl OcctKernel {
+    pub fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         let shape = match op {
             GeometryOp::Box {
                 width,
@@ -144,7 +159,7 @@ impl GeometryKernel for OcctKernel {
         Ok(self.store(shape))
     }
 
-    fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+    pub fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         match query {
             GeometryQuery::Volume(id) => {
                 let shape = self
@@ -188,7 +203,7 @@ impl GeometryKernel for OcctKernel {
         }
     }
 
-    fn export(
+    pub fn export(
         &self,
         handle: GeometryHandleId,
         format: ExportFormat,
@@ -213,7 +228,7 @@ impl GeometryKernel for OcctKernel {
         }
     }
 
-    fn tessellate(
+    pub fn tessellate(
         &self,
         handle: GeometryHandleId,
         tolerance: f64,

@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_geometry::DispatchPlanner;
-use reify_kernel_occt::OcctKernel;
+use reify_kernel_occt::OcctKernelHandle;
 use reify_types::{ExportFormat, ModulePath, Satisfaction};
 
 fn main() -> ExitCode {
@@ -131,7 +131,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
 
     let checker = SimpleConstraintChecker;
     let mut planner = DispatchPlanner::new();
-    planner.register_kernel(Box::new(OcctKernel::new()));
+    planner.register_kernel(Box::new(OcctKernelHandle::spawn()));
 
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, format);
