@@ -1,225 +1,192 @@
 {
-  "task_id": "33",
-  "title": "LSP features — hover, go-to-def, completions",
-  "modules": ["crates/reify-lsp"],
-  "analysis": "Task 32 built the LSP server foundation: ReifyLanguageServer with full-sync document management, diagnostic pipeline (parse→compile→check→convert), and bidirectional position/span conversion utilities including position_to_offset() and find_word_at_offset() (added as pre-1 for this task, already committed as 70772d8).\n\nThis task adds three interactive LSP features: hover, go-to-definition, and completions.\n\n**Architecture:** All three features need the same underlying data: ParsedModule (for declaration names and source spans), CompiledModule (for resolved types via ValueCellDecl.cell_type), and optionally CheckResult (for evaluated runtime values). Rather than duplicating the pipeline in each module, a shared AnalysisContext struct runs parse→compile→check once and provides structured accessors. This context also extracts the module_name_from_uri helper currently inlined in diagnostics.rs.\n\n**Key constraint — compiler discards spans:** The compiler sets ALL spans to SourceSpan::new(0,0) in ValueCellDecl, CompiledConstraint, and RealizationDecl. Go-to-definition MUST use ParsedModule spans (ParamDecl.span, LetDecl.span) which retain accurate byte offsets from tree-sitter. For type info, CompiledModule.templates[].value_cells[] provides cell_type: Type.\n\n**Symbol lookup strategy:** Word-based extraction via find_word_at_offset, then name matching against known symbols. This is pragmatic because: (a) ParsedModule declaration spans cover entire declarations, not individual name tokens; (b) it handles both declaration-site and reference-site hovers uniformly; (c) no need for full AST position walking.\n\n**Value formatting:** Value doesn't implement Display. A local format_value() helper in the analysis module handles user-friendly formatting (Scalar{si_value: 0.08, dimension: LENGTH} → '0.08 m').\n\n**Test strategy:** All tests use bracket_source() fixture with known byte offsets from bracket_parsed_module(): width param at (24,42), height at (47,74), thickness at (79,107), volume let at (187,226), 'width' ident ref at (200,205), 'thickness' ref in constraint at (243,252). Tests verify exact hover content, goto-def target locations, and completion item counts/kinds.",
+  "task_id": "36",
+  "title": "Reproduce and fix interactive edit-loop staleness after parameter edits",
+  "modules": ["crates/reify-eval", "crates/reify-runtime"],
+  "analysis": "## Current State\n\nSteps 1-12 from the prior plan are complete and committed. The sequential edit pipeline is fully working:\n- `edit_param()` handles auto-resolution, second-wave let-binding propagation, diagnostics\n- `edit_check()` adds constraint satisfaction checking\n- 365 tests pass\n\nThe concurrent edit path (`edit_param_concurrent`) calls `resolve_concurrent_edit()` which correctly updates `result.values` and `result.snapshot_values` in place — so values ARE correct after `apply_concurrent_edit()`. The test `edit_param_concurrent_re_resolves_auto_params` passes.\n\n## Remaining Staleness Gaps\n\n### Gap 1: ConcurrentEditResult discards resolution metadata\n`edit_param_concurrent` (concurrent_eval.rs:312-313):\n```rust\nlet (_resolved_params, _diagnostics) =\n    engine.resolve_concurrent_edit(&setup, &mut result);\n```\nThe returned `resolved_params` and `diagnostics` are assigned to underscore-prefixed variables and discarded. The `ConcurrentEditResult` struct (lib.rs:152-163) has no fields for these. Callers cannot tell what auto params were resolved or if the solver produced diagnostics.\n\n### Gap 2: No concurrent constraint checking\nThere is no `edit_check_concurrent` equivalent. After a concurrent edit, the only way to check constraint satisfaction is to call `check()` which does a full cold-start `eval()`. The sequential path has `edit_check()` which combines `edit_param()` + constraint checking, but the concurrent path has no equivalent.\n\n### Gap 3: Stale test comment\nThe test `edit_param_concurrent_re_resolves_auto_params` (concurrent_eval.rs:875) has a doc comment saying \"Currently FAILS because the concurrent edit path doesn't include a resolution phase.\" This is stale — the test passes.\n\n### Gap 4: Constraint label regression (blocking review feedback)\n`check_constraints_with_values` (lib.rs:1253) always sets `label: None` on every `ConstraintCheckEntry`, discarding user-provided constraint labels. The cold-start `check()` path (lib.rs:1611) correctly populates `label` from `compiled.label.clone()`. Both `edit_check` and `edit_check_concurrent` route through `check_constraints_with_values`, so their `CheckResult` structs lose labels. Root cause: `ConstraintNodeData` in graph.rs lacks a `label` field, and the graph builder (graph.rs:86-92) discards `constraint.label` when converting `CompiledConstraint` → `ConstraintNodeData`.\n\n## Approach\n1. Add `resolved_params` and `diagnostics` fields to `ConcurrentEditResult`\n2. Wire `resolve_concurrent_edit` return values into the result in `edit_param_concurrent`\n3. Add `check_constraints_with_values` helper to Engine (factored from `edit_check`)\n4. Create `edit_check_concurrent` function in reify-runtime\n5. Fix stale comments\n6. Fix label preservation: add `label: Option<String>` to `ConstraintNodeData`, populate in graph builder, use in `check_constraints_with_values`\n\nAll changes are additive — no existing behavior is modified.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add position_to_offset (LSP Position → byte offset) and find_word_at_offset (extract identifier word at byte offset) utilities to convert.rs. Foundational for all three features.",
+      "description": "Verify all existing tests pass (365 tests across workspace)",
       "status": "done",
-      "commit": "70772d8",
-      "tests": [
-        "position_to_offset first line returns correct byte offset",
-        "position_to_offset second line accounts for newline",
-        "position_to_offset at origin returns 0",
-        "position_to_offset past end returns source.len()",
-        "position_to_offset handles UTF-16 multibyte (emoji)",
-        "find_word_at_offset returns full word from middle position",
-        "find_word_at_offset at non-ident returns None",
-        "find_word_at_offset at start/end of word returns full word",
-        "find_word_at_offset on keyword 'param' returns keyword string"
-      ]
-    },
-    {
-      "id": "pre-2",
-      "description": "Create analysis.rs module with shared AnalysisContext that runs parse→compile→check pipeline once and provides structured accessors. Includes: module_name_from_uri(uri) helper extracted from diagnostics.rs; AnalysisContext struct holding source ref, uri ref, ParsedModule, CompiledModule, CheckResult; methods: new(source, uri) -> Self, find_member_decl(name) -> Option<MemberInfo> (returns kind, type, span from ParsedModule+CompiledModule), structure_names() -> Vec<(&str, member counts)>, member_names() -> Vec<(&str, ValueCellKind, &Type)>, get_value(entity, member) -> Option<&Value>; format_value(value: &Value) -> String helper. Update diagnostics.rs to use module_name_from_uri. Register module in lib.rs.",
-      "status": "done",
-      "commit": "5d8ce86",
-      "tests": [
-        "analysis context builds without panic on bracket_source",
-        "analysis context builds without panic on empty source",
-        "find_member_decl('width') returns Param kind, Scalar[Length] type, span (24,42)",
-        "find_member_decl('volume') returns Let kind with inferred type",
-        "find_member_decl('nonexistent') returns None",
-        "member_names returns all 6 value cells (5 params + volume)",
-        "structure_names returns [('Bracket', 5 params, 1 let, 3 constraints)]",
-        "get_value returns evaluated Value for 'width' (Scalar 0.08m)",
-        "format_value formats Scalar LENGTH as SI meters",
-        "format_value formats Bool/Int/Real/String/Undef correctly",
-        "module_name_from_uri extracts 'test' from 'file:///test.ri'"
-      ]
+      "commit": null,
+      "tests": []
     }
   ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for hover on param declaration: (1) hover at Position corresponding to byte ~30 ('width' in 'param width: Scalar = 80mm') returns Some(Hover) with markdown containing 'param', 'width', 'Scalar[Length]'; (2) hover at Position for 'thickness' returns similar info; (3) hover at whitespace/operator position returns None.",
+      "description": "Write failing test `concurrent_edit_result_includes_resolved_params` in crates/reify-runtime/tests/concurrent_eval.rs. Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`, constraint `x > a`. SequencedMockSolver: 1st call x=mm(5.0), 2nd call x=mm(20.0). Cold eval. Concurrent edit a→mm(8.0). Assert `result.resolved_params` is non-empty and contains x→mm(20.0). This test will NOT COMPILE because `ConcurrentEditResult` has no `resolved_params` field.",
       "status": "done",
-      "commit": "1616bd9"
+      "commit": "a2feb1d"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Create hover.rs with compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hover>. Uses position_to_offset → find_word_at_offset → build AnalysisContext → look up word via find_member_decl → format markdown with kind, name, type, and evaluated value. Returns Hover with MarkupContent::markdown and range covering the matched word. Register module in lib.rs.",
+      "description": "Add `resolved_params: HashMap<ValueCellId, Value>` and `diagnostics: Vec<Diagnostic>` fields to `ConcurrentEditResult` in crates/reify-eval/src/lib.rs. Initialize to empty defaults in `ConcurrentEvalAdapter::into_result()` and `build_result_shared()` in crates/reify-runtime/src/concurrent_eval.rs. Update `edit_param_concurrent` to capture the return value of `resolve_concurrent_edit` and set `result.resolved_params` and `result.diagnostics` before returning.",
       "status": "done",
-      "commit": "0ced4b4"
+      "commit": "a013e8c"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for hover on let binding and ident references: (1) hover on 'volume' (at byte ~193) shows 'let', 'volume', computed type; (2) hover on 'thickness' at byte 243 (inside constraint expression 'constraint thickness > 2mm') shows param type info identical to hovering at declaration site; (3) hover on 'width' at byte 200 (inside 'let volume = width * ...') shows param info.",
+      "description": "Write failing test `concurrent_edit_result_includes_diagnostics_on_infeasible` in crates/reify-runtime/tests/concurrent_eval.rs. Module: param `a` (default mm(1.0)), auto `x`, constraint `x > a`. SequencedMockSolver: 1st call Solved x=mm(5.0), 2nd call Infeasible with diagnostic message. Cold eval. Concurrent edit a→mm(10.0). Assert `result.diagnostics` is non-empty and contains the infeasibility message. This verifies solver diagnostics flow through the concurrent path.",
       "status": "done",
-      "commit": "871b554"
+      "commit": "5268c85"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Extend hover.rs to include evaluated values from CheckResult in the hover output. For lets, show the computed value. For params, show the default value. Verify that word-based lookup correctly handles ident references (same member name match whether at declaration or reference site).",
+      "description": "Verify step-3 test passes with step-2 implementation (diagnostics should already flow through since resolve_concurrent_edit returns them and edit_param_concurrent now captures them). Fix if needed.",
       "status": "done",
-      "commit": "871b554"
+      "commit": "5268c85"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for hover edge cases: (1) hover on structure name 'Bracket' (byte ~10) shows structure summary with member counts; (2) hover on keyword 'param' (byte 24) shows keyword description; (3) hover on keyword 'constraint' shows keyword description; (4) hover on unknown/non-identifier word returns None; (5) hover on empty source returns None.",
+      "description": "Write failing test `edit_check_concurrent_reports_constraint_satisfaction` in crates/reify-runtime/tests/concurrent_eval.rs. Uses SimpleConstraintChecker (from reify-constraints). Module: param `width` (default mm(10.0)), constraint `width > mm(5.0)`. Cold check(). Call new function `edit_check_concurrent(engine, width_id, mm(2.0), cancel)`. Assert: (1) CheckResult.constraint_results[0].satisfaction == Violated, (2) values[width] == mm(2.0), (3) resolved_params is empty (no auto params). This test will NOT COMPILE because `edit_check_concurrent` doesn't exist.",
       "status": "done",
-      "commit": "57d95c6"
+      "commit": "2a02a32"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Extend hover.rs: after member lookup, check if word matches a structure name → show 'structure Bracket (5 params, 1 let, 3 constraints)'. Then check keyword list → show brief description. Keywords: structure, param, let, constraint, sub, import, if, then, else, and, or, not, true, false, auto. Return None for unrecognized words.",
+      "description": "Add `check_constraints_with_values(&self, values: &ValueMap) -> (Vec<ConstraintCheckEntry>, Vec<Diagnostic>)` public method to Engine in crates/reify-eval/src/lib.rs. Factor the constraint-checking logic from `edit_check` into this method: iterate snapshot.graph.constraints, build ConstraintInput, call self.constraint_checker.check(), collect results. Refactor `edit_check` to use this new helper. Then create `edit_check_concurrent` async function in crates/reify-runtime/src/concurrent_eval.rs: calls edit_param_concurrent, clones resolved_params and diagnostics from result, calls engine.apply_concurrent_edit, calls engine.check_constraints_with_values, returns CheckResult.",
       "status": "done",
-      "commit": "537e7e8"
+      "commit": "adcdfef"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for go-to-definition: (1) goto-def on 'thickness' at byte 243 (in 'constraint thickness > 2mm') returns Location with range corresponding to span (79,107); (2) goto-def on 'width' at byte 286 (in 'width / 4') returns Location for span (24,42); (3) goto-def on 'volume' reference returns Location for span (187,226); (4) goto-def on keyword 'param' returns None; (5) goto-def on structure name 'Bracket' returns None; (6) goto-def on unknown word returns None.",
+      "description": "Write test `edit_check_concurrent_constraint_transitions` in crates/reify-runtime/tests/concurrent_eval.rs. Uses SimpleConstraintChecker. Module: param `width` (default mm(10.0)), constraint `width > mm(5.0)`. Cold check → Satisfied. edit_check_concurrent(width, mm(2.0)) → Violated. edit_check_concurrent(width, mm(8.0)) → Satisfied. Verifies constraint transitions work correctly through the concurrent path across multiple consecutive edits.",
       "status": "done",
-      "commit": "afabb81"
+      "commit": "bcca88b"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Create goto_def.rs with compute_goto_definition(source: &str, uri: &Url, position: Position) -> Option<Location>. Uses find_word_at_offset → parse source → iterate ParsedModule declarations → for each StructureDef search members for ParamDecl/LetDecl with matching name → return Location(uri, span_to_range(decl.span)). Only needs ParsedModule (no compile/check needed). Register module in lib.rs.",
+      "description": "Fix any issues with concurrent constraint transitions. Ensure engine state is correctly updated between consecutive edit_check_concurrent calls (snapshot, cache, param_overrides all consistent).",
       "status": "done",
-      "commit": "9116fcd"
+      "commit": "bcca88b"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for completions: (1) completions include all 12+ keywords with CompletionItemKind::KEYWORD; (2) completions include 6 scope identifiers (width, height, thickness, fillet_radius, hole_diameter, volume) with VARIABLE kind and type detail string; (3) completions include 'Bracket' with STRUCT kind; (4) completions include built-in functions (box, cylinder, sphere, sin, cos, sqrt, abs, min, max) with FUNCTION kind; (5) completions include type names (Scalar, Bool, Int, Real, String) with CLASS kind; (6) completions on empty source still includes keywords and built-ins.",
+      "description": "Write test `edit_check_concurrent_with_resolution_and_constraints` — end-to-end concurrent interactive loop. Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`, constraint `x > a`, constraint `y < mm(100.0)`. SequencedMockSolver returns x=mm(5.0) then x=mm(20.0). Cold eval+check. edit_check_concurrent(a, mm(8.0)). Assert: (1) resolved_params contains x→mm(20.0), (2) values[y] = 0.04 SI (re-evaluated from resolved x), (3) constraint `x > a` is Satisfied (via checker), (4) constraint `y < mm(100)` is Satisfied. This is the comprehensive coherence test: concurrent edit → resolution → let-binding propagation → constraint checking, all in one interactive update.",
       "status": "done",
-      "commit": "bb5bf8c"
+      "commit": "86a9969"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Create completion.rs with compute_completions(source: &str, uri: &Url, position: Position) -> Vec<CompletionItem>. Builds AnalysisContext, collects: (a) keywords as KEYWORD items, (b) value_cell members as VARIABLE items with cell_type.to_string() as detail, (c) structure names as STRUCT items, (d) built-in function names as FUNCTION items, (e) type names as CLASS items. Returns flat list for client-side filtering. Register module in lib.rs.",
+      "description": "Fix any coherence issues found by step-9. Update the stale doc comment on `edit_param_concurrent_re_resolves_auto_params` test (remove 'Currently FAILS' note). Clean up any remaining underscore-prefixed variable names from the old discard pattern.",
       "status": "done",
-      "commit": "3572f37"
+      "commit": "57d26db"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test: after server.initialize(), capabilities should include hover_provider (Some), definition_provider (Some), and completion_provider (Some). Uses existing LspService::new(ReifyLanguageServer::new) + service.inner() pattern.",
+      "description": "Write failing test `edit_check_preserves_constraint_labels` in crates/reify-eval/tests/incremental.rs. Uses SimpleConstraintChecker. Module: param `width` (default mm(10.0)), TWO constraints: `.constraint(\"S\", 0, Some(\"min_width\"), gt(value_ref(\"S\", \"width\"), literal(mm(5.0))))` and `.constraint(\"S\", 1, None, lt(value_ref(\"S\", \"width\"), literal(mm(100.0))))`. Cold check() → verify constraint_results[0].label == Some(\"min_width\") and constraint_results[1].label == None. Then call edit_check(width, mm(2.0)). Assert: (1) constraint_results[0].label == Some(\"min_width\"), (2) constraint_results[1].label == None, (3) constraint_results[0].satisfaction == Violated. This test WILL FAIL because `check_constraints_with_values` always sets `label: None`, so the edit_check path returns `label: None` for the labeled constraint.",
       "status": "done",
-      "commit": "a9c81a3"
+      "commit": "5905aa2"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Update server.rs initialize() to advertise: hover_provider: Some(HoverProviderCapability::Simple(true)), definition_provider: Some(OneOf::Left(true)), completion_provider: Some(CompletionOptions::default()). Existing text_document_sync unchanged.",
+      "description": "Fix label preservation in `check_constraints_with_values`. Add `pub label: Option<String>` field to `ConstraintNodeData` in crates/reify-eval/src/graph.rs. Update the graph builder (graph.rs:86-92) to copy `constraint.label.clone()` into `ConstraintNodeData`. Update all existing `ConstraintNodeData { .. }` construction sites in tests (graph.rs tests, demand.rs, deps.rs, dirty.rs) to include `label: None`. In `check_constraints_with_values` (lib.rs:1251-1255), change `label: None` to `label: cnode.label.clone()` by looking up the constraint node from `snapshot.graph.constraints` using the constraint id. The helper already iterates `snapshot.graph.constraints` and has access to each `cnode`, so use `cnode.label.clone()` directly in the `ConstraintCheckEntry` construction.",
       "status": "done",
-      "commit": "d61e14f"
+      "commit": "d9d6854"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing integration tests: (1) open bracket_source, call hover() with position at 'width' → returns Ok(Some(Hover)) with non-empty contents; (2) open bracket_source, call goto_definition() at 'thickness' in constraint → returns Ok(Some(GotoDefinitionResponse)); (3) open bracket_source, call completion() → returns Ok(Some(CompletionResponse)) with items. These tests verify end-to-end wiring through the server handlers.",
+      "description": "Write test `edit_check_concurrent_preserves_constraint_labels` in crates/reify-runtime/tests/concurrent_eval.rs. Uses SimpleConstraintChecker. Module: param `width` (default mm(10.0)), constraint `.constraint(\"S\", 0, Some(\"min_width\"), gt(value_ref(\"S\", \"width\"), literal(mm(5.0))))`. Cold check(). edit_check_concurrent(width, mm(2.0)). Assert: (1) constraint_results[0].label == Some(\"min_width\"), (2) satisfaction == Violated. This verifies label preservation through the concurrent constraint-checking path. Should pass immediately since edit_check_concurrent also uses check_constraints_with_values which was fixed in step-12.",
       "status": "done",
-      "commit": "d30c54e"
+      "commit": "a8652fa"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Wire handlers in server.rs: (1) async fn hover(&self, params: HoverParams) → reads document from state, calls hover::compute_hover(text, uri, position), returns result; (2) async fn goto_definition(&self, params: GotoDefinitionParams) → calls goto_def::compute_goto_definition, wraps in GotoDefinitionResponse::Scalar; (3) async fn completion(&self, params: CompletionParams) → calls completion::compute_completions, wraps in CompletionResponse::Array. Each follows existing did_open pattern of state.read().await → documents.get().",
+      "description": "Verify step-13 test passes (it should, since edit_check_concurrent routes through the same check_constraints_with_values helper fixed in step-12). Run full test suite to confirm no regressions. Fix any compilation issues in test files that construct ConstraintNodeData without the new `label` field.",
       "status": "done",
-      "commit": "51601b7"
+      "commit": "bb812af"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Shared AnalysisContext runs the pipeline once per request",
-      "rationale": "Hover, goto-def (optionally), and completions all need ParsedModule, CompiledModule, and/or CheckResult. A shared context avoids duplicating the 5-line pipeline (derive module name, parse, compile, check). This also centralizes the module_name_from_uri extraction, reducing duplication with diagnostics.rs. The context is cheap to construct per-request given M1's single-file scope."
+      "decision": "Add resolved_params/diagnostics as fields on ConcurrentEditResult rather than returning them separately from edit_param_concurrent",
+      "rationale": "Keeping all edit output in one struct mirrors the EvalResult pattern, prevents callers from losing track of associated data, and means existing callers just get additional fields (backward-compatible). The struct already carries values and snapshot_values; adding resolution metadata completes it."
     },
     {
-      "decision": "Word-based symbol lookup rather than full AST position walking",
-      "rationale": "ParsedModule stores whole-declaration spans (e.g., ParamDecl.span covers entire 'param width: Scalar = 80mm', not just 'width'). Walking the AST to find which node contains the cursor offset would miss declaration-site name hovers and require complex tree traversal. Word extraction + name matching is simpler, covers all cases (declaration site, reference site, structure names, keywords), and handles the fact that expression-level ExprKind::Ident spans are only available deep in the AST."
+      "decision": "Factor constraint checking into Engine::check_constraints_with_values helper, reuse in both edit_check and edit_check_concurrent",
+      "rationale": "Avoids duplicating constraint-checking logic. edit_check currently inlines the constraint loop; factoring it out makes it available to the concurrent path without copying. Both paths need identical constraint evaluation logic — only the value-computation step differs (sequential vs concurrent)."
     },
     {
-      "decision": "Go-to-definition uses ParsedModule spans exclusively",
-      "rationale": "The compiler sets ALL spans to SourceSpan::new(0,0) in compile_structure() (lines 669, 683, 705, 729, 751 in lib.rs). ParsedModule retains accurate tree-sitter byte offsets: ParamDecl.span for 'param width' is (24,42), LetDecl.span for 'let volume' is (187,226), etc. This is the only reliable source of declaration locations. Go-to-def only needs the parsed module, not the compiled one."
+      "decision": "edit_check_concurrent is a free function in reify-runtime (not an Engine method)",
+      "rationale": "Matches the existing edit_param_concurrent pattern. Keeps async code in the runtime crate rather than making Engine depend on tokio. The function orchestrates Engine methods (prepare, apply, check) without owning any state."
     },
     {
-      "decision": "Hover shows evaluated values from CheckResult",
-      "rationale": "The task description says 'type/value info'. Running the full pipeline through Engine::check() provides both Type (from CompiledModule) and evaluated Value (from CheckResult.values). For a CAD language, showing computed dimensions immediately on hover is high-value: 'param width: Scalar[Length] = 0.08 m'. The cost of running check() is negligible for M1 single-file sources."
+      "decision": "edit_check_concurrent applies the concurrent edit before checking constraints (apply-then-check, not check-with-temporary-values)",
+      "rationale": "Applying first ensures the engine state is fully updated for subsequent operations. The caller gets a consistent engine state plus a complete CheckResult. This matches edit_check's pattern where edit_param updates engine state before constraint checking reads from it."
     },
     {
-      "decision": "Value formatting as a local helper, not cross-crate Display impl",
-      "rationale": "Value is defined in reify-types (outside module scope). Adding Display there would be a cross-crate change. A local format_value() in analysis.rs handles the LSP-specific formatting needs: Scalar shows SI value with dimension label, Bool shows true/false, Undef shows '(undefined)'. This can be promoted to a proper Display impl later if useful elsewhere."
+      "decision": "Defer incremental geometry realization to a separate task",
+      "rationale": "The task mentions 'realized outputs' but geometry realization requires OCCT kernel integration with thread-safety constraints (M4 'Living Design' scope). The 'realized outputs' gap for this task is addressed by ensuring let-binding values that feed realization (e.g., volume) are correctly updated in the interactive loop. Incremental geometry belongs to a dedicated task."
     },
     {
-      "decision": "Flat completion list with client-side filtering",
-      "rationale": "Always return all completions (keywords, identifiers, types, functions) regardless of cursor position. LSP clients perform their own fuzzy filtering on CompletionItem.label. Server-side context-aware filtering (only types after ':', only keywords at start of member) adds complexity with minimal benefit since clients already filter well. Can be added as a refinement later."
+      "decision": "Use SimpleConstraintChecker (real checker) for edit_check_concurrent tests, not MockConstraintChecker",
+      "rationale": "The concurrent constraint tests need to verify actual satisfaction transitions (Satisfied→Violated→Satisfied). MockConstraintChecker returns predetermined results regardless of values, which wouldn't test the pipeline. SimpleConstraintChecker evaluates constraint expressions against actual values, proving the full pipeline is coherent."
     },
     {
-      "decision": "Go-to-def returns None for structure names and keywords",
-      "rationale": "Structure names are self-referential (Bracket is its own definition). Keywords have no source definition. Only param/let member names provide meaningful navigation targets. This matches user expectations: clicking an identifier reference navigates to its declaration."
-    },
-    {
-      "decision": "Fresh Engine per request, consistent with diagnostics pattern",
-      "rationale": "Engine is not Send (holds Box<dyn ConstraintChecker>). Persisting across async handler calls would require a dedicated thread, Mutex, or architectural change. For M1 single-file sources the per-request cost is negligible. M4 'Living Design' task will address persistent Engine state for warm-starting and incremental evaluation."
+      "decision": "Store constraint labels on ConstraintNodeData in the graph rather than passing a label map to check_constraints_with_values",
+      "rationale": "Labels are a static property of a constraint, logically belonging on the graph node alongside id and expr. Storing them in ConstraintNodeData makes them available everywhere the graph is used, not just in constraint-checking. It avoids threading extra parameters (a label map built from the compiled template) through check_constraints_with_values. The graph builder already has access to the label from CompiledConstraint; it just wasn't copying it. This is a one-field addition to a struct, matching the existing pattern where ValueCellNode stores all static cell metadata."
     }
   ],
   "reuse": [
     {
-      "what": "position_to_offset(source, Position) -> usize",
-      "where": "crates/reify-lsp/src/convert.rs:44-85",
-      "how": "Convert incoming LSP cursor position to byte offset for word extraction. First step in all three feature handlers. Added in pre-1 (commit 70772d8)."
+      "what": "TopologyTemplateBuilder, CompiledModuleBuilder, expression helpers (binop, gt, lt, literal, value_ref)",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Build test modules with .param(), .auto_param(), .let_binding(), .constraint(). Same pattern used in all existing concurrent_eval.rs and resolution.rs tests. The .constraint() method already accepts label: Option<&str> as its 3rd argument."
     },
     {
-      "what": "find_word_at_offset(source, offset) -> Option<(usize, &str)>",
-      "where": "crates/reify-lsp/src/convert.rs:92-117",
-      "how": "Extract identifier word at cursor position. Used by hover and goto-def to find the symbol name under cursor. Added in pre-1 (commit 70772d8)."
+      "what": "MockConstraintChecker, SequencedMockConstraintSolver",
+      "where": "crates/reify-test-support/src/mocks.rs",
+      "how": "MockConstraintChecker for Engine construction in resolution tests. SequencedMockSolver for multi-phase resolution testing (cold eval → edit). Already used in edit_param_concurrent_re_resolves_auto_params test."
     },
     {
-      "what": "span_to_range(source, SourceSpan) -> Range",
-      "where": "crates/reify-lsp/src/convert.rs:125-130",
-      "how": "Convert ParsedModule declaration spans to LSP Range for goto-def Location results and hover word Range."
+      "what": "SimpleConstraintChecker (real constraint evaluator)",
+      "where": "crates/reify-constraints/src/lib.rs",
+      "how": "For edit_check_concurrent tests that need actual constraint evaluation. Already used in edit_check_constraint_transitions_satisfied_to_violated_and_back test in incremental.rs."
     },
     {
-      "what": "diagnostics.rs pipeline pattern",
-      "where": "crates/reify-lsp/src/diagnostics.rs:8-45",
-      "how": "The module_name_from_uri derivation (uri.path_segments()...strip_suffix('.ri')) and the parse→compile→check sequence are extracted into AnalysisContext. diagnostics.rs is updated to use the shared helper."
+      "what": "mm() value constructor",
+      "where": "crates/reify-test-support/src/values.rs",
+      "how": "Create length values in millimeters. mm(5.0) → Value::Scalar { si_value: 0.005, dimension: LENGTH }."
     },
     {
-      "what": "Type::Display implementation",
-      "where": "crates/reify-types/src/ty.rs:46-62",
-      "how": "Type implements Display: Bool→'Bool', Scalar{LENGTH}→'Scalar[Length]', etc. Used in hover markdown and completion item detail strings via .to_string()."
+      "what": "edit_param_concurrent() existing function",
+      "where": "crates/reify-runtime/src/concurrent_eval.rs:282-324",
+      "how": "edit_check_concurrent wraps edit_param_concurrent with constraint checking, following the same composition pattern as edit_check wraps edit_param."
     },
     {
-      "what": "bracket_source() and bracket_parsed_module() test fixtures",
-      "where": "crates/reify-test-support/src/fixtures.rs:8-264",
-      "how": "Primary test fixture with known byte offsets: width param (24,42), height (47,74), thickness (79,107), fillet_radius (112,144), hole_diameter (149,181), volume let (187,226), body let (346,385), 'width' ident in volume expr (200,205), 'thickness' ident in constraint (243,252)."
+      "what": "edit_check() constraint-checking logic",
+      "where": "crates/reify-eval/src/lib.rs:1218-1261",
+      "how": "Factor the constraint-checking loop (lines 1228-1253) into check_constraints_with_values helper. The helper takes &self and &ValueMap, accesses self.current_snapshot.graph.constraints and self.constraint_checker."
     },
     {
-      "what": "LspService::new server test pattern",
-      "where": "crates/reify-lsp/src/server.rs:118-130",
-      "how": "Integration tests use LspService::new(ReifyLanguageServer::new), service.inner() for direct handler calls, did_open to load documents. Existing pattern reused for hover/goto_def/completion handler tests."
+      "what": "ConcurrentEvalAdapter::into_result() and build_result_shared()",
+      "where": "crates/reify-runtime/src/concurrent_eval.rs:111-167",
+      "how": "Update these to initialize new resolved_params and diagnostics fields to empty defaults. The resolution metadata is set after the adapter produces the result, in edit_param_concurrent."
     },
     {
-      "what": "CompiledModule topology iteration",
-      "where": "crates/reify-compiler/src/lib.rs (TopologyTemplate, ValueCellDecl)",
-      "how": "TopologyTemplate.value_cells provides cell_type: Type and kind: ValueCellKind for each declared member. ValueCellDecl.id.member gives the name. Used by AnalysisContext to build symbol→type mapping for hover and completions."
+      "what": "CheckResult, ConstraintCheckEntry, EvalResult types",
+      "where": "crates/reify-eval/src/lib.rs:68-90",
+      "how": "edit_check_concurrent returns CheckResult (same as edit_check). No new result types needed."
     },
     {
-      "what": "CheckResult.values (ValueMap)",
-      "where": "crates/reify-eval/src/lib.rs:77-82",
-      "how": "CheckResult.values is a ValueMap (PersistentMap<ValueCellId, Value>) providing evaluated runtime values. Used by hover to show computed values alongside types."
+      "what": "ConstraintNodeData struct and graph builder",
+      "where": "crates/reify-eval/src/graph.rs:20-27 (struct), graph.rs:86-94 (builder)",
+      "how": "Add `label: Option<String>` field to ConstraintNodeData. In the graph builder loop (graph.rs:86-94), copy `constraint.label.clone()` into the new field. This makes labels available to check_constraints_with_values without needing the compiled template."
     }
   ]
 }

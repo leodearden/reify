@@ -861,3 +861,560 @@ async fn concurrent_triple_fan_in_mixed_early_cutoff() {
         "y should be 10 + 1 + 2 = 13, NOT stale 8"
     );
 }
+
+/// After concurrent edit of a param that affects constraints governing auto params,
+/// the solver should re-run and resolved values should be propagated.
+///
+/// Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`,
+/// constraint `x > a`. SequencedMockSolver: 1st call x=mm(5.0), 2nd x=mm(20.0).
+///
+/// Cold eval → x=mm(5.0)=0.005 SI, y = 0.01 SI.
+/// Concurrent edit a→mm(8.0) → solver re-resolves x to mm(20.0)=0.02 SI.
+/// After apply: y should be 0.04 SI, x should be 0.02 SI.
+#[tokio::test]
+async fn edit_param_concurrent_re_resolves_auto_params() {
+    use reify_test_support::builders::{binop, gt, literal, value_ref};
+    use reify_test_support::mocks::SequencedMockConstraintSolver;
+    use reify_test_support::mm;
+    use reify_types::SolveResult;
+
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // Sequenced solver: first x=mm(5.0), second x=mm(20.0)
+    let mut solved1 = HashMap::new();
+    solved1.insert(x_id.clone(), mm(5.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(x_id.clone(), mm(20.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1 },
+        SolveResult::Solved { values: solved2 },
+    ]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(3.0))))
+        .auto_param("S", "x", Type::length())
+        .let_binding(
+            "S",
+            "y",
+            Type::length(),
+            binop(BinOp::Mul, value_ref("S", "x"), literal(Value::Real(2.0))),
+        )
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None)
+        .with_solver(Box::new(solver));
+
+    // Cold eval: x resolved to mm(5.0), y = 0.005*2 = 0.01
+    let cold = engine.eval(&module);
+    assert!(
+        !cold.resolved_params.is_empty(),
+        "cold eval should resolve auto params"
+    );
+
+    let cancel = CancellationToken::new();
+
+    // Concurrent edit: change a from mm(3.0) to mm(8.0)
+    let (setup, result) = edit_param_concurrent(
+        &mut engine,
+        a_id.clone(),
+        mm(8.0),
+        &cancel,
+    ).await.unwrap();
+
+    // Apply the concurrent edit
+    engine.apply_concurrent_edit(&setup, result);
+
+    // After apply, check engine snapshot values
+    let snap = engine.snapshot().expect("snapshot should exist");
+
+    // x should be re-resolved to mm(20.0) = 0.02 SI
+    let (x_val, _) = snap.values.get(&x_id).expect("x should be in snapshot");
+    assert!(
+        matches!(x_val, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
+        "expected x = mm(20.0) = 0.02 SI after concurrent edit, got {:?}",
+        x_val
+    );
+
+    // y should be re-evaluated: mm(20.0)*2 = 0.04 SI
+    let (y_val, _) = snap.values.get(&y_id).expect("y should be in snapshot");
+    assert!(
+        matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.04).abs() < 1e-10),
+        "expected y = 0.04 SI after concurrent edit with re-resolution, got {:?}",
+        y_val
+    );
+}
+
+/// After a concurrent edit that triggers auto-resolution, the returned
+/// `ConcurrentEditResult` should include `resolved_params` with the solver's
+/// resolved values.
+///
+/// Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`,
+/// constraint `x > a`. SequencedMockSolver: 1st call x=mm(5.0), 2nd x=mm(20.0).
+///
+/// Cold eval → x=mm(5.0). Concurrent edit a→mm(8.0) → solver re-resolves x to mm(20.0).
+/// Assert result.resolved_params contains x→mm(20.0).
+#[tokio::test]
+async fn concurrent_edit_result_includes_resolved_params() {
+    use reify_test_support::builders::{binop, gt, literal, value_ref};
+    use reify_test_support::mocks::SequencedMockConstraintSolver;
+    use reify_test_support::mm;
+    use reify_types::SolveResult;
+
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+
+    // Sequenced solver: first x=mm(5.0), second x=mm(20.0)
+    let mut solved1 = HashMap::new();
+    solved1.insert(x_id.clone(), mm(5.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(x_id.clone(), mm(20.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1 },
+        SolveResult::Solved { values: solved2 },
+    ]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(3.0))))
+        .auto_param("S", "x", Type::length())
+        .let_binding(
+            "S",
+            "y",
+            Type::length(),
+            binop(BinOp::Mul, value_ref("S", "x"), literal(Value::Real(2.0))),
+        )
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None)
+        .with_solver(Box::new(solver));
+
+    // Cold eval: x resolved to mm(5.0)
+    let cold = engine.eval(&module);
+    assert!(!cold.resolved_params.is_empty(), "cold eval should resolve auto params");
+
+    let cancel = CancellationToken::new();
+
+    // Concurrent edit: change a from mm(3.0) to mm(8.0)
+    let (_setup, result) = edit_param_concurrent(
+        &mut engine,
+        a_id.clone(),
+        mm(8.0),
+        &cancel,
+    ).await.unwrap();
+
+    // The ConcurrentEditResult should carry resolved_params
+    assert!(
+        !result.resolved_params.is_empty(),
+        "ConcurrentEditResult should include resolved_params after re-resolution"
+    );
+    let resolved_x = result.resolved_params.get(&x_id)
+        .expect("resolved_params should contain x");
+    assert!(
+        matches!(resolved_x, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
+        "expected resolved x = mm(20.0) = 0.02 SI, got {:?}",
+        resolved_x
+    );
+
+    // diagnostics should be empty (successful solve)
+    assert!(
+        result.diagnostics.is_empty(),
+        "diagnostics should be empty on successful solve, got {:?}",
+        result.diagnostics
+    );
+}
+
+/// When the solver returns Infeasible during a concurrent edit, the
+/// `ConcurrentEditResult` should carry the solver's diagnostic messages.
+///
+/// Module: param `a` (default mm(1.0)), auto `x`, constraint `x > a`.
+/// SequencedMockSolver: 1st call Solved x=mm(5.0), 2nd call Infeasible
+/// with a diagnostic message.
+///
+/// Cold eval → x=mm(5.0). Concurrent edit a→mm(10.0) → solver infeasible.
+/// Assert result.diagnostics is non-empty and contains the infeasibility message.
+#[tokio::test]
+async fn concurrent_edit_result_includes_diagnostics_on_infeasible() {
+    use reify_test_support::builders::{gt, literal, value_ref};
+    use reify_test_support::mocks::SequencedMockConstraintSolver;
+    use reify_test_support::mm;
+    use reify_types::{Diagnostic, Severity, SolveResult};
+
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+
+    // Sequenced solver: first Solved, second Infeasible
+    let mut solved1 = HashMap::new();
+    solved1.insert(x_id.clone(), mm(5.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1 },
+        SolveResult::Infeasible {
+            diagnostics: vec![Diagnostic {
+                severity: Severity::Error,
+                message: "constraint x > a is infeasible".to_string(),
+                labels: Vec::new(),
+            }],
+        },
+    ]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(1.0))))
+        .auto_param("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None)
+        .with_solver(Box::new(solver));
+
+    // Cold eval: x resolved to mm(5.0)
+    let cold = engine.eval(&module);
+    assert!(!cold.resolved_params.is_empty(), "cold eval should resolve auto params");
+
+    let cancel = CancellationToken::new();
+
+    // Concurrent edit: change a from mm(1.0) to mm(10.0) — triggers infeasible solve
+    let (_setup, result) = edit_param_concurrent(
+        &mut engine,
+        a_id.clone(),
+        mm(10.0),
+        &cancel,
+    ).await.unwrap();
+
+    // resolved_params should be empty (infeasible solve doesn't produce resolved values)
+    assert!(
+        result.resolved_params.is_empty(),
+        "resolved_params should be empty on infeasible solve, got {:?}",
+        result.resolved_params
+    );
+
+    // diagnostics should contain the infeasibility message
+    assert!(
+        !result.diagnostics.is_empty(),
+        "diagnostics should be non-empty on infeasible solve"
+    );
+    assert!(
+        result.diagnostics.iter().any(|d| d.message.contains("infeasible")),
+        "diagnostics should contain infeasibility message, got {:?}",
+        result.diagnostics
+    );
+}
+
+/// After a concurrent edit that violates a constraint, `edit_check_concurrent`
+/// should return a CheckResult with the constraint marked as Violated.
+///
+/// Module: param `width` (default mm(10.0)), constraint `width > mm(5.0)`.
+/// Cold check → Satisfied. edit_check_concurrent(width, mm(2.0)) → Violated.
+/// Also verifies values and empty resolved_params (no auto params).
+#[tokio::test]
+async fn edit_check_concurrent_reports_constraint_satisfaction() {
+    use reify_test_support::builders::{gt, literal, value_ref};
+    use reify_test_support::mm;
+    use reify_runtime::concurrent_eval::edit_check_concurrent;
+    use reify_types::Satisfaction;
+
+    let width_id = ValueCellId::new("S", "width");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "width", Type::length(), Some(literal(mm(10.0))))
+        .constraint("S", 0, None, gt(value_ref("S", "width"), literal(mm(5.0))))
+        .build();
+
+    let module = build_module(template);
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold check: width=mm(10.0) > mm(5.0) → Satisfied
+    let cold_result = engine.check(&module);
+    assert_eq!(
+        cold_result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "cold check should be Satisfied"
+    );
+
+    let cancel = CancellationToken::new();
+
+    // Concurrent edit: width=mm(2.0) < mm(5.0) → Violated
+    let check_result = edit_check_concurrent(
+        &mut engine,
+        width_id.clone(),
+        mm(2.0),
+        &cancel,
+    ).await.unwrap();
+
+    assert_eq!(
+        check_result.constraint_results[0].satisfaction,
+        Satisfaction::Violated,
+        "constraint should be Violated when width=mm(2.0) < mm(5.0)"
+    );
+
+    // values should reflect the new width
+    let width_val = check_result.values.get(&width_id)
+        .expect("values should contain width");
+    assert!(
+        matches!(width_val, Value::Scalar { si_value, .. } if (*si_value - 0.002).abs() < 1e-10),
+        "expected width = mm(2.0) = 0.002 SI, got {:?}",
+        width_val
+    );
+
+    // No auto params → resolved_params should be empty
+    assert!(
+        check_result.resolved_params.is_empty(),
+        "resolved_params should be empty (no auto params)"
+    );
+}
+
+/// Verify constraint transitions work correctly through the concurrent path
+/// across multiple consecutive edits.
+///
+/// Module: param `width` (default mm(10.0)), constraint `width > mm(5.0)`.
+/// Cold check → Satisfied. edit_check_concurrent(width, mm(2.0)) → Violated.
+/// edit_check_concurrent(width, mm(8.0)) → Satisfied.
+#[tokio::test]
+async fn edit_check_concurrent_constraint_transitions() {
+    use reify_test_support::builders::{gt, literal, value_ref};
+    use reify_test_support::mm;
+    use reify_runtime::concurrent_eval::edit_check_concurrent;
+    use reify_types::Satisfaction;
+
+    let width_id = ValueCellId::new("S", "width");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "width", Type::length(), Some(literal(mm(10.0))))
+        .constraint("S", 0, None, gt(value_ref("S", "width"), literal(mm(5.0))))
+        .build();
+
+    let module = build_module(template);
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold check: width=mm(10.0) > mm(5.0) → Satisfied
+    let cold_result = engine.check(&module);
+    assert_eq!(
+        cold_result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "cold check should be Satisfied"
+    );
+
+    let cancel = CancellationToken::new();
+
+    // First concurrent edit: width=mm(2.0) < mm(5.0) → Violated
+    let result1 = edit_check_concurrent(
+        &mut engine,
+        width_id.clone(),
+        mm(2.0),
+        &cancel,
+    ).await.unwrap();
+    assert_eq!(
+        result1.constraint_results[0].satisfaction,
+        Satisfaction::Violated,
+        "constraint should be Violated when width=mm(2.0) < mm(5.0)"
+    );
+
+    // Second concurrent edit: width=mm(8.0) > mm(5.0) → Satisfied
+    let result2 = edit_check_concurrent(
+        &mut engine,
+        width_id.clone(),
+        mm(8.0),
+        &cancel,
+    ).await.unwrap();
+    assert_eq!(
+        result2.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "constraint should be Satisfied when width=mm(8.0) > mm(5.0)"
+    );
+}
+
+/// End-to-end concurrent interactive loop: edit → resolution → let-binding
+/// propagation → constraint checking, all in one interactive update.
+///
+/// Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`,
+/// constraint `x > a` (index 0), constraint `y < mm(100.0)` (index 1).
+/// SequencedMockSolver: 1st call x=mm(5.0), 2nd call x=mm(20.0).
+///
+/// Cold check → x=mm(5.0), y=0.01 SI, both constraints satisfied.
+/// edit_check_concurrent(a, mm(8.0)) → x re-resolved to mm(20.0), y=0.04 SI.
+/// Assert: (1) resolved_params contains x→mm(20.0),
+///         (2) values[y] = 0.04 SI,
+///         (3) constraint `x > a` Satisfied,
+///         (4) constraint `y < mm(100)` Satisfied.
+#[tokio::test]
+async fn edit_check_concurrent_with_resolution_and_constraints() {
+    use reify_test_support::builders::{binop, gt, literal, lt, value_ref};
+    use reify_test_support::mocks::SequencedMockConstraintSolver;
+    use reify_test_support::mm;
+    use reify_runtime::concurrent_eval::edit_check_concurrent;
+    use reify_types::{Satisfaction, SolveResult};
+
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // Sequenced solver: first x=mm(5.0), second x=mm(20.0)
+    let mut solved1 = HashMap::new();
+    solved1.insert(x_id.clone(), mm(5.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(x_id.clone(), mm(20.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1 },
+        SolveResult::Solved { values: solved2 },
+    ]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(3.0))))
+        .auto_param("S", "x", Type::length())
+        .let_binding(
+            "S",
+            "y",
+            Type::length(),
+            binop(BinOp::Mul, value_ref("S", "x"), literal(Value::Real(2.0))),
+        )
+        // constraint 0: x > a
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        // constraint 1: y < mm(100.0)
+        .constraint("S", 1, None, lt(value_ref("S", "y"), literal(mm(100.0))))
+        .build();
+
+    let module = build_module(template);
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None)
+        .with_solver(Box::new(solver));
+
+    // Cold check: x=mm(5.0), y=mm(10.0), both constraints satisfied
+    let cold = engine.check(&module);
+    assert_eq!(cold.constraint_results.len(), 2);
+    assert_eq!(cold.constraint_results[0].satisfaction, Satisfaction::Satisfied);
+    assert_eq!(cold.constraint_results[1].satisfaction, Satisfaction::Satisfied);
+
+    let cancel = CancellationToken::new();
+
+    // edit_check_concurrent: a → mm(8.0) → solver re-resolves x to mm(20.0)
+    let result = edit_check_concurrent(
+        &mut engine,
+        a_id.clone(),
+        mm(8.0),
+        &cancel,
+    ).await.unwrap();
+
+    // (1) resolved_params contains x→mm(20.0)
+    assert!(
+        !result.resolved_params.is_empty(),
+        "resolved_params should contain re-resolved auto params"
+    );
+    let resolved_x = result.resolved_params.get(&x_id)
+        .expect("resolved_params should contain x");
+    assert!(
+        matches!(resolved_x, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
+        "expected resolved x = mm(20.0) = 0.02 SI, got {:?}",
+        resolved_x
+    );
+
+    // (2) y re-evaluated from resolved x: mm(20.0) * 2.0 = 0.04 SI
+    let y_val = result.values.get(&y_id).expect("values should contain y");
+    assert!(
+        matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.04).abs() < 1e-10),
+        "expected y = 0.04 SI after re-resolution, got {:?}",
+        y_val
+    );
+
+    // (3) constraint x > a: mm(20.0) > mm(8.0) → Satisfied
+    assert_eq!(
+        result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "constraint x > a should be Satisfied after re-resolution"
+    );
+
+    // (4) constraint y < mm(100.0): mm(40.0) < mm(100.0) → Satisfied
+    assert_eq!(
+        result.constraint_results[1].satisfaction,
+        Satisfaction::Satisfied,
+        "constraint y < mm(100.0) should be Satisfied"
+    );
+}
+
+/// Verify that constraint labels are preserved through the concurrent
+/// constraint-checking path (edit_check_concurrent).
+///
+/// Module: param `width` (default mm(10.0)), constraint with label "min_width":
+/// `width > mm(5.0)`. Cold check → label present. edit_check_concurrent(width,
+/// mm(2.0)) → Violated, label must still be "min_width".
+///
+/// Should pass immediately since edit_check_concurrent routes through
+/// check_constraints_with_values which was fixed to use cnode.label.clone().
+#[tokio::test]
+async fn edit_check_concurrent_preserves_constraint_labels() {
+    use reify_test_support::builders::{gt, literal, value_ref};
+    use reify_test_support::mm;
+    use reify_runtime::concurrent_eval::edit_check_concurrent;
+    use reify_types::{ConstraintNodeId, Satisfaction};
+
+    let width_id = ValueCellId::new("S", "width");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "width", Type::length(), Some(literal(mm(10.0))))
+        // Labeled constraint: "min_width", width > mm(5.0)
+        .constraint(
+            "S",
+            0,
+            Some("min_width"),
+            gt(value_ref("S", "width"), literal(mm(5.0))),
+        )
+        .build();
+
+    let module = build_module(template);
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold check: width=mm(10.0) > mm(5.0) → Satisfied, label present
+    let cold_result = engine.check(&module);
+    assert_eq!(cold_result.constraint_results.len(), 1);
+    assert_eq!(
+        cold_result.constraint_results[0].label,
+        Some("min_width".to_string()),
+        "cold check: label should be 'min_width'"
+    );
+    assert_eq!(
+        cold_result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+    );
+
+    let cancel = CancellationToken::new();
+
+    // edit_check_concurrent: width=mm(2.0) → Violated, label preserved
+    let result = edit_check_concurrent(
+        &mut engine,
+        width_id.clone(),
+        mm(2.0),
+        &cancel,
+    ).await.unwrap();
+
+    assert_eq!(result.constraint_results.len(), 1);
+
+    let c0 = &result.constraint_results[0];
+    assert_eq!(c0.id, ConstraintNodeId::new("S", 0));
+
+    // Label must be preserved through the concurrent path
+    assert_eq!(
+        c0.label,
+        Some("min_width".to_string()),
+        "edit_check_concurrent: label should be preserved as 'min_width'"
+    );
+
+    // Satisfaction must be Violated
+    assert_eq!(
+        c0.satisfaction,
+        Satisfaction::Violated,
+        "constraint should be Violated when width=mm(2.0) < mm(5.0)"
+    );
+}

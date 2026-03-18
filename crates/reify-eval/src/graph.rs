@@ -18,10 +18,11 @@ pub struct ValueCellNode {
 }
 
 /// A constraint node in the evaluation graph.
-/// Holds the compiled constraint expression and its content hash.
+/// Holds the compiled constraint expression, optional label, and its content hash.
 #[derive(Debug, Clone)]
 pub struct ConstraintNodeData {
     pub id: ConstraintNodeId,
+    pub label: Option<String>,
     pub expr: CompiledExpr,
     pub content_hash: ContentHash,
 }
@@ -87,6 +88,7 @@ impl EvaluationGraph {
                 let id_hash = ContentHash::of_str(&format!("{}", constraint.id));
                 let node = ConstraintNodeData {
                     id: constraint.id.clone(),
+                    label: constraint.label.clone(),
                     expr: constraint.expr.clone(),
                     content_hash: id_hash.combine(constraint.expr.content_hash),
                 };
@@ -212,6 +214,7 @@ mod tests {
 
         let node = ConstraintNodeData {
             id: id.clone(),
+            label: None,
             expr: expr.clone(),
             content_hash: hash,
         };
@@ -328,6 +331,7 @@ mod tests {
         let cnid = ConstraintNodeId::new("Bracket", 0);
         let cnode = ConstraintNodeData {
             id: cnid.clone(),
+            label: None,
             expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
             content_hash: ContentHash::of_str("c0"),
         };
@@ -602,6 +606,7 @@ mod tests {
             ConstraintNodeId::new("X", 0),
             ConstraintNodeData {
                 id: ConstraintNodeId::new("X", 0),
+                label: None,
                 expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
                 content_hash: hash_h,
             },
@@ -635,6 +640,7 @@ mod tests {
             ConstraintNodeId::new("X", 0),
             ConstraintNodeData {
                 id: ConstraintNodeId::new("X", 0),
+                label: None,
                 expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
                 content_hash: hash_h,
             },

@@ -332,6 +332,7 @@ mod tests {
         let c0_id = ConstraintNodeId::new(e, 0);
         graph.constraints.insert(c0_id.clone(), crate::graph::ConstraintNodeData {
             id: c0_id.clone(),
+            label: None,
             expr: CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real),
             content_hash: ContentHash::of_str("c0"),
         });

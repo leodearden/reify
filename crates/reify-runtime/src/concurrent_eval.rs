@@ -11,7 +11,7 @@ use reify_compiler::ValueCellKind;
 use reify_eval::cache::{CachedResult, EvalOutcome, NodeId};
 use reify_eval::deps::{extract_dependency_trace, ReverseDependencyIndex};
 use reify_eval::graph::EvaluationGraph;
-use reify_eval::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
+use reify_eval::{CheckResult, ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
 use reify_types::{
     ContentHash, DeterminacyState, PersistentMap, Value, ValueCellId, ValueMap, VersionId,
 };
@@ -109,10 +109,10 @@ impl ConcurrentEvalAdapter {
     /// references still exist. Slightly less efficient than `into_result`
     /// since it clones each inner container through locks.
     pub fn build_result_shared(&self, eval_set: &[NodeId]) -> ConcurrentEditResult {
-        let values = self.values.read().unwrap().clone();
-        let snapshot_values = self.snapshot_values.read().unwrap().clone();
-        let node_results = self.results.lock().unwrap().clone();
-        let skipped = self.skip_state.lock().unwrap().skipped.clone();
+        let values = self.values.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let snapshot_values = self.snapshot_values.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let node_results = self.results.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let skipped = self.skip_state.lock().unwrap_or_else(|e| e.into_inner()).skipped.clone();
 
         let actual_eval_set: Vec<NodeId> = eval_set
             .iter()
@@ -126,6 +126,8 @@ impl ConcurrentEvalAdapter {
             node_results,
             actual_eval_set,
             skipped,
+            resolved_params: std::collections::HashMap::new(),
+            diagnostics: Vec::new(),
         }
     }
 
@@ -134,20 +136,20 @@ impl ConcurrentEvalAdapter {
     /// Extracts the final values, snapshot_values, results, and skipped set.
     pub fn into_result(self, eval_set: &[NodeId]) -> ConcurrentEditResult {
         let values = match Arc::try_unwrap(self.values) {
-            Ok(lock) => lock.into_inner().unwrap(),
-            Err(arc) => arc.read().unwrap().clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
+            Err(arc) => arc.read().unwrap_or_else(|e| e.into_inner()).clone(),
         };
         let snapshot_values = match Arc::try_unwrap(self.snapshot_values) {
-            Ok(lock) => lock.into_inner().unwrap(),
-            Err(arc) => arc.read().unwrap().clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
+            Err(arc) => arc.read().unwrap_or_else(|e| e.into_inner()).clone(),
         };
         let node_results = match Arc::try_unwrap(self.results) {
-            Ok(lock) => lock.into_inner().unwrap(),
-            Err(arc) => arc.lock().unwrap().clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
+            Err(arc) => arc.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         };
         let skipped = match Arc::try_unwrap(self.skip_state) {
-            Ok(lock) => lock.into_inner().unwrap().skipped,
-            Err(arc) => arc.lock().unwrap().skipped.clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()).skipped,
+            Err(arc) => arc.lock().unwrap_or_else(|e| e.into_inner()).skipped.clone(),
         };
 
         // actual_eval_set = eval_set nodes that weren't skipped
@@ -163,6 +165,8 @@ impl ConcurrentEvalAdapter {
             node_results,
             actual_eval_set,
             skipped,
+            resolved_params: std::collections::HashMap::new(),
+            diagnostics: Vec::new(),
         }
     }
 }
@@ -301,10 +305,20 @@ pub async fn edit_param_concurrent(
             // Extract result from adapter. After scheduler completes, the only
             // remaining Arc reference should be ours — but if a spawned task
             // retained a clone, fall back to building the result via shared access.
-            let result = match Arc::try_unwrap(adapter_arc) {
+            let mut result = match Arc::try_unwrap(adapter_arc) {
                 Ok(adapter) => adapter.into_result(&eval_set),
                 Err(arc) => arc.build_result_shared(&eval_set),
             };
+
+            // Resolution phase: run solver synchronously after concurrent
+            // value evaluation completes. NLopt is single-threaded, so this
+            // sequential step is architecturally correct.
+            let (resolved_params, diagnostics) =
+                engine.resolve_concurrent_edit(&setup, &mut result);
+
+            result.resolved_params = resolved_params;
+            result.diagnostics = diagnostics;
+
             Ok((setup, result))
         }
         Err(e) => {
@@ -314,4 +328,41 @@ pub async fn edit_param_concurrent(
             Err(e)
         }
     }
+}
+
+/// Concurrent edit + constraint checking, analogous to `Engine::edit_check()`.
+///
+/// Calls `edit_param_concurrent` to compute new values (including auto-resolution),
+/// applies the result to the engine, then checks all constraints against the
+/// updated values.
+///
+/// Returns a `CheckResult` containing values, constraint results, diagnostics,
+/// and resolved_params — the same shape as `edit_check` in the sequential path.
+pub async fn edit_check_concurrent(
+    engine: &mut reify_eval::Engine,
+    cell: ValueCellId,
+    new_value: Value,
+    cancel: &CancellationToken,
+) -> Result<CheckResult, SchedulerError> {
+    let (setup, result) = edit_param_concurrent(engine, cell, new_value, cancel).await?;
+
+    // Capture resolution metadata before apply consumes the result
+    let resolved_params = result.resolved_params.clone();
+    let mut diagnostics = result.diagnostics.clone();
+    let values = result.values.clone();
+
+    // Apply concurrent edit to update engine state
+    engine.apply_concurrent_edit(&setup, result);
+
+    // Check constraints against the updated values
+    let (constraint_results, constraint_diagnostics) =
+        engine.check_constraints_with_values(&values);
+    diagnostics.extend(constraint_diagnostics);
+
+    Ok(CheckResult {
+        values,
+        constraint_results,
+        diagnostics,
+        resolved_params,
+    })
 }

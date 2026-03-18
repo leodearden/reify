@@ -146,6 +146,8 @@ fn apply_concurrent_edit_updates_engine_state() {
         node_results,
         actual_eval_set: vec![volume_node.clone()],
         skipped: skipped.clone(),
+        resolved_params: std::collections::HashMap::new(),
+        diagnostics: Vec::new(),
     };
 
     // Apply the result
