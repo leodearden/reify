@@ -1342,3 +1342,79 @@ async fn edit_check_concurrent_with_resolution_and_constraints() {
         "constraint y < mm(100.0) should be Satisfied"
     );
 }
+
+/// Verify that constraint labels are preserved through the concurrent
+/// constraint-checking path (edit_check_concurrent).
+///
+/// Module: param `width` (default mm(10.0)), constraint with label "min_width":
+/// `width > mm(5.0)`. Cold check → label present. edit_check_concurrent(width,
+/// mm(2.0)) → Violated, label must still be "min_width".
+///
+/// Should pass immediately since edit_check_concurrent routes through
+/// check_constraints_with_values which was fixed to use cnode.label.clone().
+#[tokio::test]
+async fn edit_check_concurrent_preserves_constraint_labels() {
+    use reify_test_support::builders::{gt, literal, value_ref};
+    use reify_test_support::mm;
+    use reify_runtime::concurrent_eval::edit_check_concurrent;
+    use reify_types::{ConstraintNodeId, Satisfaction};
+
+    let width_id = ValueCellId::new("S", "width");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "width", Type::length(), Some(literal(mm(10.0))))
+        // Labeled constraint: "min_width", width > mm(5.0)
+        .constraint(
+            "S",
+            0,
+            Some("min_width"),
+            gt(value_ref("S", "width"), literal(mm(5.0))),
+        )
+        .build();
+
+    let module = build_module(template);
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold check: width=mm(10.0) > mm(5.0) → Satisfied, label present
+    let cold_result = engine.check(&module);
+    assert_eq!(cold_result.constraint_results.len(), 1);
+    assert_eq!(
+        cold_result.constraint_results[0].label,
+        Some("min_width".to_string()),
+        "cold check: label should be 'min_width'"
+    );
+    assert_eq!(
+        cold_result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+    );
+
+    let cancel = CancellationToken::new();
+
+    // edit_check_concurrent: width=mm(2.0) → Violated, label preserved
+    let result = edit_check_concurrent(
+        &mut engine,
+        width_id.clone(),
+        mm(2.0),
+        &cancel,
+    ).await.unwrap();
+
+    assert_eq!(result.constraint_results.len(), 1);
+
+    let c0 = &result.constraint_results[0];
+    assert_eq!(c0.id, ConstraintNodeId::new("S", 0));
+
+    // Label must be preserved through the concurrent path
+    assert_eq!(
+        c0.label,
+        Some("min_width".to_string()),
+        "edit_check_concurrent: label should be preserved as 'min_width'"
+    );
+
+    // Satisfaction must be Violated
+    assert_eq!(
+        c0.satisfaction,
+        Satisfaction::Violated,
+        "constraint should be Violated when width=mm(2.0) < mm(5.0)"
+    );
+}
