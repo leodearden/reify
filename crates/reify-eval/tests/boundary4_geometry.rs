@@ -132,7 +132,7 @@ mod occt_tests {
     use reify_kernel_occt::OcctKernel;
     use reify_test_support::*;
     use reify_types::{
-        ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery,
+        ExportFormat, GeometryError, GeometryHandleId, GeometryOp, GeometryQuery,
         Value,
     };
     #[test]

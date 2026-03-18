@@ -39,7 +39,7 @@ fn run_bracket_e2e(source: &str) {
     // Build with real constraint checker and OCCT kernel
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::DispatchPlanner::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernel::new()));
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
 
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
