@@ -580,4 +580,75 @@ mod tests {
         tracker.remove_task(&node);
         assert!(!tracker.is_committed(&node));
     }
+
+    // --- CommitmentTransition tests ---
+
+    #[test]
+    fn update_status_returns_unchanged_when_still_not_yet() {
+        let mut tracker = CommitmentTracker::new(CommitmentPolicy::default());
+        let node = make_node("x");
+        tracker.register_task(node.clone(), NodeCommitmentOverride::CommitIfSlow);
+
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(1),
+            reported_progress: None,
+            previous_runtime: None,
+        };
+        let transition = tracker.update_status(&node, &progress, false);
+        assert_eq!(transition, Some(CommitmentTransition::Unchanged));
+    }
+
+    #[test]
+    fn update_status_returns_became_committed_on_transition() {
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_secs(10),
+            commit_when_proportion_done: 0.5,
+        };
+        let mut tracker = CommitmentTracker::new(policy);
+        let node = make_node("x");
+        tracker.register_task(node.clone(), NodeCommitmentOverride::CommitIfSlow);
+
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(11),
+            reported_progress: None,
+            previous_runtime: None,
+        };
+        let transition = tracker.update_status(&node, &progress, false);
+        assert_eq!(transition, Some(CommitmentTransition::BecameCommitted));
+    }
+
+    #[test]
+    fn update_status_returns_unchanged_when_already_committed() {
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_secs(10),
+            commit_when_proportion_done: 0.5,
+        };
+        let mut tracker = CommitmentTracker::new(policy);
+        let node = make_node("x");
+        tracker.register_task(node.clone(), NodeCommitmentOverride::CommitIfSlow);
+
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(11),
+            reported_progress: None,
+            previous_runtime: None,
+        };
+        // First update transitions
+        tracker.update_status(&node, &progress, false);
+        // Second update should be Unchanged (already committed)
+        let transition = tracker.update_status(&node, &progress, false);
+        assert_eq!(transition, Some(CommitmentTransition::Unchanged));
+    }
+
+    #[test]
+    fn update_status_returns_none_for_unknown_node() {
+        let mut tracker = CommitmentTracker::new(CommitmentPolicy::default());
+        let node = make_node("unknown");
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(1),
+            reported_progress: None,
+            previous_runtime: None,
+        };
+        let transition = tracker.update_status(&node, &progress, false);
+        assert_eq!(transition, None);
+    }
 }
