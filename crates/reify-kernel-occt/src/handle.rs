@@ -143,4 +143,39 @@ mod tests {
         assert_eq!(result.id, GeometryHandleId(1));
         assert_eq!(result.repr, ReprKind::Solid);
     }
+
+    #[test]
+    fn query_volume_returns_correct_value() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute(&op).unwrap();
+        let result = handle
+            .query(&reify_types::GeometryQuery::Volume(gh.id))
+            .unwrap();
+        match result {
+            Value::Real(v) => {
+                // 10 * 20 * 30 = 6000
+                assert!((v - 6000.0).abs() < 1.0, "expected ~6000, got {v}");
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn query_invalid_handle_returns_error() {
+        let handle = super::OcctKernelHandle::spawn();
+        let result =
+            handle.query(&reify_types::GeometryQuery::Volume(GeometryHandleId(999)));
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            reify_types::QueryError::InvalidHandle(id) => {
+                assert_eq!(id, GeometryHandleId(999));
+            }
+            other => panic!("expected InvalidHandle, got {:?}", other),
+        }
+    }
 }
