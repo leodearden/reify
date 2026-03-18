@@ -577,3 +577,101 @@ async fn rollback_on_task_panicked_restores_engine_state() {
         "b should be 50 * 2 = 100 after sequential edit"
     );
 }
+
+/// step-23: Repeated error-then-success cycle validates full recovery.
+#[tokio::test]
+async fn repeated_error_then_success_cycle() {
+    use reify_runtime::concurrent::SchedulerError;
+    use reify_types::Freshness;
+
+    let e = "T";
+
+    // param a, let b = a * 2, let c = b + 1
+    let a_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
+    let b_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::Real);
+
+    let b_expr = reify_types::CompiledExpr::binop(
+        BinOp::Mul, a_ref(),
+        reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        Type::Real,
+    );
+    let c_expr = reify_types::CompiledExpr::binop(
+        BinOp::Add, b_ref(),
+        reify_types::CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        Type::Real,
+    );
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "a", Type::Real, Some(reify_types::CompiledExpr::literal(Value::Real(5.0), Type::Real)))
+        .let_binding(e, "b", Type::Real, b_expr)
+        .let_binding(e, "c", Type::Real, c_expr)
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let _initial = engine.eval(&module);
+
+    let a_id = ValueCellId::new(e, "a");
+    let b_node = NodeId::Value(ValueCellId::new(e, "b"));
+    let c_node = NodeId::Value(ValueCellId::new(e, "c"));
+
+    // === First cycle: prepare → panicking scheduler → rollback ===
+    let setup1 = engine.prepare_concurrent_edit(a_id.clone(), Value::Real(20.0));
+
+    struct PanickingEvaluator;
+    impl AsyncNodeEvaluator for PanickingEvaluator {
+        fn is_dirty(&self, _node: &NodeId) -> bool { true }
+        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+            panic!("intentional panic in evaluator");
+        }
+    }
+
+    let cancel = CancellationToken::new();
+    let scheduler = ConcurrentScheduler;
+    let err_result = scheduler
+        .execute(setup1.eval_set.clone(), Arc::new(PanickingEvaluator), &setup1.traces, &cancel)
+        .await;
+    assert!(matches!(err_result, Err(SchedulerError::TaskPanicked(_))));
+
+    // Rollback
+    engine.rollback_concurrent_edit(&setup1);
+
+    // Verify engine is in clean state
+    let entry_b = engine.cache_store().get(&b_node).unwrap();
+    assert_eq!(entry_b.freshness, Freshness::Final, "b should be Final after rollback");
+    let entry_c = engine.cache_store().get(&c_node).unwrap();
+    assert_eq!(entry_c.freshness, Freshness::Final, "c should be Final after rollback");
+
+    // === Second cycle: edit_param_concurrent should succeed normally ===
+    let (setup2, result2) = edit_param_concurrent(
+        &mut engine,
+        a_id.clone(),
+        Value::Real(20.0),
+        &cancel,
+    ).await.unwrap();
+
+    // Values should be correct: a=20, b=40, c=41
+    assert_eq!(result2.values.get(&ValueCellId::new(e, "a")), Some(&Value::Real(20.0)));
+    assert_eq!(result2.values.get(&ValueCellId::new(e, "b")), Some(&Value::Real(40.0)));
+    assert_eq!(result2.values.get(&ValueCellId::new(e, "c")), Some(&Value::Real(41.0)));
+
+    // === Third: apply and verify engine state is fully correct ===
+    engine.apply_concurrent_edit(&setup2, result2);
+
+    // Cache freshness should be Final for all evaluated nodes
+    let entry_b = engine.cache_store().get(&b_node).unwrap();
+    assert_eq!(entry_b.freshness, Freshness::Final, "b should be Final after apply");
+    let entry_c = engine.cache_store().get(&c_node).unwrap();
+    assert_eq!(entry_c.freshness, Freshness::Final, "c should be Final after apply");
+
+    // Snapshot should have correct version
+    let snapshot = engine.snapshot().unwrap();
+    assert_eq!(snapshot.version, setup2.version, "version should match setup2");
+
+    // Values in snapshot should be correct
+    let (b_val, _) = snapshot.values.get(&ValueCellId::new(e, "b")).unwrap();
+    assert_eq!(*b_val, Value::Real(40.0), "snapshot b should be 40");
+    let (c_val, _) = snapshot.values.get(&ValueCellId::new(e, "c")).unwrap();
+    assert_eq!(*c_val, Value::Real(41.0), "snapshot c should be 41");
+}
