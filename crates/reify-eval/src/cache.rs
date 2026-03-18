@@ -1399,4 +1399,52 @@ mod tests {
         let marked = store.mark_pending(&node);
         assert!(!marked);
     }
+
+    // --- warm_state on NodeCache tests ---
+
+    #[test]
+    fn node_cache_new_creates_entry_with_no_warm_state() {
+        let cache = NodeCache::new(
+            CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+        );
+        assert!(cache.warm_state.is_none());
+    }
+
+    #[test]
+    fn node_cache_warm_state_can_be_set() {
+        let mut cache = NodeCache::new(
+            CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+        );
+        let state = reify_types::OpaqueState::new(42i32, 4);
+        cache.warm_state = Some(state);
+        assert!(cache.warm_state.is_some());
+        let val = cache.warm_state.unwrap().downcast::<i32>();
+        assert_eq!(val, Some(42));
+    }
+
+    #[test]
+    fn cache_store_put_get_preserves_warm_state() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        let mut cache = NodeCache::new(
+            CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+        );
+        cache.warm_state = Some(reify_types::OpaqueState::new(99i32, 4));
+        store.put(node.clone(), cache);
+
+        let entry = store.get(&node).unwrap();
+        assert!(entry.warm_state.is_some());
+        // Use downcast_ref to check without consuming
+        let val = entry.warm_state.as_ref().unwrap().downcast_ref::<i32>();
+        assert_eq!(val, Some(&99));
+    }
 }
