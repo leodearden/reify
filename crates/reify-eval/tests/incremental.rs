@@ -1677,3 +1677,47 @@ fn forward_let_ref_cold_start_deep_reverse_chain() {
     assert_eq!(*y_val, Value::Int(2), "y = x + 1 = 1 + 1 = 2");
     assert_eq!(*z_val, Value::Int(3), "z = y + 1 = 2 + 1 = 3");
 }
+
+/// Cold-start eval handles diamond-shaped forward references.
+///
+/// Template: param a (default 10, Int)
+///   let d = b + c  (declared 1st — forward refs to both b and c)
+///   let b = a + 1  (declared 2nd)
+///   let c = a + 2  (declared 3rd)
+///
+/// Expected: b = 11, c = 12, d = 23.
+#[test]
+fn forward_let_ref_cold_start_diamond() {
+    let b_id = ValueCellId::new("S", "b");
+    let c_id = ValueCellId::new("S", "c");
+    let d_id = ValueCellId::new("S", "d");
+
+    // d = b + c (forward refs to both b and c)
+    let d_expr = binop(BinOp::Add, value_ref("S", "b"), value_ref("S", "c"));
+    // b = a + 1
+    let b_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(1)));
+    // c = a + 2
+    let c_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(2)));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(10))))
+        .let_binding("S", "d", Type::Int, d_expr)  // d declared first
+        .let_binding("S", "b", Type::Int, b_expr)  // b declared second
+        .let_binding("S", "c", Type::Int, c_expr)  // c declared third
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result = engine.eval(&module);
+
+    let b_val = result.values.get(&b_id).expect("b should be in values");
+    let c_val = result.values.get(&c_id).expect("c should be in values");
+    let d_val = result.values.get(&d_id).expect("d should be in values");
+
+    assert_eq!(*b_val, Value::Int(11), "b = a + 1 = 10 + 1 = 11");
+    assert_eq!(*c_val, Value::Int(12), "c = a + 2 = 10 + 2 = 12");
+    assert_eq!(*d_val, Value::Int(23), "d = b + c = 11 + 12 = 23");
+}
