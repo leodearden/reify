@@ -83,28 +83,34 @@ pub fn compute_diagnostics_with_state(
 
     let _eval_result = state.engine.eval(&compiled);
 
-    // Check constraints from snapshot
-    if let Some(check_result) = state.engine.check_snapshot(&compiled) {
-        // Convert eval/constraint diagnostics
-        for diag in &check_result.diagnostics {
-            diagnostics.push(convert::convert_diagnostic(diag, source, uri));
+    // Check constraints from snapshot, falling back to full check() if snapshot is absent
+    let check_result = match state.engine.check_snapshot(&compiled) {
+        Some(result) => result,
+        None => {
+            eprintln!("[reify-lsp] check_snapshot returned None after eval, falling back to full check");
+            state.engine.check(&compiled)
         }
+    };
 
-        // Generate explicit diagnostics for constraint violations
-        for entry in &check_result.constraint_results {
-            if entry.satisfaction == Satisfaction::Violated {
-                let msg = match &entry.label {
-                    Some(label) => format!("constraint violated: {}", label),
-                    None => format!("constraint {} violated", entry.id),
-                };
-                diagnostics.push(lsp_types::Diagnostic {
-                    range: lsp_types::Range::default(),
-                    severity: Some(lsp_types::DiagnosticSeverity::ERROR),
-                    source: Some("reify".to_string()),
-                    message: msg,
-                    ..Default::default()
-                });
-            }
+    // Convert eval/constraint diagnostics
+    for diag in &check_result.diagnostics {
+        diagnostics.push(convert::convert_diagnostic(diag, source, uri));
+    }
+
+    // Generate explicit diagnostics for constraint violations
+    for entry in &check_result.constraint_results {
+        if entry.satisfaction == Satisfaction::Violated {
+            let msg = match &entry.label {
+                Some(label) => format!("constraint violated: {}", label),
+                None => format!("constraint {} violated", entry.id),
+            };
+            diagnostics.push(lsp_types::Diagnostic {
+                range: lsp_types::Range::default(),
+                severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                source: Some("reify".to_string()),
+                message: msg,
+                ..Default::default()
+            });
         }
     }
 
