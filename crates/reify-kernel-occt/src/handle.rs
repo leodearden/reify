@@ -57,6 +57,11 @@ impl OcctKernelHandle {
     /// The kernel thread serializes to a `Vec<u8>` internally, then sends the
     /// bytes back through the channel. The handle writes them to the caller's
     /// writer. This avoids sending the `!Send` `&mut dyn Write` across threads.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context. Use
+    /// [`export_async`](Self::export_async) instead.
     pub fn export(
         &self,
         handle: GeometryHandleId,
@@ -80,6 +85,11 @@ impl OcctKernelHandle {
     }
 
     /// Run a query against a geometry handle on the kernel thread.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context. Use
+    /// [`query_async`](Self::query_async) instead.
     pub fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -94,6 +104,11 @@ impl OcctKernelHandle {
     }
 
     /// Tessellate a geometry handle into a mesh on the kernel thread.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context. Use
+    /// [`tessellate_async`](Self::tessellate_async) instead.
     pub fn tessellate(
         &self,
         handle: GeometryHandleId,
@@ -113,6 +128,11 @@ impl OcctKernelHandle {
     }
 
     /// Execute a geometry operation on the kernel thread.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context. Use
+    /// [`execute_async`](Self::execute_async) instead.
     pub fn execute(&self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -171,6 +191,99 @@ impl OcctKernelHandle {
             tx,
             thread: Some(thread),
         }
+    }
+
+    // --- Async companion methods ---
+    //
+    // Safe to call from within a tokio async execution context (unlike the
+    // sync methods which use blocking_send/blocking_recv and will panic).
+
+    /// Execute a geometry operation on the kernel thread (async version).
+    ///
+    /// Safe to call from within a tokio async execution context.
+    pub async fn execute_async(
+        &self,
+        op: &GeometryOp,
+    ) -> Result<GeometryHandle, GeometryError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(OcctRequest::Execute {
+                op: op.clone(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| GeometryError::OperationFailed("kernel thread died".into()))?;
+        reply_rx
+            .await
+            .map_err(|_| GeometryError::OperationFailed("kernel thread died".into()))?
+    }
+
+    /// Run a query against a geometry handle on the kernel thread (async version).
+    ///
+    /// Safe to call from within a tokio async execution context.
+    pub async fn query_async(
+        &self,
+        query: &GeometryQuery,
+    ) -> Result<Value, QueryError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(OcctRequest::Query {
+                query: query.clone(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
+        reply_rx
+            .await
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
+    }
+
+    /// Export a geometry handle to the given format (async version).
+    ///
+    /// Returns the exported bytes directly instead of taking `&mut dyn Write`,
+    /// because writer references cannot be held across await points and would
+    /// make the future `!Send`.
+    ///
+    /// Safe to call from within a tokio async execution context.
+    pub async fn export_async(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+    ) -> Result<Vec<u8>, ExportError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(OcctRequest::Export {
+                handle,
+                format,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ExportError::IoError("kernel thread died".into()))?;
+        reply_rx
+            .await
+            .map_err(|_| ExportError::IoError("kernel thread died".into()))?
+    }
+
+    /// Tessellate a geometry handle into a mesh (async version).
+    ///
+    /// Safe to call from within a tokio async execution context.
+    pub async fn tessellate_async(
+        &self,
+        handle: GeometryHandleId,
+        tolerance: f64,
+    ) -> Result<Mesh, TessError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(OcctRequest::Tessellate {
+                handle,
+                tolerance,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| TessError::TessellationFailed("kernel thread died".into()))?;
+        reply_rx
+            .await
+            .map_err(|_| TessError::TessellationFailed("kernel thread died".into()))?
     }
 }
 
