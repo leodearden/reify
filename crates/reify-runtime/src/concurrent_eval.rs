@@ -224,17 +224,25 @@ pub async fn edit_param_concurrent(
     let adapter_arc = Arc::new(adapter);
 
     let scheduler = ConcurrentScheduler;
-    let _changed = scheduler
+    match scheduler
         .execute(eval_set.clone(), Arc::clone(&adapter_arc), &traces, cancel)
-        .await?;
-
-    // Extract result from adapter. After scheduler completes, the only
-    // remaining Arc reference should be ours.
-    let adapter = match Arc::try_unwrap(adapter_arc) {
-        Ok(a) => a,
-        Err(_) => panic!("scheduler should have released all Arc references"),
-    };
-    let result = adapter.into_result(&eval_set);
-
-    Ok((setup, result))
+        .await
+    {
+        Ok(_changed) => {
+            // Extract result from adapter. After scheduler completes, the only
+            // remaining Arc reference should be ours.
+            let adapter = match Arc::try_unwrap(adapter_arc) {
+                Ok(a) => a,
+                Err(_) => panic!("scheduler should have released all Arc references"),
+            };
+            let result = adapter.into_result(&eval_set);
+            Ok((setup, result))
+        }
+        Err(e) => {
+            // Rollback: restore eval_set nodes from Pending → Final and
+            // revert version/snapshot ID bumps to prevent resource leak.
+            engine.rollback_concurrent_edit(&setup);
+            Err(e)
+        }
+    }
 }

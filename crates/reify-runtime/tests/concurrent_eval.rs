@@ -498,3 +498,82 @@ async fn bracket_concurrent_matches_sequential() {
         "concurrent eval set should contain volume: {:?}", con_result.actual_eval_set
     );
 }
+
+/// step-21: rollback Pending state when scheduler returns Err(TaskPanicked).
+#[tokio::test]
+async fn rollback_on_task_panicked_restores_engine_state() {
+    use reify_runtime::concurrent::SchedulerError;
+    use reify_types::Freshness;
+
+    let e = "T";
+    let a_ref = reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
+    let two = reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let b_expr = reify_types::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::Real);
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "a", Type::Real, Some(reify_types::CompiledExpr::literal(Value::Real(5.0), Type::Real)))
+        .let_binding(e, "b", Type::Real, b_expr)
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let _initial = engine.eval(&module);
+
+    let a_id = ValueCellId::new(e, "a");
+    let b_node = NodeId::Value(ValueCellId::new(e, "b"));
+
+    // Prepare concurrent edit — marks b as Pending
+    let setup = engine.prepare_concurrent_edit(a_id.clone(), Value::Real(50.0));
+
+    // Verify b is Pending
+    let entry = engine.cache_store().get(&b_node).unwrap();
+    assert!(
+        matches!(entry.freshness, Freshness::Pending { .. }),
+        "b should be Pending after prepare"
+    );
+
+    // Create a panicking evaluator
+    struct PanickingEvaluator;
+    impl AsyncNodeEvaluator for PanickingEvaluator {
+        fn is_dirty(&self, _node: &NodeId) -> bool {
+            true
+        }
+        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+            panic!("intentional panic in evaluator");
+        }
+    }
+
+    let panicking = Arc::new(PanickingEvaluator);
+    let cancel = CancellationToken::new();
+    let scheduler = ConcurrentScheduler;
+
+    // Execute — should return Err(TaskPanicked)
+    let result = scheduler
+        .execute(setup.eval_set.clone(), panicking, &setup.traces, &cancel)
+        .await;
+
+    assert!(result.is_err(), "scheduler should return error on panic");
+    match result.unwrap_err() {
+        SchedulerError::TaskPanicked(_) => {} // expected
+        other => panic!("Expected TaskPanicked, got {:?}", other),
+    }
+
+    // Rollback
+    engine.rollback_concurrent_edit(&setup);
+
+    // (1) All nodes in eval_set should have freshness=Final (not stuck in Pending)
+    let entry = engine.cache_store().get(&b_node).unwrap();
+    assert_eq!(
+        entry.freshness, Freshness::Final,
+        "b should be Final after rollback, got: {:?}", entry.freshness
+    );
+
+    // (2) Sequential edit_param should succeed with correct values
+    let seq_result = engine.edit_param(a_id.clone(), Value::Real(50.0));
+    assert_eq!(
+        seq_result.values.get(&ValueCellId::new(e, "b")),
+        Some(&Value::Real(100.0)),
+        "b should be 50 * 2 = 100 after sequential edit"
+    );
+}
