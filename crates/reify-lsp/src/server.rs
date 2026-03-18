@@ -27,6 +27,12 @@ impl ReifyLanguageServer {
             })),
         }
     }
+
+    /// Access server state (for testing).
+    #[cfg(test)]
+    pub(crate) fn state(&self) -> &Arc<RwLock<ServerState>> {
+        &self.state
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -55,6 +61,10 @@ mod tests {
     use super::*;
     use tower_lsp::LspService;
 
+    fn test_uri() -> Url {
+        Url::parse("file:///test.ri").unwrap()
+    }
+
     #[tokio::test]
     async fn initialize_returns_full_sync_capability() {
         let (service, _socket) = LspService::new(ReifyLanguageServer::new);
@@ -71,5 +81,34 @@ mod tests {
             }
             other => panic!("Expected TextDocumentSyncKind::FULL, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn did_open_stores_document_and_runs_pipeline() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+
+        let source = reify_test_support::bracket_source();
+        let uri = test_uri();
+
+        let params = DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "reify".to_string(),
+                version: 1,
+                text: source.to_string(),
+            },
+        };
+
+        server.did_open(params).await;
+
+        // Verify document was stored
+        let state = server.state().read().await;
+        let doc = state
+            .documents
+            .get(&uri)
+            .expect("document should be stored after did_open");
+        assert_eq!(doc.text, source);
+        assert_eq!(doc.version, 1);
     }
 }
