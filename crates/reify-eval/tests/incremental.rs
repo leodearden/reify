@@ -1590,3 +1590,46 @@ fn edit_check_preserves_constraint_labels() {
         "C1 should be Satisfied when width=mm(2.0) < mm(100.0)"
     );
 }
+
+// ────────────────────────────────────────────────────────────────────
+//  Forward let-binding reference tests
+// ────────────────────────────────────────────────────────────────────
+
+/// Cold-start eval must handle forward let-binding references correctly.
+///
+/// Template: param a (default 5, Int)
+///   let y = x + 1   (forward ref to x — declared *before* x)
+///   let x = a + 10  (declared *after* y)
+///
+/// Expected: x = 15, y = 16.
+/// Without topological sorting, y evaluates before x and gets Undef.
+#[test]
+fn forward_let_ref_cold_start_simple() {
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // y = x + 1  (forward reference to x)
+    let y_expr = binop(BinOp::Add, value_ref("S", "x"), literal(Value::Int(1)));
+    // x = a + 10
+    let x_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(10)));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(5))))
+        .let_binding("S", "y", Type::Int, y_expr)  // y declared first (forward ref to x)
+        .let_binding("S", "x", Type::Int, x_expr)  // x declared second
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result = engine.eval(&module);
+
+    let x_val = result.values.get(&x_id).expect("x should be in values");
+    let y_val = result.values.get(&y_id).expect("y should be in values");
+
+    assert_eq!(*x_val, Value::Int(15), "x = a + 10 = 5 + 10 = 15");
+    assert_eq!(*y_val, Value::Int(16), "y = x + 1 = 15 + 1 = 16");
+}
