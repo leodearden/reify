@@ -102,6 +102,8 @@ impl OcctKernelHandle {
 
 #[cfg(test)]
 mod tests {
+    use reify_types::{GeometryHandleId, GeometryOp, ReprKind, Value};
+
     /// Compile-time assertion: OcctKernelHandle must be Send + Sync.
     const _: fn() = || {
         fn must_be_send_sync<T: Send + Sync>() {}
@@ -113,5 +115,18 @@ mod tests {
         let handle = super::OcctKernelHandle::spawn();
         // Just verifying spawn() returns successfully without panic.
         drop(handle);
+    }
+
+    #[test]
+    fn execute_creates_box_and_returns_handle() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let result = handle.execute(&op).unwrap();
+        assert_eq!(result.id, GeometryHandleId(1));
+        assert_eq!(result.repr, ReprKind::Solid);
     }
 }
