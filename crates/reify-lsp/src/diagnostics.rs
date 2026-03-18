@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
-use reify_types::{ModulePath, Satisfaction};
+use reify_types::{ConstraintNodeId, ModulePath, Satisfaction, SourceSpan};
 use tower_lsp::lsp_types::{self, Url};
 
 use crate::analysis::module_name_from_uri;
@@ -92,20 +94,42 @@ pub fn compute_diagnostics_with_state(
         }
     };
 
-    // Convert eval/constraint diagnostics
+    // Build constraint span lookup map from compiled module
+    let constraint_spans: HashMap<ConstraintNodeId, SourceSpan> = compiled
+        .templates
+        .iter()
+        .flat_map(|t| t.constraints.iter())
+        .map(|c| (c.id.clone(), c.span))
+        .collect();
+
+    // Convert non-constraint eval diagnostics from check result.
+    // Skip constraint checker messages (format: "constraint {id} violated")
+    // since we generate span-aware versions below.
+    let violated_messages: std::collections::HashSet<String> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.satisfaction == Satisfaction::Violated)
+        .map(|e| format!("constraint {} violated", e.id))
+        .collect();
     for diag in &check_result.diagnostics {
-        diagnostics.push(convert::convert_diagnostic(diag, source, uri));
+        if !violated_messages.contains(&diag.message) {
+            diagnostics.push(convert::convert_diagnostic(diag, source, uri));
+        }
     }
 
-    // Generate explicit diagnostics for constraint violations
+    // Generate explicit diagnostics for constraint violations with source spans
     for entry in &check_result.constraint_results {
         if entry.satisfaction == Satisfaction::Violated {
             let msg = match &entry.label {
                 Some(label) => format!("constraint violated: {}", label),
                 None => format!("constraint {} violated", entry.id),
             };
+            let span_lookup = constraint_spans.get(&entry.id);
+            let range = span_lookup
+                .map(|span| convert::span_to_range(source, *span))
+                .unwrap_or_default();
             diagnostics.push(lsp_types::Diagnostic {
-                range: lsp_types::Range::default(),
+                range,
                 severity: Some(lsp_types::DiagnosticSeverity::ERROR),
                 source: Some("reify".to_string()),
                 message: msg,
