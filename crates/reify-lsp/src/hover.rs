@@ -98,6 +98,49 @@ mod tests {
         );
     }
 
+    // --- step-3: hover on let binding and ident references ---
+
+    #[test]
+    fn hover_on_volume_let_shows_let_info() {
+        let source = reify_test_support::bracket_source();
+        // 'volume' is on line 7: "    let volume = width * height * thickness"
+        let position = Position::new(7, 8); // on 'volume'
+        let md = hover_markdown(source, position).expect("hover should return info for volume");
+        assert!(md.contains("let"), "should mention 'let', got: {md}");
+        assert!(md.contains("volume"), "should mention 'volume', got: {md}");
+    }
+
+    #[test]
+    fn hover_on_thickness_in_constraint_shows_param_info() {
+        let source = reify_test_support::bracket_source();
+        // 'thickness' in 'constraint thickness > 2mm' is on line 9
+        let position = Position::new(9, 15); // on 'thickness' in constraint
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for thickness ref");
+        assert!(
+            md.contains("param"),
+            "should show param (declaration type), got: {md}"
+        );
+        assert!(
+            md.contains("thickness"),
+            "should show 'thickness', got: {md}"
+        );
+    }
+
+    #[test]
+    fn hover_on_width_in_let_expr_shows_param_info() {
+        let source = reify_test_support::bracket_source();
+        // 'width' in 'let volume = width * height * thickness' is on line 7
+        let position = Position::new(7, 17); // on 'width' in the expression
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for width ref in let");
+        assert!(
+            md.contains("param"),
+            "should show param (declaration type), got: {md}"
+        );
+        assert!(md.contains("width"), "should show 'width', got: {md}");
+    }
+
     #[test]
     fn hover_on_whitespace_returns_none() {
         let source = reify_test_support::bracket_source();
