@@ -756,3 +756,108 @@ async fn mixed_fan_in_concurrent_unchanged_upstream_does_not_skip_shared_downstr
         "y should be 10 + 1 = 11, NOT stale 6"
     );
 }
+
+/// Triple fan-in in concurrent mode: two unchanged intermediaries plus a
+/// changed param all feed into the same downstream node.
+///
+/// Graph:
+///   param a (Int, 5)
+///   let x = if a > 0 then 1 else 1  (reads a, always 1 → Unchanged)
+///   let z = if a > 0 then 2 else 2  (reads a, always 2 → Unchanged)
+///   let y = a + x + z               (reads a, x, AND z → triple fan-in)
+///
+/// Edit a → 10: x=1, z=2 (both Unchanged), y MUST re-eval to 13.
+#[tokio::test]
+async fn concurrent_triple_fan_in_mixed_early_cutoff() {
+    use reify_types::{CompiledExpr, CompiledExprKind, ContentHash};
+
+    let e = "T";
+
+    // Build conditional: if a > 0 then 1 else 1 (always 1)
+    let x_cond = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+    let x_expr = CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(x_cond),
+            then_branch: Box::new(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            else_branch: Box::new(CompiledExpr::literal(Value::Int(1), Type::Int)),
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of_str("if_a_gt_0_then_1_else_1"),
+    };
+
+    // Build conditional: if a > 0 then 2 else 2 (always 2)
+    let z_cond = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+    let z_expr = CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(z_cond),
+            then_branch: Box::new(CompiledExpr::literal(Value::Int(2), Type::Int)),
+            else_branch: Box::new(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of_str("if_a_gt_0_then_2_else_2"),
+    };
+
+    // let y = (a + x) + z
+    let a_plus_x = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Int),
+        CompiledExpr::value_ref(ValueCellId::new(e, "x"), Type::Int),
+        Type::Int,
+    );
+    let y_expr = CompiledExpr::binop(
+        BinOp::Add,
+        a_plus_x,
+        CompiledExpr::value_ref(ValueCellId::new(e, "z"), Type::Int),
+        Type::Int,
+    );
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "a", Type::Int, Some(CompiledExpr::literal(Value::Int(5), Type::Int)))
+        .let_binding(e, "x", Type::Int, x_expr)
+        .let_binding(e, "z", Type::Int, z_expr)
+        .let_binding(e, "y", Type::Int, y_expr)
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let _initial = engine.eval(&module);
+
+    let a_id = ValueCellId::new(e, "a");
+    let cancel = CancellationToken::new();
+
+    // Concurrent edit: change a from 5 to 10
+    let (_setup, result) = edit_param_concurrent(
+        &mut engine,
+        a_id.clone(),
+        Value::Int(10),
+        &cancel,
+    ).await.unwrap();
+
+    let y_node = NodeId::Value(ValueCellId::new(e, "y"));
+
+    // y MUST be in actual_eval_set (not skipped)
+    assert!(
+        result.actual_eval_set.contains(&y_node),
+        "y should be in actual_eval_set despite both x and z being Unchanged. \
+         actual_eval_set: {:?}",
+        result.actual_eval_set
+    );
+
+    // y must have the correct value: 10 + 1 + 2 = 13
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Int(13)),
+        "y should be 10 + 1 + 2 = 13, NOT stale 8"
+    );
+}
