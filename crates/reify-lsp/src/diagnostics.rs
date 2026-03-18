@@ -322,4 +322,44 @@ mod tests {
         // Should not panic; result may contain parse errors but should be valid
         let _ = result;
     }
+
+    // --- constraint violation diagnostic range tests (step-31) ---
+
+    #[test]
+    fn constraint_violation_diagnostic_has_correct_range() {
+        let mut state = EvalState::new();
+        let uri = test_uri();
+        let source_violating = reify_test_support::bracket_source_violating();
+        let result = compute_diagnostics_with_state(&mut state, &source_violating, &uri);
+
+        // Find the constraint violation ERROR diagnostic
+        let violation_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.to_lowercase().contains("constraint")
+                    && d.message.to_lowercase().contains("violated")
+            })
+            .collect();
+
+        assert!(
+            !violation_diags.is_empty(),
+            "should have at least one constraint violation diagnostic"
+        );
+
+        for diag in &violation_diags {
+            // Constraints are on lines 7-9 of bracket source (0-indexed), not line 0
+            assert!(
+                diag.range.start.line > 0,
+                "constraint violation range should not be on line 0, got range: {:?}",
+                diag.range
+            );
+            assert_ne!(
+                diag.range,
+                lsp_types::Range::default(),
+                "constraint violation range should not be Range::default() (0,0)→(0,0)"
+            );
+        }
+    }
 }
