@@ -1387,13 +1387,15 @@ impl Engine {
                 }
             }
 
-            if last_handle.is_none() && total_ops > 0 {
+            if total_ops == 0 {
+                None
+            } else if last_handle.is_none() {
                 diagnostics.push(Diagnostic::error(
                     "all geometry operations failed; no geometry output produced",
                 ));
                 None
             } else {
-                let export_handle = last_handle.unwrap_or(GeometryHandleId(0));
+                let export_handle = last_handle.unwrap();
                 let mut output = Vec::new();
                 match kernel.export(export_handle, format, &mut output) {
                     Ok(()) => Some(output),
