@@ -20,8 +20,20 @@ use std::collections::HashMap;
 
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp,
-    GeometryQuery, Mesh, QueryError, ReprKind, TessError, Value,
+    GeometryQuery, Mesh, OpaqueState, QueryError, ReprKind, TessError, Value, WarmStartable,
 };
+
+/// Send-safe payload for OCCT warm-start state.
+///
+/// Contains BRep ASCII serializations of all shapes in the kernel, plus the
+/// next handle ID counter. BRep format is valid UTF-8 text, so `String` is
+/// used instead of `Vec<u8>`.
+struct OcctWarmState {
+    /// Map from handle ID to BRep ASCII string of the corresponding shape.
+    shapes: HashMap<u64, String>,
+    /// The next handle ID to assign (preserves ID namespace across warm-start).
+    next_id: u64,
+}
 
 /// Extract an f64 from a Value (Int, Real, or Scalar → SI value).
 fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
@@ -249,5 +261,396 @@ impl OcctKernel {
                 Some(result.normals)
             },
         })
+    }
+}
+
+impl WarmStartable for OcctKernel {
+    fn warm_state(&self) -> Option<OpaqueState> {
+        if self.shapes.is_empty() {
+            return None;
+        }
+        let mut warm_shapes = HashMap::new();
+        let mut total_bytes: usize = 0;
+        for (&id, shape) in &self.shapes {
+            match ffi::ffi::serialize_brep(shape.as_ref().unwrap()) {
+                Ok(brep) => {
+                    total_bytes += brep.len();
+                    warm_shapes.insert(id, brep);
+                }
+                Err(_) => {
+                    // Skip shapes that fail to serialize (best-effort)
+                    continue;
+                }
+            }
+        }
+        if warm_shapes.is_empty() {
+            return None;
+        }
+        let size_estimate = total_bytes + 64; // overhead for HashMap + struct
+        Some(OpaqueState::new(
+            OcctWarmState {
+                shapes: warm_shapes,
+                next_id: self.next_id,
+            },
+            size_estimate,
+        ))
+    }
+
+    fn with_warm_state(&mut self, state: OpaqueState) {
+        let warm = match state.downcast::<OcctWarmState>() {
+            Some(w) => w,
+            None => return, // Wrong type, silently ignore per trait contract
+        };
+        // Stage deserialization into a temporary map first. If all entries fail
+        // to deserialize, we preserve the kernel's pre-existing state untouched.
+        let mut staged = HashMap::new();
+        for (id, brep) in warm.shapes {
+            cxx::let_cxx_string!(brep_cxx = brep.as_str());
+            match ffi::ffi::deserialize_brep(&brep_cxx) {
+                Ok(shape) => {
+                    staged.insert(id, shape);
+                }
+                Err(_) => {
+                    // Skip entries that fail to deserialize (best-effort)
+                    continue;
+                }
+            }
+        }
+        // Atomic swap: only replace kernel state if at least one shape was
+        // successfully deserialized. Otherwise the kernel state is untouched.
+        if !staged.is_empty() {
+            self.shapes = staged;
+            self.next_id = warm.next_id;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warm_state_returns_none_on_fresh_kernel() {
+        let kernel = OcctKernel::new();
+        assert!(kernel.warm_state().is_none(), "fresh kernel should have no warm state");
+    }
+
+    #[test]
+    fn warm_state_returns_some_after_ops() {
+        let mut kernel = OcctKernel::new();
+        // Execute a box and a cylinder
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+
+        let state = kernel.warm_state();
+        assert!(state.is_some(), "kernel with shapes should have warm state");
+        let state = state.unwrap();
+        assert!(
+            state.estimated_size_bytes() > 0,
+            "estimated size should be positive"
+        );
+    }
+
+    #[test]
+    fn warm_start_roundtrip_single_shape() {
+        // Create kernel A with a box
+        let mut kernel_a = OcctKernel::new();
+        kernel_a
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // Extract warm state
+        let state = kernel_a.warm_state().expect("should have warm state");
+
+        // Create fresh kernel B and restore warm state
+        let mut kernel_b = OcctKernel::new();
+        kernel_b.with_warm_state(state);
+
+        // Query volume on kernel B using handle ID 1 (the box)
+        let vol = kernel_b
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 6000.0).abs() < 1.0,
+                    "expected volume ~6000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn warm_start_roundtrip_multi_shape() {
+        let mut kernel_a = OcctKernel::new();
+
+        // Create box (10x20x30), handle ID 1
+        kernel_a
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // Create cylinder (r=5, h=20), handle ID 2
+        kernel_a
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+
+        // Boolean union, handle ID 3
+        kernel_a
+            .execute(&GeometryOp::Union {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            })
+            .unwrap();
+
+        // Extract warm state
+        let state = kernel_a.warm_state().expect("should have warm state");
+
+        // Create fresh kernel B and restore
+        let mut kernel_b = OcctKernel::new();
+        kernel_b.with_warm_state(state);
+
+        // Verify box volume (~6000)
+        let vol_box = kernel_b
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match vol_box {
+            Value::Real(v) => assert!((v - 6000.0).abs() < 1.0, "box vol: {v}"),
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // Verify cylinder volume (~pi*25*20 ≈ 1570.8)
+        let vol_cyl = kernel_b
+            .query(&GeometryQuery::Volume(GeometryHandleId(2)))
+            .unwrap();
+        match vol_cyl {
+            Value::Real(v) => assert!((v - 1570.8).abs() < 1.0, "cyl vol: {v}"),
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // Verify union volume (positive)
+        let vol_union = kernel_b
+            .query(&GeometryQuery::Volume(GeometryHandleId(3)))
+            .unwrap();
+        match vol_union {
+            Value::Real(v) => assert!(v > 0.0, "union vol should be positive: {v}"),
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // Verify next_id restored: new sphere should get handle ID 4
+        let sphere_h = kernel_b
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(5.0),
+            })
+            .unwrap();
+        assert_eq!(sphere_h.id, GeometryHandleId(4), "next_id should be restored");
+    }
+
+    #[test]
+    fn with_warm_state_ignores_wrong_type() {
+        let mut kernel = OcctKernel::new();
+        // Pass a String instead of OcctWarmState — should be silently ignored
+        kernel.with_warm_state(OpaqueState::new(String::from("garbage"), 8));
+        // Kernel should still function normally
+        let gh = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(gh.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => assert!((v - 6000.0).abs() < 1.0, "vol: {v}"),
+            other => panic!("expected Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn with_warm_state_preserves_state_on_total_deserialization_failure() {
+        // Create a kernel with a box
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // Verify box works
+        let vol = kernel.query(&GeometryQuery::Volume(box_h.id)).unwrap();
+        match &vol {
+            Value::Real(v) => assert!((v - 6000.0).abs() < 1.0, "box vol: {v}"),
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // Construct a corrupted OcctWarmState manually
+        let mut corrupted_shapes = HashMap::new();
+        corrupted_shapes.insert(1, "INVALID_BREP_DATA".to_string());
+        corrupted_shapes.insert(2, "ALSO_GARBAGE".to_string());
+        let corrupted_warm = OcctWarmState {
+            shapes: corrupted_shapes,
+            next_id: 99,
+        };
+        let corrupted_state = OpaqueState::new(corrupted_warm, 64);
+
+        // Apply corrupted warm state — should NOT destroy existing state
+        kernel.with_warm_state(corrupted_state);
+
+        // The original box should still be queryable
+        let vol_after = kernel.query(&GeometryQuery::Volume(GeometryHandleId(1))).unwrap();
+        match vol_after {
+            Value::Real(v) => assert!(
+                (v - 6000.0).abs() < 1.0,
+                "box volume should survive corrupted warm state, got {v}"
+            ),
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // next_id should NOT have been advanced to 99 — new sphere should get ID 2
+        let sphere_h = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(5.0),
+            })
+            .unwrap();
+        assert_eq!(
+            sphere_h.id,
+            GeometryHandleId(2),
+            "next_id should not advance on total deserialization failure"
+        );
+    }
+
+    #[test]
+    fn with_warm_state_partial_deserialization_replaces_state() {
+        // Create a helper kernel to get a valid cylinder BRep string
+        let mut helper = OcctKernel::new();
+        helper
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        let helper_state = helper.warm_state().expect("helper should have warm state");
+        let helper_warm = helper_state
+            .downcast::<OcctWarmState>()
+            .expect("should downcast");
+        let valid_cylinder_brep = helper_warm
+            .shapes
+            .get(&1)
+            .expect("handle 1 should exist")
+            .clone();
+
+        // Create main kernel with a box
+        let mut kernel = OcctKernel::new();
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // Verify it's a box (volume ~6000)
+        let vol_before = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match &vol_before {
+            Value::Real(v) => assert!((v - 6000.0).abs() < 1.0, "box vol: {v}"),
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // Construct partially-corrupted warm state:
+        // handle 1 = valid cylinder BRep, handle 2 = corrupt data
+        let mut partial_shapes = HashMap::new();
+        partial_shapes.insert(1, valid_cylinder_brep);
+        partial_shapes.insert(2, "CORRUPT".to_string());
+        let partial_warm = OcctWarmState {
+            shapes: partial_shapes,
+            next_id: 10,
+        };
+        let partial_state = OpaqueState::new(partial_warm, 64);
+
+        // Apply partially-corrupted warm state
+        kernel.with_warm_state(partial_state);
+
+        // Handle 1 should now be a cylinder (not a box)
+        let vol_after = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match vol_after {
+            Value::Real(v) => {
+                // Cylinder volume = pi * r^2 * h = pi * 25 * 20 ≈ 1570.8
+                assert!(
+                    (v - 1570.8).abs() < 1.0,
+                    "handle 1 should be cylinder volume ~1570.8, got {v}"
+                );
+            }
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // Handle 2 should NOT exist (corrupt, was not restored)
+        let result = kernel.query(&GeometryQuery::Volume(GeometryHandleId(2)));
+        assert!(
+            result.is_err(),
+            "handle 2 should not exist (corrupt BRep was skipped)"
+        );
+
+        // next_id should be updated to 10 (swap occurred)
+        let new_h = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(3.0),
+            })
+            .unwrap();
+        assert_eq!(
+            new_h.id,
+            GeometryHandleId(10),
+            "next_id should be updated to 10 after partial restore"
+        );
+    }
+
+    #[test]
+    fn brep_serialization_roundtrip() {
+        // Create a box shape
+        let shape = ffi::ffi::make_box(10.0, 20.0, 30.0).unwrap();
+
+        // Serialize to BRep
+        let brep = ffi::ffi::serialize_brep(&shape).unwrap();
+        assert!(!brep.is_empty(), "BRep serialization should produce non-empty output");
+
+        // Deserialize from BRep
+        cxx::let_cxx_string!(brep_cxx = brep.as_str());
+        let restored = ffi::ffi::deserialize_brep(&brep_cxx).unwrap();
+
+        // Query volume of deserialized shape
+        let vol = ffi::ffi::query_volume(&restored).unwrap();
+        assert!(
+            (vol - 6000.0).abs() < 1.0,
+            "expected volume ~6000, got {vol}"
+        );
     }
 }

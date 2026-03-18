@@ -16,7 +16,7 @@
 
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
+    GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -40,6 +40,13 @@ enum OcctRequest {
         tolerance: f64,
         reply: oneshot::Sender<Result<Mesh, TessError>>,
     },
+    WarmState {
+        reply: oneshot::Sender<Option<OpaqueState>>,
+    },
+    WithWarmState {
+        state: OpaqueState,
+        reply: oneshot::Sender<()>,
+    },
 }
 
 /// Thread-safe handle to an OCCT kernel running on a dedicated thread.
@@ -53,6 +60,10 @@ enum OcctRequest {
 /// `blocking_send`/`blocking_recv` and **panic if called from an async
 /// context**. Use the `_async` variants (`execute_async`, `query_async`,
 /// `export_async`, `tessellate_async`) from async code.
+///
+/// The `WarmStartable` trait methods (`warm_state`, `with_warm_state`) are
+/// safe to call from both sync and async contexts — they detect the runtime
+/// and use `block_in_place` when needed.
 ///
 /// # Drop behaviour
 ///
@@ -197,6 +208,14 @@ impl OcctKernelHandle {
                         let result = kernel.tessellate(handle, tolerance);
                         let _ = reply.send(result);
                     }
+                    OcctRequest::WarmState { reply } => {
+                        let result = kernel.warm_state();
+                        let _ = reply.send(result);
+                    }
+                    OcctRequest::WithWarmState { state, reply } => {
+                        kernel.with_warm_state(state);
+                        let _ = reply.send(());
+                    }
                 }
             }
             // Channel closed (sender dropped) → exit cleanly.
@@ -301,6 +320,36 @@ impl OcctKernelHandle {
             .map_err(|_| TessError::TessellationFailed("kernel thread died".into()))?
     }
 
+    /// Extract warm-start state from the kernel thread (async version).
+    ///
+    /// Safe to call from within a tokio async execution context.
+    pub async fn warm_state_async(&self) -> Option<OpaqueState> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(OcctRequest::WarmState { reply: reply_tx })
+            .await
+            .ok()?;
+        reply_rx.await.ok()?
+    }
+
+    /// Restore warm-start state on the kernel thread (async version).
+    ///
+    /// Safe to call from within a tokio async execution context.
+    pub async fn with_warm_state_async(&self, state: OpaqueState) {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(OcctRequest::WithWarmState {
+                state,
+                reply: reply_tx,
+            })
+            .await
+            .is_ok()
+        {
+            let _ = reply_rx.await;
+        }
+    }
+
     /// Explicitly shut down the kernel thread from an async context.
     ///
     /// Drops the channel sender (closing the channel so the kernel thread exits
@@ -320,6 +369,57 @@ impl OcctKernelHandle {
             let _ = tokio::task::spawn_blocking(move || thread.join()).await;
         }
         // self.thread is now None, so Drop will be a no-op.
+    }
+}
+
+/// Send a request and wait for the reply, safely handling both sync and
+/// async calling contexts.
+///
+/// When called from outside a tokio runtime, uses `blocking_send` /
+/// `blocking_recv` directly. When called from within an async runtime,
+/// dispatches the blocking work to a helper `std::thread` to avoid
+/// panicking (tokio's blocking primitives panic inside an async context).
+fn send_recv<T: Send + 'static>(
+    tx: &mpsc::Sender<OcctRequest>,
+    request: OcctRequest,
+    reply_rx: oneshot::Receiver<T>,
+) -> Option<T> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // Inside an async runtime — cannot use blocking_send/blocking_recv.
+        // Clone the sender and move everything to a helper OS thread.
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            tx.blocking_send(request).ok()?;
+            reply_rx.blocking_recv().ok()
+        })
+        .join()
+        .ok()?
+    } else {
+        tx.blocking_send(request).ok()?;
+        reply_rx.blocking_recv().ok()
+    }
+}
+
+impl WarmStartable for OcctKernelHandle {
+    fn warm_state(&self) -> Option<OpaqueState> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        send_recv(
+            &self.tx,
+            OcctRequest::WarmState { reply: reply_tx },
+            reply_rx,
+        )?
+    }
+
+    fn with_warm_state(&mut self, state: OpaqueState) {
+        let (reply_tx, reply_rx) = oneshot::channel::<()>();
+        send_recv(
+            &self.tx,
+            OcctRequest::WithWarmState {
+                state,
+                reply: reply_tx,
+            },
+            reply_rx,
+        );
     }
 }
 
@@ -863,6 +963,142 @@ mod tests {
         let handle2 = super::OcctKernelHandle::spawn();
         let result = handle2.execute_async(&op).await.unwrap();
         assert_eq!(result.id, GeometryHandleId(1)); // fresh kernel, fresh ids
+    }
+
+    // --- Warm-start tests ---
+
+    #[test]
+    fn handle_warm_state_returns_some_after_op() {
+        use reify_types::WarmStartable;
+        let mut handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        handle.execute(&op).unwrap();
+        let state = handle.warm_state();
+        assert!(state.is_some(), "handle with shapes should have warm state");
+        assert!(
+            state.unwrap().estimated_size_bytes() > 0,
+            "estimated size should be positive"
+        );
+    }
+
+    #[test]
+    fn cross_handle_warm_start_transfer() {
+        use reify_types::WarmStartable;
+        // Handle A: create box
+        let mut handle_a = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        handle_a.execute(&op).unwrap();
+
+        // Extract warm state from handle A
+        let state = handle_a.warm_state().expect("should have warm state");
+
+        // Handle B: restore warm state
+        let mut handle_b = super::OcctKernelHandle::spawn();
+        handle_b.with_warm_state(state);
+
+        // Query volume on handle B using handle ID 1
+        let vol = handle_b
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 6000.0).abs() < 1.0,
+                    "expected volume ~6000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn async_warm_start_roundtrip() {
+        let mut handle_a = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        handle_a.execute_async(&op).await.unwrap();
+
+        // Extract warm state via async
+        let state = handle_a
+            .warm_state_async()
+            .await
+            .expect("should have warm state");
+
+        // Restore on new handle via async
+        let mut handle_b = super::OcctKernelHandle::spawn();
+        handle_b.with_warm_state_async(state).await;
+
+        // Query volume via async
+        let vol = handle_b
+            .query_async(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .await
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 6000.0).abs() < 1.0,
+                    "expected volume ~6000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn handle_warm_state_none_on_empty_kernel() {
+        use reify_types::WarmStartable;
+        let handle = super::OcctKernelHandle::spawn();
+        // No ops executed — warm_state should return None
+        let state = handle.warm_state();
+        assert!(state.is_none(), "empty kernel should have no warm state");
+    }
+
+    #[tokio::test]
+    async fn warm_startable_trait_safe_in_async_context() {
+        use reify_types::WarmStartable;
+        // Calling the sync WarmStartable trait methods from an async context
+        // must not panic (previously used blocking_send/blocking_recv which
+        // panicked inside tokio runtime).
+        let mut handle_a = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        handle_a.execute_async(&op).await.unwrap();
+
+        // Call sync warm_state() from async context — must not panic
+        let state = handle_a.warm_state().expect("should have warm state");
+
+        // Call sync with_warm_state() from async context — must not panic
+        let mut handle_b = super::OcctKernelHandle::spawn();
+        handle_b.with_warm_state(state);
+
+        // Verify restored state works
+        let vol = handle_b
+            .query_async(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .await
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 6000.0).abs() < 1.0,
+                    "expected volume ~6000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
     }
 
     #[test]

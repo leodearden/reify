@@ -53,6 +53,14 @@ BBox query_bbox(const OcctShape& shape);
 /// Export shape to STEP format, returns the STEP file content as a string.
 rust::String export_step(const OcctShape& shape);
 
+// --- BRep serialization ---
+
+/// Serialize a shape to OCCT BRep ASCII format.
+rust::String serialize_brep(const OcctShape& shape);
+
+/// Deserialize a shape from OCCT BRep ASCII format.
+std::unique_ptr<OcctShape> deserialize_brep(const std::string& data);
+
 // --- Tessellation ---
 
 TessResult tessellate_shape(const OcctShape& shape, double tolerance);
