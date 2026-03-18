@@ -285,6 +285,94 @@ mod tests {
     }
 
     #[test]
+    fn events_in_range_returns_subset() {
+        let mut journal = EventJournal::new();
+        let t1 = Instant::now();
+        journal.record(EvalEvent {
+            timestamp: t1,
+            node_id: NodeId::Value(reify_types::ValueCellId::new("Test", "a")),
+            kind: EventKind::Started,
+            version: VersionId(0),
+            payload: None,
+        });
+        // Force distinct timestamps
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let t2 = Instant::now();
+        journal.record(EvalEvent {
+            timestamp: t2,
+            node_id: NodeId::Value(reify_types::ValueCellId::new("Test", "b")),
+            kind: EventKind::Started,
+            version: VersionId(0),
+            payload: None,
+        });
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let t3 = Instant::now();
+        journal.record(EvalEvent {
+            timestamp: t3,
+            node_id: NodeId::Value(reify_types::ValueCellId::new("Test", "c")),
+            kind: EventKind::Started,
+            version: VersionId(0),
+            payload: None,
+        });
+
+        // Range t1..t3 should include t1 and t2 (exclusive end)
+        let events = journal.events_in_range(t1..t3);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].node_id, NodeId::Value(reify_types::ValueCellId::new("Test", "a")));
+        assert_eq!(events[1].node_id, NodeId::Value(reify_types::ValueCellId::new("Test", "b")));
+    }
+
+    #[test]
+    fn events_in_range_from() {
+        let mut journal = EventJournal::new();
+        let t1 = Instant::now();
+        journal.record(EvalEvent {
+            timestamp: t1,
+            node_id: NodeId::Value(reify_types::ValueCellId::new("Test", "a")),
+            kind: EventKind::Started,
+            version: VersionId(0),
+            payload: None,
+        });
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let t2 = Instant::now();
+        journal.record(EvalEvent {
+            timestamp: t2,
+            node_id: NodeId::Value(reify_types::ValueCellId::new("Test", "b")),
+            kind: EventKind::Started,
+            version: VersionId(0),
+            payload: None,
+        });
+
+        // t2.. should include only event at t2
+        let events = journal.events_in_range(t2..);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].node_id, NodeId::Value(reify_types::ValueCellId::new("Test", "b")));
+    }
+
+    #[test]
+    fn events_in_range_full() {
+        let mut journal = EventJournal::new();
+        journal.record(make_event("a", EventKind::Started, 0));
+        journal.record(make_event("b", EventKind::Started, 0));
+
+        let events = journal.events_in_range(..);
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn events_in_range_empty() {
+        let mut journal = EventJournal::new();
+        journal.record(make_event("a", EventKind::Started, 0));
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let future = Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let more_future = Instant::now();
+
+        let events = journal.events_in_range(future..more_future);
+        assert!(events.is_empty());
+    }
+
+    #[test]
     fn eval_event_construction() {
         let event = EvalEvent {
             timestamp: Instant::now(),
