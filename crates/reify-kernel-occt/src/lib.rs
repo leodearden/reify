@@ -546,6 +546,94 @@ mod tests {
     }
 
     #[test]
+    fn with_warm_state_partial_deserialization_replaces_state() {
+        // Create a helper kernel to get a valid cylinder BRep string
+        let mut helper = OcctKernel::new();
+        helper
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        let helper_state = helper.warm_state().expect("helper should have warm state");
+        let helper_warm = helper_state
+            .downcast::<OcctWarmState>()
+            .expect("should downcast");
+        let valid_cylinder_brep = helper_warm
+            .shapes
+            .get(&1)
+            .expect("handle 1 should exist")
+            .clone();
+
+        // Create main kernel with a box
+        let mut kernel = OcctKernel::new();
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // Verify it's a box (volume ~6000)
+        let vol_before = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match &vol_before {
+            Value::Real(v) => assert!((v - 6000.0).abs() < 1.0, "box vol: {v}"),
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // Construct partially-corrupted warm state:
+        // handle 1 = valid cylinder BRep, handle 2 = corrupt data
+        let mut partial_shapes = HashMap::new();
+        partial_shapes.insert(1, valid_cylinder_brep);
+        partial_shapes.insert(2, "CORRUPT".to_string());
+        let partial_warm = OcctWarmState {
+            shapes: partial_shapes,
+            next_id: 10,
+        };
+        let partial_state = OpaqueState::new(partial_warm, 64);
+
+        // Apply partially-corrupted warm state
+        kernel.with_warm_state(partial_state);
+
+        // Handle 1 should now be a cylinder (not a box)
+        let vol_after = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match vol_after {
+            Value::Real(v) => {
+                // Cylinder volume = pi * r^2 * h = pi * 25 * 20 ≈ 1570.8
+                assert!(
+                    (v - 1570.8).abs() < 1.0,
+                    "handle 1 should be cylinder volume ~1570.8, got {v}"
+                );
+            }
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // Handle 2 should NOT exist (corrupt, was not restored)
+        let result = kernel.query(&GeometryQuery::Volume(GeometryHandleId(2)));
+        assert!(
+            result.is_err(),
+            "handle 2 should not exist (corrupt BRep was skipped)"
+        );
+
+        // next_id should be updated to 10 (swap occurred)
+        let new_h = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(3.0),
+            })
+            .unwrap();
+        assert_eq!(
+            new_h.id,
+            GeometryHandleId(10),
+            "next_id should be updated to 10 after partial restore"
+        );
+    }
+
+    #[test]
     fn brep_serialization_roundtrip() {
         // Create a box shape
         let shape = ffi::ffi::make_box(10.0, 20.0, 30.0).unwrap();
