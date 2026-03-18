@@ -385,6 +385,40 @@ mod tests {
     }
 
     #[test]
+    fn events_since_version_filters_correctly() {
+        let mut journal = EventJournal::new();
+        journal.record(make_event("a", EventKind::Started, 0));
+        journal.record(make_event("b", EventKind::Started, 0));
+        journal.record(make_event("c", EventKind::Started, 1));
+        journal.record(make_event("d", EventKind::Started, 2));
+
+        let events = journal.events_since(VersionId(1));
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].node_id, NodeId::Value(reify_types::ValueCellId::new("Test", "c")));
+        assert_eq!(events[1].node_id, NodeId::Value(reify_types::ValueCellId::new("Test", "d")));
+    }
+
+    #[test]
+    fn events_since_exact_boundary() {
+        let mut journal = EventJournal::new();
+        journal.record(make_event("a", EventKind::Started, 5));
+        journal.record(make_event("b", EventKind::Started, 5));
+
+        let events = journal.events_since(VersionId(5));
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn events_since_higher_than_all_returns_empty() {
+        let mut journal = EventJournal::new();
+        journal.record(make_event("a", EventKind::Started, 0));
+        journal.record(make_event("b", EventKind::Started, 1));
+
+        let events = journal.events_since(VersionId(99));
+        assert!(events.is_empty());
+    }
+
+    #[test]
     fn eval_event_construction() {
         let event = EvalEvent {
             timestamp: Instant::now(),
