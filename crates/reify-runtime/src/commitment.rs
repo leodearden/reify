@@ -47,6 +47,41 @@ impl Default for NodeCommitmentOverride {
     }
 }
 
+/// Progress information for a running task, used by the commitment decision function.
+///
+/// Captures elapsed time, optional self-reported progress, and optional
+/// previous runtime for fallback estimation.
+#[derive(Clone, Debug)]
+pub struct TaskProgress {
+    /// How long the task has been running.
+    pub elapsed: Duration,
+    /// Self-reported progress fraction (0.0–1.0), if available.
+    pub reported_progress: Option<f64>,
+    /// Previous runtime for this node (used for fallback estimation).
+    pub previous_runtime: Option<Duration>,
+}
+
+impl TaskProgress {
+    /// Estimate the task's progress as a fraction.
+    ///
+    /// Returns:
+    /// - `reported_progress` if available
+    /// - `elapsed / previous_runtime` if previous runtime is available and nonzero
+    /// - `None` otherwise
+    pub fn progress_estimate(&self) -> Option<f64> {
+        if let Some(reported) = self.reported_progress {
+            return Some(reported);
+        }
+        if let Some(prev) = self.previous_runtime {
+            let prev_secs = prev.as_secs_f64();
+            if prev_secs > 0.0 {
+                return Some(self.elapsed.as_secs_f64() / prev_secs);
+            }
+        }
+        None
+    }
+}
+
 impl Default for CommitmentPolicy {
     fn default() -> Self {
         Self {
