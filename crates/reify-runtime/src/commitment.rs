@@ -405,4 +405,92 @@ mod tests {
         );
         assert_eq!(decision, CommitmentDecision::NotYet);
     }
+
+    // --- CommitmentTracker tests ---
+
+    fn make_node(name: &str) -> NodeId {
+        NodeId::Value(reify_types::ValueCellId::new("T", name))
+    }
+
+    #[test]
+    fn tracker_new_has_no_committed_nodes() {
+        let tracker = CommitmentTracker::new(CommitmentPolicy::default());
+        let node = make_node("x");
+        assert!(!tracker.is_committed(&node));
+    }
+
+    #[test]
+    fn tracker_register_and_check_not_yet() {
+        let mut tracker = CommitmentTracker::new(CommitmentPolicy::default());
+        let node = make_node("x");
+        tracker.register_task(node.clone(), NodeCommitmentOverride::CommitIfSlow);
+        assert!(!tracker.is_committed(&node));
+    }
+
+    #[test]
+    fn tracker_update_transitions_to_committed() {
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_secs(10),
+            commit_when_proportion_done: 0.5,
+        };
+        let mut tracker = CommitmentTracker::new(policy);
+        let node = make_node("x");
+        tracker.register_task(node.clone(), NodeCommitmentOverride::CommitIfSlow);
+
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(11),
+            reported_progress: None,
+            previous_runtime: None,
+        };
+        tracker.update_status(&node, &progress, false);
+        assert!(tracker.is_committed(&node));
+    }
+
+    #[test]
+    fn tracker_committed_in_dirty_cone_should_continue() {
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_secs(10),
+            commit_when_proportion_done: 0.5,
+        };
+        let mut tracker = CommitmentTracker::new(policy);
+        let node = make_node("x");
+        tracker.register_task(node.clone(), NodeCommitmentOverride::CommitIfSlow);
+
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(11),
+            reported_progress: None,
+            previous_runtime: None,
+        };
+        tracker.update_status(&node, &progress, false);
+        assert!(tracker.should_continue(&node, true)); // in dirty cone, committed
+    }
+
+    #[test]
+    fn tracker_uncommitted_in_dirty_cone_should_not_continue() {
+        let policy = CommitmentPolicy::default();
+        let mut tracker = CommitmentTracker::new(policy);
+        let node = make_node("x");
+        tracker.register_task(node.clone(), NodeCommitmentOverride::CommitIfSlow);
+        // No update_status called, so still NotYet
+        assert!(!tracker.should_continue(&node, true)); // in dirty cone, not committed
+    }
+
+    #[test]
+    fn tracker_not_in_dirty_cone_should_always_continue() {
+        let policy = CommitmentPolicy::default();
+        let mut tracker = CommitmentTracker::new(policy);
+        let node = make_node("x");
+        tracker.register_task(node.clone(), NodeCommitmentOverride::CommitIfSlow);
+        // Not in dirty cone → should always continue
+        assert!(tracker.should_continue(&node, false));
+    }
+
+    #[test]
+    fn tracker_remove_task() {
+        let mut tracker = CommitmentTracker::new(CommitmentPolicy::default());
+        let node = make_node("x");
+        tracker.register_task(node.clone(), NodeCommitmentOverride::CommitIfSlow);
+        tracker.remove_task(&node);
+        assert!(!tracker.is_committed(&node));
+    }
 }
