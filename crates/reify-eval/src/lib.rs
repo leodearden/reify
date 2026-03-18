@@ -6,15 +6,15 @@ pub mod graph;
 pub mod journal;
 pub mod snapshot;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
-    AutoParam, ConstraintChecker, ConstraintInput, ConstraintSolver, DeterminacyState,
-    Diagnostic, ExportFormat, GeometryHandleId, GeometryKernel, ResolutionProblem,
-    Satisfaction, SnapshotId, SnapshotProvenance, SolveResult, ValueCellId, ValueMap,
-    VersionId,
+    AutoParam, ConstraintChecker, ConstraintInput, ConstraintSolver, ContentHash,
+    DeterminacyState, Diagnostic, ExportFormat, GeometryHandleId, GeometryKernel,
+    PersistentMap, ResolutionProblem, Satisfaction, SnapshotId, SnapshotProvenance,
+    SolveResult, Value, ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
@@ -97,6 +97,69 @@ pub struct BuildResult {
     pub geometry_output: Option<Vec<u8>>,
     pub diagnostics: Vec<Diagnostic>,
     pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
+}
+
+/// State extracted from Engine for concurrent evaluation.
+///
+/// Contains all the Clone-able, Send+Sync state needed for concurrent
+/// evaluation. Produced by `Engine::prepare_concurrent_edit()` and consumed
+/// by `ConcurrentEvalAdapter` in reify-runtime.
+///
+/// PersistentMap fields clone in O(1) via structural sharing.
+#[derive(Debug)]
+pub struct ConcurrentEditSetup {
+    /// Nodes to evaluate (topologically sorted, dirty ∩ demand).
+    pub eval_set: Vec<NodeId>,
+    /// The evaluation graph (O(1) clone).
+    pub graph: crate::graph::EvaluationGraph,
+    /// Current values for all cells (O(1) clone).
+    pub values: ValueMap,
+    /// Snapshot values with determinacy state (O(1) clone).
+    pub snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    /// Forward dependency traces for topological sort.
+    pub traces: HashMap<NodeId, DependencyTrace>,
+    /// Reverse dependency index for early cutoff propagation.
+    pub reverse_index: ReverseDependencyIndex,
+    /// Pre-extracted content hashes for Changed/Unchanged determination.
+    pub previous_hashes: HashMap<NodeId, ContentHash>,
+    /// Version for this edit.
+    pub version: VersionId,
+    /// Snapshot ID for this edit.
+    pub snapshot_id: SnapshotId,
+    /// Parent snapshot ID.
+    pub parent_snapshot_id: SnapshotId,
+    /// Set of changed cells (the edited parameter).
+    pub changed_cells: HashSet<ValueCellId>,
+}
+
+/// Result of evaluating a single node during concurrent evaluation.
+#[derive(Debug, Clone)]
+pub struct ConcurrentNodeResult {
+    /// The node that was evaluated.
+    pub node: NodeId,
+    /// The computed value.
+    pub value: Value,
+    /// Determinacy state of the result.
+    pub determinacy: DeterminacyState,
+    /// Dependency trace from expression evaluation.
+    pub trace: DependencyTrace,
+    /// Whether the result changed vs the previous evaluation.
+    pub outcome: EvalOutcome,
+}
+
+/// Aggregate result from concurrent evaluation, ready for Engine::apply_concurrent_edit().
+#[derive(Debug)]
+pub struct ConcurrentEditResult {
+    /// Updated values for all cells.
+    pub values: ValueMap,
+    /// Updated snapshot values with determinacy states.
+    pub snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    /// Per-node evaluation results.
+    pub node_results: Vec<ConcurrentNodeResult>,
+    /// Nodes that were actually evaluated (excludes skipped).
+    pub actual_eval_set: Vec<NodeId>,
+    /// Nodes skipped due to early cutoff.
+    pub skipped: HashSet<NodeId>,
 }
 
 impl Engine {
