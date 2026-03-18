@@ -102,6 +102,14 @@ impl EventJournal {
     pub fn all_events(&self) -> &[EvalEvent] {
         &self.events
     }
+
+    /// Events for a specific node, in insertion order.
+    pub fn events_for_node(&self, node_id: &NodeId) -> Vec<&EvalEvent> {
+        self.by_node
+            .get(node_id)
+            .map(|indices| indices.iter().map(|&idx| &self.events[idx]).collect())
+            .unwrap_or_default()
+    }
 }
 
 impl Default for EventJournal {
