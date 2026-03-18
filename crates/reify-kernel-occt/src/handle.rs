@@ -52,6 +52,20 @@ pub struct OcctKernelHandle {
 }
 
 impl OcctKernelHandle {
+    /// Run a query against a geometry handle on the kernel thread.
+    pub fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .blocking_send(OcctRequest::Query {
+                query: query.clone(),
+                reply: reply_tx,
+            })
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?;
+        reply_rx
+            .blocking_recv()
+            .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
+    }
+
     /// Execute a geometry operation on the kernel thread.
     pub fn execute(&self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         let (reply_tx, reply_rx) = oneshot::channel();
