@@ -427,6 +427,43 @@ mod tests {
     }
 
     #[test]
+    fn latest_for_node_returns_last_event() {
+        let mut journal = EventJournal::new();
+        journal.record(make_event("x", EventKind::Started, 0));
+        journal.record(make_event("x", EventKind::Completed { outcome: EvalOutcome::Changed }, 0));
+        journal.record(make_event("x", EventKind::CacheHit, 1));
+
+        let node_x = NodeId::Value(reify_types::ValueCellId::new("Test", "x"));
+        let latest = journal.latest_for_node(&node_x);
+        assert!(latest.is_some());
+        assert!(matches!(latest.unwrap().kind, EventKind::CacheHit));
+    }
+
+    #[test]
+    fn latest_for_node_unknown_returns_none() {
+        let journal = EventJournal::new();
+        let unknown = NodeId::Value(reify_types::ValueCellId::new("Test", "unknown"));
+        assert!(journal.latest_for_node(&unknown).is_none());
+    }
+
+    #[test]
+    fn latest_for_node_interleaved() {
+        let mut journal = EventJournal::new();
+        journal.record(make_event("a", EventKind::Started, 0));
+        journal.record(make_event("b", EventKind::Started, 0));
+        journal.record(make_event("a", EventKind::Completed { outcome: EvalOutcome::Unchanged }, 0));
+        journal.record(make_event("b", EventKind::Completed { outcome: EvalOutcome::Changed }, 0));
+
+        let node_a = NodeId::Value(reify_types::ValueCellId::new("Test", "a"));
+        let latest_a = journal.latest_for_node(&node_a).unwrap();
+        assert!(matches!(latest_a.kind, EventKind::Completed { outcome: EvalOutcome::Unchanged }));
+
+        let node_b = NodeId::Value(reify_types::ValueCellId::new("Test", "b"));
+        let latest_b = journal.latest_for_node(&node_b).unwrap();
+        assert!(matches!(latest_b.kind, EventKind::Completed { outcome: EvalOutcome::Changed }));
+    }
+
+    #[test]
     fn eval_event_construction() {
         let event = EvalEvent {
             timestamp: Instant::now(),
