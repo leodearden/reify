@@ -54,6 +54,7 @@ use crate::cache::NodeId;
 ///
 /// This enables forward propagation: when a cell changes, look up which nodes
 /// need to be re-evaluated. Built from graph structure (expressions), not runtime traces.
+#[derive(Clone, Debug)]
 pub struct ReverseDependencyIndex {
     index: HashMap<ValueCellId, HashSet<NodeId>>,
 }
