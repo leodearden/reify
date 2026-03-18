@@ -1,7 +1,8 @@
 use std::io::{BufRead, BufReader, Read as _, Write};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 /// Send a JSON-RPC message with Content-Length header framing.
 fn send_jsonrpc(stdin: &mut impl Write, body: &str) {
@@ -10,6 +11,23 @@ fn send_jsonrpc(stdin: &mut impl Write, body: &str) {
     stdin.flush().expect("flush stdin");
 }
 
+/// Wait for a child process to exit with a timeout.
+/// Panics with a clear message if the deadline expires instead of hanging CI.
+fn wait_for_exit(child: &mut Child, timeout_secs: u64) -> ExitStatus {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait().expect("try_wait failed") {
+            Some(status) => return status,
+            None => {
+                assert!(
+                    Instant::now() < deadline,
+                    "child process did not exit within {timeout_secs}s"
+                );
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
 
 #[test]
 fn lsp_initialize_returns_capabilities() {
@@ -79,10 +97,10 @@ fn lsp_initialize_returns_capabilities() {
     });
     send_jsonrpc(&mut stdin, &exit.to_string());
 
-    // Drop stdin to signal EOF, then wait for exit
+    // Drop stdin to signal EOF, then wait for exit with timeout
     drop(stdin);
 
-    let status = child.wait().expect("wait for child");
+    let status = wait_for_exit(&mut child, 10);
     assert!(
         status.success(),
         "reify lsp should exit cleanly after shutdown+exit"
