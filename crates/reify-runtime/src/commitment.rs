@@ -212,4 +212,140 @@ mod tests {
         // Division by zero case — should return None or infinity; we return None
         assert_eq!(progress.progress_estimate(), None);
     }
+
+    // --- CommitmentDecision + check_commitment tests ---
+
+    #[test]
+    fn always_cancel_override_returns_never_commit() {
+        let policy = CommitmentPolicy::default();
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(999),
+            reported_progress: Some(0.99),
+            previous_runtime: None,
+        };
+        // AlwaysCancelWhenStale should always return NeverCommit
+        let decision = check_commitment(
+            &policy,
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+            &progress,
+            false,
+        );
+        assert_eq!(decision, CommitmentDecision::NeverCommit);
+    }
+
+    #[test]
+    fn elapsed_exceeds_always_commit_after_returns_committed() {
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_secs(120),
+            commit_when_proportion_done: 0.5,
+        };
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(121),
+            reported_progress: None,
+            previous_runtime: None,
+        };
+        let decision = check_commitment(
+            &policy,
+            NodeCommitmentOverride::CommitIfSlow,
+            &progress,
+            false,
+        );
+        assert_eq!(decision, CommitmentDecision::Committed);
+    }
+
+    #[test]
+    fn estimated_progress_exceeds_threshold_returns_committed() {
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_secs(120),
+            commit_when_proportion_done: 0.5,
+        };
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(10),
+            reported_progress: Some(0.6),
+            previous_runtime: None,
+        };
+        let decision = check_commitment(
+            &policy,
+            NodeCommitmentOverride::CommitIfSlow,
+            &progress,
+            false,
+        );
+        assert_eq!(decision, CommitmentDecision::Committed);
+    }
+
+    #[test]
+    fn below_both_thresholds_returns_not_yet() {
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_secs(120),
+            commit_when_proportion_done: 0.5,
+        };
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(10),
+            reported_progress: Some(0.3),
+            previous_runtime: None,
+        };
+        let decision = check_commitment(
+            &policy,
+            NodeCommitmentOverride::CommitIfSlow,
+            &progress,
+            false,
+        );
+        assert_eq!(decision, CommitmentDecision::NotYet);
+    }
+
+    #[test]
+    fn only_run_on_final_with_intermediate_inputs_returns_never_commit() {
+        let policy = CommitmentPolicy::default();
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(999),
+            reported_progress: Some(0.99),
+            previous_runtime: None,
+        };
+        // OnlyRunOnFinalInputs with intermediate inputs → NeverCommit
+        let decision = check_commitment(
+            &policy,
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+            &progress,
+            true, // has_intermediate_inputs = true
+        );
+        assert_eq!(decision, CommitmentDecision::NeverCommit);
+    }
+
+    #[test]
+    fn only_run_on_final_with_final_inputs_uses_dual_threshold() {
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_secs(120),
+            commit_when_proportion_done: 0.5,
+        };
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(121),
+            reported_progress: None,
+            previous_runtime: None,
+        };
+        // OnlyRunOnFinalInputs with final inputs → falls through to dual-threshold
+        let decision = check_commitment(
+            &policy,
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+            &progress,
+            false, // has_intermediate_inputs = false
+        );
+        assert_eq!(decision, CommitmentDecision::Committed);
+    }
+
+    #[test]
+    fn no_progress_estimate_and_below_time_threshold_returns_not_yet() {
+        let policy = CommitmentPolicy::default();
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(10),
+            reported_progress: None,
+            previous_runtime: None,
+        };
+        let decision = check_commitment(
+            &policy,
+            NodeCommitmentOverride::CommitIfSlow,
+            &progress,
+            false,
+        );
+        assert_eq!(decision, CommitmentDecision::NotYet);
+    }
 }
