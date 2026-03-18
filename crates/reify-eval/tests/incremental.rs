@@ -1797,3 +1797,57 @@ fn forward_let_ref_post_resolution() {
         c_val
     );
 }
+
+/// Incremental edit_param handles forward let-binding references correctly.
+///
+/// The incremental path (compute_eval_set → topological_sort) already sorts
+/// by dependency, so this test confirms that forward-declared lets work
+/// correctly both in cold-start and after an incremental parameter edit.
+///
+/// Template: param a (default 5, Int)
+///   let y = x + 1  (forward ref to x)
+///   let x = a + 10
+///
+/// Cold-start: x = 15, y = 16.
+/// Edit a = 20: x = 30, y = 31.
+#[test]
+fn forward_let_ref_incremental_edit_param() {
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // y = x + 1 (forward reference to x)
+    let y_expr = binop(BinOp::Add, value_ref("S", "x"), literal(Value::Int(1)));
+    // x = a + 10
+    let x_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(10)));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(5))))
+        .let_binding("S", "y", Type::Int, y_expr)  // y declared first (forward ref)
+        .let_binding("S", "x", Type::Int, x_expr)  // x declared second
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result = engine.eval(&module);
+
+    // Cold-start: x = 15, y = 16
+    assert_eq!(*result.values.get(&x_id).unwrap(), Value::Int(15));
+    assert_eq!(*result.values.get(&y_id).unwrap(), Value::Int(16));
+
+    // Incremental edit: a = 20 → x = 30, y = 31
+    let edit_result = engine.edit_param(a_id.clone(), Value::Int(20));
+    assert_eq!(
+        *edit_result.values.get(&x_id).unwrap(),
+        Value::Int(30),
+        "x = a + 10 = 20 + 10 = 30"
+    );
+    assert_eq!(
+        *edit_result.values.get(&y_id).unwrap(),
+        Value::Int(31),
+        "y = x + 1 = 30 + 1 = 31"
+    );
+}
