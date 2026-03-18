@@ -4,6 +4,55 @@
 //! and NodeId (HashMap<NodeId>), recording Started, Completed, Cancelled,
 //! Failed, CacheHit, and WarmStartUsed events during evaluation.
 
+use std::time::Instant;
+
+use reify_types::VersionId;
+
+use crate::cache::{EvalOutcome, NodeId};
+
+/// A single evaluation event recorded in the journal.
+#[derive(Clone, Debug)]
+pub struct EvalEvent {
+    /// Monotonic timestamp when the event occurred.
+    pub timestamp: Instant,
+    /// The node this event pertains to.
+    pub node_id: NodeId,
+    /// What kind of event occurred.
+    pub kind: EventKind,
+    /// The evaluation version when this event was recorded.
+    pub version: VersionId,
+    /// Optional payload with additional event data.
+    pub payload: Option<EventPayload>,
+}
+
+/// The kind of evaluation event.
+#[derive(Clone, Debug)]
+pub enum EventKind {
+    /// Evaluation of a node has started.
+    Started,
+    /// Evaluation of a node completed with the given outcome.
+    Completed { outcome: EvalOutcome },
+    /// Evaluation of a node was cancelled.
+    Cancelled,
+    /// Evaluation of a node failed with an error message.
+    Failed { error: String },
+    /// A cache hit was used instead of re-evaluating.
+    CacheHit,
+    /// A warm-start state was used for evaluation.
+    WarmStartUsed,
+}
+
+/// Optional payload attached to an evaluation event.
+#[derive(Clone, Debug)]
+pub enum EventPayload {
+    /// Duration of the evaluation.
+    Duration(std::time::Duration),
+    /// Error details.
+    Error(String),
+    /// Custom string payload.
+    Custom(String),
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
