@@ -20,3 +20,6 @@ reify-kernel-occt.workspace = true
 reify-stdlib.workspace = true
 reify-lsp.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

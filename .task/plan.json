@@ -1,14 +1,14 @@
 {
-  "task_id": "32",
-  "title": "LSP server \u2014 core infrastructure",
-  "modules": ["crates/reify-lsp", "crates/reify-cli", "crates/reify-compiler"],
-  "analysis": "This task builds the foundational LSP server for Reify: tower-lsp based initialization, full-sync document management (didOpen/didChange/didClose), and a diagnostic pipeline that feeds parse\u2192compile\u2192eval\u2192check results back to the editor.\n\nThe existing codebase already provides: reify-syntax (tree-sitter parser \u2192 ParsedModule), reify-compiler (compile \u2192 CompiledModule with diagnostics), reify-eval (Engine with eval/check/check_snapshot), reify-constraints (SimpleConstraintChecker), and reify-types (Diagnostic, SourceSpan, Severity, ParseError). The LSP crate exists in the workspace Cargo.toml with tower-lsp 0.20 and tokio as workspace dependencies.\n\nCore architecture:\n1. **convert.rs** \u2014 Bidirectional byte-offset \u2194 LSP Position conversion (handling UTF-16 per LSP spec), span_to_range, and Diagnostic/ParseError \u2192 LSP Diagnostic conversion. Must handle UTF-8 boundary safety (tree-sitter error-recovery can produce mid-character byte offsets).\n2. **document.rs** \u2014 HashMap-backed DocumentStore holding open document text+version, keyed by URI.\n3. **diagnostics.rs** \u2014 Two pipelines: (a) stateless compute_diagnostics (fresh Engine per call), (b) stateful compute_diagnostics_with_state (EvalState holding persistent Engine for incremental potential). Both run parse\u2192compile\u2192eval\u2192check_snapshot, converting all diagnostics (parse errors, compiler diagnostics, eval diagnostics, constraint violations) to LSP format.\n4. **server.rs** \u2014 ReifyLanguageServer wrapping Arc<RwLock<ServerState>> for documents + Arc<Mutex<EvalState>> for eval. Handlers: initialize (advertise FULL sync), did_open/did_change (update doc store, run diagnostics, publish), did_close (remove doc, clear diagnostics), shutdown. Lock strategy: narrow RwLock for document access, separate Mutex for eval (avoids blocking concurrent reads during expensive eval). Mutex poison recovery via unwrap_or_else(into_inner).\n5. **lib.rs** \u2014 run_server() async entry point using tokio stdin/stdout.\n6. **reify-cli** \u2014 'reify lsp' subcommand that creates a tokio Runtime and block_on(run_server()).\n\nKey design constraint: Engine is Send but not Sync (holds Box<dyn ConstraintChecker>). The EvalState wraps it in Mutex for thread safety. For M1 single-file scope, creating a fresh Engine per source change is acceptable; true incrementality (diffing compiled modules) is future work.\n\n**Post-review additions (steps 25\u201332):** Three blocking issues identified by review:\n1. compute_diagnostics_with_state has no dedicated unit tests in diagnostics.rs despite step-21 being marked done. Integration tests exist in tests/interactive_edit_loop.rs but do not verify EvalState internals (version_counter persistence) or the three-phase state-clearing cycle within a single test.\n2. check_snapshot returning None is silently ignored (line 87), causing constraint violations to be invisible to the user. Fix: fall back to engine.check() when check_snapshot returns None.\n3. Constraint violation diagnostics always report Range::default() (0,0)\u2192(0,0) because (a) the compiler hardcodes CompiledConstraint.span to SourceSpan::new(0,0) instead of propagating ConstraintDecl.span, and (b) the LSP diagnostic emitter uses Range::default() instead of looking up constraint spans. Fix requires a one-line compiler fix and a span lookup in the diagnostics pipeline.",
+  "task_id": "35",
+  "title": "Ensure that the M4 user-facing interactive surface has been implemented",
+  "modules": ["crates/reify-cli", "crates/reify-lsp"],
+  "analysis": "This task verifies and hardens the M4 user-facing interactive surface. The codebase already has a fully-implemented LSP server (tower-lsp with hover, goto-def, completion, stateful diagnostics, constraint violation reporting with source spans, Mutex poison recovery) and a CLI binary with `check`, `build`, and `lsp` commands.\n\nCurrent test coverage gaps that need filling:\n1. **CLI `reify check` has NO integration test** — The only CLI tests are for the `lsp` subcommand (command recognition + help text). There are no tests that actually run `reify check <file>` against a `.ri` fixture and verify output/exit-code.\n2. **CLI `reify lsp` test is superficial** — The existing `lsp_command_is_recognized` test sends null stdin and only checks stderr doesn't contain 'Unknown command'. It does NOT verify the LSP server actually handles JSON-RPC protocol messages through the binary entry point.\n3. **No test proves the interactive loop works through the CLI binary** — All interactive edit loop tests use `LspService::new(ReifyLanguageServer::new)` and call methods directly on the inner server. This tests the library code but not the stdio transport wiring that real users depend on.\n\nThe plan adds integration tests that exercise user-facing surfaces as real users would: spawning the binary, writing fixture files, sending JSON-RPC over stdin/stdout, and verifying outputs. The `reify build` command requires OCCT kernel availability, so its integration test is gated behind a cfg/env check.\n\nThe LSP is NOT a stub — it's a complete implementation with 580+ lines across server.rs, diagnostics.rs, convert.rs, document.rs, hover.rs, goto_def.rs, completion.rs, and analysis.rs. The CLI properly wires all three commands. The interactive loop (open → edit → diagnostics) works through the LSP server with stateful EvalState persistence. This task's job is to prove all of this through user-facing integration tests.\n\n**Post-review addendum:** Four blocking issues were identified: (1) `read_jsonrpc()` blocks indefinitely with no timeout, (2) `lsp_command_is_recognized` is duplicated in cli_smoke.rs and cli_lsp.rs, (3) `lsp_initialize_returns_capabilities` uses naive sequential reads instead of the spawn_reader+wait_for_response pattern that correctly filters by id, (4) `child.wait()` with no timeout in both protocol tests. Steps 13-18 address these issues.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create crates/reify-lsp crate skeleton: Cargo.toml with dependencies (reify-types, reify-syntax, reify-compiler, reify-eval, reify-constraints, tower-lsp, tokio, serde_json; dev: reify-test-support), empty lib.rs with module declarations. Ensure it compiles in the workspace.",
+      "description": "Create a test fixture directory `crates/reify-cli/tests/fixtures/` with `bracket.ri` (valid bracket source) and `bracket_violating.ri` (thickness=1mm, violates constraint). These are file-system fixtures for CLI integration tests that invoke the binary with file paths.",
       "status": "done",
-      "commit": "6652574",
+      "commit": "34d9147",
       "tests": []
     }
   ],
@@ -16,320 +16,194 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests in convert.rs for offset_to_position (byte offset \u2192 LSP Position): (1) offset 0 in empty string \u2192 Position(0,0); (2) offset within first line returns correct character; (3) offset on second line returns line=1, correct character; (4) offset at newline character returns end of line 0; (5) multiline bracket_source \u2014 offset 0 \u2192 (0,0), second line start \u2192 (1,0). Also test span_to_range: SourceSpan{6,12} in 'first\\nsecond\\nthird' \u2192 Range{(1,0),(1,6)}.",
+      "description": "Write failing test in `crates/reify-cli/tests/cli_check.rs`: `reify check fixtures/bracket.ri` exits with code 0, stdout contains 'All constraints satisfied', and stderr does NOT contain 'Unknown command'. Uses `Command::new(env!(\"CARGO_BIN_EXE_reify\"))` with `.args([\"check\", fixture_path])`. Fixture path is resolved relative to the test file using `CARGO_MANIFEST_DIR`.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "b51c486"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement offset_to_position(source, offset) \u2192 Position and span_to_range(source, SourceSpan) \u2192 Range in convert.rs. offset_to_position: iterate bytes counting newlines for line number, then count UTF-16 code units from line start to offset for character column. span_to_range: call offset_to_position for start and end.",
+      "description": "Ensure `reify check` works correctly with the fixture file. The implementation already exists in `cmd_check()` — this step verifies it passes. If the test fails, diagnose and fix the issue (likely path resolution or missing fixture).",
       "status": "done",
-      "commit": "6652574"
+      "commit": "b51c486"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests in convert.rs for diagnostic conversion: (1) convert_severity maps Error\u2192ERROR, Warning\u2192WARNING, Info\u2192INFORMATION; (2) convert_diagnostic with no labels produces range at origin (0,0)\u2192(0,0); (3) convert_diagnostic with one label uses label span for range; (4) convert_diagnostic with multiple labels puts first as primary range and rest as related_information; (5) convert_parse_error produces ERROR severity diagnostic with correct range from ParseError.span.",
+      "description": "Write failing test in `crates/reify-cli/tests/cli_check.rs`: `reify check fixtures/bracket_violating.ri` exits with non-zero code, stdout contains 'VIOLATED' and 'Some constraints violated'. Proves the CLI surfaces constraint violations to users.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "0d35347"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement convert_severity, convert_diagnostic, and convert_parse_error in convert.rs. convert_diagnostic: use first label's span for primary range, remaining labels as DiagnosticRelatedInformation. convert_parse_error: map ParseError.span to range with ERROR severity. Both set source='reify'.",
+      "description": "Ensure `reify check` correctly reports constraint violations. The implementation should already handle this — verify and fix if needed.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "0d35347"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests in document.rs for DocumentStore: (1) open stores text and version, get returns them; (2) get returns Some after open; (3) update replaces text and version; (4) close removes entry, get returns None; (5) get returns None after close; (6) two documents stored independently.",
+      "description": "Write failing test in `crates/reify-cli/tests/cli_check.rs`: `reify check nonexistent.ri` exits with non-zero code and stderr contains error message. Validates error handling for missing files.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "0d35347"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement DocumentStore in document.rs: HashMap<Url, DocumentState> where DocumentState holds text: String and version: i32. Methods: new(), open(uri, text, version), update(uri, text, version), close(uri), get(uri) \u2192 Option<&DocumentState>.",
+      "description": "Ensure `reify check` handles missing files gracefully. Already implemented via `std::fs::read_to_string` error handling in `parse_and_compile()` — verify it passes.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "0d35347"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests in diagnostics.rs for compute_diagnostics pipeline: (1) valid bracket_source produces no ERROR-severity diagnostics; (2) syntax error 'structure {' produces at least one ERROR diagnostic; (3) unknown identifier in expression produces diagnostics; (4) empty source does not panic.",
+      "description": "Write failing test in `crates/reify-cli/tests/cli_lsp_protocol.rs`: Spawn `reify lsp` process with piped stdin/stdout, send a JSON-RPC initialize request (Content-Length header + JSON body with method 'initialize'), read the response, verify it contains 'textDocumentSync' capability. Then send shutdown + exit. This proves the LSP server is reachable as a user-facing surface via the CLI binary, not just through internal test adapters.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "1a01988"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement compute_diagnostics(source, uri) \u2192 Vec<Diagnostic> in diagnostics.rs. Derives module_name from URI path (strip .ri suffix). Pipeline: parse \u2192 collect parse errors via convert_parse_error; compile \u2192 collect diagnostics via convert_diagnostic; create fresh Engine with SimpleConstraintChecker \u2192 check() \u2192 collect eval diagnostics.",
+      "description": "Ensure the JSON-RPC protocol test passes through the CLI binary. The `cmd_lsp()` function already creates a tokio runtime and calls `run_server()`. If the test fails, it likely means the stdin/stdout wiring or JSON-RPC framing needs adjustment. Write a small helper function `send_jsonrpc(stdin, method, params) -> String` and `read_jsonrpc(stdout) -> serde_json::Value` for the test to use.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "1a01988"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test in server.rs: after calling initialize(), the result capabilities must include text_document_sync = TextDocumentSyncKind::FULL.",
+      "description": "Write failing test in `crates/reify-cli/tests/cli_lsp_protocol.rs`: Full interactive loop through the binary's stdio transport. (1) Initialize, (2) send didOpen with valid bracket source, (3) send didChange with violating source, (4) send didChange back to valid source, (5) shutdown+exit. Verify the process exits cleanly with code 0. This is the capstone test proving the interactive loop is reachable through the user-facing CLI surface.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "397f14a"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement ReifyLanguageServer struct with client: Client, state: Arc<RwLock<ServerState>>. ServerState contains DocumentStore. Implement LanguageServer trait: initialize() returns ServerCapabilities with text_document_sync FULL; initialized() is no-op; shutdown() returns Ok(()).",
+      "description": "Ensure the full interactive loop test passes through the binary. May need to handle notification messages (didOpen/didChange are notifications, not requests) and published diagnostics (server→client notifications). If JSON-RPC framing or async issues arise, fix them.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "397f14a"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test: after did_open with bracket_source, the document should be stored in ServerState.documents with correct text and version.",
+      "description": "Write test in `crates/reify-cli/tests/cli_smoke.rs`: Comprehensive smoke test verifying all user-facing CLI commands are available: (1) `reify` with no args lists all commands (check, build, lsp) in help text, (2) `reify check` with no file arg shows usage, (3) `reify build` with no file arg shows usage, (4) `reify lsp` is recognized (existing test moved here). Consolidates command availability verification.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "6f4e5b4"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement did_open handler: extract uri/text/version from params, write-lock state to store document via documents.open(), then run compute_diagnostics and publish via client.publish_diagnostics().",
+      "description": "Ensure all smoke tests pass. Verify help text includes all three commands. The existing `cli_lsp.rs` tests can remain as-is or be consolidated into the smoke test file. Fix any missing commands in help text.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "6f4e5b4"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test: after did_open + did_change with new text, the stored document text and version should be updated.",
+      "description": "[Review fix: duplicate_test] Remove the duplicate `lsp_command_is_recognized` test from `crates/reify-cli/tests/cli_smoke.rs` (lines 76-92). This test is an exact duplicate of the one in `cli_lsp.rs` — same binary invocation, same stdin/stdout/stderr setup, same assertion. Having both causes silent redundancy. The test in `cli_lsp.rs` is the canonical location and should remain. Verify the remaining 3 tests in cli_smoke.rs still pass.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "878586c"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement did_change handler: full sync mode \u2014 take last content_change.text, write-lock state to update document, run compute_diagnostics and publish.",
+      "description": "[Review fix: unbounded_blocking + incorrect_message_routing] Refactor `lsp_initialize_returns_capabilities` in `cli_lsp_protocol.rs` to use `spawn_reader` + `wait_for_response` instead of direct `read_jsonrpc` calls. The current code uses naive sequential `read_jsonrpc` on lines 66 and 94 which (a) blocks indefinitely if the server stalls/crashes and (b) will misinterpret server-initiated notifications as responses because it doesn't filter by `id`. The `lsp_full_interactive_loop_through_binary` test already solves this correctly — apply the same pattern: call `spawn_reader(stdout)` to get an `mpsc::Receiver`, then use `wait_for_response(&rx, 1)` for initialize and `wait_for_response(&rx, 2)` for shutdown. This addresses both the timeout issue (recv_timeout of 10s in wait_for_response) and the message routing issue (id-matching loop).",
       "status": "done",
-      "commit": "6652574"
+      "commit": "9a820e2"
     },
     {
       "id": "step-15",
-      "type": "test",
-      "description": "Write failing test: after did_open + did_close, the document should be removed from the store (get returns None).",
+      "type": "impl",
+      "description": "[Review fix: unbounded_blocking cleanup] Remove the `read_jsonrpc` function from `cli_lsp_protocol.rs` since it is now unused after step-14 migrated its only caller to `spawn_reader` + `wait_for_response`. This eliminates the unbounded blocking helper entirely, preventing future callers from accidentally using it.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "572abea"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement did_close handler: write-lock state to close document, publish empty diagnostics to clear editor markers.",
+      "description": "[Review fix: missing_timeout_hang_risk] Replace `child.wait()` with a timeout-guarded wait in `lsp_initialize_returns_capabilities` (line 107). Use a `try_wait` polling loop with an explicit 10-second deadline: `let deadline = Instant::now() + Duration::from_secs(10); loop { match child.try_wait()? { Some(s) => break s, None => { assert!(Instant::now() < deadline, \"child did not exit within 10s\"); thread::sleep(Duration::from_millis(50)); } } }`. If the deadline expires, the test panics with a clear message instead of hanging CI indefinitely.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "8fc0a7a"
     },
     {
       "id": "step-17",
-      "type": "test",
-      "description": "Write failing tests for run_server entry point: verify lib.rs exports run_server() as pub async fn, and that the CLI 'lsp' subcommand calls it via tokio Runtime. (Compile-time verification that the integration wires correctly.)",
+      "type": "impl",
+      "description": "[Review fix: missing_timeout_hang_risk] Apply the same timeout-guarded wait pattern to `lsp_full_interactive_loop_through_binary` (line 310). Replace `child.wait()` with the same `try_wait` polling loop with a 10-second deadline. Extract a shared helper function `wait_for_exit(child: &mut Child, timeout_secs: u64) -> ExitStatus` to avoid duplicating the polling logic between the two tests.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "f65eba0"
     },
     {
       "id": "step-18",
-      "type": "impl",
-      "description": "Implement run_server() in lib.rs: create LspService from ReifyLanguageServer::new, serve on tokio stdin/stdout. Add cmd_lsp() to reify-cli main.rs: create tokio Runtime, block_on(run_server()), return SUCCESS. Wire 'lsp' match arm in CLI dispatch.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-19",
       "type": "test",
-      "description": "Write failing tests for UTF-8 boundary safety in offset_to_position: (1) 2-byte char '\u00e9' (U+00E9) \u2014 offset at continuation byte should not panic, snaps to next char boundary; (2) 3-byte char '\u4e16' (U+4E16) \u2014 offsets at continuation bytes snap forward; (3) 4-byte char '\ud83d\ude00' (U+1F600) \u2014 continuation byte offsets snap forward with correct UTF-16 surrogate pair handling (2 UTF-16 units); (4) exact char boundaries produce correct positions; (5) mid-char on second line still reports correct line; (6) span_to_range with mid-multibyte span does not panic.",
+      "description": "[Review fix: verification] Run `cargo test -p reify-cli` to verify all fixes are correct: (1) cli_smoke.rs has 3 tests (no duplicate lsp_command_is_recognized), (2) lsp_initialize_returns_capabilities uses spawn_reader+wait_for_response and timeout-guarded exit, (3) lsp_full_interactive_loop_through_binary uses timeout-guarded exit, (4) read_jsonrpc is removed, (5) all tests pass without hanging. This is a verification-only step — no code changes.",
       "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Harden offset_to_position: after clamping to source length, snap forward to next valid UTF-8 char boundary while not at boundary (continuation bytes 0x80..0xBF). This handles tree-sitter error-recovery spans that land mid-character.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing test for stateful diagnostics pipeline: compute_diagnostics_with_state with bracket_source produces no errors; then with violating source (thickness=1mm) produces constraint violation diagnostic; then with valid source again clears violations. Verify EvalState maintains Engine across calls.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Implement EvalState struct (engine: Engine, last_module: Option<CompiledModule>, version_counter: u64) and compute_diagnostics_with_state(state, source, uri) \u2192 DiagnosticsResult. On each call: re-parse, re-compile, create fresh Engine (source change invalidates all state), eval, check_snapshot for constraint results. Convert constraint violations to explicit ERROR diagnostics. Store compiled module for future use.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write failing tests: (1) after did_open, ServerState.last_diagnostics_for(uri) returns captured diagnostics (valid source \u2192 no errors); (2) eval_state Mutex is poisoned via thread panic, then did_open still succeeds \u2014 recovers from poison and produces diagnostics.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Restructure server: add eval_state: Arc<Mutex<EvalState>> to ReifyLanguageServer (separate from RwLock). Add last_published_diagnostics to ServerState. Update did_open/did_change: narrow RwLock scope (brief write to store doc, release lock, then lock eval_state Mutex for eval, brief write to capture diagnostics). Recover from Mutex poison via unwrap_or_else(|e| e.into_inner()). Update did_close to clear captured diagnostics.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "[Review fix: missing_test_coverage] Write dedicated unit tests for compute_diagnostics_with_state in diagnostics.rs #[cfg(test)] mod tests (not integration tests). Single test function exercising the full three-phase stateful lifecycle: (1) call with bracket_source() \u2014 assert no ERROR diagnostics; (2) call with bracket_source_violating() on same EvalState \u2014 assert at least one ERROR diagnostic with message containing 'constraint' and 'violated'; (3) call with bracket_source() again on same EvalState \u2014 assert ERROR diagnostics are empty, verifying violations clear on valid source. Also assert EvalState.version_counter == 3 after three calls (confirms state persistence across invocations). Add a separate test that EvalState::new() starts with version_counter == 0.",
-      "status": "done",
-      "commit": "6ac0d4f"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "[Review fix: missing_test_coverage] Verify step-25 tests pass against existing compute_diagnostics_with_state implementation. If any tests fail, fix the underlying issues. The existing implementation should handle bracket_source_violating() (String coerced to &str) correctly. If version_counter is not accessible from tests (it is \u2014 same module), no changes needed. This step may be a no-op if the implementation is already correct for the tested scenarios.",
-      "status": "done",
-      "commit": "6ac0d4f"
-    },
-    {
-      "id": "step-27",
-      "type": "test",
-      "description": "[Review fix: silent_failure_at_boundary] Write tests in diagnostics.rs for check_snapshot fallback robustness: (1) assert that a fresh Engine (without prior eval call) has check_snapshot return None when given a compiled bracket module \u2014 validates the edge case exists; (2) test that compute_diagnostics_with_state with bracket_source_violating() ALWAYS produces at least one constraint violation ERROR diagnostic (regression guard ensuring the constraint pipeline is never silently skipped); (3) test that compute_diagnostics_with_state with an empty source ('') does not panic and produces a result (edge case where eval may not create a meaningful snapshot).",
-      "status": "done",
-      "commit": "0a519c8"
-    },
-    {
-      "id": "step-28",
-      "type": "impl",
-      "description": "[Review fix: silent_failure_at_boundary] In compute_diagnostics_with_state, replace `if let Some(check_result) = state.engine.check_snapshot(&compiled)` with a match that falls back to `state.engine.check(&compiled)` when check_snapshot returns None. Add eprintln!(\"[reify-lsp] check_snapshot returned None after eval, falling back to full check\") warning when the fallback is triggered. The fallback path calls check() which internally re-runs eval + constraint checking \u2014 slightly less efficient but ensures constraint violations are never silently dropped. The normal path (check_snapshot returns Some) is unchanged.",
-      "status": "done",
-      "commit": "8bba05f"
-    },
-    {
-      "id": "step-29",
-      "type": "test",
-      "description": "[Review fix: misleading_error_location] In crates/reify-compiler, write a test that compiles bracket_source() via parse+compile and asserts that each CompiledConstraint.span is non-zero and matches the corresponding ConstraintDecl.span from the parsed module. Specifically: parse bracket_source(), compile it, then for each template.constraints[i], assert constraint.span != SourceSpan::new(0,0). Also compare against known bracket fixture spans: constraint 0 span should be (232,258), constraint 1 span (263,295), constraint 2 span (300,340). This test currently fails because the compiler hardcodes span: SourceSpan::new(0, 0) at lib.rs:729.",
-      "status": "done",
-      "commit": "e460a73"
-    },
-    {
-      "id": "step-30",
-      "type": "impl",
-      "description": "[Review fix: misleading_error_location] In crates/reify-compiler/src/lib.rs at line 729, change `span: SourceSpan::new(0, 0)` to `span: constraint.span`, propagating the ConstraintDecl's source span (which tree-sitter correctly populates) into the CompiledConstraint. This is a one-line fix \u2014 the `constraint` variable is the ConstraintDecl which has a valid `.span` field with correct byte offsets.",
-      "status": "done",
-      "commit": "3433209"
-    },
-    {
-      "id": "step-31",
-      "type": "test",
-      "description": "[Review fix: misleading_error_location] In diagnostics.rs, write test that constraint violation diagnostics from compute_diagnostics_with_state have ranges pointing to the constraint declaration in source, NOT (0,0)\u2192(0,0). Use bracket_source_violating() and verify: (a) find the ERROR diagnostic whose message contains 'constraint' and 'violated', (b) assert its range.start.line > 0 (constraints are on lines 7-9 of bracket source, not line 0), (c) assert range != Range::default(). This test fails initially because the current code uses Range::default() for all constraint violation diagnostics.",
-      "status": "done",
-      "commit": "e92a3bb"
-    },
-    {
-      "id": "step-32",
-      "type": "impl",
-      "description": "[Review fix: misleading_error_location] In compute_diagnostics_with_state, after compiling, build a HashMap<ConstraintNodeId, SourceSpan> from compiled.templates.iter().flat_map(|t| t.constraints.iter()).map(|c| (c.id.clone(), c.span)). When emitting constraint violation diagnostics (the for loop over check_result.constraint_results), look up the span by entry.id in this map and use convert::span_to_range(source, span) for the diagnostic range instead of lsp_types::Range::default(). Fall back to Range::default() only if the span lookup fails (defensive, should not happen in practice).",
-      "status": "done",
-      "commit": "e92a3bb"
+      "commit": "f65eba0"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Full document sync (TextDocumentSyncKind::FULL) instead of incremental",
-      "rationale": "Full sync is simpler to implement and sufficient for M1 single-file scope. The entire document text arrives on each change, avoiding diff/patch complexity. Incremental sync can be added later as an optimization when document sizes warrant it."
+      "decision": "Test the CLI binary as a subprocess, not just library code",
+      "rationale": "The task specifically requires proving the interactive loop is 'reachable through supported user-facing surfaces rather than only through internal test adapters'. Using `Command::new(env!(\"CARGO_BIN_EXE_reify\"))` tests the actual binary users will invoke, including CLI argument parsing, tokio runtime creation, and stdio transport — none of which are covered by the existing tower-lsp unit tests."
     },
     {
-      "decision": "Separate RwLock for documents and Mutex for eval state",
-      "rationale": "Engine evaluation is expensive relative to document lookups. A single RwLock would block all document reads during eval. Separating them allows concurrent document reads (hover, goto-def, completion) while eval runs. The Mutex on EvalState serializes eval calls which is necessary since Engine is Send but not Sync."
+      "decision": "JSON-RPC protocol test for LSP, not just command recognition",
+      "rationale": "The existing `lsp_command_is_recognized` test only checks that the command doesn't produce 'Unknown command' in stderr. This doesn't prove the LSP server actually works. Sending a real JSON-RPC initialize request and verifying the response proves the full stack: CLI dispatch → tokio runtime → tower-lsp → ReifyLanguageServer → capabilities response."
     },
     {
-      "decision": "Fresh Engine per source change in stateful pipeline",
-      "rationale": "Source text changes invalidate the entire compilation/evaluation graph. True source-level incrementality (diffing compiled modules, updating only changed topology) is complex and deferred to M4. For M1 single-file scope, cold-start eval is fast enough (<1ms for bracket.ri)."
+      "decision": "Skip `reify build` integration test for now",
+      "rationale": "The `reify build` command requires `OcctKernelHandle::spawn()` which needs the OCCT kernel binary available. This is environment-dependent and may not be available in CI. The `check` and `lsp` tests cover the interactive surface without geometry dependencies. Build testing is deferred to OCCT-specific test infrastructure."
     },
     {
-      "decision": "Mutex poison recovery via into_inner()",
-      "rationale": "If eval panics (e.g., unexpected OCCT crash), the Mutex becomes poisoned. Rather than propagating the panic to all future LSP requests (effectively killing the server), we recover the inner EvalState and continue. A fresh Engine will be created on next eval anyway, so the recovered state is safe to use."
+      "decision": "File-based fixtures for CLI tests instead of stdin-piped source",
+      "rationale": "The `reify check` and `reify build` commands take file paths, not stdin. Creating actual `.ri` fixture files in the test directory mirrors real user workflows and tests the full file-reading path. Using CARGO_MANIFEST_DIR for path resolution ensures tests work regardless of working directory."
     },
     {
-      "decision": "UTF-8 boundary snapping in offset_to_position",
-      "rationale": "Tree-sitter error-recovery can produce byte offsets that land in the middle of multi-byte UTF-8 characters. Rather than panicking on invalid slice boundaries, we snap forward to the next valid char boundary. This is safe because it only affects the column position of error spans, and snapping forward to the next character is a reasonable approximation."
+      "decision": "Interactive loop capstone test verifies clean exit, not diagnostic content",
+      "rationale": "Verifying the actual diagnostic content published over JSON-RPC would require parsing server→client notifications from the stdout stream, which is complex and fragile (tower-lsp may interleave notifications). The capstone test verifies the interactive loop completes without crashes or hangs. Diagnostic content correctness is already thoroughly tested at the library level in reify-lsp integration tests."
     },
     {
-      "decision": "UTF-16 character counting per LSP specification",
-      "rationale": "LSP Position.character uses UTF-16 code units, not bytes or Unicode scalar values. This matters for emoji (surrogate pairs = 2 UTF-16 units) and CJK characters. Correct handling via char::len_utf16() ensures editors display diagnostics at the right column."
+      "decision": "Unify both protocol tests on spawn_reader+wait_for_response pattern instead of fixing read_jsonrpc",
+      "rationale": "The reviewer identified two separate issues with read_jsonrpc: it blocks indefinitely (no timeout) and it doesn't filter by message id (notifications consumed as responses). Rather than patching read_jsonrpc to add timeout+id-matching (which would essentially re-implement wait_for_response), the better fix is to migrate lsp_initialize_returns_capabilities to the same spawn_reader+wait_for_response pattern that lsp_full_interactive_loop_through_binary already uses. This gives a single, well-tested code path for all message reading, and allows removing read_jsonrpc entirely."
     },
     {
-      "decision": "Constraint violations as explicit ERROR diagnostics",
-      "rationale": "CheckResult.constraint_results contains Satisfaction entries but these aren't Diagnostic objects. The LSP pipeline explicitly converts Violated constraints into ERROR diagnostics with descriptive messages ('constraint violated: <label>'), making them visible in the editor's problem panel alongside parse/compile errors."
+      "decision": "Extract wait_for_exit helper instead of duplicating try_wait loops",
+      "rationale": "Both protocol tests need timeout-guarded child process exit. Extracting a shared `wait_for_exit(child, timeout_secs)` helper keeps the fix DRY and ensures consistent timeout behavior (10s, 50ms poll interval, clear panic message) across all tests that spawn child processes."
     },
     {
-      "decision": "Fallback from check_snapshot to check() when snapshot is absent",
-      "rationale": "check_snapshot returns None when no evaluation snapshot exists. While eval() is always called before check_snapshot in the normal path (so None should be rare), silently dropping the constraint check makes violations invisible to the user with no indication. Falling back to check() (which internally re-runs eval + constraint check) is slightly less efficient but guarantees constraint results are always produced. An eprintln warning alerts developers to the unexpected condition without polluting the LSP diagnostic output."
-    },
-    {
-      "decision": "Constraint span resolution via CompiledModule lookup",
-      "rationale": "ConstraintCheckEntry (from Engine) carries id and label but no source span. CompiledConstraint (from CompiledModule) carries the span. Building a HashMap<ConstraintNodeId, SourceSpan> from the compiled module's templates and looking up by id when emitting violation diagnostics is O(n) construction + O(1) per lookup. With typical constraint counts < 20, this adds negligible overhead while ensuring violation diagnostics point to the actual constraint declaration in source."
-    },
-    {
-      "decision": "Fix compiler span propagation as part of this task",
-      "rationale": "The compiler hardcodes CompiledConstraint.span to SourceSpan::new(0,0) instead of using ConstraintDecl.span. This is a one-line bug fix (span: constraint.span) that is prerequisite for correct LSP constraint violation locations. While technically in crates/reify-compiler, the fix is trivial, self-contained, and required for the LSP task's correctness. Adding crates/reify-compiler to the module scope is justified."
+      "decision": "Remove duplicate test from cli_smoke.rs rather than cli_lsp.rs",
+      "rationale": "cli_lsp.rs is the original, purpose-built file for LSP command tests, with both lsp_command_is_recognized and help_text_includes_lsp. cli_smoke.rs duplicated lsp_command_is_recognized during step-11/12. The duplicate should be removed from the newer file (cli_smoke.rs) since cli_lsp.rs is the canonical location for LSP-specific command tests."
     }
   ],
   "reuse": [
     {
-      "what": "reify_syntax::parse(source, ModulePath) \u2192 ParsedModule",
-      "where": "crates/reify-syntax/src/lib.rs",
-      "how": "First stage of the diagnostics pipeline. ParsedModule.errors provides ParseError with SourceSpan for syntax error diagnostics."
+      "what": "env!(\"CARGO_BIN_EXE_reify\") for binary path in tests",
+      "where": "crates/reify-cli/tests/cli_lsp.rs",
+      "how": "Existing pattern for spawning the reify binary in CLI integration tests. Provides the correct path to the compiled binary regardless of build directory."
     },
     {
-      "what": "reify_compiler::compile(parsed) \u2192 CompiledModule",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "Second stage. CompiledModule.diagnostics provides type-check and scope-resolution errors as Diagnostic objects. CompiledModule.templates[].constraints[] provides CompiledConstraint with span for violation location resolution."
-    },
-    {
-      "what": "reify_eval::Engine::new(checker, kernel) + check/check_snapshot",
-      "where": "crates/reify-eval/src/lib.rs",
-      "how": "Third stage. Engine.check() runs eval + constraint checking (always returns CheckResult). check_snapshot() provides constraint check from current snapshot (returns Option). CheckResult.diagnostics + constraint_results feed the LSP diagnostic output."
-    },
-    {
-      "what": "reify_constraints::SimpleConstraintChecker",
-      "where": "crates/reify-constraints/src/lib.rs",
-      "how": "Default constraint checker for LSP. Evaluates constraint expressions against current values and reports Satisfied/Violated/Indeterminate."
-    },
-    {
-      "what": "reify_types::{Diagnostic, SourceSpan, Severity, ParseError}",
-      "where": "crates/reify-types/src/diagnostics.rs",
-      "how": "Source types for diagnostic conversion. Diagnostic has message, severity, labels[]. SourceSpan has start/end byte offsets. These are converted to LSP types by convert.rs."
-    },
-    {
-      "what": "tower-lsp framework",
-      "where": "Cargo.toml workspace dependency",
-      "how": "Provides LanguageServer trait, LspService, Server, Client, and all LSP type definitions. The async_trait macro enables async handler methods."
-    },
-    {
-      "what": "bracket_source() test fixture",
+      "what": "bracket_source() and bracket_source_violating() fixtures",
       "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "Canonical test source for integration tests (did_open, did_change). Known to parse and compile cleanly, with 5 params, 1 let, 3 constraints for predictable diagnostic output."
+      "how": "Write these to .ri files in the fixture directory for CLI tests. The bracket source is a known-good Reify program with 5 params and 3 constraints; violating version sets thickness=1mm which violates the thickness > 2mm constraint."
     },
     {
-      "what": "bracket_source_violating() test fixture",
-      "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "Returns bracket source with thickness=1mm (violates 'thickness > 2mm' constraint). Returns String (not &str). Same byte length as bracket_source() so constraint span offsets are preserved. Used in steps 25, 27, 31 for testing constraint violation detection and span resolution."
+      "what": "std::process::Command with piped stdin/stdout/stderr",
+      "where": "crates/reify-cli/tests/cli_lsp.rs",
+      "how": "Existing pattern for CLI integration tests. Extended with Stdio::piped() for stdin to enable JSON-RPC communication with the LSP server process."
     },
     {
-      "what": "LspService::new + service.inner() test pattern",
-      "where": "tower-lsp API",
-      "how": "Creates server instance for testing without actual stdin/stdout transport. service.inner() returns &ReifyLanguageServer for direct handler calls. Used in all server.rs integration tests."
+      "what": "tower-lsp JSON-RPC framing (Content-Length headers)",
+      "where": "LSP specification / tower-lsp internals",
+      "how": "JSON-RPC over LSP uses 'Content-Length: N\\r\\n\\r\\n<body>' framing. Test helpers will format requests in this framing and parse responses from stdout."
     },
     {
-      "what": "ConstraintNodeId for constraint span lookup",
-      "where": "crates/reify-types/src/constraint.rs",
-      "how": "Unique identifier for constraints (e.g. 'Bracket#0'). Used as key in HashMap<ConstraintNodeId, SourceSpan> built from CompiledModule to resolve constraint violation locations. ConstraintCheckEntry.id matches CompiledConstraint.id."
+      "what": "Existing cli_lsp.rs tests",
+      "where": "crates/reify-cli/tests/cli_lsp.rs",
+      "how": "The `lsp_command_is_recognized` and `help_text_includes_lsp` tests remain as-is. New tests in separate files (cli_check.rs, cli_lsp_protocol.rs, cli_smoke.rs) follow the same patterns."
+    },
+    {
+      "what": "spawn_reader + wait_for_response pattern from lsp_full_interactive_loop_through_binary",
+      "where": "crates/reify-cli/tests/cli_lsp_protocol.rs lines 117-177",
+      "how": "Already implemented for the second protocol test. Reuse the exact same pattern in lsp_initialize_returns_capabilities to replace direct read_jsonrpc calls, fixing both the timeout and message-routing issues."
     }
   ]
 }
