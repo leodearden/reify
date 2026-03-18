@@ -242,6 +242,7 @@ impl TopologyTemplateBuilder {
             value_cells: self.value_cells,
             constraints: self.constraints,
             realizations: self.realizations,
+            sub_components: Vec::new(),
             content_hash,
         }
     }

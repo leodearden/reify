@@ -31,6 +31,17 @@ pub struct TopologyTemplate {
     pub value_cells: Vec<ValueCellDecl>,
     pub constraints: Vec<CompiledConstraint>,
     pub realizations: Vec<RealizationDecl>,
+    pub sub_components: Vec<SubComponentDecl>,
+    pub content_hash: ContentHash,
+}
+
+/// A sub-component declaration — compiled from a SubDecl.
+#[derive(Debug, Clone)]
+pub struct SubComponentDecl {
+    pub name: String,
+    pub structure_name: String,
+    pub args: Vec<(String, CompiledExpr)>,
+    pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
 
@@ -770,6 +781,7 @@ fn compile_structure(
         value_cells,
         constraints,
         realizations,
+        sub_components: Vec::new(),
         content_hash,
     }
 }
