@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod convert;
 pub mod diagnostics;
 pub mod document;
+pub mod goto_def;
 pub mod hover;
 pub mod server;
 
