@@ -1,6 +1,15 @@
 //! OpenCASCADE geometry kernel implementation for Reify.
 //!
-//! Implements the `GeometryKernel` trait from `reify-types` using OCCT via cxx FFI.
+//! Provides two public types:
+//!
+//! - [`OcctKernel`] — the raw kernel, `!Send + !Sync` (contains `cxx::UniquePtr`).
+//!   Useful for single-threaded test scenarios where channel overhead is unwanted.
+//!
+//! - [`OcctKernelHandle`] — a `Send + Sync` handle that communicates with a
+//!   dedicated OS thread owning an `OcctKernel`. Implements [`GeometryKernel`]
+//!   and is the recommended API for all production and cross-thread usage.
+//!
+//! [`GeometryKernel`]: reify_types::GeometryKernel
 
 #[allow(dead_code)]
 mod ffi;
@@ -20,7 +29,11 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
         .ok_or_else(|| GeometryError::OperationFailed("expected numeric value".into()))
 }
 
-/// OpenCASCADE geometry kernel.
+/// OpenCASCADE geometry kernel (raw, `!Send + !Sync`).
+///
+/// Contains `cxx::UniquePtr<OcctShape>` handles which are `!Send`, so the
+/// kernel cannot cross thread boundaries. For cross-thread usage, use
+/// [`OcctKernelHandle`] which runs the kernel on a dedicated OS thread.
 pub struct OcctKernel {
     shapes: HashMap<u64, cxx::UniquePtr<ffi::ffi::OcctShape>>,
     next_id: u64,
