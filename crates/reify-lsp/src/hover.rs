@@ -1,10 +1,49 @@
-use tower_lsp::lsp_types::{Hover, Position, Url};
+use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Url};
+
+use crate::analysis::{format_value, AnalysisContext};
+use crate::convert::{find_word_at_offset, position_to_offset};
 
 /// Compute hover information for the symbol at the given position.
 ///
 /// Returns `None` if there is nothing to show at the given position.
-pub fn compute_hover(_source: &str, _uri: &Url, _position: Position) -> Option<Hover> {
-    None // TODO: implement
+pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hover> {
+    let offset = position_to_offset(source, position);
+    let (_word_start, word) = find_word_at_offset(source, offset)?;
+
+    let ctx = AnalysisContext::new(source, uri);
+
+    // Try member lookup first
+    if let Some(info) = ctx.find_member_decl(word) {
+        let kind_str = match info.kind {
+            reify_compiler::ValueCellKind::Param => "param",
+            reify_compiler::ValueCellKind::Let => "let",
+            reify_compiler::ValueCellKind::Auto => "auto",
+        };
+        let type_str = info.cell_type.to_string();
+
+        // Try to get the evaluated value
+        let value_str = ctx
+            .compiled
+            .templates
+            .first()
+            .and_then(|t| ctx.get_value(&t.name, word))
+            .map(|v| format!(" = {}", format_value(v)));
+
+        let md = format!(
+            "```reify\n{kind_str} {word}: {type_str}{}\n```",
+            value_str.unwrap_or_default()
+        );
+
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: md,
+            }),
+            range: None,
+        });
+    }
+
+    None
 }
 
 #[cfg(test)]
