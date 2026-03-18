@@ -10,6 +10,59 @@ use reify_eval::cache::NodeId;
 
 use crate::Priority;
 
+/// Tracks the effective priority of in-flight tasks and supports promotion.
+///
+/// The effective priority may differ from the original Task priority when
+/// a higher-priority demanded node depends on this in-flight task.
+/// The original Task struct is not mutated — PriorityPromoter tracks
+/// the dynamic effective priority separately.
+pub struct PriorityPromoter {
+    /// Maps in-flight node → current effective priority.
+    effective: HashMap<NodeId, Priority>,
+}
+
+impl PriorityPromoter {
+    /// Create a new empty promoter.
+    pub fn new() -> Self {
+        Self {
+            effective: HashMap::new(),
+        }
+    }
+
+    /// Register an in-flight task with its initial priority.
+    pub fn register(&mut self, node_id: NodeId, priority: Priority) {
+        self.effective.insert(node_id, priority);
+    }
+
+    /// Get the current effective priority for a node, if registered.
+    pub fn effective_priority(&self, node_id: &NodeId) -> Option<Priority> {
+        self.effective.get(node_id).copied()
+    }
+
+    /// Promote a node to a higher priority.
+    ///
+    /// Only raises priority (lower enum value = higher priority via Ord).
+    /// Same-or-lower-priority promotions are no-ops.
+    pub fn promote(&mut self, node_id: &NodeId, new_priority: Priority) {
+        if let Some(current) = self.effective.get_mut(node_id) {
+            if new_priority < *current {
+                *current = new_priority;
+            }
+        }
+    }
+
+    /// Remove a node from the promoter (on completion or cancellation).
+    pub fn remove(&mut self, node_id: &NodeId) {
+        self.effective.remove(node_id);
+    }
+}
+
+impl Default for PriorityPromoter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
