@@ -88,3 +88,51 @@ fn build_snapshot_produces_geometry_from_current_values() {
     let ops = ops_ref.lock().unwrap();
     assert!(!ops.is_empty(), "mock kernel should have received geometry operations");
 }
+
+#[test]
+fn edit_param_then_check_snapshot_reflects_updated_values() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start eval
+    let _eval_result = engine.eval(&module);
+
+    // Edit width: 80mm → 100mm (0.1m)
+    let _edit_result = engine.edit_param(vcid("Bracket", "width"), Value::length(0.1));
+
+    // check_snapshot should reflect updated values
+    let check = engine
+        .check_snapshot(&module)
+        .expect("check_snapshot should return Some after edit_param()");
+
+    // Verify width was updated to 0.1m
+    let width_val = check.values.get(&vcid("Bracket", "width")).expect("width should exist");
+    assert_eq!(*width_val, Value::length(0.1), "width should be 0.1m (100mm)");
+
+    // Verify volume was recomputed: 0.1m * 0.1m * 0.005m = 5e-5 m³
+    let volume_val = check.values.get(&vcid("Bracket", "volume")).expect("volume should exist");
+    let expected_volume = 0.1 * 0.1 * 0.005; // 5e-5 m³
+    match volume_val {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (*si_value - expected_volume).abs() < 1e-12,
+                "volume should be {expected_volume}, got {si_value}"
+            );
+        }
+        other => panic!("volume should be Scalar, got {:?}", other),
+    }
+
+    // Unchanged params should be preserved
+    let height_val = check.values.get(&vcid("Bracket", "height")).expect("height should exist");
+    assert_eq!(*height_val, Value::length(0.1), "height should still be 100mm = 0.1m");
+
+    let thickness_val = check.values.get(&vcid("Bracket", "thickness")).expect("thickness should exist");
+    assert_eq!(*thickness_val, Value::length(0.005), "thickness should still be 5mm = 0.005m");
+
+    // All 3 constraints still Satisfied (width 100mm doesn't violate any constraint)
+    assert_eq!(check.constraint_results.len(), 3);
+    for entry in &check.constraint_results {
+        assert_eq!(entry.satisfaction, Satisfaction::Satisfied);
+    }
+}
