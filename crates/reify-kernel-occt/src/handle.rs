@@ -174,6 +174,34 @@ impl OcctKernelHandle {
     }
 }
 
+impl GeometryKernel for OcctKernelHandle {
+    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        // Delegate to inherent method (which only needs &self).
+        OcctKernelHandle::execute(self, op)
+    }
+
+    fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+        OcctKernelHandle::query(self, query)
+    }
+
+    fn export(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        OcctKernelHandle::export(self, handle, format, writer)
+    }
+
+    fn tessellate(
+        &self,
+        handle: GeometryHandleId,
+        tolerance: f64,
+    ) -> Result<Mesh, TessError> {
+        OcctKernelHandle::tessellate(self, handle, tolerance)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_types::{GeometryHandleId, GeometryOp, ReprKind, Value};
