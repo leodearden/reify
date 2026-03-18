@@ -61,6 +61,36 @@ mod tests {
         assert!(token.is_cancelled());
     }
 
+    #[tokio::test]
+    async fn async_node_evaluator_mock_compiles() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_types::ValueCellId;
+
+        struct MockAsyncEvaluator {
+            all_dirty: bool,
+            result: EvalOutcome,
+        }
+
+        impl AsyncNodeEvaluator for MockAsyncEvaluator {
+            fn is_dirty(&self, _node: &NodeId) -> bool {
+                self.all_dirty
+            }
+
+            async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+                self.result
+            }
+        }
+
+        let mock = MockAsyncEvaluator {
+            all_dirty: true,
+            result: EvalOutcome::Changed,
+        };
+
+        let node = NodeId::Value(ValueCellId::new("A", "x"));
+        let outcome = mock.evaluate(node).await;
+        assert_eq!(outcome, EvalOutcome::Changed);
+    }
+
     #[test]
     fn cancellation_token_child_follows_parent() {
         let parent = CancellationToken::new();
