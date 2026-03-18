@@ -1,21 +1,21 @@
 {
-  "task_id": "21",
-  "title": "Resolution engine — wire solver into eval pipeline",
-  "modules": ["crates/reify-eval", "crates/reify-test-support"],
-  "analysis": "The Engine in reify-eval/src/lib.rs currently has eval(), check(), and build() methods. eval() does two-pass evaluation: Pass 1 evaluates Param defaults and Auto cells (Auto cells become (Undef, Auto)), Pass 2 evaluates Let bindings. check() calls eval() then runs constraints through ConstraintChecker. build() calls check() then does geometry.\n\nThe ConstraintSolver trait, ResolutionProblem, AutoParam, and SolveResult types are already defined in reify-types/src/constraint.rs and re-exported from reify_types. The DimensionalSolver in reify-constraints implements ConstraintSolver. ResolutionNodeData, NodeId::Resolution, CachedResult::Resolution variants, and demand/dep support for Resolution nodes all exist from task 20. The EvaluationGraph has a resolutions PersistentMap but from_templates() does not populate it.\n\nApproach: (1) Add Option<Box<dyn ConstraintSolver>> to Engine via with_solver() builder. (2) Add resolution phase at end of eval() after two-pass evaluation. Resolution scans template value_cells for Auto kind, finds constraints whose dependency traces reference auto params, builds ResolutionProblem, calls solver. On Solved: updates values map and snapshot values to (resolved_val, Determined), creates child snapshot with SnapshotProvenance::Resolution provenance, re-evaluates let bindings. (3) check() naturally sees resolved values since it calls eval(). (4) Handle Infeasible/NoProgress with diagnostics. (5) Add resolved_params tracking to EvalResult/CheckResult/BuildResult.\n\nResolutionNodes in the graph are NOT populated by from_templates in this task — the resolution phase scans value cells and constraints directly. Incremental resolution support can be added later.\n\nKey files: lib.rs (Engine, eval, check, build, result types), snapshot.rs (Snapshot), deps.rs (extract_dependency_trace), cache.rs (CachedResult::Resolution), mocks.rs (MockConstraintSolver).\n\n--- REVIEW FIX ANALYSIS ---\nReview found two blocking issues (same root cause): In the Solved branch of the resolution phase (lib.rs lines 320-385), all record_evaluation() calls use VersionId(version_id) — the pre-resolution version allocated at eval() start (line 156). But the snapshot's version is updated to VersionId(res_version_id) — a freshly allocated post-resolution version (line 354). This creates a mismatch: snapshot.version = N+1 but all cache entries have basis_version = N. The try_fast_path() in CacheStore checks basis_version == current_version (strict equality), so on any subsequent edit_param() call (which allocates version N+2), the fast-path check for resolution-phase entries becomes N != N+2, forcing ALL let bindings through the full dependency-trace path regardless of whether they depend on the changed param. This completely negates incremental evaluation for post-resolution modules.\n\nFix: Move res_version_id allocation BEFORE the auto-param and let-binding cache recording loops, and use VersionId(res_version_id) in ALL record_evaluation() calls within the Solved branch. This ensures cache entries are stamped with the same version as the snapshot, allowing the fast-path to succeed on subsequent edit_param() calls when the edited param doesn't affect those cached nodes.",
+  "task_id": "25",
+  "title": "Add tokio async runtime foundation",
+  "modules": ["crates/reify-runtime", "Cargo.toml"],
+  "analysis": "Currently reify-runtime has a SequentialScheduler (lib.rs:48-79) that iterates eval_set in order using a synchronous NodeEvaluator trait (lib.rs:35-46) with `fn evaluate(&mut self, node: &NodeId) -> EvalOutcome` and `fn is_dirty(&self, node: &NodeId) -> bool`. All identity types (ValueCellId, ConstraintNodeId, etc.) are composed of String and u32, so they are Send + Sync automatically. NodeId and EvalOutcome are also Send + Sync.\n\nFor the concurrent scheduler, we need: (1) tokio async runtime for spawning tasks, (2) tokio-util for CancellationToken, (3) an AsyncNodeEvaluator trait with `&self` (not `&mut self`) since concurrent evaluation requires shared access with interior mutability, (4) a ConcurrentScheduler that groups eval_set nodes by topological level and spawns all nodes within a level concurrently.\n\nThe topological level computation follows the same Kahn's algorithm as dirty.rs::topological_sort but outputs `Vec<Vec<NodeId>>` (batched by level) instead of flat `Vec<NodeId>`. This requires DependencyTrace information, so ConcurrentScheduler::execute takes `traces: &HashMap<NodeId, DependencyTrace>` in addition to the eval_set.\n\nThe AsyncNodeEvaluator trait uses RPITIT (Return Position Impl Trait In Traits), available since Rust 1.75 and natively supported in edition 2024 (this project's edition). The method signature `fn evaluate(&self, node: NodeId) -> impl Future<Output = EvalOutcome> + Send` captures the `'_` lifetime of `&self` implicitly in edition 2024, allowing the future to be awaited inside a tokio::spawn block that owns an Arc<E>.\n\nNew code goes in a new file `crates/reify-runtime/src/concurrent.rs` to keep the existing SequentialScheduler code untouched. The module is declared as `pub mod concurrent` in lib.rs.\n\nCancellationToken is a thin wrapper around tokio_util::sync::CancellationToken, providing a project-specific API surface that decouples from the transitive dependency.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add MockConstraintSolver to reify-test-support/src/mocks.rs. Three constructors: new_solved(HashMap<ValueCellId, Value>) for Solved, new_infeasible(Vec<Diagnostic>) for Infeasible, new_no_progress(String) for NoProgress. Implements ConstraintSolver trait by returning cloned predetermined result. Include unit tests for each constructor. Follows existing MockConstraintChecker pattern.",
+      "description": "Add workspace dependencies to Cargo.toml: tokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\", \"sync\"] } and tokio-util = { version = \"0.7\", features = [\"rt\"] }. Add tokio.workspace = true and tokio-util.workspace = true to reify-runtime/Cargo.toml [dependencies].",
       "status": "done",
-      "commit": "1bef41d",
-      "tests": ["mock_constraint_solver_solved", "mock_constraint_solver_infeasible", "mock_constraint_solver_no_progress", "mock_constraint_solver_is_send_sync"]
+      "commit": "8e94015",
+      "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Add resolved_params: std::collections::HashMap<ValueCellId, reify_types::Value> field to EvalResult, CheckResult, and BuildResult in reify-eval/src/lib.rs. Initialize to HashMap::new() in all existing construction sites: eval() line 266, edit_param() line 391, eval_cached() line 588, check() line 631, build() line 703. Non-behavioral change — all existing tests pass with empty resolved_params.",
+      "description": "Create crates/reify-runtime/src/concurrent.rs as an empty module file. Add `pub mod concurrent;` to lib.rs. Verify the crate compiles with `cargo check -p reify-runtime`.",
       "status": "done",
-      "commit": "efc194f",
+      "commit": "9c2ef36",
       "tests": []
     }
   ],
@@ -23,265 +23,171 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `engine_with_solver_accepts_solver` in new file crates/reify-eval/tests/resolution.rs: Create Engine::new(MockConstraintChecker, None).with_solver(MockConstraintSolver::new_solved(...)). Build module with auto_param('S','x',Type::length()) via TopologyTemplateBuilder. Call eval(). Assert no panic, x is in values (may still be Undef — solver integration comes later).",
+      "description": "Write failing test `cancellation_token_create_and_cancel` in concurrent.rs: Create CancellationToken::new(), assert !is_cancelled(), call cancel(), assert is_cancelled(). Also test child_token(): create child from parent, cancel parent, assert child.is_cancelled(). Uses #[test] (not async — these are synchronous operations).",
       "status": "done",
-      "commit": "2e7be14"
+      "commit": "bab1e71"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `solver: Option<Box<dyn ConstraintSolver>>` field to Engine struct. Add `pub fn with_solver(mut self, solver: Box<dyn ConstraintSolver>) -> Self` that sets the field and returns self. Update Engine::new() to init solver: None. Add import for ConstraintSolver from reify_types.",
+      "description": "Implement CancellationToken wrapper struct in concurrent.rs. Fields: inner: tokio_util::sync::CancellationToken. Methods: new(), cancel(), is_cancelled(), child_token() -> Self, async cancelled(). Derive Clone. Implement Default delegating to new().",
       "status": "done",
-      "commit": "2e7be14"
+      "commit": "d20a046"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test `resolve_single_auto_param`: Build module with auto_param('S','thickness',Type::length()), constraint 'thickness > 2mm' (gt(value_ref('S','thickness'), literal(mm(2.0)))), constraint 'thickness < 20mm' (lt(value_ref('S','thickness'), literal(mm(20.0)))). Create Engine with MockConstraintSolver::new_solved({thickness: mm(5.0)}). Call eval(). Assert thickness value == mm(5.0) (not Undef).",
+      "description": "Write failing test `async_node_evaluator_mock_compiles` in concurrent.rs: Define a MockAsyncEvaluator struct with all_dirty: bool and result: EvalOutcome. Implement AsyncNodeEvaluator: is_dirty returns self.all_dirty, evaluate returns self.result. Write a #[tokio::test] that creates the mock, calls evaluate(node).await, asserts EvalOutcome::Changed. This test verifies the trait is usable and correctly defined.",
       "status": "done",
-      "commit": "15168cc"
+      "commit": "706560c"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add resolution phase to eval() after pass 2 (let bindings). For each template: (1) collect auto_ids = value_cells where kind==Auto as HashSet<ValueCellId>, (2) skip if empty or solver is None, (3) find constraints whose extract_dependency_trace reads intersect auto_ids, (4) build Vec<AutoParam> from graph nodes (id, cell_type, bounds=None), (5) build ResolutionProblem { auto_params, constraints: filtered_pairs, current_values: values.clone(), objective: None }, (6) call solver.solve(&problem), (7) on Solved: insert resolved values into values map. Import AutoParam, ResolutionProblem, SolveResult, ConstraintSolver from reify_types.",
+      "description": "Define AsyncNodeEvaluator trait in concurrent.rs. Import std::future::Future. Trait: `pub trait AsyncNodeEvaluator: Send + Sync { fn is_dirty(&self, node: &NodeId) -> bool; fn evaluate(&self, node: NodeId) -> impl Future<Output = EvalOutcome> + Send; }`. Uses RPITIT (edition 2024). No async_trait crate needed.",
       "status": "done",
-      "commit": "15168cc"
+      "commit": "750bc3c"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test `resolved_param_determinacy_and_provenance`: Same module setup as step-3. After eval(), get engine.snapshot(). Assert snapshot.values has thickness → (mm(5.0), DeterminacyState::Determined). Assert snapshot.provenance matches SnapshotProvenance::Resolution { scope: 'S', resolved: {thickness_id}, parent: SnapshotId(0) }.",
+      "description": "Write failing test `concurrent_scheduler_empty_eval_set` in concurrent.rs: Create ConcurrentScheduler, empty eval_set, MockAsyncEvaluator wrapped in Arc, empty traces HashMap, CancellationToken. Call execute().await. Assert returned HashSet is empty. Uses #[tokio::test].",
       "status": "done",
-      "commit": "2ae5544"
+      "commit": "04ea215"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "In resolution phase Solved branch: (1) update snapshot.values with (resolved_val, Determined) for each resolved param, (2) allocate new snapshot_id and version_id, (3) set snapshot.provenance = SnapshotProvenance::Resolution { scope: template.name.clone(), resolved: resolved_ids_set, parent: parent_snapshot_id }, (4) record CachedResult::Value(val, Determined) in cache for each resolved param node.",
+      "description": "Define ConcurrentScheduler as a unit struct in concurrent.rs. Implement execute method: `pub async fn execute<E: AsyncNodeEvaluator>(&self, eval_set: Vec<NodeId>, evaluator: Arc<E>, traces: &HashMap<NodeId, DependencyTrace>, cancel: &CancellationToken) -> HashSet<NodeId>`. Initial implementation: return empty HashSet for empty eval_set. Import Arc from std::sync, HashMap from std::collections, HashSet, NodeId, EvalOutcome, DependencyTrace.",
       "status": "done",
-      "commit": "2ae5544"
+      "commit": "68c59fa"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test `let_binding_re_evaluated_after_resolution`: Build module with auto_param('S','x',Type::length()), let_binding('S','y',Type::length(), BinOp::Mul(value_ref('S','x'), literal(Value::Real(2.0)))), constraint 'x > 2mm'. MockConstraintSolver returns x=mm(10.0). After eval(), assert y value ≈ 0.02 (10mm * 2 in SI). This fails until let re-evaluation is added.",
+      "description": "Write failing test `concurrent_scheduler_single_dirty_node` in concurrent.rs: Create eval_set with one node (NodeId::Value(ValueCellId::new('A','x'))). MockAsyncEvaluator returns Changed for all, is_dirty=true. Empty traces (node has no deps). Call execute().await. Assert changed set contains the single node. Fails because execute returns empty.",
       "status": "done",
-      "commit": "4a40bfe"
+      "commit": "7087b50"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "After Solved branch updates values map, re-run pass 2 (let binding evaluation): iterate template.value_cells for Let kind with default_expr, re-evaluate expr against updated values, update snapshot.values and cache entries. This is idempotent for lets not depending on resolved params. Update cache with new dependency traces and CachedResult.",
+      "description": "Implement basic level computation and single-level execution in ConcurrentScheduler::execute. Add private fn compute_levels(eval_set: &[NodeId], traces: &HashMap<NodeId, DependencyTrace>) -> Vec<Vec<NodeId>> using Kahn's algorithm (same approach as dirty.rs::topological_sort but emitting levels). For execution: iterate levels, for each node in level check is_dirty, spawn tokio tasks for dirty nodes, join all handles, collect Changed results.",
       "status": "done",
-      "commit": "4a40bfe"
+      "commit": "0ce4a14"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test `check_reports_satisfied_after_resolution`: Build module with auto_param('S','thickness',Type::length()), constraint gt(value_ref, literal(mm(2.0))). Use SimpleConstraintChecker (real checker) and MockConstraintSolver returning thickness=mm(5.0). Call engine.check(). Assert constraint_results[0].satisfaction == Satisfied. Verifies check() integration with resolution.",
+      "description": "Write failing test `concurrent_scheduler_multi_level_ordering` in concurrent.rs: Build eval_set with 3 nodes: a (param), b (param), c (let, reads a and b). Traces: a and b have empty reads, c reads [a_vcid, b_vcid]. Use a TrackingAsyncEvaluator that records evaluation order in Arc<Mutex<Vec<NodeId>>>. After execute().await: assert all 3 nodes evaluated, assert c's position in eval_order is after both a and b (level ordering). Assert changed set has all 3.",
       "status": "done",
-      "commit": "d977faf"
+      "commit": "6b66bd9"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify check() integration works. check() calls eval() which now resolves, then passes resolved values to constraint_checker.check(). SimpleConstraintChecker evaluates 0.005 > 0.002 → true → Satisfied. Propagate resolved_params from eval_result into CheckResult.resolved_params. May need no changes beyond resolved_params propagation.",
+      "description": "Verify multi-level execution works with the compute_levels implementation from step-8. The Kahn's algorithm should correctly place a and b at level 0 (in-degree 0) and c at level 1 (depends on a and b). Level 0 nodes spawn concurrently, all join, then level 1 starts. Fix any issues found.",
       "status": "done",
-      "commit": "d977faf"
+      "commit": "6b66bd9"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test `resolve_multiple_auto_params`: Build module with auto_param('S','a',Type::length()), auto_param('S','b',Type::length()), constraint gt(value_ref('S','a'), literal(mm(1.0))), constraint gt(value_ref('S','b'), literal(mm(2.0))). MockConstraintSolver returns {a:mm(5.0), b:mm(10.0)}. After eval(), assert a==mm(5.0), b==mm(10.0). Assert resolved_params has 2 entries.",
+      "description": "Write test `concurrent_scheduler_skips_non_dirty` in concurrent.rs: eval_set with 2 nodes (a, b). MockAsyncEvaluator where is_dirty returns true only for a, evaluate returns Changed. After execute, assert changed set contains only a (b was skipped). Verifies dynamic dirty check mirroring SequentialScheduler behavior.",
       "status": "done",
-      "commit": "cec5e49"
+      "commit": "0489a86"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Verify multi-param resolution works with existing implementation. Step-4 impl collects ALL auto params per template into a single ResolutionProblem. MockConstraintSolver returns all values. Should work without changes. Fix any issues found.",
+      "description": "Verify non-dirty skip works. The implementation from step-8 should already check is_dirty before spawning. If not, add the is_dirty check before spawning the tokio task for each node.",
       "status": "done",
-      "commit": "cec5e49"
+      "commit": "0489a86"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test `solver_infeasible_produces_diagnostics`: Build module with auto_param and constraint. MockConstraintSolver::new_infeasible(vec![Diagnostic::error('constraints are infeasible')]). After eval(), assert thickness is Undef. Assert diagnostics contains message 'constraints are infeasible'. Assert resolved_params is empty.",
+      "description": "Write test `concurrent_matches_sequential_bracket_topology` in concurrent.rs: Build bracket-like topology with 4 nodes: width (param), thickness (param), volume (let, reads width+thickness), C1 (constraint, reads width+thickness). All dirty, all Changed. Run SequentialScheduler::execute with equivalent sync MockNodeEvaluator and ConcurrentScheduler::execute with async mock. Assert both produce the same changed set (all 4 nodes). Verifies behavioral equivalence.",
       "status": "done",
-      "commit": "ef4c736"
+      "commit": "d887612"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "In resolution phase, handle SolveResult::Infeasible { diagnostics: solver_diags }: extend eval diagnostics with solver_diags. Auto params remain (Undef, Auto) in snapshot. resolved_params stays empty. Snapshot provenance stays Initial (no Resolution provenance on failure).",
+      "description": "Verify ConcurrentScheduler produces identical results to SequentialScheduler. Both should return the same changed set regardless of execution order within levels. Fix any discrepancies.",
       "status": "done",
-      "commit": "ef4c736"
+      "commit": "d887612"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test `solver_no_progress_produces_warning`: Build module with auto_param and constraint. MockConstraintSolver::new_no_progress('iteration limit reached'). After eval(), assert auto param is Undef. Assert diagnostics contains a warning with text containing 'iteration limit reached'. Assert resolved_params is empty.",
+      "description": "Write failing test `cancellation_stops_evaluation` in concurrent.rs: Build eval_set with 2 levels: level 0 has node a, level 1 has node b (depends on a). Use a CancellingAsyncEvaluator that cancels the CancellationToken during evaluation of node a. After execute().await: assert a was evaluated (in changed set or tracked), assert b was NOT evaluated (evaluator tracks eval count per node via AtomicUsize). The ConcurrentScheduler should check cancel between levels.",
       "status": "done",
-      "commit": "ef4c736"
+      "commit": "c0a9eee"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "In resolution phase, handle SolveResult::NoProgress { reason }: push Diagnostic::warning(format!('Constraint solver made no progress: {}', reason)) to eval diagnostics. Auto params remain (Undef, Auto). resolved_params stays empty.",
+      "description": "Add cancellation check in ConcurrentScheduler::execute: at the start of each level iteration, check if cancel.is_cancelled() and break if so. This ensures that once cancellation is triggered during level N's evaluation, level N+1 is skipped. Return whatever changed nodes were collected so far.",
       "status": "done",
-      "commit": "ef4c736"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write test `no_solver_backward_compatible`: Build module with auto_param('S','x',Type::length()) and constraint. Create Engine WITHOUT with_solver() (solver is None). Call eval(). Assert x is Undef with Auto determinacy in snapshot. Assert diagnostics is empty. Assert resolved_params is empty. Confirms backward compatibility.",
-      "status": "done",
-      "commit": "aed5ef8"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Verify no-solver case works. Resolution phase is guarded by solver.is_some() check, so it's skipped when solver is None. Auto params remain (Undef, Auto). No changes expected — this step confirms existing behavior.",
-      "status": "done",
-      "commit": "aed5ef8"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write test `eval_result_tracks_resolved_params`: Same setup as step-3 (single auto param resolved). Assert eval_result.resolved_params == {thickness_id: mm(5.0)}. Call check() and assert check_result.resolved_params matches. Call build() with MockGeometryKernel and assert build_result.resolved_params matches. Verifies resolved_params propagation through all result types.",
-      "status": "done",
-      "commit": "325c704"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "In eval() Solved branch: set resolved_params = solver_values.clone() (the HashMap from SolveResult::Solved). Return EvalResult { values, diagnostics, resolved_params }. In check(): copy eval_result.resolved_params to CheckResult. In build(): copy check_result.resolved_params to BuildResult. Ensure edit_param() and eval_cached() return empty resolved_params.",
-      "status": "done",
-      "commit": "325c704"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing test `resolution_cache_version_matches_snapshot` in crates/reify-eval/tests/resolution.rs: Build module with auto_param('S','x',Type::length()), let_binding('S','y',Type::length(), x*2), constraint gt(x, mm(2.0)). MockConstraintSolver returns x=mm(5.0). Call eval(). Then inspect: (1) get snapshot version via engine.snapshot().unwrap().version, (2) get cache entry for auto param x via engine.cache_store().get(&NodeId::Value(x_id)), (3) get cache entry for let binding y via engine.cache_store().get(&NodeId::Value(y_id)). Assert both cache entries' basis_version == snapshot.version. This test exposes the bug where resolution-phase cache entries are stamped with the pre-resolution version_id while the snapshot uses res_version_id, creating a phantom version gap that breaks the fast-path invariant.",
-      "status": "done",
-      "commit": "67a45be"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Fix cache version consistency in the Solved branch of eval()'s resolution phase (lib.rs lines 320-385). The bug: res_snapshot_id/res_version_id are allocated at lines 349-352 (AFTER the auto-param cache recording loop at lines 340-345), and the let-binding re-eval loop at lines 378-383 also uses VersionId(version_id). Fix: (1) Move the res_snapshot_id/res_version_id allocation to immediately after 'let mut resolved_ids = ...' (BEFORE the auto-param loop), (2) set snapshot.id/version/provenance immediately after allocation, (3) change the record_evaluation call at line 343 (auto-param loop) to use VersionId(res_version_id), (4) change the record_evaluation call at line 381 (let-binding re-eval loop) to use VersionId(res_version_id). This ensures all cache entries from the resolution phase have basis_version == snapshot.version == VersionId(res_version_id), restoring the invariant that try_fast_path relies on.",
-      "status": "done",
-      "commit": "066cf5a"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write test `incremental_fast_path_works_after_resolution` in crates/reify-eval/tests/resolution.rs: Build module with auto_param('S','x',Type::length()), param('S','z',Type::length(), default=mm(1.0)), let_binding('S','y',Type::length(), x*2), let_binding('S','w',Type::length(), z*3), constraint gt(x, mm(2.0)). MockConstraintSolver returns x=mm(5.0). Call eval(). Then call edit_param(z_id, mm(2.0)). Assert w value == mm(2.0)*3 = 0.006 SI (updated). Assert y value == mm(5.0)*2 = 0.01 SI (unchanged — still uses resolved x). Also verify that the cache entry for y has basis_version == snapshot.version from the resolution phase (not the edit_param version), confirming the fast-path was usable. This test validates the practical impact: incremental evaluation correctly skips unaffected let bindings after resolution.",
-      "status": "done",
-      "commit": "be45391"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Verify that step-23's test passes with the fix from step-22. The edit_param() fast-path check for y's cache entry now succeeds: y's basis_version (res_version_id from eval) won't match edit_param's new version_id, BUT y is not in the dirty cone (y depends on x, not z), so it's not in the eval_set and its cached value is simply read from the snapshot. The key correctness property is that w (which depends on z) IS re-evaluated while y (which depends only on resolved x) is NOT. No additional code changes expected — this step confirms the fix from step-22 restores correct incremental behavior.",
-      "status": "done",
-      "commit": "be45391"
+      "commit": "c0a9eee"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Embed resolution phase in eval(), not check() or build()",
-      "rationale": "eval() returns fully-resolved values so check() and build() naturally see resolved values. This maintains the existing layering: eval() → check() → build(). Constraints are checked against already-resolved values in check(), producing a single constraint check that reports the final state (Satisfied). The task pseudocode shows resolution before geometry, which this achieves."
+      "decision": "New concurrent.rs module rather than extending lib.rs",
+      "rationale": "lib.rs already has 343 lines including SequentialScheduler and tests. Adding ConcurrentScheduler, AsyncNodeEvaluator, CancellationToken, and async tests would make it unwieldy. A separate module provides clean separation while keeping SequentialScheduler as the fallback exactly as it is."
     },
     {
-      "decision": "with_solver() builder method rather than new constructor parameter",
-      "rationale": "Backward compatible — existing Engine::new(checker, kernel) callers need no changes. Solver is optional (most tests don't need it). Builder pattern (self-consuming method returning Self) is idiomatic Rust for optional configuration. Matches how geometry_kernel is already optional."
+      "decision": "RPITIT for AsyncNodeEvaluator::evaluate return type instead of async_trait crate or boxed futures",
+      "rationale": "The project uses edition 2024 which fully supports Return Position Impl Trait In Traits. The signature `fn evaluate(&self, node: NodeId) -> impl Future<Output = EvalOutcome> + Send` avoids heap allocation (no Box<dyn Future>), avoids a crate dependency (no async-trait), and is idiomatic Rust 2024. The Send bound on the returned future ensures compatibility with tokio::spawn."
     },
     {
-      "decision": "Resolution phase scans graph directly instead of populating ResolutionNodes from from_templates",
-      "rationale": "from_templates() doesn't currently populate ResolutionNodes and adding that introduces complexity not needed for this task. The resolution phase can scan value_cells for Auto kind and constraint dependency traces for references to auto params. The ResolutionNode infrastructure from task 20 is available for future incremental resolution (edit_param triggering re-resolution). Keeps this task focused on core wiring."
+      "decision": "AsyncNodeEvaluator takes &self (not &mut self) and evaluate takes NodeId (owned, not &NodeId)",
+      "rationale": "&self instead of &mut self because concurrent evaluation shares the evaluator across multiple spawned tasks via Arc<E>. Mutable access would require synchronization that's better handled by the implementor with interior mutability (Mutex, RwLock, etc.). Owned NodeId instead of &NodeId avoids lifetime issues when moving data into spawned tasks — the node is cloned into each task's closure."
     },
     {
-      "decision": "Re-run entire let binding loop after resolution rather than selective re-evaluation",
-      "rationale": "For cold-start eval(), re-running all let bindings is simple, correct, and the performance cost is negligible (only evaluated in initial eval, not incremental). Using dirty/demand infrastructure for selective re-evaluation is designed for incremental (edit_param) scenarios. The re-run is idempotent for let bindings not depending on resolved params."
+      "decision": "ConcurrentScheduler::execute takes traces parameter for level computation",
+      "rationale": "The ConcurrentScheduler needs dependency information to group nodes into topological levels. Rather than requiring the caller to pre-compute levels, execute accepts the trace map (already available from compute_eval_set) and computes levels internally using Kahn's algorithm. This keeps the API similar to SequentialScheduler (takes eval_set) while adding the minimal extra information needed for concurrency."
     },
     {
-      "decision": "Only include constraints that directly reference auto params in ResolutionProblem",
-      "rationale": "Constraints referencing let bindings that transitively depend on auto params are excluded because the DimensionalSolver substitutes auto param values in current_values but doesn't propagate through let binding expressions. Direct constraints cover the v0.1 use case ('param thickness = auto, constraint thickness > 2mm'). Transitive resolution can be added in M5 when the language supports more complex dependency patterns."
+      "decision": "Cancellation checked between levels, not within a level",
+      "rationale": "Within a level, all tasks are spawned and joined together. Cancelling mid-level would require aborting spawned tasks, which adds complexity and may leave evaluator state inconsistent. Checking cancellation between levels is simpler, deterministic, and sufficient for the use case: cancel before starting expensive downstream levels. Individual task cancellation (e.g., via tokio::select! with the cancel token) can be added in a future refinement."
     },
     {
-      "decision": "Per-template resolution with scope tracking",
-      "rationale": "Auto params and constraints are per-template in the compiler output. ResolutionProblem is built per-template, and SnapshotProvenance::Resolution carries the template name as scope. Multiple templates with auto params produce separate solve calls, which is correct since their auto params are independent. The scope field in provenance enables debugging and audit."
+      "decision": "CancellationToken as a thin wrapper type, not a re-export",
+      "rationale": "A wrapper provides API stability: if we later switch from tokio-util to a custom cancellation mechanism (e.g., for WASM targets or testing), callers don't need to change. The wrapper exposes only the methods we need: new(), cancel(), is_cancelled(), child_token(), cancelled(). It also provides a natural extension point for logging or metrics."
     },
     {
-      "decision": "Resolution creates child snapshot with new ID/version (not in-place mutation)",
-      "rationale": "Follows the existing edit_param() pattern: clone snapshot (O(1) via PersistentMap structural sharing), update values and provenance. Preserves the provenance chain for undo/redo and audit trails. The parent snapshot ID links back to the Initial snapshot. If multiple templates resolve, each produces a new child snapshot."
-    },
-    {
-      "decision": "Solver failure (Infeasible/NoProgress) is non-fatal — diagnostics emitted, eval continues",
-      "rationale": "The task explicitly requires 'Solver failure produces diagnostics, not panics'. Auto params remain (Undef, Auto) on failure. Constraints referencing unresolved autos evaluate to Indeterminate (existing behavior via SimpleConstraintChecker Undef→Indeterminate mapping). Geometry realization can still proceed with Undef values, producing degraded output rather than crashing."
-    },
-    {
-      "decision": "Allocate res_version_id BEFORE recording resolution-phase cache entries, not after",
-      "rationale": "Review found that the original implementation allocated res_version_id after recording auto-param cache entries with the pre-resolution version_id, and the let-binding re-eval loop also used the pre-resolution version_id. This created a version mismatch: snapshot.version = res_version_id but all cache entries had basis_version = version_id. The try_fast_path check (basis_version == current_version) would never match for resolution-phase entries, forcing all let bindings through the full dependency-trace path on every subsequent edit_param(), completely negating incremental evaluation. Fix: allocate res_version_id first, use it in all record_evaluation calls within the Solved branch."
+      "decision": "Level computation uses Kahn's algorithm mirroring dirty.rs::topological_sort",
+      "rationale": "The same algorithm is used but outputs Vec<Vec<NodeId>> (levels) instead of Vec<NodeId> (flat). Each 'wave' of Kahn's algorithm (all nodes with in-degree 0 at that step) forms one level. Nodes within a level have no dependencies on each other and can safely execute concurrently. This is a minimal adaptation of proven existing code."
     }
   ],
   "reuse": [
     {
-      "what": "edit_param() snapshot pattern",
-      "where": "crates/reify-eval/src/lib.rs lines 278-395",
-      "how": "Clone current snapshot (O(1)), assign new snapshot_id/version_id, set SnapshotProvenance::Resolution. Same structural sharing via PersistentMap. Follow the exact pattern: clone → update values → update provenance → store."
+      "what": "Kahn's algorithm pattern from topological_sort",
+      "where": "crates/reify-eval/src/dirty.rs lines 47-101",
+      "how": "The compute_levels function follows the same algorithm: compute in-degree map, use BTreeSet for deterministic ordering, process nodes in waves. The key difference is emitting entire waves as levels (Vec<Vec<NodeId>>) instead of individual nodes (Vec<NodeId>). Same deduplication of reads via HashSet to avoid over-counting in-degree."
     },
     {
-      "what": "extract_dependency_trace()",
-      "where": "crates/reify-eval/src/deps.rs line 13",
-      "how": "Use to determine which constraints reference auto params. Call extract_dependency_trace(&constraint.expr) and check if any reads are in the auto_param_ids HashSet."
+      "what": "NodeId, EvalOutcome, DependencyTrace types from reify-eval",
+      "where": "crates/reify-eval/src/cache.rs, crates/reify-eval/src/deps.rs",
+      "how": "ConcurrentScheduler uses these types in its execute method signature. reify-runtime already depends on reify-eval. Import via `use reify_eval::cache::{EvalOutcome, NodeId}; use reify_eval::deps::DependencyTrace;`."
     },
     {
-      "what": "MockConstraintChecker pattern",
-      "where": "crates/reify-test-support/src/mocks.rs lines 11-58",
-      "how": "Follow same pattern for MockConstraintSolver: predetermined result, builder constructors (new_solved, new_infeasible, new_no_progress), implement ConstraintSolver trait returning cloned result."
+      "what": "SequentialScheduler test mock patterns",
+      "where": "crates/reify-runtime/src/lib.rs lines 147-265",
+      "how": "The existing tests define inline mock structs (NoopEvaluator, AlwaysChanged, CutoffEvaluator) for testing SequentialScheduler. Apply the same pattern for AsyncNodeEvaluator mocks: MockAsyncEvaluator, TrackingAsyncEvaluator, CancellingAsyncEvaluator. Each is a struct with the test-specific behavior (is_dirty policy, evaluate outcome, tracking state via Arc<Mutex<>>)."
     },
     {
-      "what": "TopologyTemplateBuilder.auto_param()",
-      "where": "crates/reify-test-support/src/builders.rs lines 175-189",
-      "how": "Already exists. Build test modules with auto params. Combine with .constraint() and expression builders (gt, lt, and, value_ref, literal) for test module construction."
+      "what": "ValueCellId::new() for test node construction",
+      "where": "crates/reify-types/src/identity.rs line 61",
+      "how": "Create test NodeId values: NodeId::Value(ValueCellId::new('A','x')). Same pattern as existing SequentialScheduler tests."
     },
     {
-      "what": "Expression builders (gt, lt, and, value_ref, literal, binop)",
-      "where": "crates/reify-test-support/src/builders.rs lines 6-130",
-      "how": "Build constraint expressions in tests: gt(value_ref('S','x'), literal(mm(2.0))). Also BinOp::Mul via CompiledExpr::binop() for let binding expressions referencing auto params."
-    },
-    {
-      "what": "Value constructors (mm)",
-      "where": "crates/reify-test-support/src/values.rs",
-      "how": "mm(5.0) creates Value::Scalar with LENGTH dimension and SI value 0.005. Use for solver mock return values and expected value assertions."
-    },
-    {
-      "what": "SnapshotProvenance::Resolution variant",
-      "where": "crates/reify-types/src/provenance.rs lines 21-25",
-      "how": "Already defined with { scope: String, resolved: HashSet<ValueCellId>, parent: SnapshotId }. Use directly when creating resolution snapshot provenance."
-    },
-    {
-      "what": "CachedResult::Resolution variant",
-      "where": "crates/reify-eval/src/cache.rs line 54",
-      "how": "Already defined as Resolution(HashMap<ValueCellId, Value>). Use for recording resolution results in the cache store."
-    },
-    {
-      "what": "Diagnostic::error() and Diagnostic::warning()",
-      "where": "crates/reify-types/src/diagnostics.rs lines 72, 80",
-      "how": "Use Diagnostic::error() for infeasible diagnostics, Diagnostic::warning() for no-progress warnings. Both take impl Into<String>."
-    },
-    {
-      "what": "SimpleConstraintChecker",
-      "where": "crates/reify-constraints/src/lib.rs",
-      "how": "Use as real constraint checker in integration test (step-9) to verify constraints evaluate to Satisfied after resolution. Evaluates constraint expressions against current values and maps bool results to Satisfaction."
-    },
-    {
-      "what": "Engine::cache_store() and CacheStore::get()",
-      "where": "crates/reify-eval/src/lib.rs line 125, crates/reify-eval/src/cache.rs line 160",
-      "how": "Use engine.cache_store().get(&NodeId::Value(id)) to inspect NodeCache entries in tests. NodeCache.basis_version can be compared against snapshot.version to verify the cache version invariant."
+      "what": "SequentialScheduler execute API pattern",
+      "where": "crates/reify-runtime/src/lib.rs lines 52-79",
+      "how": "ConcurrentScheduler follows the same behavioral contract: skip non-dirty nodes, call evaluate for dirty nodes, collect Changed nodes into HashSet. The API differs in being async, taking Arc<E> instead of &mut dyn, and additionally requiring traces for level computation."
     }
   ]
 }
