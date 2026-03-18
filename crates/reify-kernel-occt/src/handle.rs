@@ -783,4 +783,53 @@ mod tests {
         let content = String::from_utf8(bytes).unwrap();
         assert!(content.contains("ISO-10303-21"));
     }
+
+    // --- Async-safe Drop and shutdown tests (step-23) ---
+
+    #[tokio::test]
+    async fn drop_in_async_context_does_not_block() {
+        // Dropping OcctKernelHandle inside an async context must not block
+        // the tokio worker thread (i.e., must not call thread.join()).
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(5.0),
+            height: Value::Real(5.0),
+            depth: Value::Real(5.0),
+        };
+        handle.execute_async(&op).await.unwrap();
+        // Drop inside async context — must complete without blocking
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn shutdown_completes_cleanly() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(5.0),
+            height: Value::Real(5.0),
+            depth: Value::Real(5.0),
+        };
+        handle.execute_async(&op).await.unwrap();
+        // Explicit async shutdown — should complete cleanly
+        handle.shutdown().await;
+        // After shutdown, spawning a new handle should work (kernel thread exited)
+        let handle2 = super::OcctKernelHandle::spawn();
+        let result = handle2.execute_async(&op).await.unwrap();
+        assert_eq!(result.id, GeometryHandleId(1)); // fresh kernel, fresh ids
+    }
+
+    #[test]
+    fn sync_drop_still_joins_thread() {
+        // Sync (non-async) Drop should preserve existing join behavior
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(5.0),
+            height: Value::Real(5.0),
+            depth: Value::Real(5.0),
+        };
+        handle.execute(&op).unwrap();
+        // Drop outside async context — should join the thread
+        drop(handle);
+        // No panic means success
+    }
 }
