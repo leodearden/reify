@@ -1,5 +1,6 @@
-use reify_types::SourceSpan;
-use tower_lsp::lsp_types::Position;
+use reify_syntax::ParseError;
+use reify_types::{Diagnostic, DiagnosticLabel, Severity, SourceSpan};
+use tower_lsp::lsp_types::{self, DiagnosticRelatedInformation, DiagnosticSeverity, Position, Url};
 
 /// Convert a byte offset in `source` to an LSP Position (line, character).
 ///
@@ -34,10 +35,33 @@ pub fn span_to_range(source: &str, span: SourceSpan) -> tower_lsp::lsp_types::Ra
     }
 }
 
+/// Convert a Reify Severity to an LSP DiagnosticSeverity.
+pub fn convert_severity(_severity: Severity) -> DiagnosticSeverity {
+    todo!()
+}
+
+/// Convert a Reify Diagnostic to an LSP Diagnostic.
+pub fn convert_diagnostic(
+    _diag: &Diagnostic,
+    _source: &str,
+    _uri: &Url,
+) -> lsp_types::Diagnostic {
+    todo!()
+}
+
+/// Convert a ParseError to an LSP Diagnostic.
+pub fn convert_parse_error(
+    _err: &ParseError,
+    _source: &str,
+    _uri: &Url,
+) -> lsp_types::Diagnostic {
+    todo!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tower_lsp::lsp_types::Position;
+    use tower_lsp::lsp_types::{DiagnosticSeverity, Position, Url};
 
     #[test]
     fn offset_zero_in_empty_string() {
@@ -92,5 +116,84 @@ mod tests {
         let range = span_to_range(source, span);
         assert_eq!(range.start, Position::new(1, 0));
         assert_eq!(range.end, Position::new(1, 6));
+    }
+
+    // --- Diagnostic conversion tests ---
+
+    fn test_uri() -> Url {
+        Url::parse("file:///test.ri").unwrap()
+    }
+
+    #[test]
+    fn severity_error_maps_to_lsp_error() {
+        assert_eq!(convert_severity(Severity::Error), DiagnosticSeverity::ERROR);
+    }
+
+    #[test]
+    fn severity_warning_maps_to_lsp_warning() {
+        assert_eq!(
+            convert_severity(Severity::Warning),
+            DiagnosticSeverity::WARNING
+        );
+    }
+
+    #[test]
+    fn severity_info_maps_to_lsp_information() {
+        assert_eq!(
+            convert_severity(Severity::Info),
+            DiagnosticSeverity::INFORMATION
+        );
+    }
+
+    #[test]
+    fn diagnostic_no_labels_range_at_origin() {
+        let source = "hello\nworld";
+        let diag = Diagnostic::error("something went wrong");
+        let lsp_diag = convert_diagnostic(&diag, source, &test_uri());
+        assert_eq!(lsp_diag.range.start, Position::new(0, 0));
+        assert_eq!(lsp_diag.range.end, Position::new(0, 0));
+        assert_eq!(lsp_diag.message, "something went wrong");
+    }
+
+    #[test]
+    fn diagnostic_one_label_uses_label_span() {
+        let source = "hello\nworld";
+        let diag = Diagnostic::error("bad token").with_label(DiagnosticLabel::new(
+            SourceSpan::new(6, 11), // "world"
+            "here",
+        ));
+        let lsp_diag = convert_diagnostic(&diag, source, &test_uri());
+        assert_eq!(lsp_diag.range.start, Position::new(1, 0));
+        assert_eq!(lsp_diag.range.end, Position::new(1, 5));
+    }
+
+    #[test]
+    fn diagnostic_multiple_labels_primary_and_related() {
+        let source = "aaa\nbbb\nccc";
+        let diag = Diagnostic::error("conflict")
+            .with_label(DiagnosticLabel::new(SourceSpan::new(0, 3), "primary"))
+            .with_label(DiagnosticLabel::new(SourceSpan::new(4, 7), "related"));
+        let lsp_diag = convert_diagnostic(&diag, source, &test_uri());
+        // Primary range from first label
+        assert_eq!(lsp_diag.range.start, Position::new(0, 0));
+        assert_eq!(lsp_diag.range.end, Position::new(0, 3));
+        // Related information from second label
+        let related = lsp_diag.related_information.unwrap();
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].message, "related");
+    }
+
+    #[test]
+    fn parse_error_converts_to_lsp_diagnostic() {
+        let source = "hello\nworld";
+        let err = ParseError {
+            message: "unexpected token".to_string(),
+            span: SourceSpan::new(6, 11),
+        };
+        let lsp_diag = convert_parse_error(&err, source, &test_uri());
+        assert_eq!(lsp_diag.severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(lsp_diag.message, "unexpected token");
+        assert_eq!(lsp_diag.range.start, Position::new(1, 0));
+        assert_eq!(lsp_diag.range.end, Position::new(1, 5));
     }
 }
