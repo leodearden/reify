@@ -575,6 +575,7 @@ fn compile_expr(
 pub fn compile(
     parsed: &reify_syntax::ParsedModule,
 ) -> CompiledModule {
+    let mut imports = Vec::new();
     let mut templates = Vec::new();
     let mut diagnostics = Vec::new();
 
@@ -592,8 +593,18 @@ pub fn compile(
                 let template = compile_structure(structure, &mut diagnostics);
                 templates.push(template);
             }
-            reify_syntax::Declaration::Import(_) => {
-                // Imports are not yet handled in M1
+            reify_syntax::Declaration::Import(import) => {
+                imports.push(CompiledImport {
+                    path: import.path.clone(),
+                    span: import.span,
+                });
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "import \"{}\" noted; module resolution not yet implemented",
+                        import.path
+                    ))
+                    .with_label(DiagnosticLabel::new(import.span, "import")),
+                );
             }
         }
     }
@@ -602,7 +613,7 @@ pub fn compile(
 
     CompiledModule {
         path: parsed.path.clone(),
-        imports: Vec::new(),
+        imports,
         templates,
         diagnostics,
         content_hash,
