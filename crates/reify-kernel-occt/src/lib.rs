@@ -296,8 +296,26 @@ impl WarmStartable for OcctKernel {
         ))
     }
 
-    fn with_warm_state(&mut self, _state: OpaqueState) {
-        // Will be implemented in step-8
+    fn with_warm_state(&mut self, state: OpaqueState) {
+        let warm = match state.downcast::<OcctWarmState>() {
+            Some(w) => w,
+            None => return, // Wrong type, silently ignore per trait contract
+        };
+        // Clear existing shapes and restore from warm state
+        self.shapes.clear();
+        for (id, brep) in warm.shapes {
+            cxx::let_cxx_string!(brep_cxx = brep.as_str());
+            match ffi::ffi::deserialize_brep(&brep_cxx) {
+                Ok(shape) => {
+                    self.shapes.insert(id, shape);
+                }
+                Err(_) => {
+                    // Skip entries that fail to deserialize (best-effort)
+                    continue;
+                }
+            }
+        }
+        self.next_id = warm.next_id;
     }
 }
 
