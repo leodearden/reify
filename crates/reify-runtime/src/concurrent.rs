@@ -275,6 +275,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_scheduler_multi_level_ordering() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        /// Tracks evaluation order via a shared vec.
+        struct TrackingAsyncEvaluator {
+            eval_order: Arc<Mutex<Vec<NodeId>>>,
+        }
+
+        impl AsyncNodeEvaluator for TrackingAsyncEvaluator {
+            fn is_dirty(&self, _node: &NodeId) -> bool {
+                true
+            }
+
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                self.eval_order.lock().unwrap().push(node);
+                EvalOutcome::Changed
+            }
+        }
+
+        let eval_order = Arc::new(Mutex::new(Vec::new()));
+        let evaluator = Arc::new(TrackingAsyncEvaluator {
+            eval_order: Arc::clone(&eval_order),
+        });
+
+        let e = "T";
+        let a = NodeId::Value(reify_types::ValueCellId::new(e, "a"));
+        let b = NodeId::Value(reify_types::ValueCellId::new(e, "b"));
+        let c = NodeId::Value(reify_types::ValueCellId::new(e, "c"));
+
+        let eval_set = vec![a.clone(), b.clone(), c.clone()];
+
+        let mut traces = HashMap::new();
+        traces.insert(a.clone(), DependencyTrace::default());
+        traces.insert(b.clone(), DependencyTrace::default());
+        // c reads a and b
+        traces.insert(
+            c.clone(),
+            DependencyTrace {
+                reads: vec![
+                    reify_types::ValueCellId::new(e, "a"),
+                    reify_types::ValueCellId::new(e, "b"),
+                ],
+            },
+        );
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let changed = scheduler
+            .execute(eval_set, evaluator, &traces, &cancel)
+            .await;
+
+        // All 3 nodes should be in the changed set
+        assert_eq!(changed.len(), 3);
+        assert!(changed.contains(&a));
+        assert!(changed.contains(&b));
+        assert!(changed.contains(&c));
+
+        // c must appear after both a and b in eval order
+        let order = eval_order.lock().unwrap();
+        let a_pos = order.iter().position(|n| *n == a).unwrap();
+        let b_pos = order.iter().position(|n| *n == b).unwrap();
+        let c_pos = order.iter().position(|n| *n == c).unwrap();
+        assert!(c_pos > a_pos, "c should be evaluated after a");
+        assert!(c_pos > b_pos, "c should be evaluated after b");
+    }
+
+    #[tokio::test]
     async fn concurrent_scheduler_single_dirty_node() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
