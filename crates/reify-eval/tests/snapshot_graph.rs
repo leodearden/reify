@@ -13,11 +13,10 @@ fn snapshot_from_bracket_compiled_module() {
     let snap = Snapshot::from_compiled_module(&module);
 
     // bracket_compiled_module has 5 params + 1 let (volume) = 6 value cells
-    // (body is a realization in the real compiler, but the test fixture builder
-    // does not add it as a realization — so 0 realizations from this fixture)
+    // and 1 realization (box with width, height, depth=thickness)
     assert_eq!(snap.graph.value_cells.len(), 6);
     assert_eq!(snap.graph.constraints.len(), 3);
-    assert_eq!(snap.graph.realizations.len(), 0);
+    assert_eq!(snap.graph.realizations.len(), 1);
 
     // Provenance should be Initial
     assert_eq!(snap.provenance, SnapshotProvenance::Initial);

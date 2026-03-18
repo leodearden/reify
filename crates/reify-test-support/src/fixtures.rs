@@ -23,6 +23,22 @@ pub fn bracket_source() -> &'static str {
 }"#
 }
 
+/// Return the bracket source with the default width replaced by `width_str`.
+///
+/// E.g. `bracket_source_with_width("120mm")` gives `param width: Scalar = 120mm`.
+pub fn bracket_source_with_width(width_str: &str) -> String {
+    bracket_source().replace("80mm", width_str)
+}
+
+/// Return the bracket source with thickness set to 1mm, which violates the
+/// `thickness > 2mm` constraint.
+pub fn bracket_source_violating() -> String {
+    bracket_source().replace(
+        "param thickness: Scalar = 5mm",
+        "param thickness: Scalar = 1mm",
+    )
+}
+
 /// Create a `ParsedModule` matching the bracket source.
 pub fn bracket_parsed_module() -> ParsedModule {
     use reify_syntax::*;
@@ -266,6 +282,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
 /// Create a `CompiledModule` matching the bracket source.
 /// Uses the test builders to construct a realistic compiled form.
 pub fn bracket_compiled_module() -> CompiledModule {
+    use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
     use reify_types::CompiledExpr;
 
     let e = "Bracket";
@@ -352,6 +369,18 @@ pub fn bracket_compiled_module() -> CompiledModule {
         .constraint(e, 0, None, constraint_0)
         .constraint(e, 1, None, constraint_1)
         .constraint(e, 2, None, constraint_2)
+        .realization(
+            e,
+            0,
+            vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".to_string(), width_ref()),
+                    ("height".to_string(), height_ref()),
+                    ("depth".to_string(), thickness_ref()),
+                ],
+            }],
+        )
         .build();
 
     CompiledModuleBuilder::new(ModulePath::single("bracket"))
@@ -392,6 +421,26 @@ mod tests {
         // 5 params + 1 let (volume) = 6 value cells
         assert_eq!(t.value_cells.len(), 6);
         assert_eq!(t.constraints.len(), 3);
+    }
+
+    #[test]
+    fn bracket_source_with_width_replaces_default() {
+        let source = bracket_source_with_width("120mm");
+        assert!(source.contains("param width: Scalar = 120mm"));
+        assert!(!source.contains("80mm"), "original 80mm should be replaced");
+        // Everything else should be intact
+        assert!(source.contains("param height: Scalar = 100mm"));
+        assert!(source.contains("constraint thickness > 2mm"));
+    }
+
+    #[test]
+    fn bracket_source_violating_has_small_thickness() {
+        let source = bracket_source_violating();
+        assert!(source.contains("param thickness: Scalar = 1mm"));
+        assert!(!source.contains("param thickness: Scalar = 5mm"), "original 5mm should be replaced");
+        // Other params should be unchanged
+        assert!(source.contains("param width: Scalar = 80mm"));
+        assert!(source.contains("constraint thickness > 2mm"));
     }
 
     #[test]

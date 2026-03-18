@@ -32,10 +32,10 @@ fn prepare_concurrent_edit_returns_correct_setup() {
     let setup = engine.prepare_concurrent_edit(width_id.clone(), Value::length(0.1));
 
     // (1) eval_set should match sequential dirty∩demand set for width change
-    // width change → dirty = {volume, C1}; all are demanded → eval_set = {volume, C1}
+    // width change → dirty = {volume, C1, R0}; all are demanded → eval_set = {volume, C1, R0}
     assert_eq!(
-        setup.eval_set.len(), 2,
-        "eval_set should have 2 nodes (volume + C1), got: {:?}", setup.eval_set
+        setup.eval_set.len(), 3,
+        "eval_set should have 3 nodes (volume + C1 + R0), got: {:?}", setup.eval_set
     );
     assert!(
         setup.eval_set.contains(&NodeId::Value(ValueCellId::new(e, "volume"))),
@@ -44,6 +44,10 @@ fn prepare_concurrent_edit_returns_correct_setup() {
     assert!(
         setup.eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))),
         "eval_set should contain C1"
+    );
+    assert!(
+        setup.eval_set.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(e, 0))),
+        "eval_set should contain R0"
     );
 
     // (2) previous_hashes should contain entries for nodes that had cache entries
