@@ -94,6 +94,38 @@ impl ConstraintSolver for MockConstraintSolver {
     }
 }
 
+/// Mock constraint solver that returns different results on each call.
+/// Results are consumed in order; once exhausted, the last result is repeated.
+pub struct SequencedMockConstraintSolver {
+    results: Arc<Mutex<Vec<SolveResult>>>,
+    last: Arc<Mutex<Option<SolveResult>>>,
+}
+
+impl SequencedMockConstraintSolver {
+    /// Create a solver that returns each result in sequence.
+    /// After all results are consumed, the last one is repeated.
+    pub fn new(results: Vec<SolveResult>) -> Self {
+        Self {
+            results: Arc::new(Mutex::new(results)),
+            last: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+impl ConstraintSolver for SequencedMockConstraintSolver {
+    fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
+        let mut results = self.results.lock().unwrap();
+        let result = if results.is_empty() {
+            self.last.lock().unwrap().clone().expect("no results configured")
+        } else {
+            let r = results.remove(0);
+            *self.last.lock().unwrap() = Some(r.clone());
+            r
+        };
+        result
+    }
+}
+
 /// Record of operations received by MockGeometryKernel.
 #[derive(Debug, Clone)]
 pub struct GeometryOpRecord {

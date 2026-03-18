@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_test_support::bracket_compiled_module;
-use reify_test_support::mocks::{MockConstraintChecker, MockConstraintSolver};
+use reify_test_support::mocks::{MockConstraintChecker, MockConstraintSolver, SequencedMockConstraintSolver};
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
 use reify_test_support::builders::{literal, value_ref, value_ref_typed, binop, gt};
 use reify_types::{
@@ -1079,5 +1079,94 @@ fn edit_param_re_resolves_auto_params_when_constraints_dirty() {
         matches!(x_val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
         "expected x = mm(5.0) = 0.005 SI, got {:?}",
         x_val
+    );
+}
+
+/// After edit_param triggers re-resolution, let bindings that depend on auto
+/// params must also be re-evaluated with the updated resolved values.
+///
+/// Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`,
+/// constraint `x > a`. Sequenced solver: 1st call returns x=mm(5.0),
+/// 2nd call returns x=mm(20.0).
+///
+/// Cold eval → x=mm(5.0)=0.005 SI, y = 0.005*2 = 0.01 SI.
+/// Edit `a` to mm(8.0) → solver re-resolves x to mm(20.0)=0.02 SI.
+/// y depends on x and must be re-evaluated: y = 0.02*2 = 0.04 SI.
+///
+/// Currently FAILS because edit_param's resolution phase does not re-evaluate
+/// let bindings that depend on re-resolved auto params (no second propagation wave).
+#[test]
+fn edit_param_let_binding_re_evaluates_after_re_resolution() {
+    use reify_types::SolveResult;
+
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // First call: x = mm(5.0)
+    let mut solved1 = HashMap::new();
+    solved1.insert(x_id.clone(), mm(5.0));
+    // Second call: x = mm(20.0) (different value!)
+    let mut solved2 = HashMap::new();
+    solved2.insert(x_id.clone(), mm(20.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1 },
+        SolveResult::Solved { values: solved2 },
+    ]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(3.0))))
+        .auto_param("S", "x", Type::length())
+        // y = x * 2.0
+        .let_binding(
+            "S",
+            "y",
+            Type::length(),
+            binop(
+                BinOp::Mul,
+                value_ref("S", "x"),
+                literal(Value::Real(2.0)),
+            ),
+        )
+        // constraint: x > a
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    // Cold eval: solver returns x=mm(5.0), y = 0.005 * 2 = 0.01
+    let result = engine.eval(&module);
+    let y_val = result.values.get(&y_id).expect("y should be in values after cold eval");
+    assert!(
+        matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-10),
+        "expected y ≈ 0.01 after cold eval (x=mm(5.0)*2), got {:?}",
+        y_val
+    );
+
+    // Edit a from mm(3.0) to mm(8.0) — constraint `x > a` in dirty cone.
+    // Solver re-resolves x to mm(20.0) (different value!).
+    // Let binding y depends on x and MUST be re-evaluated: y = 0.02*2 = 0.04.
+    let result2 = engine.edit_param(a_id.clone(), mm(8.0));
+
+    // x must have the new resolved value
+    let x_val2 = result2.values.get(&x_id).expect("x should be in values after edit");
+    assert!(
+        matches!(x_val2, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
+        "expected x = mm(20.0) = 0.02 SI, got {:?}",
+        x_val2
+    );
+
+    // y must be re-evaluated with new x: y = 0.02 * 2 = 0.04
+    let y_val2 = result2.values.get(&y_id).expect("y should be in values after edit");
+    assert!(
+        matches!(y_val2, Value::Scalar { si_value, .. } if (*si_value - 0.04).abs() < 1e-10),
+        "expected y ≈ 0.04 after re-resolution (x=mm(20.0)*2), got {:?} (stale!)",
+        y_val2
     );
 }
