@@ -9,6 +9,7 @@ build = "build.rs"
 [dependencies]
 reify-types.workspace = true
 cxx = "1"
+tokio = { workspace = true }
 
 [build-dependencies]
 cxx-build = "1"
