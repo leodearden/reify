@@ -253,4 +253,24 @@ mod tests {
         let result = handle.export(gh.id, reify_types::ExportFormat::Stl, &mut buf);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn tessellate_returns_valid_mesh() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute(&op).unwrap();
+        let mesh = handle.tessellate(gh.id, 0.1).unwrap();
+        assert!(!mesh.vertices.is_empty(), "mesh should have vertices");
+        assert!(!mesh.indices.is_empty(), "mesh should have indices");
+        assert_eq!(
+            mesh.indices.len() % 3,
+            0,
+            "indices should be divisible by 3 (triangles)"
+        );
+        assert!(mesh.normals.is_some(), "mesh should have normals");
+    }
 }
