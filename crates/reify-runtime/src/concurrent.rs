@@ -117,10 +117,10 @@ impl ConcurrentScheduler {
 
             // Join all tasks in this level
             for handle in handles {
-                if let Ok((node, outcome)) = handle.await {
-                    if outcome == EvalOutcome::Changed {
-                        changed.insert(node);
-                    }
+                if let Ok((node, outcome)) = handle.await
+                    && outcome == EvalOutcome::Changed
+                {
+                    changed.insert(node);
                 }
             }
         }
