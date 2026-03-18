@@ -2,7 +2,7 @@
   "task_id": "36",
   "title": "Reproduce and fix interactive edit-loop staleness after parameter edits",
   "modules": ["crates/reify-eval", "crates/reify-runtime"],
-  "analysis": "## Current State\n\nSteps 1-12 from the prior plan are complete and committed. The sequential edit pipeline is fully working:\n- `edit_param()` handles auto-resolution, second-wave let-binding propagation, diagnostics\n- `edit_check()` adds constraint satisfaction checking\n- 365 tests pass\n\nThe concurrent edit path (`edit_param_concurrent`) calls `resolve_concurrent_edit()` which correctly updates `result.values` and `result.snapshot_values` in place — so values ARE correct after `apply_concurrent_edit()`. The test `edit_param_concurrent_re_resolves_auto_params` passes.\n\n## Remaining Staleness Gaps\n\n### Gap 1: ConcurrentEditResult discards resolution metadata\n`edit_param_concurrent` (concurrent_eval.rs:312-313):\n```rust\nlet (_resolved_params, _diagnostics) =\n    engine.resolve_concurrent_edit(&setup, &mut result);\n```\nThe returned `resolved_params` and `diagnostics` are assigned to underscore-prefixed variables and discarded. The `ConcurrentEditResult` struct (lib.rs:152-163) has no fields for these. Callers cannot tell what auto params were resolved or if the solver produced diagnostics.\n\n### Gap 2: No concurrent constraint checking\nThere is no `edit_check_concurrent` equivalent. After a concurrent edit, the only way to check constraint satisfaction is to call `check()` which does a full cold-start `eval()`. The sequential path has `edit_check()` which combines `edit_param()` + constraint checking, but the concurrent path has no equivalent.\n\n### Gap 3: Stale test comment\nThe test `edit_param_concurrent_re_resolves_auto_params` (concurrent_eval.rs:875) has a doc comment saying \"Currently FAILS because the concurrent edit path doesn't include a resolution phase.\" This is stale — the test passes.\n\n## Approach\n1. Add `resolved_params` and `diagnostics` fields to `ConcurrentEditResult`\n2. Wire `resolve_concurrent_edit` return values into the result in `edit_param_concurrent`\n3. Add `check_constraints_with_values` helper to Engine (factored from `edit_check`)\n4. Create `edit_check_concurrent` function in reify-runtime\n5. Fix stale comments\n\nAll changes are additive — no existing behavior is modified.",
+  "analysis": "## Current State\n\nSteps 1-12 from the prior plan are complete and committed. The sequential edit pipeline is fully working:\n- `edit_param()` handles auto-resolution, second-wave let-binding propagation, diagnostics\n- `edit_check()` adds constraint satisfaction checking\n- 365 tests pass\n\nThe concurrent edit path (`edit_param_concurrent`) calls `resolve_concurrent_edit()` which correctly updates `result.values` and `result.snapshot_values` in place — so values ARE correct after `apply_concurrent_edit()`. The test `edit_param_concurrent_re_resolves_auto_params` passes.\n\n## Remaining Staleness Gaps\n\n### Gap 1: ConcurrentEditResult discards resolution metadata\n`edit_param_concurrent` (concurrent_eval.rs:312-313):\n```rust\nlet (_resolved_params, _diagnostics) =\n    engine.resolve_concurrent_edit(&setup, &mut result);\n```\nThe returned `resolved_params` and `diagnostics` are assigned to underscore-prefixed variables and discarded. The `ConcurrentEditResult` struct (lib.rs:152-163) has no fields for these. Callers cannot tell what auto params were resolved or if the solver produced diagnostics.\n\n### Gap 2: No concurrent constraint checking\nThere is no `edit_check_concurrent` equivalent. After a concurrent edit, the only way to check constraint satisfaction is to call `check()` which does a full cold-start `eval()`. The sequential path has `edit_check()` which combines `edit_param()` + constraint checking, but the concurrent path has no equivalent.\n\n### Gap 3: Stale test comment\nThe test `edit_param_concurrent_re_resolves_auto_params` (concurrent_eval.rs:875) has a doc comment saying \"Currently FAILS because the concurrent edit path doesn't include a resolution phase.\" This is stale — the test passes.\n\n### Gap 4: Constraint label regression (blocking review feedback)\n`check_constraints_with_values` (lib.rs:1253) always sets `label: None` on every `ConstraintCheckEntry`, discarding user-provided constraint labels. The cold-start `check()` path (lib.rs:1611) correctly populates `label` from `compiled.label.clone()`. Both `edit_check` and `edit_check_concurrent` route through `check_constraints_with_values`, so their `CheckResult` structs lose labels. Root cause: `ConstraintNodeData` in graph.rs lacks a `label` field, and the graph builder (graph.rs:86-92) discards `constraint.label` when converting `CompiledConstraint` → `ConstraintNodeData`.\n\n## Approach\n1. Add `resolved_params` and `diagnostics` fields to `ConcurrentEditResult`\n2. Wire `resolve_concurrent_edit` return values into the result in `edit_param_concurrent`\n3. Add `check_constraints_with_values` helper to Engine (factored from `edit_check`)\n4. Create `edit_check_concurrent` function in reify-runtime\n5. Fix stale comments\n6. Fix label preservation: add `label: Option<String>` to `ConstraintNodeData`, populate in graph builder, use in `check_constraints_with_values`\n\nAll changes are additive — no existing behavior is modified.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -82,6 +82,34 @@
       "description": "Fix any coherence issues found by step-9. Update the stale doc comment on `edit_param_concurrent_re_resolves_auto_params` test (remove 'Currently FAILS' note). Clean up any remaining underscore-prefixed variable names from the old discard pattern.",
       "status": "done",
       "commit": "57d26db"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test `edit_check_preserves_constraint_labels` in crates/reify-eval/tests/incremental.rs. Uses SimpleConstraintChecker. Module: param `width` (default mm(10.0)), TWO constraints: `.constraint(\"S\", 0, Some(\"min_width\"), gt(value_ref(\"S\", \"width\"), literal(mm(5.0))))` and `.constraint(\"S\", 1, None, lt(value_ref(\"S\", \"width\"), literal(mm(100.0))))`. Cold check() → verify constraint_results[0].label == Some(\"min_width\") and constraint_results[1].label == None. Then call edit_check(width, mm(2.0)). Assert: (1) constraint_results[0].label == Some(\"min_width\"), (2) constraint_results[1].label == None, (3) constraint_results[0].satisfaction == Violated. This test WILL FAIL because `check_constraints_with_values` always sets `label: None`, so the edit_check path returns `label: None` for the labeled constraint.",
+      "status": "done",
+      "commit": "5905aa2"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Fix label preservation in `check_constraints_with_values`. Add `pub label: Option<String>` field to `ConstraintNodeData` in crates/reify-eval/src/graph.rs. Update the graph builder (graph.rs:86-92) to copy `constraint.label.clone()` into `ConstraintNodeData`. Update all existing `ConstraintNodeData { .. }` construction sites in tests (graph.rs tests, demand.rs, deps.rs, dirty.rs) to include `label: None`. In `check_constraints_with_values` (lib.rs:1251-1255), change `label: None` to `label: cnode.label.clone()` by looking up the constraint node from `snapshot.graph.constraints` using the constraint id. The helper already iterates `snapshot.graph.constraints` and has access to each `cnode`, so use `cnode.label.clone()` directly in the `ConstraintCheckEntry` construction.",
+      "status": "done",
+      "commit": "d9d6854"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write test `edit_check_concurrent_preserves_constraint_labels` in crates/reify-runtime/tests/concurrent_eval.rs. Uses SimpleConstraintChecker. Module: param `width` (default mm(10.0)), constraint `.constraint(\"S\", 0, Some(\"min_width\"), gt(value_ref(\"S\", \"width\"), literal(mm(5.0))))`. Cold check(). edit_check_concurrent(width, mm(2.0)). Assert: (1) constraint_results[0].label == Some(\"min_width\"), (2) satisfaction == Violated. This verifies label preservation through the concurrent constraint-checking path. Should pass immediately since edit_check_concurrent also uses check_constraints_with_values which was fixed in step-12.",
+      "status": "done",
+      "commit": "a8652fa"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Verify step-13 test passes (it should, since edit_check_concurrent routes through the same check_constraints_with_values helper fixed in step-12). Run full test suite to confirm no regressions. Fix any compilation issues in test files that construct ConstraintNodeData without the new `label` field.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
@@ -108,13 +136,17 @@
     {
       "decision": "Use SimpleConstraintChecker (real checker) for edit_check_concurrent tests, not MockConstraintChecker",
       "rationale": "The concurrent constraint tests need to verify actual satisfaction transitions (Satisfied→Violated→Satisfied). MockConstraintChecker returns predetermined results regardless of values, which wouldn't test the pipeline. SimpleConstraintChecker evaluates constraint expressions against actual values, proving the full pipeline is coherent."
+    },
+    {
+      "decision": "Store constraint labels on ConstraintNodeData in the graph rather than passing a label map to check_constraints_with_values",
+      "rationale": "Labels are a static property of a constraint, logically belonging on the graph node alongside id and expr. Storing them in ConstraintNodeData makes them available everywhere the graph is used, not just in constraint-checking. It avoids threading extra parameters (a label map built from the compiled template) through check_constraints_with_values. The graph builder already has access to the label from CompiledConstraint; it just wasn't copying it. This is a one-field addition to a struct, matching the existing pattern where ValueCellNode stores all static cell metadata."
     }
   ],
   "reuse": [
     {
-      "what": "TopologyTemplateBuilder, CompiledModuleBuilder, expression helpers (binop, gt, literal, value_ref)",
+      "what": "TopologyTemplateBuilder, CompiledModuleBuilder, expression helpers (binop, gt, lt, literal, value_ref)",
       "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Build test modules with .param(), .auto_param(), .let_binding(), .constraint(). Same pattern used in all existing concurrent_eval.rs and resolution.rs tests."
+      "how": "Build test modules with .param(), .auto_param(), .let_binding(), .constraint(). Same pattern used in all existing concurrent_eval.rs and resolution.rs tests. The .constraint() method already accepts label: Option<&str> as its 3rd argument."
     },
     {
       "what": "MockConstraintChecker, SequencedMockConstraintSolver",
@@ -150,6 +182,11 @@
       "what": "CheckResult, ConstraintCheckEntry, EvalResult types",
       "where": "crates/reify-eval/src/lib.rs:68-90",
       "how": "edit_check_concurrent returns CheckResult (same as edit_check). No new result types needed."
+    },
+    {
+      "what": "ConstraintNodeData struct and graph builder",
+      "where": "crates/reify-eval/src/graph.rs:20-27 (struct), graph.rs:86-94 (builder)",
+      "how": "Add `label: Option<String>` field to ConstraintNodeData. In the graph builder loop (graph.rs:86-94), copy `constraint.label.clone()` into the new field. This makes labels available to check_constraints_with_values without needing the compiled template."
     }
   ]
 }
