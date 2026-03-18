@@ -8,7 +8,10 @@
 //! Per-node overrides allow: 'commit if slow' (default), 'always cancel
 //! when stale', and 'only run on final inputs'.
 
+use std::collections::HashMap;
 use std::time::Duration;
+
+use reify_eval::cache::NodeId;
 
 /// Project-level configuration for the dual-threshold commitment policy.
 ///
@@ -137,6 +140,90 @@ pub fn check_commitment(
 
     // 5. Below both thresholds
     CommitmentDecision::NotYet
+}
+
+/// Per-node commitment state tracked by [`CommitmentTracker`].
+struct CommitmentState {
+    override_: NodeCommitmentOverride,
+    decision: CommitmentDecision,
+}
+
+/// Tracks per-node commitment status for in-flight tasks.
+///
+/// Wraps the pure [`check_commitment`] function with stateful tracking:
+/// register tasks when they start, update status periodically, and query
+/// whether a task should continue or be cancelled.
+pub struct CommitmentTracker {
+    policy: CommitmentPolicy,
+    states: HashMap<NodeId, CommitmentState>,
+}
+
+impl CommitmentTracker {
+    /// Create a new tracker with the given project-level commitment policy.
+    pub fn new(policy: CommitmentPolicy) -> Self {
+        Self {
+            policy,
+            states: HashMap::new(),
+        }
+    }
+
+    /// Register a new in-flight task with its per-node override.
+    pub fn register_task(&mut self, node_id: NodeId, override_: NodeCommitmentOverride) {
+        self.states.insert(
+            node_id,
+            CommitmentState {
+                override_,
+                decision: CommitmentDecision::NotYet,
+            },
+        );
+    }
+
+    /// Update the commitment status for a node based on current progress.
+    ///
+    /// Calls [`check_commitment`] and stores the result. Only transitions
+    /// from `NotYet` to `Committed` or `NeverCommit` — once committed,
+    /// the decision is sticky.
+    pub fn update_status(
+        &mut self,
+        node_id: &NodeId,
+        progress: &TaskProgress,
+        has_intermediate_inputs: bool,
+    ) {
+        if let Some(state) = self.states.get_mut(node_id) {
+            if state.decision == CommitmentDecision::NotYet {
+                state.decision = check_commitment(
+                    &self.policy,
+                    state.override_,
+                    progress,
+                    has_intermediate_inputs,
+                );
+            }
+        }
+    }
+
+    /// Check if a node is currently committed.
+    pub fn is_committed(&self, node_id: &NodeId) -> bool {
+        self.states
+            .get(node_id)
+            .is_some_and(|s| s.decision == CommitmentDecision::Committed)
+    }
+
+    /// Determine whether a running task should continue.
+    ///
+    /// - If not in dirty cone: always continue (no reason to cancel)
+    /// - If in dirty cone and committed: continue (run to completion)
+    /// - If in dirty cone and not committed: cancel (stale)
+    pub fn should_continue(&self, node_id: &NodeId, in_dirty_cone: bool) -> bool {
+        if !in_dirty_cone {
+            return true;
+        }
+        self.is_committed(node_id)
+    }
+
+    /// Remove a task from the tracker (on completion or cancellation).
+    pub fn remove_task(&mut self, node_id: &NodeId) {
+        self.states.remove(node_id);
+    }
 }
 
 impl Default for CommitmentPolicy {
