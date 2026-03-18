@@ -1053,6 +1053,59 @@ impl Engine {
         }
     }
 
+    /// Incrementally re-evaluate and check constraints after changing a parameter.
+    ///
+    /// Combines edit_param() (incremental value evaluation + re-resolution)
+    /// with constraint satisfaction checking against the updated values.
+    /// Evaluates ALL constraints (not just dirty ones) to produce a complete
+    /// CheckResult, mirroring check()'s pattern but incrementally.
+    ///
+    /// Requires a prior call to eval() or check() to establish the baseline.
+    pub fn edit_check(
+        &mut self,
+        cell: ValueCellId,
+        new_value: reify_types::Value,
+    ) -> CheckResult {
+        let eval_result = self.edit_param(cell, new_value);
+        let mut constraint_results = Vec::new();
+        let mut diagnostics = eval_result.diagnostics;
+
+        // Evaluate ALL constraints from the snapshot's graph
+        let snapshot = self.current_snapshot.as_ref()
+            .expect("edit_check requires a snapshot from edit_param");
+
+        let constraint_pairs: Vec<_> = snapshot
+            .graph
+            .constraints
+            .iter()
+            .map(|(_, cnode)| (cnode.id.clone(), &cnode.expr))
+            .collect();
+
+        if !constraint_pairs.is_empty() {
+            let input = ConstraintInput {
+                constraints: constraint_pairs,
+                values: &eval_result.values,
+            };
+
+            let results = self.constraint_checker.check(&input);
+            for result in results {
+                diagnostics.extend(result.diagnostics.messages);
+                constraint_results.push(ConstraintCheckEntry {
+                    id: result.id,
+                    label: None,
+                    satisfaction: result.satisfaction,
+                });
+            }
+        }
+
+        CheckResult {
+            values: eval_result.values,
+            constraint_results,
+            diagnostics,
+            resolved_params: eval_result.resolved_params,
+        }
+    }
+
     /// Evaluate a compiled module with caching and early cutoff.
     ///
     /// On first call (cold start), behaves like eval() but populates the cache.

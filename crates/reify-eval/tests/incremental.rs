@@ -1220,7 +1220,7 @@ fn edit_check_returns_incremental_constraint_satisfaction() {
     // Values should be updated
     let width_val = result2.values.get(&width_id).expect("width should be in values");
     assert!(
-        matches!(width_val, Value::Scalar { si_value, .. } if (*si_value - 0.002).abs() < 1e-10),
+        matches!(width_val, Value::Scalar { si_value, .. } if (si_value - 0.002).abs() < 1e-10),
         "expected width = mm(2.0) = 0.002 SI, got {:?}",
         width_val
     );
