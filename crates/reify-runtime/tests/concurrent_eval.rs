@@ -1111,3 +1111,67 @@ async fn concurrent_edit_result_includes_diagnostics_on_infeasible() {
         result.diagnostics
     );
 }
+
+/// After a concurrent edit that violates a constraint, `edit_check_concurrent`
+/// should return a CheckResult with the constraint marked as Violated.
+///
+/// Module: param `width` (default mm(10.0)), constraint `width > mm(5.0)`.
+/// Cold check → Satisfied. edit_check_concurrent(width, mm(2.0)) → Violated.
+/// Also verifies values and empty resolved_params (no auto params).
+#[tokio::test]
+async fn edit_check_concurrent_reports_constraint_satisfaction() {
+    use reify_test_support::builders::{gt, literal, value_ref};
+    use reify_test_support::mm;
+    use reify_runtime::concurrent_eval::edit_check_concurrent;
+    use reify_types::Satisfaction;
+
+    let width_id = ValueCellId::new("S", "width");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "width", Type::length(), Some(literal(mm(10.0))))
+        .constraint("S", 0, None, gt(value_ref("S", "width"), literal(mm(5.0))))
+        .build();
+
+    let module = build_module(template);
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold check: width=mm(10.0) > mm(5.0) → Satisfied
+    let cold_result = engine.check(&module);
+    assert_eq!(
+        cold_result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "cold check should be Satisfied"
+    );
+
+    let cancel = CancellationToken::new();
+
+    // Concurrent edit: width=mm(2.0) < mm(5.0) → Violated
+    let check_result = edit_check_concurrent(
+        &mut engine,
+        width_id.clone(),
+        mm(2.0),
+        &cancel,
+    ).await.unwrap();
+
+    assert_eq!(
+        check_result.constraint_results[0].satisfaction,
+        Satisfaction::Violated,
+        "constraint should be Violated when width=mm(2.0) < mm(5.0)"
+    );
+
+    // values should reflect the new width
+    let width_val = check_result.values.get(&width_id)
+        .expect("values should contain width");
+    assert!(
+        matches!(width_val, Value::Scalar { si_value, .. } if (*si_value - 0.002).abs() < 1e-10),
+        "expected width = mm(2.0) = 0.002 SI, got {:?}",
+        width_val
+    );
+
+    // No auto params → resolved_params should be empty
+    assert!(
+        check_result.resolved_params.is_empty(),
+        "resolved_params should be empty (no auto params)"
+    );
+}
