@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::RwLock;
@@ -13,6 +14,15 @@ pub struct ServerState {
     pub documents: DocumentStore,
     /// Wrapped in Mutex because Engine internals (OpaqueState) are Send but not Sync.
     pub eval_state: Mutex<EvalState>,
+    /// Diagnostics last published for each URI (for test verification).
+    last_published_diagnostics: HashMap<Url, Vec<Diagnostic>>,
+}
+
+impl ServerState {
+    /// Retrieve the last published diagnostics for a given URI.
+    pub fn last_diagnostics_for(&self, uri: &Url) -> Option<&Vec<Diagnostic>> {
+        self.last_published_diagnostics.get(uri)
+    }
 }
 
 /// The Reify language server.
@@ -28,6 +38,7 @@ impl ReifyLanguageServer {
             state: Arc::new(RwLock::new(ServerState {
                 documents: DocumentStore::new(),
                 eval_state: Mutex::new(EvalState::new()),
+                last_published_diagnostics: HashMap::new(),
             })),
         }
     }
@@ -64,13 +75,20 @@ impl LanguageServer for ReifyLanguageServer {
         let diagnostics = {
             let mut state = self.state.write().await;
             state.documents.open(uri.clone(), text.clone(), version);
-            let mut eval_state = state.eval_state.lock().unwrap();
-            let result = crate::diagnostics::compute_diagnostics_with_state(
-                &mut eval_state,
-                &text,
-                &uri,
-            );
-            result.diagnostics
+            let diagnostics = {
+                let mut eval_state = state.eval_state.lock().unwrap();
+                let result = crate::diagnostics::compute_diagnostics_with_state(
+                    &mut eval_state,
+                    &text,
+                    &uri,
+                );
+                result.diagnostics
+            };
+            // Capture diagnostics for test verification (after dropping MutexGuard)
+            state
+                .last_published_diagnostics
+                .insert(uri.clone(), diagnostics.clone());
+            diagnostics
         };
 
         self.client
@@ -92,13 +110,20 @@ impl LanguageServer for ReifyLanguageServer {
         let diagnostics = {
             let mut state = self.state.write().await;
             state.documents.update(&uri, text.clone(), version);
-            let mut eval_state = state.eval_state.lock().unwrap();
-            let result = crate::diagnostics::compute_diagnostics_with_state(
-                &mut eval_state,
-                &text,
-                &uri,
-            );
-            result.diagnostics
+            let diagnostics = {
+                let mut eval_state = state.eval_state.lock().unwrap();
+                let result = crate::diagnostics::compute_diagnostics_with_state(
+                    &mut eval_state,
+                    &text,
+                    &uri,
+                );
+                result.diagnostics
+            };
+            // Capture diagnostics for test verification (after dropping MutexGuard)
+            state
+                .last_published_diagnostics
+                .insert(uri.clone(), diagnostics.clone());
+            diagnostics
         };
 
         self.client
@@ -109,10 +134,11 @@ impl LanguageServer for ReifyLanguageServer {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
 
-        // Remove from store
+        // Remove from store and clear captured diagnostics
         {
             let mut state = self.state.write().await;
             state.documents.close(&uri);
+            state.last_published_diagnostics.remove(&uri);
         }
 
         // Clear diagnostics for the closed file
