@@ -120,4 +120,61 @@ mod tests {
         assert_eq!(override_, cloned);
         let _ = format!("{:?}", override_);
     }
+
+    // --- TaskProgress tests ---
+
+    #[test]
+    fn task_progress_with_reported_progress() {
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(30),
+            reported_progress: Some(0.7),
+            previous_runtime: Some(Duration::from_secs(100)),
+        };
+        // reported_progress takes precedence over elapsed/previous_runtime
+        assert_eq!(progress.progress_estimate(), Some(0.7));
+    }
+
+    #[test]
+    fn task_progress_fallback_to_elapsed_over_previous() {
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(60),
+            reported_progress: None,
+            previous_runtime: Some(Duration::from_secs(120)),
+        };
+        // Fallback: elapsed/previous_runtime = 60/120 = 0.5
+        assert_eq!(progress.progress_estimate(), Some(0.5));
+    }
+
+    #[test]
+    fn task_progress_no_estimate_available() {
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(60),
+            reported_progress: None,
+            previous_runtime: None,
+        };
+        // No reported progress and no previous runtime → None
+        assert_eq!(progress.progress_estimate(), None);
+    }
+
+    #[test]
+    fn task_progress_elapsed_exceeds_previous_runtime() {
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(200),
+            reported_progress: None,
+            previous_runtime: Some(Duration::from_secs(100)),
+        };
+        // elapsed/previous_runtime = 2.0 (can exceed 1.0)
+        assert_eq!(progress.progress_estimate(), Some(2.0));
+    }
+
+    #[test]
+    fn task_progress_zero_previous_runtime() {
+        let progress = TaskProgress {
+            elapsed: Duration::from_secs(10),
+            reported_progress: None,
+            previous_runtime: Some(Duration::ZERO),
+        };
+        // Division by zero case — should return None or infinity; we return None
+        assert_eq!(progress.progress_estimate(), None);
+    }
 }
