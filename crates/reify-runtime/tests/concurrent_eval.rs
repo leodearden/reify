@@ -1175,3 +1175,64 @@ async fn edit_check_concurrent_reports_constraint_satisfaction() {
         "resolved_params should be empty (no auto params)"
     );
 }
+
+/// Verify constraint transitions work correctly through the concurrent path
+/// across multiple consecutive edits.
+///
+/// Module: param `width` (default mm(10.0)), constraint `width > mm(5.0)`.
+/// Cold check → Satisfied. edit_check_concurrent(width, mm(2.0)) → Violated.
+/// edit_check_concurrent(width, mm(8.0)) → Satisfied.
+#[tokio::test]
+async fn edit_check_concurrent_constraint_transitions() {
+    use reify_test_support::builders::{gt, literal, value_ref};
+    use reify_test_support::mm;
+    use reify_runtime::concurrent_eval::edit_check_concurrent;
+    use reify_types::Satisfaction;
+
+    let width_id = ValueCellId::new("S", "width");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "width", Type::length(), Some(literal(mm(10.0))))
+        .constraint("S", 0, None, gt(value_ref("S", "width"), literal(mm(5.0))))
+        .build();
+
+    let module = build_module(template);
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold check: width=mm(10.0) > mm(5.0) → Satisfied
+    let cold_result = engine.check(&module);
+    assert_eq!(
+        cold_result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "cold check should be Satisfied"
+    );
+
+    let cancel = CancellationToken::new();
+
+    // First concurrent edit: width=mm(2.0) < mm(5.0) → Violated
+    let result1 = edit_check_concurrent(
+        &mut engine,
+        width_id.clone(),
+        mm(2.0),
+        &cancel,
+    ).await.unwrap();
+    assert_eq!(
+        result1.constraint_results[0].satisfaction,
+        Satisfaction::Violated,
+        "constraint should be Violated when width=mm(2.0) < mm(5.0)"
+    );
+
+    // Second concurrent edit: width=mm(8.0) > mm(5.0) → Satisfied
+    let result2 = edit_check_concurrent(
+        &mut engine,
+        width_id.clone(),
+        mm(8.0),
+        &cancel,
+    ).await.unwrap();
+    assert_eq!(
+        result2.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "constraint should be Satisfied when width=mm(8.0) > mm(5.0)"
+    );
+}
