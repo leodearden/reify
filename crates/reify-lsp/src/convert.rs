@@ -1,5 +1,5 @@
 use reify_syntax::ParseError;
-use reify_types::{Diagnostic, DiagnosticLabel, Severity, SourceSpan};
+use reify_types::{Diagnostic, Severity, SourceSpan};
 use tower_lsp::lsp_types::{self, DiagnosticRelatedInformation, DiagnosticSeverity, Position, Url};
 
 /// Convert a byte offset in `source` to an LSP Position (line, character).
@@ -104,6 +104,7 @@ pub fn convert_parse_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_types::DiagnosticLabel;
     use tower_lsp::lsp_types::{DiagnosticSeverity, Position, Url};
 
     #[test]

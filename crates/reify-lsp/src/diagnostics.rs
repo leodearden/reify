@@ -1,8 +1,47 @@
+use reify_constraints::SimpleConstraintChecker;
+use reify_types::ModulePath;
 use tower_lsp::lsp_types::{self, Url};
 
+use crate::convert;
+
 /// Run the full parse → compile → check pipeline and return LSP diagnostics.
-pub fn compute_diagnostics(_source: &str, _uri: &Url) -> Vec<lsp_types::Diagnostic> {
-    todo!()
+pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic> {
+    let mut result = Vec::new();
+
+    // Derive a module name from the URI
+    let module_name = uri
+        .path_segments()
+        .and_then(|segs| segs.last())
+        .and_then(|name| name.strip_suffix(".ri"))
+        .unwrap_or("unnamed");
+
+    // Parse
+    let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
+
+    // Convert parse errors
+    for err in &parsed.errors {
+        result.push(convert::convert_parse_error(err, source, uri));
+    }
+
+    // Compile
+    let compiled = reify_compiler::compile(&parsed);
+
+    // Convert compiler diagnostics
+    for diag in &compiled.diagnostics {
+        result.push(convert::convert_diagnostic(diag, source, uri));
+    }
+
+    // Check (eval with constraint checker, no geometry kernel)
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let check_result = engine.check(&compiled);
+
+    // Convert eval diagnostics
+    for diag in &check_result.diagnostics {
+        result.push(convert::convert_diagnostic(diag, source, uri));
+    }
+
+    result
 }
 
 #[cfg(test)]
