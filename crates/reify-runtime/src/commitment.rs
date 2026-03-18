@@ -25,6 +25,28 @@ pub struct CommitmentPolicy {
     pub commit_when_proportion_done: f64,
 }
 
+/// Per-node override for commitment behavior.
+///
+/// Each node can override the project-level commitment policy:
+/// - `CommitIfSlow` (default): apply the dual-threshold policy
+/// - `AlwaysCancelWhenStale`: never commit, always cancel when stale
+/// - `OnlyRunOnFinalInputs`: skip intermediate inputs entirely
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeCommitmentOverride {
+    /// Apply the dual-threshold commitment policy (default behavior).
+    CommitIfSlow,
+    /// Never commit — always cancel when inputs become stale.
+    AlwaysCancelWhenStale,
+    /// Only run when all inputs are final (skip intermediate evaluations).
+    OnlyRunOnFinalInputs,
+}
+
+impl Default for NodeCommitmentOverride {
+    fn default() -> Self {
+        Self::CommitIfSlow
+    }
+}
+
 impl Default for CommitmentPolicy {
     fn default() -> Self {
         Self {
