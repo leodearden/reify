@@ -10,6 +10,30 @@
 
 use std::time::Duration;
 
+/// Project-level configuration for the dual-threshold commitment policy.
+///
+/// Controls when a running speculative evaluation becomes "committed" —
+/// meaning it will run to completion even if subsequent edits arrive.
+///
+/// - `always_commit_after`: unconditionally commit after this elapsed time
+/// - `commit_when_proportion_done`: commit when estimated progress exceeds this fraction
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommitmentPolicy {
+    /// Unconditionally commit after this elapsed time (default: 120s).
+    pub always_commit_after: Duration,
+    /// Commit when estimated progress exceeds this fraction (default: 0.5).
+    pub commit_when_proportion_done: f64,
+}
+
+impl Default for CommitmentPolicy {
+    fn default() -> Self {
+        Self {
+            always_commit_after: Duration::from_secs(120),
+            commit_when_proportion_done: 0.5,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
