@@ -871,8 +871,6 @@ async fn concurrent_triple_fan_in_mixed_early_cutoff() {
 /// Cold eval → x=mm(5.0)=0.005 SI, y = 0.01 SI.
 /// Concurrent edit a→mm(8.0) → solver re-resolves x to mm(20.0)=0.02 SI.
 /// After apply: y should be 0.04 SI, x should be 0.02 SI.
-///
-/// Currently FAILS because the concurrent edit path doesn't include a resolution phase.
 #[tokio::test]
 async fn edit_param_concurrent_re_resolves_auto_params() {
     use reify_test_support::builders::{binop, gt, literal, value_ref};
