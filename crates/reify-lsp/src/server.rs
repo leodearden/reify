@@ -196,4 +196,37 @@ mod tests {
         assert_eq!(doc.text, broken_source);
         assert_eq!(doc.version, 2);
     }
+
+    #[tokio::test]
+    async fn did_close_removes_document_from_store() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+        let uri = test_uri();
+
+        // Open a document
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: "structure Foo {}".to_string(),
+                },
+            })
+            .await;
+
+        // Close it
+        server
+            .did_close(DidCloseTextDocumentParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+            })
+            .await;
+
+        // Verify removed
+        let state = server.state().read().await;
+        assert!(
+            state.documents.get(&uri).is_none(),
+            "document should be removed after did_close"
+        );
+    }
 }
