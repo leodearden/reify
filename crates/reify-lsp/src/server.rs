@@ -10,10 +10,13 @@ use crate::diagnostics::EvalState;
 use crate::document::DocumentStore;
 
 /// Internal state shared across handler calls.
+///
+/// Contains document storage and captured diagnostics. The RwLock guards
+/// only these lightweight fields — eval_state lives separately on
+/// ReifyLanguageServer to avoid holding the RwLock during expensive
+/// evaluation.
 pub struct ServerState {
     pub documents: DocumentStore,
-    /// Wrapped in Mutex because Engine internals (OpaqueState) are Send but not Sync.
-    pub eval_state: Mutex<EvalState>,
     /// Diagnostics last published for each URI (for test verification).
     last_published_diagnostics: HashMap<Url, Vec<Diagnostic>>,
 }
@@ -29,6 +32,10 @@ impl ServerState {
 pub struct ReifyLanguageServer {
     client: Client,
     state: Arc<RwLock<ServerState>>,
+    /// Evaluation state lives outside the RwLock so eval can run without
+    /// blocking concurrent LSP requests that only need document state.
+    /// Wrapped in Mutex because Engine internals (OpaqueState) are Send but not Sync.
+    eval_state: Arc<Mutex<EvalState>>,
 }
 
 impl ReifyLanguageServer {
@@ -37,9 +44,9 @@ impl ReifyLanguageServer {
             client,
             state: Arc::new(RwLock::new(ServerState {
                 documents: DocumentStore::new(),
-                eval_state: Mutex::new(EvalState::new()),
                 last_published_diagnostics: HashMap::new(),
             })),
+            eval_state: Arc::new(Mutex::new(EvalState::new())),
         }
     }
 
@@ -47,6 +54,12 @@ impl ReifyLanguageServer {
     #[cfg(test)]
     pub(crate) fn state(&self) -> &Arc<RwLock<ServerState>> {
         &self.state
+    }
+
+    /// Access eval_state (for testing, e.g. poison recovery tests).
+    #[cfg(test)]
+    pub(crate) fn eval_state(&self) -> &Arc<Mutex<EvalState>> {
+        &self.eval_state
     }
 }
 
@@ -71,25 +84,37 @@ impl LanguageServer for ReifyLanguageServer {
         let text = params.text_document.text;
         let version = params.text_document.version;
 
-        // Store the document and compute diagnostics with persistent eval state
-        let diagnostics = {
+        // Brief write lock: store the document
+        {
             let mut state = self.state.write().await;
             state.documents.open(uri.clone(), text.clone(), version);
-            let diagnostics = {
-                let mut eval_state = state.eval_state.lock().unwrap();
-                let result = crate::diagnostics::compute_diagnostics_with_state(
-                    &mut eval_state,
-                    &text,
-                    &uri,
-                );
-                result.diagnostics
-            };
-            // Capture diagnostics for test verification (after dropping MutexGuard)
+        }
+
+        // Eval runs outside the RwLock, using only the eval_state Mutex.
+        // Recovers from poisoned lock (e.g., prior panic during eval).
+        let diagnostics = {
+            let mut eval_state = self
+                .eval_state
+                .lock()
+                .unwrap_or_else(|e| {
+                    eprintln!("eval_state lock poisoned, recovering");
+                    e.into_inner()
+                });
+            let result = crate::diagnostics::compute_diagnostics_with_state(
+                &mut eval_state,
+                &text,
+                &uri,
+            );
+            result.diagnostics
+        };
+
+        // Brief write lock: capture diagnostics
+        {
+            let mut state = self.state.write().await;
             state
                 .last_published_diagnostics
                 .insert(uri.clone(), diagnostics.clone());
-            diagnostics
-        };
+        }
 
         self.client
             .publish_diagnostics(uri, diagnostics, Some(version))
@@ -106,25 +131,37 @@ impl LanguageServer for ReifyLanguageServer {
             None => return,
         };
 
-        // Update the document and recompute diagnostics with persistent eval state
-        let diagnostics = {
+        // Brief write lock: update the document
+        {
             let mut state = self.state.write().await;
             state.documents.update(&uri, text.clone(), version);
-            let diagnostics = {
-                let mut eval_state = state.eval_state.lock().unwrap();
-                let result = crate::diagnostics::compute_diagnostics_with_state(
-                    &mut eval_state,
-                    &text,
-                    &uri,
-                );
-                result.diagnostics
-            };
-            // Capture diagnostics for test verification (after dropping MutexGuard)
+        }
+
+        // Eval runs outside the RwLock, using only the eval_state Mutex.
+        // Recovers from poisoned lock (e.g., prior panic during eval).
+        let diagnostics = {
+            let mut eval_state = self
+                .eval_state
+                .lock()
+                .unwrap_or_else(|e| {
+                    eprintln!("eval_state lock poisoned, recovering");
+                    e.into_inner()
+                });
+            let result = crate::diagnostics::compute_diagnostics_with_state(
+                &mut eval_state,
+                &text,
+                &uri,
+            );
+            result.diagnostics
+        };
+
+        // Brief write lock: capture diagnostics
+        {
+            let mut state = self.state.write().await;
             state
                 .last_published_diagnostics
                 .insert(uri.clone(), diagnostics.clone());
-            diagnostics
-        };
+        }
 
         self.client
             .publish_diagnostics(uri, diagnostics, Some(version))
