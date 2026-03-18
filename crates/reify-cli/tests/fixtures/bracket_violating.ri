@@ -1,0 +1,15 @@
+structure Bracket {
+    param width: Scalar = 80mm
+    param height: Scalar = 100mm
+    param thickness: Scalar = 1mm
+    param fillet_radius: Scalar = 3mm
+    param hole_diameter: Scalar = 6mm
+
+    let volume = width * height * thickness
+
+    constraint thickness > 2mm
+    constraint thickness < width / 4
+    constraint hole_diameter < thickness * 2
+
+    let body = box(width, height, thickness)
+}
