@@ -1215,22 +1215,22 @@ impl Engine {
     ///
     /// Combines edit_param() (incremental value evaluation + re-resolution)
     /// with constraint satisfaction checking against the updated values.
-    /// Evaluates ALL constraints (not just dirty ones) to produce a complete
-    /// CheckResult, mirroring check()'s pattern but incrementally.
+    /// Check all constraints against the given values.
     ///
-    /// Requires a prior call to eval() or check() to establish the baseline.
-    pub fn edit_check(
-        &mut self,
-        cell: ValueCellId,
-        new_value: reify_types::Value,
-    ) -> CheckResult {
-        let eval_result = self.edit_param(cell, new_value);
+    /// Returns constraint check entries and any diagnostics produced by
+    /// violated constraints. Uses the current snapshot's constraint graph.
+    ///
+    /// This is the shared constraint-checking logic used by both `edit_check`
+    /// (sequential path) and `edit_check_concurrent` (concurrent path).
+    pub fn check_constraints_with_values(
+        &self,
+        values: &ValueMap,
+    ) -> (Vec<ConstraintCheckEntry>, Vec<Diagnostic>) {
         let mut constraint_results = Vec::new();
-        let mut diagnostics = eval_result.diagnostics;
+        let mut diagnostics = Vec::new();
 
-        // Evaluate ALL constraints from the snapshot's graph
         let snapshot = self.current_snapshot.as_ref()
-            .expect("edit_check requires a snapshot from edit_param");
+            .expect("check_constraints_with_values requires a snapshot");
 
         let constraint_pairs: Vec<_> = snapshot
             .graph
@@ -1242,7 +1242,7 @@ impl Engine {
         if !constraint_pairs.is_empty() {
             let input = ConstraintInput {
                 constraints: constraint_pairs,
-                values: &eval_result.values,
+                values,
             };
 
             let results = self.constraint_checker.check(&input);
@@ -1255,6 +1255,25 @@ impl Engine {
                 });
             }
         }
+
+        (constraint_results, diagnostics)
+    }
+
+    /// Evaluates ALL constraints (not just dirty ones) to produce a complete
+    /// CheckResult, mirroring check()'s pattern but incrementally.
+    ///
+    /// Requires a prior call to eval() or check() to establish the baseline.
+    pub fn edit_check(
+        &mut self,
+        cell: ValueCellId,
+        new_value: reify_types::Value,
+    ) -> CheckResult {
+        let eval_result = self.edit_param(cell, new_value);
+        let (constraint_results, constraint_diagnostics) =
+            self.check_constraints_with_values(&eval_result.values);
+
+        let mut diagnostics = eval_result.diagnostics;
+        diagnostics.extend(constraint_diagnostics);
 
         CheckResult {
             values: eval_result.values,

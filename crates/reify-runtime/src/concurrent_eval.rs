@@ -11,7 +11,7 @@ use reify_compiler::ValueCellKind;
 use reify_eval::cache::{CachedResult, EvalOutcome, NodeId};
 use reify_eval::deps::{extract_dependency_trace, ReverseDependencyIndex};
 use reify_eval::graph::EvaluationGraph;
-use reify_eval::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
+use reify_eval::{CheckResult, ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
 use reify_types::{
     ContentHash, DeterminacyState, PersistentMap, Value, ValueCellId, ValueMap, VersionId,
 };
@@ -328,4 +328,41 @@ pub async fn edit_param_concurrent(
             Err(e)
         }
     }
+}
+
+/// Concurrent edit + constraint checking, analogous to `Engine::edit_check()`.
+///
+/// Calls `edit_param_concurrent` to compute new values (including auto-resolution),
+/// applies the result to the engine, then checks all constraints against the
+/// updated values.
+///
+/// Returns a `CheckResult` containing values, constraint results, diagnostics,
+/// and resolved_params — the same shape as `edit_check` in the sequential path.
+pub async fn edit_check_concurrent(
+    engine: &mut reify_eval::Engine,
+    cell: ValueCellId,
+    new_value: Value,
+    cancel: &CancellationToken,
+) -> Result<CheckResult, SchedulerError> {
+    let (setup, result) = edit_param_concurrent(engine, cell, new_value, cancel).await?;
+
+    // Capture resolution metadata before apply consumes the result
+    let resolved_params = result.resolved_params.clone();
+    let mut diagnostics = result.diagnostics.clone();
+    let values = result.values.clone();
+
+    // Apply concurrent edit to update engine state
+    engine.apply_concurrent_edit(&setup, result);
+
+    // Check constraints against the updated values
+    let (constraint_results, constraint_diagnostics) =
+        engine.check_constraints_with_values(&values);
+    diagnostics.extend(constraint_diagnostics);
+
+    Ok(CheckResult {
+        values,
+        constraint_results,
+        diagnostics,
+        resolved_params,
+    })
 }
