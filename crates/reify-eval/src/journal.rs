@@ -130,6 +130,14 @@ impl EventJournal {
             .map(|indices| indices.iter().map(|&idx| &self.events[idx]).collect())
             .unwrap_or_default()
     }
+
+    /// The most recent event for a specific node, or None if no events exist.
+    pub fn latest_for_node(&self, node_id: &NodeId) -> Option<&EvalEvent> {
+        self.by_node
+            .get(node_id)
+            .and_then(|indices| indices.last())
+            .map(|&idx| &self.events[idx])
+    }
 }
 
 impl Default for EventJournal {
