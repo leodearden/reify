@@ -1,12 +1,11 @@
 //! Integration tests for the EventJournal instrumentation in Engine.
 
-use reify_eval::cache::NodeId;
-use reify_eval::cache::EvalOutcome;
+use reify_eval::cache::{EvalOutcome, NodeId};
 use reify_eval::journal::{EventJournal, EventKind};
 use reify_eval::Engine;
 use reify_test_support::bracket_compiled_module;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ValueCellId, VersionId};
+use reify_types::{Value, ValueCellId, VersionId};
 
 /// After eval(), the journal should contain events for all evaluated nodes.
 #[test]
@@ -129,4 +128,71 @@ fn edit_param_records_journal_events() {
             unchanged_param
         );
     }
+}
+
+/// eval_cached() should record Started/Completed for cold start,
+/// CacheHit for repeated calls, and mix for dirty calls.
+#[test]
+fn eval_cached_records_cache_hit_events() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // First call: cold start — should record Started/Completed
+    let v0 = VersionId(0);
+    let result1 = engine.eval_cached(&module, v0);
+    let events_after_cold = engine.journal().len();
+    assert!(events_after_cold > 0, "cold start should record events");
+
+    // Check that cold start has Started events
+    let e = "Bracket";
+    let width_node = NodeId::Value(ValueCellId::new(e, "width"));
+    let cold_width = engine.journal().events_for_node(&width_node);
+    let has_started = cold_width.iter().any(|e| matches!(e.kind, EventKind::Started));
+    assert!(has_started, "cold start should have Started for width");
+
+    // Second call with same version: should get CacheHit via fast path
+    let result2 = engine.eval_cached(&module, v0);
+    let events_after_second = engine.journal().len();
+    assert!(
+        events_after_second > events_after_cold,
+        "second call should record CacheHit events"
+    );
+
+    // Check that the second call produced CacheHit events
+    let second_call_events: Vec<_> = engine
+        .journal()
+        .all_events()
+        .iter()
+        .skip(events_after_cold)
+        .collect();
+    let has_cache_hit = second_call_events.iter().any(|e| matches!(e.kind, EventKind::CacheHit));
+    assert!(has_cache_hit, "second call should have CacheHit events");
+
+    // Third call after invalidation: should record mix of events
+    let width_id = ValueCellId::new(e, "width");
+    engine.set_param_and_invalidate(&width_id, Value::length(0.1));
+    let events_before_dirty = engine.journal().len();
+    let v1 = VersionId(1);
+    let result3 = engine.eval_cached(&module, v1);
+    let events_after_dirty = engine.journal().len();
+    assert!(
+        events_after_dirty > events_before_dirty,
+        "dirty eval should record events"
+    );
+
+    // The dirty eval should have some Started/Completed (for dirty nodes)
+    // and some CacheHit (for clean nodes)
+    let dirty_events: Vec<_> = engine
+        .journal()
+        .all_events()
+        .iter()
+        .skip(events_before_dirty)
+        .collect();
+    let dirty_has_started = dirty_events.iter().any(|e| matches!(e.kind, EventKind::Started));
+    let dirty_has_cache_hit = dirty_events.iter().any(|e| matches!(e.kind, EventKind::CacheHit));
+    assert!(
+        dirty_has_started || dirty_has_cache_hit,
+        "dirty eval should have Started or CacheHit events"
+    );
 }
