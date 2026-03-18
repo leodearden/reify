@@ -568,6 +568,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_returns_error_on_task_panic() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        struct PanickingAsyncEvaluator;
+
+        impl AsyncNodeEvaluator for PanickingAsyncEvaluator {
+            fn is_dirty(&self, _node: &NodeId) -> bool {
+                true
+            }
+
+            async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+                panic!("evaluator bug");
+            }
+        }
+
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(PanickingAsyncEvaluator);
+        let node = NodeId::Value(reify_types::ValueCellId::new("P", "x"));
+        let eval_set = vec![node.clone()];
+        let mut traces = HashMap::new();
+        traces.insert(node.clone(), DependencyTrace::default());
+        let cancel = CancellationToken::new();
+
+        let result = scheduler
+            .execute(eval_set, evaluator, &traces, &cancel)
+            .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SchedulerError::TaskPanicked(_) => {} // expected
+            other => panic!("Expected TaskPanicked, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
     async fn concurrent_scheduler_empty_eval_set() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
