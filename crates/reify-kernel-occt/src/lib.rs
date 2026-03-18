@@ -10,8 +10,8 @@ pub use handle::OcctKernelHandle;
 use std::collections::HashMap;
 
 use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, QueryError, ReprKind, TessError, Value,
+    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp,
+    GeometryQuery, Mesh, QueryError, ReprKind, TessError, Value,
 };
 
 /// Extract an f64 from a Value (Int, Real, or Scalar → SI value).
@@ -26,11 +26,9 @@ pub struct OcctKernel {
     next_id: u64,
 }
 
-// SAFETY: OcctKernel is only accessed via &mut self for mutation (execute) and
-// &self for read-only queries. The underlying OCCT shapes are not shared across
-// threads — the kernel instance is owned by a single thread at a time.
-unsafe impl Send for OcctKernel {}
-unsafe impl Sync for OcctKernel {}
+// Note: OcctKernel is !Send + !Sync because cxx::UniquePtr<OcctShape> is !Send.
+// Use OcctKernelHandle for cross-thread usage — it communicates with a dedicated
+// OS thread that owns the kernel.
 
 impl OcctKernel {
     pub fn new() -> Self {
@@ -66,8 +64,10 @@ impl Default for OcctKernel {
     }
 }
 
-impl GeometryKernel for OcctKernel {
-    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+/// Inherent methods — same bodies as the former `GeometryKernel` impl.
+/// Called directly by the kernel thread in `OcctKernelHandle`.
+impl OcctKernel {
+    pub fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         let shape = match op {
             GeometryOp::Box {
                 width,
@@ -146,7 +146,7 @@ impl GeometryKernel for OcctKernel {
         Ok(self.store(shape))
     }
 
-    fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+    pub fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         match query {
             GeometryQuery::Volume(id) => {
                 let shape = self
@@ -190,7 +190,7 @@ impl GeometryKernel for OcctKernel {
         }
     }
 
-    fn export(
+    pub fn export(
         &self,
         handle: GeometryHandleId,
         format: ExportFormat,
@@ -215,7 +215,7 @@ impl GeometryKernel for OcctKernel {
         }
     }
 
-    fn tessellate(
+    pub fn tessellate(
         &self,
         handle: GeometryHandleId,
         tolerance: f64,
