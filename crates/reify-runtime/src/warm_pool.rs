@@ -97,6 +97,22 @@ impl WarmStatePool {
     pub fn budget_bytes(&self) -> usize {
         self.budget_bytes
     }
+
+    /// Remove all entries from the pool and reset used_bytes to 0.
+    pub fn clear(&mut self) {
+        self.pool.clear();
+        self.used_bytes = 0;
+    }
+
+    /// Number of entries in the pool.
+    pub fn len(&self) -> usize {
+        self.pool.len()
+    }
+
+    /// Whether the pool has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.pool.is_empty()
+    }
 }
 
 #[cfg(test)]
