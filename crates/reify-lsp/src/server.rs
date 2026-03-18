@@ -69,6 +69,29 @@ impl LanguageServer for ReifyLanguageServer {
             .await;
     }
 
+    async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        let uri = params.text_document.uri;
+        let version = params.text_document.version;
+
+        // Full sync: take the last content change (there should be exactly one)
+        let text = match params.content_changes.into_iter().last() {
+            Some(change) => change.text,
+            None => return,
+        };
+
+        // Update the document
+        {
+            let mut state = self.state.write().await;
+            state.documents.update(&uri, text.clone(), version);
+        }
+
+        // Recompute and publish diagnostics
+        let diagnostics = crate::diagnostics::compute_diagnostics(&text, &uri);
+        self.client
+            .publish_diagnostics(uri, diagnostics, Some(version))
+            .await;
+    }
+
     async fn shutdown(&self) -> Result<()> {
         Ok(())
     }
