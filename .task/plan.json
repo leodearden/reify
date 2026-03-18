@@ -23,15 +23,15 @@
       "id": "step-3",
       "type": "test",
       "description": "Verify the new concurrent_export_step_from_multiple_handles test now passes, and re-run the full handle.rs test suite (cargo test -p reify-kernel-occt) to confirm all 4 previously-failing tests (export_step_contains_iso_header, export_async_returns_step_bytes, multi_operation_sequence, async_multi_op_sequence) now pass in parallel mode.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "91434cc"
     },
     {
       "id": "step-4",
       "type": "test",
       "description": "Run the full workspace test suite (cargo test --workspace or at least the crates that use STEP export: reify-kernel-occt, reify-eval, reify-geometry) to ensure no regressions elsewhere. The eval boundary/e2e tests that do STEP export should also pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "91434cc"
     }
   ],
   "design_decisions": [
