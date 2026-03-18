@@ -303,7 +303,7 @@ fn lsp_full_interactive_loop_through_binary() {
 
     drop(stdin);
 
-    let status = child.wait().expect("wait for child");
+    let status = wait_for_exit(&mut child, 10);
     assert!(
         status.success(),
         "reify lsp should exit cleanly after full interactive loop"
