@@ -27,6 +27,12 @@ impl EvalState {
     }
 }
 
+impl Default for EvalState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Result from the stateful diagnostics pipeline.
 pub struct DiagnosticsResult {
     /// LSP diagnostics to publish.

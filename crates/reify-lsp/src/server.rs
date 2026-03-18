@@ -1,15 +1,18 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
+use crate::diagnostics::EvalState;
 use crate::document::DocumentStore;
 
 /// Internal state shared across handler calls.
 pub struct ServerState {
     pub documents: DocumentStore,
+    /// Wrapped in Mutex because Engine internals (OpaqueState) are Send but not Sync.
+    pub eval_state: Mutex<EvalState>,
 }
 
 /// The Reify language server.
@@ -24,6 +27,7 @@ impl ReifyLanguageServer {
             client,
             state: Arc::new(RwLock::new(ServerState {
                 documents: DocumentStore::new(),
+                eval_state: Mutex::new(EvalState::new()),
             })),
         }
     }
@@ -56,14 +60,19 @@ impl LanguageServer for ReifyLanguageServer {
         let text = params.text_document.text;
         let version = params.text_document.version;
 
-        // Store the document
-        {
+        // Store the document and compute diagnostics with persistent eval state
+        let diagnostics = {
             let mut state = self.state.write().await;
             state.documents.open(uri.clone(), text.clone(), version);
-        }
+            let mut eval_state = state.eval_state.lock().unwrap();
+            let result = crate::diagnostics::compute_diagnostics_with_state(
+                &mut eval_state,
+                &text,
+                &uri,
+            );
+            result.diagnostics
+        };
 
-        // Compute and publish diagnostics
-        let diagnostics = crate::diagnostics::compute_diagnostics(&text, &uri);
         self.client
             .publish_diagnostics(uri, diagnostics, Some(version))
             .await;
@@ -79,14 +88,19 @@ impl LanguageServer for ReifyLanguageServer {
             None => return,
         };
 
-        // Update the document
-        {
+        // Update the document and recompute diagnostics with persistent eval state
+        let diagnostics = {
             let mut state = self.state.write().await;
             state.documents.update(&uri, text.clone(), version);
-        }
+            let mut eval_state = state.eval_state.lock().unwrap();
+            let result = crate::diagnostics::compute_diagnostics_with_state(
+                &mut eval_state,
+                &text,
+                &uri,
+            );
+            result.diagnostics
+        };
 
-        // Recompute and publish diagnostics
-        let diagnostics = crate::diagnostics::compute_diagnostics(&text, &uri);
         self.client
             .publish_diagnostics(uri, diagnostics, Some(version))
             .await;
