@@ -5,6 +5,7 @@
 //! on a P3 task already in-flight, the P3 task is promoted to P1-slow.'
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use reify_eval::cache::NodeId;
 
@@ -93,6 +94,63 @@ impl PriorityPromoter {
 }
 
 impl Default for PriorityPromoter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Thread-safe wrapper around [`PriorityPromoter`] for concurrent access.
+///
+/// Uses `Mutex` (not `RwLock`) because priority operations are extremely fast
+/// (HashMap lookups) and the Mutex avoids reader-writer distinction overhead.
+/// This matches the `SkipState` pattern in `ConcurrentEvalAdapter`.
+pub struct SharedPriorityPromoter {
+    inner: Mutex<PriorityPromoter>,
+}
+
+impl SharedPriorityPromoter {
+    /// Create a new shared promoter.
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(PriorityPromoter::new()),
+        }
+    }
+
+    /// Register an in-flight task with its initial priority.
+    pub fn register(&self, node_id: NodeId, priority: Priority) {
+        self.inner.lock().unwrap().register(node_id, priority);
+    }
+
+    /// Get the current effective priority for a node.
+    pub fn effective_priority(&self, node_id: &NodeId) -> Option<Priority> {
+        self.inner.lock().unwrap().effective_priority(node_id)
+    }
+
+    /// Promote a node to a higher priority (lower enum value).
+    pub fn promote(&self, node_id: &NodeId, new_priority: Priority) {
+        self.inner.lock().unwrap().promote(node_id, new_priority);
+    }
+
+    /// Remove a node from the promoter.
+    pub fn remove(&self, node_id: &NodeId) {
+        self.inner.lock().unwrap().remove(node_id);
+    }
+
+    /// Promote all in-flight dependencies of a demanded node transitively.
+    pub fn promote_for_demand(
+        &self,
+        demanded_node: &NodeId,
+        demand_priority: Priority,
+        dependency_map: &HashMap<NodeId, Vec<NodeId>>,
+    ) {
+        self.inner
+            .lock()
+            .unwrap()
+            .promote_for_demand(demanded_node, demand_priority, dependency_map);
+    }
+}
+
+impl Default for SharedPriorityPromoter {
     fn default() -> Self {
         Self::new()
     }
