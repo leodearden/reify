@@ -1,14 +1,35 @@
 {
-  "task_id": "30",
-  "title": "Event journal",
-  "modules": ["crates/reify-eval"],
-  "analysis": "The task requires implementing an append-only EventJournal in reify-eval that records evaluation events (Started, Completed, Cancelled, Failed, CacheHit, WarmStartUsed) dual-indexed by time (BTreeMap<Instant>) and NodeId (HashMap<NodeId>). The journal will be owned by Engine and populated during eval() and edit_param() calls.\n\nThe existing codebase has:\n- Engine struct in lib.rs (972 lines) with eval(), edit_param(), eval_cached(), check(), build() methods\n- NodeId enum in cache.rs (Value, Constraint, Realization, Resolution variants) — derives Clone, Debug, PartialEq, Eq, Hash\n- EvalOutcome enum in cache.rs (Changed, Unchanged) — derives Clone, Copy, Debug, PartialEq, Eq\n- VersionId in reify-types (u64 newtype, implements Ord, Copy, Clone, Hash)\n- CacheStore.record_evaluation() pattern showing natural instrumentation points\n- Test infrastructure: reify-test-support with bracket_compiled_module(), MockConstraintChecker, CompiledModuleBuilder, TopologyTemplateBuilder\n\nKey code points where events should be recorded:\n1. eval() lines 194-413: Pass 1 (Param/Auto cells), Pass 2 (Let bindings), Resolution phase — each cache.record_evaluation() call is a natural Started→Completed pair\n2. edit_param() lines 424-542: eval set loop with early cutoff — Started before eval, Completed{outcome} after, skipped nodes get no events\n3. eval_cached() lines 550-738: cache hits via try_fast_path or not-dirty checks → CacheHit events; cache misses → Started/Completed\n\nThe module structure follows existing patterns: journal.rs alongside cache.rs, deps.rs, etc. with `pub mod journal;` in lib.rs. Unit tests go in #[cfg(test)] module within journal.rs; integration tests in tests/journal.rs.\n\nInstant is suitable for timestamps since it's monotonic and implements Ord (BTreeMap key requirement). The journal is in-process only — serialization not needed for v0.1.",
+  "task_id": "29",
+  "title": "Concurrent evaluate() with async fan-out",
+  "modules": ["crates/reify-eval", "crates/reify-runtime"],
+  "analysis": "Task 29 adds concurrent evaluation to the Engine, where independent nodes within a topological level fan out to parallel tokio tasks. The foundation is already in place from tasks 25-27: reify-runtime has ConcurrentScheduler (level-based async execution), AsyncNodeEvaluator trait (immutable-ref async evaluation), and CancellationToken. The Engine in reify-eval is currently fully synchronous with a sequential edit_param() loop.\n\nThe key integration challenge is bridging Engine's mutable state (cache, journal, snapshot, values) with the concurrent scheduler's shared-immutable model. Engine holds Box<dyn ConstraintChecker> and other non-Send types, making it impossible to share via Arc directly.\n\nDesign approach: (1) Engine exposes prepare_concurrent_edit() which clones/extracts state into a ConcurrentEditSetup value type (cheap via PersistentMap O(1) clones), and apply_concurrent_edit() to merge results back. (2) A ConcurrentEvalAdapter in reify-runtime implements AsyncNodeEvaluator using interior mutability (Arc<RwLock<ValueMap>> for shared values, Arc<RwLock<HashSet>> for skip tracking). (3) Content hash comparison uses pre-extracted previous hashes from CacheStore, avoiding shared mutable cache during concurrent eval. (4) Results are batch-applied to cache/journal/snapshot after concurrent execution completes. (5) Early cutoff propagates between levels via a shared skip set checked by is_dirty(). This design keeps reify-eval free of tokio dependency while enabling full concurrency in reify-runtime.\n\nExisting ConcurrentScheduler already handles: level computation via Kahn's algorithm, spawning tokio tasks per level, joining before next level, cancellation checking between levels, and SchedulerError propagation for panics. The adapter just needs to implement the two-method AsyncNodeEvaluator trait.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create empty crates/reify-eval/src/journal.rs module file and add `pub mod journal;` to lib.rs module declarations. Add `pub use journal::*;` re-export to lib.rs.",
+      "description": "Add Clone derive to ReverseDependencyIndex in reify-eval/src/deps.rs (inner HashMap<ValueCellId, HashSet<NodeId>> is already Clone-able, just needs the derive). This enables cheap cloning for the concurrent eval setup.",
       "status": "done",
-      "commit": "de9953e",
+      "commit": "b0886b0",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Update reify-runtime/Cargo.toml: add reify-expr.workspace = true to [dependencies] (needed for eval_expr in adapter). Move reify-compiler.workspace = true from [dev-dependencies] to [dependencies] (needed for CompiledExpr, ValueCellKind types).",
+      "status": "done",
+      "commit": "0997a46",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Define ConcurrentEditSetup struct in reify-eval/src/lib.rs containing all state needed for concurrent evaluation: eval_set (Vec<NodeId>), graph (EvaluationGraph), values (ValueMap), snapshot_values (PersistentMap<ValueCellId, (Value, DeterminacyState)>), traces (HashMap<NodeId, DependencyTrace>), reverse_index (ReverseDependencyIndex), previous_hashes (HashMap<NodeId, ContentHash>), version (VersionId), snapshot_id (SnapshotId), parent_snapshot_id (SnapshotId), changed_cells (HashSet<ValueCellId>).",
+      "status": "done",
+      "commit": "6bf2773",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Define ConcurrentNodeResult struct {node: NodeId, value: Value, determinacy: DeterminacyState, trace: DependencyTrace, outcome: EvalOutcome} and ConcurrentEditResult struct {values: ValueMap, snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)>, node_results: Vec<ConcurrentNodeResult>, actual_eval_set: Vec<NodeId>, skipped: HashSet<NodeId>} in reify-eval/src/lib.rs.",
+      "status": "done",
+      "commit": "6bf2773",
       "tests": []
     }
   ],
@@ -16,204 +37,219 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write unit tests in journal.rs #[cfg(test)] for EvalEvent, EventKind, and EventPayload type construction: verify all EventKind variants can be created (Started, Completed{outcome: Changed}, Completed{outcome: Unchanged}, Cancelled, Failed{error}, CacheHit, WarmStartUsed), all EventPayload variants (Duration, Error, Custom), EvalEvent can be constructed with all fields, and Clone/Debug derives work.",
+      "description": "Write failing test in reify-eval tests/concurrent.rs: Engine::prepare_concurrent_edit() returns ConcurrentEditSetup with correct state. Use bracket topology: eval(), then prepare_concurrent_edit(width, new_value). Verify: (1) eval_set matches sequential dirty∩demand set (volume + C1 for width change), (2) previous_hashes contains entries for nodes in eval_set that had cache entries, (3) values map has all current parameter values, (4) graph.value_cells.len() == 6, (5) version is bumped from initial.",
       "status": "done",
-      "commit": "3c7abf5"
+      "commit": "f607e90"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Define EvalEvent struct {timestamp: Instant, node_id: NodeId, kind: EventKind, version: VersionId, payload: Option<EventPayload>}, EventKind enum {Started, Completed{outcome: EvalOutcome}, Cancelled, Failed{error: String}, CacheHit, WarmStartUsed}, EventPayload enum {Duration(std::time::Duration), Error(String), Custom(String)}. All derive Clone, Debug. Import NodeId from crate::cache, EvalOutcome from crate::cache, VersionId from reify_types.",
+      "description": "Implement Engine::prepare_concurrent_edit(cell: ValueCellId, new_value: Value) -> ConcurrentEditSetup. Clone snapshot (O(1) via PersistentMap), update changed cell value, compute dirty cone via compute_dirty_cone, compute eval set via compute_eval_set, extract previous content hashes from CacheStore for nodes in eval set, bump snapshot/version IDs, set Edit provenance, mark pending in cache for eval set nodes, build ValueMap from snapshot, clone graph/traces/reverse_index, return ConcurrentEditSetup.",
       "status": "done",
-      "commit": "5d76e24"
+      "commit": "f607e90"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write unit tests for EventJournal::new() and record(): new() creates empty journal (len()==0, is_empty()==true); record() appends event and increments len(); multiple record() calls maintain insertion order; events can be accessed by index via all_events() slice accessor.",
+      "description": "Write failing test in reify-runtime tests/concurrent_eval.rs: ConcurrentEvalAdapter correctly evaluates a single value node. Build a simple topology (param a=5, let b = a * 2) using TopologyTemplateBuilder. Create ConcurrentEditSetup manually with values containing a=10, eval_set = [b]. Construct adapter, call evaluate(b_node).await. Verify: (1) adapter's shared values map now has b=20, (2) results vec contains one entry with outcome Changed, (3) adapter's shared snapshot_values has b entry with Determined.",
       "status": "done",
-      "commit": "ed447f5"
+      "commit": "9c5a7ac"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Define EventJournal struct {events: Vec<EvalEvent>, by_time: BTreeMap<Instant, Vec<usize>>, by_node: HashMap<NodeId, Vec<usize>>}. Implement new() returning empty journal, record(&mut self, event: EvalEvent) that appends to events vec and updates both by_time and by_node indices with the new index, len() -> usize, is_empty() -> bool, all_events() -> &[EvalEvent].",
+      "description": "Create ConcurrentEvalAdapter struct in reify-runtime/src/concurrent_eval.rs (new file). Fields: graph (Arc<EvaluationGraph>), values (Arc<std::sync::RwLock<ValueMap>>), snapshot_values (Arc<std::sync::RwLock<PersistentMap<ValueCellId, (Value, DeterminacyState)>>>), previous_hashes (Arc<HashMap<NodeId, ContentHash>>), reverse_index (Arc<ReverseDependencyIndex>), skipped (Arc<std::sync::RwLock<HashSet<NodeId>>>), results (Arc<std::sync::Mutex<Vec<ConcurrentNodeResult>>>), version (VersionId). Implement AsyncNodeEvaluator: is_dirty returns !skipped.contains(node); evaluate looks up expression from graph, calls reify_expr::eval_expr with read-locked values, writes result to values and snapshot_values, computes content hash, compares with previous_hashes for outcome, records ConcurrentNodeResult, returns outcome. Add constructor from_setup(setup: &ConcurrentEditSetup). Add pub mod concurrent_eval; to lib.rs.",
       "status": "done",
-      "commit": "0f0e932"
+      "commit": "9c5a7ac"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write unit tests for events_for_node(node_id): record events for 3 different NodeIds, verify events_for_node returns correct events for each, verify empty Vec for unknown NodeId, verify events are in insertion order within a node.",
+      "description": "Write failing test: edit_param_concurrent on a linear chain (param a → let b = a * 2) produces correct values. Build topology with builder, create Engine, eval(), then call edit_param_concurrent(engine, a_id, mm(50.0), cancel).await. Verify returned ConcurrentEditResult has correct values: a=50mm, b=100mm. Verify actual_eval_set contains NodeId::Value(b_id).",
       "status": "done",
-      "commit": "d46321d"
+      "commit": "a6064f5"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement events_for_node(&self, node_id: &NodeId) -> Vec<&EvalEvent> — look up indices in by_node HashMap, map to &self.events[idx] references. Return empty Vec if node not found.",
+      "description": "Implement pub async fn edit_param_concurrent(engine: &mut Engine, cell: ValueCellId, new_value: Value, cancel: &CancellationToken) -> Result<ConcurrentEditResult, SchedulerError> in concurrent_eval.rs. Steps: (1) call engine.prepare_concurrent_edit(cell, new_value), (2) create ConcurrentEvalAdapter from setup, wrap in Arc, (3) call ConcurrentScheduler.execute(eval_set, adapter, traces, cancel).await, (4) extract results from adapter into ConcurrentEditResult. Include into_result() method on adapter that consumes the Arc wrappers.",
       "status": "done",
-      "commit": "c461eaa"
+      "commit": "9c5a7ac"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write unit tests for events_in_range(range): record events with naturally ordered Instants (Instant::now() between records), verify range query returns correct subset. Test with Range (start..end), RangeFrom (start..), and RangeFull (..). Test empty range returns empty Vec.",
+      "description": "Write failing test: concurrent eval of 3 independent let bindings at the same topological level. Build topology: param a, let x = a+1, let y = a+2, let z = a+3. Change a from 5 to 10. All three lets are in dirty cone and eval_set at the same level. Verify all three values are correct (x=11, y=12, z=13) and all three appear in actual_eval_set and node_results.",
       "status": "done",
-      "commit": "a3757d8"
+      "commit": "a6064f5"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement events_in_range(&self, range: impl RangeBounds<Instant>) -> Vec<&EvalEvent> — use BTreeMap::range() on by_time to get matching time entries, collect all event indices, sort by index (preserves insertion order), deduplicate, and map to references.",
+      "description": "Verify concurrent safety of the adapter when multiple nodes at the same level evaluate simultaneously. Each node acquires write lock on values briefly (insert), then releases. Since ValueCellIds are distinct across nodes in a level, there's no logical contention—only lock contention which is brief. Ensure tests pass reliably with tokio multi-threaded runtime.",
       "status": "done",
-      "commit": "1e955ef"
+      "commit": "a6064f5"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write unit tests for events_since(version): record events across VersionId(0), VersionId(1), VersionId(2), verify events_since(VersionId(1)) returns only events with version >= 1. Test exact boundary match and no-match case (version higher than all events returns empty).",
+      "description": "Write failing test: multi-level diamond dependency. Build topology: param a, let b = a * 2, let c = a + 1, let d = b + c. Change a from 5 to 10. Levels: [b,c] then [d]. Verify d = 20 + 11 = 31 (not stale values). This validates that values written during level 0 (b=20, c=11) are visible to level 1 (d reads b and c).",
       "status": "done",
-      "commit": "9b99343"
+      "commit": "a6064f5"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement events_since(&self, version: VersionId) -> Vec<&EvalEvent> — linear scan of events vec filtering where event.version >= version. Returns references in insertion order.",
+      "description": "Ensure multi-level value propagation: ConcurrentScheduler joins all level N handles before starting level N+1, so all write locks from level N are released and visible. The RwLock provides happens-before ordering. Verify the diamond test passes with correct d value computed from updated b and c.",
       "status": "done",
-      "commit": "f042d17"
+      "commit": "a6064f5"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write unit tests for latest_for_node(node_id): record multiple events for same node, verify latest_for_node returns the last one recorded. Verify None for unknown node. Verify correct result after interleaving events for different nodes.",
+      "description": "Write failing test: early cutoff in concurrent mode. Build topology: param a, let x = a - a (always 0), let y = x + 1. Change a from 5 to 7. x is dirty, evaluates to 0 (same as before) → Unchanged. y depends on x only, should be skipped. Verify: (1) x appears in actual_eval_set with outcome Unchanged, (2) y is in skipped set, (3) y does NOT appear in node_results, (4) y retains its value of 1.0 in the result values map.",
       "status": "done",
-      "commit": "1a2860c"
+      "commit": "a6064f5"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement latest_for_node(&self, node_id: &NodeId) -> Option<&EvalEvent> — look up by_node, get last index, return &self.events[last_idx].",
+      "description": "Implement early cutoff propagation in ConcurrentEvalAdapter::evaluate(). After computing outcome, if Unchanged: acquire write lock on skipped set, iterate reverse_index.dependents_of(vcid), insert each dependent into skipped. In is_dirty(): return !skipped.read().contains(node). ConcurrentScheduler checks is_dirty before spawning each node, so nodes added to skipped in level N won't be spawned in level N+1.",
       "status": "done",
-      "commit": "368b14a"
+      "commit": "9c5a7ac"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write integration test (tests/journal.rs) that Engine::eval() populates the journal: create Engine with MockConstraintChecker, eval bracket_compiled_module, verify engine.journal().len() > 0, verify events exist for known ValueCellIds (e.g., Bracket/width), verify all events have the correct VersionId matching the snapshot, verify Started events precede Completed events for same node.",
+      "description": "Write failing test: Engine::apply_concurrent_edit correctly updates Engine state. After edit_param_concurrent, call engine.apply_concurrent_edit(result). Verify: (1) cache_store has updated entries for each evaluated node with correct freshness=Final, result_hash matches, basis_version matches, (2) current snapshot values match the concurrent result values with Edit provenance, (3) last_eval_set() matches actual_eval_set, (4) journal has Started+Completed event pairs for each evaluated node with correct version, (5) skipped nodes have freshness restored to Final.",
       "status": "done",
-      "commit": "4f5b0d1"
+      "commit": "4deeee7"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Add journal: EventJournal field to Engine struct, initialize in new(). Add pub fn journal(&self) -> &EventJournal accessor. Wire into eval(): before each node evaluation call Instant::now() and record Started event, after cache.record_evaluation() record Completed{outcome} event with Duration payload. Cover all three passes: Param/Auto (pass 1), Let bindings (pass 2), and Resolution phase.",
+      "description": "Implement Engine::apply_concurrent_edit(&mut self, setup: ConcurrentEditSetup, result: ConcurrentEditResult). For each ConcurrentNodeResult: call self.cache.record_evaluation(node, CachedResult::Value(value, det), version, trace). Record journal events: Started event (with Instant::now() for approximate timestamp) and Completed{outcome} event for each node result. Update self.current_snapshot with result's snapshot_values and the setup's snapshot metadata (id, version, provenance). For skipped nodes: call self.cache.restore_final(). Set self.last_eval_set = result.actual_eval_set. Build and return EvalResult from result.values.",
       "status": "done",
-      "commit": "80be82f"
+      "commit": "f607e90"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write integration test that Engine::edit_param() records correct journal events: eval() then edit_param(), verify new events appear with the edit_param's version, verify Started/Completed pairs for re-evaluated Value nodes, verify events_since(edit_version) returns only the edit_param events, verify early-cutoff-skipped nodes do NOT have Started events.",
+      "description": "Write failing test: cancellation stops concurrent evaluation between levels. Build topology: param a → let b (level 0), b → let c (level 1). Create a CancellationToken, trigger cancel inside a custom evaluator wrapper that cancels after evaluating b. Run edit_param_concurrent. Verify: (1) b appears in node_results, (2) c does NOT appear in node_results, (3) function returns Ok (scheduler's cooperative cancellation breaks between levels, not mid-task).",
       "status": "done",
-      "commit": "0f163bf"
+      "commit": "a6064f5"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Wire journal into edit_param(): record Started before reify_expr::eval_expr, record Completed{outcome} after cache.record_evaluation(). For Constraint/Realization nodes in eval set that are tracked but not evaluated, do not record events. Ensure version in events matches the edit_param's allocated VersionId(version_id).",
+      "description": "Verify cancellation integration: ConcurrentScheduler already checks cancel.is_cancelled() before each level and breaks. The adapter evaluates b, which triggers cancel. Before level 1, scheduler sees is_cancelled=true and breaks. edit_param_concurrent collects partial results from completed levels. Ensure ConcurrentEditResult correctly reflects only evaluated nodes.",
       "status": "done",
-      "commit": "94e9469"
+      "commit": "a6064f5"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write integration test for eval_cached() journal events: first call (cold start) records Started/Completed for all nodes, second call with same version records CacheHit events via fast-path, call after set_param_and_invalidate records mix of CacheHit (unchanged nodes) and Started/Completed (dirty nodes).",
+      "description": "Write integration test: bracket topology concurrent edit_param matches sequential. Use bracket_compiled_module(), two separate Engine instances with same MockConstraintChecker. Both: eval(module). Then: engine_seq.edit_param(width, mm(100.0)) vs edit_param_concurrent(engine_conc, width, mm(100.0), cancel). Compare: (1) all values match exactly, (2) both report same set of evaluated nodes (volume in both cases), (3) both produce same cache entries for volume (same content hash, same freshness).",
       "status": "done",
-      "commit": "718e34c"
+      "commit": "a6064f5"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Wire journal into eval_cached(): record CacheHit when try_fast_path succeeds, record CacheHit when cache reuse succeeds (not dirty, existing entry), record Started/Completed for cache misses that trigger actual evaluation. Include Duration payload on Completed events.",
+      "description": "Fix any remaining edge cases exposed by the bracket integration test. Ensure non-Value nodes (Constraint, Realization) in the eval set are tracked in actual_eval_set but not evaluated by the adapter (return Unchanged, matching sequential behavior). Verify Param nodes without expressions are handled correctly (no-op evaluation). Ensure concurrent EvalResult values match sequential EvalResult values exactly.",
       "status": "done",
-      "commit": "e5afca2"
+      "commit": "a6064f5"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Place journal.rs in crates/reify-eval/src/ alongside Engine code",
-      "rationale": "The PRD mentions reify-runtime but Engine lives in reify-eval. Keeping the journal co-located with Engine avoids cross-crate coupling and allows direct field access. The journal can be re-exported from reify-runtime later if needed."
+      "decision": "State extraction pattern: Engine::prepare_concurrent_edit() + apply_concurrent_edit() instead of shared mutable Engine",
+      "rationale": "Engine holds Box<dyn ConstraintChecker> and other non-Send types, making it impossible to share via Arc. The prepare/apply pattern extracts only the Clone-able, Send+Sync state needed for concurrent evaluation, keeping Engine's ownership model intact. PersistentMap makes cloning cheap (O(1) structural sharing for graph, values, snapshot_values)."
     },
     {
-      "decision": "Use std::time::Instant for timestamps",
-      "rationale": "Instant is monotonic and implements Ord (required for BTreeMap keys). It's not serializable, but the EventJournal is an in-process data structure for live consumers (LSP, CLI). Serialization can be added later with a wrapper if needed. The task description explicitly specifies Instant."
+      "decision": "Pre-extract content hashes from CacheStore instead of sharing CacheStore with concurrent tasks",
+      "rationale": "CacheStore uses HashMap (not concurrent-safe) and has complex dirty_reasons tracking. Sharing it via Mutex would create contention and complicate the API. Instead, extract HashMap<NodeId, ContentHash> from CacheStore before concurrent eval. The adapter computes Changed/Unchanged by comparing new hash with pre-extracted old hash. Batch-apply all results to the real CacheStore after concurrent eval completes via apply_concurrent_edit()."
     },
     {
-      "decision": "Return Vec<&EvalEvent> from query methods instead of &[EvalEvent]",
-      "rationale": "Events are stored contiguously in a Vec but accessed via indices in secondary maps. Returning a contiguous slice is impossible when elements are scattered across non-contiguous positions. Vec<&EvalEvent> is the natural return type for index-based lookups."
+      "decision": "Early cutoff via shared skip set (Arc<RwLock<HashSet<NodeId>>>) checked by is_dirty()",
+      "rationale": "Mirrors the sequential edit_param() skipped-set approach. Within a topological level, nodes are independent so no intra-level early cutoff occurs. Between levels, ConcurrentScheduler joins all tasks before moving to next level, ensuring the skip set is fully populated from all Unchanged outcomes. The is_dirty() check before spawning each node in the next level correctly skips nodes whose upstream was Unchanged."
     },
     {
-      "decision": "Use linear scan for events_since(version) instead of a version index",
-      "rationale": "Version-based queries are expected to be infrequent (LSP polling, debugging). A linear scan over the events vec is simple and cache-friendly. A BTreeMap<VersionId, Vec<usize>> index can be added later if profiling shows it's needed."
+      "decision": "ConcurrentEvalAdapter + edit_param_concurrent() live in reify-runtime; data types live in reify-eval",
+      "rationale": "Keeps reify-eval free of tokio dependency. ConcurrentEditSetup and ConcurrentEditResult are plain data structs (no async) so they belong in reify-eval alongside Engine. The async adapter and orchestration function require tokio::spawn so they live in reify-runtime which already has the dependency."
     },
     {
-      "decision": "EventJournal is owned by Engine (not Arc<Mutex>)",
-      "rationale": "Engine is already &mut self for eval/edit_param. The journal follows the same ownership model. M4 (concurrent evaluation) will need to revisit this with channels or Arc<Mutex>, but for now single-threaded ownership is correct and simple."
+      "decision": "Use std::sync::RwLock (not tokio::sync::RwLock) for shared values during concurrent eval",
+      "rationale": "Expression evaluation (eval_expr) is CPU-bound and completes in microseconds. Locks are held briefly for read (during eval) and write (to insert result). std::sync::RwLock avoids the overhead of async-aware locking and doesn't require awaiting. The lock is never held across .await points, so this is safe and correct in async context."
     },
     {
-      "decision": "Record events inline during eval/edit_param rather than via a callback/observer pattern",
-      "rationale": "Direct recording is simpler and has zero allocation overhead beyond the event itself. An observer/subscriber pattern can be layered on top of the journal's query API by consumers. This avoids trait object dispatch overhead in the hot evaluation path."
+      "decision": "Add reify-expr and reify-compiler as runtime dependencies of reify-runtime",
+      "rationale": "ConcurrentEvalAdapter needs to call eval_expr (from reify-expr) and access CompiledExpr/ValueCellKind types (from reify-compiler) when looking up node expressions and determining cell kinds. reify-runtime is the integration layer crate, so depending on core evaluation crates is natural. reify-compiler was already a dev-dependency."
     },
     {
-      "decision": "Do not record events for Constraint/Realization nodes tracked but not evaluated in edit_param",
-      "rationale": "The existing code explicitly notes that Constraint/Realization nodes are 'tracked in eval set but not evaluated (deferred to check()/build())'. Recording Started without Completed would be misleading. Events for these node types will be added when check()/build() are instrumented."
+      "decision": "Constraint/Realization/Resolution nodes tracked in eval_set but not evaluated during concurrent edit",
+      "rationale": "Matches the sequential edit_param() behavior where only Value nodes with expressions are evaluated. Constraint checking and geometry building happen in separate check()/build() calls. The concurrent adapter returns Unchanged for non-Value nodes, and they appear in actual_eval_set for tracking purposes."
     },
     {
-      "decision": "Include EvalOutcome in Completed variant rather than separate Changed/Unchanged event kinds",
-      "rationale": "Follows the task description's specified EventKind::Completed{outcome: EvalOutcome}. Reuses the existing EvalOutcome enum from cache.rs. Keeps the event kind count manageable while encoding the early-cutoff-relevant information."
+      "decision": "Journal events recorded during apply phase with approximate timestamps, not during concurrent evaluation",
+      "rationale": "Recording events during concurrent eval would require Arc<Mutex<EventJournal>> with contention across tasks. Instead, collect evaluation metadata (which nodes, outcomes, durations) in ConcurrentNodeResult, then replay as journal events during the synchronous apply phase. Timestamps are approximate but ordering is preserved."
     }
   ],
   "reuse": [
     {
-      "what": "NodeId enum",
-      "where": "crates/reify-eval/src/cache.rs lines 10-42",
-      "how": "Used as the node_id field in EvalEvent and as HashMap key in by_node index. Already derives Clone, Debug, PartialEq, Eq, Hash — all traits needed for both roles."
+      "what": "ConcurrentScheduler::execute()",
+      "where": "reify-runtime/src/concurrent.rs lines 108-171",
+      "how": "Use directly as the async fan-out engine. It already handles level-based scheduling via compute_levels(), task spawning via tokio::spawn, joining, cancellation checking between levels, and SchedulerError propagation for panics. Just provide an AsyncNodeEvaluator implementation."
     },
     {
-      "what": "EvalOutcome enum (Changed | Unchanged)",
-      "where": "crates/reify-eval/src/cache.rs lines 92-100",
-      "how": "Used inside EventKind::Completed{outcome: EvalOutcome} to record whether a node's result changed or was unchanged (enables early cutoff tracking). Already derives Clone, Copy, Debug, PartialEq, Eq."
+      "what": "AsyncNodeEvaluator trait",
+      "where": "reify-runtime/src/concurrent.rs lines 96-102",
+      "how": "Implement for ConcurrentEvalAdapter. The trait's is_dirty/evaluate contract matches our skip-set + expression-eval pattern. evaluate takes NodeId by value (no lifetime issues with spawned tasks), returns impl Future<Output=EvalOutcome> + Send."
     },
     {
-      "what": "VersionId type",
-      "where": "crates/reify-types/src/identity.rs line 154",
-      "how": "Used as the version field in EvalEvent and as parameter to events_since(). Already derives Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord — Ord needed for version comparison in events_since()."
+      "what": "CancellationToken",
+      "where": "reify-runtime/src/concurrent.rs lines 52-86",
+      "how": "Pass through to ConcurrentScheduler::execute(). Already supports hierarchical cancellation via child_token(), cooperative checking via is_cancelled(), and async waiting via cancelled()."
     },
     {
-      "what": "cache.record_evaluation() return value",
-      "where": "crates/reify-eval/src/lib.rs (eval, edit_param, eval_cached methods)",
-      "how": "record_evaluation() already returns EvalOutcome, which feeds directly into EventKind::Completed{outcome}. No extra computation needed to determine Changed vs Unchanged."
+      "what": "compute_dirty_cone, compute_eval_set",
+      "where": "reify-eval/src/dirty.rs lines 22-117",
+      "how": "Reuse in prepare_concurrent_edit() to compute the eval set identically to the sequential path. dirty∩demand intersection with topological sorting produces the same eval_set for both sequential and concurrent execution."
     },
     {
-      "what": "bracket_compiled_module() fixture",
-      "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "Reuse in integration tests to create a realistic CompiledModule with 5 params + 1 let binding for Engine eval/edit_param journal tests."
+      "what": "extract_dependency_trace",
+      "where": "reify-eval/src/deps.rs lines 13-17",
+      "how": "Called from ConcurrentEvalAdapter::evaluate() to record dependency traces for each evaluated node, same as the sequential path."
     },
     {
-      "what": "MockConstraintChecker",
-      "where": "crates/reify-test-support (mocks module)",
-      "how": "Reuse as the constraint_checker parameter when constructing Engine in integration tests."
+      "what": "CachedResult::content_hash()",
+      "where": "reify-eval/src/cache.rs lines 57-90",
+      "how": "Used in the adapter to compute the new content hash of each evaluation result and compare with pre-extracted previous_hashes for Changed/Unchanged determination."
     },
     {
-      "what": "CompiledModuleBuilder / TopologyTemplateBuilder",
+      "what": "reify_expr::eval_expr()",
+      "where": "crates/reify-expr",
+      "how": "Called from ConcurrentEvalAdapter::evaluate() to evaluate compiled expressions against current values. Same pure function as the sequential Engine path."
+    },
+    {
+      "what": "ValueMap (PersistentMap-backed, O(1) clone)",
+      "where": "reify-types/src/value.rs lines 183-187",
+      "how": "O(1) clone used in prepare_concurrent_edit() to snapshot current values. Wrapped in Arc<RwLock> for concurrent read/write access during evaluation."
+    },
+    {
+      "what": "CacheStore::record_evaluation() and restore_final()",
+      "where": "reify-eval/src/cache.rs lines 213-357",
+      "how": "Called during apply_concurrent_edit() to batch-update cache entries with concurrent evaluation results and restore freshness for skipped nodes."
+    },
+    {
+      "what": "TopologyTemplateBuilder, bracket_compiled_module, MockConstraintChecker",
       "where": "crates/reify-test-support",
-      "how": "For building custom minimal modules in targeted tests (e.g., single-node modules for event ordering verification)."
+      "how": "Reuse for building test fixtures and topologies in concurrent evaluation tests. TopologyTemplateBuilder for custom test graphs (linear, diamond, fan-out). bracket_compiled_module for integration tests."
     },
     {
-      "what": "Existing Engine field + accessor pattern",
-      "where": "crates/reify-eval/src/lib.rs lines 124-137 (cache_store(), snapshot(), last_eval_set())",
-      "how": "Follow the same pattern for journal field: private field, pub fn journal(&self) -> &EventJournal accessor for testing/inspection."
+      "what": "ReverseDependencyIndex::build_from_graph() and dependents_of()",
+      "where": "reify-eval/src/deps.rs lines 57-141",
+      "how": "build_from_graph used in prepare phase to construct the index. dependents_of used by the adapter during early cutoff to find which downstream nodes to add to the skip set."
     }
   ]
 }
