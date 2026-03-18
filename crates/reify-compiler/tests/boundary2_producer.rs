@@ -520,6 +520,63 @@ fn sub_compiles_into_template_sub_components() {
     assert_eq!(sub.args[0].0, "diameter");
 }
 
+/// Sub-structure args can reference parent params — expressions are compiled with
+/// the parent's scope for name resolution.
+#[test]
+fn sub_args_reference_parent_params() {
+    let source = r#"structure S {
+    param t: Scalar = 5mm
+    sub rib = Rib(height: t * 0.8)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sub_ref"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // No error diagnostics expected
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
+
+    let template = &compiled.templates[0];
+    assert_eq!(template.sub_components.len(), 1);
+
+    let sub = &template.sub_components[0];
+    assert_eq!(sub.args[0].0, "height");
+
+    // The arg expression should contain a ValueRef to 't' (resolved identifier)
+    fn contains_value_ref(expr: &reify_types::CompiledExpr, member: &str) -> bool {
+        use reify_types::CompiledExprKind;
+        match &expr.kind {
+            CompiledExprKind::ValueRef(id) => id.member == member,
+            CompiledExprKind::BinOp { left, right, .. } => {
+                contains_value_ref(left, member) || contains_value_ref(right, member)
+            }
+            CompiledExprKind::UnOp { operand, .. } => contains_value_ref(operand, member),
+            CompiledExprKind::FunctionCall { args, .. } => {
+                args.iter().any(|a| contains_value_ref(a, member))
+            }
+            _ => false,
+        }
+    }
+
+    assert!(
+        contains_value_ref(&sub.args[0].1, "t"),
+        "sub arg expression should contain ValueRef to 't'"
+    );
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
