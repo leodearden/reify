@@ -1171,6 +1171,61 @@ fn edit_param_let_binding_re_evaluates_after_re_resolution() {
     );
 }
 
+/// After edit_check with a value that violates a constraint, the CheckResult
+/// should report the constraint as Violated.
+///
+/// Uses SimpleConstraintChecker (real checker). Module: param `width` (default
+/// mm(10.0)), constraint `width > mm(5.0)`. Cold check → Satisfied.
+/// edit_check(width, mm(2.0)) → constraint should be Violated because 2 < 5.
+///
+/// Currently FAILS because edit_check() doesn't exist.
+#[test]
+fn edit_check_returns_incremental_constraint_satisfaction() {
+    use reify_types::Satisfaction;
+
+    let width_id = ValueCellId::new("S", "width");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "width", Type::length(), Some(literal(mm(10.0))))
+        // constraint: width > mm(5.0)
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "width"), literal(mm(5.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold check: width=mm(10.0) > mm(5.0) → Satisfied
+    let result = engine.check(&module);
+    assert_eq!(result.constraint_results.len(), 1);
+    assert_eq!(result.constraint_results[0].satisfaction, Satisfaction::Satisfied);
+
+    // edit_check: width=mm(2.0) < mm(5.0) → Violated
+    let result2 = engine.edit_check(width_id.clone(), mm(2.0));
+    assert_eq!(result2.constraint_results.len(), 1);
+    assert_eq!(
+        result2.constraint_results[0].satisfaction,
+        Satisfaction::Violated,
+        "constraint should be Violated when width=mm(2.0) < mm(5.0)"
+    );
+
+    // Values should be updated
+    let width_val = result2.values.get(&width_id).expect("width should be in values");
+    assert!(
+        matches!(width_val, Value::Scalar { si_value, .. } if (*si_value - 0.002).abs() < 1e-10),
+        "expected width = mm(2.0) = 0.002 SI, got {:?}",
+        width_val
+    );
+}
+
 /// When the solver returns Infeasible during re-resolution in edit_param,
 /// the diagnostics must be propagated in the EvalResult.
 ///
