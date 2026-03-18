@@ -275,6 +275,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_matches_sequential_bracket_topology() {
+        use crate::{NodeEvaluator, SequentialScheduler};
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use reify_types::{ConstraintNodeId, ValueCellId};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let e = "B";
+        let width = NodeId::Value(ValueCellId::new(e, "width"));
+        let thickness = NodeId::Value(ValueCellId::new(e, "thickness"));
+        let volume = NodeId::Value(ValueCellId::new(e, "volume"));
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+
+        let eval_set = vec![
+            width.clone(),
+            thickness.clone(),
+            volume.clone(),
+            c1.clone(),
+        ];
+
+        let mut traces = HashMap::new();
+        traces.insert(width.clone(), DependencyTrace::default());
+        traces.insert(thickness.clone(), DependencyTrace::default());
+        traces.insert(
+            volume.clone(),
+            DependencyTrace {
+                reads: vec![
+                    ValueCellId::new(e, "width"),
+                    ValueCellId::new(e, "thickness"),
+                ],
+            },
+        );
+        traces.insert(
+            c1.clone(),
+            DependencyTrace {
+                reads: vec![
+                    ValueCellId::new(e, "width"),
+                    ValueCellId::new(e, "thickness"),
+                ],
+            },
+        );
+
+        // Sequential scheduler
+        struct AllChanged;
+        impl NodeEvaluator for AllChanged {
+            fn is_dirty(&self, _node: &NodeId) -> bool {
+                true
+            }
+            fn evaluate(&mut self, _node: &NodeId) -> EvalOutcome {
+                EvalOutcome::Changed
+            }
+        }
+
+        let seq_scheduler = SequentialScheduler;
+        let mut seq_evaluator = AllChanged;
+        let seq_changed = seq_scheduler.execute(eval_set.clone(), &mut seq_evaluator);
+
+        // Concurrent scheduler
+        struct AllChangedAsync;
+        impl AsyncNodeEvaluator for AllChangedAsync {
+            fn is_dirty(&self, _node: &NodeId) -> bool {
+                true
+            }
+            async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+                EvalOutcome::Changed
+            }
+        }
+
+        let con_scheduler = ConcurrentScheduler;
+        let con_evaluator = Arc::new(AllChangedAsync);
+        let cancel = CancellationToken::new();
+        let con_changed = con_scheduler
+            .execute(eval_set, con_evaluator, &traces, &cancel)
+            .await;
+
+        // Both should produce the same changed set
+        assert_eq!(seq_changed, con_changed);
+        assert_eq!(con_changed.len(), 4);
+        assert!(con_changed.contains(&width));
+        assert!(con_changed.contains(&thickness));
+        assert!(con_changed.contains(&volume));
+        assert!(con_changed.contains(&c1));
+    }
+
+    #[tokio::test]
     async fn concurrent_scheduler_skips_non_dirty() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
