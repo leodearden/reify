@@ -651,6 +651,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_panic_preserves_payload() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        struct PanickingWithPayload;
+
+        impl AsyncNodeEvaluator for PanickingWithPayload {
+            fn is_dirty(&self, _node: &NodeId) -> bool {
+                true
+            }
+
+            async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+                panic!("kaboom from evaluator");
+            }
+        }
+
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(PanickingWithPayload);
+        let node = NodeId::Value(reify_types::ValueCellId::new("P", "y"));
+        let eval_set = vec![node.clone()];
+        let mut traces = HashMap::new();
+        traces.insert(node.clone(), DependencyTrace::default());
+        let cancel = CancellationToken::new();
+
+        let result = scheduler
+            .execute(eval_set, evaluator, &traces, &cancel)
+            .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SchedulerError::TaskPanicked(payload) => {
+                let msg = payload
+                    .downcast_ref::<&str>()
+                    .expect("panic payload should be &str");
+                assert_eq!(*msg, "kaboom from evaluator");
+            }
+            other => panic!("Expected TaskPanicked, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
     async fn concurrent_scheduler_empty_eval_set() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
