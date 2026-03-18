@@ -223,4 +223,133 @@ mod tests {
         let result = eval_builtin("foo", &[Value::Real(1.0)]);
         assert!(result.is_undef());
     }
+
+    // --- Trig function tests ---
+
+    #[test]
+    fn sin_angle_scalar() {
+        let result = eval_builtin(
+            "sin",
+            &[Value::Scalar {
+                si_value: std::f64::consts::FRAC_PI_4,
+                dimension: DimensionVector::ANGLE,
+            }],
+        );
+        match result {
+            Value::Real(v) => assert!((v - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-10),
+            other => panic!("expected Real(~0.7071), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cos_angle_zero() {
+        let result = eval_builtin(
+            "cos",
+            &[Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::ANGLE,
+            }],
+        );
+        match result {
+            Value::Real(v) => assert!((v - 1.0).abs() < 1e-12),
+            other => panic!("expected Real(1.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tan_angle_pi_over_4() {
+        let result = eval_builtin(
+            "tan",
+            &[Value::Scalar {
+                si_value: std::f64::consts::FRAC_PI_4,
+                dimension: DimensionVector::ANGLE,
+            }],
+        );
+        match result {
+            Value::Real(v) => assert!((v - 1.0).abs() < 1e-10),
+            other => panic!("expected Real(~1.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn asin_returns_angle() {
+        let result = eval_builtin("asin", &[Value::Real(1.0)]);
+        match result {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!((si_value - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::ANGLE);
+            }
+            other => panic!("expected Angle Scalar, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn acos_returns_angle() {
+        let result = eval_builtin("acos", &[Value::Real(0.0)]);
+        match result {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!((si_value - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::ANGLE);
+            }
+            other => panic!("expected Angle Scalar, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn atan_returns_angle() {
+        let result = eval_builtin("atan", &[Value::Real(1.0)]);
+        match result {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!((si_value - std::f64::consts::FRAC_PI_4).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::ANGLE);
+            }
+            other => panic!("expected Angle Scalar, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn atan2_returns_angle() {
+        let result = eval_builtin("atan2", &[Value::Real(1.0), Value::Real(1.0)]);
+        match result {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!((si_value - std::f64::consts::FRAC_PI_4).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::ANGLE);
+            }
+            other => panic!("expected Angle Scalar, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sinh_real() {
+        let result = eval_builtin("sinh", &[Value::Real(0.0)]);
+        match result {
+            Value::Real(v) => assert!((v - 0.0).abs() < 1e-12),
+            other => panic!("expected Real(0.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sin_non_angle_scalar_returns_undef() {
+        // A LENGTH scalar should not be accepted by sin
+        let result = eval_builtin(
+            "sin",
+            &[Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            }],
+        );
+        assert!(result.is_undef(), "sin of LENGTH scalar should be Undef");
+    }
 }
