@@ -264,6 +264,43 @@ impl OcctKernel {
     }
 }
 
+impl WarmStartable for OcctKernel {
+    fn warm_state(&self) -> Option<OpaqueState> {
+        if self.shapes.is_empty() {
+            return None;
+        }
+        let mut warm_shapes = HashMap::new();
+        let mut total_bytes: usize = 0;
+        for (&id, shape) in &self.shapes {
+            match ffi::ffi::serialize_brep(shape.as_ref().unwrap()) {
+                Ok(brep) => {
+                    total_bytes += brep.len();
+                    warm_shapes.insert(id, brep);
+                }
+                Err(_) => {
+                    // Skip shapes that fail to serialize (best-effort)
+                    continue;
+                }
+            }
+        }
+        if warm_shapes.is_empty() {
+            return None;
+        }
+        let size_estimate = total_bytes + 64; // overhead for HashMap + struct
+        Some(OpaqueState::new(
+            OcctWarmState {
+                shapes: warm_shapes,
+                next_id: self.next_id,
+            },
+            size_estimate,
+        ))
+    }
+
+    fn with_warm_state(&mut self, _state: OpaqueState) {
+        // Will be implemented in step-8
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
