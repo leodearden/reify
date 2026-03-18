@@ -335,4 +335,57 @@ mod tests {
         );
         assert!(mesh.normals.is_some(), "mesh should have normals");
     }
+
+    #[test]
+    fn chamfer_returns_operation_failed_through_channel() {
+        let handle = super::OcctKernelHandle::spawn();
+        let box_op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        };
+        let gh = handle.execute(&box_op).unwrap();
+        let chamfer_op = GeometryOp::Chamfer {
+            target: gh.id,
+            distance: Value::Real(1.0),
+        };
+        let result = handle.execute(&chamfer_op);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            reify_types::GeometryError::OperationFailed(msg) => {
+                assert!(
+                    msg.contains("Chamfer not yet implemented"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn export_invalid_handle_returns_error() {
+        let handle = super::OcctKernelHandle::spawn();
+        let mut buf = Vec::new();
+        let result = handle.export(GeometryHandleId(999), reify_types::ExportFormat::Step, &mut buf);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            reify_types::ExportError::InvalidHandle(id) => {
+                assert_eq!(id, GeometryHandleId(999));
+            }
+            other => panic!("expected InvalidHandle, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tessellate_invalid_handle_returns_error() {
+        let handle = super::OcctKernelHandle::spawn();
+        let result = handle.tessellate(GeometryHandleId(999), 0.1);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            reify_types::TessError::InvalidHandle(id) => {
+                assert_eq!(id, GeometryHandleId(999));
+            }
+            other => panic!("expected InvalidHandle, got {:?}", other),
+        }
+    }
 }
