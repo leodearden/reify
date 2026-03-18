@@ -11,6 +11,40 @@ use reify_eval::cache::{EvalOutcome, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_types::ValueCellId;
 
+/// Error type for concurrent scheduler execution.
+///
+/// Surfaces spawned task failures to callers rather than silently discarding them.
+#[derive(Debug)]
+pub enum SchedulerError {
+    /// A spawned evaluation task panicked. Contains the raw panic payload
+    /// (`Box<dyn Any + Send>`) so callers can downcast to the original type
+    /// (&str, String, custom error types) for programmatic handling.
+    TaskPanicked(Box<dyn std::any::Any + Send>),
+    /// A spawned evaluation task was cancelled by the tokio runtime.
+    TaskCancelled,
+}
+
+impl std::fmt::Display for SchedulerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SchedulerError::TaskPanicked(payload) => {
+                if let Some(s) = payload.downcast_ref::<&str>() {
+                    write!(f, "evaluation task panicked: {s}")
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    write!(f, "evaluation task panicked: {s}")
+                } else {
+                    write!(f, "evaluation task panicked (unknown payload type)")
+                }
+            }
+            SchedulerError::TaskCancelled => {
+                write!(f, "evaluation task was cancelled")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SchedulerError {}
+
 /// A cancellation token for cooperative cancellation of async tasks.
 ///
 /// Thin wrapper around `tokio_util::sync::CancellationToken` providing a
@@ -85,9 +119,9 @@ impl ConcurrentScheduler {
         evaluator: Arc<E>,
         traces: &HashMap<NodeId, DependencyTrace>,
         cancel: &CancellationToken,
-    ) -> HashSet<NodeId> {
+    ) -> Result<HashSet<NodeId>, SchedulerError> {
         if eval_set.is_empty() {
-            return HashSet::new();
+            return Ok(HashSet::new());
         }
 
         let levels = compute_levels(&eval_set, traces);
@@ -117,15 +151,22 @@ impl ConcurrentScheduler {
 
             // Join all tasks in this level
             for handle in handles {
-                if let Ok((node, outcome)) = handle.await
-                    && outcome == EvalOutcome::Changed
-                {
-                    changed.insert(node);
+                match handle.await {
+                    Ok((node, EvalOutcome::Changed)) => {
+                        changed.insert(node);
+                    }
+                    Ok(_) => {} // Unchanged — skip
+                    Err(e) if e.is_panic() => {
+                        return Err(SchedulerError::TaskPanicked(e.into_panic()));
+                    }
+                    Err(_) => {
+                        return Err(SchedulerError::TaskCancelled);
+                    }
                 }
             }
         }
 
-        changed
+        Ok(changed)
     }
 }
 
@@ -326,7 +367,8 @@ mod tests {
         let eval_set = vec![a.clone(), b.clone()];
         let changed = scheduler
             .execute(eval_set, evaluator.clone(), &traces, &cancel)
-            .await;
+            .await
+            .unwrap();
 
         // a should have been evaluated
         assert!(changed.contains(&a));
@@ -411,7 +453,8 @@ mod tests {
         let cancel = CancellationToken::new();
         let con_changed = con_scheduler
             .execute(eval_set, con_evaluator, &traces, &cancel)
-            .await;
+            .await
+            .unwrap();
 
         // Both should produce the same changed set
         assert_eq!(seq_changed, con_changed);
@@ -458,7 +501,8 @@ mod tests {
         let scheduler = ConcurrentScheduler;
         let changed = scheduler
             .execute(eval_set, evaluator, &traces, &cancel)
-            .await;
+            .await
+            .unwrap();
 
         assert_eq!(changed.len(), 1);
         assert!(changed.contains(&dirty_node));
@@ -518,7 +562,8 @@ mod tests {
         let scheduler = ConcurrentScheduler;
         let changed = scheduler
             .execute(eval_set, evaluator, &traces, &cancel)
-            .await;
+            .await
+            .unwrap();
 
         // All 3 nodes should be in the changed set
         assert_eq!(changed.len(), 3);
@@ -562,7 +607,7 @@ mod tests {
         traces.insert(node.clone(), DependencyTrace::default());
         let cancel = CancellationToken::new();
 
-        let changed = scheduler.execute(eval_set, evaluator, &traces, &cancel).await;
+        let changed = scheduler.execute(eval_set, evaluator, &traces, &cancel).await.unwrap();
         assert_eq!(changed.len(), 1);
         assert!(changed.contains(&node));
     }
@@ -630,7 +675,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let eval_set = vec![];
 
-        let changed = scheduler.execute(eval_set, evaluator, &traces, &cancel).await;
+        let changed = scheduler.execute(eval_set, evaluator, &traces, &cancel).await.unwrap();
         assert!(changed.is_empty());
     }
 }
