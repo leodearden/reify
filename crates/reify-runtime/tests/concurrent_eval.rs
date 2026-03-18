@@ -1236,3 +1236,111 @@ async fn edit_check_concurrent_constraint_transitions() {
         "constraint should be Satisfied when width=mm(8.0) > mm(5.0)"
     );
 }
+
+/// End-to-end concurrent interactive loop: edit → resolution → let-binding
+/// propagation → constraint checking, all in one interactive update.
+///
+/// Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`,
+/// constraint `x > a` (index 0), constraint `y < mm(100.0)` (index 1).
+/// SequencedMockSolver: 1st call x=mm(5.0), 2nd call x=mm(20.0).
+///
+/// Cold check → x=mm(5.0), y=0.01 SI, both constraints satisfied.
+/// edit_check_concurrent(a, mm(8.0)) → x re-resolved to mm(20.0), y=0.04 SI.
+/// Assert: (1) resolved_params contains x→mm(20.0),
+///         (2) values[y] = 0.04 SI,
+///         (3) constraint `x > a` Satisfied,
+///         (4) constraint `y < mm(100)` Satisfied.
+#[tokio::test]
+async fn edit_check_concurrent_with_resolution_and_constraints() {
+    use reify_test_support::builders::{binop, gt, literal, lt, value_ref};
+    use reify_test_support::mocks::SequencedMockConstraintSolver;
+    use reify_test_support::mm;
+    use reify_runtime::concurrent_eval::edit_check_concurrent;
+    use reify_types::{Satisfaction, SolveResult};
+
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // Sequenced solver: first x=mm(5.0), second x=mm(20.0)
+    let mut solved1 = HashMap::new();
+    solved1.insert(x_id.clone(), mm(5.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(x_id.clone(), mm(20.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1 },
+        SolveResult::Solved { values: solved2 },
+    ]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(3.0))))
+        .auto_param("S", "x", Type::length())
+        .let_binding(
+            "S",
+            "y",
+            Type::length(),
+            binop(BinOp::Mul, value_ref("S", "x"), literal(Value::Real(2.0))),
+        )
+        // constraint 0: x > a
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        // constraint 1: y < mm(100.0)
+        .constraint("S", 1, None, lt(value_ref("S", "y"), literal(mm(100.0))))
+        .build();
+
+    let module = build_module(template);
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None)
+        .with_solver(Box::new(solver));
+
+    // Cold check: x=mm(5.0), y=mm(10.0), both constraints satisfied
+    let cold = engine.check(&module);
+    assert_eq!(cold.constraint_results.len(), 2);
+    assert_eq!(cold.constraint_results[0].satisfaction, Satisfaction::Satisfied);
+    assert_eq!(cold.constraint_results[1].satisfaction, Satisfaction::Satisfied);
+
+    let cancel = CancellationToken::new();
+
+    // edit_check_concurrent: a → mm(8.0) → solver re-resolves x to mm(20.0)
+    let result = edit_check_concurrent(
+        &mut engine,
+        a_id.clone(),
+        mm(8.0),
+        &cancel,
+    ).await.unwrap();
+
+    // (1) resolved_params contains x→mm(20.0)
+    assert!(
+        !result.resolved_params.is_empty(),
+        "resolved_params should contain re-resolved auto params"
+    );
+    let resolved_x = result.resolved_params.get(&x_id)
+        .expect("resolved_params should contain x");
+    assert!(
+        matches!(resolved_x, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
+        "expected resolved x = mm(20.0) = 0.02 SI, got {:?}",
+        resolved_x
+    );
+
+    // (2) y re-evaluated from resolved x: mm(20.0) * 2.0 = 0.04 SI
+    let y_val = result.values.get(&y_id).expect("values should contain y");
+    assert!(
+        matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.04).abs() < 1e-10),
+        "expected y = 0.04 SI after re-resolution, got {:?}",
+        y_val
+    );
+
+    // (3) constraint x > a: mm(20.0) > mm(8.0) → Satisfied
+    assert_eq!(
+        result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "constraint x > a should be Satisfied after re-resolution"
+    );
+
+    // (4) constraint y < mm(100.0): mm(40.0) < mm(100.0) → Satisfied
+    assert_eq!(
+        result.constraint_results[1].satisfaction,
+        Satisfaction::Satisfied,
+        "constraint y < mm(100.0) should be Satisfied"
+    );
+}
