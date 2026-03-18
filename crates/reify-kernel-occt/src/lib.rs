@@ -4,6 +4,8 @@
 
 #[allow(dead_code)]
 mod ffi;
+mod handle;
+pub use handle::OcctKernelHandle;
 
 use std::collections::HashMap;
 
