@@ -722,6 +722,97 @@ mod tests {
     }
 
     #[test]
+    fn function_call_unknown_returns_undef() {
+        let arg = lit(Value::Real(1.0), Type::Real);
+        let expr = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[44]),
+            result_type: Type::Real,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: "nonexistent".to_string(),
+                    qualified_name: "std::nonexistent".to_string(),
+                },
+                args: vec![arg],
+            },
+        };
+        let values = ValueMap::new();
+        assert!(eval_expr(&expr, &values).is_undef());
+    }
+
+    #[test]
+    fn function_call_undef_propagation() {
+        // abs(Undef) should return Undef (strict propagation)
+        let arg = lit(Value::Undef, Type::Real);
+        let expr = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[45]),
+            result_type: Type::Real,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: "abs".to_string(),
+                    qualified_name: "std::abs".to_string(),
+                },
+                args: vec![arg],
+            },
+        };
+        let values = ValueMap::new();
+        assert!(eval_expr(&expr, &values).is_undef());
+    }
+
+    #[test]
+    fn function_call_with_value_ref_args() {
+        // abs(width) where width = -80mm
+        let arg = vref("B", "width", Type::length());
+        let expr = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[46]),
+            result_type: Type::length(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: "abs".to_string(),
+                    qualified_name: "std::abs".to_string(),
+                },
+                args: vec![arg],
+            },
+        };
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("B", "width"),
+            Value::Scalar {
+                si_value: -0.08,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let result = eval_expr(&expr, &values);
+        match result {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!((si_value - 0.08).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn function_call_zero_args_returns_undef() {
+        // abs() with no args should return Undef
+        let expr = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[47]),
+            result_type: Type::Real,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: "abs".to_string(),
+                    qualified_name: "std::abs".to_string(),
+                },
+                args: vec![],
+            },
+        };
+        let values = ValueMap::new();
+        assert!(eval_expr(&expr, &values).is_undef());
+    }
+
+    #[test]
     fn div_same_dimension_yields_dimensionless() {
         // 80mm / 20mm = 4.0 (dimensionless Real)
         let left = lit(mm_val(80.0), Type::length());
