@@ -51,6 +51,24 @@ impl LanguageServer for ReifyLanguageServer {
 
     async fn initialized(&self, _: InitializedParams) {}
 
+    async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        let uri = params.text_document.uri;
+        let text = params.text_document.text;
+        let version = params.text_document.version;
+
+        // Store the document
+        {
+            let mut state = self.state.write().await;
+            state.documents.open(uri.clone(), text.clone(), version);
+        }
+
+        // Compute and publish diagnostics
+        let diagnostics = crate::diagnostics::compute_diagnostics(&text, &uri);
+        self.client
+            .publish_diagnostics(uri, diagnostics, Some(version))
+            .await;
+    }
+
     async fn shutdown(&self) -> Result<()> {
         Ok(())
     }
