@@ -1333,3 +1333,85 @@ fn edit_param_solver_diagnostics_propagated() {
         result2.diagnostics
     );
 }
+
+/// Regression guard: when editing a param that does NOT affect auto param
+/// constraints, the solver should NOT be re-run and resolved_params should
+/// be empty.
+///
+/// Module: param `a` (default mm(1.0)), param `b` (default mm(2.0)),
+/// auto `x`, let `y = b * 2.0`, constraint `x > a`.
+/// Solver returns x=mm(5.0).
+/// Cold eval → x resolved. Edit `b` to mm(3.0) — constraint `x > a` is NOT
+/// in dirty cone (doesn't depend on `b`). Assert:
+///   (1) result.resolved_params is empty (solver not re-run)
+///   (2) y = mm(3.0) * 2.0 = 0.006 SI (re-evaluated)
+///   (3) x remains mm(5.0) in values
+#[test]
+fn edit_param_no_re_resolution_when_auto_constraints_not_dirty() {
+    let _a_id = ValueCellId::new("S", "a");
+    let b_id = ValueCellId::new("S", "b");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(x_id.clone(), mm(5.0));
+
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(1.0))))
+        .param("S", "b", Type::length(), Some(literal(mm(2.0))))
+        .auto_param("S", "x", Type::length())
+        // y = b * 2.0
+        .let_binding(
+            "S",
+            "y",
+            Type::length(),
+            binop(
+                BinOp::Mul,
+                value_ref("S", "b"),
+                literal(Value::Real(2.0)),
+            ),
+        )
+        // constraint: x > a  (does NOT reference b)
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    // Cold eval: x resolved to mm(5.0), y = mm(2.0) * 2 = 0.004
+    let result = engine.eval(&module);
+    assert!(!result.resolved_params.is_empty(), "cold eval should resolve x");
+
+    // Edit b from mm(2.0) to mm(3.0) — constraint `x > a` NOT in dirty cone
+    let result2 = engine.edit_param(b_id.clone(), mm(3.0));
+
+    // (1) resolved_params should be empty (solver NOT re-run)
+    assert!(
+        result2.resolved_params.is_empty(),
+        "edit_param should NOT re-resolve when auto constraints are not dirty, \
+         got resolved_params: {:?}",
+        result2.resolved_params
+    );
+
+    // (2) y should be re-evaluated: mm(3.0) * 2.0 = 0.006 SI
+    let y_val = result2.values.get(&y_id).expect("y should be in values");
+    assert!(
+        matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.006).abs() < 1e-10),
+        "expected y ≈ 0.006 (mm(3.0)*2), got {:?}",
+        y_val
+    );
+
+    // (3) x should remain mm(5.0) = 0.005 SI
+    let x_val = result2.values.get(&x_id).expect("x should be in values");
+    assert!(
+        matches!(x_val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
+        "expected x = mm(5.0) = 0.005 SI (unchanged), got {:?}",
+        x_val
+    );
+}
