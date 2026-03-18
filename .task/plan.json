@@ -2,7 +2,7 @@
   "task_id": "25",
   "title": "Add tokio async runtime foundation",
   "modules": ["crates/reify-runtime", "Cargo.toml"],
-  "analysis": "Currently reify-runtime has a SequentialScheduler (lib.rs:48-79) that iterates eval_set in order using a synchronous NodeEvaluator trait (lib.rs:35-46) with `fn evaluate(&mut self, node: &NodeId) -> EvalOutcome` and `fn is_dirty(&self, node: &NodeId) -> bool`. All identity types (ValueCellId, ConstraintNodeId, etc.) are composed of String and u32, so they are Send + Sync automatically. NodeId and EvalOutcome are also Send + Sync.\n\nFor the concurrent scheduler, we need: (1) tokio async runtime for spawning tasks, (2) tokio-util for CancellationToken, (3) an AsyncNodeEvaluator trait with `&self` (not `&mut self`) since concurrent evaluation requires shared access with interior mutability, (4) a ConcurrentScheduler that groups eval_set nodes by topological level and spawns all nodes within a level concurrently.\n\nThe topological level computation follows the same Kahn's algorithm as dirty.rs::topological_sort but outputs `Vec<Vec<NodeId>>` (batched by level) instead of flat `Vec<NodeId>`. This requires DependencyTrace information, so ConcurrentScheduler::execute takes `traces: &HashMap<NodeId, DependencyTrace>` in addition to the eval_set.\n\nThe AsyncNodeEvaluator trait uses RPITIT (Return Position Impl Trait In Traits), available since Rust 1.75 and natively supported in edition 2024 (this project's edition). The method signature `fn evaluate(&self, node: NodeId) -> impl Future<Output = EvalOutcome> + Send` captures the `'_` lifetime of `&self` implicitly in edition 2024, allowing the future to be awaited inside a tokio::spawn block that owns an Arc<E>.\n\nNew code goes in a new file `crates/reify-runtime/src/concurrent.rs` to keep the existing SequentialScheduler code untouched. The module is declared as `pub mod concurrent` in lib.rs.\n\nCancellationToken is a thin wrapper around tokio_util::sync::CancellationToken, providing a project-specific API surface that decouples from the transitive dependency.",
+  "analysis": "Currently reify-runtime has a SequentialScheduler (lib.rs:48-79) that iterates eval_set in order using a synchronous NodeEvaluator trait (lib.rs:35-46) with `fn evaluate(&mut self, node: &NodeId) -> EvalOutcome` and `fn is_dirty(&self, node: &NodeId) -> bool`. All identity types (ValueCellId, ConstraintNodeId, etc.) are composed of String and u32, so they are Send + Sync automatically. NodeId and EvalOutcome are also Send + Sync.\n\nFor the concurrent scheduler, we need: (1) tokio async runtime for spawning tasks, (2) tokio-util for CancellationToken, (3) an AsyncNodeEvaluator trait with `&self` (not `&mut self`) since concurrent evaluation requires shared access with interior mutability, (4) a ConcurrentScheduler that groups eval_set nodes by topological level and spawns all nodes within a level concurrently.\n\nThe topological level computation follows the same Kahn's algorithm as dirty.rs::topological_sort but outputs `Vec<Vec<NodeId>>` (batched by level) instead of flat `Vec<NodeId>`. This requires DependencyTrace information, so ConcurrentScheduler::execute takes `traces: &HashMap<NodeId, DependencyTrace>` in addition to the eval_set.\n\nThe AsyncNodeEvaluator trait uses RPITIT (Return Position Impl Trait In Traits), available since Rust 1.75 and natively supported in edition 2024 (this project's edition). The method signature `fn evaluate(&self, node: NodeId) -> impl Future<Output = EvalOutcome> + Send` captures the `'_` lifetime of `&self` implicitly in edition 2024, allowing the future to be awaited inside a tokio::spawn block that owns an Arc<E>.\n\nNew code goes in a new file `crates/reify-runtime/src/concurrent.rs` to keep the existing SequentialScheduler code untouched. The module is declared as `pub mod concurrent` in lib.rs.\n\nCancellationToken is a thin wrapper around tokio_util::sync::CancellationToken, providing a project-specific API surface that decouples from the transitive dependency.\n\n[POST-REVIEW] Review feedback identified that spawned task panics are silently discarded at lines 119-125 of concurrent.rs. The `if let Ok(...)` pattern on `handle.await` drops JoinError variants (panics, cancellations), causing the caller to receive a seemingly normal but incomplete HashSet<NodeId>. Callers would interpret missing nodes as Unchanged rather than Errored. Fix: introduce SchedulerError enum, change execute return type to Result<HashSet<NodeId>, SchedulerError>, and handle JoinError properly by distinguishing panics from cancellations.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -131,6 +131,34 @@
       "description": "Add cancellation check in ConcurrentScheduler::execute: at the start of each level iteration, check if cancel.is_cancelled() and break if so. This ensures that once cancellation is triggered during level N's evaluation, level N+1 is skipped. Return whatever changed nodes were collected so far.",
       "status": "done",
       "commit": "c0a9eee"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing test `execute_returns_error_on_task_panic` in concurrent.rs: Define a PanickingAsyncEvaluator where is_dirty returns true and evaluate() panics with `panic!(\"evaluator bug\")`. Create eval_set with one node, empty traces, call execute().await. Assert the result is Err and matches SchedulerError::TaskPanicked. This test will fail to compile initially because execute currently returns HashSet<NodeId> not Result<HashSet<NodeId>, SchedulerError>. The test verifies that spawned task panics are surfaced to callers rather than silently swallowed.",
+      "status": "done",
+      "commit": "afead0e"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Fix the silent error swallow bug (concurrent.rs lines 119-125). (1) Define `pub enum SchedulerError { TaskPanicked(Box<dyn std::any::Any + Send>), TaskCancelled }` with Debug and Display impls. Implement std::error::Error for SchedulerError. (2) Change execute return type from `HashSet<NodeId>` to `Result<HashSet<NodeId>, SchedulerError>`. (3) Replace the `if let Ok((node, outcome)) = handle.await` pattern with a proper match: match handle.await { Ok((node, EvalOutcome::Changed)) => insert into changed, Ok(_) => skip, Err(e) if e.is_panic() => return Err(SchedulerError::TaskPanicked(e.into_panic())), Err(_) => return Err(SchedulerError::TaskCancelled) }. (4) Wrap the successful return in Ok(changed). (5) Update all 7 existing tests that call execute() to append .unwrap() after .await: concurrent_scheduler_empty_eval_set, concurrent_scheduler_single_dirty_node, concurrent_scheduler_multi_level_ordering, concurrent_scheduler_skips_non_dirty, concurrent_matches_sequential_bracket_topology, cancellation_stops_evaluation. Run `cargo test -p reify-runtime` to verify all tests pass.",
+      "status": "done",
+      "commit": "0771973"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write test `execute_panic_preserves_payload` in concurrent.rs: Define a PanickingAsyncEvaluator that panics with a specific &str message \"kaboom from evaluator\". Call execute().await, assert it returns Err. Match on SchedulerError::TaskPanicked(payload), downcast payload to &str via payload.downcast_ref::<&str>(), assert_eq to \"kaboom from evaluator\". This verifies that the panic payload is faithfully preserved for debugging, not just that an error occurred.",
+      "status": "done",
+      "commit": "95a3c30"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Verify the panic payload preservation test passes with the implementation from step-18. The JoinError::into_panic() method returns Box<dyn Any + Send> which is stored directly in SchedulerError::TaskPanicked. The downcast_ref::<&str>() should work because panic!(&str) stores a &str payload. Fix if needed.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
@@ -161,6 +189,14 @@
     {
       "decision": "Level computation uses Kahn's algorithm mirroring dirty.rs::topological_sort",
       "rationale": "The same algorithm is used but outputs Vec<Vec<NodeId>> (levels) instead of Vec<NodeId> (flat). Each 'wave' of Kahn's algorithm (all nodes with in-degree 0 at that step) forms one level. Nodes within a level have no dependencies on each other and can safely execute concurrently. This is a minimal adaptation of proven existing code."
+    },
+    {
+      "decision": "Return Result<HashSet<NodeId>, SchedulerError> instead of using expect/resume_unwind",
+      "rationale": "The reviewer suggested three options: (a) propagate via Result, (b) resume_unwind, (c) expect(). Option (a) is chosen because it gives callers explicit control over error handling — the future Engine integration can decide whether to abort the entire evaluation cycle, retry, or report a diagnostic. resume_unwind would propagate the panic to the caller's task, potentially taking down the entire runtime if not caught. expect() is the simplest but offers no programmatic error handling. Result is the idiomatic Rust approach for recoverable errors and the most forward-compatible choice."
+    },
+    {
+      "decision": "SchedulerError::TaskPanicked stores Box<dyn Any + Send> payload, not a formatted String",
+      "rationale": "Preserving the raw panic payload (Box<dyn Any + Send>) allows callers to downcast to the original type (&str, String, custom error types) for programmatic handling. Converting to String at the SchedulerError boundary would lose type information. Callers who just want a message can use the Display impl which formats the payload. Callers who need resume_unwind can extract the original payload."
     }
   ],
   "reuse": [
@@ -177,7 +213,7 @@
     {
       "what": "SequentialScheduler test mock patterns",
       "where": "crates/reify-runtime/src/lib.rs lines 147-265",
-      "how": "The existing tests define inline mock structs (NoopEvaluator, AlwaysChanged, CutoffEvaluator) for testing SequentialScheduler. Apply the same pattern for AsyncNodeEvaluator mocks: MockAsyncEvaluator, TrackingAsyncEvaluator, CancellingAsyncEvaluator. Each is a struct with the test-specific behavior (is_dirty policy, evaluate outcome, tracking state via Arc<Mutex<>>)."
+      "how": "The existing tests define inline mock structs (NoopEvaluator, AlwaysChanged, CutoffEvaluator) for testing SequentialScheduler. Apply the same pattern for AsyncNodeEvaluator mocks: MockAsyncEvaluator, TrackingAsyncEvaluator, CancellingAsyncEvaluator, PanickingAsyncEvaluator. Each is a struct with the test-specific behavior (is_dirty policy, evaluate outcome, tracking state via Arc<Mutex<>>)."
     },
     {
       "what": "ValueCellId::new() for test node construction",
@@ -187,7 +223,7 @@
     {
       "what": "SequentialScheduler execute API pattern",
       "where": "crates/reify-runtime/src/lib.rs lines 52-79",
-      "how": "ConcurrentScheduler follows the same behavioral contract: skip non-dirty nodes, call evaluate for dirty nodes, collect Changed nodes into HashSet. The API differs in being async, taking Arc<E> instead of &mut dyn, and additionally requiring traces for level computation."
+      "how": "ConcurrentScheduler follows the same behavioral contract: skip non-dirty nodes, call evaluate for dirty nodes, collect Changed nodes into HashSet. The API differs in being async, taking Arc<E> instead of &mut dyn, additionally requiring traces for level computation, and returning Result<HashSet<NodeId>, SchedulerError> to surface task failures."
     }
   ]
 }
