@@ -72,4 +72,30 @@ mod tests {
         assert_eq!(policy, cloned);
         let _ = format!("{:?}", policy);
     }
+
+    // --- NodeCommitmentOverride tests ---
+
+    #[test]
+    fn node_commitment_override_default_is_commit_if_slow() {
+        let override_ = NodeCommitmentOverride::default();
+        assert_eq!(override_, NodeCommitmentOverride::CommitIfSlow);
+    }
+
+    #[test]
+    fn node_commitment_override_variants() {
+        let a = NodeCommitmentOverride::CommitIfSlow;
+        let b = NodeCommitmentOverride::AlwaysCancelWhenStale;
+        let c = NodeCommitmentOverride::OnlyRunOnFinalInputs;
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn node_commitment_override_clone_and_debug() {
+        let override_ = NodeCommitmentOverride::AlwaysCancelWhenStale;
+        let cloned = override_.clone();
+        assert_eq!(override_, cloned);
+        let _ = format!("{:?}", override_);
+    }
 }
