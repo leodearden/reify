@@ -236,6 +236,107 @@ mod tests {
         assert_eq!(doc.version, 2);
     }
 
+    // --- step-13: integration tests for hover/goto-def/completion handlers ---
+
+    async fn open_bracket_source(server: &ReifyLanguageServer) -> Url {
+        let source = reify_test_support::bracket_source();
+        let uri = test_uri();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: source.to_string(),
+                },
+            })
+            .await;
+        uri
+    }
+
+    #[tokio::test]
+    async fn hover_handler_returns_info_for_width() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        let hover_result = server
+            .hover(HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: Position::new(1, 10), // on 'width'
+                },
+                work_done_progress_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            hover_result.is_some(),
+            "hover should return info for 'width'"
+        );
+    }
+
+    #[tokio::test]
+    async fn goto_definition_handler_returns_location_for_thickness() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        let goto_result = server
+            .goto_definition(GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: Position::new(9, 15), // on 'thickness' in constraint
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            goto_result.is_some(),
+            "goto-def should return location for 'thickness'"
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_handler_returns_items() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        let comp_result = server
+            .completion(CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: Position::new(1, 0),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            comp_result.is_some(),
+            "completion should return items"
+        );
+        match comp_result.unwrap() {
+            CompletionResponse::Array(items) => {
+                assert!(!items.is_empty(), "completion should return non-empty items");
+            }
+            CompletionResponse::List(list) => {
+                assert!(
+                    !list.items.is_empty(),
+                    "completion should return non-empty items"
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn did_close_removes_document_from_store() {
         let (service, _socket) = LspService::new(ReifyLanguageServer::new);
