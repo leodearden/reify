@@ -34,16 +34,59 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
             value_str.unwrap_or_default()
         );
 
-        return Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: md,
-            }),
-            range: None,
-        });
+        return Some(make_hover_markdown(md));
+    }
+
+    // Try structure name
+    for (name, params, lets, constraints) in ctx.structure_names() {
+        if name == word {
+            let md = format!(
+                "```reify\nstructure {name}\n```\n\n{params} params, {lets} lets, {constraints} constraints"
+            );
+            return Some(make_hover_markdown(md));
+        }
+    }
+
+    // Try keyword
+    if let Some(desc) = keyword_description(word) {
+        let md = format!("**{word}** — {desc}");
+        return Some(make_hover_markdown(md));
     }
 
     None
+}
+
+/// Create a Hover with markdown content.
+fn make_hover_markdown(value: String) -> Hover {
+    Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value,
+        }),
+        range: None,
+    }
+}
+
+/// Return a brief description for Reify keywords.
+fn keyword_description(word: &str) -> Option<&'static str> {
+    match word {
+        "structure" => Some("Declares a parametric structure."),
+        "param" => Some("Declares an externally settable parameter with a type and default value."),
+        "let" => Some("Declares a computed binding derived from other values."),
+        "constraint" => Some("Declares a boolean constraint that must be satisfied."),
+        "sub" => Some("Declares a sub-structure instantiation."),
+        "import" => Some("Imports declarations from another module."),
+        "if" => Some("Conditional expression."),
+        "then" => Some("Then branch of a conditional."),
+        "else" => Some("Else branch of a conditional."),
+        "and" => Some("Logical AND operator."),
+        "or" => Some("Logical OR operator."),
+        "not" => Some("Logical NOT operator."),
+        "true" => Some("Boolean literal true."),
+        "false" => Some("Boolean literal false."),
+        "auto" => Some("Marks a parameter for automatic resolution by the constraint solver."),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
