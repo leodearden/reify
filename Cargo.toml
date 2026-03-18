@@ -40,6 +40,9 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 im = "15"
 
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
 tree-sitter = "0.24"
 tree-sitter-language = "0.1"
 tree-sitter-reify = { path = "tree-sitter-reify" }
