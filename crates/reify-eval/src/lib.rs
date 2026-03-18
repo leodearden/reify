@@ -18,6 +18,7 @@ use reify_types::{
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
+use crate::dirty::topological_sort;
 use crate::demand::DemandRegistry;
 use crate::deps::{extract_dependency_trace, DependencyTrace, ReverseDependencyIndex};
 use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
@@ -676,49 +677,67 @@ impl Engine {
                 }
             }
 
-            // Second pass: evaluate Let bindings (which may reference params)
-            for cell in &template.value_cells {
-                if cell.kind == ValueCellKind::Let
-                    && let Some(ref expr) = cell.default_expr
-                {
-                    let node_id = NodeId::Value(cell.id.clone());
-                    let start = Instant::now();
-                    self.journal.record(EvalEvent {
-                        timestamp: start,
-                        node_id: node_id.clone(),
-                        kind: EventKind::Started,
-                        version: VersionId(version_id),
-                        payload: None,
-                    });
+            // Second pass: evaluate Let bindings in topological order
+            // (handles forward references where a let declared earlier
+            //  depends on a let declared later)
+            let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
+                .value_cells
+                .iter()
+                .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
+                .map(|c| (NodeId::Value(c.id.clone()), c.default_expr.as_ref().unwrap()))
+                .collect();
 
-                    let val = reify_expr::eval_expr(expr, &values);
-                    values.insert(cell.id.clone(), val.clone());
+            let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
+            let let_traces: HashMap<NodeId, DependencyTrace> = let_cells
+                .iter()
+                .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
+                .collect();
 
-                    // Update snapshot values
-                    snapshot.values.insert(
-                        cell.id.clone(),
-                        (val.clone(), DeterminacyState::Determined),
-                    );
+            let sorted_lets = topological_sort(&let_node_ids, &let_traces);
 
-                    // Record in cache with dependency trace
-                    let trace = extract_dependency_trace(expr);
-                    let cached_result =
-                        CachedResult::Value(val, DeterminacyState::Determined);
-                    let outcome = self.cache.record_evaluation(
-                        node_id.clone(),
-                        cached_result,
-                        VersionId(version_id),
-                        trace,
-                    );
+            for node_id in sorted_lets {
+                let expr = let_cells[&node_id];
+                let cell_id = match &node_id {
+                    NodeId::Value(vcid) => vcid,
+                    _ => unreachable!(),
+                };
 
-                    self.journal.record(EvalEvent {
-                        timestamp: Instant::now(),
-                        node_id,
-                        kind: EventKind::Completed { outcome },
-                        version: VersionId(version_id),
-                        payload: Some(EventPayload::Duration(start.elapsed())),
-                    });
-                }
+                let start = Instant::now();
+                self.journal.record(EvalEvent {
+                    timestamp: start,
+                    node_id: node_id.clone(),
+                    kind: EventKind::Started,
+                    version: VersionId(version_id),
+                    payload: None,
+                });
+
+                let val = reify_expr::eval_expr(expr, &values);
+                values.insert(cell_id.clone(), val.clone());
+
+                // Update snapshot values
+                snapshot.values.insert(
+                    cell_id.clone(),
+                    (val.clone(), DeterminacyState::Determined),
+                );
+
+                // Record in cache with dependency trace
+                let trace = extract_dependency_trace(expr);
+                let cached_result =
+                    CachedResult::Value(val, DeterminacyState::Determined);
+                let outcome = self.cache.record_evaluation(
+                    node_id.clone(),
+                    cached_result,
+                    VersionId(version_id),
+                    trace,
+                );
+
+                self.journal.record(EvalEvent {
+                    timestamp: Instant::now(),
+                    node_id,
+                    kind: EventKind::Completed { outcome },
+                    version: VersionId(version_id),
+                    payload: Some(EventPayload::Duration(start.elapsed())),
+                });
             }
         }
 
