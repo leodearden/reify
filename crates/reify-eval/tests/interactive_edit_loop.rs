@@ -4,8 +4,9 @@
 //! Uses MockConstraintChecker/MockGeometryKernel so tests run fast and in parallel.
 
 use reify_eval::Engine;
-use reify_test_support::{bracket_compiled_module, vcid};
+use reify_test_support::{bracket_compiled_module, cnid, vcid};
 use reify_test_support::mocks::{MockConstraintChecker, MockGeometryKernel};
+use reify_constraints::SimpleConstraintChecker;
 use reify_types::{ExportFormat, Satisfaction, Value};
 
 #[test]
@@ -135,4 +136,45 @@ fn edit_param_then_check_snapshot_reflects_updated_values() {
     for entry in &check.constraint_results {
         assert_eq!(entry.satisfaction, Satisfaction::Satisfied);
     }
+}
+
+#[test]
+fn edit_param_constraint_violation_detected() {
+    let module = bracket_compiled_module();
+    // Use SimpleConstraintChecker to actually evaluate constraint expressions
+    let checker = SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start eval — all constraints satisfied with defaults
+    let _eval_result = engine.eval(&module);
+
+    // Edit thickness: 5mm → 1mm (0.001m) — violates `thickness > 2mm`
+    let _edit_result = engine.edit_param(vcid("Bracket", "thickness"), Value::length(0.001));
+
+    // check_snapshot should detect the violation
+    let check = engine
+        .check_snapshot(&module)
+        .expect("check_snapshot should return Some");
+
+    // Verify thickness was updated
+    let thickness_val = check.values.get(&vcid("Bracket", "thickness")).expect("thickness");
+    assert_eq!(*thickness_val, Value::length(0.001), "thickness should be 0.001m (1mm)");
+
+    // Constraint 0: thickness > 2mm — should be VIOLATED (1mm < 2mm)
+    let c0 = check.constraint_results.iter().find(|e| e.id == cnid("Bracket", 0))
+        .expect("constraint 0 should exist");
+    assert_eq!(
+        c0.satisfaction,
+        Satisfaction::Violated,
+        "thickness > 2mm should be violated when thickness=1mm"
+    );
+
+    // Constraint 1: thickness < width/4 — should be Satisfied (1mm < 80mm/4 = 20mm)
+    let c1 = check.constraint_results.iter().find(|e| e.id == cnid("Bracket", 1))
+        .expect("constraint 1 should exist");
+    assert_eq!(
+        c1.satisfaction,
+        Satisfaction::Satisfied,
+        "thickness < width/4 should be satisfied when thickness=1mm"
+    );
 }
