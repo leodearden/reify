@@ -3,9 +3,11 @@ pub mod demand;
 pub mod deps;
 pub mod dirty;
 pub mod graph;
+pub mod journal;
 pub mod snapshot;
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
@@ -18,6 +20,7 @@ use reify_types::{
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
 use crate::demand::DemandRegistry;
 use crate::deps::{extract_dependency_trace, DependencyTrace, ReverseDependencyIndex};
+use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
 
 /// The engine facade — main entry point for evaluation.
@@ -42,6 +45,8 @@ pub struct Engine {
     next_version_id: u64,
     /// The eval set from the last edit_param() or eval() call.
     last_eval_set: Vec<NodeId>,
+    /// Event journal recording evaluation events.
+    journal: EventJournal,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
@@ -112,6 +117,7 @@ impl Engine {
             next_snapshot_id: 0,
             next_version_id: 0,
             last_eval_set: Vec::new(),
+            journal: EventJournal::new(),
         }
     }
 
@@ -134,6 +140,11 @@ impl Engine {
     /// Access the eval set from the last eval() or edit_param() call.
     pub fn last_eval_set(&self) -> &[NodeId] {
         &self.last_eval_set
+    }
+
+    /// Access the event journal (for testing/inspection).
+    pub fn journal(&self) -> &EventJournal {
+        &self.journal
     }
 
     /// Set a parameter override and invalidate cache entries that depend on it.
@@ -196,6 +207,16 @@ impl Engine {
             for cell in &template.value_cells {
                 if cell.kind == ValueCellKind::Auto {
                     // Auto cells: Undef with DeterminacyState::Auto
+                    let node_id = NodeId::Value(cell.id.clone());
+                    let start = Instant::now();
+                    self.journal.record(EvalEvent {
+                        timestamp: start,
+                        node_id: node_id.clone(),
+                        kind: EventKind::Started,
+                        version: VersionId(version_id),
+                        payload: None,
+                    });
+
                     values.insert(cell.id.clone(), reify_types::Value::Undef);
                     snapshot.values.insert(
                         cell.id.clone(),
@@ -203,19 +224,36 @@ impl Engine {
                     );
 
                     // Record in cache
-                    let node_id = NodeId::Value(cell.id.clone());
                     let trace = DependencyTrace::default();
                     let cached_result =
                         CachedResult::Value(reify_types::Value::Undef, DeterminacyState::Auto);
-                    self.cache.record_evaluation(
-                        node_id,
+                    let outcome = self.cache.record_evaluation(
+                        node_id.clone(),
                         cached_result,
                         VersionId(version_id),
                         trace,
                     );
+
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id,
+                        kind: EventKind::Completed { outcome },
+                        version: VersionId(version_id),
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
                 } else if cell.kind == ValueCellKind::Param
                     && let Some(ref expr) = cell.default_expr
                 {
+                    let node_id = NodeId::Value(cell.id.clone());
+                    let start = Instant::now();
+                    self.journal.record(EvalEvent {
+                        timestamp: start,
+                        node_id: node_id.clone(),
+                        kind: EventKind::Started,
+                        version: VersionId(version_id),
+                        payload: None,
+                    });
+
                     let val = reify_expr::eval_expr(expr, &values);
                     values.insert(cell.id.clone(), val.clone());
 
@@ -226,16 +264,23 @@ impl Engine {
                     );
 
                     // Record in cache
-                    let node_id = NodeId::Value(cell.id.clone());
                     let trace = DependencyTrace::default();
                     let cached_result =
                         CachedResult::Value(val, DeterminacyState::Determined);
-                    self.cache.record_evaluation(
-                        node_id,
+                    let outcome = self.cache.record_evaluation(
+                        node_id.clone(),
                         cached_result,
                         VersionId(version_id),
                         trace,
                     );
+
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id,
+                        kind: EventKind::Completed { outcome },
+                        version: VersionId(version_id),
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
                 }
             }
 
@@ -244,6 +289,16 @@ impl Engine {
                 if cell.kind == ValueCellKind::Let
                     && let Some(ref expr) = cell.default_expr
                 {
+                    let node_id = NodeId::Value(cell.id.clone());
+                    let start = Instant::now();
+                    self.journal.record(EvalEvent {
+                        timestamp: start,
+                        node_id: node_id.clone(),
+                        kind: EventKind::Started,
+                        version: VersionId(version_id),
+                        payload: None,
+                    });
+
                     let val = reify_expr::eval_expr(expr, &values);
                     values.insert(cell.id.clone(), val.clone());
 
@@ -254,16 +309,23 @@ impl Engine {
                     );
 
                     // Record in cache with dependency trace
-                    let node_id = NodeId::Value(cell.id.clone());
                     let trace = extract_dependency_trace(expr);
                     let cached_result =
                         CachedResult::Value(val, DeterminacyState::Determined);
-                    self.cache.record_evaluation(
-                        node_id,
+                    let outcome = self.cache.record_evaluation(
+                        node_id.clone(),
                         cached_result,
                         VersionId(version_id),
                         trace,
                     );
+
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id,
+                        kind: EventKind::Completed { outcome },
+                        version: VersionId(version_id),
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
                 }
             }
         }
@@ -331,6 +393,16 @@ impl Engine {
                         // Update values map with resolved values
                         let mut resolved_ids = std::collections::HashSet::new();
                         for (id, val) in &solver_values {
+                            let node_id = NodeId::Value(id.clone());
+                            let start = Instant::now();
+                            self.journal.record(EvalEvent {
+                                timestamp: start,
+                                node_id: node_id.clone(),
+                                kind: EventKind::Started,
+                                version: VersionId(res_version_id),
+                                payload: None,
+                            });
+
                             values.insert(id.clone(), val.clone());
                             resolved_params.insert(id.clone(), val.clone());
                             resolved_ids.insert(id.clone());
@@ -342,16 +414,23 @@ impl Engine {
                             );
 
                             // Update cache with res_version_id (matches snapshot)
-                            let node_id = NodeId::Value(id.clone());
                             let trace = DependencyTrace::default();
                             let cached_result =
                                 CachedResult::Value(val.clone(), DeterminacyState::Determined);
-                            self.cache.record_evaluation(
-                                node_id,
+                            let outcome = self.cache.record_evaluation(
+                                node_id.clone(),
                                 cached_result,
                                 VersionId(res_version_id),
                                 trace,
                             );
+
+                            self.journal.record(EvalEvent {
+                                timestamp: Instant::now(),
+                                node_id,
+                                kind: EventKind::Completed { outcome },
+                                version: VersionId(res_version_id),
+                                payload: Some(EventPayload::Duration(start.elapsed())),
+                            });
                         }
 
                         // Set child snapshot with Resolution provenance
@@ -368,6 +447,16 @@ impl Engine {
                             if cell.kind == ValueCellKind::Let
                                 && let Some(ref expr) = cell.default_expr
                             {
+                                let node_id = NodeId::Value(cell.id.clone());
+                                let start = Instant::now();
+                                self.journal.record(EvalEvent {
+                                    timestamp: start,
+                                    node_id: node_id.clone(),
+                                    kind: EventKind::Started,
+                                    version: VersionId(res_version_id),
+                                    payload: None,
+                                });
+
                                 let val = reify_expr::eval_expr(expr, &values);
                                 values.insert(cell.id.clone(), val.clone());
 
@@ -376,16 +465,23 @@ impl Engine {
                                     (val.clone(), DeterminacyState::Determined),
                                 );
 
-                                let node_id = NodeId::Value(cell.id.clone());
                                 let trace = extract_dependency_trace(expr);
                                 let cached_result =
                                     CachedResult::Value(val, DeterminacyState::Determined);
-                                self.cache.record_evaluation(
-                                    node_id,
+                                let outcome = self.cache.record_evaluation(
+                                    node_id.clone(),
                                     cached_result,
                                     VersionId(res_version_id),
                                     trace,
                                 );
+
+                                self.journal.record(EvalEvent {
+                                    timestamp: Instant::now(),
+                                    node_id,
+                                    kind: EventKind::Completed { outcome },
+                                    version: VersionId(res_version_id),
+                                    payload: Some(EventPayload::Duration(start.elapsed())),
+                                });
                             }
                         }
                     }
@@ -492,6 +588,15 @@ impl Engine {
                 && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
                 && let Some(ref expr) = node.default_expr
             {
+                let start = Instant::now();
+                self.journal.record(EvalEvent {
+                    timestamp: start,
+                    node_id: node_id.clone(),
+                    kind: EventKind::Started,
+                    version: VersionId(version_id),
+                    payload: None,
+                });
+
                 let val = reify_expr::eval_expr(expr, &values);
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot.values.insert(
@@ -509,6 +614,14 @@ impl Engine {
                     VersionId(version_id),
                     trace,
                 );
+
+                self.journal.record(EvalEvent {
+                    timestamp: Instant::now(),
+                    node_id: node_id.clone(),
+                    kind: EventKind::Completed { outcome },
+                    version: VersionId(version_id),
+                    payload: Some(EventPayload::Duration(start.elapsed())),
+                });
 
                 // Early cutoff: if result unchanged, remove downstream
                 // dependents from remaining eval set
@@ -566,6 +679,13 @@ impl Engine {
                     if let Some(CachedResult::Value(val, _)) =
                         self.cache.try_fast_path(&node_id, version)
                     {
+                        self.journal.record(EvalEvent {
+                            timestamp: Instant::now(),
+                            node_id,
+                            kind: EventKind::CacheHit,
+                            version,
+                            payload: None,
+                        });
                         values.insert(cell.id.clone(), val);
                         stats.cache_hits += 1;
                         continue;
@@ -582,16 +702,32 @@ impl Engine {
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
                         self.cache.record_evaluation(
-                            node_id,
+                            node_id.clone(),
                             result,
                             version,
                             trace,
                         );
+                        self.journal.record(EvalEvent {
+                            timestamp: Instant::now(),
+                            node_id,
+                            kind: EventKind::CacheHit,
+                            version,
+                            payload: None,
+                        });
                         stats.cache_hits += 1;
                         continue;
                     }
 
                     stats.cache_misses += 1;
+
+                    let start = Instant::now();
+                    self.journal.record(EvalEvent {
+                        timestamp: start,
+                        node_id: node_id.clone(),
+                        kind: EventKind::Started,
+                        version,
+                        payload: None,
+                    });
 
                     // Use override if available, otherwise Undef with Auto determinacy
                     let (val, det) = if let Some(override_val) = self.param_overrides.get(&cell.id) {
@@ -604,7 +740,16 @@ impl Engine {
                     let cached_result = CachedResult::Value(val.clone(), det);
                     let outcome =
                         self.cache
-                            .record_evaluation(node_id, cached_result, version, trace);
+                            .record_evaluation(node_id.clone(), cached_result, version, trace);
+
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id,
+                        kind: EventKind::Completed { outcome },
+                        version,
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
+
                     if outcome == EvalOutcome::Unchanged {
                         stats.early_cutoffs += 1;
                     }
@@ -617,6 +762,13 @@ impl Engine {
                     if let Some(CachedResult::Value(val, _)) =
                         self.cache.try_fast_path(&node_id, version)
                     {
+                        self.journal.record(EvalEvent {
+                            timestamp: Instant::now(),
+                            node_id,
+                            kind: EventKind::CacheHit,
+                            version,
+                            payload: None,
+                        });
                         values.insert(cell.id.clone(), val);
                         stats.cache_hits += 1;
                         continue;
@@ -634,16 +786,32 @@ impl Engine {
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
                         self.cache.record_evaluation(
-                            node_id,
+                            node_id.clone(),
                             result,
                             version,
                             trace,
                         );
+                        self.journal.record(EvalEvent {
+                            timestamp: Instant::now(),
+                            node_id,
+                            kind: EventKind::CacheHit,
+                            version,
+                            payload: None,
+                        });
                         stats.cache_hits += 1;
                         continue;
                     }
 
                     stats.cache_misses += 1;
+
+                    let start = Instant::now();
+                    self.journal.record(EvalEvent {
+                        timestamp: start,
+                        node_id: node_id.clone(),
+                        kind: EventKind::Started,
+                        version,
+                        payload: None,
+                    });
 
                     // Use override if available, otherwise evaluate default
                     let val = if let Some(override_val) = self.param_overrides.get(&cell.id) {
@@ -661,7 +829,16 @@ impl Engine {
                         CachedResult::Value(val.clone(), DeterminacyState::Determined);
                     let outcome =
                         self.cache
-                            .record_evaluation(node_id, cached_result, version, trace);
+                            .record_evaluation(node_id.clone(), cached_result, version, trace);
+
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id,
+                        kind: EventKind::Completed { outcome },
+                        version,
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
+
                     if outcome == EvalOutcome::Unchanged {
                         stats.early_cutoffs += 1;
                     }
@@ -681,6 +858,13 @@ impl Engine {
                     if let Some(CachedResult::Value(val, _)) =
                         self.cache.try_fast_path(&node_id, version)
                     {
+                        self.journal.record(EvalEvent {
+                            timestamp: Instant::now(),
+                            node_id,
+                            kind: EventKind::CacheHit,
+                            version,
+                            payload: None,
+                        });
                         values.insert(cell.id.clone(), val);
                         stats.cache_hits += 1;
                         continue;
@@ -698,17 +882,34 @@ impl Engine {
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
                         self.cache.record_evaluation(
-                            node_id,
+                            node_id.clone(),
                             result,
                             version,
                             trace,
                         );
+                        self.journal.record(EvalEvent {
+                            timestamp: Instant::now(),
+                            node_id,
+                            kind: EventKind::CacheHit,
+                            version,
+                            payload: None,
+                        });
                         stats.cache_hits += 1;
                         continue;
                     }
 
                     stats.cache_misses += 1;
                     self.cache.clear_dirty(&node_id);
+
+                    let start = Instant::now();
+                    self.journal.record(EvalEvent {
+                        timestamp: start,
+                        node_id: node_id.clone(),
+                        kind: EventKind::Started,
+                        version,
+                        payload: None,
+                    });
+
                     let val = reify_expr::eval_expr(expr, &values);
 
                     // Build dependency trace from expression refs
@@ -718,7 +919,16 @@ impl Engine {
                         CachedResult::Value(val.clone(), DeterminacyState::Determined);
                     let outcome =
                         self.cache
-                            .record_evaluation(node_id, cached_result, version, trace);
+                            .record_evaluation(node_id.clone(), cached_result, version, trace);
+
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id,
+                        kind: EventKind::Completed { outcome },
+                        version,
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
+
                     if outcome == EvalOutcome::Unchanged {
                         stats.early_cutoffs += 1;
                         // Early cutoff: clear dirty flags on nodes that

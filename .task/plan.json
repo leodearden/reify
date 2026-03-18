@@ -1,14 +1,14 @@
 {
-  "task_id": "27",
-  "title": "Warm-start protocol + WarmStatePool",
-  "modules": ["crates/reify-types", "crates/reify-eval", "crates/reify-runtime"],
-  "analysis": "This task adds warm-start infrastructure across three crates. (1) reify-types gets OpaqueState (a type-erased Box<dyn Any + Send> with size hint) and a WarmStartable trait. (2) reify-eval's NodeCache gains an optional warm_state field and CacheStore gets donate/retrieve helpers. (3) reify-runtime gets a standalone WarmStatePool with memory-budgeted LRU eviction.\n\nExisting patterns: NodeCache is a plain struct with pub fields (cache.rs:102-134). CacheStore uses HashMap<NodeId, NodeCache> with no capacity limits. record_evaluation() takes (NodeId, CachedResult, VersionId, DependencyTrace) — we will add an optional OpaqueState parameter. The concurrent module already uses Box<dyn Any + Send> for panic payloads (concurrent.rs:22), confirming the pattern is idiomatic in this codebase.\n\nKey design: OpaqueState wraps Box<dyn Any + Send> with an estimated_size_bytes field (not a method on the inner type, since the inner is type-erased). WarmStartable is a trait that types can implement to produce/consume OpaqueState. WarmStatePool lives in reify-runtime (not reify-eval) because it manages runtime resources with memory budgets — this follows the existing separation where reify-eval handles evaluation logic and reify-runtime handles scheduling/resource management.\n\nThe pool uses HashMap<NodeId, PoolEntry> with LRU eviction based on last_accessed Instant. Eviction removes least-recently-accessed entries until used_bytes <= budget_bytes. donate() inserts and triggers eviction if needed; retrieve() removes and returns the entry (take semantics).",
+  "task_id": "30",
+  "title": "Event journal",
+  "modules": ["crates/reify-eval"],
+  "analysis": "The task requires implementing an append-only EventJournal in reify-eval that records evaluation events (Started, Completed, Cancelled, Failed, CacheHit, WarmStartUsed) dual-indexed by time (BTreeMap<Instant>) and NodeId (HashMap<NodeId>). The journal will be owned by Engine and populated during eval() and edit_param() calls.\n\nThe existing codebase has:\n- Engine struct in lib.rs (972 lines) with eval(), edit_param(), eval_cached(), check(), build() methods\n- NodeId enum in cache.rs (Value, Constraint, Realization, Resolution variants) — derives Clone, Debug, PartialEq, Eq, Hash\n- EvalOutcome enum in cache.rs (Changed, Unchanged) — derives Clone, Copy, Debug, PartialEq, Eq\n- VersionId in reify-types (u64 newtype, implements Ord, Copy, Clone, Hash)\n- CacheStore.record_evaluation() pattern showing natural instrumentation points\n- Test infrastructure: reify-test-support with bracket_compiled_module(), MockConstraintChecker, CompiledModuleBuilder, TopologyTemplateBuilder\n\nKey code points where events should be recorded:\n1. eval() lines 194-413: Pass 1 (Param/Auto cells), Pass 2 (Let bindings), Resolution phase — each cache.record_evaluation() call is a natural Started→Completed pair\n2. edit_param() lines 424-542: eval set loop with early cutoff — Started before eval, Completed{outcome} after, skipped nodes get no events\n3. eval_cached() lines 550-738: cache hits via try_fast_path or not-dirty checks → CacheHit events; cache misses → Started/Completed\n\nThe module structure follows existing patterns: journal.rs alongside cache.rs, deps.rs, etc. with `pub mod journal;` in lib.rs. Unit tests go in #[cfg(test)] module within journal.rs; integration tests in tests/journal.rs.\n\nInstant is suitable for timestamps since it's monotonic and implements Ord (BTreeMap key requirement). The journal is in-process only — serialization not needed for v0.1.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add OpaqueState type and WarmStartable trait to reify-types. Create new module crates/reify-types/src/warm.rs, add pub mod warm to lib.rs, re-export OpaqueState and WarmStartable from lib.rs.",
+      "description": "Create empty crates/reify-eval/src/journal.rs module file and add `pub mod journal;` to lib.rs module declarations. Add `pub use journal::*;` re-export to lib.rs.",
       "status": "done",
-      "commit": "208fbae",
+      "commit": "de9953e",
       "tests": []
     }
   ],
@@ -16,147 +16,204 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write tests for OpaqueState in reify-types/src/warm.rs: (1) roundtrip — create OpaqueState from i32, downcast back to i32; (2) estimated_size_bytes returns the value provided at construction; (3) wrong-type downcast returns None; (4) OpaqueState is Send (compile-time assertion via fn assert_send<T: Send>()).",
+      "description": "Write unit tests in journal.rs #[cfg(test)] for EvalEvent, EventKind, and EventPayload type construction: verify all EventKind variants can be created (Started, Completed{outcome: Changed}, Completed{outcome: Unchanged}, Cancelled, Failed{error}, CacheHit, WarmStartUsed), all EventPayload variants (Duration, Error, Custom), EvalEvent can be constructed with all fields, and Clone/Debug derives work.",
       "status": "done",
-      "commit": "46ba1e7"
+      "commit": "3c7abf5"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement OpaqueState struct: fields inner: Box<dyn Any + Send>, estimated_size: usize. Methods: new<T: Any + Send>(value: T, estimated_size_bytes: usize) -> Self; estimated_size_bytes() -> usize; downcast<T: Any>(self) -> Option<T>; downcast_ref<T: Any>(&self) -> Option<&T>. Implement WarmStartable trait: fn warm_state(&self) -> Option<OpaqueState>; fn with_warm_state(&mut self, state: OpaqueState).",
+      "description": "Define EvalEvent struct {timestamp: Instant, node_id: NodeId, kind: EventKind, version: VersionId, payload: Option<EventPayload>}, EventKind enum {Started, Completed{outcome: EvalOutcome}, Cancelled, Failed{error: String}, CacheHit, WarmStartUsed}, EventPayload enum {Duration(std::time::Duration), Error(String), Custom(String)}. All derive Clone, Debug. Import NodeId from crate::cache, EvalOutcome from crate::cache, VersionId from reify_types.",
       "status": "done",
-      "commit": "660218e"
+      "commit": "5d76e24"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write tests for warm_state field on NodeCache in reify-eval/src/cache.rs: (1) NodeCache::new creates entry with warm_state: None; (2) can set warm_state on a NodeCache after creation; (3) CacheStore get/put preserves warm_state on NodeCache.",
+      "description": "Write unit tests for EventJournal::new() and record(): new() creates empty journal (len()==0, is_empty()==true); record() appends event and increments len(); multiple record() calls maintain insertion order; events can be accessed by index via all_events() slice accessor.",
       "status": "done",
-      "commit": "0efffad"
+      "commit": "ed447f5"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add warm_state: Option<OpaqueState> field to NodeCache struct. Update NodeCache::new() to set warm_state: None. Since OpaqueState contains Box<dyn Any + Send> which isn't Clone, remove #[derive(Clone)] from NodeCache and implement Clone manually (cloning warm_state as None — warm state is transient, not preserved across clones). Verify all existing tests still pass.",
+      "description": "Define EventJournal struct {events: Vec<EvalEvent>, by_time: BTreeMap<Instant, Vec<usize>>, by_node: HashMap<NodeId, Vec<usize>>}. Implement new() returning empty journal, record(&mut self, event: EvalEvent) that appends to events vec and updates both by_time and by_node indices with the new index, len() -> usize, is_empty() -> bool, all_events() -> &[EvalEvent].",
       "status": "done",
-      "commit": "eb726a7"
+      "commit": "0f0e932"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write tests for CacheStore warm-state helpers: (1) donate_warm_state stores OpaqueState on an existing cached node, get_warm_state retrieves it (take semantics — second get returns None); (2) donate_warm_state on non-existent node returns false / is no-op; (3) record_evaluation preserves warm_state if node already has one (or clears it — decide based on semantics: re-evaluation produces new state, so clear).",
+      "description": "Write unit tests for events_for_node(node_id): record events for 3 different NodeIds, verify events_for_node returns correct events for each, verify empty Vec for unknown NodeId, verify events are in insertion order within a node.",
       "status": "done",
-      "commit": "80786ac"
+      "commit": "d46321d"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add CacheStore methods: donate_warm_state(node: &NodeId, state: OpaqueState) -> bool — sets warm_state on existing cached node, returns false if node not cached; get_warm_state(node: &NodeId) -> Option<OpaqueState> — takes warm_state out of the cache entry (Option::take). Update record_evaluation to clear warm_state (set to None) when recording a new result, since the old warm state is stale after re-evaluation.",
+      "description": "Implement events_for_node(&self, node_id: &NodeId) -> Vec<&EvalEvent> — look up indices in by_node HashMap, map to &self.events[idx] references. Return empty Vec if node not found.",
       "status": "done",
-      "commit": "33b9a85"
+      "commit": "c461eaa"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write tests for WarmStatePool in reify-runtime (new module warm_pool.rs): (1) donate and retrieve roundtrip — store OpaqueState for a NodeId, retrieve returns Some with correct value; (2) retrieve removes entry (second retrieve returns None); (3) used_bytes tracks correctly on donate and retrieve.",
+      "description": "Write unit tests for events_in_range(range): record events with naturally ordered Instants (Instant::now() between records), verify range query returns correct subset. Test with Range (start..end), RangeFrom (start..), and RangeFull (..). Test empty range returns empty Vec.",
       "status": "done",
-      "commit": "f2c797f"
+      "commit": "a3757d8"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Create crates/reify-runtime/src/warm_pool.rs with WarmStatePool struct: fields pool: HashMap<NodeId, PoolEntry>, budget_bytes: usize, used_bytes: usize. PoolEntry: { state: OpaqueState, last_accessed: Instant, size_bytes: usize }. Implement new(budget_bytes: usize), donate(node_id: NodeId, state: OpaqueState), retrieve(node_id: &NodeId) -> Option<OpaqueState>, used_bytes(), budget_bytes(). Add pub mod warm_pool to lib.rs.",
+      "description": "Implement events_in_range(&self, range: impl RangeBounds<Instant>) -> Vec<&EvalEvent> — use BTreeMap::range() on by_time to get matching time entries, collect all event indices, sort by index (preserves insertion order), deduplicate, and map to references.",
       "status": "done",
-      "commit": "384432f"
+      "commit": "1e955ef"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write tests for WarmStatePool memory budget enforcement: (1) donate exceeding budget triggers eviction of LRU entries until under budget; (2) eviction removes least-recently-accessed entry (donate 3 items within budget, retrieve middle one to update its access time, donate a large item that exceeds budget — first item should be evicted, not the middle one); (3) donate single item larger than budget still stores it (evicts everything else) or rejects it — decide semantics.",
+      "description": "Write unit tests for events_since(version): record events across VersionId(0), VersionId(1), VersionId(2), verify events_since(VersionId(1)) returns only events with version >= 1. Test exact boundary match and no-match case (version higher than all events returns empty).",
       "status": "done",
-      "commit": "b69ca82"
+      "commit": "9b99343"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement LRU eviction in WarmStatePool: evict_lru() private method removes the entry with the oldest last_accessed Instant, subtracts its size_bytes from used_bytes. donate() calls evict_lru() in a loop while used_bytes + new_size > budget_bytes && !pool.is_empty(). If a single item exceeds budget and pool is empty, store it anyway (over-budget by one item is acceptable — the alternative of rejecting warm state silently is worse). Update last_accessed on retrieve() before taking the entry out (not strictly needed since it's removed, but keeps semantics clean for future peek operations).",
+      "description": "Implement events_since(&self, version: VersionId) -> Vec<&EvalEvent> — linear scan of events vec filtering where event.version >= version. Returns references in insertion order.",
       "status": "done",
-      "commit": "0805e88"
+      "commit": "f042d17"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write tests for WarmStatePool edge cases: (1) donate with same NodeId replaces existing entry and adjusts used_bytes; (2) pool with budget_bytes = 0 still accepts first item (graceful degradation); (3) clear() resets pool to empty and used_bytes to 0; (4) len() returns correct count.",
+      "description": "Write unit tests for latest_for_node(node_id): record multiple events for same node, verify latest_for_node returns the last one recorded. Verify None for unknown node. Verify correct result after interleaving events for different nodes.",
       "status": "done",
-      "commit": "ba4e1a8"
+      "commit": "1a2860c"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement remaining WarmStatePool methods: handle duplicate NodeId in donate() by removing old entry first (subtract old size, then insert new). Add clear(), len(), is_empty() utility methods. Ensure donate with same NodeId updates last_accessed.",
+      "description": "Implement latest_for_node(&self, node_id: &NodeId) -> Option<&EvalEvent> — look up by_node, get last index, return &self.events[last_idx].",
       "status": "done",
-      "commit": "219618a"
+      "commit": "368b14a"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write integration test (tests/journal.rs) that Engine::eval() populates the journal: create Engine with MockConstraintChecker, eval bracket_compiled_module, verify engine.journal().len() > 0, verify events exist for known ValueCellIds (e.g., Bracket/width), verify all events have the correct VersionId matching the snapshot, verify Started events precede Completed events for same node.",
+      "status": "done",
+      "commit": "4f5b0d1"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Add journal: EventJournal field to Engine struct, initialize in new(). Add pub fn journal(&self) -> &EventJournal accessor. Wire into eval(): before each node evaluation call Instant::now() and record Started event, after cache.record_evaluation() record Completed{outcome} event with Duration payload. Cover all three passes: Param/Auto (pass 1), Let bindings (pass 2), and Resolution phase.",
+      "status": "done",
+      "commit": "80be82f"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write integration test that Engine::edit_param() records correct journal events: eval() then edit_param(), verify new events appear with the edit_param's version, verify Started/Completed pairs for re-evaluated Value nodes, verify events_since(edit_version) returns only the edit_param events, verify early-cutoff-skipped nodes do NOT have Started events.",
+      "status": "done",
+      "commit": "0f163bf"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Wire journal into edit_param(): record Started before reify_expr::eval_expr, record Completed{outcome} after cache.record_evaluation(). For Constraint/Realization nodes in eval set that are tracked but not evaluated, do not record events. Ensure version in events matches the edit_param's allocated VersionId(version_id).",
+      "status": "done",
+      "commit": "94e9469"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write integration test for eval_cached() journal events: first call (cold start) records Started/Completed for all nodes, second call with same version records CacheHit events via fast-path, call after set_param_and_invalidate records mix of CacheHit (unchanged nodes) and Started/Completed (dirty nodes).",
+      "status": "done",
+      "commit": "718e34c"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Wire journal into eval_cached(): record CacheHit when try_fast_path succeeds, record CacheHit when cache reuse succeeds (not dirty, existing entry), record Started/Completed for cache misses that trigger actual evaluation. Include Duration payload on Completed events.",
+      "status": "done",
+      "commit": "e5afca2"
     }
   ],
   "design_decisions": [
     {
-      "decision": "OpaqueState stores estimated_size_bytes as a field provided at construction, not computed dynamically",
-      "rationale": "The inner type is type-erased (Box<dyn Any + Send>), so we cannot call std::mem::size_of_val on the pointed-to data to get heap allocations. The caller who constructs OpaqueState knows the size of their data (e.g., OCCT TopoDS_Shape). A size hint field is simpler and more accurate than trying to compute size through trait objects."
+      "decision": "Place journal.rs in crates/reify-eval/src/ alongside Engine code",
+      "rationale": "The PRD mentions reify-runtime but Engine lives in reify-eval. Keeping the journal co-located with Engine avoids cross-crate coupling and allows direct field access. The journal can be re-exported from reify-runtime later if needed."
     },
     {
-      "decision": "WarmStartable trait has with_warm_state(&mut self, state: OpaqueState) not returning Result",
-      "rationale": "The warm state is best-effort optimization. If the state is the wrong type or stale, the implementor can silently ignore it and proceed with cold evaluation. Returning Result would force error handling at every call site for a non-critical optimization path."
+      "decision": "Use std::time::Instant for timestamps",
+      "rationale": "Instant is monotonic and implements Ord (required for BTreeMap keys). It's not serializable, but the EventJournal is an in-process data structure for live consumers (LSP, CLI). Serialization can be added later with a wrapper if needed. The task description explicitly specifies Instant."
     },
     {
-      "decision": "NodeCache warm_state clones as None (warm state is transient)",
-      "rationale": "Warm state contains type-erased Box<dyn Any + Send> which doesn't implement Clone. Rather than requiring Clone on the inner type (which would complicate OpaqueState and exclude types like OCCT handles), we treat warm state as transient — it's an optimization hint, not essential data. Cloning a NodeCache (e.g., for snapshot) drops the warm state."
+      "decision": "Return Vec<&EvalEvent> from query methods instead of &[EvalEvent]",
+      "rationale": "Events are stored contiguously in a Vec but accessed via indices in secondary maps. Returning a contiguous slice is impossible when elements are scattered across non-contiguous positions. Vec<&EvalEvent> is the natural return type for index-based lookups."
     },
     {
-      "decision": "CacheStore.get_warm_state uses take semantics (removes from cache entry)",
-      "rationale": "Warm state is consumed by the evaluator during re-evaluation. Take semantics prevent accidental double-use and make ownership transfer explicit. The evaluator takes the warm state, uses it, and then donates new warm state back after evaluation completes."
+      "decision": "Use linear scan for events_since(version) instead of a version index",
+      "rationale": "Version-based queries are expected to be infrequent (LSP polling, debugging). A linear scan over the events vec is simple and cache-friendly. A BTreeMap<VersionId, Vec<usize>> index can be added later if profiling shows it's needed."
     },
     {
-      "decision": "record_evaluation clears warm_state on the cache entry",
-      "rationale": "After re-evaluation, the old warm state is stale — the evaluator has already consumed it (via get_warm_state) or it's from a previous evaluation cycle. The evaluator is expected to donate new warm state separately after recording the result."
+      "decision": "EventJournal is owned by Engine (not Arc<Mutex>)",
+      "rationale": "Engine is already &mut self for eval/edit_param. The journal follows the same ownership model. M4 (concurrent evaluation) will need to revisit this with channels or Arc<Mutex>, but for now single-threaded ownership is correct and simple."
     },
     {
-      "decision": "WarmStatePool lives in reify-runtime, not reify-eval",
-      "rationale": "The pool manages runtime resources (memory budgets, LRU eviction with Instant timestamps). This is a resource management concern, not an evaluation logic concern. reify-eval's CacheStore provides the per-node warm_state slot; reify-runtime's WarmStatePool manages the cross-node budget. This also follows the existing separation where reify-runtime has scheduling/resource logic."
+      "decision": "Record events inline during eval/edit_param rather than via a callback/observer pattern",
+      "rationale": "Direct recording is simpler and has zero allocation overhead beyond the event itself. An observer/subscriber pattern can be layered on top of the journal's query API by consumers. This avoids trait object dispatch overhead in the hot evaluation path."
     },
     {
-      "decision": "Single oversized item is allowed to exceed budget",
-      "rationale": "If a warm state item is larger than the entire budget, we still store it (after evicting everything else). Silently dropping warm state without storing would be surprising behavior. The budget is a soft limit for the common case of many small items; a single large item temporarily exceeding budget is acceptable."
+      "decision": "Do not record events for Constraint/Realization nodes tracked but not evaluated in edit_param",
+      "rationale": "The existing code explicitly notes that Constraint/Realization nodes are 'tracked in eval set but not evaluated (deferred to check()/build())'. Recording Started without Completed would be misleading. Events for these node types will be added when check()/build() are instrumented."
     },
     {
-      "decision": "LRU eviction uses linear scan over HashMap entries comparing Instant values",
-      "rationale": "For the expected pool sizes (hundreds to low thousands of nodes), a linear scan is fast enough and avoids the complexity of maintaining a doubly-linked list or BTreeMap secondary index. If pool sizes grow, this can be optimized later with an LRU list (e.g., lru crate), but premature optimization would add unnecessary complexity."
+      "decision": "Include EvalOutcome in Completed variant rather than separate Changed/Unchanged event kinds",
+      "rationale": "Follows the task description's specified EventKind::Completed{outcome: EvalOutcome}. Reuses the existing EvalOutcome enum from cache.rs. Keeps the event kind count manageable while encoding the early-cutoff-relevant information."
     }
   ],
   "reuse": [
     {
-      "what": "NodeId enum (cache.rs:10-42)",
-      "where": "WarmStatePool key type, CacheStore warm state methods",
-      "how": "Use existing NodeId as the key for WarmStatePool's HashMap. Import from reify_eval::cache::NodeId."
+      "what": "NodeId enum",
+      "where": "crates/reify-eval/src/cache.rs lines 10-42",
+      "how": "Used as the node_id field in EvalEvent and as HashMap key in by_node index. Already derives Clone, Debug, PartialEq, Eq, Hash — all traits needed for both roles."
     },
     {
-      "what": "Box<dyn Any + Send> pattern (concurrent.rs:22)",
-      "where": "OpaqueState inner type",
-      "how": "Same type-erasure pattern already used for panic payloads in SchedulerError::TaskPanicked. OpaqueState wraps Box<dyn Any + Send> with the same ownership semantics."
+      "what": "EvalOutcome enum (Changed | Unchanged)",
+      "where": "crates/reify-eval/src/cache.rs lines 92-100",
+      "how": "Used inside EventKind::Completed{outcome: EvalOutcome} to record whether a node's result changed or was unchanged (enables early cutoff tracking). Already derives Clone, Copy, Debug, PartialEq, Eq."
     },
     {
-      "what": "CacheStore method patterns (cache.rs:137-348)",
-      "where": "New donate_warm_state/get_warm_state methods",
-      "how": "Follow existing CacheStore API patterns: methods take &NodeId for lookups, return bool for success/failure of mutations, use Option for nullable returns."
+      "what": "VersionId type",
+      "where": "crates/reify-types/src/identity.rs line 154",
+      "how": "Used as the version field in EvalEvent and as parameter to events_since(). Already derives Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord — Ord needed for version comparison in events_since()."
     },
     {
-      "what": "Inline #[cfg(test)] mod tests pattern",
-      "where": "All new test code",
-      "how": "Follow the project convention of inline test modules at the bottom of source files, with descriptive test_name_what_it_does naming."
+      "what": "cache.record_evaluation() return value",
+      "where": "crates/reify-eval/src/lib.rs (eval, edit_param, eval_cached methods)",
+      "how": "record_evaluation() already returns EvalOutcome, which feeds directly into EventKind::Completed{outcome}. No extra computation needed to determine Changed vs Unchanged."
     },
     {
-      "what": "ValueCellId::new(entity, member) test helper",
-      "where": "All tests creating NodeIds",
-      "how": "Use existing ValueCellId::new('Test', 'x') pattern for creating test node IDs, same as in cache.rs tests."
+      "what": "bracket_compiled_module() fixture",
+      "where": "crates/reify-test-support/src/fixtures.rs",
+      "how": "Reuse in integration tests to create a realistic CompiledModule with 5 params + 1 let binding for Engine eval/edit_param journal tests."
+    },
+    {
+      "what": "MockConstraintChecker",
+      "where": "crates/reify-test-support (mocks module)",
+      "how": "Reuse as the constraint_checker parameter when constructing Engine in integration tests."
+    },
+    {
+      "what": "CompiledModuleBuilder / TopologyTemplateBuilder",
+      "where": "crates/reify-test-support",
+      "how": "For building custom minimal modules in targeted tests (e.g., single-node modules for event ordering verification)."
+    },
+    {
+      "what": "Existing Engine field + accessor pattern",
+      "where": "crates/reify-eval/src/lib.rs lines 124-137 (cache_store(), snapshot(), last_eval_set())",
+      "how": "Follow the same pattern for journal field: private field, pub fn journal(&self) -> &EventJournal accessor for testing/inspection."
     }
   ]
 }
