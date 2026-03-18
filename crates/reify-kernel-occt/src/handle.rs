@@ -431,4 +431,68 @@ mod tests {
             drop(handle);
         }
     }
+
+    #[test]
+    fn multi_operation_sequence() {
+        let handle = super::OcctKernelHandle::spawn();
+
+        // Create box
+        let box_h = handle
+            .execute(&GeometryOp::Box {
+                width: Value::Real(100.0),
+                height: Value::Real(60.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        assert_eq!(box_h.id, GeometryHandleId(1));
+
+        // Create cylinder
+        let cyl_h = handle
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        assert_eq!(cyl_h.id, GeometryHandleId(2));
+
+        // Boolean union
+        let union_h = handle
+            .execute(&GeometryOp::Union {
+                left: box_h.id,
+                right: cyl_h.id,
+            })
+            .unwrap();
+        assert_eq!(union_h.id, GeometryHandleId(3));
+
+        // Fillet
+        let fillet_h = handle
+            .execute(&GeometryOp::Fillet {
+                target: union_h.id,
+                radius: Value::Real(2.0),
+            })
+            .unwrap();
+        assert_eq!(fillet_h.id, GeometryHandleId(4));
+
+        // Query volume
+        let vol = handle
+            .query(&reify_types::GeometryQuery::Volume(fillet_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => assert!(v > 0.0, "volume should be positive, got {v}"),
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+
+        // Tessellate
+        let mesh = handle.tessellate(fillet_h.id, 0.1).unwrap();
+        assert!(!mesh.vertices.is_empty());
+        assert!(!mesh.indices.is_empty());
+
+        // Export STEP
+        let mut buf = Vec::new();
+        handle
+            .export(fillet_h.id, reify_types::ExportFormat::Step, &mut buf)
+            .unwrap();
+        let content = String::from_utf8(buf).unwrap();
+        assert!(content.contains("ISO-10303-21"));
+    }
 }
