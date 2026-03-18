@@ -109,10 +109,10 @@ impl ConcurrentEvalAdapter {
     /// references still exist. Slightly less efficient than `into_result`
     /// since it clones each inner container through locks.
     pub fn build_result_shared(&self, eval_set: &[NodeId]) -> ConcurrentEditResult {
-        let values = self.values.read().unwrap().clone();
-        let snapshot_values = self.snapshot_values.read().unwrap().clone();
-        let node_results = self.results.lock().unwrap().clone();
-        let skipped = self.skip_state.lock().unwrap().skipped.clone();
+        let values = self.values.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let snapshot_values = self.snapshot_values.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let node_results = self.results.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let skipped = self.skip_state.lock().unwrap_or_else(|e| e.into_inner()).skipped.clone();
 
         let actual_eval_set: Vec<NodeId> = eval_set
             .iter()
@@ -136,20 +136,20 @@ impl ConcurrentEvalAdapter {
     /// Extracts the final values, snapshot_values, results, and skipped set.
     pub fn into_result(self, eval_set: &[NodeId]) -> ConcurrentEditResult {
         let values = match Arc::try_unwrap(self.values) {
-            Ok(lock) => lock.into_inner().unwrap(),
-            Err(arc) => arc.read().unwrap().clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
+            Err(arc) => arc.read().unwrap_or_else(|e| e.into_inner()).clone(),
         };
         let snapshot_values = match Arc::try_unwrap(self.snapshot_values) {
-            Ok(lock) => lock.into_inner().unwrap(),
-            Err(arc) => arc.read().unwrap().clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
+            Err(arc) => arc.read().unwrap_or_else(|e| e.into_inner()).clone(),
         };
         let node_results = match Arc::try_unwrap(self.results) {
-            Ok(lock) => lock.into_inner().unwrap(),
-            Err(arc) => arc.lock().unwrap().clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
+            Err(arc) => arc.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         };
         let skipped = match Arc::try_unwrap(self.skip_state) {
-            Ok(lock) => lock.into_inner().unwrap().skipped,
-            Err(arc) => arc.lock().unwrap().skipped.clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()).skipped,
+            Err(arc) => arc.lock().unwrap_or_else(|e| e.into_inner()).skipped.clone(),
         };
 
         // actual_eval_set = eval_set nodes that weren't skipped

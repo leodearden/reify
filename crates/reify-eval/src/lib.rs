@@ -363,6 +363,13 @@ impl Engine {
             self.cache.restore_final(node_id);
         }
 
+        // Commit solver-resolved auto param values to engine state.
+        // These were computed by resolve_concurrent_edit but must only
+        // be persisted here so that resolve remains side-effect-free.
+        for (id, val) in &result.resolved_params {
+            self.param_overrides.insert(id.clone(), val.clone());
+        }
+
         // Update current snapshot
         let snapshot = self.current_snapshot.as_ref()
             .expect("apply_concurrent_edit requires snapshot from eval()");
@@ -461,8 +468,6 @@ impl Engine {
                                     id.clone(),
                                     (val.clone(), DeterminacyState::Determined),
                                 );
-
-                                self.param_overrides.insert(id.clone(), val.clone());
 
                                 let node_id = NodeId::Value(id.clone());
                                 let trace = DependencyTrace::default();
