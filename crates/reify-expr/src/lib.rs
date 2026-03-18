@@ -671,6 +671,59 @@ mod tests {
     }
 
     #[test]
+    fn function_call_abs_dispatches_to_stdlib() {
+        // FunctionCall('abs', [Literal(Real(-3.0))]) should return Real(3.0), not Undef
+        let arg = lit(Value::Real(-3.0), Type::Real);
+        let expr = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[42]),
+            result_type: Type::Real,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: "abs".to_string(),
+                    qualified_name: "std::abs".to_string(),
+                },
+                args: vec![arg],
+            },
+        };
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &values);
+        match result {
+            Value::Real(v) => assert!((v - 3.0).abs() < 1e-12),
+            other => panic!("expected Real(3.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn function_call_sin_with_angle() {
+        let arg = lit(
+            Value::Scalar {
+                si_value: std::f64::consts::FRAC_PI_4,
+                dimension: DimensionVector::ANGLE,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+        let expr = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[43]),
+            result_type: Type::Real,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: "sin".to_string(),
+                    qualified_name: "std::sin".to_string(),
+                },
+                args: vec![arg],
+            },
+        };
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &values);
+        match result {
+            Value::Real(v) => assert!((v - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-10),
+            other => panic!("expected Real(~0.7071), got {:?}", other),
+        }
+    }
+
+    #[test]
     fn div_same_dimension_yields_dimensionless() {
         // 80mm / 20mm = 4.0 (dimensionless Real)
         let left = lit(mm_val(80.0), Type::length());
