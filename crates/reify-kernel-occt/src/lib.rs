@@ -312,6 +312,33 @@ mod tests {
     }
 
     #[test]
+    fn warm_state_returns_some_after_ops() {
+        let mut kernel = OcctKernel::new();
+        // Execute a box and a cylinder
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+
+        let state = kernel.warm_state();
+        assert!(state.is_some(), "kernel with shapes should have warm state");
+        let state = state.unwrap();
+        assert!(
+            state.estimated_size_bytes() > 0,
+            "estimated size should be positive"
+        );
+    }
+
+    #[test]
     fn brep_serialization_roundtrip() {
         // Create a box shape
         let shape = ffi::ffi::make_box(10.0, 20.0, 30.0).unwrap();
