@@ -2,7 +2,7 @@
   "task_id": "32",
   "title": "LSP server — core infrastructure",
   "modules": ["crates/reify-lsp", "crates/reify-cli", "Cargo.toml"],
-  "analysis": "The reify-lsp crate is currently a stub containing only a comment. Task 32 requires building core LSP infrastructure: initialization, document sync (didOpen/didChange/didClose), and diagnostics publishing. The architecture doc (section 3.9) mandates tower-lsp. The existing pipeline is: source → reify_syntax::parse() → reify_compiler::compile() → reify_eval::Engine::check(). Diagnostics come from three layers: ParseError (with SourceSpan), compiler Diagnostic (with DiagnosticLabel/SourceSpan), and eval CheckResult diagnostics. All use byte-offset SourceSpan which must be converted to LSP line/column Positions. The Engine is not Send (holds Box<dyn ConstraintChecker> etc.), so it must be managed behind a tokio Mutex or on a dedicated task. For initial LSP, we only need check (no geometry kernel), so Engine::new(checker, None) suffices. The CLI already has check/build commands and needs a new 'lsp' subcommand that starts the server on stdio. Key integration points: reify-test-support provides bracket_source(), MockConstraintChecker for testing the pipeline without real geometry.",
+  "analysis": "The reify-lsp crate is currently a stub containing only a comment. Task 32 requires building core LSP infrastructure: initialization, document sync (didOpen/didChange/didClose), and diagnostics publishing. The architecture doc (section 3.9) mandates tower-lsp. The existing pipeline is: source → reify_syntax::parse() → reify_compiler::compile() → reify_eval::Engine::check(). Diagnostics come from three layers: ParseError (with SourceSpan), compiler Diagnostic (with DiagnosticLabel/SourceSpan), and eval CheckResult diagnostics. All use byte-offset SourceSpan which must be converted to LSP line/column Positions. The Engine is not Send (holds Box<dyn ConstraintChecker> etc.), so it must be managed behind a tokio Mutex or on a dedicated task. For initial LSP, we only need check (no geometry kernel), so Engine::new(checker, None) suffices. The CLI already has check/build commands and needs a new 'lsp' subcommand that starts the server on stdio. Key integration points: reify-test-support provides bracket_source(), MockConstraintChecker for testing the pipeline without real geometry.\n\nPOST-REVIEW UPDATE: Reviewer identified a blocking panic in offset_to_position when byte offsets land mid-character in multi-byte UTF-8 sequences. Tree-sitter error-recovery spans routinely produce such offsets. Steps 21-22 added to fix this with TDD.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -166,6 +166,20 @@
       "description": "Fix any issues found in integration testing. Wire up the public API in lib.rs: pub mod convert, pub mod document, pub mod server. Export run_server as the main entry point. Ensure cargo test passes for all crates, cargo clippy is clean.",
       "status": "done",
       "commit": "b28eacd"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing tests for UTF-8 boundary safety in offset_to_position (review fix: panic_on_invalid_utf8_slice). In crates/reify-lsp/src/convert.rs #[cfg(test)] mod tests, add: (1) offset_mid_multibyte_2byte: source contains a 2-byte char (e.g., \"a\\u{00E9}b\" = \"aéb\"), pass offset pointing to the continuation byte (byte index 2, which is 0x80..0xBF) — must not panic, should snap forward to the next char boundary and return a valid Position. (2) offset_mid_multibyte_3byte: source \"a\\u{4E16}b\" (\"a世b\"), offset at byte 2 and byte 3 (middle of the 3-byte 世) — must not panic. (3) offset_mid_multibyte_4byte: source with a 4-byte emoji \"a\\u{1F600}b\" (\"a😀b\"), offsets at bytes 2, 3, 4 — must not panic. (4) offset_at_exact_char_boundary: source \"aéb\", offset at byte 0, 1, 3, 4 (all valid boundaries) — returns correct positions, confirming no regression. (5) offset_mid_char_in_second_line: source \"x\\n\\u{00E9}y\", offset pointing mid-é on line 2 — must not panic, line number must be 1. (6) span_to_range_mid_multibyte: a SourceSpan where start or end lands mid-character — must not panic, range should be valid. These tests should panic/fail against the current implementation, proving the bug exists.",
+      "status": "done",
+      "commit": "ff58677"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Fix offset_to_position in crates/reify-lsp/src/convert.rs to handle byte offsets that land mid-character in multi-byte UTF-8 sequences. After computing `clamped = offset.min(bytes.len())`, snap `clamped` forward to the next valid UTF-8 character boundary: `while clamped < bytes.len() && !source.is_char_boundary(clamped) { clamped += 1; }`. Apply the same snapping to `line_start` for defensive safety (though `line_start` is always after a `\\n` byte, which is a valid boundary). The line_slice `&source[line_start..clamped]` is now guaranteed to be valid UTF-8. Also snap `line_start` forward if it somehow lands mid-char (defensive). This ensures Tree-sitter error-recovery spans pointing to mid-character byte positions never crash the LSP server. All step-21 tests must pass, and all existing tests must continue to pass with no regressions.",
+      "status": "done",
+      "commit": "42e543c"
     }
   ],
   "design_decisions": [
@@ -196,6 +210,10 @@
     {
       "decision": "CLI uses synchronous tokio Runtime::new().block_on() for lsp subcommand",
       "rationale": "The existing CLI main() is synchronous. Rather than converting the entire CLI to async, only the lsp subcommand needs async. block_on() bridges sync → async cleanly. The other commands (check, build) remain synchronous."
+    },
+    {
+      "decision": "Snap mid-character byte offsets forward to next char boundary (not backward)",
+      "rationale": "When a byte offset falls inside a continuation bytes of a multi-byte UTF-8 sequence, we snap forward to the next character boundary rather than backward. Forward-snapping is simpler (just advance while !is_char_boundary) and avoids the risk of snapping backward past a newline, which would corrupt line counting. Using str::is_char_boundary() is the idiomatic Rust approach and handles all UTF-8 sequence lengths (2/3/4 byte) uniformly. This matches the reviewer's suggestion of advancing past continuation bytes (bytes matching 0x80..0xBF pattern)."
     }
   ],
   "reuse": [
@@ -243,6 +261,11 @@
       "what": "CLI parse_and_compile pattern",
       "where": "crates/reify-cli/src/main.rs lines 29-58",
       "how": "The LSP diagnostics pipeline follows the same parse → compile → engine pattern. Reuse the same sequencing: parse source, forward parse errors, compile, collect diagnostics."
+    },
+    {
+      "what": "str::is_char_boundary()",
+      "where": "Rust std library",
+      "how": "Use in the UTF-8 boundary fix to test whether a byte index is a valid character boundary. More idiomatic and robust than manually checking continuation byte patterns (0x80..0xBF)."
     }
   ]
 }
