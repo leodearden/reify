@@ -952,9 +952,11 @@ impl Engine {
 
                     match solver.solve(&problem) {
                         SolveResult::Solved { values: solver_values } => {
+                            let mut resolved_ids = HashSet::new();
                             for (id, val) in &solver_values {
                                 values.insert(id.clone(), val.clone());
                                 resolved_params.insert(id.clone(), val.clone());
+                                resolved_ids.insert(id.clone());
 
                                 // Update snapshot values
                                 new_snapshot.values.insert(
@@ -979,6 +981,51 @@ impl Engine {
                                     VersionId(version_id),
                                     trace,
                                 );
+                            }
+
+                            // ── Second propagation wave ─────────────────────
+                            // Re-resolved auto params may have changed value.
+                            // Let bindings depending on them may NOT be in the
+                            // original dirty cone. Compute a second dirty cone
+                            // from the resolved auto param IDs and re-evaluate
+                            // affected value nodes.
+                            if !resolved_ids.is_empty() {
+                                let wave2_dirty = crate::dirty::compute_dirty_cone(
+                                    &resolved_ids,
+                                    reverse_index,
+                                );
+                                let wave2_eval = crate::dirty::compute_eval_set(
+                                    &wave2_dirty,
+                                    &self.demand,
+                                    trace_map,
+                                );
+
+                                for node_id in &wave2_eval {
+                                    if let NodeId::Value(vcid) = node_id
+                                        && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
+                                        && let Some(ref expr) = node.default_expr
+                                    {
+                                        let val = reify_expr::eval_expr(expr, &values);
+                                        values.insert(vcid.clone(), val.clone());
+                                        new_snapshot.values.insert(
+                                            vcid.clone(),
+                                            (val.clone(), DeterminacyState::Determined),
+                                        );
+
+                                        // Update cache for re-evaluated node
+                                        let trace = extract_dependency_trace(expr);
+                                        let cached_result = CachedResult::Value(
+                                            val,
+                                            DeterminacyState::Determined,
+                                        );
+                                        self.cache.record_evaluation(
+                                            node_id.clone(),
+                                            cached_result,
+                                            VersionId(version_id),
+                                            trace,
+                                        );
+                                    }
+                                }
                             }
                         }
                         SolveResult::Infeasible { diagnostics: solver_diags } => {
