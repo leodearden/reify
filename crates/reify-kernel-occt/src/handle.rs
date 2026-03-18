@@ -388,4 +388,34 @@ mod tests {
             other => panic!("expected InvalidHandle, got {:?}", other),
         }
     }
+
+    #[test]
+    fn drop_handle_exits_thread_cleanly() {
+        let handle = super::OcctKernelHandle::spawn();
+        // Execute an op to ensure kernel thread is alive and working
+        let op = GeometryOp::Box {
+            width: Value::Real(1.0),
+            height: Value::Real(1.0),
+            depth: Value::Real(1.0),
+        };
+        handle.execute(&op).unwrap();
+        // Drop should not panic — thread exits cleanly
+        drop(handle);
+    }
+
+    #[test]
+    fn multiple_sequential_handles() {
+        for _ in 0..3 {
+            let handle = super::OcctKernelHandle::spawn();
+            let op = GeometryOp::Box {
+                width: Value::Real(5.0),
+                height: Value::Real(5.0),
+                depth: Value::Real(5.0),
+            };
+            let gh = handle.execute(&op).unwrap();
+            // Each handle starts with its own id counter
+            assert_eq!(gh.id, GeometryHandleId(1));
+            drop(handle);
+        }
+    }
 }
