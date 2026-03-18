@@ -18,3 +18,5 @@ reify-constraints.workspace = true
 reify-geometry.workspace = true
 reify-kernel-occt.workspace = true
 reify-stdlib.workspace = true
+reify-lsp.workspace = true
+tokio.workspace = true
