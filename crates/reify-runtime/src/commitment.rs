@@ -142,6 +142,18 @@ pub fn check_commitment(
     CommitmentDecision::NotYet
 }
 
+/// Transition signal returned by [`CommitmentTracker::update_status`].
+///
+/// Enables callers to emit journal events (e.g., `commitment_acquired`)
+/// when a task transitions to committed status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitmentTransition {
+    /// No change in commitment status.
+    Unchanged,
+    /// Task just transitioned from NotYet to Committed.
+    BecameCommitted,
+}
+
 /// Per-node commitment state tracked by [`CommitmentTracker`].
 struct CommitmentState {
     override_: NodeCommitmentOverride,
@@ -183,22 +195,30 @@ impl CommitmentTracker {
     /// Calls [`check_commitment`] and stores the result. Only transitions
     /// from `NotYet` to `Committed` or `NeverCommit` — once committed,
     /// the decision is sticky.
+    ///
+    /// Returns `Some(CommitmentTransition)` indicating whether a transition
+    /// occurred, or `None` if the node is not registered.
     pub fn update_status(
         &mut self,
         node_id: &NodeId,
         progress: &TaskProgress,
         has_intermediate_inputs: bool,
-    ) {
-        if let Some(state) = self.states.get_mut(node_id) {
-            if state.decision == CommitmentDecision::NotYet {
-                state.decision = check_commitment(
-                    &self.policy,
-                    state.override_,
-                    progress,
-                    has_intermediate_inputs,
-                );
+    ) -> Option<CommitmentTransition> {
+        let state = self.states.get_mut(node_id)?;
+        if state.decision == CommitmentDecision::NotYet {
+            let new_decision = check_commitment(
+                &self.policy,
+                state.override_,
+                progress,
+                has_intermediate_inputs,
+            );
+            if new_decision == CommitmentDecision::Committed {
+                state.decision = new_decision;
+                return Some(CommitmentTransition::BecameCommitted);
             }
+            state.decision = new_decision;
         }
+        Some(CommitmentTransition::Unchanged)
     }
 
     /// Check if a node is currently committed.
