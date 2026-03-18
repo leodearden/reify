@@ -28,3 +28,46 @@ fn lsp_stateful_diagnostics_initial_eval() {
         "valid bracket source should have no errors via stateful pipeline, got: {errors:?}"
     );
 }
+
+#[test]
+fn lsp_stateful_diagnostics_after_edit_detects_violation() {
+    let mut state = EvalState::new();
+
+    // First call: valid bracket source (no errors)
+    let result1 = compute_diagnostics_with_state(
+        &mut state,
+        reify_test_support::bracket_source(),
+        &test_uri(),
+    );
+    let errors1: Vec<_> = result1
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+        .collect();
+    assert!(errors1.is_empty(), "initial valid source should have no errors");
+
+    // Second call: violating bracket source (thickness=1mm violates thickness > 2mm)
+    let violating_source = reify_test_support::bracket_source_violating();
+    let result2 = compute_diagnostics_with_state(&mut state, &violating_source, &test_uri());
+
+    // Should have at least one error-severity diagnostic for the constraint violation
+    let errors2: Vec<_> = result2
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+        .collect();
+    assert!(
+        !errors2.is_empty(),
+        "violating source should produce error diagnostics, got: {:?}",
+        result2.diagnostics
+    );
+
+    // At least one error should mention constraint violation
+    let has_violation = errors2.iter().any(|d| {
+        d.message.contains("violated") || d.message.contains("constraint")
+    });
+    assert!(
+        has_violation,
+        "should have a diagnostic mentioning constraint violation, got: {errors2:?}"
+    );
+}
