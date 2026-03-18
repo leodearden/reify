@@ -1033,3 +1033,81 @@ async fn concurrent_edit_result_includes_resolved_params() {
         result.diagnostics
     );
 }
+
+/// When the solver returns Infeasible during a concurrent edit, the
+/// `ConcurrentEditResult` should carry the solver's diagnostic messages.
+///
+/// Module: param `a` (default mm(1.0)), auto `x`, constraint `x > a`.
+/// SequencedMockSolver: 1st call Solved x=mm(5.0), 2nd call Infeasible
+/// with a diagnostic message.
+///
+/// Cold eval → x=mm(5.0). Concurrent edit a→mm(10.0) → solver infeasible.
+/// Assert result.diagnostics is non-empty and contains the infeasibility message.
+#[tokio::test]
+async fn concurrent_edit_result_includes_diagnostics_on_infeasible() {
+    use reify_test_support::builders::{gt, literal, value_ref};
+    use reify_test_support::mocks::SequencedMockConstraintSolver;
+    use reify_test_support::mm;
+    use reify_types::{Diagnostic, Severity, SolveResult};
+
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+
+    // Sequenced solver: first Solved, second Infeasible
+    let mut solved1 = HashMap::new();
+    solved1.insert(x_id.clone(), mm(5.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1 },
+        SolveResult::Infeasible {
+            diagnostics: vec![Diagnostic {
+                severity: Severity::Error,
+                message: "constraint x > a is infeasible".to_string(),
+                labels: Vec::new(),
+            }],
+        },
+    ]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(1.0))))
+        .auto_param("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None)
+        .with_solver(Box::new(solver));
+
+    // Cold eval: x resolved to mm(5.0)
+    let cold = engine.eval(&module);
+    assert!(!cold.resolved_params.is_empty(), "cold eval should resolve auto params");
+
+    let cancel = CancellationToken::new();
+
+    // Concurrent edit: change a from mm(1.0) to mm(10.0) — triggers infeasible solve
+    let (_setup, result) = edit_param_concurrent(
+        &mut engine,
+        a_id.clone(),
+        mm(10.0),
+        &cancel,
+    ).await.unwrap();
+
+    // resolved_params should be empty (infeasible solve doesn't produce resolved values)
+    assert!(
+        result.resolved_params.is_empty(),
+        "resolved_params should be empty on infeasible solve, got {:?}",
+        result.resolved_params
+    );
+
+    // diagnostics should contain the infeasibility message
+    assert!(
+        !result.diagnostics.is_empty(),
+        "diagnostics should be non-empty on infeasible solve"
+    );
+    assert!(
+        result.diagnostics.iter().any(|d| d.message.contains("infeasible")),
+        "diagnostics should contain infeasibility message, got {:?}",
+        result.diagnostics
+    );
+}
