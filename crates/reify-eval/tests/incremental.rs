@@ -1497,3 +1497,96 @@ fn edit_param_no_re_resolution_when_auto_constraints_not_dirty() {
         x_val
     );
 }
+
+/// Verify that constraint labels survive through the edit_check path.
+///
+/// Module: param `width` (default mm(10.0)), two constraints:
+///   C0: label="min_width",  width > mm(5.0)
+///   C1: label=None,         width < mm(100.0)
+///
+/// Cold check() → labels come from CompiledConstraint, so both are correct.
+/// edit_check(width, mm(2.0)) → constraint checking routes through
+/// check_constraints_with_values, which currently always sets label: None.
+///
+/// This test WILL FAIL because check_constraints_with_values always sets
+/// `label: None`, so the labeled constraint loses its label.
+#[test]
+fn edit_check_preserves_constraint_labels() {
+    use reify_test_support::builders::lt;
+    use reify_types::Satisfaction;
+
+    let width_id = ValueCellId::new("S", "width");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "width", Type::length(), Some(literal(mm(10.0))))
+        // C0: labeled "min_width", width > mm(5.0)
+        .constraint(
+            "S",
+            0,
+            Some("min_width"),
+            gt(value_ref("S", "width"), literal(mm(5.0))),
+        )
+        // C1: no label, width < mm(100.0)
+        .constraint(
+            "S",
+            1,
+            None,
+            lt(value_ref("S", "width"), literal(mm(100.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold check: both constraints satisfied, labels correct
+    let result = engine.check(&module);
+    assert_eq!(result.constraint_results.len(), 2);
+
+    // Find the constraint entries by ID (iteration order may vary)
+    let c0 = result.constraint_results.iter()
+        .find(|c| c.id == ConstraintNodeId::new("S", 0))
+        .expect("C0 should be in results");
+    let c1 = result.constraint_results.iter()
+        .find(|c| c.id == ConstraintNodeId::new("S", 1))
+        .expect("C1 should be in results");
+
+    assert_eq!(c0.label, Some("min_width".to_string()), "cold check: C0 label");
+    assert_eq!(c1.label, None, "cold check: C1 label");
+    assert_eq!(c0.satisfaction, Satisfaction::Satisfied);
+    assert_eq!(c1.satisfaction, Satisfaction::Satisfied);
+
+    // edit_check: width=mm(2.0) — C0 Violated, C1 Satisfied
+    let result2 = engine.edit_check(width_id.clone(), mm(2.0));
+    assert_eq!(result2.constraint_results.len(), 2);
+
+    let c0_edit = result2.constraint_results.iter()
+        .find(|c| c.id == ConstraintNodeId::new("S", 0))
+        .expect("C0 should be in edit_check results");
+    let c1_edit = result2.constraint_results.iter()
+        .find(|c| c.id == ConstraintNodeId::new("S", 1))
+        .expect("C1 should be in edit_check results");
+
+    // Labels must be preserved through edit_check path
+    assert_eq!(
+        c0_edit.label,
+        Some("min_width".to_string()),
+        "edit_check: C0 label should be preserved as 'min_width'"
+    );
+    assert_eq!(c1_edit.label, None, "edit_check: C1 label should remain None");
+
+    // Satisfaction assertions
+    assert_eq!(
+        c0_edit.satisfaction,
+        Satisfaction::Violated,
+        "C0 should be Violated when width=mm(2.0) < mm(5.0)"
+    );
+    assert_eq!(
+        c1_edit.satisfaction,
+        Satisfaction::Satisfied,
+        "C1 should be Satisfied when width=mm(2.0) < mm(100.0)"
+    );
+}
