@@ -245,4 +245,68 @@ mod tests {
         // dep is not in-flight, so no effective priority
         assert_eq!(promoter.effective_priority(&dep), None);
     }
+
+    // --- SharedPriorityPromoter (concurrent wrapper) tests ---
+
+    #[test]
+    fn shared_promoter_register_and_read() {
+        let shared = SharedPriorityPromoter::new();
+        let node = make_node("a");
+        shared.register(node.clone(), Priority::P3Speculative);
+        assert_eq!(
+            shared.effective_priority(&node),
+            Some(Priority::P3Speculative)
+        );
+    }
+
+    #[test]
+    fn shared_promoter_promote_from_another_thread() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let shared = Arc::new(SharedPriorityPromoter::new());
+        let node = make_node("a");
+        shared.register(node.clone(), Priority::P3Speculative);
+
+        let shared2 = Arc::clone(&shared);
+        let node2 = node.clone();
+        let handle = thread::spawn(move || {
+            shared2.promote(&node2, Priority::P1Slow);
+        });
+        handle.join().unwrap();
+
+        assert_eq!(
+            shared.effective_priority(&node),
+            Some(Priority::P1Slow)
+        );
+    }
+
+    #[test]
+    fn shared_promoter_concurrent_promotes() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let shared = Arc::new(SharedPriorityPromoter::new());
+        let node = make_node("a");
+        shared.register(node.clone(), Priority::P3Speculative);
+
+        let mut handles = Vec::new();
+        // Spawn multiple threads that all try to promote
+        for _ in 0..10 {
+            let s = Arc::clone(&shared);
+            let n = node.clone();
+            handles.push(thread::spawn(move || {
+                s.promote(&n, Priority::P1Fast);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // All promotions should result in P1Fast
+        assert_eq!(
+            shared.effective_priority(&node),
+            Some(Priority::P1Fast)
+        );
+    }
 }
