@@ -339,6 +339,40 @@ mod tests {
     }
 
     #[test]
+    fn warm_start_roundtrip_single_shape() {
+        // Create kernel A with a box
+        let mut kernel_a = OcctKernel::new();
+        kernel_a
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // Extract warm state
+        let state = kernel_a.warm_state().expect("should have warm state");
+
+        // Create fresh kernel B and restore warm state
+        let mut kernel_b = OcctKernel::new();
+        kernel_b.with_warm_state(state);
+
+        // Query volume on kernel B using handle ID 1 (the box)
+        let vol = kernel_b
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 6000.0).abs() < 1.0,
+                    "expected volume ~6000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn brep_serialization_roundtrip() {
         // Create a box shape
         let shape = ffi::ffi::make_box(10.0, 20.0, 30.0).unwrap();
