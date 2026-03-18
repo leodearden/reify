@@ -1102,6 +1102,42 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_export_step_from_multiple_handles() {
+        // Regression test: spawn N OcctKernelHandle instances, each on its own
+        // dedicated thread, create a box on each, and export to STEP concurrently.
+        // This reliably triggers the OCCT global STEP writer state race condition
+        // when the C++ export_step() function is not guarded by a mutex.
+        const N: usize = 4;
+        std::thread::scope(|s| {
+            let threads: Vec<_> = (0..N)
+                .map(|_| {
+                    s.spawn(|| {
+                        let handle = super::OcctKernelHandle::spawn();
+                        let op = GeometryOp::Box {
+                            width: Value::Real(10.0),
+                            height: Value::Real(20.0),
+                            depth: Value::Real(30.0),
+                        };
+                        let gh = handle.execute(&op).unwrap();
+                        let mut buf = Vec::new();
+                        handle
+                            .export(gh.id, reify_types::ExportFormat::Step, &mut buf)
+                            .expect("STEP export should succeed under concurrent access");
+                        let content = String::from_utf8(buf).unwrap();
+                        assert!(
+                            content.contains("ISO-10303-21"),
+                            "STEP export should contain ISO-10303-21 header"
+                        );
+                    })
+                })
+                .collect();
+            for t in threads {
+                t.join().unwrap();
+            }
+        });
+    }
+
+    #[test]
     fn sync_drop_still_joins_thread() {
         // Sync (non-async) Drop should preserve existing join behavior
         let handle = super::OcctKernelHandle::spawn();

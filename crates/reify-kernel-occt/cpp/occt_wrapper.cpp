@@ -48,6 +48,7 @@
 #include <sstream>
 #include <fstream>
 #include <cstdio>
+#include <mutex>
 
 namespace occt {
 
@@ -250,7 +251,14 @@ BBox query_bbox(const OcctShape& shape) {
 
 // --- Export ---
 
+// Process-global mutex for STEP export. OCCT's STEPControl_Writer (and its
+// Transfer/Write pipeline) uses process-global state (XSAlgo session, interface
+// model, shape naming tables) that is not thread-safe. This mutex serializes
+// all concurrent export_step() calls across all kernel threads.
+static std::mutex g_step_export_mutex;
+
 rust::String export_step(const OcctShape& shape) {
+    std::lock_guard<std::mutex> lock(g_step_export_mutex);
     try {
         STEPControl_Writer writer;
         writer.Transfer(shape.shape, STEPControl_AsIs);
