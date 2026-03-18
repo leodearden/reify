@@ -1,0 +1,162 @@
+{
+  "task_id": "27",
+  "title": "Warm-start protocol + WarmStatePool",
+  "modules": ["crates/reify-types", "crates/reify-eval", "crates/reify-runtime"],
+  "analysis": "This task adds warm-start infrastructure across three crates. (1) reify-types gets OpaqueState (a type-erased Box<dyn Any + Send> with size hint) and a WarmStartable trait. (2) reify-eval's NodeCache gains an optional warm_state field and CacheStore gets donate/retrieve helpers. (3) reify-runtime gets a standalone WarmStatePool with memory-budgeted LRU eviction.\n\nExisting patterns: NodeCache is a plain struct with pub fields (cache.rs:102-134). CacheStore uses HashMap<NodeId, NodeCache> with no capacity limits. record_evaluation() takes (NodeId, CachedResult, VersionId, DependencyTrace) — we will add an optional OpaqueState parameter. The concurrent module already uses Box<dyn Any + Send> for panic payloads (concurrent.rs:22), confirming the pattern is idiomatic in this codebase.\n\nKey design: OpaqueState wraps Box<dyn Any + Send> with an estimated_size_bytes field (not a method on the inner type, since the inner is type-erased). WarmStartable is a trait that types can implement to produce/consume OpaqueState. WarmStatePool lives in reify-runtime (not reify-eval) because it manages runtime resources with memory budgets — this follows the existing separation where reify-eval handles evaluation logic and reify-runtime handles scheduling/resource management.\n\nThe pool uses HashMap<NodeId, PoolEntry> with LRU eviction based on last_accessed Instant. Eviction removes least-recently-accessed entries until used_bytes <= budget_bytes. donate() inserts and triggers eviction if needed; retrieve() removes and returns the entry (take semantics).",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add OpaqueState type and WarmStartable trait to reify-types. Create new module crates/reify-types/src/warm.rs, add pub mod warm to lib.rs, re-export OpaqueState and WarmStartable from lib.rs.",
+      "status": "done",
+      "commit": "208fbae",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write tests for OpaqueState in reify-types/src/warm.rs: (1) roundtrip — create OpaqueState from i32, downcast back to i32; (2) estimated_size_bytes returns the value provided at construction; (3) wrong-type downcast returns None; (4) OpaqueState is Send (compile-time assertion via fn assert_send<T: Send>()).",
+      "status": "done",
+      "commit": "46ba1e7"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Implement OpaqueState struct: fields inner: Box<dyn Any + Send>, estimated_size: usize. Methods: new<T: Any + Send>(value: T, estimated_size_bytes: usize) -> Self; estimated_size_bytes() -> usize; downcast<T: Any>(self) -> Option<T>; downcast_ref<T: Any>(&self) -> Option<&T>. Implement WarmStartable trait: fn warm_state(&self) -> Option<OpaqueState>; fn with_warm_state(&mut self, state: OpaqueState).",
+      "status": "done",
+      "commit": "660218e"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write tests for warm_state field on NodeCache in reify-eval/src/cache.rs: (1) NodeCache::new creates entry with warm_state: None; (2) can set warm_state on a NodeCache after creation; (3) CacheStore get/put preserves warm_state on NodeCache.",
+      "status": "done",
+      "commit": "0efffad"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Add warm_state: Option<OpaqueState> field to NodeCache struct. Update NodeCache::new() to set warm_state: None. Since OpaqueState contains Box<dyn Any + Send> which isn't Clone, remove #[derive(Clone)] from NodeCache and implement Clone manually (cloning warm_state as None — warm state is transient, not preserved across clones). Verify all existing tests still pass.",
+      "status": "done",
+      "commit": "eb726a7"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write tests for CacheStore warm-state helpers: (1) donate_warm_state stores OpaqueState on an existing cached node, get_warm_state retrieves it (take semantics — second get returns None); (2) donate_warm_state on non-existent node returns false / is no-op; (3) record_evaluation preserves warm_state if node already has one (or clears it — decide based on semantics: re-evaluation produces new state, so clear).",
+      "status": "done",
+      "commit": "80786ac"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Add CacheStore methods: donate_warm_state(node: &NodeId, state: OpaqueState) -> bool — sets warm_state on existing cached node, returns false if node not cached; get_warm_state(node: &NodeId) -> Option<OpaqueState> — takes warm_state out of the cache entry (Option::take). Update record_evaluation to clear warm_state (set to None) when recording a new result, since the old warm state is stale after re-evaluation.",
+      "status": "done",
+      "commit": "33b9a85"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write tests for WarmStatePool in reify-runtime (new module warm_pool.rs): (1) donate and retrieve roundtrip — store OpaqueState for a NodeId, retrieve returns Some with correct value; (2) retrieve removes entry (second retrieve returns None); (3) used_bytes tracks correctly on donate and retrieve.",
+      "status": "done",
+      "commit": "f2c797f"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Create crates/reify-runtime/src/warm_pool.rs with WarmStatePool struct: fields pool: HashMap<NodeId, PoolEntry>, budget_bytes: usize, used_bytes: usize. PoolEntry: { state: OpaqueState, last_accessed: Instant, size_bytes: usize }. Implement new(budget_bytes: usize), donate(node_id: NodeId, state: OpaqueState), retrieve(node_id: &NodeId) -> Option<OpaqueState>, used_bytes(), budget_bytes(). Add pub mod warm_pool to lib.rs.",
+      "status": "done",
+      "commit": "384432f"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write tests for WarmStatePool memory budget enforcement: (1) donate exceeding budget triggers eviction of LRU entries until under budget; (2) eviction removes least-recently-accessed entry (donate 3 items within budget, retrieve middle one to update its access time, donate a large item that exceeds budget — first item should be evicted, not the middle one); (3) donate single item larger than budget still stores it (evicts everything else) or rejects it — decide semantics.",
+      "status": "done",
+      "commit": "b69ca82"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Implement LRU eviction in WarmStatePool: evict_lru() private method removes the entry with the oldest last_accessed Instant, subtracts its size_bytes from used_bytes. donate() calls evict_lru() in a loop while used_bytes + new_size > budget_bytes && !pool.is_empty(). If a single item exceeds budget and pool is empty, store it anyway (over-budget by one item is acceptable — the alternative of rejecting warm state silently is worse). Update last_accessed on retrieve() before taking the entry out (not strictly needed since it's removed, but keeps semantics clean for future peek operations).",
+      "status": "done",
+      "commit": "0805e88"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write tests for WarmStatePool edge cases: (1) donate with same NodeId replaces existing entry and adjusts used_bytes; (2) pool with budget_bytes = 0 still accepts first item (graceful degradation); (3) clear() resets pool to empty and used_bytes to 0; (4) len() returns correct count.",
+      "status": "done",
+      "commit": "ba4e1a8"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Implement remaining WarmStatePool methods: handle duplicate NodeId in donate() by removing old entry first (subtract old size, then insert new). Add clear(), len(), is_empty() utility methods. Ensure donate with same NodeId updates last_accessed.",
+      "status": "done",
+      "commit": "219618a"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "OpaqueState stores estimated_size_bytes as a field provided at construction, not computed dynamically",
+      "rationale": "The inner type is type-erased (Box<dyn Any + Send>), so we cannot call std::mem::size_of_val on the pointed-to data to get heap allocations. The caller who constructs OpaqueState knows the size of their data (e.g., OCCT TopoDS_Shape). A size hint field is simpler and more accurate than trying to compute size through trait objects."
+    },
+    {
+      "decision": "WarmStartable trait has with_warm_state(&mut self, state: OpaqueState) not returning Result",
+      "rationale": "The warm state is best-effort optimization. If the state is the wrong type or stale, the implementor can silently ignore it and proceed with cold evaluation. Returning Result would force error handling at every call site for a non-critical optimization path."
+    },
+    {
+      "decision": "NodeCache warm_state clones as None (warm state is transient)",
+      "rationale": "Warm state contains type-erased Box<dyn Any + Send> which doesn't implement Clone. Rather than requiring Clone on the inner type (which would complicate OpaqueState and exclude types like OCCT handles), we treat warm state as transient — it's an optimization hint, not essential data. Cloning a NodeCache (e.g., for snapshot) drops the warm state."
+    },
+    {
+      "decision": "CacheStore.get_warm_state uses take semantics (removes from cache entry)",
+      "rationale": "Warm state is consumed by the evaluator during re-evaluation. Take semantics prevent accidental double-use and make ownership transfer explicit. The evaluator takes the warm state, uses it, and then donates new warm state back after evaluation completes."
+    },
+    {
+      "decision": "record_evaluation clears warm_state on the cache entry",
+      "rationale": "After re-evaluation, the old warm state is stale — the evaluator has already consumed it (via get_warm_state) or it's from a previous evaluation cycle. The evaluator is expected to donate new warm state separately after recording the result."
+    },
+    {
+      "decision": "WarmStatePool lives in reify-runtime, not reify-eval",
+      "rationale": "The pool manages runtime resources (memory budgets, LRU eviction with Instant timestamps). This is a resource management concern, not an evaluation logic concern. reify-eval's CacheStore provides the per-node warm_state slot; reify-runtime's WarmStatePool manages the cross-node budget. This also follows the existing separation where reify-runtime has scheduling/resource logic."
+    },
+    {
+      "decision": "Single oversized item is allowed to exceed budget",
+      "rationale": "If a warm state item is larger than the entire budget, we still store it (after evicting everything else). Silently dropping warm state without storing would be surprising behavior. The budget is a soft limit for the common case of many small items; a single large item temporarily exceeding budget is acceptable."
+    },
+    {
+      "decision": "LRU eviction uses linear scan over HashMap entries comparing Instant values",
+      "rationale": "For the expected pool sizes (hundreds to low thousands of nodes), a linear scan is fast enough and avoids the complexity of maintaining a doubly-linked list or BTreeMap secondary index. If pool sizes grow, this can be optimized later with an LRU list (e.g., lru crate), but premature optimization would add unnecessary complexity."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "NodeId enum (cache.rs:10-42)",
+      "where": "WarmStatePool key type, CacheStore warm state methods",
+      "how": "Use existing NodeId as the key for WarmStatePool's HashMap. Import from reify_eval::cache::NodeId."
+    },
+    {
+      "what": "Box<dyn Any + Send> pattern (concurrent.rs:22)",
+      "where": "OpaqueState inner type",
+      "how": "Same type-erasure pattern already used for panic payloads in SchedulerError::TaskPanicked. OpaqueState wraps Box<dyn Any + Send> with the same ownership semantics."
+    },
+    {
+      "what": "CacheStore method patterns (cache.rs:137-348)",
+      "where": "New donate_warm_state/get_warm_state methods",
+      "how": "Follow existing CacheStore API patterns: methods take &NodeId for lookups, return bool for success/failure of mutations, use Option for nullable returns."
+    },
+    {
+      "what": "Inline #[cfg(test)] mod tests pattern",
+      "where": "All new test code",
+      "how": "Follow the project convention of inline test modules at the bottom of source files, with descriptive test_name_what_it_does naming."
+    },
+    {
+      "what": "ValueCellId::new(entity, member) test helper",
+      "where": "All tests creating NodeIds",
+      "how": "Use existing ValueCellId::new('Test', 'x') pattern for creating test node IDs, same as in cache.rs tests."
+    }
+  ]
+}
