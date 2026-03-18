@@ -226,6 +226,57 @@ mod tests {
     }
 
     #[test]
+    fn events_for_node_returns_correct_events() {
+        let mut journal = EventJournal::new();
+        let node_a = NodeId::Value(reify_types::ValueCellId::new("Test", "a"));
+        let node_b = NodeId::Value(reify_types::ValueCellId::new("Test", "b"));
+        let node_c = NodeId::Value(reify_types::ValueCellId::new("Test", "c"));
+
+        journal.record(make_event("a", EventKind::Started, 0));
+        journal.record(make_event("b", EventKind::Started, 0));
+        journal.record(make_event("a", EventKind::Completed { outcome: EvalOutcome::Changed }, 0));
+        journal.record(make_event("c", EventKind::CacheHit, 0));
+        journal.record(make_event("b", EventKind::Completed { outcome: EvalOutcome::Unchanged }, 0));
+
+        let a_events = journal.events_for_node(&node_a);
+        assert_eq!(a_events.len(), 2);
+        assert!(matches!(a_events[0].kind, EventKind::Started));
+        assert!(matches!(a_events[1].kind, EventKind::Completed { outcome: EvalOutcome::Changed }));
+
+        let b_events = journal.events_for_node(&node_b);
+        assert_eq!(b_events.len(), 2);
+
+        let c_events = journal.events_for_node(&node_c);
+        assert_eq!(c_events.len(), 1);
+        assert!(matches!(c_events[0].kind, EventKind::CacheHit));
+    }
+
+    #[test]
+    fn events_for_node_unknown_returns_empty() {
+        let journal = EventJournal::new();
+        let unknown = NodeId::Value(reify_types::ValueCellId::new("Test", "unknown"));
+        assert!(journal.events_for_node(&unknown).is_empty());
+    }
+
+    #[test]
+    fn events_for_node_preserves_insertion_order() {
+        let mut journal = EventJournal::new();
+        // Interleave events for same node
+        journal.record(make_event("x", EventKind::Started, 0));
+        journal.record(make_event("y", EventKind::Started, 0));
+        journal.record(make_event("x", EventKind::CacheHit, 1));
+        journal.record(make_event("y", EventKind::CacheHit, 1));
+        journal.record(make_event("x", EventKind::Completed { outcome: EvalOutcome::Changed }, 2));
+
+        let node_x = NodeId::Value(reify_types::ValueCellId::new("Test", "x"));
+        let x_events = journal.events_for_node(&node_x);
+        assert_eq!(x_events.len(), 3);
+        assert!(matches!(x_events[0].kind, EventKind::Started));
+        assert!(matches!(x_events[1].kind, EventKind::CacheHit));
+        assert!(matches!(x_events[2].kind, EventKind::Completed { .. }));
+    }
+
+    #[test]
     fn eval_event_construction() {
         let event = EvalEvent {
             timestamp: Instant::now(),
