@@ -367,4 +367,85 @@ mod tests {
             Some(Priority::P1Fast)
         );
     }
+
+    // --- Integration test: commitment + priority promotion ---
+
+    #[test]
+    fn integration_commitment_and_priority_promotion() {
+        use crate::commitment::{
+            CommitmentPolicy, CommitmentTracker, CommitmentTransition,
+            NodeCommitmentOverride, TaskProgress,
+        };
+        use std::time::Duration;
+
+        // Setup: 3 nodes at different priorities
+        // node_spec (P3 speculative) → long-running
+        // node_demanded (P1Slow demanded) → depends on node_spec
+        // node_cancel (P3 speculative) → short-running, stale
+        let node_spec = make_node("speculative");
+        let node_demanded = make_node("demanded");
+        let node_cancel = make_node("cancelable");
+
+        // --- Priority promotion scenario ---
+        let mut promoter = PriorityPromoter::new();
+        promoter.register(node_spec.clone(), Priority::P3Speculative);
+        promoter.register(node_demanded.clone(), Priority::P1Slow);
+        promoter.register(node_cancel.clone(), Priority::P3Speculative);
+
+        // node_demanded depends on node_spec
+        let mut deps: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        deps.insert(node_demanded.clone(), vec![node_spec.clone()]);
+
+        // Promote dependencies of demanded node
+        promoter.promote_for_demand(&node_demanded, Priority::P1Slow, &deps);
+
+        // node_spec should now be P1Slow (promoted from P3)
+        assert_eq!(
+            promoter.effective_priority(&node_spec),
+            Some(Priority::P1Slow),
+            "P3 speculative node should be promoted to P1Slow"
+        );
+        // node_cancel is unaffected (not a dependency of demanded)
+        assert_eq!(
+            promoter.effective_priority(&node_cancel),
+            Some(Priority::P3Speculative),
+            "unrelated node should remain at original priority"
+        );
+
+        // --- Commitment scenario ---
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_secs(60),
+            commit_when_proportion_done: 0.5,
+        };
+        let mut tracker = CommitmentTracker::new(policy);
+
+        // Register both nodes
+        tracker.register_task(node_spec.clone(), NodeCommitmentOverride::CommitIfSlow);
+        tracker.register_task(node_cancel.clone(), NodeCommitmentOverride::CommitIfSlow);
+
+        // node_spec has been running long (committed)
+        let spec_progress = TaskProgress {
+            elapsed: Duration::from_secs(61),
+            reported_progress: None,
+            previous_runtime: None,
+        };
+        let transition = tracker.update_status(&node_spec, &spec_progress, false);
+        assert_eq!(transition, Some(CommitmentTransition::BecameCommitted));
+        assert!(
+            tracker.should_continue(&node_spec, true),
+            "committed node in dirty cone should continue"
+        );
+
+        // node_cancel is not yet committed (short elapsed)
+        let cancel_progress = TaskProgress {
+            elapsed: Duration::from_secs(5),
+            reported_progress: Some(0.1),
+            previous_runtime: None,
+        };
+        tracker.update_status(&node_cancel, &cancel_progress, false);
+        assert!(
+            !tracker.should_continue(&node_cancel, true),
+            "uncommitted node in dirty cone should NOT continue"
+        );
+    }
 }
