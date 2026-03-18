@@ -129,4 +129,85 @@ mod tests {
         promoter.remove(&node);
         assert_eq!(promoter.effective_priority(&node), None);
     }
+
+    // --- promote_for_demand tests ---
+
+    #[test]
+    fn promote_for_demand_promotes_p3_dependency_to_p1_slow() {
+        let mut promoter = PriorityPromoter::new();
+        let demanded = make_node("demanded");
+        let dep = make_node("dep");
+
+        // dep is in-flight at P3
+        promoter.register(dep.clone(), Priority::P3Speculative);
+
+        // Build dependency map: demanded depends on dep
+        let mut deps: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        deps.insert(demanded.clone(), vec![dep.clone()]);
+
+        promoter.promote_for_demand(&demanded, Priority::P1Slow, &deps);
+
+        assert_eq!(
+            promoter.effective_priority(&dep),
+            Some(Priority::P1Slow)
+        );
+    }
+
+    #[test]
+    fn promote_for_demand_transitive_chain() {
+        // A(P1Slow) -> B(P3) -> C(P3) should promote both B and C
+        let mut promoter = PriorityPromoter::new();
+        let a = make_node("a");
+        let b = make_node("b");
+        let c = make_node("c");
+
+        promoter.register(b.clone(), Priority::P3Speculative);
+        promoter.register(c.clone(), Priority::P3Speculative);
+
+        let mut deps: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        deps.insert(a.clone(), vec![b.clone()]);
+        deps.insert(b.clone(), vec![c.clone()]);
+
+        promoter.promote_for_demand(&a, Priority::P1Slow, &deps);
+
+        assert_eq!(promoter.effective_priority(&b), Some(Priority::P1Slow));
+        assert_eq!(promoter.effective_priority(&c), Some(Priority::P1Slow));
+    }
+
+    #[test]
+    fn promote_for_demand_does_not_demote_higher_priority() {
+        let mut promoter = PriorityPromoter::new();
+        let demanded = make_node("demanded");
+        let dep = make_node("dep");
+
+        // dep is already at P0Interactive (higher than P1Slow)
+        promoter.register(dep.clone(), Priority::P0Interactive);
+
+        let mut deps: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        deps.insert(demanded.clone(), vec![dep.clone()]);
+
+        promoter.promote_for_demand(&demanded, Priority::P1Slow, &deps);
+
+        // Should stay at P0Interactive (not demoted to P1Slow)
+        assert_eq!(
+            promoter.effective_priority(&dep),
+            Some(Priority::P0Interactive)
+        );
+    }
+
+    #[test]
+    fn promote_for_demand_ignores_non_inflight_dependency() {
+        let mut promoter = PriorityPromoter::new();
+        let demanded = make_node("demanded");
+        let dep = make_node("dep");
+        // dep is NOT registered (not in-flight)
+
+        let mut deps: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        deps.insert(demanded.clone(), vec![dep.clone()]);
+
+        promoter.promote_for_demand(&demanded, Priority::P1Slow, &deps);
+
+        // dep is not in-flight, so no effective priority
+        assert_eq!(promoter.effective_priority(&dep), None);
+    }
 }
