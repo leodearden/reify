@@ -622,6 +622,85 @@ fn e2e_stdlib_function_in_let_binding() {
     );
 }
 
+/// Comprehensive: import + sub-structure + stdlib function in one module.
+#[test]
+fn comprehensive_all_three_features() {
+    let source = r#"import "std/math"
+
+structure Bracket {
+    param w: Scalar = 80mm
+    param h: Scalar = 100mm
+    let diag = sqrt(w * w + h * h)
+    sub base = Base(width: w)
+    constraint diag > 0mm
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_comprehensive"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // Imports: should have 1 entry
+    assert_eq!(compiled.imports.len(), 1);
+    assert_eq!(compiled.imports[0].path, "std/math");
+
+    // Only the import warning diagnostic (no errors)
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+
+    let warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Warning)
+        .collect();
+    assert_eq!(warnings.len(), 1, "expected 1 warning (import), got: {:?}", warnings);
+    assert!(warnings[0].message.contains("import"));
+
+    // Template structure
+    let template = &compiled.templates[0];
+    assert_eq!(template.name, "Bracket");
+
+    // Sub-components: should have 1 entry
+    assert_eq!(template.sub_components.len(), 1);
+    assert_eq!(template.sub_components[0].name, "base");
+    assert_eq!(template.sub_components[0].structure_name, "Base");
+
+    // Eval: 'diag' let binding should produce non-Undef
+    let diag_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "diag")
+        .expect("should have diag value cell");
+    let diag_expr = diag_cell.default_expr.as_ref().expect("let should have expr");
+
+    let mut values = reify_types::ValueMap::new();
+    values.insert(
+        reify_types::ValueCellId::new("Bracket", "w"),
+        reify_types::Value::length(0.08),
+    );
+    values.insert(
+        reify_types::ValueCellId::new("Bracket", "h"),
+        reify_types::Value::length(0.1),
+    );
+
+    let result = reify_expr::eval_expr(diag_expr, &values);
+    assert!(
+        !result.is_undef(),
+        "diag = sqrt(w*w + h*h) should produce non-Undef, got Undef"
+    );
+
+    // sqrt(0.08^2 + 0.1^2) = sqrt(0.0064 + 0.01) = sqrt(0.0164) ≈ 0.12806
+    let v = result.as_f64().unwrap();
+    assert!(
+        (v - 0.0164_f64.sqrt()).abs() < 1e-10,
+        "expected ~0.128, got {}",
+        v
+    );
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
