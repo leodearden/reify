@@ -92,6 +92,21 @@ impl LanguageServer for ReifyLanguageServer {
             .await;
     }
 
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        let uri = params.text_document.uri;
+
+        // Remove from store
+        {
+            let mut state = self.state.write().await;
+            state.documents.close(&uri);
+        }
+
+        // Clear diagnostics for the closed file
+        self.client
+            .publish_diagnostics(uri, vec![], None)
+            .await;
+    }
+
     async fn shutdown(&self) -> Result<()> {
         Ok(())
     }
