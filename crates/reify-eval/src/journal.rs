@@ -4,6 +4,7 @@
 //! and NodeId (HashMap<NodeId>), recording Started, Completed, Cancelled,
 //! Failed, CacheHit, and WarmStartUsed events during evaluation.
 
+use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 use reify_types::VersionId;
@@ -51,6 +52,62 @@ pub enum EventPayload {
     Error(String),
     /// Custom string payload.
     Custom(String),
+}
+
+/// Append-only event journal dual-indexed by time and node.
+pub struct EventJournal {
+    /// All events in insertion order.
+    events: Vec<EvalEvent>,
+    /// Index from timestamp to event indices (events at the same Instant).
+    by_time: BTreeMap<Instant, Vec<usize>>,
+    /// Index from NodeId to event indices.
+    by_node: HashMap<NodeId, Vec<usize>>,
+}
+
+impl EventJournal {
+    /// Create a new, empty event journal.
+    pub fn new() -> Self {
+        Self {
+            events: Vec::new(),
+            by_time: BTreeMap::new(),
+            by_node: HashMap::new(),
+        }
+    }
+
+    /// Record an event in the journal.
+    pub fn record(&mut self, event: EvalEvent) {
+        let idx = self.events.len();
+        self.by_time
+            .entry(event.timestamp)
+            .or_default()
+            .push(idx);
+        self.by_node
+            .entry(event.node_id.clone())
+            .or_default()
+            .push(idx);
+        self.events.push(event);
+    }
+
+    /// Number of events recorded.
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    /// Whether the journal is empty.
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    /// All events in insertion order.
+    pub fn all_events(&self) -> &[EvalEvent] {
+        &self.events
+    }
+}
+
+impl Default for EventJournal {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
