@@ -35,8 +35,25 @@ impl WarmStatePool {
     ///
     /// If the pool exceeds its memory budget after insertion, LRU eviction
     /// is triggered to bring usage back within budget.
+    /// Store warm-start state for a node.
+    ///
+    /// If the pool exceeds its memory budget after insertion, LRU eviction
+    /// is triggered to bring usage back within budget. A single item that
+    /// exceeds the entire budget is still stored (over-budget by one item
+    /// is acceptable).
     pub fn donate(&mut self, node_id: NodeId, state: OpaqueState) {
         let size = state.estimated_size_bytes();
+
+        // If this node already has an entry, remove the old one first
+        if let Some(old) = self.pool.remove(&node_id) {
+            self.used_bytes = self.used_bytes.saturating_sub(old.size_bytes);
+        }
+
+        // Evict LRU entries until the new item fits within budget
+        while self.used_bytes + size > self.budget_bytes && !self.pool.is_empty() {
+            self.evict_lru();
+        }
+
         let entry = PoolEntry {
             state,
             last_accessed: Instant::now(),
@@ -44,6 +61,21 @@ impl WarmStatePool {
         };
         self.pool.insert(node_id, entry);
         self.used_bytes += size;
+    }
+
+    /// Evict the least-recently-accessed entry from the pool.
+    fn evict_lru(&mut self) {
+        let lru_key = self
+            .pool
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_accessed)
+            .map(|(key, _)| key.clone());
+
+        if let Some(key) = lru_key {
+            if let Some(entry) = self.pool.remove(&key) {
+                self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
+            }
+        }
     }
 
     /// Retrieve and remove warm-start state for a node (take semantics).
