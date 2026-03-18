@@ -43,6 +43,9 @@ impl LanguageServer for ReifyLanguageServer {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
+                definition_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions::default()),
                 ..Default::default()
             },
             ..Default::default()
