@@ -140,6 +140,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initialize_advertises_hover_definition_completion() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+        let init_result = server.initialize(InitializeParams::default()).await.unwrap();
+
+        let caps = &init_result.capabilities;
+        assert!(
+            caps.hover_provider.is_some(),
+            "should advertise hover_provider"
+        );
+        assert!(
+            caps.definition_provider.is_some(),
+            "should advertise definition_provider"
+        );
+        assert!(
+            caps.completion_provider.is_some(),
+            "should advertise completion_provider"
+        );
+    }
+
+    #[tokio::test]
     async fn did_open_stores_document_and_runs_pipeline() {
         let (service, _socket) = LspService::new(ReifyLanguageServer::new);
         let server = service.inner();
