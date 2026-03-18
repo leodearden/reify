@@ -898,14 +898,111 @@ impl Engine {
             self.cache.restore_final(node_id);
         }
 
+        // ── Resolution phase ───────────────────────────────────────────
+        // If a solver is present, check whether any constraints governing
+        // auto params are in the dirty cone. If so, re-run the solver
+        // to update auto param values and propagate to dependents.
+        let mut resolved_params = HashMap::new();
+        let mut diagnostics = Vec::new();
+
+        if let Some(ref solver) = self.solver {
+            // Collect auto param IDs grouped by scope (entity name)
+            let mut auto_ids: HashSet<ValueCellId> = HashSet::new();
+            let mut auto_param_list: Vec<AutoParam> = Vec::new();
+            let mut scope_name: Option<String> = None;
+
+            for (_, node) in new_snapshot.graph.value_cells.iter() {
+                if node.kind == ValueCellKind::Auto {
+                    auto_ids.insert(node.id.clone());
+                    auto_param_list.push(AutoParam {
+                        id: node.id.clone(),
+                        param_type: node.cell_type.clone(),
+                        bounds: None,
+                    });
+                    // Use entity from ValueCellId as scope
+                    if scope_name.is_none() {
+                        scope_name = Some(node.id.entity.clone());
+                    }
+                }
+            }
+
+            if !auto_ids.is_empty() {
+                // Find constraints whose dependency traces reference auto params
+                let filtered_constraints: Vec<_> = new_snapshot.graph.constraints.iter()
+                    .filter(|(_, cnode)| {
+                        let trace = extract_dependency_trace(&cnode.expr);
+                        trace.reads.iter().any(|r| auto_ids.contains(r))
+                    })
+                    .map(|(_, cnode)| (cnode.id.clone(), cnode.expr.clone()))
+                    .collect();
+
+                // Check if any of those constraints are in the dirty cone
+                let constraints_dirty = filtered_constraints.iter().any(|(cid, _)| {
+                    dirty_cone.contains(&NodeId::Constraint(cid.clone()))
+                });
+
+                if constraints_dirty {
+                    // Build ResolutionProblem and solve
+                    let problem = ResolutionProblem {
+                        auto_params: auto_param_list,
+                        constraints: filtered_constraints,
+                        current_values: values.clone(),
+                        objective: None,
+                    };
+
+                    match solver.solve(&problem) {
+                        SolveResult::Solved { values: solver_values } => {
+                            for (id, val) in &solver_values {
+                                values.insert(id.clone(), val.clone());
+                                resolved_params.insert(id.clone(), val.clone());
+
+                                // Update snapshot values
+                                new_snapshot.values.insert(
+                                    id.clone(),
+                                    (val.clone(), DeterminacyState::Determined),
+                                );
+
+                                // Update param_overrides so subsequent edits
+                                // use the resolved value
+                                self.param_overrides.insert(id.clone(), val.clone());
+
+                                // Update cache
+                                let node_id = NodeId::Value(id.clone());
+                                let trace = DependencyTrace::default();
+                                let cached_result = CachedResult::Value(
+                                    val.clone(),
+                                    DeterminacyState::Determined,
+                                );
+                                self.cache.record_evaluation(
+                                    node_id,
+                                    cached_result,
+                                    VersionId(version_id),
+                                    trace,
+                                );
+                            }
+                        }
+                        SolveResult::Infeasible { diagnostics: solver_diags } => {
+                            diagnostics.extend(solver_diags);
+                        }
+                        SolveResult::NoProgress { reason } => {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "Constraint solver made no progress: {}",
+                                reason
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
         // Store state (actual_eval_set excludes early-cutoff-skipped nodes)
         self.last_eval_set = actual_eval_set;
         self.current_snapshot = Some(new_snapshot);
 
         EvalResult {
             values,
-            diagnostics: Vec::new(),
-            resolved_params: HashMap::new(),
+            diagnostics,
+            resolved_params,
         }
     }
 
