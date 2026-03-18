@@ -2,7 +2,7 @@
   "task_id": "34",
   "title": "M4 integration — interactive edit loop E2E",
   "modules": ["crates/reify-eval", "crates/reify-lsp", "crates/reify-test-support"],
-  "analysis": "This task creates an end-to-end integration test verifying the interactive edit loop: LSP edit → incremental eval → updated diagnostics + geometry. The codebase currently has: (1) Engine with eval() for cold-start, edit_param() for incremental value re-evaluation, eval_cached() for cached re-eval, check() for constraint checking, and build() for geometry — but check/build always call eval() internally (cold start), so there's no way to check constraints or build geometry using incrementally-updated values after edit_param(). (2) LSP server with compute_diagnostics() that creates a fresh Engine per edit (no persistent state). (3) Event journal recording evaluation events. (4) Concurrent evaluation adapter for parallel re-eval.\n\nKey gap: After edit_param() updates values incrementally, there's no check_snapshot()/build_snapshot() to check constraints or produce geometry from the current snapshot. The edit_param() docstring even says 'Constraint/Realization nodes tracked in eval set but not evaluated (deferred to check()/build())' — but check() calls eval() which destroys the incremental state.\n\nPlan: (1) Add check_snapshot() and build_snapshot() methods to Engine that operate on current snapshot values without re-eval. (2) Write engine-level E2E test demonstrating true incrementality: eval → edit_param → check_snapshot → build_snapshot → verify values/constraints/geometry update correctly. (3) Add stateful diagnostics pipeline to LSP with persistent Engine. (4) Write LSP-level E2E test: open document → edit → verify diagnostics + geometry update through the server lifecycle.\n\nThe engine-level test proves incrementality (edit_param + check/build on snapshot). The LSP-level test proves the interactive loop works end-to-end (open → edit → diagnostics update). Together they form the complete E2E integration test for the interactive edit loop.",
+  "analysis": "This task creates an end-to-end integration test verifying the interactive edit loop: LSP edit → incremental eval → updated diagnostics + geometry. The codebase currently has: (1) Engine with eval() for cold-start, edit_param() for incremental value re-evaluation, eval_cached() for cached re-eval, check() for constraint checking, and build() for geometry — but check/build always call eval() internally (cold start), so there's no way to check constraints or build geometry using incrementally-updated values after edit_param(). (2) LSP server with compute_diagnostics() that creates a fresh Engine per edit (no persistent state). (3) Event journal recording evaluation events. (4) Concurrent evaluation adapter for parallel re-eval.\n\nKey gap: After edit_param() updates values incrementally, there's no check_snapshot()/build_snapshot() to check constraints or produce geometry from the current snapshot. The edit_param() docstring even says 'Constraint/Realization nodes tracked in eval set but not evaluated (deferred to check()/build())' — but check() calls eval() which destroys the incremental state.\n\nPlan: (1) Add check_snapshot() and build_snapshot() methods to Engine that operate on current snapshot values without re-eval. (2) Write engine-level E2E test demonstrating true incrementality: eval → edit_param → check_snapshot → build_snapshot → verify values/constraints/geometry update correctly. (3) Add stateful diagnostics pipeline to LSP with persistent Engine. (4) Write LSP-level E2E test: open document → edit → verify diagnostics + geometry update through the server lifecycle.\n\nThe engine-level test proves incrementality (edit_param + check/build on snapshot). The LSP-level test proves the interactive loop works end-to-end (open → edit → diagnostics update). Together they form the complete E2E integration test for the interactive edit loop.\n\n--- POST-REVIEW ADDENDUM ---\n\nReview identified three blocking issues in the LSP server implementation:\n\n(A) test_does_not_test_what_it_claims: The capstone E2E test (step 17) creates independent EvalState instances as proxy checks instead of verifying the diagnostics the server actually publishes. If did_change always published empty diagnostics or panicked, the test would still pass. Fix: add diagnostics capture to ServerState, rewrite the test to assert on captured diagnostics.\n\n(B) mutex_poisoning: did_open/did_change call state.eval_state.lock().unwrap(). If compute_diagnostics_with_state panics while holding the lock, the Mutex becomes poisoned and every subsequent LSP request panics permanently. Fix: use .lock().unwrap_or_else(|e| e.into_inner()) to recover from poisoned locks.\n\n(C) lock_held_during_blocking_computation: The tokio::sync::RwLock write guard is held across the entire compute_diagnostics_with_state() call (parse + compile + eval + constraint check). All concurrent LSP requests are fully blocked during this potentially expensive computation. Fix: extract eval_state from ServerState into its own Arc<Mutex<EvalState>> on ReifyLanguageServer. The RwLock then only guards DocumentStore + captured diagnostics with brief critical sections, while eval runs outside the RwLock.\n\nSteps 19-24 address these issues in TDD order.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -145,6 +145,48 @@
       "description": "Add EvalState to ServerState in crates/reify-lsp/src/server.rs (behind the existing Arc<RwLock<>>). Update did_open to use compute_diagnostics_with_state() instead of stateless compute_diagnostics(). Update did_change similarly. The persistent EvalState survives across edits, enabling the server to maintain Engine state. did_close resets EvalState for the closed document (or leaves it — it will be rebuilt on next open).",
       "status": "done",
       "commit": "3697ff8"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing test in crates/reify-lsp/src/server.rs (mod tests): server_captures_published_diagnostics. Create LspService, call did_open with valid bracket source, then read server.state().read().await.last_diagnostics_for(&uri). Assert it returns Some (diagnostics were captured) and that the captured list contains no ERROR-severity diagnostics. This tests the new diagnostics capture mechanism in ServerState — currently fails because last_diagnostics_for() method and last_published_diagnostics field don't exist. [Addresses reviewer issue: test_does_not_test_what_it_claims]",
+      "status": "done",
+      "commit": "3121226"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Add diagnostics capture to ServerState in crates/reify-lsp/src/server.rs: (1) Add field last_published_diagnostics: HashMap<Url, Vec<lsp_types::Diagnostic>> to ServerState, initialized to empty in ReifyLanguageServer::new(). (2) Add pub fn last_diagnostics_for(&self, uri: &Url) -> Option<&Vec<lsp_types::Diagnostic>> accessor to ServerState. (3) In did_open, store diagnostics.clone() in last_published_diagnostics before calling client.publish_diagnostics(). (4) In did_change, same pattern. (5) In did_close, remove the URI entry from last_published_diagnostics. Add 'use std::collections::HashMap' import. Pass step-19 test.",
+      "status": "done",
+      "commit": "8ce76d8"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing test in crates/reify-lsp/src/server.rs (mod tests): server_recovers_from_eval_state_lock_poisoning. Create LspService. Access the eval_state Mutex through server.eval_state() (new test accessor that returns &Arc<Mutex<EvalState>>), clone the Arc, spawn a std::thread that locks the Mutex and panics to poison it. Verify lock().is_err() confirms the lock is poisoned. Then call did_open with valid bracket source — should succeed (recover from poison) rather than panic. Verify diagnostics were captured in last_diagnostics_for(&uri). Currently fails because: (a) eval_state() accessor doesn't exist on ReifyLanguageServer, and (b) .lock().unwrap() in did_open panics on poisoned lock. [Addresses reviewer issue: mutex_poisoning]",
+      "status": "done",
+      "commit": "c8d5919"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Restructure server to fix mutex poisoning and lock scope in crates/reify-lsp/src/server.rs: (1) Move eval_state out of ServerState into ReifyLanguageServer as a separate field: eval_state: Arc<Mutex<EvalState>>. ServerState now only holds documents + last_published_diagnostics. (2) Add #[cfg(test)] pub(crate) fn eval_state(&self) -> &Arc<Mutex<EvalState>> accessor. (3) Replace .lock().unwrap() with .lock().unwrap_or_else(|e| { eprintln!(\"eval_state lock poisoned, recovering\"); e.into_inner() }) in did_open and did_change. (4) Narrow RwLock scope in did_open: brief write lock for documents.open(), release, eval runs outside RwLock using only the eval_state Mutex, then brief write lock to store captured diagnostics. Same pattern for did_change. (5) Update ReifyLanguageServer::new() to initialize eval_state separately. This simultaneously fixes poison recovery (issue B) and lock contention (issue C). [Addresses reviewer issues: mutex_poisoning + lock_held_during_blocking_computation]",
+      "status": "done",
+      "commit": "d8961b8"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Rewrite the capstone E2E test lsp_server_e2e_interactive_edit_loop in crates/reify-lsp/tests/interactive_edit_loop.rs to assert on the server's actual published diagnostics instead of proxy EvalState checks. After each did_open/did_change, read server.state().read().await.last_diagnostics_for(&uri) and assert directly: (1) after did_open with valid bracket source → captured diagnostics exist and contain no ERROR-severity entries, (2) after did_change with bracket_source_violating() → captured diagnostics contain at least one ERROR with message mentioning 'constraint' or 'violated', (3) after did_change back to valid source → captured diagnostics have no errors. Remove all three proxy blocks that create independent EvalState instances (lines 113-122, 141-153, 171-180 of current file). Also verify did_close clears captured diagnostics for the URI. The last_diagnostics_for accessor must be pub (add to ServerState impl without #[cfg(test)]). [Addresses reviewer issue: test_does_not_test_what_it_claims]",
+      "status": "done",
+      "commit": "06b65c7"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Verification step: run the rewritten capstone E2E test. Should pass since steps 20 and 22 already implemented diagnostics capture and the restructured server correctly stores diagnostics before publishing. If test fails, diagnose: (a) check that last_diagnostics_for is accessible from integration tests (must be pub, not pub(crate)), (b) verify diagnostics are stored BEFORE client.publish_diagnostics() is called, (c) ensure did_close removes the entry from last_published_diagnostics. Fix any issues found.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
@@ -175,6 +217,18 @@
     {
       "decision": "Use SimpleConstraintChecker (not MockConstraintChecker) for constraint violation tests",
       "rationale": "MockConstraintChecker returns predetermined Satisfaction values and doesn't evaluate constraint expressions. To test that 'thickness=1mm violates thickness > 2mm', we need SimpleConstraintChecker which actually evaluates the compiled expression against the ValueMap. Mock is used only when we don't care about real constraint semantics."
+    },
+    {
+      "decision": "Store published diagnostics in ServerState rather than mocking tower-lsp Client",
+      "rationale": "tower-lsp's Client is created internally by LspService::new() and cannot be easily mocked or intercepted without significant transport-level plumbing (mock JSON-RPC channels, message parsing, etc.). Instead, store the exact diagnostics Vec passed to client.publish_diagnostics() in a HashMap<Url, Vec<Diagnostic>> field on ServerState. Tests read this via last_diagnostics_for(). This proves the server computed and published the correct diagnostics — the same Vec is stored and then published, so the capture is faithful. This is simpler than tower_test::mock::Spawn and equally verifiable."
+    },
+    {
+      "decision": "Extract eval_state from ServerState into ReifyLanguageServer to fix lock contention",
+      "rationale": "The original design places eval_state: Mutex<EvalState> inside ServerState, which is guarded by Arc<RwLock<ServerState>>. This means the RwLock write guard must be held for the entire duration of compute_diagnostics_with_state (parse + compile + eval + constraint check). Moving eval_state to its own Arc<Mutex<EvalState>> on ReifyLanguageServer means: (1) RwLock is only held briefly for DocumentStore updates and diagnostics capture, (2) eval runs outside the RwLock using only the eval_state Mutex, (3) concurrent LSP requests that need document state (hover, completion, etc.) can proceed during eval. The Mutex on EvalState still serializes evaluations (correct, since Engine is not Sync), but doesn't block unrelated state reads."
+    },
+    {
+      "decision": "Use unwrap_or_else(|e| e.into_inner()) for Mutex poison recovery instead of custom error handling",
+      "rationale": "When the Mutex is poisoned (e.g., compute_diagnostics_with_state panicked), into_inner() extracts the last known good state. The Engine may be in an inconsistent state, but compute_diagnostics_with_state immediately creates a fresh Engine (line 80-81 of diagnostics.rs: 'state.engine = reify_eval::Engine::new(...)'), so any stale state from the poisoned lock is discarded on the next call. This makes poison recovery safe without needing to rebuild EvalState from scratch."
     }
   ],
   "reuse": [
@@ -227,6 +281,16 @@
       "what": "SimpleConstraintChecker",
       "where": "crates/reify-constraints/src/lib.rs",
       "how": "Real constraint checker that evaluates compiled boolean expressions against ValueMap. Used in constraint violation tests and in the LSP EvalState (same as the current compute_diagnostics pipeline)."
+    },
+    {
+      "what": "Existing server test patterns (state accessor, LspService setup)",
+      "where": "crates/reify-lsp/src/server.rs (mod tests)",
+      "how": "Existing #[cfg(test)] state() accessor and test_uri() helper. Extended with eval_state() accessor for poison recovery testing. The pattern of creating LspService, calling server.inner(), and exercising handlers directly is reused for all new server tests."
+    },
+    {
+      "what": "std::sync::Mutex poison recovery pattern",
+      "where": "Rust standard library",
+      "how": "PoisonError::into_inner() extracts the guarded data from a poisoned Mutex. Combined with unwrap_or_else, this is the standard Rust pattern for recovering from panics that occurred while holding a lock."
     }
   ]
 }
