@@ -1,14 +1,14 @@
 {
-  "task_id": "36",
-  "title": "Reproduce and fix interactive edit-loop staleness after parameter edits",
-  "modules": ["crates/reify-eval", "crates/reify-runtime"],
-  "analysis": "## Current State\n\nSteps 1-12 from the prior plan are complete and committed. The sequential edit pipeline is fully working:\n- `edit_param()` handles auto-resolution, second-wave let-binding propagation, diagnostics\n- `edit_check()` adds constraint satisfaction checking\n- 365 tests pass\n\nThe concurrent edit path (`edit_param_concurrent`) calls `resolve_concurrent_edit()` which correctly updates `result.values` and `result.snapshot_values` in place — so values ARE correct after `apply_concurrent_edit()`. The test `edit_param_concurrent_re_resolves_auto_params` passes.\n\n## Remaining Staleness Gaps\n\n### Gap 1: ConcurrentEditResult discards resolution metadata\n`edit_param_concurrent` (concurrent_eval.rs:312-313):\n```rust\nlet (_resolved_params, _diagnostics) =\n    engine.resolve_concurrent_edit(&setup, &mut result);\n```\nThe returned `resolved_params` and `diagnostics` are assigned to underscore-prefixed variables and discarded. The `ConcurrentEditResult` struct (lib.rs:152-163) has no fields for these. Callers cannot tell what auto params were resolved or if the solver produced diagnostics.\n\n### Gap 2: No concurrent constraint checking\nThere is no `edit_check_concurrent` equivalent. After a concurrent edit, the only way to check constraint satisfaction is to call `check()` which does a full cold-start `eval()`. The sequential path has `edit_check()` which combines `edit_param()` + constraint checking, but the concurrent path has no equivalent.\n\n### Gap 3: Stale test comment\nThe test `edit_param_concurrent_re_resolves_auto_params` (concurrent_eval.rs:875) has a doc comment saying \"Currently FAILS because the concurrent edit path doesn't include a resolution phase.\" This is stale — the test passes.\n\n### Gap 4: Constraint label regression (blocking review feedback)\n`check_constraints_with_values` (lib.rs:1253) always sets `label: None` on every `ConstraintCheckEntry`, discarding user-provided constraint labels. The cold-start `check()` path (lib.rs:1611) correctly populates `label` from `compiled.label.clone()`. Both `edit_check` and `edit_check_concurrent` route through `check_constraints_with_values`, so their `CheckResult` structs lose labels. Root cause: `ConstraintNodeData` in graph.rs lacks a `label` field, and the graph builder (graph.rs:86-92) discards `constraint.label` when converting `CompiledConstraint` → `ConstraintNodeData`.\n\n## Approach\n1. Add `resolved_params` and `diagnostics` fields to `ConcurrentEditResult`\n2. Wire `resolve_concurrent_edit` return values into the result in `edit_param_concurrent`\n3. Add `check_constraints_with_values` helper to Engine (factored from `edit_check`)\n4. Create `edit_check_concurrent` function in reify-runtime\n5. Fix stale comments\n6. Fix label preservation: add `label: Option<String>` to `ConstraintNodeData`, populate in graph builder, use in `check_constraints_with_values`\n\nAll changes are additive — no existing behavior is modified.",
+  "task_id": "32",
+  "title": "LSP server \u2014 core infrastructure",
+  "modules": ["crates/reify-lsp", "crates/reify-cli", "crates/reify-compiler"],
+  "analysis": "This task builds the foundational LSP server for Reify: tower-lsp based initialization, full-sync document management (didOpen/didChange/didClose), and a diagnostic pipeline that feeds parse\u2192compile\u2192eval\u2192check results back to the editor.\n\nThe existing codebase already provides: reify-syntax (tree-sitter parser \u2192 ParsedModule), reify-compiler (compile \u2192 CompiledModule with diagnostics), reify-eval (Engine with eval/check/check_snapshot), reify-constraints (SimpleConstraintChecker), and reify-types (Diagnostic, SourceSpan, Severity, ParseError). The LSP crate exists in the workspace Cargo.toml with tower-lsp 0.20 and tokio as workspace dependencies.\n\nCore architecture:\n1. **convert.rs** \u2014 Bidirectional byte-offset \u2194 LSP Position conversion (handling UTF-16 per LSP spec), span_to_range, and Diagnostic/ParseError \u2192 LSP Diagnostic conversion. Must handle UTF-8 boundary safety (tree-sitter error-recovery can produce mid-character byte offsets).\n2. **document.rs** \u2014 HashMap-backed DocumentStore holding open document text+version, keyed by URI.\n3. **diagnostics.rs** \u2014 Two pipelines: (a) stateless compute_diagnostics (fresh Engine per call), (b) stateful compute_diagnostics_with_state (EvalState holding persistent Engine for incremental potential). Both run parse\u2192compile\u2192eval\u2192check_snapshot, converting all diagnostics (parse errors, compiler diagnostics, eval diagnostics, constraint violations) to LSP format.\n4. **server.rs** \u2014 ReifyLanguageServer wrapping Arc<RwLock<ServerState>> for documents + Arc<Mutex<EvalState>> for eval. Handlers: initialize (advertise FULL sync), did_open/did_change (update doc store, run diagnostics, publish), did_close (remove doc, clear diagnostics), shutdown. Lock strategy: narrow RwLock for document access, separate Mutex for eval (avoids blocking concurrent reads during expensive eval). Mutex poison recovery via unwrap_or_else(into_inner).\n5. **lib.rs** \u2014 run_server() async entry point using tokio stdin/stdout.\n6. **reify-cli** \u2014 'reify lsp' subcommand that creates a tokio Runtime and block_on(run_server()).\n\nKey design constraint: Engine is Send but not Sync (holds Box<dyn ConstraintChecker>). The EvalState wraps it in Mutex for thread safety. For M1 single-file scope, creating a fresh Engine per source change is acceptable; true incrementality (diffing compiled modules) is future work.\n\n**Post-review additions (steps 25\u201332):** Three blocking issues identified by review:\n1. compute_diagnostics_with_state has no dedicated unit tests in diagnostics.rs despite step-21 being marked done. Integration tests exist in tests/interactive_edit_loop.rs but do not verify EvalState internals (version_counter persistence) or the three-phase state-clearing cycle within a single test.\n2. check_snapshot returning None is silently ignored (line 87), causing constraint violations to be invisible to the user. Fix: fall back to engine.check() when check_snapshot returns None.\n3. Constraint violation diagnostics always report Range::default() (0,0)\u2192(0,0) because (a) the compiler hardcodes CompiledConstraint.span to SourceSpan::new(0,0) instead of propagating ConstraintDecl.span, and (b) the LSP diagnostic emitter uses Range::default() instead of looking up constraint spans. Fix requires a one-line compiler fix and a span lookup in the diagnostics pipeline.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Verify all existing tests pass (365 tests across workspace)",
+      "description": "Create crates/reify-lsp crate skeleton: Cargo.toml with dependencies (reify-types, reify-syntax, reify-compiler, reify-eval, reify-constraints, tower-lsp, tokio, serde_json; dev: reify-test-support), empty lib.rs with module declarations. Ensure it compiles in the workspace.",
       "status": "done",
-      "commit": null,
+      "commit": "6652574",
       "tests": []
     }
   ],
@@ -16,177 +16,320 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `concurrent_edit_result_includes_resolved_params` in crates/reify-runtime/tests/concurrent_eval.rs. Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`, constraint `x > a`. SequencedMockSolver: 1st call x=mm(5.0), 2nd call x=mm(20.0). Cold eval. Concurrent edit a→mm(8.0). Assert `result.resolved_params` is non-empty and contains x→mm(20.0). This test will NOT COMPILE because `ConcurrentEditResult` has no `resolved_params` field.",
+      "description": "Write failing tests in convert.rs for offset_to_position (byte offset \u2192 LSP Position): (1) offset 0 in empty string \u2192 Position(0,0); (2) offset within first line returns correct character; (3) offset on second line returns line=1, correct character; (4) offset at newline character returns end of line 0; (5) multiline bracket_source \u2014 offset 0 \u2192 (0,0), second line start \u2192 (1,0). Also test span_to_range: SourceSpan{6,12} in 'first\\nsecond\\nthird' \u2192 Range{(1,0),(1,6)}.",
       "status": "done",
-      "commit": "a2feb1d"
+      "commit": "6652574"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `resolved_params: HashMap<ValueCellId, Value>` and `diagnostics: Vec<Diagnostic>` fields to `ConcurrentEditResult` in crates/reify-eval/src/lib.rs. Initialize to empty defaults in `ConcurrentEvalAdapter::into_result()` and `build_result_shared()` in crates/reify-runtime/src/concurrent_eval.rs. Update `edit_param_concurrent` to capture the return value of `resolve_concurrent_edit` and set `result.resolved_params` and `result.diagnostics` before returning.",
+      "description": "Implement offset_to_position(source, offset) \u2192 Position and span_to_range(source, SourceSpan) \u2192 Range in convert.rs. offset_to_position: iterate bytes counting newlines for line number, then count UTF-16 code units from line start to offset for character column. span_to_range: call offset_to_position for start and end.",
       "status": "done",
-      "commit": "a013e8c"
+      "commit": "6652574"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test `concurrent_edit_result_includes_diagnostics_on_infeasible` in crates/reify-runtime/tests/concurrent_eval.rs. Module: param `a` (default mm(1.0)), auto `x`, constraint `x > a`. SequencedMockSolver: 1st call Solved x=mm(5.0), 2nd call Infeasible with diagnostic message. Cold eval. Concurrent edit a→mm(10.0). Assert `result.diagnostics` is non-empty and contains the infeasibility message. This verifies solver diagnostics flow through the concurrent path.",
+      "description": "Write failing tests in convert.rs for diagnostic conversion: (1) convert_severity maps Error\u2192ERROR, Warning\u2192WARNING, Info\u2192INFORMATION; (2) convert_diagnostic with no labels produces range at origin (0,0)\u2192(0,0); (3) convert_diagnostic with one label uses label span for range; (4) convert_diagnostic with multiple labels puts first as primary range and rest as related_information; (5) convert_parse_error produces ERROR severity diagnostic with correct range from ParseError.span.",
       "status": "done",
-      "commit": "5268c85"
+      "commit": "6652574"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify step-3 test passes with step-2 implementation (diagnostics should already flow through since resolve_concurrent_edit returns them and edit_param_concurrent now captures them). Fix if needed.",
+      "description": "Implement convert_severity, convert_diagnostic, and convert_parse_error in convert.rs. convert_diagnostic: use first label's span for primary range, remaining labels as DiagnosticRelatedInformation. convert_parse_error: map ParseError.span to range with ERROR severity. Both set source='reify'.",
       "status": "done",
-      "commit": "5268c85"
+      "commit": "6652574"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test `edit_check_concurrent_reports_constraint_satisfaction` in crates/reify-runtime/tests/concurrent_eval.rs. Uses SimpleConstraintChecker (from reify-constraints). Module: param `width` (default mm(10.0)), constraint `width > mm(5.0)`. Cold check(). Call new function `edit_check_concurrent(engine, width_id, mm(2.0), cancel)`. Assert: (1) CheckResult.constraint_results[0].satisfaction == Violated, (2) values[width] == mm(2.0), (3) resolved_params is empty (no auto params). This test will NOT COMPILE because `edit_check_concurrent` doesn't exist.",
+      "description": "Write failing tests in document.rs for DocumentStore: (1) open stores text and version, get returns them; (2) get returns Some after open; (3) update replaces text and version; (4) close removes entry, get returns None; (5) get returns None after close; (6) two documents stored independently.",
       "status": "done",
-      "commit": "2a02a32"
+      "commit": "6652574"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add `check_constraints_with_values(&self, values: &ValueMap) -> (Vec<ConstraintCheckEntry>, Vec<Diagnostic>)` public method to Engine in crates/reify-eval/src/lib.rs. Factor the constraint-checking logic from `edit_check` into this method: iterate snapshot.graph.constraints, build ConstraintInput, call self.constraint_checker.check(), collect results. Refactor `edit_check` to use this new helper. Then create `edit_check_concurrent` async function in crates/reify-runtime/src/concurrent_eval.rs: calls edit_param_concurrent, clones resolved_params and diagnostics from result, calls engine.apply_concurrent_edit, calls engine.check_constraints_with_values, returns CheckResult.",
+      "description": "Implement DocumentStore in document.rs: HashMap<Url, DocumentState> where DocumentState holds text: String and version: i32. Methods: new(), open(uri, text, version), update(uri, text, version), close(uri), get(uri) \u2192 Option<&DocumentState>.",
       "status": "done",
-      "commit": "adcdfef"
+      "commit": "6652574"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `edit_check_concurrent_constraint_transitions` in crates/reify-runtime/tests/concurrent_eval.rs. Uses SimpleConstraintChecker. Module: param `width` (default mm(10.0)), constraint `width > mm(5.0)`. Cold check → Satisfied. edit_check_concurrent(width, mm(2.0)) → Violated. edit_check_concurrent(width, mm(8.0)) → Satisfied. Verifies constraint transitions work correctly through the concurrent path across multiple consecutive edits.",
+      "description": "Write failing tests in diagnostics.rs for compute_diagnostics pipeline: (1) valid bracket_source produces no ERROR-severity diagnostics; (2) syntax error 'structure {' produces at least one ERROR diagnostic; (3) unknown identifier in expression produces diagnostics; (4) empty source does not panic.",
       "status": "done",
-      "commit": "bcca88b"
+      "commit": "6652574"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Fix any issues with concurrent constraint transitions. Ensure engine state is correctly updated between consecutive edit_check_concurrent calls (snapshot, cache, param_overrides all consistent).",
+      "description": "Implement compute_diagnostics(source, uri) \u2192 Vec<Diagnostic> in diagnostics.rs. Derives module_name from URI path (strip .ri suffix). Pipeline: parse \u2192 collect parse errors via convert_parse_error; compile \u2192 collect diagnostics via convert_diagnostic; create fresh Engine with SimpleConstraintChecker \u2192 check() \u2192 collect eval diagnostics.",
       "status": "done",
-      "commit": "bcca88b"
+      "commit": "6652574"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test `edit_check_concurrent_with_resolution_and_constraints` — end-to-end concurrent interactive loop. Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`, constraint `x > a`, constraint `y < mm(100.0)`. SequencedMockSolver returns x=mm(5.0) then x=mm(20.0). Cold eval+check. edit_check_concurrent(a, mm(8.0)). Assert: (1) resolved_params contains x→mm(20.0), (2) values[y] = 0.04 SI (re-evaluated from resolved x), (3) constraint `x > a` is Satisfied (via checker), (4) constraint `y < mm(100)` is Satisfied. This is the comprehensive coherence test: concurrent edit → resolution → let-binding propagation → constraint checking, all in one interactive update.",
+      "description": "Write failing test in server.rs: after calling initialize(), the result capabilities must include text_document_sync = TextDocumentSyncKind::FULL.",
       "status": "done",
-      "commit": "86a9969"
+      "commit": "6652574"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Fix any coherence issues found by step-9. Update the stale doc comment on `edit_param_concurrent_re_resolves_auto_params` test (remove 'Currently FAILS' note). Clean up any remaining underscore-prefixed variable names from the old discard pattern.",
+      "description": "Implement ReifyLanguageServer struct with client: Client, state: Arc<RwLock<ServerState>>. ServerState contains DocumentStore. Implement LanguageServer trait: initialize() returns ServerCapabilities with text_document_sync FULL; initialized() is no-op; shutdown() returns Ok(()).",
       "status": "done",
-      "commit": "57d26db"
+      "commit": "6652574"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test `edit_check_preserves_constraint_labels` in crates/reify-eval/tests/incremental.rs. Uses SimpleConstraintChecker. Module: param `width` (default mm(10.0)), TWO constraints: `.constraint(\"S\", 0, Some(\"min_width\"), gt(value_ref(\"S\", \"width\"), literal(mm(5.0))))` and `.constraint(\"S\", 1, None, lt(value_ref(\"S\", \"width\"), literal(mm(100.0))))`. Cold check() → verify constraint_results[0].label == Some(\"min_width\") and constraint_results[1].label == None. Then call edit_check(width, mm(2.0)). Assert: (1) constraint_results[0].label == Some(\"min_width\"), (2) constraint_results[1].label == None, (3) constraint_results[0].satisfaction == Violated. This test WILL FAIL because `check_constraints_with_values` always sets `label: None`, so the edit_check path returns `label: None` for the labeled constraint.",
+      "description": "Write failing test: after did_open with bracket_source, the document should be stored in ServerState.documents with correct text and version.",
       "status": "done",
-      "commit": "5905aa2"
+      "commit": "6652574"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Fix label preservation in `check_constraints_with_values`. Add `pub label: Option<String>` field to `ConstraintNodeData` in crates/reify-eval/src/graph.rs. Update the graph builder (graph.rs:86-92) to copy `constraint.label.clone()` into `ConstraintNodeData`. Update all existing `ConstraintNodeData { .. }` construction sites in tests (graph.rs tests, demand.rs, deps.rs, dirty.rs) to include `label: None`. In `check_constraints_with_values` (lib.rs:1251-1255), change `label: None` to `label: cnode.label.clone()` by looking up the constraint node from `snapshot.graph.constraints` using the constraint id. The helper already iterates `snapshot.graph.constraints` and has access to each `cnode`, so use `cnode.label.clone()` directly in the `ConstraintCheckEntry` construction.",
+      "description": "Implement did_open handler: extract uri/text/version from params, write-lock state to store document via documents.open(), then run compute_diagnostics and publish via client.publish_diagnostics().",
       "status": "done",
-      "commit": "d9d6854"
+      "commit": "6652574"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write test `edit_check_concurrent_preserves_constraint_labels` in crates/reify-runtime/tests/concurrent_eval.rs. Uses SimpleConstraintChecker. Module: param `width` (default mm(10.0)), constraint `.constraint(\"S\", 0, Some(\"min_width\"), gt(value_ref(\"S\", \"width\"), literal(mm(5.0))))`. Cold check(). edit_check_concurrent(width, mm(2.0)). Assert: (1) constraint_results[0].label == Some(\"min_width\"), (2) satisfaction == Violated. This verifies label preservation through the concurrent constraint-checking path. Should pass immediately since edit_check_concurrent also uses check_constraints_with_values which was fixed in step-12.",
+      "description": "Write failing test: after did_open + did_change with new text, the stored document text and version should be updated.",
       "status": "done",
-      "commit": "a8652fa"
+      "commit": "6652574"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Verify step-13 test passes (it should, since edit_check_concurrent routes through the same check_constraints_with_values helper fixed in step-12). Run full test suite to confirm no regressions. Fix any compilation issues in test files that construct ConstraintNodeData without the new `label` field.",
+      "description": "Implement did_change handler: full sync mode \u2014 take last content_change.text, write-lock state to update document, run compute_diagnostics and publish.",
       "status": "done",
-      "commit": "bb812af"
+      "commit": "6652574"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test: after did_open + did_close, the document should be removed from the store (get returns None).",
+      "status": "done",
+      "commit": "6652574"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement did_close handler: write-lock state to close document, publish empty diagnostics to clear editor markers.",
+      "status": "done",
+      "commit": "6652574"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing tests for run_server entry point: verify lib.rs exports run_server() as pub async fn, and that the CLI 'lsp' subcommand calls it via tokio Runtime. (Compile-time verification that the integration wires correctly.)",
+      "status": "done",
+      "commit": "6652574"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Implement run_server() in lib.rs: create LspService from ReifyLanguageServer::new, serve on tokio stdin/stdout. Add cmd_lsp() to reify-cli main.rs: create tokio Runtime, block_on(run_server()), return SUCCESS. Wire 'lsp' match arm in CLI dispatch.",
+      "status": "done",
+      "commit": "6652574"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing tests for UTF-8 boundary safety in offset_to_position: (1) 2-byte char '\u00e9' (U+00E9) \u2014 offset at continuation byte should not panic, snaps to next char boundary; (2) 3-byte char '\u4e16' (U+4E16) \u2014 offsets at continuation bytes snap forward; (3) 4-byte char '\ud83d\ude00' (U+1F600) \u2014 continuation byte offsets snap forward with correct UTF-16 surrogate pair handling (2 UTF-16 units); (4) exact char boundaries produce correct positions; (5) mid-char on second line still reports correct line; (6) span_to_range with mid-multibyte span does not panic.",
+      "status": "done",
+      "commit": "6652574"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Harden offset_to_position: after clamping to source length, snap forward to next valid UTF-8 char boundary while not at boundary (continuation bytes 0x80..0xBF). This handles tree-sitter error-recovery spans that land mid-character.",
+      "status": "done",
+      "commit": "6652574"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing test for stateful diagnostics pipeline: compute_diagnostics_with_state with bracket_source produces no errors; then with violating source (thickness=1mm) produces constraint violation diagnostic; then with valid source again clears violations. Verify EvalState maintains Engine across calls.",
+      "status": "done",
+      "commit": "6652574"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Implement EvalState struct (engine: Engine, last_module: Option<CompiledModule>, version_counter: u64) and compute_diagnostics_with_state(state, source, uri) \u2192 DiagnosticsResult. On each call: re-parse, re-compile, create fresh Engine (source change invalidates all state), eval, check_snapshot for constraint results. Convert constraint violations to explicit ERROR diagnostics. Store compiled module for future use.",
+      "status": "done",
+      "commit": "6652574"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write failing tests: (1) after did_open, ServerState.last_diagnostics_for(uri) returns captured diagnostics (valid source \u2192 no errors); (2) eval_state Mutex is poisoned via thread panic, then did_open still succeeds \u2014 recovers from poison and produces diagnostics.",
+      "status": "done",
+      "commit": "6652574"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Restructure server: add eval_state: Arc<Mutex<EvalState>> to ReifyLanguageServer (separate from RwLock). Add last_published_diagnostics to ServerState. Update did_open/did_change: narrow RwLock scope (brief write to store doc, release lock, then lock eval_state Mutex for eval, brief write to capture diagnostics). Recover from Mutex poison via unwrap_or_else(|e| e.into_inner()). Update did_close to clear captured diagnostics.",
+      "status": "done",
+      "commit": "6652574"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "[Review fix: missing_test_coverage] Write dedicated unit tests for compute_diagnostics_with_state in diagnostics.rs #[cfg(test)] mod tests (not integration tests). Single test function exercising the full three-phase stateful lifecycle: (1) call with bracket_source() \u2014 assert no ERROR diagnostics; (2) call with bracket_source_violating() on same EvalState \u2014 assert at least one ERROR diagnostic with message containing 'constraint' and 'violated'; (3) call with bracket_source() again on same EvalState \u2014 assert ERROR diagnostics are empty, verifying violations clear on valid source. Also assert EvalState.version_counter == 3 after three calls (confirms state persistence across invocations). Add a separate test that EvalState::new() starts with version_counter == 0.",
+      "status": "done",
+      "commit": "6ac0d4f"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "[Review fix: missing_test_coverage] Verify step-25 tests pass against existing compute_diagnostics_with_state implementation. If any tests fail, fix the underlying issues. The existing implementation should handle bracket_source_violating() (String coerced to &str) correctly. If version_counter is not accessible from tests (it is \u2014 same module), no changes needed. This step may be a no-op if the implementation is already correct for the tested scenarios.",
+      "status": "done",
+      "commit": "6ac0d4f"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "[Review fix: silent_failure_at_boundary] Write tests in diagnostics.rs for check_snapshot fallback robustness: (1) assert that a fresh Engine (without prior eval call) has check_snapshot return None when given a compiled bracket module \u2014 validates the edge case exists; (2) test that compute_diagnostics_with_state with bracket_source_violating() ALWAYS produces at least one constraint violation ERROR diagnostic (regression guard ensuring the constraint pipeline is never silently skipped); (3) test that compute_diagnostics_with_state with an empty source ('') does not panic and produces a result (edge case where eval may not create a meaningful snapshot).",
+      "status": "done",
+      "commit": "0a519c8"
+    },
+    {
+      "id": "step-28",
+      "type": "impl",
+      "description": "[Review fix: silent_failure_at_boundary] In compute_diagnostics_with_state, replace `if let Some(check_result) = state.engine.check_snapshot(&compiled)` with a match that falls back to `state.engine.check(&compiled)` when check_snapshot returns None. Add eprintln!(\"[reify-lsp] check_snapshot returned None after eval, falling back to full check\") warning when the fallback is triggered. The fallback path calls check() which internally re-runs eval + constraint checking \u2014 slightly less efficient but ensures constraint violations are never silently dropped. The normal path (check_snapshot returns Some) is unchanged.",
+      "status": "done",
+      "commit": "8bba05f"
+    },
+    {
+      "id": "step-29",
+      "type": "test",
+      "description": "[Review fix: misleading_error_location] In crates/reify-compiler, write a test that compiles bracket_source() via parse+compile and asserts that each CompiledConstraint.span is non-zero and matches the corresponding ConstraintDecl.span from the parsed module. Specifically: parse bracket_source(), compile it, then for each template.constraints[i], assert constraint.span != SourceSpan::new(0,0). Also compare against known bracket fixture spans: constraint 0 span should be (232,258), constraint 1 span (263,295), constraint 2 span (300,340). This test currently fails because the compiler hardcodes span: SourceSpan::new(0, 0) at lib.rs:729.",
+      "status": "done",
+      "commit": "e460a73"
+    },
+    {
+      "id": "step-30",
+      "type": "impl",
+      "description": "[Review fix: misleading_error_location] In crates/reify-compiler/src/lib.rs at line 729, change `span: SourceSpan::new(0, 0)` to `span: constraint.span`, propagating the ConstraintDecl's source span (which tree-sitter correctly populates) into the CompiledConstraint. This is a one-line fix \u2014 the `constraint` variable is the ConstraintDecl which has a valid `.span` field with correct byte offsets.",
+      "status": "done",
+      "commit": "3433209"
+    },
+    {
+      "id": "step-31",
+      "type": "test",
+      "description": "[Review fix: misleading_error_location] In diagnostics.rs, write test that constraint violation diagnostics from compute_diagnostics_with_state have ranges pointing to the constraint declaration in source, NOT (0,0)\u2192(0,0). Use bracket_source_violating() and verify: (a) find the ERROR diagnostic whose message contains 'constraint' and 'violated', (b) assert its range.start.line > 0 (constraints are on lines 7-9 of bracket source, not line 0), (c) assert range != Range::default(). This test fails initially because the current code uses Range::default() for all constraint violation diagnostics.",
+      "status": "done",
+      "commit": "e92a3bb"
+    },
+    {
+      "id": "step-32",
+      "type": "impl",
+      "description": "[Review fix: misleading_error_location] In compute_diagnostics_with_state, after compiling, build a HashMap<ConstraintNodeId, SourceSpan> from compiled.templates.iter().flat_map(|t| t.constraints.iter()).map(|c| (c.id.clone(), c.span)). When emitting constraint violation diagnostics (the for loop over check_result.constraint_results), look up the span by entry.id in this map and use convert::span_to_range(source, span) for the diagnostic range instead of lsp_types::Range::default(). Fall back to Range::default() only if the span lookup fails (defensive, should not happen in practice).",
+      "status": "done",
+      "commit": "e92a3bb"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add resolved_params/diagnostics as fields on ConcurrentEditResult rather than returning them separately from edit_param_concurrent",
-      "rationale": "Keeping all edit output in one struct mirrors the EvalResult pattern, prevents callers from losing track of associated data, and means existing callers just get additional fields (backward-compatible). The struct already carries values and snapshot_values; adding resolution metadata completes it."
+      "decision": "Full document sync (TextDocumentSyncKind::FULL) instead of incremental",
+      "rationale": "Full sync is simpler to implement and sufficient for M1 single-file scope. The entire document text arrives on each change, avoiding diff/patch complexity. Incremental sync can be added later as an optimization when document sizes warrant it."
     },
     {
-      "decision": "Factor constraint checking into Engine::check_constraints_with_values helper, reuse in both edit_check and edit_check_concurrent",
-      "rationale": "Avoids duplicating constraint-checking logic. edit_check currently inlines the constraint loop; factoring it out makes it available to the concurrent path without copying. Both paths need identical constraint evaluation logic — only the value-computation step differs (sequential vs concurrent)."
+      "decision": "Separate RwLock for documents and Mutex for eval state",
+      "rationale": "Engine evaluation is expensive relative to document lookups. A single RwLock would block all document reads during eval. Separating them allows concurrent document reads (hover, goto-def, completion) while eval runs. The Mutex on EvalState serializes eval calls which is necessary since Engine is Send but not Sync."
     },
     {
-      "decision": "edit_check_concurrent is a free function in reify-runtime (not an Engine method)",
-      "rationale": "Matches the existing edit_param_concurrent pattern. Keeps async code in the runtime crate rather than making Engine depend on tokio. The function orchestrates Engine methods (prepare, apply, check) without owning any state."
+      "decision": "Fresh Engine per source change in stateful pipeline",
+      "rationale": "Source text changes invalidate the entire compilation/evaluation graph. True source-level incrementality (diffing compiled modules, updating only changed topology) is complex and deferred to M4. For M1 single-file scope, cold-start eval is fast enough (<1ms for bracket.ri)."
     },
     {
-      "decision": "edit_check_concurrent applies the concurrent edit before checking constraints (apply-then-check, not check-with-temporary-values)",
-      "rationale": "Applying first ensures the engine state is fully updated for subsequent operations. The caller gets a consistent engine state plus a complete CheckResult. This matches edit_check's pattern where edit_param updates engine state before constraint checking reads from it."
+      "decision": "Mutex poison recovery via into_inner()",
+      "rationale": "If eval panics (e.g., unexpected OCCT crash), the Mutex becomes poisoned. Rather than propagating the panic to all future LSP requests (effectively killing the server), we recover the inner EvalState and continue. A fresh Engine will be created on next eval anyway, so the recovered state is safe to use."
     },
     {
-      "decision": "Defer incremental geometry realization to a separate task",
-      "rationale": "The task mentions 'realized outputs' but geometry realization requires OCCT kernel integration with thread-safety constraints (M4 'Living Design' scope). The 'realized outputs' gap for this task is addressed by ensuring let-binding values that feed realization (e.g., volume) are correctly updated in the interactive loop. Incremental geometry belongs to a dedicated task."
+      "decision": "UTF-8 boundary snapping in offset_to_position",
+      "rationale": "Tree-sitter error-recovery can produce byte offsets that land in the middle of multi-byte UTF-8 characters. Rather than panicking on invalid slice boundaries, we snap forward to the next valid char boundary. This is safe because it only affects the column position of error spans, and snapping forward to the next character is a reasonable approximation."
     },
     {
-      "decision": "Use SimpleConstraintChecker (real checker) for edit_check_concurrent tests, not MockConstraintChecker",
-      "rationale": "The concurrent constraint tests need to verify actual satisfaction transitions (Satisfied→Violated→Satisfied). MockConstraintChecker returns predetermined results regardless of values, which wouldn't test the pipeline. SimpleConstraintChecker evaluates constraint expressions against actual values, proving the full pipeline is coherent."
+      "decision": "UTF-16 character counting per LSP specification",
+      "rationale": "LSP Position.character uses UTF-16 code units, not bytes or Unicode scalar values. This matters for emoji (surrogate pairs = 2 UTF-16 units) and CJK characters. Correct handling via char::len_utf16() ensures editors display diagnostics at the right column."
     },
     {
-      "decision": "Store constraint labels on ConstraintNodeData in the graph rather than passing a label map to check_constraints_with_values",
-      "rationale": "Labels are a static property of a constraint, logically belonging on the graph node alongside id and expr. Storing them in ConstraintNodeData makes them available everywhere the graph is used, not just in constraint-checking. It avoids threading extra parameters (a label map built from the compiled template) through check_constraints_with_values. The graph builder already has access to the label from CompiledConstraint; it just wasn't copying it. This is a one-field addition to a struct, matching the existing pattern where ValueCellNode stores all static cell metadata."
+      "decision": "Constraint violations as explicit ERROR diagnostics",
+      "rationale": "CheckResult.constraint_results contains Satisfaction entries but these aren't Diagnostic objects. The LSP pipeline explicitly converts Violated constraints into ERROR diagnostics with descriptive messages ('constraint violated: <label>'), making them visible in the editor's problem panel alongside parse/compile errors."
+    },
+    {
+      "decision": "Fallback from check_snapshot to check() when snapshot is absent",
+      "rationale": "check_snapshot returns None when no evaluation snapshot exists. While eval() is always called before check_snapshot in the normal path (so None should be rare), silently dropping the constraint check makes violations invisible to the user with no indication. Falling back to check() (which internally re-runs eval + constraint check) is slightly less efficient but guarantees constraint results are always produced. An eprintln warning alerts developers to the unexpected condition without polluting the LSP diagnostic output."
+    },
+    {
+      "decision": "Constraint span resolution via CompiledModule lookup",
+      "rationale": "ConstraintCheckEntry (from Engine) carries id and label but no source span. CompiledConstraint (from CompiledModule) carries the span. Building a HashMap<ConstraintNodeId, SourceSpan> from the compiled module's templates and looking up by id when emitting violation diagnostics is O(n) construction + O(1) per lookup. With typical constraint counts < 20, this adds negligible overhead while ensuring violation diagnostics point to the actual constraint declaration in source."
+    },
+    {
+      "decision": "Fix compiler span propagation as part of this task",
+      "rationale": "The compiler hardcodes CompiledConstraint.span to SourceSpan::new(0,0) instead of using ConstraintDecl.span. This is a one-line bug fix (span: constraint.span) that is prerequisite for correct LSP constraint violation locations. While technically in crates/reify-compiler, the fix is trivial, self-contained, and required for the LSP task's correctness. Adding crates/reify-compiler to the module scope is justified."
     }
   ],
   "reuse": [
     {
-      "what": "TopologyTemplateBuilder, CompiledModuleBuilder, expression helpers (binop, gt, lt, literal, value_ref)",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Build test modules with .param(), .auto_param(), .let_binding(), .constraint(). Same pattern used in all existing concurrent_eval.rs and resolution.rs tests. The .constraint() method already accepts label: Option<&str> as its 3rd argument."
+      "what": "reify_syntax::parse(source, ModulePath) \u2192 ParsedModule",
+      "where": "crates/reify-syntax/src/lib.rs",
+      "how": "First stage of the diagnostics pipeline. ParsedModule.errors provides ParseError with SourceSpan for syntax error diagnostics."
     },
     {
-      "what": "MockConstraintChecker, SequencedMockConstraintSolver",
-      "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "MockConstraintChecker for Engine construction in resolution tests. SequencedMockSolver for multi-phase resolution testing (cold eval → edit). Already used in edit_param_concurrent_re_resolves_auto_params test."
+      "what": "reify_compiler::compile(parsed) \u2192 CompiledModule",
+      "where": "crates/reify-compiler/src/lib.rs",
+      "how": "Second stage. CompiledModule.diagnostics provides type-check and scope-resolution errors as Diagnostic objects. CompiledModule.templates[].constraints[] provides CompiledConstraint with span for violation location resolution."
     },
     {
-      "what": "SimpleConstraintChecker (real constraint evaluator)",
+      "what": "reify_eval::Engine::new(checker, kernel) + check/check_snapshot",
+      "where": "crates/reify-eval/src/lib.rs",
+      "how": "Third stage. Engine.check() runs eval + constraint checking (always returns CheckResult). check_snapshot() provides constraint check from current snapshot (returns Option). CheckResult.diagnostics + constraint_results feed the LSP diagnostic output."
+    },
+    {
+      "what": "reify_constraints::SimpleConstraintChecker",
       "where": "crates/reify-constraints/src/lib.rs",
-      "how": "For edit_check_concurrent tests that need actual constraint evaluation. Already used in edit_check_constraint_transitions_satisfied_to_violated_and_back test in incremental.rs."
+      "how": "Default constraint checker for LSP. Evaluates constraint expressions against current values and reports Satisfied/Violated/Indeterminate."
     },
     {
-      "what": "mm() value constructor",
-      "where": "crates/reify-test-support/src/values.rs",
-      "how": "Create length values in millimeters. mm(5.0) → Value::Scalar { si_value: 0.005, dimension: LENGTH }."
+      "what": "reify_types::{Diagnostic, SourceSpan, Severity, ParseError}",
+      "where": "crates/reify-types/src/diagnostics.rs",
+      "how": "Source types for diagnostic conversion. Diagnostic has message, severity, labels[]. SourceSpan has start/end byte offsets. These are converted to LSP types by convert.rs."
     },
     {
-      "what": "edit_param_concurrent() existing function",
-      "where": "crates/reify-runtime/src/concurrent_eval.rs:282-324",
-      "how": "edit_check_concurrent wraps edit_param_concurrent with constraint checking, following the same composition pattern as edit_check wraps edit_param."
+      "what": "tower-lsp framework",
+      "where": "Cargo.toml workspace dependency",
+      "how": "Provides LanguageServer trait, LspService, Server, Client, and all LSP type definitions. The async_trait macro enables async handler methods."
     },
     {
-      "what": "edit_check() constraint-checking logic",
-      "where": "crates/reify-eval/src/lib.rs:1218-1261",
-      "how": "Factor the constraint-checking loop (lines 1228-1253) into check_constraints_with_values helper. The helper takes &self and &ValueMap, accesses self.current_snapshot.graph.constraints and self.constraint_checker."
+      "what": "bracket_source() test fixture",
+      "where": "crates/reify-test-support/src/fixtures.rs",
+      "how": "Canonical test source for integration tests (did_open, did_change). Known to parse and compile cleanly, with 5 params, 1 let, 3 constraints for predictable diagnostic output."
     },
     {
-      "what": "ConcurrentEvalAdapter::into_result() and build_result_shared()",
-      "where": "crates/reify-runtime/src/concurrent_eval.rs:111-167",
-      "how": "Update these to initialize new resolved_params and diagnostics fields to empty defaults. The resolution metadata is set after the adapter produces the result, in edit_param_concurrent."
+      "what": "bracket_source_violating() test fixture",
+      "where": "crates/reify-test-support/src/fixtures.rs",
+      "how": "Returns bracket source with thickness=1mm (violates 'thickness > 2mm' constraint). Returns String (not &str). Same byte length as bracket_source() so constraint span offsets are preserved. Used in steps 25, 27, 31 for testing constraint violation detection and span resolution."
     },
     {
-      "what": "CheckResult, ConstraintCheckEntry, EvalResult types",
-      "where": "crates/reify-eval/src/lib.rs:68-90",
-      "how": "edit_check_concurrent returns CheckResult (same as edit_check). No new result types needed."
+      "what": "LspService::new + service.inner() test pattern",
+      "where": "tower-lsp API",
+      "how": "Creates server instance for testing without actual stdin/stdout transport. service.inner() returns &ReifyLanguageServer for direct handler calls. Used in all server.rs integration tests."
     },
     {
-      "what": "ConstraintNodeData struct and graph builder",
-      "where": "crates/reify-eval/src/graph.rs:20-27 (struct), graph.rs:86-94 (builder)",
-      "how": "Add `label: Option<String>` field to ConstraintNodeData. In the graph builder loop (graph.rs:86-94), copy `constraint.label.clone()` into the new field. This makes labels available to check_constraints_with_values without needing the compiled template."
+      "what": "ConstraintNodeId for constraint span lookup",
+      "where": "crates/reify-types/src/constraint.rs",
+      "how": "Unique identifier for constraints (e.g. 'Bracket#0'). Used as key in HashMap<ConstraintNodeId, SourceSpan> built from CompiledModule to resolve constraint violation locations. ConstraintCheckEntry.id matches CompiledConstraint.id."
     }
   ]
 }

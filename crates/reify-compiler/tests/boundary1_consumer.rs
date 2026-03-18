@@ -46,6 +46,54 @@ fn reject_unresolved_type_names() {
     assert!(!compiled.diagnostics.is_empty(), "should have diagnostics for unresolved type");
 }
 
+/// Compiled constraints should propagate spans from parsed ConstraintDecls.
+#[test]
+fn compiled_constraint_spans_match_parsed_spans() {
+    use reify_syntax::MemberDecl;
+    use reify_types::SourceSpan;
+
+    let source = bracket_source();
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
+    let compiled = reify_compiler::compile(&parsed);
+
+    assert_eq!(compiled.templates.len(), 1);
+    let template = &compiled.templates[0];
+    assert_eq!(template.constraints.len(), 3);
+
+    // Each constraint span must be non-zero (not the hardcoded (0,0) default)
+    for (i, constraint) in template.constraints.iter().enumerate() {
+        assert_ne!(
+            constraint.span,
+            SourceSpan::new(0, 0),
+            "constraint {} span should not be (0,0) — must propagate from ConstraintDecl",
+            i
+        );
+    }
+
+    // Extract parsed constraint spans for comparison
+    let parsed_constraint_spans: Vec<SourceSpan> = match &parsed.declarations[0] {
+        reify_syntax::Declaration::Structure(s) => s
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                MemberDecl::Constraint(c) => Some(c.span),
+                _ => None,
+            })
+            .collect(),
+        _ => panic!("expected Structure"),
+    };
+    assert_eq!(parsed_constraint_spans.len(), 3);
+
+    // Compiled constraint spans must match parsed ConstraintDecl spans
+    for (i, constraint) in template.constraints.iter().enumerate() {
+        assert_eq!(
+            constraint.span, parsed_constraint_spans[i],
+            "constraint {} span should match parsed ConstraintDecl.span",
+            i
+        );
+    }
+}
+
 /// Handle ParsedModule with parse errors → process valid declarations.
 #[test]
 fn handle_parse_errors_gracefully() {

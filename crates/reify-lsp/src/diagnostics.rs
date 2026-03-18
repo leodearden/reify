@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
-use reify_types::{ModulePath, Satisfaction};
+use reify_types::{ConstraintNodeId, ModulePath, Satisfaction, SourceSpan};
 use tower_lsp::lsp_types::{self, Url};
 
 use crate::analysis::module_name_from_uri;
@@ -83,28 +85,56 @@ pub fn compute_diagnostics_with_state(
 
     let _eval_result = state.engine.eval(&compiled);
 
-    // Check constraints from snapshot
-    if let Some(check_result) = state.engine.check_snapshot(&compiled) {
-        // Convert eval/constraint diagnostics
-        for diag in &check_result.diagnostics {
+    // Check constraints from snapshot, falling back to full check() if snapshot is absent
+    let check_result = match state.engine.check_snapshot(&compiled) {
+        Some(result) => result,
+        None => {
+            eprintln!("[reify-lsp] check_snapshot returned None after eval, falling back to full check");
+            state.engine.check(&compiled)
+        }
+    };
+
+    // Build constraint span lookup map from compiled module
+    let constraint_spans: HashMap<ConstraintNodeId, SourceSpan> = compiled
+        .templates
+        .iter()
+        .flat_map(|t| t.constraints.iter())
+        .map(|c| (c.id.clone(), c.span))
+        .collect();
+
+    // Convert non-constraint eval diagnostics from check result.
+    // Skip constraint checker messages (format: "constraint {id} violated")
+    // since we generate span-aware versions below.
+    let violated_messages: std::collections::HashSet<String> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.satisfaction == Satisfaction::Violated)
+        .map(|e| format!("constraint {} violated", e.id))
+        .collect();
+    for diag in &check_result.diagnostics {
+        if !violated_messages.contains(&diag.message) {
             diagnostics.push(convert::convert_diagnostic(diag, source, uri));
         }
+    }
 
-        // Generate explicit diagnostics for constraint violations
-        for entry in &check_result.constraint_results {
-            if entry.satisfaction == Satisfaction::Violated {
-                let msg = match &entry.label {
-                    Some(label) => format!("constraint violated: {}", label),
-                    None => format!("constraint {} violated", entry.id),
-                };
-                diagnostics.push(lsp_types::Diagnostic {
-                    range: lsp_types::Range::default(),
-                    severity: Some(lsp_types::DiagnosticSeverity::ERROR),
-                    source: Some("reify".to_string()),
-                    message: msg,
-                    ..Default::default()
-                });
-            }
+    // Generate explicit diagnostics for constraint violations with source spans
+    for entry in &check_result.constraint_results {
+        if entry.satisfaction == Satisfaction::Violated {
+            let msg = match &entry.label {
+                Some(label) => format!("constraint violated: {}", label),
+                None => format!("constraint {} violated", entry.id),
+            };
+            let span_lookup = constraint_spans.get(&entry.id);
+            let range = span_lookup
+                .map(|span| convert::span_to_range(source, *span))
+                .unwrap_or_default();
+            diagnostics.push(lsp_types::Diagnostic {
+                range,
+                severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                source: Some("reify".to_string()),
+                message: msg,
+                ..Default::default()
+            });
         }
     }
 
@@ -200,5 +230,160 @@ mod tests {
         let diags = compute_diagnostics("", &test_uri());
         // Should not panic; may or may not produce diagnostics
         let _ = diags;
+    }
+
+    // --- compute_diagnostics_with_state unit tests (step-25) ---
+
+    #[test]
+    fn eval_state_new_starts_with_version_counter_zero() {
+        let state = EvalState::new();
+        assert_eq!(state.version_counter, 0);
+    }
+
+    #[test]
+    fn stateful_diagnostics_three_phase_lifecycle() {
+        let mut state = EvalState::new();
+        let uri = test_uri();
+
+        // Phase 1: valid source — no ERROR diagnostics
+        let source_valid = reify_test_support::bracket_source();
+        let result1 = compute_diagnostics_with_state(&mut state, source_valid, &uri);
+        let errors1: Vec<_> = result1
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors1.is_empty(),
+            "Phase 1: valid source should produce no errors, got: {errors1:?}"
+        );
+
+        // Phase 2: violating source — at least one constraint violation ERROR
+        let source_violating = reify_test_support::bracket_source_violating();
+        let result2 = compute_diagnostics_with_state(&mut state, &source_violating, &uri);
+        let errors2: Vec<_> = result2
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            !errors2.is_empty(),
+            "Phase 2: violating source should produce at least one ERROR"
+        );
+        let has_constraint_violation = errors2.iter().any(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("constraint") && msg.contains("violated")
+        });
+        assert!(
+            has_constraint_violation,
+            "Phase 2: should have a 'constraint violated' diagnostic, got: {errors2:?}"
+        );
+
+        // Phase 3: back to valid source — violations should clear
+        let result3 = compute_diagnostics_with_state(&mut state, source_valid, &uri);
+        let errors3: Vec<_> = result3
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors3.is_empty(),
+            "Phase 3: valid source should clear violations, got: {errors3:?}"
+        );
+
+        // Verify version_counter persistence: 3 calls = version_counter 3
+        assert_eq!(
+            state.version_counter, 3,
+            "version_counter should be 3 after three calls"
+        );
+    }
+
+    // --- check_snapshot fallback robustness tests (step-27) ---
+
+    #[test]
+    fn fresh_engine_check_snapshot_returns_none() {
+        // A fresh Engine (without prior eval) should have no snapshot
+        let checker = SimpleConstraintChecker;
+        let engine = reify_eval::Engine::new(Box::new(checker), None);
+        let source = reify_test_support::bracket_source();
+        let parsed = reify_syntax::parse(source, ModulePath::single("bracket"));
+        let compiled = reify_compiler::compile(&parsed);
+        let result = engine.check_snapshot(&compiled);
+        assert!(
+            result.is_none(),
+            "fresh Engine without eval should return None from check_snapshot"
+        );
+    }
+
+    #[test]
+    fn stateful_violating_source_always_produces_constraint_violation() {
+        // Regression guard: constraint violations must never be silently skipped
+        let mut state = EvalState::new();
+        let uri = test_uri();
+        let source_violating = reify_test_support::bracket_source_violating();
+        let result = compute_diagnostics_with_state(&mut state, &source_violating, &uri);
+        let constraint_errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.to_lowercase().contains("constraint")
+                    && d.message.to_lowercase().contains("violated")
+            })
+            .collect();
+        assert!(
+            !constraint_errors.is_empty(),
+            "violating source must always produce at least one constraint violation ERROR, got diagnostics: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn stateful_empty_source_does_not_panic() {
+        let mut state = EvalState::new();
+        let uri = test_uri();
+        let result = compute_diagnostics_with_state(&mut state, "", &uri);
+        // Should not panic; result may contain parse errors but should be valid
+        let _ = result;
+    }
+
+    // --- constraint violation diagnostic range tests (step-31) ---
+
+    #[test]
+    fn constraint_violation_diagnostic_has_correct_range() {
+        let mut state = EvalState::new();
+        let uri = test_uri();
+        let source_violating = reify_test_support::bracket_source_violating();
+        let result = compute_diagnostics_with_state(&mut state, &source_violating, &uri);
+
+        // Find the constraint violation ERROR diagnostic
+        let violation_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.to_lowercase().contains("constraint")
+                    && d.message.to_lowercase().contains("violated")
+            })
+            .collect();
+
+        assert!(
+            !violation_diags.is_empty(),
+            "should have at least one constraint violation diagnostic"
+        );
+
+        for diag in &violation_diags {
+            // Constraints are on lines 7-9 of bracket source (0-indexed), not line 0
+            assert!(
+                diag.range.start.line > 0,
+                "constraint violation range should not be on line 0, got range: {:?}",
+                diag.range
+            );
+            assert_ne!(
+                diag.range,
+                lsp_types::Range::default(),
+                "constraint violation range should not be Range::default() (0,0)→(0,0)"
+            );
+        }
     }
 }
