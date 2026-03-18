@@ -316,6 +316,36 @@ impl OcctKernelHandle {
             .map_err(|_| TessError::TessellationFailed("kernel thread died".into()))?
     }
 
+    /// Extract warm-start state from the kernel thread (async version).
+    ///
+    /// Safe to call from within a tokio async execution context.
+    pub async fn warm_state_async(&self) -> Option<OpaqueState> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(OcctRequest::WarmState { reply: reply_tx })
+            .await
+            .ok()?;
+        reply_rx.await.ok()?
+    }
+
+    /// Restore warm-start state on the kernel thread (async version).
+    ///
+    /// Safe to call from within a tokio async execution context.
+    pub async fn with_warm_state_async(&self, state: OpaqueState) {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(OcctRequest::WithWarmState {
+                state,
+                reply: reply_tx,
+            })
+            .await
+            .is_ok()
+        {
+            let _ = reply_rx.await;
+        }
+    }
+
     /// Explicitly shut down the kernel thread from an async context.
     ///
     /// Drops the channel sender (closing the channel so the kernel thread exits
@@ -992,6 +1022,15 @@ mod tests {
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn handle_warm_state_none_on_empty_kernel() {
+        use reify_types::WarmStartable;
+        let handle = super::OcctKernelHandle::spawn();
+        // No ops executed — warm_state should return None
+        let state = handle.warm_state();
+        assert!(state.is_none(), "empty kernel should have no warm state");
     }
 
     #[test]
