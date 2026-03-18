@@ -25,3 +25,34 @@ pub trait WarmStartable {
     /// Silently ignores state that is the wrong type or stale.
     fn with_warm_state(&mut self, state: OpaqueState);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opaque_state_roundtrip_i32() {
+        let state = OpaqueState::new(42i32, 4);
+        let value = state.downcast::<i32>();
+        assert_eq!(value, Some(42i32));
+    }
+
+    #[test]
+    fn opaque_state_estimated_size_bytes() {
+        let state = OpaqueState::new(String::from("hello"), 128);
+        assert_eq!(state.estimated_size_bytes(), 128);
+    }
+
+    #[test]
+    fn opaque_state_wrong_type_downcast_returns_none() {
+        let state = OpaqueState::new(42i32, 4);
+        let value = state.downcast::<String>();
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn opaque_state_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<OpaqueState>();
+    }
+}
