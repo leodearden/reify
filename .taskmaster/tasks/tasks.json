@@ -126,99 +126,530 @@
         "id": "8",
         "title": "PersistentMap abstraction + im-rs integration",
         "description": "Add the `im` crate to the workspace and create a PersistentMap abstraction in reify-types. Migrate ValueMap from std::HashMap to im::HashMap with structural sharing.",
-        "details": "## Context\nM2 requires HAMT-backed persistent data structures for O(1) snapshot cloning with structural sharing. The existing ValueMap in `crates/reify-types/src/value.rs` uses `std::collections::HashMap`. This task replaces the internals with `im::HashMap` while keeping the API compatible.\n\n## What to implement\n\n1. **Add `im` crate to workspace Cargo.toml** as a workspace dependency (version 15.x). Add it to reify-types' dependencies.\n\n2. **Create `crates/reify-types/src/persistent.rs`** with:\n   - `PersistentMap&lt;K, V&gt;` newtype over `im::HashMap&lt;K, V&gt;` (where K: Clone + Hash + Eq, V: Clone)\n   - Implement: `new()`, `get()`, `insert()` (returns new map), `remove()`, `contains_key()`, `len()`, `is_empty()`, `iter()`, `keys()`, `values()`\n   - Implement `Clone` (O(1) structural sharing — this is im::HashMap's key property)\n   - Implement `FromIterator`, `IntoIterator`\n   - Implement `Default`, `Debug`, `PartialEq`\n\n3. **Migrate `ValueMap`** in `crates/reify-types/src/value.rs`:\n   - Change internal storage from `HashMap&lt;ValueCellId, Value&gt;` to `PersistentMap&lt;ValueCellId, Value&gt;`\n   - ValueCellId must implement `Clone + Hash + Eq` (check — it likely already does)\n   - Value must implement `Clone` (check — it likely already does)\n   - Keep the public API of ValueMap the same (get, insert, iter, etc.)\n\n4. **Update all consumers** — anything that creates or uses ValueMap. Key files:\n   - `crates/reify-eval/src/lib.rs` — Engine uses ValueMap\n   - `crates/reify-test-support/src/` — test fixtures and builders\n   - `crates/reify-constraints/src/lib.rs` — constraint checker reads ValueMap\n\n## Memory hints\n- Search for `ValueMap` across codebase to find all consumers\n- Check `impl Hash for ValueCellId` and `impl Clone for Value` exist\n- Look at `crates/reify-types/src/value.rs` for current ValueMap definition\n\n## Exit criteria\n- `cargo test --workspace` passes (all 122 existing tests)\n- `PersistentMap` clone is O(1) (structural sharing, not deep copy)\n- No `std::collections::HashMap` usage for ValueMap internals",
-        "testStrategy": "",
-        "status": "blocked",
-        "dependencies": [],
+        "details": "Completed. PersistentMap with im::HashMap provides O(1) clone via structural sharing.",
+        "testStrategy": "cargo test --workspace passes. PersistentMap clone is O(1).",
         "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-types"
+          ]
+        },
         "subtasks": [],
-        "updatedAt": "2026-03-17T09:26:35.587Z"
+        "updatedAt": "2026-03-18T00:00:00.000Z"
       },
       {
         "id": "9",
         "title": "Freshness model + Priority types",
         "description": "Update the Freshness enum to the spec's 4-variant model and add Priority/Task types to reify-runtime for the sequential scheduler.",
-        "details": "## Context\nThe M1 Freshness enum in `crates/reify-types/src/value.rs` is `{Fresh, Stale, Uncomputed}`. The architecture spec requires a richer model: `{Final, Intermediate{generation}, Pending{last_substantive}, Failed{error}}`. The reify-runtime crate exists but is a stub.\n\n## What to implement\n\n1. **Update Freshness enum** in `crates/reify-types/src/value.rs`:\n   ```rust\n   pub enum Freshness {\n       Final,\n       Intermediate { generation: u64 },\n       Pending { last_substantive: Option&lt;ContentHash&gt; },\n       Failed { error: EvalError },\n   }\n   ```\n   Add `EvalError` type (or use a simple error type) to support the Failed variant.\n\n2. **Add Priority enum** to `crates/reify-runtime/src/lib.rs`:\n   ```rust\n   #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]\n   pub enum Priority {\n       P0Interactive,\n       P1Fast,\n       P1Slow,\n       P3Speculative,\n   }\n   ```\n\n3. **Add Task struct** to `crates/reify-runtime/src/lib.rs`:\n   ```rust\n   pub struct Task {\n       pub node_id: NodeId,\n       pub priority: Priority,\n   }\n   ```\n   Keep it simple for now — no snapshot or cancellation token yet (those come in M4).\n\n4. **Update all consumers of old Freshness**:\n   - Search for `Freshness::Fresh` → `Freshness::Final`\n   - Search for `Freshness::Stale` → remove or map contextually\n   - Search for `Freshness::Uncomputed` → `Freshness::Pending { last_substantive: None }`\n   - Key files: `crates/reify-eval/src/lib.rs`, `crates/reify-test-support/`\n\n5. **Add reify-runtime to workspace** if not already a member. Ensure it compiles.\n\n## Memory hints\n- Search for `Freshness` across codebase for all usage sites\n- Look at `crates/reify-runtime/Cargo.toml` and `src/lib.rs` for current stub state\n- Check workspace Cargo.toml members list\n\n## Exit criteria\n- `cargo test --workspace` passes\n- Freshness has 4 variants matching spec\n- reify-runtime exports Priority and Task types\n- No references to old Freshness variants remain",
-        "testStrategy": "",
-        "status": "blocked",
-        "dependencies": [],
+        "details": "Completed. Freshness has 4 variants (Final, Intermediate, Pending, Failed). Priority and Task types in reify-runtime.",
+        "testStrategy": "cargo test --workspace passes. No references to old Freshness variants remain.",
         "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-types",
+            "crates/reify-runtime"
+          ]
+        },
         "subtasks": [],
-        "updatedAt": "2026-03-17T09:25:57.611Z"
+        "updatedAt": "2026-03-18T00:00:00.000Z"
       },
       {
         "id": "10",
         "title": "Snapshot + EvaluationGraph + node data types",
         "description": "Implement Snapshot with provenance tracking and EvaluationGraph with PersistentMap-backed node storage. Build graph from TopologyTemplate.",
-        "details": "## Context\nThe M1 evaluator uses a flat HashMap of values with no graph structure. M2 requires a proper EvaluationGraph with typed node maps and Snapshot versioning for incremental re-evaluation. This task builds the core data structures that all subsequent M2 tasks depend on.\n\n## What to implement\n\n1. **Add version/snapshot ID types** to `crates/reify-types/src/identity.rs`:\n   ```rust\n   #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]\n   pub struct VersionId(pub u64);\n   \n   #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]\n   pub struct SnapshotId(pub u64);\n   \n   #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]\n   pub struct SourceNodeId(pub u64);\n   \n   #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]\n   pub struct ComputeNodeId(pub u64);\n   ```\n\n2. **Add SnapshotProvenance** to `crates/reify-types/src/` (new file or in value.rs):\n   ```rust\n   pub enum SnapshotProvenance {\n       Initial,\n       Edit { changed: HashSet&lt;ValueCellId&gt;, parent: SnapshotId },\n       Elaboration { parent: SnapshotId },\n       Resolution { scope: String, resolved: HashSet&lt;ValueCellId&gt;, parent: SnapshotId },\n   }\n   ```\n   Keep it simpler than the full spec — Merge and Import come later.\n\n3. **Implement node data types** in `crates/reify-eval/src/graph.rs` (new file):\n   ```rust\n   pub struct ValueCellNode {\n       pub id: ValueCellId,\n       pub kind: ValueCellKind,\n       pub cell_type: Type,\n       pub default_expr: Option&lt;CompiledExpr&gt;,\n       pub content_hash: ContentHash,\n   }\n   \n   pub struct ConstraintNodeData {\n       pub id: ConstraintNodeId,\n       pub expr: CompiledExpr,\n       pub content_hash: ContentHash,\n   }\n   \n   pub struct RealizationNodeData {\n       pub id: RealizationNodeId,\n       pub operations: Vec&lt;CompiledGeometryOp&gt;,\n       pub content_hash: ContentHash,\n   }\n   ```\n\n4. **Implement EvaluationGraph** in `crates/reify-eval/src/graph.rs`:\n   ```rust\n   pub struct EvaluationGraph {\n       pub value_cells: PersistentMap&lt;ValueCellId, ValueCellNode&gt;,\n       pub constraints: PersistentMap&lt;ConstraintNodeId, ConstraintNodeData&gt;,\n       pub realizations: PersistentMap&lt;RealizationNodeId, RealizationNodeData&gt;,\n   }\n   ```\n   For M2, we need ValueCell, Constraint, and Realization nodes. SourceNode, ComputeNode, SchemaNode, and ResolutionNode come in later milestones.\n\n5. **Implement Snapshot** in `crates/reify-eval/src/snapshot.rs` (new file):\n   ```rust\n   pub struct Snapshot {\n       pub id: SnapshotId,\n       pub version: VersionId,\n       pub graph: EvaluationGraph,\n       pub values: PersistentMap&lt;ValueCellId, (Value, DeterminacyState)&gt;,\n       pub topology_fingerprint: ContentHash,\n       pub provenance: SnapshotProvenance,\n   }\n   ```\n   Implement `Snapshot::from_compiled_module(module: &amp;CompiledModule) -> Snapshot` that builds the initial snapshot from a compiled module.\n\n6. **Implement graph construction from TopologyTemplate**:\n   - `EvaluationGraph::from_templates(templates: &amp;[TopologyTemplate]) -> EvaluationGraph`\n   - Populates value_cells, constraints, realizations from the template declarations\n   - Computes topology_fingerprint as content hash of the graph structure\n\n## Memory hints\n- Read `crates/reify-compiler/src/lib.rs` for TopologyTemplate structure\n- Read `crates/reify-types/src/` for existing identity types (ValueCellId, ConstraintNodeId, etc.)\n- Search for `CompiledModule` to understand the compiler output structure\n- The PersistentMap from task 8 must be available\n\n## Exit criteria\n- `cargo test --workspace` passes\n- Snapshot can be created from a CompiledModule\n- EvaluationGraph stores nodes in PersistentMaps\n- Snapshot clone is O(1) via structural sharing\n- New unit tests: create snapshot, clone it, modify clone, verify original unchanged",
-        "testStrategy": "",
-        "status": "pending",
+        "details": "Completed. Snapshot and EvaluationGraph with PersistentMap-backed storage, graph construction from TopologyTemplate.",
+        "testStrategy": "cargo test --workspace passes. Snapshot clone is O(1) via structural sharing.",
+        "priority": "high",
         "dependencies": [
           "8"
         ],
-        "priority": "high",
-        "subtasks": []
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
       },
       {
         "id": "11",
         "title": "Dependency tracking + reverse index",
         "description": "Implement Adapton-style dynamic dependency traces during expression evaluation, and a ReverseDependencyIndex for dirty propagation.",
-        "details": "## Context\nFor incremental re-evaluation, the engine needs to know which nodes depend on which other nodes. During evaluation of a node's expression, we record every ValueCell read — this forms the node's dependency trace. The reverse index inverts these edges so we can propagate \"dirty\" from a changed ValueCell to all nodes that read it.\n\n## What to implement\n\n1. **DependencyTrace** in `crates/reify-eval/src/deps.rs` (new file):\n   ```rust\n   #[derive(Clone, Debug, Default)]\n   pub struct DependencyTrace {\n       pub reads: Vec&lt;ValueCellId&gt;,\n   }\n   ```\n   This records which ValueCells were read during a node's evaluation.\n\n2. **TraceRecorder** — a mechanism to capture reads during expression evaluation:\n   ```rust\n   pub struct TraceRecorder {\n       trace: DependencyTrace,\n   }\n   \n   impl TraceRecorder {\n       pub fn new() -> Self;\n       pub fn record_read(&amp;mut self, cell: ValueCellId);\n       pub fn finish(self) -> DependencyTrace;\n   }\n   ```\n\n3. **Instrument expression evaluation** in `crates/reify-expr/src/lib.rs`:\n   - The `eval_expr()` function currently takes a `&amp;ValueMap` and reads values directly\n   - Add an optional `&amp;mut TraceRecorder` parameter (or use a trait/callback approach)\n   - When evaluating a `CompiledExprKind::ValueRef(id)`, record the read via the TraceRecorder\n   - This must not break the existing eval_expr API — consider adding a separate `eval_expr_traced()` or using Option&lt;&amp;mut TraceRecorder&gt;\n\n4. **NodeId enum** in `crates/reify-types/src/identity.rs` (if not already present):\n   ```rust\n   #[derive(Clone, Debug, PartialEq, Eq, Hash)]\n   pub enum NodeId {\n       ValueCell(ValueCellId),\n       Constraint(ConstraintNodeId),\n       Realization(RealizationNodeId),\n   }\n   ```\n\n5. **ReverseDependencyIndex** in `crates/reify-eval/src/deps.rs`:\n   ```rust\n   #[derive(Clone, Debug, Default)]\n   pub struct ReverseDependencyIndex {\n       /// Maps a ValueCellId to all NodeIds that read it\n       index: HashMap&lt;ValueCellId, HashSet&lt;NodeId&gt;&gt;,\n   }\n   \n   impl ReverseDependencyIndex {\n       pub fn build(traces: &amp;HashMap&lt;NodeId, DependencyTrace&gt;) -> Self;\n       pub fn dependents_of(&amp;self, cell: &amp;ValueCellId) -> &amp;HashSet&lt;NodeId&gt;;\n       pub fn add_trace(&amp;mut self, node: NodeId, trace: &amp;DependencyTrace);\n       pub fn remove_node(&amp;mut self, node: &amp;NodeId);\n   }\n   ```\n\n6. **Store traces in the evaluation engine**:\n   - Add a `traces: HashMap&lt;NodeId, DependencyTrace&gt;` field to the engine or snapshot\n   - After evaluating each node, store its trace\n   - After all traces are collected, build the ReverseDependencyIndex\n\n## Memory hints\n- Read `crates/reify-expr/src/lib.rs` for the eval_expr function signature\n- Search for `ValueRef` to see how value references are resolved during evaluation\n- Read `crates/reify-eval/src/lib.rs` for the Engine evaluation loop\n\n## Exit criteria\n- `cargo test --workspace` passes (all existing + new tests)\n- New tests:\n  - Evaluate a compiled module, verify traces capture correct reads (e.g., `volume = width * height * thickness` reads width, height, thickness)\n  - Build reverse index, verify `dependents_of(width)` includes the volume let-binding and any constraints that reference width\n  - Traces are recorded for constraint nodes too (constraint `thickness > 2mm` reads thickness)",
-        "testStrategy": "",
-        "status": "pending",
+        "details": "Completed. TraceRecorder captures reads during evaluation, ReverseDependencyIndex inverts edges for dirty propagation.",
+        "testStrategy": "cargo test --workspace passes. Traces capture correct reads, reverse index correctly maps dependents.",
+        "priority": "high",
         "dependencies": [
           "10"
         ],
-        "priority": "high",
-        "subtasks": []
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval",
+            "crates/reify-expr"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
       },
       {
         "id": "12",
         "title": "Content-hash caching + early cutoff",
         "description": "Implement NodeCache with version fast path and content-hash early cutoff. If a node re-evaluates to the same result, don't propagate dirty to dependents.",
-        "details": "## Context\nThis is the core incrementality optimization. When a parameter changes, nodes downstream of it are marked dirty. But if a node re-evaluates and produces the same result (same content hash), its dependents don't need to re-evaluate. This \"early cutoff\" (borrowed from Salsa's \"backdating\") prevents unnecessary cascading recomputation.\n\n## What to implement\n\n1. **NodeCache** in `crates/reify-eval/src/cache.rs` (new file):\n   ```rust\n   #[derive(Clone, Debug)]\n   pub struct NodeCache {\n       pub result: CachedResult,\n       pub result_hash: ContentHash,\n       pub freshness: Freshness,\n       pub dependency_trace: DependencyTrace,\n       pub basis_version: VersionId,\n   }\n   \n   #[derive(Clone, Debug)]\n   pub enum CachedResult {\n       Value(Value, DeterminacyState),\n       Satisfaction(Satisfaction),\n       GeometryHandle(GeometryHandleId),\n   }\n   ```\n\n2. **CacheStore** — manages caches for all nodes:\n   ```rust\n   pub struct CacheStore {\n       caches: HashMap&lt;NodeId, NodeCache&gt;,\n   }\n   \n   impl CacheStore {\n       pub fn get(&amp;self, node: &amp;NodeId) -> Option&lt;&amp;NodeCache&gt;;\n       pub fn put(&amp;mut self, node: NodeId, cache: NodeCache);\n       pub fn invalidate(&amp;mut self, node: &amp;NodeId);\n   }\n   ```\n\n3. **Version fast path**: Before re-evaluating a node, check:\n   ```rust\n   if cache.basis_version == current_version {\n       // Node was already evaluated in this snapshot version, skip\n       return cache.result.clone();\n   }\n   ```\n\n4. **Content-hash early cutoff**: After re-evaluating a node:\n   ```rust\n   let new_hash = compute_content_hash(&amp;new_result);\n   if new_hash == cache.result_hash {\n       // Result unchanged — update basis_version but DON'T propagate dirty\n       cache.basis_version = current_version;\n       return EvalOutcome::Unchanged;\n   } else {\n       // Result changed — update cache AND propagate dirty to dependents\n       cache.result = new_result;\n       cache.result_hash = new_hash;\n       cache.basis_version = current_version;\n       return EvalOutcome::Changed;\n   }\n   ```\n\n5. **Content hashing for results**: Use the existing `ContentHash` (XXH3-128) infrastructure:\n   - Hash Value variants deterministically (handle f64 NaN canonicalization, -0/+0 distinction)\n   - Hash Satisfaction enum\n   - GeometryHandle results: use the operation sequence hash as proxy (we can't hash OCCT shapes)\n\n6. **Integrate with evaluation loop**: Modify the Engine's evaluation to:\n   - Check cache before evaluating each node\n   - After evaluation, compare result hash with cached hash\n   - Return Changed/Unchanged outcome to control dirty propagation\n\n## Memory hints\n- Read `crates/reify-types/src/hash.rs` for existing ContentHash implementation\n- Read `crates/reify-eval/src/deps.rs` (from task 11) for DependencyTrace\n- Search for `xxhash` usage patterns in the codebase\n- The Freshness type from task 9 is needed for NodeCache\n\n## Exit criteria\n- `cargo test --workspace` passes\n- New tests:\n  - Evaluate module, cache all results. Change one param value to a DIFFERENT value → dependent nodes re-evaluate, non-dependent don't\n  - Change a param that feeds a `let` whose expression result is unchanged (e.g., `let x = if a > 0 then 1 else 1`, change a) → early cutoff prevents downstream re-evaluation\n  - Version fast path: evaluate same snapshot twice → second time hits cache for all nodes\n  - Cache miss on first evaluation (cold start)",
-        "testStrategy": "",
-        "status": "pending",
+        "details": "Completed. NodeCache with version fast path and content-hash early cutoff prevents unnecessary cascading recomputation.",
+        "testStrategy": "cargo test --workspace passes. Early cutoff prevents downstream re-evaluation when results unchanged.",
+        "priority": "high",
         "dependencies": [
           "11"
         ],
-        "priority": "high",
-        "subtasks": []
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
       },
       {
         "id": "13",
         "title": "Dirty/demand cone + sequential scheduler",
         "description": "Implement DemandRegistry, dirty cone propagation, demand cone computation, dirty∩demand intersection, and a sequential priority-ordered scheduler in reify-runtime.",
-        "details": "## Context\nWhen a parameter changes, not all nodes need re-evaluation — only those that are both \"dirty\" (transitively depend on the changed value) AND \"demanded\" (someone cares about their result). The dirty∩demand intersection is the minimal re-evaluation set. A sequential scheduler processes this set in priority order.\n\n## What to implement\n\n1. **DemandRegistry** in `crates/reify-eval/src/demand.rs` (new file):\n   ```rust\n   pub struct DemandRegistry {\n       /// Nodes that are always demanded (e.g., visible geometry, active constraints)\n       always_demanded: HashSet&lt;NodeId&gt;,\n       /// Backward transitive closure of demanded nodes (cached, rebuilt on topology change)\n       demand_cone: HashSet&lt;NodeId&gt;,\n   }\n   \n   impl DemandRegistry {\n       pub fn new() -> Self;\n       pub fn add_demand(&amp;mut self, node: NodeId);\n       pub fn remove_demand(&amp;mut self, node: NodeId);\n       pub fn rebuild_cone(&amp;mut self, reverse_index: &amp;ReverseDependencyIndex, graph: &amp;EvaluationGraph);\n       pub fn is_demanded(&amp;self, node: &amp;NodeId) -> bool;\n   }\n   ```\n   The demand cone is the set of all nodes that transitively feed into a demanded node. It's computed by walking backward from demanded nodes through forward dependency edges.\n\n2. **Dirty cone computation** in `crates/reify-eval/src/dirty.rs` (new file):\n   ```rust\n   /// Given a set of changed ValueCells, compute the dirty cone:\n   /// all nodes that transitively depend on any changed cell.\n   pub fn compute_dirty_cone(\n       changed: &amp;HashSet&lt;ValueCellId&gt;,\n       reverse_index: &amp;ReverseDependencyIndex,\n   ) -> HashSet&lt;NodeId&gt;;\n   ```\n   Walk forward from changed cells through the reverse dependency index.\n\n3. **Intersection** — the minimal re-evaluation set:\n   ```rust\n   pub fn compute_eval_set(\n       dirty: &amp;HashSet&lt;NodeId&gt;,\n       demand: &amp;DemandRegistry,\n   ) -> Vec&lt;NodeId&gt;;\n   ```\n   Returns `dirty ∩ demand_cone`, sorted by evaluation order (dependencies first).\n\n4. **Sequential scheduler** in `crates/reify-runtime/src/lib.rs`:\n   ```rust\n   pub struct SequentialScheduler;\n   \n   impl SequentialScheduler {\n       /// Process the evaluation set in dependency order.\n       /// Returns the set of nodes whose results actually changed.\n       pub fn execute(\n           &amp;self,\n           eval_set: Vec&lt;NodeId&gt;,\n           // ... evaluation context (snapshot, cache, etc.)\n       ) -> HashSet&lt;NodeId&gt;;\n   }\n   ```\n   For M2, this is a simple loop: evaluate each node in order, applying early cutoff to shrink the remaining set dynamically.\n\n5. **Topological sort** — ensure eval_set is ordered so dependencies evaluate before dependents:\n   ```rust\n   pub fn topological_sort(\n       nodes: &amp;HashSet&lt;NodeId&gt;,\n       traces: &amp;HashMap&lt;NodeId, DependencyTrace&gt;,\n   ) -> Vec&lt;NodeId&gt;;\n   ```\n\n## Memory hints\n- Read `crates/reify-eval/src/deps.rs` (from task 11) for ReverseDependencyIndex\n- Read `crates/reify-eval/src/cache.rs` (from task 12) for CacheStore and early cutoff\n- The Priority type from task 9 is used by the scheduler\n- Read `crates/reify-eval/src/graph.rs` (from task 10) for EvaluationGraph\n\n## Exit criteria\n- `cargo test --workspace` passes\n- New tests:\n  - Bracket module: demand all constraints and realization. Change `width` → dirty cone includes volume, constraints referencing width, realization. Does NOT include `fillet_radius` or constraints not referencing width.\n  - Demand only constraints (not realization) → realization not in eval set even if dirty\n  - Empty dirty set (no changes) → empty eval set\n  - Topological order: volume (depends on width/height/thickness) evaluates after its inputs\n  - Sequential scheduler processes eval set and applies dynamic early cutoff",
-        "testStrategy": "",
-        "status": "pending",
+        "details": "Completed. DemandRegistry, dirty/demand cone intersection, and sequential scheduler with topological sort.",
+        "testStrategy": "cargo test --workspace passes. Only dirty∩demand nodes re-evaluated.",
+        "priority": "high",
         "dependencies": [
           "9",
           "12"
         ],
-        "priority": "high",
-        "subtasks": []
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval",
+            "crates/reify-runtime"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
       },
       {
         "id": "14",
         "title": "Integration: incremental evaluator pipeline",
-        "description": "Replace the M1 simple evaluator with the new incremental engine. Wire Snapshot, EvaluationGraph, caching, dirty/demand into Engine. All 122 M1 tests pass plus new incremental behavior tests.",
-        "details": "## Context\nThis is the integration task that replaces the M1 evaluator with the real incremental engine. Tasks 8-13 built the components (PersistentMap, Snapshot, EvaluationGraph, dependency tracking, caching, dirty/demand scheduling). This task wires them together into the Engine and verifies the M2 exit criterion.\n\n## What to implement\n\n1. **Refactor Engine** in `crates/reify-eval/src/lib.rs`:\n   - Engine now holds a current `Snapshot` and `CacheStore`\n   - `eval()` builds initial Snapshot from CompiledModule, demands all ValueCells, evaluates via scheduler\n   - `check()` also demands all ConstraintNodes\n   - `build()` also demands all RealizationNodes\n   - First evaluation (cold start) evaluates everything — same behavior as M1\n\n2. **Add `edit_param()` method** to Engine:\n   ```rust\n   /// Apply a parameter edit and incrementally re-evaluate.\n   /// Returns the new EvalResult with only changed nodes re-evaluated.\n   pub fn edit_param(&amp;mut self, cell: ValueCellId, new_value: Value) -> EvalResult {\n       // 1. Create child snapshot with Edit provenance\n       // 2. Update the ValueCell's value in the new snapshot\n       // 3. Compute dirty cone from changed cells\n       // 4. Intersect with demand cone\n       // 5. Evaluate only the intersection via sequential scheduler\n       // 6. Apply early cutoff\n       // 7. Return updated results\n   }\n   ```\n\n3. **Maintain backward compatibility**:\n   - `Engine::new()` signature unchanged\n   - `eval()`, `check()`, `build()` return types unchanged (EvalResult, CheckResult, BuildResult)\n   - CLI (`reify check`, `reify build`) works exactly as before\n   - All 122 M1 tests pass without modification\n\n4. **New incremental behavior tests** in `crates/reify-eval/tests/incremental.rs`:\n   \n   a. **Parameter change → partial re-evaluation:**\n      - Evaluate bracket module fully (cold start)\n      - Edit `width` from 80mm to 100mm\n      - Verify: `volume` re-evaluated (depends on width), constraints involving width re-evaluated\n      - Verify: `fillet_radius`, `hole_diameter` NOT re-evaluated (independent of width)\n      - Use a counter or trace to verify which nodes were actually evaluated\n\n   b. **Content-hash early cutoff:**\n      - Create a design where changing param A feeds into `let x = ...` but the result of x doesn't change\n      - Verify: x is re-evaluated (it's dirty), but nodes downstream of x are NOT (early cutoff)\n   \n   c. **Freshness propagation:**\n      - After full evaluation, all nodes are `Freshness::Final`\n      - After param edit, changed nodes transition through appropriate freshness states\n   \n   d. **Snapshot provenance:**\n      - Initial snapshot has `SnapshotProvenance::Initial`\n      - After edit, child snapshot has `SnapshotProvenance::Edit { changed: {width}, parent: initial_id }`\n\n5. **IMPORTANT: OCCT thread safety**:\n   - Do NOT introduce concurrent geometry kernel access\n   - Geometry evaluation remains sequential within the scheduler\n   - The e2e_bracket test still requires `--test-threads=1`\n\n## Memory hints\n- Read `crates/reify-eval/src/lib.rs` for current Engine implementation\n- Read `crates/reify-eval/tests/` for all existing test files and patterns\n- Read `crates/reify-cli/src/main.rs` to verify CLI compatibility\n- Search for `Engine::new` to find all construction sites\n- The test fixtures in `crates/reify-test-support/` may need updates for new test patterns\n\n## Exit criteria (M2 exit criterion)\n- All 122 existing M1 tests pass\n- Changing a parameter in a loaded design re-evaluates only the dirty-demand intersection\n- Content-hash matches on unchanged subtrees prevent recomputation (early cutoff works)\n- Freshness propagates correctly\n- `reify check` and `reify build` CLI commands work unchanged",
-        "testStrategy": "",
-        "status": "pending",
+        "description": "Replace the M1 simple evaluator with the new incremental engine. Wire Snapshot, EvaluationGraph, caching, dirty/demand into Engine. All M1 tests pass plus new incremental behavior tests.",
+        "details": "Completed. Engine uses Snapshot + CacheStore + dirty/demand scheduling. edit_param() incrementally re-evaluates only dirty∩demand nodes.",
+        "testStrategy": "cargo test --workspace passes. All M1 tests pass, incremental re-evaluation verified.",
+        "priority": "high",
         "dependencies": [
           "12",
           "13"
         ],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval",
+            "crates/reify-runtime"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "15",
+        "title": "Handle geometry build errors gracefully",
+        "description": "Geometry build errors are caught and reported without panicking, allowing the eval pipeline to continue.",
+        "details": "Completed. Graceful error handling for geometry build failures in the eval pipeline.",
+        "testStrategy": "cargo test -p reify-eval passes with geometry error tests.",
         "priority": "high",
-        "subtasks": []
+        "dependencies": [],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "16",
+        "title": "Add test for consecutive edit_param() calls",
+        "description": "Test that multiple consecutive edit_param() calls work correctly with incremental re-evaluation.",
+        "details": "Completed. Test verifies consecutive parameter edits produce correct incremental results.",
+        "testStrategy": "cargo test -p reify-eval -- consecutive_edit passes.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "17",
+        "title": "Core resolution types in reify-types",
+        "description": "Add resolution-related types (AutoParam, ResolutionScope, ConstraintSolver trait) to reify-types.",
+        "details": "Completed. Core resolution types added to reify-types for auto parameter resolution.",
+        "testStrategy": "cargo test -p reify-types passes.",
+        "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-types"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "18",
+        "title": "auto keyword — grammar, parser, compiler",
+        "description": "Add `auto` keyword to the Reify grammar, parse it in reify-syntax, and compile auto parameters in reify-compiler.",
+        "details": "Completed. auto keyword in grammar, parser produces AutoParam nodes, compiler emits auto-flagged ValueCells.",
+        "testStrategy": "cargo test -p reify-syntax -p reify-compiler passes with auto keyword tests.",
+        "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "tree-sitter-reify",
+            "crates/reify-syntax",
+            "crates/reify-compiler"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "19",
+        "title": "Argmin solver implementation in reify-constraints",
+        "description": "Implement a ConstraintSolver using the argmin optimization library to resolve auto parameters.",
+        "details": "Completed. ArgminSolver implements ConstraintSolver trait, uses L-BFGS/Nelder-Mead to minimize constraint violation.",
+        "testStrategy": "cargo test -p reify-constraints passes with solver tests.",
+        "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "20",
+        "title": "ResolutionNode in evaluation graph",
+        "description": "Add ResolutionNode to the EvaluationGraph to represent auto-parameter resolution steps.",
+        "details": "Completed. ResolutionNode integrates into the evaluation graph for auto parameter resolution.",
+        "testStrategy": "cargo test -p reify-eval passes with resolution node tests.",
+        "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "21",
+        "title": "Resolution engine — wire solver into eval pipeline",
+        "description": "Wire the constraint solver into the eval pipeline so auto parameters are resolved during evaluation.",
+        "details": "Completed. Resolution engine invokes solver for auto params, integrates with incremental evaluation and caching.",
+        "testStrategy": "cargo test -p reify-eval -p reify-constraints passes with resolution integration tests.",
+        "priority": "high",
+        "dependencies": [
+          "18",
+          "19",
+          "20"
+        ],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval",
+            "crates/reify-constraints"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "22",
+        "title": "minimize/maximize syntax + optimization",
+        "description": "Add minimize/maximize keywords to the grammar and implement optimization objective support in the solver.",
+        "details": "Completed. minimize/maximize syntax parsed, compiled, and solver supports optimization objectives.",
+        "testStrategy": "cargo test --workspace passes with optimization syntax and solver tests.",
+        "priority": "high",
+        "dependencies": [
+          "21"
+        ],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "tree-sitter-reify",
+            "crates/reify-syntax",
+            "crates/reify-compiler",
+            "crates/reify-constraints"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "23",
+        "title": "E2E integration — auto resolution + optimization",
+        "description": "End-to-end integration tests for auto parameter resolution and optimization through the full pipeline.",
+        "details": "Completed. E2E tests verify auto params resolve correctly and optimization objectives are met.",
+        "testStrategy": "cargo test --workspace passes with e2e resolution and optimization tests.",
+        "priority": "high",
+        "dependencies": [
+          "22"
+        ],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval",
+            "crates/reify-cli",
+            "tests"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "24",
+        "title": "NLopt solver integration as ConstraintSolver alternative",
+        "description": "Integrate NLopt as an alternative ConstraintSolver backend alongside the argmin solver.",
+        "details": "Completed. NLopt solver available as alternative backend, solver selection configurable.",
+        "testStrategy": "cargo test -p reify-constraints passes with NLopt solver tests.",
+        "priority": "medium",
+        "dependencies": [
+          "21"
+        ],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "25",
+        "title": "Add tokio async runtime foundation",
+        "description": "Add tokio as a workspace dependency and set up the async runtime foundation in reify-runtime.",
+        "details": "Completed. Tokio runtime foundation in reify-runtime, async entry points for eval pipeline.",
+        "testStrategy": "cargo test -p reify-runtime passes.",
+        "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-runtime",
+            "Cargo.toml"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "26",
+        "title": "OCCT dedicated kernel thread",
+        "description": "Run all OCCT operations on a dedicated thread to ensure thread safety, communicating via async channels.",
+        "details": "Completed. OCCT kernel runs on a dedicated thread with channel-based request/response.",
+        "testStrategy": "cargo test -p reify-kernel-occt passes with dedicated thread tests.",
+        "priority": "high",
+        "dependencies": [
+          "25"
+        ],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-kernel-occt"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "27",
+        "title": "Warm-start protocol + WarmStatePool",
+        "description": "Define the warm-start protocol trait and implement WarmStatePool for reusing intermediate computation state.",
+        "details": "Completed. WarmStart trait and WarmStatePool implemented in reify-types/reify-eval/reify-runtime.",
+        "testStrategy": "cargo test --workspace passes with warm-start tests.",
+        "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-types",
+            "crates/reify-eval",
+            "crates/reify-runtime"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "28",
+        "title": "OCCT warm-start support",
+        "description": "Implement warm-start for the OCCT kernel, reusing TopoDS_Shape state across incremental rebuilds.",
+        "details": "Implement WarmStart trait for OcctKernel to cache and reuse intermediate shapes across incremental re-evaluations.",
+        "testStrategy": "cargo test -p reify-kernel-occt passes with warm-start reuse tests.",
+        "priority": "high",
+        "dependencies": [
+          "26",
+          "27"
+        ],
+        "status": "pending",
+        "metadata": {
+          "modules": [
+            "crates/reify-kernel-occt"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "29",
+        "title": "Concurrent evaluate() with async fan-out",
+        "description": "Implement concurrent evaluation where independent nodes in the eval graph fan out to parallel async tasks.",
+        "details": "Concurrent evaluate() fans out independent nodes to tokio tasks, respecting dependency order and demand.",
+        "testStrategy": "cargo test -p reify-eval passes with concurrent evaluation tests.",
+        "priority": "high",
+        "dependencies": [
+          "25",
+          "26",
+          "27"
+        ],
+        "status": "pending",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "30",
+        "title": "Event journal",
+        "description": "Implement an event journal that records evaluation events for debugging, replay, and undo support.",
+        "details": "Completed. Event journal records eval events with timestamps, supports replay and filtering.",
+        "testStrategy": "cargo test -p reify-eval passes with event journal tests.",
+        "priority": "medium",
+        "dependencies": [
+          "25"
+        ],
+        "status": "done",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "31",
+        "title": "Commitment policy + priority promotion",
+        "description": "Implement commitment policies that control when speculative results are committed, with priority promotion for demanded nodes.",
+        "details": "Commitment policy determines when speculative/intermediate results become final. Priority promotion escalates node priority when demanded.",
+        "testStrategy": "cargo test -p reify-runtime passes with commitment policy tests.",
+        "priority": "medium",
+        "dependencies": [
+          "25",
+          "29"
+        ],
+        "status": "pending",
+        "metadata": {
+          "modules": [
+            "crates/reify-runtime"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "32",
+        "title": "LSP server — core infrastructure",
+        "description": "Implement the core LSP server infrastructure for Reify, handling initialization, document sync, and diagnostics.",
+        "details": "LSP server using tower-lsp, handles textDocument/didOpen, didChange, diagnostics from eval pipeline.",
+        "testStrategy": "cargo test -p reify-lsp passes with LSP protocol tests.",
+        "priority": "high",
+        "dependencies": [
+          "29",
+          "30"
+        ],
+        "status": "pending",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp",
+            "crates/reify-cli"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "33",
+        "title": "LSP features — hover, go-to-def, completions",
+        "description": "Implement hover information, go-to-definition, and completion suggestions in the LSP server.",
+        "details": "Hover shows type/value info, go-to-def navigates to parameter/let declarations, completions for keywords and identifiers.",
+        "testStrategy": "cargo test -p reify-lsp passes with feature-specific tests.",
+        "priority": "medium",
+        "dependencies": [
+          "32"
+        ],
+        "status": "pending",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
+      },
+      {
+        "id": "34",
+        "title": "M4 integration — interactive edit loop E2E",
+        "description": "End-to-end integration test for the interactive edit loop: LSP edit → incremental eval → updated diagnostics + geometry.",
+        "details": "E2E test verifying the full interactive loop: user edits in LSP → incremental re-evaluation → diagnostics + geometry update.",
+        "testStrategy": "cargo test --workspace passes with interactive edit loop E2E test.",
+        "priority": "high",
+        "dependencies": [
+          "29",
+          "30",
+          "32"
+        ],
+        "status": "pending",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval",
+            "crates/reify-lsp",
+            "tests"
+          ]
+        },
+        "subtasks": [],
+        "updatedAt": "2026-03-18T00:00:00.000Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-17T09:26:35.587Z",
-      "taskCount": 14,
-      "completedCount": 7,
+      "lastModified": "2026-03-18T00:00:00.000Z",
+      "taskCount": 34,
+      "completedCount": 28,
       "tags": [
         "master"
       ]
