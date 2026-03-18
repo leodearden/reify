@@ -1170,3 +1170,60 @@ fn edit_param_let_binding_re_evaluates_after_re_resolution() {
         y_val2
     );
 }
+
+/// When the solver returns Infeasible during re-resolution in edit_param,
+/// the diagnostics must be propagated in the EvalResult.
+///
+/// Module: param `a` (default mm(1.0)), auto `x`, constraint `x > a`.
+/// Sequenced solver: 1st call returns Solved (cold eval works), 2nd call
+/// returns Infeasible with diagnostic 'constraints are infeasible'.
+/// Cold eval → solver resolves x. Edit `a` to mm(5.0) → constraint in dirty
+/// cone → solver re-runs → Infeasible → diagnostics in result.
+#[test]
+fn edit_param_solver_diagnostics_propagated() {
+    use reify_types::{Diagnostic, SolveResult};
+
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(x_id.clone(), mm(5.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved_values },
+        SolveResult::Infeasible {
+            diagnostics: vec![Diagnostic::error("constraints are infeasible")],
+        },
+    ]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(1.0))))
+        .auto_param("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    // Cold eval: solver returns Solved
+    let result = engine.eval(&module);
+    assert!(result.diagnostics.is_empty(), "cold eval should have no diagnostics");
+
+    // Edit a → constraint in dirty cone → solver returns Infeasible
+    let result2 = engine.edit_param(a_id.clone(), mm(5.0));
+
+    // Diagnostics should be propagated
+    assert!(
+        !result2.diagnostics.is_empty(),
+        "edit_param should propagate solver diagnostics when Infeasible"
+    );
+    assert!(
+        result2.diagnostics.iter().any(|d| d.message.contains("infeasible")),
+        "expected 'infeasible' in diagnostics, got: {:?}",
+        result2.diagnostics
+    );
+}
