@@ -577,6 +577,51 @@ fn sub_args_reference_parent_params() {
     );
 }
 
+/// E2E: parse source with stdlib function in let binding, compile, eval_expr.
+/// Validates the full pipeline: parse → compile (FunctionCall) → eval → stdlib dispatch.
+#[test]
+fn e2e_stdlib_function_in_let_binding() {
+    let source = r#"structure S {
+    param w: Scalar = 80mm
+    let half_w = abs(w / 2)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_stdlib_e2e"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let template = &compiled.templates[0];
+
+    // Find the 'half_w' let binding
+    let half_w = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "half_w")
+        .expect("should have half_w value cell");
+    assert_eq!(half_w.kind, ValueCellKind::Let);
+    let half_w_expr = half_w.default_expr.as_ref().expect("let should have expr");
+
+    // Build a ValueMap with the param default value
+    let mut values = reify_types::ValueMap::new();
+    let w_id = reify_types::ValueCellId::new("S", "w");
+    // 80mm = 0.08m
+    values.insert(w_id, reify_types::Value::length(0.08));
+
+    // Evaluate the let expression — should produce a defined value, NOT Undef
+    let result = reify_expr::eval_expr(half_w_expr, &values);
+    assert!(
+        !result.is_undef(),
+        "half_w = abs(w / 2) should produce a defined value, got Undef"
+    );
+
+    // abs(0.08 / 2) = abs(0.04) = 0.04
+    let v = result.as_f64().unwrap();
+    assert!(
+        (v - 0.04).abs() < 1e-10,
+        "expected ~0.04, got {}",
+        v
+    );
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
