@@ -115,6 +115,14 @@ impl EventJournal {
         indices.iter().map(|&idx| &self.events[idx]).collect()
     }
 
+    /// Events since (inclusive) the given version, in insertion order.
+    pub fn events_since(&self, version: VersionId) -> Vec<&EvalEvent> {
+        self.events
+            .iter()
+            .filter(|e| e.version >= version)
+            .collect()
+    }
+
     /// Events for a specific node, in insertion order.
     pub fn events_for_node(&self, node_id: &NodeId) -> Vec<&EvalEvent> {
         self.by_node
