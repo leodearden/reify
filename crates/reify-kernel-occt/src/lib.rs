@@ -301,13 +301,14 @@ impl WarmStartable for OcctKernel {
             Some(w) => w,
             None => return, // Wrong type, silently ignore per trait contract
         };
-        // Clear existing shapes and restore from warm state
-        self.shapes.clear();
+        // Stage deserialization into a temporary map first. If all entries fail
+        // to deserialize, we preserve the kernel's pre-existing state untouched.
+        let mut staged = HashMap::new();
         for (id, brep) in warm.shapes {
             cxx::let_cxx_string!(brep_cxx = brep.as_str());
             match ffi::ffi::deserialize_brep(&brep_cxx) {
                 Ok(shape) => {
-                    self.shapes.insert(id, shape);
+                    staged.insert(id, shape);
                 }
                 Err(_) => {
                     // Skip entries that fail to deserialize (best-effort)
@@ -315,7 +316,12 @@ impl WarmStartable for OcctKernel {
                 }
             }
         }
-        self.next_id = warm.next_id;
+        // Atomic swap: only replace kernel state if at least one shape was
+        // successfully deserialized. Otherwise the kernel state is untouched.
+        if !staged.is_empty() {
+            self.shapes = staged;
+            self.next_id = warm.next_id;
+        }
     }
 }
 
