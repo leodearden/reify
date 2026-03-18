@@ -1334,6 +1334,88 @@ fn edit_param_solver_diagnostics_propagated() {
     );
 }
 
+/// After edit_param triggers re-resolution, verify the snapshot is correctly
+/// updated with resolved auto param values and re-evaluated let binding values.
+///
+/// Module: param `a`, auto `x`, let `y = x * 2.0`, constraint `x > a`.
+/// Sequenced solver: 1st call returns x=mm(5.0), 2nd call returns x=mm(20.0).
+/// Cold eval. Edit `a`. Assert:
+///   (1) snapshot exists
+///   (2) snapshot.values contains x with resolved value (0.02 SI, not Undef)
+///   (3) snapshot.values contains y with re-evaluated value (0.04 SI)
+///   (4) snapshot provenance is Edit (not Initial)
+#[test]
+fn edit_param_snapshot_updated_after_re_resolution() {
+    use reify_types::SolveResult;
+
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    let mut solved1 = HashMap::new();
+    solved1.insert(x_id.clone(), mm(5.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(x_id.clone(), mm(20.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1 },
+        SolveResult::Solved { values: solved2 },
+    ]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(3.0))))
+        .auto_param("S", "x", Type::length())
+        .let_binding(
+            "S",
+            "y",
+            Type::length(),
+            binop(BinOp::Mul, value_ref("S", "x"), literal(Value::Real(2.0))),
+        )
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    // Cold eval
+    engine.eval(&module);
+
+    // Edit a → re-resolution with x=mm(20.0), y=0.04
+    engine.edit_param(a_id.clone(), mm(8.0));
+
+    // (1) snapshot exists
+    let snap = engine.snapshot().expect("snapshot should exist after edit_param");
+
+    // (4) provenance is Edit
+    assert!(
+        matches!(snap.provenance, SnapshotProvenance::Edit { .. }),
+        "snapshot provenance should be Edit, got {:?}",
+        snap.provenance
+    );
+
+    // (2) snapshot.values contains x with resolved value (not Undef)
+    let (x_val, x_det) = snap.values.get(&x_id).expect("x should be in snapshot values");
+    assert!(
+        matches!(x_val, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
+        "expected x = mm(20.0) = 0.02 SI in snapshot, got {:?}",
+        x_val
+    );
+    assert_eq!(*x_det, reify_types::DeterminacyState::Determined);
+
+    // (3) snapshot.values contains y with re-evaluated value
+    let (y_val, y_det) = snap.values.get(&y_id).expect("y should be in snapshot values");
+    assert!(
+        matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.04).abs() < 1e-10),
+        "expected y = mm(20.0)*2 = 0.04 SI in snapshot, got {:?}",
+        y_val
+    );
+    assert_eq!(*y_det, reify_types::DeterminacyState::Determined);
+}
+
 /// Regression guard: when editing a param that does NOT affect auto param
 /// constraints, the solver should NOT be re-run and resolved_params should
 /// be empty.
