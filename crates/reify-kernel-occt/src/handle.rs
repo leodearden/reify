@@ -217,7 +217,7 @@ impl GeometryKernel for OcctKernelHandle {
 
 #[cfg(test)]
 mod tests {
-    use reify_types::{GeometryHandleId, GeometryOp, ReprKind, Value};
+    use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, ReprKind, Value};
 
     /// Compile-time assertion: OcctKernelHandle must be Send + Sync.
     const _: fn() = || {
@@ -493,6 +493,181 @@ mod tests {
             .export(fillet_h.id, reify_types::ExportFormat::Step, &mut buf)
             .unwrap();
         let content = String::from_utf8(buf).unwrap();
+        assert!(content.contains("ISO-10303-21"));
+    }
+
+    // --- Async companion method tests (step-21) ---
+
+    #[tokio::test]
+    async fn execute_async_creates_box() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let result = handle.execute_async(&op).await.unwrap();
+        assert_eq!(result.id, GeometryHandleId(1));
+        assert_eq!(result.repr, ReprKind::Solid);
+    }
+
+    #[tokio::test]
+    async fn query_async_volume() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute_async(&op).await.unwrap();
+        let result = handle
+            .query_async(&GeometryQuery::Volume(gh.id))
+            .await
+            .unwrap();
+        match result {
+            Value::Real(v) => {
+                assert!((v - 6000.0).abs() < 1.0, "expected ~6000, got {v}");
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn query_async_invalid_handle() {
+        let handle = super::OcctKernelHandle::spawn();
+        let result = handle
+            .query_async(&GeometryQuery::Volume(GeometryHandleId(999)))
+            .await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            reify_types::QueryError::InvalidHandle(id) => {
+                assert_eq!(id, GeometryHandleId(999));
+            }
+            other => panic!("expected InvalidHandle, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn export_async_returns_step_bytes() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute_async(&op).await.unwrap();
+        let bytes = handle
+            .export_async(gh.id, reify_types::ExportFormat::Step)
+            .await
+            .unwrap();
+        let content = String::from_utf8(bytes).unwrap();
+        assert!(
+            content.contains("ISO-10303-21"),
+            "STEP export should contain ISO-10303-21 header"
+        );
+    }
+
+    #[tokio::test]
+    async fn export_async_invalid_handle() {
+        let handle = super::OcctKernelHandle::spawn();
+        let result = handle
+            .export_async(GeometryHandleId(999), reify_types::ExportFormat::Step)
+            .await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            reify_types::ExportError::InvalidHandle(id) => {
+                assert_eq!(id, GeometryHandleId(999));
+            }
+            other => panic!("expected InvalidHandle, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn tessellate_async_returns_valid_mesh() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute_async(&op).await.unwrap();
+        let mesh = handle.tessellate_async(gh.id, 0.1).await.unwrap();
+        assert!(!mesh.vertices.is_empty(), "mesh should have vertices");
+        assert!(!mesh.indices.is_empty(), "mesh should have indices");
+        assert_eq!(
+            mesh.indices.len() % 3,
+            0,
+            "indices should be divisible by 3 (triangles)"
+        );
+        assert!(mesh.normals.is_some(), "mesh should have normals");
+    }
+
+    #[tokio::test]
+    async fn async_multi_op_sequence() {
+        let handle = super::OcctKernelHandle::spawn();
+
+        // Create box
+        let box_h = handle
+            .execute_async(&GeometryOp::Box {
+                width: Value::Real(100.0),
+                height: Value::Real(60.0),
+                depth: Value::Real(10.0),
+            })
+            .await
+            .unwrap();
+        assert_eq!(box_h.id, GeometryHandleId(1));
+
+        // Create cylinder
+        let cyl_h = handle
+            .execute_async(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .await
+            .unwrap();
+        assert_eq!(cyl_h.id, GeometryHandleId(2));
+
+        // Boolean union
+        let union_h = handle
+            .execute_async(&GeometryOp::Union {
+                left: box_h.id,
+                right: cyl_h.id,
+            })
+            .await
+            .unwrap();
+        assert_eq!(union_h.id, GeometryHandleId(3));
+
+        // Fillet
+        let fillet_h = handle
+            .execute_async(&GeometryOp::Fillet {
+                target: union_h.id,
+                radius: Value::Real(2.0),
+            })
+            .await
+            .unwrap();
+        assert_eq!(fillet_h.id, GeometryHandleId(4));
+
+        // Query volume via async
+        let vol = handle
+            .query_async(&GeometryQuery::Volume(fillet_h.id))
+            .await
+            .unwrap();
+        match vol {
+            Value::Real(v) => assert!(v > 0.0, "volume should be positive, got {v}"),
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+
+        // Tessellate via async
+        let mesh = handle.tessellate_async(fillet_h.id, 0.1).await.unwrap();
+        assert!(!mesh.vertices.is_empty());
+        assert!(!mesh.indices.is_empty());
+
+        // Export STEP via async (returns Vec<u8>)
+        let bytes = handle
+            .export_async(fillet_h.id, reify_types::ExportFormat::Step)
+            .await
+            .unwrap();
+        let content = String::from_utf8(bytes).unwrap();
         assert!(content.contains("ISO-10303-21"));
     }
 }
