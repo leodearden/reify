@@ -120,81 +120,79 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
 
     async fn evaluate(&self, node: NodeId) -> EvalOutcome {
         // Only evaluate Value nodes with expressions
-        if let NodeId::Value(ref vcid) = node {
-            if let Some(cell_node) = self.graph.value_cells.get(vcid) {
-                if (cell_node.kind == ValueCellKind::Let || cell_node.kind == ValueCellKind::Auto)
-                    && cell_node.default_expr.is_some()
-                {
-                    let expr = cell_node.default_expr.as_ref().unwrap();
+        if let NodeId::Value(ref vcid) = node
+            && let Some(cell_node) = self.graph.value_cells.get(vcid)
+            && (cell_node.kind == ValueCellKind::Let || cell_node.kind == ValueCellKind::Auto)
+            && cell_node.default_expr.is_some()
+        {
+            let expr = cell_node.default_expr.as_ref().unwrap();
 
-                    // Read current values (brief read lock)
-                    let current_values = {
-                        self.values.read().unwrap().clone()
-                    };
+            // Read current values (brief read lock)
+            let current_values = {
+                self.values.read().unwrap().clone()
+            };
 
-                    // Evaluate expression (pure, no lock held)
-                    let val = reify_expr::eval_expr(expr, &current_values);
+            // Evaluate expression (pure, no lock held)
+            let val = reify_expr::eval_expr(expr, &current_values);
 
-                    // Compute dependency trace
-                    let trace = extract_dependency_trace(expr);
+            // Compute dependency trace
+            let trace = extract_dependency_trace(expr);
 
-                    // Compute content hash for early cutoff
-                    let cached_result = CachedResult::Value(
-                        val.clone(),
-                        DeterminacyState::Determined,
-                    );
-                    let new_hash = cached_result.content_hash();
+            // Compute content hash for early cutoff
+            let cached_result = CachedResult::Value(
+                val.clone(),
+                DeterminacyState::Determined,
+            );
+            let new_hash = cached_result.content_hash();
 
-                    // Compare with previous hash
-                    let outcome = if let Some(old_hash) = self.previous_hashes.get(&node) {
-                        if new_hash == *old_hash {
-                            EvalOutcome::Unchanged
-                        } else {
-                            EvalOutcome::Changed
-                        }
-                    } else {
-                        // No previous hash → first evaluation, always Changed
-                        EvalOutcome::Changed
-                    };
+            // Compare with previous hash
+            let outcome = if let Some(old_hash) = self.previous_hashes.get(&node) {
+                if new_hash == *old_hash {
+                    EvalOutcome::Unchanged
+                } else {
+                    EvalOutcome::Changed
+                }
+            } else {
+                // No previous hash → first evaluation, always Changed
+                EvalOutcome::Changed
+            };
 
-                    // Write result to shared values (brief write lock)
-                    {
-                        let mut values = self.values.write().unwrap();
-                        values.insert(vcid.clone(), val.clone());
+            // Write result to shared values (brief write lock)
+            {
+                let mut values = self.values.write().unwrap();
+                values.insert(vcid.clone(), val.clone());
+            }
+
+            // Write to snapshot values (brief write lock)
+            {
+                let mut sv = self.snapshot_values.write().unwrap();
+                sv.insert(
+                    vcid.clone(),
+                    (val.clone(), DeterminacyState::Determined),
+                );
+            }
+
+            // Early cutoff: if unchanged, mark dependents for skipping
+            if outcome == EvalOutcome::Unchanged {
+                let dependents = self.reverse_index.dependents_of(vcid);
+                if !dependents.is_empty() {
+                    let mut skipped = self.skipped.write().unwrap();
+                    for dep in dependents {
+                        skipped.insert(dep.clone());
                     }
-
-                    // Write to snapshot values (brief write lock)
-                    {
-                        let mut sv = self.snapshot_values.write().unwrap();
-                        sv.insert(
-                            vcid.clone(),
-                            (val.clone(), DeterminacyState::Determined),
-                        );
-                    }
-
-                    // Early cutoff: if unchanged, mark dependents for skipping
-                    if outcome == EvalOutcome::Unchanged {
-                        let dependents = self.reverse_index.dependents_of(vcid);
-                        if !dependents.is_empty() {
-                            let mut skipped = self.skipped.write().unwrap();
-                            for dep in dependents {
-                                skipped.insert(dep.clone());
-                            }
-                        }
-                    }
-
-                    // Record result
-                    self.results.lock().unwrap().push(ConcurrentNodeResult {
-                        node: node.clone(),
-                        value: val,
-                        determinacy: DeterminacyState::Determined,
-                        trace,
-                        outcome,
-                    });
-
-                    return outcome;
                 }
             }
+
+            // Record result
+            self.results.lock().unwrap().push(ConcurrentNodeResult {
+                node: node.clone(),
+                value: val,
+                determinacy: DeterminacyState::Determined,
+                trace,
+                outcome,
+            });
+
+            return outcome;
         }
 
         // Non-Value nodes or Value nodes without expressions: Unchanged
