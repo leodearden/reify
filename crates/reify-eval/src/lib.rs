@@ -590,6 +590,15 @@ impl Engine {
                 && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
                 && let Some(ref expr) = node.default_expr
             {
+                let start = Instant::now();
+                self.journal.record(EvalEvent {
+                    timestamp: start,
+                    node_id: node_id.clone(),
+                    kind: EventKind::Started,
+                    version: VersionId(version_id),
+                    payload: None,
+                });
+
                 let val = reify_expr::eval_expr(expr, &values);
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot.values.insert(
@@ -607,6 +616,14 @@ impl Engine {
                     VersionId(version_id),
                     trace,
                 );
+
+                self.journal.record(EvalEvent {
+                    timestamp: Instant::now(),
+                    node_id: node_id.clone(),
+                    kind: EventKind::Completed { outcome },
+                    version: VersionId(version_id),
+                    payload: Some(EventPayload::Duration(start.elapsed())),
+                });
 
                 // Early cutoff: if result unchanged, remove downstream
                 // dependents from remaining eval set

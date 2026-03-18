@@ -90,26 +90,7 @@ fn edit_param_records_journal_events() {
         "should have events with version >= 1"
     );
 
-    // Verify Started/Completed pairs for re-evaluated Value nodes
-    let width_node = NodeId::Value(width_id);
-    let width_events: Vec<_> = journal
-        .events_for_node(&width_node)
-        .into_iter()
-        .filter(|e| e.version >= VersionId(1))
-        .collect();
-    assert!(
-        !width_events.is_empty(),
-        "should have edit_param events for width"
-    );
-
-    // Verify Started precedes Completed in edit_param events for width
-    let started_pos = width_events.iter().position(|e| matches!(e.kind, EventKind::Started));
-    let completed_pos = width_events.iter().position(|e| matches!(e.kind, EventKind::Completed { .. }));
-    if let (Some(s), Some(c)) = (started_pos, completed_pos) {
-        assert!(s < c, "Started should precede Completed for width in edit_param");
-    }
-
-    // The volume node (let binding depending on width) should also have events
+    // The volume node (let binding depending on width) should have Started/Completed events
     let volume_node = NodeId::Value(ValueCellId::new(e, "volume"));
     let volume_events: Vec<_> = journal
         .events_for_node(&volume_node)
@@ -121,9 +102,20 @@ fn edit_param_records_journal_events() {
         "volume should be re-evaluated after width edit"
     );
 
-    // Nodes that weren't in the dirty cone (e.g., height, thickness, fillet_radius, hole_diameter)
-    // should NOT have Started events in this version
-    for unchanged_param in &["height", "thickness", "fillet_radius", "hole_diameter"] {
+    // Verify Started precedes Completed for volume in edit_param
+    let started_pos = volume_events.iter().position(|e| matches!(e.kind, EventKind::Started));
+    let completed_pos = volume_events.iter().position(|e| matches!(e.kind, EventKind::Completed { .. }));
+    assert!(started_pos.is_some(), "volume should have Started event");
+    assert!(completed_pos.is_some(), "volume should have Completed event");
+    assert!(
+        started_pos.unwrap() < completed_pos.unwrap(),
+        "Started should precede Completed for volume in edit_param"
+    );
+
+    // Nodes that weren't re-evaluated (directly changed param width, unchanged params)
+    // should NOT have Started events in this version.
+    // Width's value is set directly in edit_param, not via eval_expr.
+    for unchanged_param in &["width", "height", "thickness", "fillet_radius", "hole_diameter"] {
         let node = NodeId::Value(ValueCellId::new(e, *unchanged_param));
         let param_edit_events: Vec<_> = journal
             .events_for_node(&node)
