@@ -6,10 +6,18 @@ use reify_types::{
     Value, ValueCellId,
 };
 
+/// A compiled import declaration.
+#[derive(Debug, Clone)]
+pub struct CompiledImport {
+    pub path: String,
+    pub span: SourceSpan,
+}
+
 /// A compiled module — the output of the compiler.
 #[derive(Debug, Clone)]
 pub struct CompiledModule {
     pub path: reify_types::ModulePath,
+    pub imports: Vec<CompiledImport>,
     pub templates: Vec<TopologyTemplate>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
@@ -583,6 +591,7 @@ pub fn compile(
 
     CompiledModule {
         path: parsed.path.clone(),
+        imports: Vec::new(),
         templates,
         diagnostics,
         content_hash,

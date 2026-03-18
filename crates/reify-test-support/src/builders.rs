@@ -296,6 +296,7 @@ impl CompiledModuleBuilder {
         let content_hash = ContentHash::of_str(&format!("{}", self.path));
         CompiledModule {
             path: self.path,
+            imports: Vec::new(),
             templates: self.templates,
             diagnostics: self.diagnostics,
             content_hash,
