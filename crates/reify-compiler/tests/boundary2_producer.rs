@@ -489,6 +489,37 @@ structure S {
     assert_eq!(template.constraints.len(), 1);
 }
 
+/// Sub-structure declarations should be compiled into TopologyTemplate.sub_components.
+#[test]
+fn sub_compiles_into_template_sub_components() {
+    let source = r#"structure Parent {
+    param d: Scalar = 6mm
+    sub mount_hole = Hole(diameter: 6mm)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sub"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let template = &compiled.templates[0];
+
+    assert_eq!(
+        template.sub_components.len(),
+        1,
+        "expected 1 sub_component, got {}",
+        template.sub_components.len()
+    );
+
+    let sub = &template.sub_components[0];
+    assert_eq!(sub.name, "mount_hole");
+    assert_eq!(sub.structure_name, "Hole");
+    assert_eq!(sub.args.len(), 1, "expected 1 arg");
+    assert_eq!(sub.args[0].0, "diameter");
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
