@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn dirty_cone_bracket_change_width() {
-        // Change width → dirty = {volume, C1}
+        // Change width → dirty = {volume, C1, R0}
         // Excludes: fillet_radius, C0, C2
         use crate::graph::EvaluationGraph;
         use reify_test_support::bracket_compiled_module;
@@ -194,16 +194,17 @@ mod tests {
 
         assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
         assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
+        assert!(dirty.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(e, 0))));
         assert!(!dirty.contains(&NodeId::Value(ValueCellId::new(e, "fillet_radius"))));
         assert!(!dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
         assert!(!dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
-        assert_eq!(dirty.len(), 2);
+        assert_eq!(dirty.len(), 3);
     }
 
     #[test]
     fn dirty_cone_bracket_change_thickness() {
-        // Change thickness → dirty = {volume, C0, C1, C2}
-        // All constraints read thickness, volume reads thickness
+        // Change thickness → dirty = {volume, C0, C1, C2, R0}
+        // All constraints read thickness, volume reads thickness, R0 uses thickness as depth
         use crate::graph::EvaluationGraph;
         use reify_test_support::bracket_compiled_module;
 
@@ -221,8 +222,9 @@ mod tests {
         assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
         assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
         assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
+        assert!(dirty.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(e, 0))));
         assert!(!dirty.contains(&NodeId::Value(ValueCellId::new(e, "fillet_radius"))));
-        assert_eq!(dirty.len(), 4);
+        assert_eq!(dirty.len(), 5);
     }
 
     #[test]

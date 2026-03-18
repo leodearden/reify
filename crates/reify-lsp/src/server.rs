@@ -1,21 +1,41 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
+use crate::diagnostics::EvalState;
 use crate::document::DocumentStore;
 
 /// Internal state shared across handler calls.
+///
+/// Contains document storage and captured diagnostics. The RwLock guards
+/// only these lightweight fields — eval_state lives separately on
+/// ReifyLanguageServer to avoid holding the RwLock during expensive
+/// evaluation.
 pub struct ServerState {
     pub documents: DocumentStore,
+    /// Diagnostics last published for each URI (for test verification).
+    last_published_diagnostics: HashMap<Url, Vec<Diagnostic>>,
+}
+
+impl ServerState {
+    /// Retrieve the last published diagnostics for a given URI.
+    pub fn last_diagnostics_for(&self, uri: &Url) -> Option<&Vec<Diagnostic>> {
+        self.last_published_diagnostics.get(uri)
+    }
 }
 
 /// The Reify language server.
 pub struct ReifyLanguageServer {
     client: Client,
     state: Arc<RwLock<ServerState>>,
+    /// Evaluation state lives outside the RwLock so eval can run without
+    /// blocking concurrent LSP requests that only need document state.
+    /// Wrapped in Mutex because Engine internals (OpaqueState) are Send but not Sync.
+    eval_state: Arc<Mutex<EvalState>>,
 }
 
 impl ReifyLanguageServer {
@@ -24,14 +44,21 @@ impl ReifyLanguageServer {
             client,
             state: Arc::new(RwLock::new(ServerState {
                 documents: DocumentStore::new(),
+                last_published_diagnostics: HashMap::new(),
             })),
+            eval_state: Arc::new(Mutex::new(EvalState::new())),
         }
     }
 
-    /// Access server state (for testing).
-    #[cfg(test)]
-    pub(crate) fn state(&self) -> &Arc<RwLock<ServerState>> {
+    /// Access server state (for testing and embedding).
+    pub fn state(&self) -> &Arc<RwLock<ServerState>> {
         &self.state
+    }
+
+    /// Access eval_state (for testing, e.g. poison recovery tests).
+    #[cfg(test)]
+    pub(crate) fn eval_state(&self) -> &Arc<Mutex<EvalState>> {
+        &self.eval_state
     }
 }
 
@@ -56,14 +83,38 @@ impl LanguageServer for ReifyLanguageServer {
         let text = params.text_document.text;
         let version = params.text_document.version;
 
-        // Store the document
+        // Brief write lock: store the document
         {
             let mut state = self.state.write().await;
             state.documents.open(uri.clone(), text.clone(), version);
         }
 
-        // Compute and publish diagnostics
-        let diagnostics = crate::diagnostics::compute_diagnostics(&text, &uri);
+        // Eval runs outside the RwLock, using only the eval_state Mutex.
+        // Recovers from poisoned lock (e.g., prior panic during eval).
+        let diagnostics = {
+            let mut eval_state = self
+                .eval_state
+                .lock()
+                .unwrap_or_else(|e| {
+                    eprintln!("eval_state lock poisoned, recovering");
+                    e.into_inner()
+                });
+            let result = crate::diagnostics::compute_diagnostics_with_state(
+                &mut eval_state,
+                &text,
+                &uri,
+            );
+            result.diagnostics
+        };
+
+        // Brief write lock: capture diagnostics
+        {
+            let mut state = self.state.write().await;
+            state
+                .last_published_diagnostics
+                .insert(uri.clone(), diagnostics.clone());
+        }
+
         self.client
             .publish_diagnostics(uri, diagnostics, Some(version))
             .await;
@@ -79,14 +130,38 @@ impl LanguageServer for ReifyLanguageServer {
             None => return,
         };
 
-        // Update the document
+        // Brief write lock: update the document
         {
             let mut state = self.state.write().await;
             state.documents.update(&uri, text.clone(), version);
         }
 
-        // Recompute and publish diagnostics
-        let diagnostics = crate::diagnostics::compute_diagnostics(&text, &uri);
+        // Eval runs outside the RwLock, using only the eval_state Mutex.
+        // Recovers from poisoned lock (e.g., prior panic during eval).
+        let diagnostics = {
+            let mut eval_state = self
+                .eval_state
+                .lock()
+                .unwrap_or_else(|e| {
+                    eprintln!("eval_state lock poisoned, recovering");
+                    e.into_inner()
+                });
+            let result = crate::diagnostics::compute_diagnostics_with_state(
+                &mut eval_state,
+                &text,
+                &uri,
+            );
+            result.diagnostics
+        };
+
+        // Brief write lock: capture diagnostics
+        {
+            let mut state = self.state.write().await;
+            state
+                .last_published_diagnostics
+                .insert(uri.clone(), diagnostics.clone());
+        }
+
         self.client
             .publish_diagnostics(uri, diagnostics, Some(version))
             .await;
@@ -95,10 +170,11 @@ impl LanguageServer for ReifyLanguageServer {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
 
-        // Remove from store
+        // Remove from store and clear captured diagnostics
         {
             let mut state = self.state.write().await;
             state.documents.close(&uri);
+            state.last_published_diagnostics.remove(&uri);
         }
 
         // Clear diagnostics for the closed file
@@ -210,6 +286,91 @@ mod tests {
             .expect("document should exist after change");
         assert_eq!(doc.text, broken_source);
         assert_eq!(doc.version, 2);
+    }
+
+    #[tokio::test]
+    async fn server_captures_published_diagnostics() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+        let uri = test_uri();
+        let source = reify_test_support::bracket_source();
+
+        // Open with valid bracket source
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: source.to_string(),
+                },
+            })
+            .await;
+
+        // Read captured diagnostics from server state
+        let state = server.state().read().await;
+        let captured = state
+            .last_diagnostics_for(&uri)
+            .expect("diagnostics should be captured after did_open");
+
+        // Valid bracket source should have no ERROR-severity diagnostics
+        let errors: Vec<_> = captured
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "valid bracket source should have no errors in captured diagnostics, got: {errors:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn server_recovers_from_eval_state_lock_poisoning() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+        let uri = test_uri();
+
+        // Get the eval_state Arc and poison the Mutex by panicking while holding the lock
+        let eval_state_arc = server.eval_state().clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = eval_state_arc.lock().unwrap();
+            panic!("intentional panic to poison the mutex");
+        });
+        // Wait for the thread to finish (it panicked)
+        let _ = handle.join();
+
+        // Confirm the lock is poisoned
+        assert!(
+            server.eval_state().lock().is_err(),
+            "lock should be poisoned after panic"
+        );
+
+        // did_open should recover from the poisoned lock, not panic
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: reify_test_support::bracket_source().to_string(),
+                },
+            })
+            .await;
+
+        // Verify diagnostics were captured (server recovered successfully)
+        let state = server.state().read().await;
+        let captured = state
+            .last_diagnostics_for(&uri)
+            .expect("diagnostics should be captured even after poison recovery");
+        // Valid bracket source should have no ERROR-severity diagnostics
+        let errors: Vec<_> = captured
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "valid source should have no errors after poison recovery, got: {errors:?}"
+        );
     }
 
     #[tokio::test]

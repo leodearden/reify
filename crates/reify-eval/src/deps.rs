@@ -369,15 +369,16 @@ mod tests {
 
         let e = "Bracket";
 
-        // width is read by: volume (let), C1 (constraint: thickness < width/4)
+        // width is read by: volume (let), C1 (constraint: thickness < width/4), R0 (box realization)
         let width_deps = index.dependents_of(&ValueCellId::new(e, "width"));
-        assert_eq!(width_deps.len(), 2, "width dependents: {:?}", width_deps);
+        assert_eq!(width_deps.len(), 3, "width dependents: {:?}", width_deps);
         assert!(width_deps.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
         assert!(width_deps.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
+        assert!(width_deps.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(e, 0))));
 
-        // thickness is read by: volume (let), C0, C1, C2 (all three constraints)
+        // thickness is read by: volume (let), C0, C1, C2 (all three constraints), R0 (box depth)
         let thickness_deps = index.dependents_of(&ValueCellId::new(e, "thickness"));
-        assert_eq!(thickness_deps.len(), 4, "thickness dependents: {:?}", thickness_deps);
+        assert_eq!(thickness_deps.len(), 5, "thickness dependents: {:?}", thickness_deps);
         assert!(thickness_deps.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
         assert!(thickness_deps.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
         assert!(thickness_deps.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
@@ -392,9 +393,10 @@ mod tests {
         assert_eq!(hole_deps.len(), 1, "hole_diameter dependents: {:?}", hole_deps);
         assert!(hole_deps.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
 
-        // height is read by: volume (let)
+        // height is read by: volume (let), R0 (box realization)
         let height_deps = index.dependents_of(&ValueCellId::new(e, "height"));
-        assert_eq!(height_deps.len(), 1, "height dependents: {:?}", height_deps);
+        assert_eq!(height_deps.len(), 2, "height dependents: {:?}", height_deps);
         assert!(height_deps.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
+        assert!(height_deps.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(e, 0))));
     }
 }

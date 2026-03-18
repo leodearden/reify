@@ -1,21 +1,21 @@
 {
-  "task_id": "31",
-  "title": "Commitment policy + priority promotion",
-  "modules": ["crates/reify-runtime"],
-  "analysis": "This task implements two distinct but related features for the M4 'Living Design' milestone:\n\n1. **Commitment Policy**: Controls when speculative/intermediate evaluation results become 'committed' (run to completion regardless of subsequent edits). Per the architecture docs (§7.3), this is a dual-threshold system: `always_commit_after` (default 120s) commits unconditionally after elapsed time, and `commit_when_proportion_done` (default 0.5) commits based on estimated progress. Per-node overrides allow: 'commit if slow' (default), 'always cancel when stale', and 'only run on final inputs'. The commitment policy checker takes a running task's metadata (elapsed time, estimated progress, per-node override) and returns a CommitmentDecision (NotYet, Committed, NeverCommit).\n\n2. **Priority Promotion**: When a higher-priority task (e.g. P1-slow demanded node) depends on a lower-priority in-flight task (e.g. P3 speculative), the lower-priority task should be promoted. Per the design (§8.2), 'if a P1-slow task depends on a P3 task already in-flight, the P3 task is promoted to P1-slow.'\n\nBoth features are purely within reify-runtime. The commitment policy is a data structure + decision function. Priority promotion is a registry/tracker that maps running tasks to their current effective priority and supports promote operations.\n\nExisting code provides: Priority enum (4 levels with Ord), Task struct, ConcurrentScheduler, CancellationToken, WarmStatePool, ConcurrentEvalAdapter, event journal (in reify-eval). The new code introduces CommitmentPolicy config, CommitmentStatus tracking per-task, a check_commitment() decision function, and a PriorityPromoter that tracks effective priorities and promotes dependencies.\n\nKey design constraints:\n- Commitment policy is project-level configuration with per-node overrides (not hardcoded)\n- Progress estimation uses reported progress or elapsed/previous_runtime fallback\n- Committed tasks in dirty cone run to completion; uncommitted ones cancel\n- No parallel evaluations of same node\n- Priority promotion is transitive through dependency chains",
+  "task_id": "34",
+  "title": "M4 integration — interactive edit loop E2E",
+  "modules": ["crates/reify-eval", "crates/reify-lsp", "crates/reify-test-support"],
+  "analysis": "This task creates an end-to-end integration test verifying the interactive edit loop: LSP edit → incremental eval → updated diagnostics + geometry. The codebase currently has: (1) Engine with eval() for cold-start, edit_param() for incremental value re-evaluation, eval_cached() for cached re-eval, check() for constraint checking, and build() for geometry — but check/build always call eval() internally (cold start), so there's no way to check constraints or build geometry using incrementally-updated values after edit_param(). (2) LSP server with compute_diagnostics() that creates a fresh Engine per edit (no persistent state). (3) Event journal recording evaluation events. (4) Concurrent evaluation adapter for parallel re-eval.\n\nKey gap: After edit_param() updates values incrementally, there's no check_snapshot()/build_snapshot() to check constraints or produce geometry from the current snapshot. The edit_param() docstring even says 'Constraint/Realization nodes tracked in eval set but not evaluated (deferred to check()/build())' — but check() calls eval() which destroys the incremental state.\n\nPlan: (1) Add check_snapshot() and build_snapshot() methods to Engine that operate on current snapshot values without re-eval. (2) Write engine-level E2E test demonstrating true incrementality: eval → edit_param → check_snapshot → build_snapshot → verify values/constraints/geometry update correctly. (3) Add stateful diagnostics pipeline to LSP with persistent Engine. (4) Write LSP-level E2E test: open document → edit → verify diagnostics + geometry update through the server lifecycle.\n\nThe engine-level test proves incrementality (edit_param + check/build on snapshot). The LSP-level test proves the interactive loop works end-to-end (open → edit → diagnostics update). Together they form the complete E2E integration test for the interactive edit loop.\n\n--- POST-REVIEW ADDENDUM ---\n\nReview identified three blocking issues in the LSP server implementation:\n\n(A) test_does_not_test_what_it_claims: The capstone E2E test (step 17) creates independent EvalState instances as proxy checks instead of verifying the diagnostics the server actually publishes. If did_change always published empty diagnostics or panicked, the test would still pass. Fix: add diagnostics capture to ServerState, rewrite the test to assert on captured diagnostics.\n\n(B) mutex_poisoning: did_open/did_change call state.eval_state.lock().unwrap(). If compute_diagnostics_with_state panics while holding the lock, the Mutex becomes poisoned and every subsequent LSP request panics permanently. Fix: use .lock().unwrap_or_else(|e| e.into_inner()) to recover from poisoned locks.\n\n(C) lock_held_during_blocking_computation: The tokio::sync::RwLock write guard is held across the entire compute_diagnostics_with_state() call (parse + compile + eval + constraint check). All concurrent LSP requests are fully blocked during this potentially expensive computation. Fix: extract eval_state from ServerState into its own Arc<Mutex<EvalState>> on ReifyLanguageServer. The RwLock then only guards DocumentStore + captured diagnostics with brief critical sections, while eval runs outside the RwLock.\n\nSteps 19-24 address these issues in TDD order.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create commitment.rs module file and register in lib.rs",
+      "description": "Add bracket_source_with_width(width_str: &str) and bracket_source_violating() fixture helpers to crates/reify-test-support/src/fixtures.rs. bracket_source_with_width replaces '80mm' width default via string replacement. bracket_source_violating sets thickness=1mm to trigger constraint violation (thickness > 2mm). Add self-consistency tests for both.",
       "status": "done",
-      "commit": "57029dd",
-      "tests": []
+      "commit": "71e9dff",
+      "tests": ["reify-test-support::fixtures::tests::bracket_source_with_width_replaces_default", "reify-test-support::fixtures::tests::bracket_source_violating_has_small_thickness"]
     },
     {
       "id": "pre-2",
-      "description": "Create priority_promotion.rs module file and register in lib.rs",
+      "description": "Ensure crates/reify-lsp/Cargo.toml has reify-eval in dev-dependencies (already in deps) and that reify-test-support dev-dep is available. No new external deps needed — MockGeometryKernel is already in reify-test-support.",
       "status": "done",
-      "commit": "57029dd",
+      "commit": "71e9dff",
       "tests": []
     }
   ],
@@ -23,204 +23,274 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write tests for CommitmentPolicy struct with default thresholds: always_commit_after=120s, commit_when_proportion_done=0.5. Test Default impl, custom construction, and field access.",
+      "description": "Write failing test in crates/reify-eval/tests/interactive_edit_loop.rs: check_snapshot_returns_constraint_results_from_current_values. Create Engine with MockConstraintChecker (default Satisfied), call eval() with bracket_compiled_module(), then call engine.check_snapshot(&module). Verify it returns Some(CheckResult) with 3 constraint entries all Satisfied, values map has 6 entries matching eval() output. This tests the new check_snapshot() method that checks constraints from the current snapshot without re-calling eval().",
       "status": "done",
-      "commit": "9b70c20"
+      "commit": "6cd0809"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement CommitmentPolicy struct with always_commit_after (Duration), commit_when_proportion_done (f64), Default trait impl, and builder/constructor methods.",
+      "description": "Add Engine::check_snapshot(&self, module: &CompiledModule) -> Option<CheckResult> method to crates/reify-eval/src/lib.rs. Returns None if self.current_snapshot is None. Otherwise: extract values from snapshot (build ValueMap from snapshot.values), iterate template constraints, call self.constraint_checker.check() with values, collect ConstraintCheckEntry results. Return Some(CheckResult { values, constraint_results, diagnostics: vec![], resolved_params }).",
       "status": "done",
-      "commit": "95d2802"
+      "commit": "a6db531"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write tests for NodeCommitmentOverride enum with three variants: CommitIfSlow (default dual-threshold), AlwaysCancelWhenStale (never commit), OnlyRunOnFinalInputs (skip intermediate inputs). Test Default is CommitIfSlow.",
+      "description": "Write failing test: build_snapshot_produces_geometry_from_current_values. Create Engine with MockConstraintChecker + MockGeometryKernel, eval() bracket_compiled_module() (which has a realization with box op), then call engine.build_snapshot(&module, ExportFormat::Step). Verify geometry_output is Some containing mock export data (b'MOCK_EXPORT_DATA'), constraint results are present, and the mock kernel's operations() list is non-empty (box op was executed).",
       "status": "done",
-      "commit": "9d83375"
+      "commit": "a0b49fe"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement NodeCommitmentOverride enum with CommitIfSlow, AlwaysCancelWhenStale, OnlyRunOnFinalInputs variants and Default trait.",
+      "description": "Add Engine::build_snapshot(&mut self, module: &CompiledModule, format: ExportFormat) -> Option<BuildResult> method. Returns None if no snapshot. Otherwise: get values from snapshot, check constraints (same as check_snapshot), then execute geometry operations from module realizations using self.geometry_kernel (reuse existing compile_geometry_op helper), export result. Return Some(BuildResult { values, constraint_results, geometry_output, diagnostics }).",
       "status": "done",
-      "commit": "9100592"
+      "commit": "e330aa6"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write tests for TaskProgress struct capturing elapsed time, optional reported progress (0.0-1.0), and optional previous_runtime for estimation. Test progress_estimate() method: returns reported_progress if available, else elapsed/previous_runtime, else None.",
+      "description": "Write failing test: edit_param_then_check_snapshot_reflects_updated_values. Eval bracket module, then edit_param(ValueCellId::new('Bracket','width'), Value::length(0.1)). Call check_snapshot() and verify: width=0.1m in returned values, volume recomputed to 0.1*0.1*0.005=5e-5 m³, all 3 constraints still Satisfied (width 100mm doesn't violate any constraint). Also verify height/thickness/fillet_radius/hole_diameter unchanged.",
       "status": "done",
-      "commit": "9c261c6"
+      "commit": "03ce384"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement TaskProgress struct with elapsed (Duration), reported_progress (Option<f64>), previous_runtime (Option<Duration>), and progress_estimate() method.",
+      "description": "Integration test — should pass with check_snapshot() already reading from self.current_snapshot which was updated by edit_param(). If not, ensure check_snapshot() reads from current_snapshot.values (which edit_param updates) rather than any stale source.",
       "status": "done",
-      "commit": "eae7fd9"
+      "commit": "03ce384"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write tests for CommitmentDecision enum (NotYet, Committed, NeverCommit) and the check_commitment() function. Cases: (1) AlwaysCancelWhenStale override returns NeverCommit regardless of progress, (2) elapsed > always_commit_after returns Committed, (3) estimated progress > commit_when_proportion_done returns Committed, (4) below both thresholds returns NotYet, (5) OnlyRunOnFinalInputs with intermediate inputs returns NeverCommit, (6) OnlyRunOnFinalInputs with final inputs falls through to dual-threshold.",
+      "description": "Write failing test: edit_param_constraint_violation_detected. Eval bracket module, then edit_param(ValueCellId::new('Bracket','thickness'), Value::length(0.001)) — thickness=1mm violates 'thickness > 2mm'. Call check_snapshot() and verify: constraint 0 (thickness > 2mm) has Satisfaction::Violated. Also verify thickness value is 0.001m in the results. This proves the interactive loop detects constraint violations after incremental param edits.",
       "status": "done",
-      "commit": "e4ce746"
+      "commit": "4aa3b24"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement CommitmentDecision enum and check_commitment(policy, override, progress, has_intermediate_inputs) -> CommitmentDecision function implementing the dual-threshold logic with per-node override handling.",
+      "description": "Integration test — should pass since check_snapshot() uses the real constraint checker (SimpleConstraintChecker or MockConstraintChecker with default Satisfied won't work here). This test needs SimpleConstraintChecker to evaluate the actual constraint expression (thickness > 2mm). Update the test or Engine setup to use SimpleConstraintChecker from reify-constraints for constraint violation detection.",
       "status": "done",
-      "commit": "be60da6"
+      "commit": "4aa3b24"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write tests for CommitmentTracker that manages per-node commitment status. Tests: (1) new tracker has no committed nodes, (2) update_status() transitions from NotYet to Committed when thresholds met, (3) is_committed(node_id) returns correct status, (4) committed task in dirty cone returns true for should_continue(), (5) uncommitted task in dirty cone returns false for should_continue(), (6) registering and removing tasks.",
+      "description": "Write failing test: edit_param_then_build_snapshot_updates_geometry. Create Engine with MockConstraintChecker + MockGeometryKernel. Eval bracket_compiled_module(), record initial mock kernel operations count. Then edit_param(width, Value::length(0.1)). Call build_snapshot(). Verify: geometry_output is Some, mock kernel received NEW geometry ops (operations count increased), and the box op arguments include the updated width value (0.1m).",
       "status": "done",
-      "commit": "7159e31"
+      "commit": "8a348db"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement CommitmentTracker struct with HashMap<NodeId, CommitmentState> tracking per-node status (start_time, decision, override). Methods: register_task(), update_status(), is_committed(), should_continue(node_id, in_dirty_cone), remove_task().",
+      "description": "Integration test — should pass if build_snapshot() correctly reads updated values from current snapshot. If the mock kernel's operations don't reflect updated values, verify that compile_geometry_op receives the post-edit ValueMap from the snapshot.",
       "status": "done",
-      "commit": "d3269d4"
+      "commit": "8a348db"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write tests for commitment event integration: when a task transitions to Committed, a commitment_acquired event should be recordable. Test that CommitmentTracker::update_status returns the transition (e.g., Option<CommitmentTransition>) so callers can emit journal events.",
+      "description": "Write failing test: journal_records_full_edit_cycle_events. Eval bracket module, then edit_param(width, 0.1m). Query engine.journal().events_for_node(NodeId::Value(vcid('Bracket','volume'))) and verify: at least 2 Started events (one from eval, one from edit_param re-eval since volume depends on width). Query journal for width node: should have 1 Started event from eval only (width is the changed param, not re-evaluated in edit_param). Verify total edit_param events < total eval events (proves incremental — fewer nodes evaluated).",
       "status": "done",
-      "commit": "1f0bffa"
+      "commit": "57977b0"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Add CommitmentTransition enum (Unchanged, BecameCommitted) as return type from update_status(), enabling callers to emit journal events on transition.",
+      "description": "Integration test — should pass since EventJournal is already wired into both eval() and edit_param(). If any events are missing, add journal.record() calls at the appropriate points.",
       "status": "done",
-      "commit": "8ab8850"
+      "commit": "57977b0"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write tests for PriorityPromoter: (1) register a task with initial priority, (2) effective_priority returns initial priority when no promotion, (3) promote(node_id, new_priority) raises priority (lower enum = higher priority), (4) promote with same-or-lower priority is a no-op, (5) remove_task cleans up.",
+      "description": "Write failing test in crates/reify-lsp/tests/interactive_edit_loop.rs: lsp_stateful_diagnostics_initial_eval. Create an EvalState via EvalState::new(), call compute_diagnostics_with_state(&mut state, bracket_source(), &test_uri()). Verify: returns DiagnosticsResult with no error-severity diagnostics (same as existing compute_diagnostics). This tests the new stateful pipeline entry point.",
       "status": "done",
-      "commit": "3b6104a"
+      "commit": "db675d7"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement PriorityPromoter struct with HashMap<NodeId, Priority> tracking effective priority per in-flight task. Methods: register(node_id, priority), effective_priority(node_id), promote(node_id, new_priority), remove(node_id).",
+      "description": "Add EvalState struct to crates/reify-lsp/src/diagnostics.rs holding: engine: Engine, last_module: Option<CompiledModule>, version_counter: u64. Add EvalState::new() that creates Engine with SimpleConstraintChecker and no geometry kernel. Add DiagnosticsResult { diagnostics: Vec<lsp_types::Diagnostic>, geometry_output: Option<Vec<u8>> }. Add pub fn compute_diagnostics_with_state(state: &mut EvalState, source: &str, uri: &Url) -> DiagnosticsResult. First impl: parse → compile → engine.eval() → engine.check_snapshot() → convert diagnostics → return result. Store compiled module in state.",
       "status": "done",
-      "commit": "d327b56"
+      "commit": "74550ac"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write tests for demand-driven priority promotion: promote_for_demand(demanded_node, dependency_map) promotes all in-flight dependencies of a demanded node. Cases: (1) P3 dependency of P1Slow demanded node promoted to P1Slow, (2) transitive promotion through chain A(P1Slow) -> B(P3) -> C(P3), both B and C promoted, (3) already-higher-priority dependency not demoted, (4) dependency not in-flight is ignored.",
+      "description": "Write failing test: lsp_stateful_diagnostics_after_edit_detects_violation. Create EvalState, call compute_diagnostics_with_state with bracket_source() (no errors). Then call again with bracket_source_violating() (thickness=1mm). Verify second call returns at least one error-severity diagnostic indicating constraint violation. This proves the stateful pipeline correctly updates diagnostics when source changes.",
       "status": "done",
-      "commit": "e65025c"
+      "commit": "6a4d2b2"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement promote_for_demand() method on PriorityPromoter that walks dependency edges from a demanded node and promotes all in-flight lower-priority tasks to the demanded node's priority level.",
+      "description": "Extend compute_diagnostics_with_state() to handle subsequent calls correctly: re-parse, re-compile, call engine.eval() with new module (cold start — source text change invalidates all cached state), then check_snapshot(), convert diagnostics. Update stored last_module. Since full text sync means source changes completely each time, cold-start eval is correct here.",
       "status": "done",
-      "commit": "6327522"
+      "commit": "6a4d2b2"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write tests for concurrent-safe PriorityPromoter wrapper (using Arc<Mutex<PriorityPromoter>> or similar) that can be shared across async tasks. Test promote from one task, read from another.",
+      "description": "Write failing test: lsp_server_e2e_interactive_edit_loop. Full lifecycle through tower-lsp: (1) create LspService with ReifyLanguageServer, (2) initialize, (3) did_open with bracket_source() — verify via compute_diagnostics proxy that no errors exist, (4) did_change with bracket_source_violating() — verify diagnostics now include constraint violation, (5) did_change back to bracket_source() — verify diagnostics clear (no errors), (6) did_close + shutdown. This is the capstone E2E test proving the interactive edit loop works through the LSP server.",
       "status": "done",
-      "commit": "7c43ca2"
+      "commit": "bb6e0e8"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Wrap PriorityPromoter internals with Mutex for thread-safe concurrent access, matching the pattern used by ConcurrentEvalAdapter's skip_state.",
+      "description": "Add EvalState to ServerState in crates/reify-lsp/src/server.rs (behind the existing Arc<RwLock<>>). Update did_open to use compute_diagnostics_with_state() instead of stateless compute_diagnostics(). Update did_change similarly. The persistent EvalState survives across edits, enabling the server to maintain Engine state. did_close resets EvalState for the closed document (or leaves it — it will be rebuilt on next open).",
       "status": "done",
-      "commit": "1a05a4e"
+      "commit": "3697ff8"
     },
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write integration test combining commitment + priority promotion: a scenario with multiple nodes at different priorities where (1) a P3 speculative node gets promoted when a demanded P1Slow node needs it, and (2) a long-running committed node continues despite dirty cone intersection while an uncommitted one would not.",
+      "description": "Write failing test in crates/reify-lsp/src/server.rs (mod tests): server_captures_published_diagnostics. Create LspService, call did_open with valid bracket source, then read server.state().read().await.last_diagnostics_for(&uri). Assert it returns Some (diagnostics were captured) and that the captured list contains no ERROR-severity diagnostics. This tests the new diagnostics capture mechanism in ServerState — currently fails because last_diagnostics_for() method and last_published_diagnostics field don't exist. [Addresses reviewer issue: test_does_not_test_what_it_claims]",
       "status": "done",
-      "commit": "5326b9e"
+      "commit": "3121226"
     },
     {
       "id": "step-20",
       "type": "impl",
-      "description": "Wire integration: ensure CommitmentTracker and PriorityPromoter are re-exported from lib.rs with proper public API. Verify all edge cases in the integration test pass.",
+      "description": "Add diagnostics capture to ServerState in crates/reify-lsp/src/server.rs: (1) Add field last_published_diagnostics: HashMap<Url, Vec<lsp_types::Diagnostic>> to ServerState, initialized to empty in ReifyLanguageServer::new(). (2) Add pub fn last_diagnostics_for(&self, uri: &Url) -> Option<&Vec<lsp_types::Diagnostic>> accessor to ServerState. (3) In did_open, store diagnostics.clone() in last_published_diagnostics before calling client.publish_diagnostics(). (4) In did_change, same pattern. (5) In did_close, remove the URI entry from last_published_diagnostics. Add 'use std::collections::HashMap' import. Pass step-19 test.",
       "status": "done",
-      "commit": "5b78f7a"
+      "commit": "8ce76d8"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing test in crates/reify-lsp/src/server.rs (mod tests): server_recovers_from_eval_state_lock_poisoning. Create LspService. Access the eval_state Mutex through server.eval_state() (new test accessor that returns &Arc<Mutex<EvalState>>), clone the Arc, spawn a std::thread that locks the Mutex and panics to poison it. Verify lock().is_err() confirms the lock is poisoned. Then call did_open with valid bracket source — should succeed (recover from poison) rather than panic. Verify diagnostics were captured in last_diagnostics_for(&uri). Currently fails because: (a) eval_state() accessor doesn't exist on ReifyLanguageServer, and (b) .lock().unwrap() in did_open panics on poisoned lock. [Addresses reviewer issue: mutex_poisoning]",
+      "status": "done",
+      "commit": "c8d5919"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Restructure server to fix mutex poisoning and lock scope in crates/reify-lsp/src/server.rs: (1) Move eval_state out of ServerState into ReifyLanguageServer as a separate field: eval_state: Arc<Mutex<EvalState>>. ServerState now only holds documents + last_published_diagnostics. (2) Add #[cfg(test)] pub(crate) fn eval_state(&self) -> &Arc<Mutex<EvalState>> accessor. (3) Replace .lock().unwrap() with .lock().unwrap_or_else(|e| { eprintln!(\"eval_state lock poisoned, recovering\"); e.into_inner() }) in did_open and did_change. (4) Narrow RwLock scope in did_open: brief write lock for documents.open(), release, eval runs outside RwLock using only the eval_state Mutex, then brief write lock to store captured diagnostics. Same pattern for did_change. (5) Update ReifyLanguageServer::new() to initialize eval_state separately. This simultaneously fixes poison recovery (issue B) and lock contention (issue C). [Addresses reviewer issues: mutex_poisoning + lock_held_during_blocking_computation]",
+      "status": "done",
+      "commit": "d8961b8"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Rewrite the capstone E2E test lsp_server_e2e_interactive_edit_loop in crates/reify-lsp/tests/interactive_edit_loop.rs to assert on the server's actual published diagnostics instead of proxy EvalState checks. After each did_open/did_change, read server.state().read().await.last_diagnostics_for(&uri) and assert directly: (1) after did_open with valid bracket source → captured diagnostics exist and contain no ERROR-severity entries, (2) after did_change with bracket_source_violating() → captured diagnostics contain at least one ERROR with message mentioning 'constraint' or 'violated', (3) after did_change back to valid source → captured diagnostics have no errors. Remove all three proxy blocks that create independent EvalState instances (lines 113-122, 141-153, 171-180 of current file). Also verify did_close clears captured diagnostics for the URI. The last_diagnostics_for accessor must be pub (add to ServerState impl without #[cfg(test)]). [Addresses reviewer issue: test_does_not_test_what_it_claims]",
+      "status": "done",
+      "commit": "06b65c7"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Verification step: run the rewritten capstone E2E test. Should pass since steps 20 and 22 already implemented diagnostics capture and the restructured server correctly stores diagnostics before publishing. If test fails, diagnose: (a) check that last_diagnostics_for is accessible from integration tests (must be pub, not pub(crate)), (b) verify diagnostics are stored BEFORE client.publish_diagnostics() is called, (c) ensure did_close removes the entry from last_published_diagnostics. Fix any issues found.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Commitment policy and priority promotion are separate modules (commitment.rs, priority_promotion.rs) rather than merged into one",
-      "rationale": "They are orthogonal concerns: commitment decides whether a running task runs to completion; priority promotion changes scheduling order. Separate modules follow SRP and make each independently testable and reusable."
+      "decision": "Add check_snapshot() and build_snapshot() methods rather than modifying check()/build()",
+      "rationale": "check() and build() always call eval() internally (cold start). Adding separate snapshot-based methods preserves backward compatibility and makes the incremental pipeline explicit: eval() → edit_param() → check_snapshot() → build_snapshot(). The comment in edit_param() already says 'Constraint/Realization nodes tracked in eval set but not evaluated (deferred to check()/build())' — these new methods fulfill that contract."
     },
     {
-      "decision": "CommitmentPolicy is a plain config struct, not a trait",
-      "rationale": "The architecture docs specify commitment policy as 'project configuration, not source code logic.' A struct with threshold fields matches this: callers pass it to check_commitment() as data. A trait would over-abstract for what is essentially a pair of thresholds."
+      "decision": "LSP stateful pipeline uses cold-start eval() on each source edit, not eval_cached()",
+      "rationale": "eval_cached() is designed for the same compiled module with different versions. When source text changes via LSP full text sync, the CompiledModule changes (different expressions, content hashes). eval_cached() would incorrectly reuse stale cached values for changed expressions because nobody marks them dirty. True source-level incrementality (diffing compiled modules to detect what changed) is future work. The Engine-level edit_param() path IS truly incremental and is tested separately."
     },
     {
-      "decision": "check_commitment is a free function taking (policy, override, progress, has_intermediate_inputs) rather than a method on CommitmentTracker",
-      "rationale": "Pure function with explicit inputs is easier to unit test, composes well, and separates the decision logic from the stateful tracking. CommitmentTracker calls check_commitment internally."
+      "decision": "Engine-level and LSP-level tests are complementary, not redundant",
+      "rationale": "Engine-level tests (steps 1-12) prove true incrementality: edit_param → check_snapshot with journal verification showing fewer events than cold start. LSP-level tests (steps 13-18) prove the interactive loop works end-to-end through the server lifecycle: open → edit → diagnostics update. Together they form the complete E2E integration test suite."
     },
     {
-      "decision": "PriorityPromoter uses interior Mutex for thread safety rather than RwLock",
-      "rationale": "Priority promotion operations (promote, read) are extremely fast (HashMap lookups). Mutex avoids the overhead of reader-writer distinction and matches the SkipState pattern in ConcurrentEvalAdapter."
+      "decision": "check_snapshot() returns Option<CheckResult> (None if no snapshot)",
+      "rationale": "Making the snapshot requirement explicit via Option rather than panicking (like edit_param does with expect()) is safer for LSP integration where the server state may not have been initialized yet. Callers can handle None gracefully."
     },
     {
-      "decision": "Priority promotion is tracked via effective_priority rather than mutating the original Task struct",
-      "rationale": "The Task struct represents the initial scheduling intent. The PriorityPromoter tracks the dynamic effective priority separately, allowing introspection of both original and promoted priority (useful for UI display and debugging)."
+      "decision": "Place engine-level tests in new file interactive_edit_loop.rs rather than extending e2e_bracket.rs",
+      "rationale": "The existing e2e_bracket.rs tests the cold-start pipeline with real OCCT kernel and requires --test-threads=1. The interactive edit loop tests use MockGeometryKernel, test incremental behavior, and can run in parallel — a different concern deserving its own test file."
     },
     {
-      "decision": "promote_for_demand walks dependency edges rather than using the reverse dependency index",
-      "rationale": "Priority promotion goes in the forward dependency direction: 'I need X, so X's dependencies should also be high priority.' This is a forward walk from demanded node through its reads, not a reverse walk. The DependencyTrace (reads field) provides the needed edges."
+      "decision": "EvalState holds Engine and last CompiledModule together",
+      "rationale": "The Engine needs the CompiledModule for check_snapshot/build_snapshot calls. Storing it alongside the Engine in EvalState keeps the stateful pipeline self-contained and avoids re-compilation when only querying current state."
     },
     {
-      "decision": "CommitmentTracker.update_status returns a CommitmentTransition to signal state changes",
-      "rationale": "Callers need to know when a task transitions to Committed to emit journal events (commitment_acquired EventKind). A return value is cleaner than a callback and avoids coupling the tracker to the journal."
+      "decision": "Use SimpleConstraintChecker (not MockConstraintChecker) for constraint violation tests",
+      "rationale": "MockConstraintChecker returns predetermined Satisfaction values and doesn't evaluate constraint expressions. To test that 'thickness=1mm violates thickness > 2mm', we need SimpleConstraintChecker which actually evaluates the compiled expression against the ValueMap. Mock is used only when we don't care about real constraint semantics."
+    },
+    {
+      "decision": "Store published diagnostics in ServerState rather than mocking tower-lsp Client",
+      "rationale": "tower-lsp's Client is created internally by LspService::new() and cannot be easily mocked or intercepted without significant transport-level plumbing (mock JSON-RPC channels, message parsing, etc.). Instead, store the exact diagnostics Vec passed to client.publish_diagnostics() in a HashMap<Url, Vec<Diagnostic>> field on ServerState. Tests read this via last_diagnostics_for(). This proves the server computed and published the correct diagnostics — the same Vec is stored and then published, so the capture is faithful. This is simpler than tower_test::mock::Spawn and equally verifiable."
+    },
+    {
+      "decision": "Extract eval_state from ServerState into ReifyLanguageServer to fix lock contention",
+      "rationale": "The original design places eval_state: Mutex<EvalState> inside ServerState, which is guarded by Arc<RwLock<ServerState>>. This means the RwLock write guard must be held for the entire duration of compute_diagnostics_with_state (parse + compile + eval + constraint check). Moving eval_state to its own Arc<Mutex<EvalState>> on ReifyLanguageServer means: (1) RwLock is only held briefly for DocumentStore updates and diagnostics capture, (2) eval runs outside the RwLock using only the eval_state Mutex, (3) concurrent LSP requests that need document state (hover, completion, etc.) can proceed during eval. The Mutex on EvalState still serializes evaluations (correct, since Engine is not Sync), but doesn't block unrelated state reads."
+    },
+    {
+      "decision": "Use unwrap_or_else(|e| e.into_inner()) for Mutex poison recovery instead of custom error handling",
+      "rationale": "When the Mutex is poisoned (e.g., compute_diagnostics_with_state panicked), into_inner() extracts the last known good state. The Engine may be in an inconsistent state, but compute_diagnostics_with_state immediately creates a fresh Engine (line 80-81 of diagnostics.rs: 'state.engine = reify_eval::Engine::new(...)'), so any stale state from the poisoned lock is discarded on the next call. This makes poison recovery safe without needing to rebuild EvalState from scratch."
     }
   ],
   "reuse": [
     {
-      "what": "Priority enum (P0Interactive, P1Fast, P1Slow, P3Speculative)",
-      "where": "crates/reify-runtime/src/lib.rs:16-26",
-      "how": "Reuse directly for PriorityPromoter's tracking and comparison. The derived Ord gives natural 'higher priority = smaller enum value' semantics needed for promotion (promote = min(current, requested))."
+      "what": "bracket_compiled_module() fixture",
+      "where": "crates/reify-test-support/src/fixtures.rs",
+      "how": "Used for engine-level tests as the CompiledModule input. Has 5 params, 1 let binding (volume), 3 constraints, and 1 realization (box). Already used in 15+ existing tests."
     },
     {
-      "what": "NodeId type for identifying nodes",
-      "where": "crates/reify-eval/src/cache.rs",
-      "how": "Use as keys in CommitmentTracker and PriorityPromoter HashMaps, consistent with all existing runtime code."
+      "what": "MockConstraintChecker, MockGeometryKernel",
+      "where": "crates/reify-test-support/src/mocks.rs",
+      "how": "MockConstraintChecker (default Satisfied) for tests not checking real constraint semantics. MockGeometryKernel for geometry build tests — tracks operations via Arc<Mutex<Vec>>, returns dummy MOCK_EXPORT_DATA on export, incrementing handle IDs."
     },
     {
-      "what": "DependencyTrace.reads for dependency walking",
-      "where": "crates/reify-eval/src/deps.rs",
-      "how": "PriorityPromoter.promote_for_demand() uses DependencyTrace reads to walk forward dependencies for transitive promotion."
+      "what": "Engine::eval() + Engine::edit_param() pipeline",
+      "where": "crates/reify-eval/src/lib.rs",
+      "how": "Existing incremental evaluation infrastructure. eval() bootstraps snapshot + cache + dependency structures. edit_param() computes dirty cone, evaluates only affected Value nodes with early cutoff. The new check_snapshot/build_snapshot operate on the snapshot left behind by these methods."
     },
     {
-      "what": "EventKind pattern for journal integration",
+      "what": "EventJournal query methods",
       "where": "crates/reify-eval/src/journal.rs",
-      "how": "CommitmentTransition signals are designed to map to existing EventKind variants (commitment_acquired is mentioned in the design docs as an event kind). The caller emits the event, keeping commitment.rs decoupled from the journal."
+      "how": "events_for_node() and events_since() for verifying that the journal records the correct sequence of evaluation events through the edit cycle. events_for_node(volume_node) should show 2 Started events (eval + edit_param)."
     },
     {
-      "what": "Arc<Mutex<T>> interior mutability pattern",
-      "where": "crates/reify-runtime/src/concurrent_eval.rs:53 (SkipState)",
-      "how": "Same pattern for PriorityPromoter's thread-safe wrapper: Mutex for atomic check-and-modify, Arc for sharing across spawned tasks."
+      "what": "compute_diagnostics() pipeline logic",
+      "where": "crates/reify-lsp/src/diagnostics.rs",
+      "how": "Existing parse → compile → check pipeline. The new compute_diagnostics_with_state() follows the same structure (parse, compile, eval, check, convert) but uses a persistent Engine stored in EvalState instead of creating a fresh one."
     },
     {
-      "what": "Test patterns with ValueCellId::new and NodeId::Value",
-      "where": "crates/reify-runtime/src/lib.rs tests, warm_pool.rs tests",
-      "how": "Follow same test helper patterns for creating test node IDs, keeping test style consistent."
+      "what": "convert module (convert_diagnostic, convert_parse_error, etc.)",
+      "where": "crates/reify-lsp/src/convert.rs",
+      "how": "Reused unchanged for converting eval/constraint diagnostics to LSP format in the stateful pipeline."
+    },
+    {
+      "what": "tower-lsp LspService::new() test pattern",
+      "where": "crates/reify-lsp/tests/lifecycle.rs",
+      "how": "Existing pattern: LspService::new(ReifyLanguageServer::new), service.inner() to get server ref, call LSP methods directly (initialize, did_open, did_change, etc.). Reused for the capstone E2E LSP lifecycle test."
+    },
+    {
+      "what": "compile_geometry_op() helper function",
+      "where": "crates/reify-eval/src/lib.rs (line 1327)",
+      "how": "Existing private fn that compiles CompiledGeometryOp into GeometryOp by evaluating expressions against a ValueMap. Reused by build_snapshot() for geometry execution. May need to be made pub(crate) or extracted for shared use."
+    },
+    {
+      "what": "bracket_source() fixture",
+      "where": "crates/reify-test-support/src/fixtures.rs",
+      "how": "Canonical bracket.ri source for LSP tests as the initial document. The new bracket_source_with_width() and bracket_source_violating() are string-replace derivatives of this."
+    },
+    {
+      "what": "SimpleConstraintChecker",
+      "where": "crates/reify-constraints/src/lib.rs",
+      "how": "Real constraint checker that evaluates compiled boolean expressions against ValueMap. Used in constraint violation tests and in the LSP EvalState (same as the current compute_diagnostics pipeline)."
+    },
+    {
+      "what": "Existing server test patterns (state accessor, LspService setup)",
+      "where": "crates/reify-lsp/src/server.rs (mod tests)",
+      "how": "Existing #[cfg(test)] state() accessor and test_uri() helper. Extended with eval_state() accessor for poison recovery testing. The pattern of creating LspService, calling server.inner(), and exercising handlers directly is reused for all new server tests."
+    },
+    {
+      "what": "std::sync::Mutex poison recovery pattern",
+      "where": "Rust standard library",
+      "how": "PoisonError::into_inner() extracts the guarded data from a poisoned Mutex. Combined with unwrap_or_else, this is the standard Rust pattern for recovering from panics that occurred while holding a lock."
     }
   ]
 }

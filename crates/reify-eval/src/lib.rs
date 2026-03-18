@@ -1202,6 +1202,64 @@ impl Engine {
         }
     }
 
+    /// Check constraints using the current snapshot values, without re-calling eval().
+    ///
+    /// Returns `None` if no snapshot exists (i.e. eval() hasn't been called yet).
+    /// Otherwise builds a ValueMap from the snapshot, runs constraint checking,
+    /// and returns constraint results. This is the incremental companion to check():
+    /// after edit_param() updates values, call check_snapshot() to see constraint
+    /// status without destroying the incremental state.
+    pub fn check_snapshot(
+        &self,
+        module: &CompiledModule,
+    ) -> Option<CheckResult> {
+        let snapshot = self.current_snapshot.as_ref()?;
+
+        // Build ValueMap from snapshot values
+        let mut values = ValueMap::new();
+        for (id, (val, _det)) in snapshot.values.iter() {
+            values.insert(id.clone(), val.clone());
+        }
+
+        let mut constraint_results = Vec::new();
+        let mut diagnostics = Vec::new();
+
+        for template in &module.templates {
+            if template.constraints.is_empty() {
+                continue;
+            }
+
+            let constraint_pairs: Vec<_> = template
+                .constraints
+                .iter()
+                .map(|c| (c.id.clone(), &c.expr))
+                .collect();
+
+            let input = ConstraintInput {
+                constraints: constraint_pairs,
+                values: &values,
+            };
+
+            let results = self.constraint_checker.check(&input);
+
+            for (result, compiled) in results.into_iter().zip(template.constraints.iter()) {
+                diagnostics.extend(result.diagnostics.messages);
+                constraint_results.push(ConstraintCheckEntry {
+                    id: result.id,
+                    label: compiled.label.clone(),
+                    satisfaction: result.satisfaction,
+                });
+            }
+        }
+
+        Some(CheckResult {
+            values,
+            constraint_results,
+            diagnostics,
+            resolved_params: HashMap::new(),
+        })
+    }
+
     /// Evaluate and check constraints.
     pub fn check(
         &mut self,
@@ -1246,6 +1304,120 @@ impl Engine {
             diagnostics,
             resolved_params: eval_result.resolved_params,
         }
+    }
+
+    /// Build geometry from the current snapshot values, without re-calling eval().
+    ///
+    /// Returns `None` if no snapshot exists. Otherwise: checks constraints from
+    /// snapshot (same as check_snapshot), then executes geometry operations from
+    /// module realizations using the geometry kernel. This is the incremental
+    /// companion to build(): after edit_param() updates values, call
+    /// build_snapshot() to get updated geometry without a cold restart.
+    pub fn build_snapshot(
+        &mut self,
+        module: &CompiledModule,
+        format: ExportFormat,
+    ) -> Option<BuildResult> {
+        let snapshot = self.current_snapshot.as_ref()?;
+
+        // Build ValueMap from snapshot values
+        let mut values = ValueMap::new();
+        for (id, (val, _det)) in snapshot.values.iter() {
+            values.insert(id.clone(), val.clone());
+        }
+
+        // Check constraints
+        let mut constraint_results = Vec::new();
+        let mut diagnostics = Vec::new();
+
+        for template in &module.templates {
+            if !template.constraints.is_empty() {
+                let constraint_pairs: Vec<_> = template
+                    .constraints
+                    .iter()
+                    .map(|c| (c.id.clone(), &c.expr))
+                    .collect();
+
+                let input = ConstraintInput {
+                    constraints: constraint_pairs,
+                    values: &values,
+                };
+
+                let results = self.constraint_checker.check(&input);
+
+                for (result, compiled) in results.into_iter().zip(template.constraints.iter()) {
+                    diagnostics.extend(result.diagnostics.messages);
+                    constraint_results.push(ConstraintCheckEntry {
+                        id: result.id,
+                        label: compiled.label.clone(),
+                        satisfaction: result.satisfaction,
+                    });
+                }
+            }
+        }
+
+        // Execute geometry operations
+        let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
+            let mut last_handle: Option<GeometryHandleId> = None;
+            let mut total_ops: usize = 0;
+
+            for template in &module.templates {
+                for realization in &template.realizations {
+                    for op in &realization.operations {
+                        total_ops += 1;
+                        let geom_op = compile_geometry_op(op, &values, &last_handle);
+                        match geom_op {
+                            Some(geom_op) => match kernel.execute(&geom_op) {
+                                Ok(handle) => {
+                                    last_handle = Some(handle.id);
+                                }
+                                Err(e) => {
+                                    diagnostics.push(Diagnostic::error(
+                                        format!("geometry error: {}", e),
+                                    ));
+                                }
+                            },
+                            None => {
+                                diagnostics.push(Diagnostic::error(
+                                    "failed to compile geometry operation",
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+
+            if total_ops == 0 {
+                None
+            } else if last_handle.is_none() {
+                diagnostics.push(Diagnostic::error(
+                    "all geometry operations failed; no geometry output produced",
+                ));
+                None
+            } else {
+                let export_handle = last_handle.unwrap();
+                let mut output = Vec::new();
+                match kernel.export(export_handle, format, &mut output) {
+                    Ok(()) => Some(output),
+                    Err(e) => {
+                        diagnostics.push(Diagnostic::error(
+                            format!("export error: {}", e),
+                        ));
+                        None
+                    }
+                }
+            }
+        } else {
+            None
+        };
+
+        Some(BuildResult {
+            values,
+            constraint_results,
+            geometry_output,
+            diagnostics,
+            resolved_params: HashMap::new(),
+        })
     }
 
     /// Full build: evaluate, check constraints, produce geometry.

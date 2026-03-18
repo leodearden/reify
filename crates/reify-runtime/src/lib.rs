@@ -316,10 +316,11 @@ mod tests {
         changed_cells.insert(ValueCellId::new(e, "width"));
         let dirty = compute_dirty_cone(&changed_cells, &index);
 
-        // Verify dirty cone
+        // Verify dirty cone: volume, c1, and the realization (depends on width)
         assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
         assert!(dirty.contains(&c1));
-        assert_eq!(dirty.len(), 2);
+        assert!(dirty.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(e, 0))));
+        assert_eq!(dirty.len(), 3);
 
         // 5. Compute eval set
         let eval_set = compute_eval_set(&dirty, &demand, &traces);
