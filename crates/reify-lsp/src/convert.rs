@@ -36,26 +36,69 @@ pub fn span_to_range(source: &str, span: SourceSpan) -> tower_lsp::lsp_types::Ra
 }
 
 /// Convert a Reify Severity to an LSP DiagnosticSeverity.
-pub fn convert_severity(_severity: Severity) -> DiagnosticSeverity {
-    todo!()
+pub fn convert_severity(severity: Severity) -> DiagnosticSeverity {
+    match severity {
+        Severity::Error => DiagnosticSeverity::ERROR,
+        Severity::Warning => DiagnosticSeverity::WARNING,
+        Severity::Info => DiagnosticSeverity::INFORMATION,
+    }
 }
 
 /// Convert a Reify Diagnostic to an LSP Diagnostic.
 pub fn convert_diagnostic(
-    _diag: &Diagnostic,
-    _source: &str,
-    _uri: &Url,
+    diag: &Diagnostic,
+    source: &str,
+    uri: &Url,
 ) -> lsp_types::Diagnostic {
-    todo!()
+    let range = if let Some(first_label) = diag.labels.first() {
+        span_to_range(source, first_label.span)
+    } else {
+        lsp_types::Range {
+            start: Position::new(0, 0),
+            end: Position::new(0, 0),
+        }
+    };
+
+    let related_information = if diag.labels.len() > 1 {
+        Some(
+            diag.labels[1..]
+                .iter()
+                .map(|label| DiagnosticRelatedInformation {
+                    location: lsp_types::Location {
+                        uri: uri.clone(),
+                        range: span_to_range(source, label.span),
+                    },
+                    message: label.message.clone(),
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
+
+    lsp_types::Diagnostic {
+        range,
+        severity: Some(convert_severity(diag.severity)),
+        message: diag.message.clone(),
+        source: Some("reify".to_string()),
+        related_information,
+        ..Default::default()
+    }
 }
 
 /// Convert a ParseError to an LSP Diagnostic.
 pub fn convert_parse_error(
-    _err: &ParseError,
-    _source: &str,
+    err: &ParseError,
+    source: &str,
     _uri: &Url,
 ) -> lsp_types::Diagnostic {
-    todo!()
+    lsp_types::Diagnostic {
+        range: span_to_range(source, err.span),
+        severity: Some(DiagnosticSeverity::ERROR),
+        message: err.message.clone(),
+        source: Some("reify".to_string()),
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]
