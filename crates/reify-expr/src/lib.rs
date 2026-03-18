@@ -21,10 +21,8 @@ pub fn eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value {
         }
 
         CompiledExprKind::FunctionCall { function, args } => {
-            // M1: no stdlib functions implemented yet
-            let _ = function;
-            let _ = args;
-            Value::Undef
+            let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, values)).collect();
+            reify_stdlib::eval_builtin(&function.name, &evaluated_args)
         }
 
         CompiledExprKind::Conditional {
