@@ -9,10 +9,10 @@ use reify_eval::cache::NodeId;
 use reify_test_support::bracket_compiled_module;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_test_support::builders::{literal, value_ref_typed, binop};
+use reify_test_support::builders::{literal, value_ref_typed, binop, gt};
 use reify_types::{
-    BinOp, ConstraintNodeId, Freshness, ModulePath, SnapshotId, SnapshotProvenance, Type,
-    Value, ValueCellId,
+    BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, Freshness,
+    ModulePath, SnapshotId, SnapshotProvenance, Type, Value, ValueCellId,
 };
 
 /// Canary backward-compatibility test: verifies that cold-start eval()
@@ -668,5 +668,100 @@ fn consecutive_edit_param_only_reevaluates_affected_nodes() {
         cache.pending_transition_count(),
         1,
         "second edit's eval_set has exactly one Value node (volume), no early cutoff"
+    );
+}
+
+/// Mixed fan-in: when an unchanged intermediary's dependents ALSO read the
+/// changed param directly, early cutoff must NOT skip them.
+///
+/// Graph:
+///   param a (Int, default 5)
+///   let x = if a > 0 then 1 else 1   (reads a, always produces 1 → Unchanged)
+///   let y = a + x                      (reads BOTH a and x → mixed fan-in)
+///
+/// Cold start: a=5, x=1, y=5+1=6
+/// Edit a → 10: x re-evals to 1 (Unchanged), but y MUST re-eval to 10+1=11.
+/// Bug: y was being added to `skipped` because x is Unchanged, even though
+/// y also reads a directly and a changed.
+#[test]
+fn mixed_fan_in_edit_param_unchanged_upstream_does_not_skip_shared_downstream() {
+    let e = "T";
+
+    // Build conditional: if a > 0 then 1 else 1 (always 1, reads a)
+    let condition = gt(
+        value_ref_typed(e, "a", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let then_branch = literal(Value::Int(1));
+    let else_branch = literal(Value::Int(1));
+    let conditional = CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(condition),
+            then_branch: Box::new(then_branch),
+            else_branch: Box::new(else_branch),
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of_str("if_a_gt_0_then_1_else_1"),
+    };
+
+    // let y = a + x (reads both a and x — diamond/mixed fan-in)
+    let y_expr = binop(
+        BinOp::Add,
+        value_ref_typed(e, "a", Type::Int),
+        value_ref_typed(e, "x", Type::Int),
+    );
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(
+            TopologyTemplateBuilder::new(e)
+                .param(e, "a", Type::Int, Some(literal(Value::Int(5))))
+                .let_binding(e, "x", Type::Int, conditional)
+                .let_binding(e, "y", Type::Int, y_expr)
+                .build(),
+        )
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start: a=5, x=1, y=6
+    let initial = engine.eval(&module);
+    assert_eq!(
+        initial.values.get(&ValueCellId::new(e, "x")),
+        Some(&Value::Int(1)),
+        "x should be 1"
+    );
+    assert_eq!(
+        initial.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Int(6)),
+        "y should be 5 + 1 = 6"
+    );
+
+    // Edit a from 5 to 10
+    let a_id = ValueCellId::new(e, "a");
+    let result = engine.edit_param(a_id, Value::Int(10));
+
+    let eval_set = engine.last_eval_set();
+
+    // x IS in eval set (reads a)
+    assert!(
+        eval_set.contains(&NodeId::Value(ValueCellId::new(e, "x"))),
+        "x should be in eval set (reads a)"
+    );
+
+    // y MUST be in eval set — it reads a directly, and a changed.
+    // The bug was that y was incorrectly added to `skipped` because
+    // x (its other parent) was Unchanged.
+    assert!(
+        eval_set.contains(&NodeId::Value(ValueCellId::new(e, "y"))),
+        "y should be in eval set (reads changed param a directly, \
+         even though x is Unchanged)"
+    );
+
+    // y must have the correct re-evaluated value: 10 + 1 = 11
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Int(11)),
+        "y should be 10 + 1 = 11, NOT stale 6"
     );
 }
