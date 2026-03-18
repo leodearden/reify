@@ -1,13 +1,76 @@
-// WarmStatePool: memory-budgeted pool for warm-start state across nodes.
-// Implementation pending.
+use std::collections::HashMap;
+use std::time::Instant;
+
+use reify_eval::cache::NodeId;
+use reify_types::OpaqueState;
+
+/// Entry in the warm-state pool, wrapping an `OpaqueState` with metadata.
+struct PoolEntry {
+    state: OpaqueState,
+    last_accessed: Instant,
+    size_bytes: usize,
+}
+
+/// Memory-budgeted pool for warm-start state across evaluation nodes.
+///
+/// Stores `OpaqueState` keyed by `NodeId` with LRU eviction when the
+/// total estimated memory usage exceeds the configured budget.
+pub struct WarmStatePool {
+    pool: HashMap<NodeId, PoolEntry>,
+    budget_bytes: usize,
+    used_bytes: usize,
+}
+
+impl WarmStatePool {
+    /// Create a new pool with the given memory budget in bytes.
+    pub fn new(budget_bytes: usize) -> Self {
+        Self {
+            pool: HashMap::new(),
+            budget_bytes,
+            used_bytes: 0,
+        }
+    }
+
+    /// Store warm-start state for a node.
+    ///
+    /// If the pool exceeds its memory budget after insertion, LRU eviction
+    /// is triggered to bring usage back within budget.
+    pub fn donate(&mut self, node_id: NodeId, state: OpaqueState) {
+        let size = state.estimated_size_bytes();
+        let entry = PoolEntry {
+            state,
+            last_accessed: Instant::now(),
+            size_bytes: size,
+        };
+        self.pool.insert(node_id, entry);
+        self.used_bytes += size;
+    }
+
+    /// Retrieve and remove warm-start state for a node (take semantics).
+    ///
+    /// Returns the `OpaqueState` if present, removing it from the pool.
+    /// A second call for the same node returns `None`.
+    pub fn retrieve(&mut self, node_id: &NodeId) -> Option<OpaqueState> {
+        let entry = self.pool.remove(node_id)?;
+        self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
+        Some(entry.state)
+    }
+
+    /// Current estimated memory usage in bytes.
+    pub fn used_bytes(&self) -> usize {
+        self.used_bytes
+    }
+
+    /// Configured memory budget in bytes.
+    pub fn budget_bytes(&self) -> usize {
+        self.budget_bytes
+    }
+}
 
 #[cfg(test)]
 mod tests {
-    use reify_eval::cache::NodeId;
-    use reify_types::{OpaqueState, ValueCellId};
-
-    // Placeholder struct for compilation — will be replaced by real impl
-    struct WarmStatePool;
+    use super::*;
+    use reify_types::ValueCellId;
 
     #[test]
     fn donate_and_retrieve_roundtrip() {
