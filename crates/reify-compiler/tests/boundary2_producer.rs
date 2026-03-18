@@ -445,6 +445,50 @@ structure S {
     assert_eq!(compiled.imports[0].path, "std/math");
 }
 
+/// Import diagnostic: should produce exactly one warning mentioning the import path.
+/// Compilation should still succeed (structures after import compile correctly).
+#[test]
+fn import_produces_warning_diagnostic() {
+    let source = r#"import "fasteners/bolt"
+
+structure S {
+    param w: Scalar = 80mm
+    param h: Scalar = 100mm
+    constraint w > 0mm
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_import_diag"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // Should have exactly one diagnostic (the import warning)
+    assert_eq!(
+        compiled.diagnostics.len(),
+        1,
+        "expected 1 diagnostic, got {:?}",
+        compiled.diagnostics
+    );
+
+    let diag = &compiled.diagnostics[0];
+    assert_eq!(
+        diag.severity,
+        reify_types::Severity::Warning,
+        "import diagnostic should be Warning, not Error"
+    );
+    assert!(
+        diag.message.contains("import") && diag.message.contains("fasteners/bolt"),
+        "diagnostic should mention import and path, got: {}",
+        diag.message
+    );
+
+    // Structure after import should still compile correctly
+    assert_eq!(compiled.templates.len(), 1);
+    let template = &compiled.templates[0];
+    assert_eq!(template.name, "S");
+    assert_eq!(template.value_cells.len(), 2);
+    assert_eq!(template.constraints.len(), 1);
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
