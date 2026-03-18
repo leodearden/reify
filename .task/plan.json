@@ -2,7 +2,7 @@
   "task_id": "28",
   "title": "OCCT warm-start support",
   "modules": ["crates/reify-kernel-occt"],
-  "analysis": "Task 28 requires implementing the WarmStartable trait (from reify-types) for both OcctKernel (raw, !Send+!Sync) and OcctKernelHandle (Send+Sync channel wrapper). The core challenge is that cxx::UniquePtr<OcctShape> is !Send, so TopoDS_Shape instances cannot be placed directly into OpaqueState (which requires Box<dyn Any + Send>). The solution is to serialize shapes to BRep format (OCCT's native ASCII B-Rep representation) via BRepTools::Write/Read on the C++ side. The serialized Strings are Send-safe and can flow through OpaqueState and the WarmStatePool.\n\nThe warm state captures the full kernel state: a HashMap<u64, String> mapping handle IDs to BRep strings, plus the next_id counter. On restore, shapes are deserialized back into TopoDS_Shape on the kernel thread. For OcctKernelHandle, two new channel request variants (WarmState and WithWarmState) forward the trait methods to the dedicated kernel thread, following the existing request/reply pattern.\n\nTKBRep is already linked in build.rs so no build changes are needed — just new #include for BRepTools.hxx and BRep_Builder.hxx in the C++ wrapper. The existing FFI error handling pattern (catch Standard_Failure -> std::runtime_error) applies to the new serialize/deserialize functions.\n\nAll changes are confined to crates/reify-kernel-occt. The WarmStartable trait and OpaqueState are already defined in reify-types and exported. The cache.rs warm_state field and WarmStatePool in reify-runtime are already wired — this task only needs to make OcctKernel/Handle produce and consume warm state.",
+  "analysis": "Task 28 requires implementing the WarmStartable trait (from reify-types) for both OcctKernel (raw, !Send+!Sync) and OcctKernelHandle (Send+Sync channel wrapper). The core challenge is that cxx::UniquePtr<OcctShape> is !Send, so TopoDS_Shape instances cannot be placed directly into OpaqueState (which requires Box<dyn Any + Send>). The solution is to serialize shapes to BRep format (OCCT's native ASCII B-Rep representation) via BRepTools::Write/Read on the C++ side. The serialized Strings are Send-safe and can flow through OpaqueState and the WarmStatePool.\n\nThe warm state captures the full kernel state: a HashMap<u64, String> mapping handle IDs to BRep strings, plus the next_id counter. On restore, shapes are deserialized back into TopoDS_Shape on the kernel thread. For OcctKernelHandle, two new channel request variants (WarmState and WithWarmState) forward the trait methods to the dedicated kernel thread, following the existing request/reply pattern.\n\nTKBRep is already linked in build.rs so no build changes are needed — just new #include for BRepTools.hxx and BRep_Builder.hxx in the C++ wrapper. The existing FFI error handling pattern (catch Standard_Failure -> std::runtime_error) applies to the new serialize/deserialize functions.\n\nAll changes are confined to crates/reify-kernel-occt. The WarmStartable trait and OpaqueState are already defined in reify-types and exported. The cache.rs warm_state field and WarmStatePool in reify-runtime are already wired — this task only needs to make OcctKernel/Handle produce and consume warm state.\n\n**Post-review update:** Reviewer identified that with_warm_state() calls self.shapes.clear() before deserialization, meaning if all BRep deserializations fail (e.g., corrupted warm state data), the kernel is left with an empty shapes map and next_id advanced — irrecoverably destroying pre-existing state. The fix is to deserialize into a staging HashMap first, then swap atomically only if at least one shape was successfully restored.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -159,6 +159,34 @@
       "description": "Verify empty-kernel None case passes through channel correctly. Final cleanup: add doc comments to all new public methods (warm_state, with_warm_state, warm_state_async, with_warm_state_async) and the OcctWarmState struct. Ensure all existing tests still pass.",
       "status": "done",
       "commit": "5518214"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write test in lib.rs: with_warm_state_preserves_state_on_total_deserialization_failure — create a kernel with a box (10x20x30), verify it works (query volume ~6000). Construct a corrupted OcctWarmState manually: OcctWarmState { shapes: HashMap from [(1, \"INVALID_BREP_DATA\".to_string()), (2, \"ALSO_GARBAGE\".to_string())], next_id: 99 }. Wrap in OpaqueState::new(corrupted_warm, 64). Call kernel.with_warm_state(corrupted_state). Assert the kernel's pre-existing state survives: query volume on handle ID 1 (the original box) must still return ~6000. Also verify next_id was NOT advanced to 99 by executing a new sphere and asserting its handle ID is 2 (not 99). This test should FAIL against the current implementation which clears shapes before deserialization.",
+      "status": "done",
+      "commit": "9914804"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Refactor with_warm_state in OcctKernel to use atomic staging: deserialize all BRep entries into a staging HashMap<u64, UniquePtr<OcctShape>> first. If the staging map is empty (all deserializations failed), return early without modifying self.shapes or self.next_id — preserving the kernel's pre-existing state. Only if at least one shape was successfully deserialized, replace self.shapes with the staging map and set self.next_id = warm.next_id. This makes the swap atomic: either the warm state is (at least partially) restored, or the kernel state is untouched.",
+      "status": "done",
+      "commit": "308d6c5"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write test in lib.rs: with_warm_state_partial_deserialization_replaces_state — create a kernel with a box (10x20x30). Construct a partially-corrupted OcctWarmState: serialize a real cylinder (r=5,h=20) to BRep via a helper kernel, then build OcctWarmState { shapes: HashMap from [(1, valid_cylinder_brep), (2, \"CORRUPT\".to_string())], next_id: 10 }. Call kernel.with_warm_state(partially_corrupted). Assert: handle 1 now returns cylinder volume (~1570.8, not box volume), handle 2 query fails (shape was corrupt, not restored), and next_id was updated (new execute returns handle ID 10). This verifies partial restoration proceeds correctly when at least one shape deserializes.",
+      "status": "done",
+      "commit": "ce8079c"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Verify step-23 passes with the staged deserialization from step-22. The partial case should work because the staging map has one valid entry, so the swap proceeds. The corrupt entry is skipped, so handle 2 won't be in the map. Fix any issues if needed.",
+      "status": "done",
+      "commit": "ce8079c"
     }
   ],
   "design_decisions": [
@@ -179,8 +207,8 @@
       "rationale": "The concrete warm state type is an implementation detail hidden behind OpaqueState type erasure. External code interacts only through the WarmStartable trait and OpaqueState. This encapsulates the BRep serialization format, allowing it to change (e.g., to binary) without affecting consumers."
     },
     {
-      "decision": "with_warm_state clears all existing shapes before restoring from warm state",
-      "rationale": "The warm state is a complete kernel snapshot. Merging with existing shapes would create handle ID conflicts and inconsistent state (e.g., a boolean union referencing handles from one set but shapes from another). A full replacement is simpler and correct — the evaluation engine applies warm state to a fresh or reset kernel."
+      "decision": "with_warm_state uses staged deserialization with atomic swap (revised from original clear-first approach)",
+      "rationale": "Original implementation called self.shapes.clear() before deserialization, which irrecoverably destroys pre-existing kernel state if all BRep deserializations fail. The staged approach deserializes into a temporary HashMap first. If the staging map is empty (total failure), the kernel state is preserved untouched. Only when at least one shape deserializes successfully does the swap occur. This prevents data loss from corrupted warm state payloads while maintaining the full-replacement semantics for successful restores."
     },
     {
       "decision": "Implement WarmStartable on both OcctKernel and OcctKernelHandle",
