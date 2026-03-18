@@ -13,12 +13,14 @@ fn main() -> ExitCode {
         eprintln!("Commands:");
         eprintln!("  check <file>              Check constraints");
         eprintln!("  build <file> -o <output>   Build geometry and export");
+        eprintln!("  lsp                        Start language server (stdin/stdout)");
         return ExitCode::FAILURE;
     }
 
     match args[1].as_str() {
         "check" => cmd_check(&args[2..]),
         "build" => cmd_build(&args[2..]),
+        "lsp" => cmd_lsp(),
         other => {
             eprintln!("Unknown command: {}", other);
             ExitCode::FAILURE
@@ -166,4 +168,10 @@ fn cmd_build(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn cmd_lsp() -> ExitCode {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    rt.block_on(reify_lsp::run_server());
+    ExitCode::SUCCESS
 }

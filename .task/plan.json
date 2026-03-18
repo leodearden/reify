@@ -1,14 +1,28 @@
 {
-  "task_id": "35",
-  "title": "Reproduce and fix mixed fan-in early-cutoff invalidation",
-  "modules": ["crates/reify-eval", "crates/reify-runtime"],
-  "analysis": "## Bug Analysis\n\nThe incremental evaluation engine has two code paths for early cutoff that propagate 'unchanged' signals incorrectly in mixed fan-in graphs.\n\n### Root Cause\n\nIn `edit_param` (lib.rs:855-863), when a Value node evaluates to `Unchanged`, ALL its dependents are unconditionally added to the `skipped` set via `reverse_index.dependents_of(vcid)`. The same pattern exists in `ConcurrentEvalAdapter::evaluate` (concurrent_eval.rs:202-210). This is incorrect when a dependent reads BOTH an unchanged intermediary AND a changed param directly (mixed fan-in).\n\nExample: param `a`, let `x = if a > 0 then 1 else 1` (reads a, always produces 1), let `y = a + x` (reads both a and x). When `a` changes from 5 to 10: x is dirty, re-evaluates, produces same value → Unchanged. y is added to `skipped` because x is Unchanged. But y also reads `a` directly, and `a` changed! y should re-evaluate to 10 + 1 = 11 but incorrectly returns the stale cached value of 6.\n\n### Why eval_cached Is Correct (But edit_param Is Not)\n\nThe `eval_cached` path uses `clear_dependents_dirty(&cell.id)` which tracks per-reason dirty state. It only removes the specific unchanged cell as a dirty reason, and a node becomes clean only when ALL its reasons are resolved. The diamond_dependency_early_cutoff_correctness test in cache.rs confirms this works for eval_cached. But no equivalent test exists for `edit_param`.\n\n### Fix Strategy\n\nTrack which eval-set nodes have at least one Changed parent via a `has_changed_parent: HashSet<NodeId>`. Seed it with all dependents of the originally changed param (since the param's value was explicitly overwritten — it IS a change). When a node evaluates to Changed, add its dependents to has_changed_parent and remove from skipped. When Unchanged, only add dependents to skipped if they're NOT in has_changed_parent.\n\nFor the concurrent path, use a combined `Mutex<SkipState>` to avoid TOCTOU races between concurrent tasks at the same topological level that could otherwise interleave the has_changed_parent check and skipped insert.\n\n### Correctness Argument\n\nThe fix is correct regardless of evaluation order among same-level nodes:\n- If Changed parent processed first: dependent added to has_changed_parent, later Unchanged parent sees it there and does NOT add to skipped.\n- If Unchanged parent processed first: dependent added to skipped, but later Changed parent removes it from skipped and adds to has_changed_parent.\n- If ALL parents Unchanged: dependent stays in skipped (correct — no input changed).\n- Seeding with changed-param dependents ensures direct readers are never incorrectly skipped even if only eval-set parents are Unchanged.",
+  "task_id": "32",
+  "title": "LSP server — core infrastructure",
+  "modules": ["crates/reify-lsp", "crates/reify-cli", "Cargo.toml"],
+  "analysis": "The reify-lsp crate is currently a stub containing only a comment. Task 32 requires building core LSP infrastructure: initialization, document sync (didOpen/didChange/didClose), and diagnostics publishing. The architecture doc (section 3.9) mandates tower-lsp. The existing pipeline is: source → reify_syntax::parse() → reify_compiler::compile() → reify_eval::Engine::check(). Diagnostics come from three layers: ParseError (with SourceSpan), compiler Diagnostic (with DiagnosticLabel/SourceSpan), and eval CheckResult diagnostics. All use byte-offset SourceSpan which must be converted to LSP line/column Positions. The Engine is not Send (holds Box<dyn ConstraintChecker> etc.), so it must be managed behind a tokio Mutex or on a dedicated task. For initial LSP, we only need check (no geometry kernel), so Engine::new(checker, None) suffices. The CLI already has check/build commands and needs a new 'lsp' subcommand that starts the server on stdio. Key integration points: reify-test-support provides bracket_source(), MockConstraintChecker for testing the pipeline without real geometry.\n\nPOST-REVIEW UPDATE: Reviewer identified a blocking panic in offset_to_position when byte offsets land mid-character in multi-byte UTF-8 sequences. Tree-sitter error-recovery spans routinely produce such offsets. Steps 21-22 added to fix this with TDD.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Verify existing test suite passes before making changes (cargo test in reify-eval and reify-runtime)",
+      "description": "Add tower-lsp and serde_json workspace dependencies to root Cargo.toml. Add tower-lsp = { version = \"0.20\", features = [\"proposed\"] } and serde_json = \"1\" to [workspace.dependencies].",
       "status": "done",
-      "commit": "b505b94",
+      "commit": "a4276b7",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Update crates/reify-lsp/Cargo.toml: add dependencies on reify-types, reify-syntax, reify-compiler, reify-eval, reify-constraints (for SimpleConstraintChecker), tower-lsp, tokio, serde_json. Add [dev-dependencies] on reify-test-support.",
+      "status": "done",
+      "commit": "f668949",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Update crates/reify-cli/Cargo.toml: add dependencies on reify-lsp and tokio (for async main in lsp subcommand).",
+      "status": "done",
+      "commit": "3a0ccb1",
       "tests": []
     }
   ],
@@ -16,113 +30,242 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `mixed_fan_in_edit_param_unchanged_upstream_does_not_skip_shared_downstream` in crates/reify-eval/tests/incremental.rs. Graph: param a, let x = if a>0 then 1 else 1 (reads a, always 1), let y = a + x (reads a AND x). Cold start a=5 → x=1, y=6. Edit a to 10 → x still 1 (Unchanged), but y should re-evaluate to 10+1=11. Assert y IS in eval_set and y == 11.",
+      "description": "Write failing tests for byte-offset SourceSpan → LSP Position conversion. Test cases: (1) offset 0 in empty string → Position(0,0), (2) offset within first line → correct column, (3) offset on second line → line 1 with correct column, (4) offset at newline character, (5) multi-line source with bracket_source() fixture verifying known span positions. Place tests in crates/reify-lsp/src/convert.rs as #[cfg(test)] mod tests.",
       "status": "done",
-      "commit": null
+      "commit": "91dbd88"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix edit_param early-cutoff in crates/reify-eval/src/lib.rs. Add `has_changed_parent: HashSet<NodeId>` seeded with `reverse_index.dependents_of(&cell)` (the changed param's direct dependents). In the eval loop: on Unchanged, only add dependents to skipped if NOT in has_changed_parent; on Changed, add dependents to has_changed_parent AND remove from skipped.",
+      "description": "Implement convert module: fn offset_to_position(source: &str, offset: u32) -> lsp_types::Position and fn span_to_range(source: &str, span: SourceSpan) -> lsp_types::Range. Iterate source bytes counting newlines to derive line/character. Handle UTF-16 offset encoding per LSP spec (tower-lsp default).",
       "status": "done",
-      "commit": "ddb7e27"
+      "commit": "8d0480f"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test `mixed_fan_in_concurrent_unchanged_upstream_does_not_skip_shared_downstream` in crates/reify-runtime/tests/concurrent_eval.rs. Same diamond topology as step-1 but via edit_param_concurrent. Assert y is in actual_eval_set and y == 11.",
+      "description": "Write failing tests for Reify Diagnostic → LSP Diagnostic conversion. Test cases: (1) Severity::Error → DiagnosticSeverity::ERROR, (2) Severity::Warning → WARNING, (3) Severity::Info → INFORMATION, (4) Diagnostic with no labels → range at (0,0), (5) Diagnostic with one label → range from label's span, (6) Diagnostic with multiple labels → primary span from first label, related info from rest. Use a sample source string for position resolution.",
       "status": "done",
-      "commit": "454bbeb"
+      "commit": "ceaa1f4"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix ConcurrentEvalAdapter in crates/reify-runtime/src/concurrent_eval.rs. Replace `skipped: Arc<RwLock<HashSet<NodeId>>>` with `skip_state: Arc<Mutex<SkipState>>` where `SkipState { skipped: HashSet<NodeId>, has_changed_parent: HashSet<NodeId> }`. In from_setup(), seed has_changed_parent from setup.changed_cells + setup.reverse_index. In evaluate(), acquire Mutex for atomic skip logic: Unchanged → add to skipped only if not in has_changed_parent; Changed → add to has_changed_parent + remove from skipped. Update is_dirty(), skipped(), build_result_shared(), and into_result() to use skip_state.",
+      "description": "Implement fn convert_diagnostic(diag: &reify_types::Diagnostic, source: &str, uri: &lsp_types::Url) -> lsp_types::Diagnostic. Maps severity, extracts range from first label span, converts remaining labels to DiagnosticRelatedInformation. Also implement fn convert_parse_error(err: &ParseError, source: &str, uri: &Url) -> lsp_types::Diagnostic for parse errors.",
       "status": "done",
-      "commit": "fd478a0"
+      "commit": "cfa5b4c"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `triple_fan_in_mixed_changed_unchanged_edit_param` in crates/reify-eval/tests/incremental.rs. Graph: param a, let x = if a>0 then 1 else 1 (unchanged), let z = if a>0 then 2 else 2 (unchanged), let y = a + x + z (reads a, x, z). Edit a from 5 to 10 → x=1, z=2 (both Unchanged), but y must re-evaluate to 10+1+2=13. Verify y IS in eval_set.",
+      "description": "Write failing tests for DocumentStore: (1) open_document stores text and URI, (2) get_document returns text after open, (3) update_document replaces text (full sync), (4) close_document removes entry, (5) get_document returns None after close, (6) open two documents independently. Place in crates/reify-lsp/src/document.rs.",
       "status": "done",
-      "commit": "671f2d9"
+      "commit": "7642fe6"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write test `freshness_all_final_after_mixed_fan_in_edit_param` in crates/reify-eval/tests/incremental.rs. Same diamond graph as step-1. After edit_param, assert ALL nodes (a, x, y) have Freshness::Final — no node left in Pending state.",
+      "type": "impl",
+      "description": "Implement DocumentStore struct with HashMap<Url, DocumentState>. DocumentState holds { text: String, version: i32 }. Methods: open(uri, text, version), update(uri, text, version), close(uri), get(uri) -> Option<&DocumentState>. Pure data structure, no async.",
       "status": "done",
-      "commit": "d366e0b"
+      "commit": "8b6e43a"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `linear_chain_early_cutoff_still_skips_after_fix` in crates/reify-eval/tests/incremental.rs. Regression guard: linear chain a → x = a-a → y = x+1. Edit a → x Unchanged → y correctly skipped. Confirms the fix didn't break the valid early-cutoff case. (Should pass immediately after step-2 fix.)",
+      "description": "Write failing tests for the diagnostics pipeline function. Test cases: (1) valid bracket source → no error-severity diagnostics, (2) source with syntax error (e.g., 'structure {') → at least one parse error diagnostic, (3) source with unknown identifier → unresolved name diagnostic, (4) empty source → no crash, returns empty diagnostics. Use MockConstraintChecker from reify-test-support.",
       "status": "done",
-      "commit": "379319e"
+      "commit": "5180315"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Write test `concurrent_triple_fan_in_mixed_early_cutoff` in crates/reify-runtime/tests/concurrent_eval.rs. Same triple fan-in as step-5 but via concurrent path. Verify y is in actual_eval_set and y == 13. Regression guard for concurrent early-cutoff fix.",
+      "type": "impl",
+      "description": "Implement fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic>. Internally: parse source with reify_syntax::parse, compile with reify_compiler::compile, run engine.check() with SimpleConstraintChecker, collect all parse errors + compiler diagnostics + eval diagnostics, convert each via convert module. Return collected LSP diagnostics.",
       "status": "done",
-      "commit": "aa9bcef"
+      "commit": "cbf77ab"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing test for LSP server initialization. Create a ReifyLanguageServer, call initialize() with an InitializeParams, verify the returned InitializeResult includes: TextDocumentSyncKind::FULL in capabilities, diagnostic provider capability is set. Use tower-lsp test utilities or direct struct construction.",
+      "status": "done",
+      "commit": "98d108b"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Implement ReifyLanguageServer struct holding Arc<tokio::sync::RwLock<ServerState>> where ServerState contains DocumentStore. Implement LanguageServer trait initialize() returning ServerCapabilities with text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)) and diagnostic_provider. Also implement initialized() and shutdown().",
+      "status": "done",
+      "commit": "dba6854"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test for did_open handler: opening a document with valid bracket source triggers publish_diagnostics with the document URI and a diagnostics list. Use a mock/spy client or verify DocumentStore state after did_open. Verify parse-compile-check pipeline ran and diagnostics were computed.",
+      "status": "done",
+      "commit": "ffa667c"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Implement LanguageServer::did_open(): extract URI and text from DidOpenTextDocumentParams, store in DocumentStore, spawn compute_diagnostics on a tokio task, publish results via self.client.publish_diagnostics(uri, diagnostics, version).",
+      "status": "done",
+      "commit": "06667ad"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test for did_change handler: after opening a document, changing its content triggers a new diagnostics computation. Change from valid source to source with an error and verify new diagnostics are published. Also test that DocumentStore reflects the updated text.",
+      "status": "done",
+      "commit": "062e18b"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Implement LanguageServer::did_change(): extract URI and new text from DidChangeTextDocumentParams (full sync — take last content change), update DocumentStore, recompute and publish diagnostics.",
+      "status": "done",
+      "commit": "6569dc0"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test for did_close handler: after closing a document, DocumentStore no longer has the entry. Verify that publish_diagnostics is called with empty diagnostics list to clear editor squiggles.",
+      "status": "done",
+      "commit": "c286109"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement LanguageServer::did_close(): remove document from DocumentStore, publish empty diagnostics to clear the editor's diagnostic display for the closed file.",
+      "status": "done",
+      "commit": "6e95114"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing test for CLI 'reify lsp' subcommand: verify that the main() function recognizes 'lsp' as a valid command (does not return 'Unknown command'). This can be tested by checking the match arm exists. Also verify the help text includes the lsp command.",
+      "status": "done",
+      "commit": "db8b712"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Add 'lsp' command to reify-cli main.rs: match 'lsp' arm that calls reify_lsp::run_server() (or similar). Implement pub async fn run_server() in reify-lsp/src/lib.rs that creates the ReifyLanguageServer, builds the tower-lsp Service, and serves over stdin/stdout via Server::new(stdin, stdout, socket).serve(service). The CLI wraps this in a tokio::runtime::Runtime::new().block_on() call.",
+      "status": "done",
+      "commit": "aa94315"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write integration test in crates/reify-lsp/tests/ that exercises the full LSP lifecycle: initialize → did_open with bracket source → verify diagnostics → did_change with broken source → verify error diagnostics → did_close. Use tower-lsp's test client or simulate JSON-RPC messages.",
+      "status": "done",
+      "commit": "d5f6e21"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Fix any issues found in integration testing. Wire up the public API in lib.rs: pub mod convert, pub mod document, pub mod server. Export run_server as the main entry point. Ensure cargo test passes for all crates, cargo clippy is clean.",
+      "status": "done",
+      "commit": "b28eacd"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing tests for UTF-8 boundary safety in offset_to_position (review fix: panic_on_invalid_utf8_slice). In crates/reify-lsp/src/convert.rs #[cfg(test)] mod tests, add: (1) offset_mid_multibyte_2byte: source contains a 2-byte char (e.g., \"a\\u{00E9}b\" = \"aéb\"), pass offset pointing to the continuation byte (byte index 2, which is 0x80..0xBF) — must not panic, should snap forward to the next char boundary and return a valid Position. (2) offset_mid_multibyte_3byte: source \"a\\u{4E16}b\" (\"a世b\"), offset at byte 2 and byte 3 (middle of the 3-byte 世) — must not panic. (3) offset_mid_multibyte_4byte: source with a 4-byte emoji \"a\\u{1F600}b\" (\"a😀b\"), offsets at bytes 2, 3, 4 — must not panic. (4) offset_at_exact_char_boundary: source \"aéb\", offset at byte 0, 1, 3, 4 (all valid boundaries) — returns correct positions, confirming no regression. (5) offset_mid_char_in_second_line: source \"x\\n\\u{00E9}y\", offset pointing mid-é on line 2 — must not panic, line number must be 1. (6) span_to_range_mid_multibyte: a SourceSpan where start or end lands mid-character — must not panic, range should be valid. These tests should panic/fail against the current implementation, proving the bug exists.",
+      "status": "done",
+      "commit": "ff58677"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Fix offset_to_position in crates/reify-lsp/src/convert.rs to handle byte offsets that land mid-character in multi-byte UTF-8 sequences. After computing `clamped = offset.min(bytes.len())`, snap `clamped` forward to the next valid UTF-8 character boundary: `while clamped < bytes.len() && !source.is_char_boundary(clamped) { clamped += 1; }`. Apply the same snapping to `line_start` for defensive safety (though `line_start` is always after a `\\n` byte, which is a valid boundary). The line_slice `&source[line_start..clamped]` is now guaranteed to be valid UTF-8. Also snap `line_start` forward if it somehow lands mid-char (defensive). This ensures Tree-sitter error-recovery spans pointing to mid-character byte positions never crash the LSP server. All step-21 tests must pass, and all existing tests must continue to pass with no regressions.",
+      "status": "done",
+      "commit": "42e543c"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use has_changed_parent set seeded from changed param's dependents rather than per-node dirty-reason tracking",
-      "rationale": "The eval_cached path already uses per-reason dirty tracking (invalidate_dependents + clear_dependents_dirty). Porting that approach to edit_param would require significant restructuring. The has_changed_parent approach achieves the same correctness with minimal code change: seed with reverse_index.dependents_of(changed_cell), then propagate Changed signals forward through the eval loop. This is O(E) where E = edges in eval subgraph."
+      "decision": "Use full document sync (TextDocumentSyncKind::FULL) instead of incremental",
+      "rationale": "Simpler to implement and correct. Incremental sync requires tracking edits and applying patches to stored text. Full sync means we always have the complete source text. Performance is fine for typical .ri files (small files). Can upgrade to incremental sync later if needed."
     },
     {
-      "decision": "Use Mutex<SkipState> instead of two separate RwLocks for concurrent path",
-      "rationale": "Two concurrent tasks at the same topological level could race: task X (Unchanged) reads has_changed_parent (Y absent), then task A (Changed) writes has_changed_parent (Y present) + removes Y from skipped, then task X writes Y to skipped. Result: Y incorrectly skipped. A single Mutex wrapping both HashSets makes the check-and-modify atomic. The lock is held only for HashSet operations (microseconds), so contention is negligible."
+      "decision": "Run diagnostics computation synchronously within the LSP handler (no background debounce)",
+      "rationale": "The parse → compile → check pipeline is fast for single-file .ri files (sub-millisecond for small files). A debounce mechanism adds complexity. We can add debouncing in task 33 or a follow-up if latency becomes an issue."
     },
     {
-      "decision": "Seed has_changed_parent from the original changed param, not just from eval-set parents",
-      "rationale": "The changed param is NOT in the eval_set (it's the edit target, not a downstream node). But dependents that read it directly have a genuine 'changed input'. Without seeding, a dependent reading both the changed param and an Unchanged intermediary would be incorrectly skipped because its only eval-set parent (the intermediary) was Unchanged. Seeding ensures direct readers are never skipped."
+      "decision": "Use Engine::check() without geometry kernel for LSP diagnostics",
+      "rationale": "LSP diagnostics only need parse errors, compile diagnostics, and constraint satisfaction status. Geometry realization is expensive and not needed for editor feedback. Engine::new(checker, None) skips geometry entirely."
     },
     {
-      "decision": "Changed nodes propagate to has_changed_parent (not just the seed)",
-      "rationale": "For multi-hop chains like a → b → c → d where b changes, c and d should not be skipped. When b evaluates to Changed, c is added to has_changed_parent. When c evaluates (possibly to Changed), d is added. This propagation handles arbitrarily deep graphs correctly."
+      "decision": "Create a fresh Engine per diagnostics computation rather than maintaining a persistent one",
+      "rationale": "Simplifies state management — no need to worry about Engine state accumulating across edits. The Engine's incremental evaluation (edit_param) is designed for parameter tweaks within a stable topology. Source text changes require full re-parse/compile anyway, invalidating the entire eval graph. Persistent Engine with incremental re-eval can be added in a future task."
+    },
+    {
+      "decision": "ServerState behind Arc<tokio::sync::RwLock<>> for interior mutability",
+      "rationale": "tower-lsp requires the LanguageServer to be Send + Sync. RwLock allows concurrent reads (e.g., multiple hover requests) and exclusive writes (document updates). tokio::sync::RwLock is used over std because tower-lsp handlers are async."
+    },
+    {
+      "decision": "Place conversion utilities in a separate convert module",
+      "rationale": "Byte-offset → Position conversion and Diagnostic conversion are pure functions with no dependencies on server state. Separating them enables thorough unit testing without needing LSP server infrastructure."
+    },
+    {
+      "decision": "CLI uses synchronous tokio Runtime::new().block_on() for lsp subcommand",
+      "rationale": "The existing CLI main() is synchronous. Rather than converting the entire CLI to async, only the lsp subcommand needs async. block_on() bridges sync → async cleanly. The other commands (check, build) remain synchronous."
+    },
+    {
+      "decision": "Snap mid-character byte offsets forward to next char boundary (not backward)",
+      "rationale": "When a byte offset falls inside a continuation bytes of a multi-byte UTF-8 sequence, we snap forward to the next character boundary rather than backward. Forward-snapping is simpler (just advance while !is_char_boundary) and avoids the risk of snapping backward past a newline, which would corrupt line counting. Using str::is_char_boundary() is the idiomatic Rust approach and handles all UTF-8 sequence lengths (2/3/4 byte) uniformly. This matches the reviewer's suggestion of advancing past continuation bytes (bytes matching 0x80..0xBF pattern)."
     }
   ],
   "reuse": [
     {
-      "what": "TopologyTemplateBuilder + CompiledModuleBuilder from reify-test-support",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Construct diamond/fan-in test graphs with .param(), .let_binding(), expression builders (binop, value_ref_typed, literal, gt, conditional)"
+      "what": "reify_syntax::parse()",
+      "where": "crates/reify-syntax/src/lib.rs",
+      "how": "Call parse(source, ModulePath::single(name)) to get ParsedModule with errors and declarations from source text. Same API used by CLI."
     },
     {
-      "what": "MockConstraintChecker from reify-test-support",
+      "what": "reify_compiler::compile()",
+      "where": "crates/reify-compiler/src/lib.rs",
+      "how": "Call compile(&parsed_module) to get CompiledModule with diagnostics. Same API used by CLI."
+    },
+    {
+      "what": "reify_eval::Engine::check()",
+      "where": "crates/reify-eval/src/lib.rs",
+      "how": "Create Engine::new(checker, None), call check(&compiled) to get CheckResult with values, constraint_results, and diagnostics. Same pattern as CLI cmd_check."
+    },
+    {
+      "what": "reify_constraints::SimpleConstraintChecker",
+      "where": "crates/reify-constraints/",
+      "how": "Use as the ConstraintChecker implementation for the LSP engine, same as CLI."
+    },
+    {
+      "what": "reify_types::Diagnostic, SourceSpan, Severity",
+      "where": "crates/reify-types/src/diagnostics.rs",
+      "how": "These are the internal diagnostic types that the convert module translates to lsp_types::Diagnostic. SourceSpan byte offsets are converted to LSP line/column positions."
+    },
+    {
+      "what": "reify_syntax::ParseError",
+      "where": "crates/reify-syntax/src/lib.rs",
+      "how": "ParsedModule.errors contains parse errors with SourceSpan. Convert these to LSP diagnostics alongside compiler diagnostics."
+    },
+    {
+      "what": "bracket_source() fixture",
+      "where": "crates/reify-test-support/src/fixtures.rs",
+      "how": "Use in LSP tests as a known-good .ri source to verify the diagnostics pipeline produces no errors for valid code."
+    },
+    {
+      "what": "MockConstraintChecker",
       "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "No-op constraint checker for Engine construction in tests"
+      "how": "Use in unit tests for the diagnostics pipeline to avoid depending on SimpleConstraintChecker behavior."
     },
     {
-      "what": "Existing conditional expression pattern from diamond_dependency_early_cutoff_correctness",
-      "where": "crates/reify-eval/src/cache.rs:1216-1231",
-      "how": "Reuse the `if a > 0 then 1 else 1` pattern (CompiledExprKind::Conditional with both branches returning same literal) as the 'always unchanged' expression for test nodes"
+      "what": "CLI parse_and_compile pattern",
+      "where": "crates/reify-cli/src/main.rs lines 29-58",
+      "how": "The LSP diagnostics pipeline follows the same parse → compile → engine pattern. Reuse the same sequencing: parse source, forward parse errors, compile, collect diagnostics."
     },
     {
-      "what": "ConcurrentEditSetup.changed_cells field",
-      "where": "crates/reify-eval/src/lib.rs:132",
-      "how": "Already contains the changed ValueCellIds — use to seed has_changed_parent in ConcurrentEvalAdapter::from_setup()"
-    },
-    {
-      "what": "edit_param_concurrent helper function",
-      "where": "crates/reify-runtime/src/concurrent_eval.rs:239",
-      "how": "Reuse in concurrent tests — handles prepare/execute/apply lifecycle"
-    },
-    {
-      "what": "CancellationToken::new() for concurrent test setup",
-      "where": "crates/reify-runtime/src/concurrent.rs",
-      "how": "Create non-cancelled token for normal concurrent test execution"
-    },
-    {
-      "what": "ReverseDependencyIndex.dependents_of()",
-      "where": "crates/reify-eval/src/deps.rs:87",
-      "how": "Use in the fix to seed has_changed_parent from the changed param's direct dependents"
+      "what": "str::is_char_boundary()",
+      "where": "Rust std library",
+      "how": "Use in the UTF-8 boundary fix to test whether a byte index is a valid character boundary. More idiomatic and robust than manually checking continuation byte patterns (0x80..0xBF)."
     }
   ]
 }
