@@ -181,3 +181,82 @@ fn apply_concurrent_edit_updates_engine_state() {
         .collect();
     assert_eq!(new_events.len(), 2, "should have Started+Completed for volume");
 }
+
+/// step-19: Engine::rollback_concurrent_edit() restores all eval_set nodes
+/// from Pending back to Final and rolls back version/snapshot IDs.
+#[test]
+fn rollback_concurrent_edit_restores_pending_to_final() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start eval to establish baseline
+    let _initial = engine.eval(&module);
+
+    let e = "Bracket";
+    let width_id = ValueCellId::new(e, "width");
+    let volume_node = NodeId::Value(ValueCellId::new(e, "volume"));
+    let c1_node = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+
+    // Record pre-prepare state for verification after rollback
+    let _pre_snapshot_id = engine.snapshot().unwrap().id;
+    let _pre_version = engine.snapshot().unwrap().version;
+    let pre_volume_hash = engine.cache_store().get(&volume_node).unwrap().result_hash;
+
+    // Prepare concurrent edit — marks eval_set nodes as Pending
+    let setup = engine.prepare_concurrent_edit(width_id.clone(), Value::length(0.1));
+
+    // Verify nodes are in Pending state after prepare
+    let volume_entry = engine.cache_store().get(&volume_node).unwrap();
+    assert!(
+        matches!(volume_entry.freshness, Freshness::Pending { .. }),
+        "volume should be Pending after prepare, got: {:?}", volume_entry.freshness
+    );
+
+    // Rollback the concurrent edit
+    engine.rollback_concurrent_edit(&setup);
+
+    // (1) All nodes in eval_set should have freshness=Final (not Pending)
+    let volume_entry = engine.cache_store().get(&volume_node).unwrap();
+    assert_eq!(
+        volume_entry.freshness, Freshness::Final,
+        "volume should be Final after rollback"
+    );
+    // C1 may not have a cache entry (constraint nodes might not be cached),
+    // but if it does, it should be Final
+    if let Some(c1_entry) = engine.cache_store().get(&c1_node) {
+        assert_eq!(
+            c1_entry.freshness, Freshness::Final,
+            "C1 should be Final after rollback"
+        );
+    }
+
+    // (2) Cache entries should still contain original result_hash values
+    let volume_entry = engine.cache_store().get(&volume_node).unwrap();
+    assert_eq!(
+        volume_entry.result_hash, pre_volume_hash,
+        "volume result_hash should be preserved after rollback"
+    );
+
+    // (3) Version and snapshot IDs should be rolled back to pre-prepare values
+    // The next_snapshot_id and next_version_id should be decremented so next
+    // prepare/edit uses the same IDs (no gaps).
+    // We can verify this indirectly: calling edit_param should produce the
+    // same version/snapshot IDs that the failed prepare would have used.
+    let seq_result = engine.edit_param(width_id.clone(), Value::length(0.1));
+
+    // The snapshot after edit_param should have the same IDs as the setup had
+    let post_snapshot = engine.snapshot().unwrap();
+    assert_eq!(
+        post_snapshot.id, setup.snapshot_id,
+        "snapshot ID should be reused after rollback"
+    );
+    assert_eq!(
+        post_snapshot.version, setup.version,
+        "version ID should be reused after rollback"
+    );
+
+    // (4) Subsequent edit_param produces correct values (engine not corrupted)
+    let volume_val = seq_result.values.get(&ValueCellId::new(e, "volume"));
+    assert!(volume_val.is_some(), "volume should have a value after sequential edit");
+}

@@ -289,6 +289,29 @@ impl Engine {
         }
     }
 
+    /// Roll back the Engine state after a failed concurrent evaluation.
+    ///
+    /// Restores all eval_set nodes from Pending back to Final and decrements
+    /// the snapshot/version ID counters to avoid gaps in numbering. This
+    /// returns the engine to a consistent state as if prepare_concurrent_edit()
+    /// was never called.
+    ///
+    /// Called on the error path when ConcurrentScheduler::execute() returns Err
+    /// (e.g. TaskPanicked), to prevent nodes from being permanently stuck in
+    /// Pending state.
+    pub fn rollback_concurrent_edit(&mut self, setup: &ConcurrentEditSetup) {
+        // Restore all eval_set nodes from Pending → Final
+        for node_id in &setup.eval_set {
+            self.cache.restore_final(node_id);
+        }
+
+        // Roll back the snapshot/version ID bumps done in prepare_concurrent_edit.
+        // Safe because no external observer has seen these IDs yet — they only
+        // exist in the ConcurrentEditSetup which is being discarded.
+        self.next_snapshot_id = setup.snapshot_id.0;
+        self.next_version_id = setup.version.0;
+    }
+
     /// Apply the results of concurrent evaluation back to the Engine.
     ///
     /// Updates cache entries, journal, snapshot, and last_eval_set from the
