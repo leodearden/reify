@@ -75,6 +75,32 @@ impl ConcurrentEvalAdapter {
         self.skipped.read().unwrap().clone()
     }
 
+    /// Build a `ConcurrentEditResult` via shared references (cloning).
+    ///
+    /// Used as a fallback when `Arc::try_unwrap` fails because outstanding
+    /// references still exist. Slightly less efficient than `into_result`
+    /// since it clones each inner container through locks.
+    pub fn build_result_shared(&self, eval_set: &[NodeId]) -> ConcurrentEditResult {
+        let values = self.values.read().unwrap().clone();
+        let snapshot_values = self.snapshot_values.read().unwrap().clone();
+        let node_results = self.results.lock().unwrap().clone();
+        let skipped = self.skipped.read().unwrap().clone();
+
+        let actual_eval_set: Vec<NodeId> = eval_set
+            .iter()
+            .filter(|n| !skipped.contains(n))
+            .cloned()
+            .collect();
+
+        ConcurrentEditResult {
+            values,
+            snapshot_values,
+            node_results,
+            actual_eval_set,
+            skipped,
+        }
+    }
+
     /// Consume the adapter and produce a `ConcurrentEditResult`.
     ///
     /// Extracts the final values, snapshot_values, results, and skipped set.
@@ -230,12 +256,12 @@ pub async fn edit_param_concurrent(
     {
         Ok(_changed) => {
             // Extract result from adapter. After scheduler completes, the only
-            // remaining Arc reference should be ours.
-            let adapter = match Arc::try_unwrap(adapter_arc) {
-                Ok(a) => a,
-                Err(_) => panic!("scheduler should have released all Arc references"),
+            // remaining Arc reference should be ours — but if a spawned task
+            // retained a clone, fall back to building the result via shared access.
+            let result = match Arc::try_unwrap(adapter_arc) {
+                Ok(adapter) => adapter.into_result(&eval_set),
+                Err(arc) => arc.build_result_shared(&eval_set),
             };
-            let result = adapter.into_result(&eval_set);
             Ok((setup, result))
         }
         Err(e) => {
