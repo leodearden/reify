@@ -1721,3 +1721,79 @@ fn forward_let_ref_cold_start_diamond() {
     assert_eq!(*c_val, Value::Int(12), "c = a + 2 = 10 + 2 = 12");
     assert_eq!(*d_val, Value::Int(23), "d = b + c = 11 + 12 = 23");
 }
+
+/// Post-resolution re-evaluation must handle forward let-binding references.
+///
+/// Template: param p (default mm(1.0), length), auto x (length)
+///   let c = b + x  (declared 1st — forward ref to b)
+///   let b = x + p  (declared 2nd)
+///   constraint: x > p
+///
+/// Solver resolves x = mm(10.0) = 0.01 SI.
+/// After resolution: b = x + p = 0.01 + 0.001 = 0.011 SI
+///                   c = b + x = 0.011 + 0.01 = 0.021 SI
+///
+/// Without topological sorting in the post-resolution re-eval, c evaluates
+/// before b is re-evaluated with the resolved x, producing a stale result.
+#[test]
+fn forward_let_ref_post_resolution() {
+    use reify_types::SolveResult;
+
+    let p_id = ValueCellId::new("S", "p");
+    let x_id = ValueCellId::new("S", "x");
+    let b_id = ValueCellId::new("S", "b");
+    let c_id = ValueCellId::new("S", "c");
+
+    // c = b + x (forward ref to b)
+    let c_expr = binop(BinOp::Add, value_ref("S", "b"), value_ref("S", "x"));
+    // b = x + p
+    let b_expr = binop(BinOp::Add, value_ref("S", "x"), value_ref("S", "p"));
+    // constraint: x > p
+    let constraint_expr = gt(value_ref("S", "x"), value_ref("S", "p"));
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(x_id.clone(), mm(10.0));
+
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "p", Type::length(), Some(literal(mm(1.0))))
+        .auto_param("S", "x", Type::length())
+        .let_binding("S", "c", Type::length(), c_expr)  // c declared first (forward ref to b)
+        .let_binding("S", "b", Type::length(), b_expr)  // b declared second
+        .constraint("S", 0, None, constraint_expr)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    // x resolved to mm(10.0) = 0.01 SI
+    let x_val = result.values.get(&x_id).expect("x should be in values");
+    assert!(
+        matches!(x_val, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-10),
+        "expected x = mm(10.0) = 0.01 SI, got {:?}",
+        x_val
+    );
+
+    // b = x + p = 0.01 + 0.001 = 0.011 SI
+    let b_val = result.values.get(&b_id).expect("b should be in values");
+    assert!(
+        matches!(b_val, Value::Scalar { si_value, .. } if (*si_value - 0.011).abs() < 1e-10),
+        "expected b = x + p = 0.011 SI, got {:?}",
+        b_val
+    );
+
+    // c = b + x = 0.011 + 0.01 = 0.021 SI
+    let c_val = result.values.get(&c_id).expect("c should be in values");
+    assert!(
+        matches!(c_val, Value::Scalar { si_value, .. } if (*si_value - 0.021).abs() < 1e-10),
+        "expected c = b + x = 0.021 SI, got {:?}",
+        c_val
+    );
+}
