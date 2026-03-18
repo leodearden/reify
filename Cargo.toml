@@ -40,7 +40,7 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 im = "15"
 
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-std", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 
 tower-lsp = { version = "0.20", features = ["proposed"] }
