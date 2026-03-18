@@ -6,8 +6,6 @@ pub mod graph;
 pub mod journal;
 pub mod snapshot;
 
-pub use journal::*;
-
 use std::collections::HashMap;
 use std::time::Instant;
 
