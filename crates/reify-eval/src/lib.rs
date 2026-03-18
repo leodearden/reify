@@ -1232,25 +1232,30 @@ impl Engine {
         let snapshot = self.current_snapshot.as_ref()
             .expect("check_constraints_with_values requires a snapshot");
 
-        let constraint_pairs: Vec<_> = snapshot
+        let constraint_nodes: Vec<_> = snapshot
             .graph
             .constraints
             .iter()
-            .map(|(_, cnode)| (cnode.id.clone(), &cnode.expr))
+            .map(|(_, cnode)| cnode)
             .collect();
 
-        if !constraint_pairs.is_empty() {
+        if !constraint_nodes.is_empty() {
+            let constraint_pairs: Vec<_> = constraint_nodes
+                .iter()
+                .map(|cnode| (cnode.id.clone(), &cnode.expr))
+                .collect();
+
             let input = ConstraintInput {
                 constraints: constraint_pairs,
                 values,
             };
 
             let results = self.constraint_checker.check(&input);
-            for result in results {
+            for (result, cnode) in results.into_iter().zip(constraint_nodes.iter()) {
                 diagnostics.extend(result.diagnostics.messages);
                 constraint_results.push(ConstraintCheckEntry {
                     id: result.id,
-                    label: None,
+                    label: cnode.label.clone(),
                     satisfaction: result.satisfaction,
                 });
             }
