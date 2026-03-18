@@ -227,6 +227,84 @@ mod tests {
         assert_eq!(related[0].message, "related");
     }
 
+    // --- UTF-8 boundary safety tests (step-21) ---
+
+    #[test]
+    fn offset_mid_multibyte_2byte() {
+        // 'é' is U+00E9, encoded as 2 bytes: [0xC3, 0xA9]
+        // "aéb" = [0x61, 0xC3, 0xA9, 0x62]
+        let source = "a\u{00E9}b";
+        assert_eq!(source.len(), 4);
+        // Byte 2 is the continuation byte 0xA9 — mid-character
+        let pos = offset_to_position(source, 2);
+        // Must not panic; should snap forward to byte 3 (start of 'b')
+        assert_eq!(pos, Position::new(0, 2)); // 'a' (1 UTF-16 unit) + 'é' (1 UTF-16 unit) = col 2
+    }
+
+    #[test]
+    fn offset_mid_multibyte_3byte() {
+        // '世' is U+4E16, encoded as 3 bytes: [0xE4, 0xB8, 0x96]
+        // "a世b" = [0x61, 0xE4, 0xB8, 0x96, 0x62]
+        let source = "a\u{4E16}b";
+        assert_eq!(source.len(), 5);
+        // Byte 2 is mid-character
+        let pos2 = offset_to_position(source, 2);
+        assert_eq!(pos2, Position::new(0, 2)); // snap to after '世'
+        // Byte 3 is also mid-character
+        let pos3 = offset_to_position(source, 3);
+        assert_eq!(pos3, Position::new(0, 2)); // snap to after '世'
+    }
+
+    #[test]
+    fn offset_mid_multibyte_4byte() {
+        // '😀' is U+1F600, encoded as 4 bytes: [0xF0, 0x9F, 0x98, 0x80]
+        // "a😀b" = [0x61, 0xF0, 0x9F, 0x98, 0x80, 0x62]
+        let source = "a\u{1F600}b";
+        assert_eq!(source.len(), 6);
+        // Bytes 2, 3, 4 are mid-character continuation bytes
+        let pos2 = offset_to_position(source, 2);
+        assert_eq!(pos2, Position::new(0, 3)); // snap to after '😀' which is 2 UTF-16 units: col = 1 + 2 = 3
+        let pos3 = offset_to_position(source, 3);
+        assert_eq!(pos3, Position::new(0, 3));
+        let pos4 = offset_to_position(source, 4);
+        assert_eq!(pos4, Position::new(0, 3));
+    }
+
+    #[test]
+    fn offset_at_exact_char_boundary() {
+        // "aéb" = [0x61, 0xC3, 0xA9, 0x62]
+        // Valid boundaries: 0 (a), 1 (é start), 3 (b), 4 (end)
+        let source = "a\u{00E9}b";
+        assert_eq!(offset_to_position(source, 0), Position::new(0, 0)); // before 'a'
+        assert_eq!(offset_to_position(source, 1), Position::new(0, 1)); // before 'é'
+        assert_eq!(offset_to_position(source, 3), Position::new(0, 2)); // before 'b'
+        assert_eq!(offset_to_position(source, 4), Position::new(0, 3)); // end
+    }
+
+    #[test]
+    fn offset_mid_char_in_second_line() {
+        // "x\né y" = [0x78, 0x0A, 0xC3, 0xA9, 0x79]
+        let source = "x\n\u{00E9}y";
+        assert_eq!(source.len(), 5);
+        // Byte 3 is continuation byte of 'é' on line 1
+        let pos = offset_to_position(source, 3);
+        assert_eq!(pos.line, 1);
+        // Should snap forward to byte 4 ('y'), so character = 1 (é) = col 1
+        assert_eq!(pos, Position::new(1, 1));
+    }
+
+    #[test]
+    fn span_to_range_mid_multibyte() {
+        // "aéb" = [0x61, 0xC3, 0xA9, 0x62]
+        let source = "a\u{00E9}b";
+        // Span where start lands mid-character (byte 2 is continuation byte)
+        let span = SourceSpan { start: 2, end: 4 };
+        let range = span_to_range(source, span);
+        // Must not panic. Start snaps to byte 3 (after 'é'), end is at end
+        assert_eq!(range.start, Position::new(0, 2));
+        assert_eq!(range.end, Position::new(0, 3));
+    }
+
     #[test]
     fn parse_error_converts_to_lsp_diagnostic() {
         let source = "hello\nworld";
