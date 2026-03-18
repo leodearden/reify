@@ -4,16 +4,34 @@ use tower_lsp::lsp_types::Position;
 /// Convert a byte offset in `source` to an LSP Position (line, character).
 ///
 /// The character offset uses UTF-16 code units per LSP spec.
-pub fn offset_to_position(_source: &str, _offset: u32) -> Position {
-    todo!()
+pub fn offset_to_position(source: &str, offset: u32) -> Position {
+    let offset = offset as usize;
+    let bytes = source.as_bytes();
+    let clamped = offset.min(bytes.len());
+
+    let mut line = 0u32;
+    let mut line_start = 0usize;
+
+    for i in 0..clamped {
+        if bytes[i] == b'\n' {
+            line += 1;
+            line_start = i + 1;
+        }
+    }
+
+    // Count UTF-16 code units from line_start to offset
+    let line_slice = &source[line_start..clamped];
+    let character: u32 = line_slice.chars().map(|c| c.len_utf16() as u32).sum();
+
+    Position::new(line, character)
 }
 
 /// Convert a SourceSpan to an LSP Range.
-pub fn span_to_range(
-    _source: &str,
-    _span: SourceSpan,
-) -> tower_lsp::lsp_types::Range {
-    todo!()
+pub fn span_to_range(source: &str, span: SourceSpan) -> tower_lsp::lsp_types::Range {
+    tower_lsp::lsp_types::Range {
+        start: offset_to_position(source, span.start),
+        end: offset_to_position(source, span.end),
+    }
 }
 
 #[cfg(test)]
