@@ -864,3 +864,69 @@ fn triple_fan_in_mixed_changed_unchanged_edit_param() {
         "y should be 10 + 1 + 2 = 13, NOT stale 8"
     );
 }
+
+/// After mixed fan-in edit_param, ALL nodes must have Freshness::Final.
+/// No node should be left in Pending state.
+///
+/// Same diamond graph as mixed_fan_in_edit_param test:
+///   param a (Int, 5), let x = if a>0 then 1 else 1, let y = a + x
+/// Edit a → 10: x Unchanged, y re-evaluated.
+#[test]
+fn freshness_all_final_after_mixed_fan_in_edit_param() {
+    let e = "T";
+
+    let condition = gt(
+        value_ref_typed(e, "a", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let conditional = CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(condition),
+            then_branch: Box::new(literal(Value::Int(1))),
+            else_branch: Box::new(literal(Value::Int(1))),
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of_str("if_a_gt_0_then_1_else_1"),
+    };
+
+    let y_expr = binop(
+        BinOp::Add,
+        value_ref_typed(e, "a", Type::Int),
+        value_ref_typed(e, "x", Type::Int),
+    );
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(
+            TopologyTemplateBuilder::new(e)
+                .param(e, "a", Type::Int, Some(literal(Value::Int(5))))
+                .let_binding(e, "x", Type::Int, conditional)
+                .let_binding(e, "y", Type::Int, y_expr)
+                .build(),
+        )
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start
+    engine.eval(&module);
+
+    // Edit a from 5 to 10
+    let a_id = ValueCellId::new(e, "a");
+    engine.edit_param(a_id, Value::Int(10));
+
+    let cache = engine.cache_store();
+
+    // ALL nodes must have Final freshness — none stuck in Pending
+    for name in ["a", "x", "y"] {
+        let node_id = NodeId::Value(ValueCellId::new(e, name));
+        let entry = cache.get(&node_id)
+            .unwrap_or_else(|| panic!("{} should be in cache", name));
+        assert_eq!(
+            entry.freshness,
+            Freshness::Final,
+            "{} should have Final freshness after mixed fan-in edit_param",
+            name
+        );
+    }
+}
