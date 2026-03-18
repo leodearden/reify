@@ -970,7 +970,6 @@ async fn concurrent_edit_result_includes_resolved_params() {
 
     let a_id = ValueCellId::new("S", "a");
     let x_id = ValueCellId::new("S", "x");
-    let y_id = ValueCellId::new("S", "y");
 
     // Sequenced solver: first x=mm(5.0), second x=mm(20.0)
     let mut solved1 = HashMap::new();

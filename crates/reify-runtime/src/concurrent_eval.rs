@@ -126,6 +126,8 @@ impl ConcurrentEvalAdapter {
             node_results,
             actual_eval_set,
             skipped,
+            resolved_params: std::collections::HashMap::new(),
+            diagnostics: Vec::new(),
         }
     }
 
@@ -163,6 +165,8 @@ impl ConcurrentEvalAdapter {
             node_results,
             actual_eval_set,
             skipped,
+            resolved_params: std::collections::HashMap::new(),
+            diagnostics: Vec::new(),
         }
     }
 }
@@ -301,10 +305,20 @@ pub async fn edit_param_concurrent(
             // Extract result from adapter. After scheduler completes, the only
             // remaining Arc reference should be ours — but if a spawned task
             // retained a clone, fall back to building the result via shared access.
-            let result = match Arc::try_unwrap(adapter_arc) {
+            let mut result = match Arc::try_unwrap(adapter_arc) {
                 Ok(adapter) => adapter.into_result(&eval_set),
                 Err(arc) => arc.build_result_shared(&eval_set),
             };
+
+            // Resolution phase: run solver synchronously after concurrent
+            // value evaluation completes. NLopt is single-threaded, so this
+            // sequential step is architecturally correct.
+            let (resolved_params, diagnostics) =
+                engine.resolve_concurrent_edit(&setup, &mut result);
+
+            result.resolved_params = resolved_params;
+            result.diagnostics = diagnostics;
+
             Ok((setup, result))
         }
         Err(e) => {

@@ -160,6 +160,10 @@ pub struct ConcurrentEditResult {
     pub actual_eval_set: Vec<NodeId>,
     /// Nodes skipped due to early cutoff.
     pub skipped: HashSet<NodeId>,
+    /// Auto parameters resolved by the constraint solver during this edit.
+    pub resolved_params: HashMap<ValueCellId, Value>,
+    /// Diagnostics from constraint resolution (e.g., infeasibility messages).
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl Engine {
@@ -374,6 +378,160 @@ impl Engine {
 
         // Update last eval set
         self.last_eval_set = result.actual_eval_set;
+    }
+
+    /// Run auto-resolution on a concurrent edit result.
+    ///
+    /// If a solver is present and constraints governing auto params are in the
+    /// dirty cone (computed from changed_cells), re-runs the solver and updates
+    /// the result's values and snapshot_values. Also propagates changes to
+    /// dependent let bindings via a second dirty cone computation.
+    ///
+    /// Called between scheduler completion and apply_concurrent_edit() to insert
+    /// resolution into the concurrent pipeline. The solver runs synchronously
+    /// (NLopt is single-threaded), which is architecturally clean: concurrent
+    /// evaluation handles parallelizable value nodes, then the solver runs
+    /// sequentially with all values finalized.
+    pub fn resolve_concurrent_edit(
+        &mut self,
+        setup: &ConcurrentEditSetup,
+        result: &mut ConcurrentEditResult,
+    ) -> (HashMap<ValueCellId, reify_types::Value>, Vec<Diagnostic>) {
+        let mut resolved_params = HashMap::new();
+        let mut diagnostics = Vec::new();
+
+        if let Some(ref solver) = self.solver {
+            let reverse_index = self.reverse_index.as_ref()
+                .expect("resolve_concurrent_edit requires reverse_index from eval()");
+            let trace_map = self.trace_map.as_ref()
+                .expect("resolve_concurrent_edit requires trace_map from eval()");
+
+            // Collect auto param IDs from graph
+            let mut auto_ids: HashSet<ValueCellId> = HashSet::new();
+            let mut auto_param_list: Vec<AutoParam> = Vec::new();
+
+            for (_, node) in setup.graph.value_cells.iter() {
+                if node.kind == ValueCellKind::Auto {
+                    auto_ids.insert(node.id.clone());
+                    auto_param_list.push(AutoParam {
+                        id: node.id.clone(),
+                        param_type: node.cell_type.clone(),
+                        bounds: None,
+                    });
+                }
+            }
+
+            if !auto_ids.is_empty() {
+                // Find constraints referencing auto params
+                let filtered_constraints: Vec<_> = setup.graph.constraints.iter()
+                    .filter(|(_, cnode)| {
+                        let trace = extract_dependency_trace(&cnode.expr);
+                        trace.reads.iter().any(|r| auto_ids.contains(r))
+                    })
+                    .map(|(_, cnode)| (cnode.id.clone(), cnode.expr.clone()))
+                    .collect();
+
+                // Compute dirty cone from changed cells
+                let dirty_cone = crate::dirty::compute_dirty_cone(
+                    &setup.changed_cells,
+                    reverse_index,
+                );
+
+                let constraints_dirty = filtered_constraints.iter().any(|(cid, _)| {
+                    dirty_cone.contains(&NodeId::Constraint(cid.clone()))
+                });
+
+                if constraints_dirty {
+                    let problem = ResolutionProblem {
+                        auto_params: auto_param_list,
+                        constraints: filtered_constraints,
+                        current_values: result.values.clone(),
+                        objective: None,
+                    };
+
+                    match solver.solve(&problem) {
+                        SolveResult::Solved { values: solver_values } => {
+                            let mut resolved_ids = HashSet::new();
+                            for (id, val) in &solver_values {
+                                result.values.insert(id.clone(), val.clone());
+                                resolved_params.insert(id.clone(), val.clone());
+                                resolved_ids.insert(id.clone());
+
+                                result.snapshot_values.insert(
+                                    id.clone(),
+                                    (val.clone(), DeterminacyState::Determined),
+                                );
+
+                                self.param_overrides.insert(id.clone(), val.clone());
+
+                                let node_id = NodeId::Value(id.clone());
+                                let trace = DependencyTrace::default();
+                                let cached_result = CachedResult::Value(
+                                    val.clone(),
+                                    DeterminacyState::Determined,
+                                );
+                                self.cache.record_evaluation(
+                                    node_id,
+                                    cached_result,
+                                    setup.version,
+                                    trace,
+                                );
+                            }
+
+                            // Second propagation wave: re-evaluate dependents of resolved auto params
+                            if !resolved_ids.is_empty() {
+                                let wave2_dirty = crate::dirty::compute_dirty_cone(
+                                    &resolved_ids,
+                                    reverse_index,
+                                );
+                                let wave2_eval = crate::dirty::compute_eval_set(
+                                    &wave2_dirty,
+                                    &self.demand,
+                                    trace_map,
+                                );
+
+                                for node_id in &wave2_eval {
+                                    if let NodeId::Value(vcid) = node_id
+                                        && let Some(node) = setup.graph.value_cells.get(vcid)
+                                        && let Some(ref expr) = node.default_expr
+                                    {
+                                        let val = reify_expr::eval_expr(expr, &result.values);
+                                        result.values.insert(vcid.clone(), val.clone());
+                                        result.snapshot_values.insert(
+                                            vcid.clone(),
+                                            (val.clone(), DeterminacyState::Determined),
+                                        );
+
+                                        let trace = extract_dependency_trace(expr);
+                                        let cached_result = CachedResult::Value(
+                                            val,
+                                            DeterminacyState::Determined,
+                                        );
+                                        self.cache.record_evaluation(
+                                            node_id.clone(),
+                                            cached_result,
+                                            setup.version,
+                                            trace,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        SolveResult::Infeasible { diagnostics: solver_diags } => {
+                            diagnostics.extend(solver_diags);
+                        }
+                        SolveResult::NoProgress { reason } => {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "Constraint solver made no progress: {}",
+                                reason
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        (resolved_params, diagnostics)
     }
 
     /// Set a parameter override and invalidate cache entries that depend on it.
