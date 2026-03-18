@@ -46,6 +46,21 @@ enum OcctRequest {
 ///
 /// All geometry operations are serialized through a channel to the kernel
 /// thread. The handle is `Send + Sync` and implements `GeometryKernel`.
+///
+/// # Async safety
+///
+/// The sync methods (`execute`, `query`, `export`, `tessellate`) use
+/// `blocking_send`/`blocking_recv` and **panic if called from an async
+/// context**. Use the `_async` variants (`execute_async`, `query_async`,
+/// `export_async`, `tessellate_async`) from async code.
+///
+/// # Drop behaviour
+///
+/// When dropped inside an async context, the handle detaches the kernel
+/// thread (it exits naturally when its channel closes) but does **not**
+/// join it — avoiding blocking a tokio worker thread. For deterministic
+/// cleanup from async code, call [`shutdown()`](Self::shutdown) instead.
+/// When dropped outside an async context, the thread is joined normally.
 pub struct OcctKernelHandle {
     tx: mpsc::Sender<OcctRequest>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -285,6 +300,27 @@ impl OcctKernelHandle {
             .await
             .map_err(|_| TessError::TessellationFailed("kernel thread died".into()))?
     }
+
+    /// Explicitly shut down the kernel thread from an async context.
+    ///
+    /// Drops the channel sender (closing the channel so the kernel thread exits
+    /// naturally) then joins the kernel thread via `spawn_blocking` to avoid
+    /// blocking the async worker.
+    ///
+    /// This gives async callers a deterministic cleanup path — the kernel
+    /// thread has fully exited (and OCCT resources are freed) by the time
+    /// this future resolves.
+    pub async fn shutdown(mut self) {
+        // Close the channel by replacing the sender with a dummy.
+        let (dummy_tx, _) = mpsc::channel::<OcctRequest>(1);
+        let _ = std::mem::replace(&mut self.tx, dummy_tx);
+
+        if let Some(thread) = self.thread.take() {
+            // Join on a blocking thread to avoid blocking the async worker.
+            let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+        }
+        // self.thread is now None, so Drop will be a no-op.
+    }
 }
 
 impl Drop for OcctKernelHandle {
@@ -294,8 +330,19 @@ impl Drop for OcctKernelHandle {
             // the channel, causing the kernel thread's recv loop to exit.
             let (dummy_tx, _) = mpsc::channel::<OcctRequest>(1);
             let _ = std::mem::replace(&mut self.tx, dummy_tx);
-            // Join the thread to ensure OCCT resources are freed before returning.
-            let _ = thread.join();
+
+            // Detect whether we're inside an async execution context.
+            if tokio::runtime::Handle::try_current().is_ok() {
+                // Inside async context: do NOT call thread.join() — it would
+                // block the tokio worker thread. The kernel thread will exit
+                // naturally when its recv loop sees the closed channel.
+                // OCCT resources are freed when the thread exits (just
+                // asynchronously). For deterministic cleanup, use shutdown().
+            } else {
+                // Outside async context: safe to block on join for
+                // deterministic cleanup.
+                let _ = thread.join();
+            }
         }
     }
 }
