@@ -50,9 +50,8 @@ impl ReifyLanguageServer {
         }
     }
 
-    /// Access server state (for testing).
-    #[cfg(test)]
-    pub(crate) fn state(&self) -> &Arc<RwLock<ServerState>> {
+    /// Access server state (for testing and embedding).
+    pub fn state(&self) -> &Arc<RwLock<ServerState>> {
         &self.state
     }
 

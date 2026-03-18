@@ -5,7 +5,7 @@
 use tower_lsp::lsp_types::*;
 use tower_lsp::{LanguageServer, LspService};
 
-use reify_lsp::diagnostics::{compute_diagnostics_with_state, DiagnosticsResult, EvalState};
+use reify_lsp::diagnostics::{compute_diagnostics_with_state, EvalState};
 use reify_lsp::server::ReifyLanguageServer;
 
 fn test_uri() -> Url {
@@ -76,11 +76,15 @@ fn lsp_stateful_diagnostics_after_edit_detects_violation() {
 
 /// Capstone E2E test: full lifecycle through tower-lsp server.
 ///
+/// Asserts on the server's **actual captured diagnostics** (the same Vec
+/// passed to `client.publish_diagnostics`), not proxy EvalState checks.
+///
 /// 1. Initialize
-/// 2. did_open with valid bracket source → no error diagnostics
-/// 3. did_change with violating source → constraint violation diagnostic
-/// 4. did_change back to valid source → diagnostics clear
-/// 5. did_close + shutdown
+/// 2. did_open with valid bracket source → captured diagnostics have no errors
+/// 3. did_change with violating source → captured diagnostics contain constraint violation
+/// 4. did_change back to valid source → captured diagnostics clear
+/// 5. did_close → captured diagnostics removed for URI
+/// 6. shutdown
 #[tokio::test]
 async fn lsp_server_e2e_interactive_edit_loop() {
     let (service, _socket) = LspService::new(ReifyLanguageServer::new);
@@ -109,16 +113,20 @@ async fn lsp_server_e2e_interactive_edit_loop() {
         })
         .await;
 
-    // Verify via compute_diagnostics_with_state proxy: no errors for valid source
+    // Assert on captured diagnostics: no errors for valid source
     {
-        let mut state = EvalState::new();
-        let result = compute_diagnostics_with_state(&mut state, source, &uri);
-        let errors: Vec<_> = result
-            .diagnostics
+        let state = server.state().read().await;
+        let captured = state
+            .last_diagnostics_for(&uri)
+            .expect("diagnostics should be captured after did_open");
+        let errors: Vec<_> = captured
             .iter()
             .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
             .collect();
-        assert!(errors.is_empty(), "valid source should have no errors after did_open");
+        assert!(
+            errors.is_empty(),
+            "valid source should have no errors after did_open, got: {errors:?}"
+        );
     }
 
     // 3. did_change with violating source (thickness=1mm)
@@ -137,18 +145,26 @@ async fn lsp_server_e2e_interactive_edit_loop() {
         })
         .await;
 
-    // Verify: violating source produces constraint violation diagnostic
+    // Assert on captured diagnostics: constraint violation present
     {
-        let mut state = EvalState::new();
-        let result = compute_diagnostics_with_state(&mut state, &violating_source, &uri);
-        let errors: Vec<_> = result
-            .diagnostics
+        let state = server.state().read().await;
+        let captured = state
+            .last_diagnostics_for(&uri)
+            .expect("diagnostics should be captured after did_change");
+        let errors: Vec<_> = captured
             .iter()
             .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
             .collect();
         assert!(
             !errors.is_empty(),
             "violating source should produce error diagnostics after did_change"
+        );
+        let has_violation = errors.iter().any(|d| {
+            d.message.contains("violated") || d.message.contains("constraint")
+        });
+        assert!(
+            has_violation,
+            "should have a diagnostic mentioning constraint violation, got: {errors:?}"
         );
     }
 
@@ -167,24 +183,37 @@ async fn lsp_server_e2e_interactive_edit_loop() {
         })
         .await;
 
-    // Verify: valid source has no errors again
+    // Assert on captured diagnostics: no errors after reverting
     {
-        let mut state = EvalState::new();
-        let result = compute_diagnostics_with_state(&mut state, source, &uri);
-        let errors: Vec<_> = result
-            .diagnostics
+        let state = server.state().read().await;
+        let captured = state
+            .last_diagnostics_for(&uri)
+            .expect("diagnostics should be captured after reverting");
+        let errors: Vec<_> = captured
             .iter()
             .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
             .collect();
-        assert!(errors.is_empty(), "valid source should have no errors after reverting");
+        assert!(
+            errors.is_empty(),
+            "valid source should have no errors after reverting, got: {errors:?}"
+        );
     }
 
-    // 5. did_close + shutdown
+    // 5. did_close — captured diagnostics should be removed for this URI
     server
         .did_close(DidCloseTextDocumentParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
         })
         .await;
 
+    {
+        let state = server.state().read().await;
+        assert!(
+            state.last_diagnostics_for(&uri).is_none(),
+            "captured diagnostics should be removed after did_close"
+        );
+    }
+
+    // 6. shutdown
     server.shutdown().await.unwrap();
 }
