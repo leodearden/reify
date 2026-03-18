@@ -629,6 +629,7 @@ fn compile_structure(
     let mut scope = CompilationScope::new(entity_name);
     let mut value_cells = Vec::new();
     let mut constraints = Vec::new();
+    let mut sub_components = Vec::new();
     let mut constraint_index: u32 = 0;
 
     // First pass: register all param and let names into the scope so they can
@@ -761,8 +762,22 @@ fn compile_structure(
                 });
                 constraint_index += 1;
             }
-            reify_syntax::MemberDecl::Sub(_) => {
-                // Sub-components not yet handled in M1
+            reify_syntax::MemberDecl::Sub(sub) => {
+                let compiled_args: Vec<(String, CompiledExpr)> = sub
+                    .args
+                    .iter()
+                    .map(|(name, expr)| {
+                        (name.clone(), compile_expr(expr, &scope, diagnostics))
+                    })
+                    .collect();
+
+                sub_components.push(SubComponentDecl {
+                    name: sub.name.clone(),
+                    structure_name: sub.structure_name.clone(),
+                    args: compiled_args,
+                    span: sub.span,
+                    content_hash: sub.content_hash,
+                });
             }
         }
     }
@@ -792,7 +807,7 @@ fn compile_structure(
         value_cells,
         constraints,
         realizations,
-        sub_components: Vec::new(),
+        sub_components,
         content_hash,
     }
 }
