@@ -117,4 +117,78 @@ mod tests {
         pool.retrieve(&node_b);
         assert_eq!(pool.used_bytes(), 0);
     }
+
+    #[test]
+    fn donate_exceeding_budget_triggers_lru_eviction() {
+        // Budget of 300. Donate 3 items of 100 each (fits exactly).
+        // Then donate a 4th item of 100 — should evict the LRU entry.
+        let mut pool = WarmStatePool::new(300);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
+        let node_c = NodeId::Value(ValueCellId::new("T", "c"));
+        let node_d = NodeId::Value(ValueCellId::new("T", "d"));
+
+        pool.donate(node_a.clone(), OpaqueState::new(1i32, 100));
+        pool.donate(node_b.clone(), OpaqueState::new(2i32, 100));
+        pool.donate(node_c.clone(), OpaqueState::new(3i32, 100));
+        assert_eq!(pool.used_bytes(), 300);
+
+        // Donate 4th item — exceeds budget, should evict node_a (oldest)
+        pool.donate(node_d.clone(), OpaqueState::new(4i32, 100));
+        assert!(pool.used_bytes() <= 300);
+
+        // node_a should have been evicted
+        assert!(pool.retrieve(&node_a).is_none());
+        // node_d should be present
+        assert!(pool.retrieve(&node_d).is_some());
+    }
+
+    #[test]
+    fn eviction_respects_access_order() {
+        // Donate A, B, C (budget=250). Retrieve B (updates access time).
+        // Donate a large item D (200) that requires eviction.
+        // A should be evicted (oldest untouched), not B (recently accessed).
+        let mut pool = WarmStatePool::new(250);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
+        let node_c = NodeId::Value(ValueCellId::new("T", "c"));
+        let node_d = NodeId::Value(ValueCellId::new("T", "d"));
+
+        pool.donate(node_a.clone(), OpaqueState::new(1i32, 50));
+        pool.donate(node_b.clone(), OpaqueState::new(2i32, 50));
+        pool.donate(node_c.clone(), OpaqueState::new(3i32, 50));
+        // used = 150, budget = 250
+
+        // Note: retrieve removes the entry, so we re-donate to simulate "access"
+        // For this test, we use retrieve + re-donate to update access time.
+        let b_state = pool.retrieve(&node_b).unwrap();
+        pool.donate(node_b.clone(), b_state);
+        // used = 150 still (retrieve - 50, donate + 50)
+
+        // Donate large item that pushes over budget
+        pool.donate(node_d.clone(), OpaqueState::new(4i32, 200));
+        // used would be 350 > 250, need to evict. A and C are oldest.
+        // Evict A (50), used = 300, still > 250
+        // Evict C (50), used = 250, within budget
+
+        // A should be evicted (oldest)
+        assert!(pool.retrieve(&node_a).is_none());
+        // C should also be evicted
+        assert!(pool.retrieve(&node_c).is_none());
+        // B (recently accessed) and D (just added) should remain
+        assert!(pool.retrieve(&node_b).is_some());
+        assert!(pool.retrieve(&node_d).is_some());
+    }
+
+    #[test]
+    fn single_oversized_item_still_stored() {
+        // Budget of 10, donate item of size 100 — should still store it
+        let mut pool = WarmStatePool::new(10);
+        let node = NodeId::Value(ValueCellId::new("T", "big"));
+        pool.donate(node.clone(), OpaqueState::new(42i32, 100));
+
+        let retrieved = pool.retrieve(&node);
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().downcast::<i32>(), Some(42));
+    }
 }
