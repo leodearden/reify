@@ -1,335 +1,110 @@
 {
-  "task_id": "32",
-  "title": "LSP server \u2014 core infrastructure",
-  "modules": ["crates/reify-lsp", "crates/reify-cli", "crates/reify-compiler"],
-  "analysis": "This task builds the foundational LSP server for Reify: tower-lsp based initialization, full-sync document management (didOpen/didChange/didClose), and a diagnostic pipeline that feeds parse\u2192compile\u2192eval\u2192check results back to the editor.\n\nThe existing codebase already provides: reify-syntax (tree-sitter parser \u2192 ParsedModule), reify-compiler (compile \u2192 CompiledModule with diagnostics), reify-eval (Engine with eval/check/check_snapshot), reify-constraints (SimpleConstraintChecker), and reify-types (Diagnostic, SourceSpan, Severity, ParseError). The LSP crate exists in the workspace Cargo.toml with tower-lsp 0.20 and tokio as workspace dependencies.\n\nCore architecture:\n1. **convert.rs** \u2014 Bidirectional byte-offset \u2194 LSP Position conversion (handling UTF-16 per LSP spec), span_to_range, and Diagnostic/ParseError \u2192 LSP Diagnostic conversion. Must handle UTF-8 boundary safety (tree-sitter error-recovery can produce mid-character byte offsets).\n2. **document.rs** \u2014 HashMap-backed DocumentStore holding open document text+version, keyed by URI.\n3. **diagnostics.rs** \u2014 Two pipelines: (a) stateless compute_diagnostics (fresh Engine per call), (b) stateful compute_diagnostics_with_state (EvalState holding persistent Engine for incremental potential). Both run parse\u2192compile\u2192eval\u2192check_snapshot, converting all diagnostics (parse errors, compiler diagnostics, eval diagnostics, constraint violations) to LSP format.\n4. **server.rs** \u2014 ReifyLanguageServer wrapping Arc<RwLock<ServerState>> for documents + Arc<Mutex<EvalState>> for eval. Handlers: initialize (advertise FULL sync), did_open/did_change (update doc store, run diagnostics, publish), did_close (remove doc, clear diagnostics), shutdown. Lock strategy: narrow RwLock for document access, separate Mutex for eval (avoids blocking concurrent reads during expensive eval). Mutex poison recovery via unwrap_or_else(into_inner).\n5. **lib.rs** \u2014 run_server() async entry point using tokio stdin/stdout.\n6. **reify-cli** \u2014 'reify lsp' subcommand that creates a tokio Runtime and block_on(run_server()).\n\nKey design constraint: Engine is Send but not Sync (holds Box<dyn ConstraintChecker>). The EvalState wraps it in Mutex for thread safety. For M1 single-file scope, creating a fresh Engine per source change is acceptable; true incrementality (diffing compiled modules) is future work.\n\n**Post-review additions (steps 25\u201332):** Three blocking issues identified by review:\n1. compute_diagnostics_with_state has no dedicated unit tests in diagnostics.rs despite step-21 being marked done. Integration tests exist in tests/interactive_edit_loop.rs but do not verify EvalState internals (version_counter persistence) or the three-phase state-clearing cycle within a single test.\n2. check_snapshot returning None is silently ignored (line 87), causing constraint violations to be invisible to the user. Fix: fall back to engine.check() when check_snapshot returns None.\n3. Constraint violation diagnostics always report Range::default() (0,0)\u2192(0,0) because (a) the compiler hardcodes CompiledConstraint.span to SourceSpan::new(0,0) instead of propagating ConstraintDecl.span, and (b) the LSP diagnostic emitter uses Range::default() instead of looking up constraint spans. Fix requires a one-line compiler fix and a span lookup in the diagnostics pipeline.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Create crates/reify-lsp crate skeleton: Cargo.toml with dependencies (reify-types, reify-syntax, reify-compiler, reify-eval, reify-constraints, tower-lsp, tokio, serde_json; dev: reify-test-support), empty lib.rs with module declarations. Ensure it compiles in the workspace.",
-      "status": "done",
-      "commit": "6652574",
-      "tests": []
-    }
-  ],
+  "task_id": "36",
+  "title": "Ensure that forward let-binding references have been implemented correctly",
+  "modules": ["crates/reify-eval"],
+  "analysis": "The cold-start evaluation path in Engine::eval() (lib.rs lines 679-722) evaluates Let bindings by iterating template.value_cells in source (declaration) order. When a let binding references another let declared later in the same scope, the referenced let hasn't been evaluated yet and its value is missing from the ValueMap. eval_expr calls values.get_or_undef(), which returns Value::Undef for missing references, producing incorrect results.\n\nThe same bug exists in the post-resolution re-evaluation loop (lib.rs lines 837-878), where let bindings are re-evaluated after auto param resolution, again in source order. If a forward-referencing let depends on another let that depends on a resolved auto param, the source-order re-evaluation produces stale/incorrect values.\n\nThe incremental path (edit_param) does NOT have this bug because it uses compute_eval_set() which calls topological_sort(), ensuring dependencies are evaluated before dependents regardless of declaration order.\n\nThe fix is to topologically sort let bindings before evaluating them in both cold-start locations. The topological_sort utility in dirty.rs and the extract_dependency_trace utility in deps.rs already exist and can be reused.\n\nNo existing tests exercise forward let-binding references — all existing tests declare let bindings in dependency order (e.g., x before y where y=x+1).",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests in convert.rs for offset_to_position (byte offset \u2192 LSP Position): (1) offset 0 in empty string \u2192 Position(0,0); (2) offset within first line returns correct character; (3) offset on second line returns line=1, correct character; (4) offset at newline character returns end of line 0; (5) multiline bracket_source \u2014 offset 0 \u2192 (0,0), second line start \u2192 (1,0). Also test span_to_range: SourceSpan{6,12} in 'first\\nsecond\\nthird' \u2192 Range{(1,0),(1,6)}.",
+      "description": "Write failing test forward_let_ref_cold_start_simple in incremental.rs: template with param a (default 5, Int), let y = x + 1 (forward ref to x, declared first), let x = a + 10 (declared second). Assert cold-start produces x=15, y=16. Currently fails because y evaluates before x and gets Undef via get_or_undef.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "41094a3"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement offset_to_position(source, offset) \u2192 Position and span_to_range(source, SourceSpan) \u2192 Range in convert.rs. offset_to_position: iterate bytes counting newlines for line number, then count UTF-16 code units from line start to offset for character column. span_to_range: call offset_to_position for start and end.",
+      "description": "Fix cold-start let evaluation in Engine::eval() to topologically sort let bindings before evaluating. Replace the source-order 'for cell in &template.value_cells' loop (lines 679-722) with: (1) collect all Let cells with expressions into a HashSet<NodeId>, (2) build HashMap<NodeId, DependencyTrace> via extract_dependency_trace for each, (3) call topological_sort from dirty.rs, (4) iterate sorted result, looking up each cell from value_cells by ID to evaluate. This reuses existing infrastructure and makes step-1 pass.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "5a90b8b"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests in convert.rs for diagnostic conversion: (1) convert_severity maps Error\u2192ERROR, Warning\u2192WARNING, Info\u2192INFORMATION; (2) convert_diagnostic with no labels produces range at origin (0,0)\u2192(0,0); (3) convert_diagnostic with one label uses label span for range; (4) convert_diagnostic with multiple labels puts first as primary range and rest as related_information; (5) convert_parse_error produces ERROR severity diagnostic with correct range from ParseError.span.",
+      "description": "Write test forward_let_ref_cold_start_deep_reverse_chain in incremental.rs: all let bindings in fully reversed dependency order. Template: param a (default 0, Int), let z = y + 1 (declared 1st), let y = x + 1 (declared 2nd), let x = a + 1 (declared 3rd). Assert x=1, y=2, z=3. Exercises 3-deep topological sort in cold-start. Should pass after step-2 fix.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "ef9f783"
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Implement convert_severity, convert_diagnostic, and convert_parse_error in convert.rs. convert_diagnostic: use first label's span for primary range, remaining labels as DiagnosticRelatedInformation. convert_parse_error: map ParseError.span to range with ERROR severity. Both set source='reify'.",
+      "type": "test",
+      "description": "Write test forward_let_ref_cold_start_diamond in incremental.rs: diamond dependency with forward refs. Template: param a (default 10, Int), let d = b + c (forward refs to both, declared 1st), let b = a + 1 (declared 2nd), let c = a + 2 (declared 3rd). Assert b=11, c=12, d=23. Exercises converging forward references. Should pass after step-2 fix.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "8b3e572"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests in document.rs for DocumentStore: (1) open stores text and version, get returns them; (2) get returns Some after open; (3) update replaces text and version; (4) close removes entry, get returns None; (5) get returns None after close; (6) two documents stored independently.",
+      "description": "Write failing test forward_let_ref_post_resolution in incremental.rs: forward ref during post-resolution re-evaluation. Template: param p (default mm(1.0), length), auto x (length), let c = b + x (forward ref to b, declared before b), let b = x + p (declared after c). MockConstraintSolver resolves x=mm(10.0). After cold-start: x=0.01 SI, b=x+p=0.01+0.001=0.011 SI, c=b+x=0.011+0.01=0.021 SI. Test asserts c has correct value. Fails because post-resolution re-eval iterates in source order, evaluating c before b is re-evaluated with resolved x.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "54a9342"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement DocumentStore in document.rs: HashMap<Url, DocumentState> where DocumentState holds text: String and version: i32. Methods: new(), open(uri, text, version), update(uri, text, version), close(uri), get(uri) \u2192 Option<&DocumentState>.",
+      "description": "Fix post-resolution let re-evaluation in Engine::eval() (lines 837-878) to topologically sort let bindings before re-evaluating. Apply the same pattern as step-2: collect Let cells into NodeId set, build trace map, topological_sort, then evaluate in sorted order. This makes step-5 pass.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "967cd5e"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests in diagnostics.rs for compute_diagnostics pipeline: (1) valid bracket_source produces no ERROR-severity diagnostics; (2) syntax error 'structure {' produces at least one ERROR diagnostic; (3) unknown identifier in expression produces diagnostics; (4) empty source does not panic.",
+      "description": "Write test forward_let_ref_incremental_edit_param in incremental.rs: verify incremental path handles forward refs correctly. Template: param a (default 5, Int), let y = x + 1 (forward ref), let x = a + 10. Cold-start → x=15, y=16. Edit a from 5 to 20 → x=30, y=31. Confirms incremental topo sort (already present in compute_eval_set) handles forward-declared lets correctly after param edit.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "5321b0a"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Implement compute_diagnostics(source, uri) \u2192 Vec<Diagnostic> in diagnostics.rs. Derives module_name from URI path (strip .ri suffix). Pipeline: parse \u2192 collect parse errors via convert_parse_error; compile \u2192 collect diagnostics via convert_diagnostic; create fresh Engine with SimpleConstraintChecker \u2192 check() \u2192 collect eval diagnostics.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-9",
       "type": "test",
-      "description": "Write failing test in server.rs: after calling initialize(), the result capabilities must include text_document_sync = TextDocumentSyncKind::FULL.",
+      "description": "Write test forward_let_ref_cold_start_matches_incremental in incremental.rs: verify cold-start and incremental produce identical values for a forward-ref template. Template: param a (default 3, Int), let c = b * 2 (forward ref), let b = a + 7. Cold-start: b=10, c=20. Edit a to 13 → b=20, c=40. Then create a fresh Engine with a=13 as default and cold-start eval. Assert fresh cold-start values match incremental edit values. Proves both evaluation paths produce consistent results for forward-ref templates.",
       "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-10",
-      "type": "impl",
-      "description": "Implement ReifyLanguageServer struct with client: Client, state: Arc<RwLock<ServerState>>. ServerState contains DocumentStore. Implement LanguageServer trait: initialize() returns ServerCapabilities with text_document_sync FULL; initialized() is no-op; shutdown() returns Ok(()).",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write failing test: after did_open with bracket_source, the document should be stored in ServerState.documents with correct text and version.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Implement did_open handler: extract uri/text/version from params, write-lock state to store document via documents.open(), then run compute_diagnostics and publish via client.publish_diagnostics().",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing test: after did_open + did_change with new text, the stored document text and version should be updated.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Implement did_change handler: full sync mode \u2014 take last content_change.text, write-lock state to update document, run compute_diagnostics and publish.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing test: after did_open + did_close, the document should be removed from the store (get returns None).",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Implement did_close handler: write-lock state to close document, publish empty diagnostics to clear editor markers.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing tests for run_server entry point: verify lib.rs exports run_server() as pub async fn, and that the CLI 'lsp' subcommand calls it via tokio Runtime. (Compile-time verification that the integration wires correctly.)",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Implement run_server() in lib.rs: create LspService from ReifyLanguageServer::new, serve on tokio stdin/stdout. Add cmd_lsp() to reify-cli main.rs: create tokio Runtime, block_on(run_server()), return SUCCESS. Wire 'lsp' match arm in CLI dispatch.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write failing tests for UTF-8 boundary safety in offset_to_position: (1) 2-byte char '\u00e9' (U+00E9) \u2014 offset at continuation byte should not panic, snaps to next char boundary; (2) 3-byte char '\u4e16' (U+4E16) \u2014 offsets at continuation bytes snap forward; (3) 4-byte char '\ud83d\ude00' (U+1F600) \u2014 continuation byte offsets snap forward with correct UTF-16 surrogate pair handling (2 UTF-16 units); (4) exact char boundaries produce correct positions; (5) mid-char on second line still reports correct line; (6) span_to_range with mid-multibyte span does not panic.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Harden offset_to_position: after clamping to source length, snap forward to next valid UTF-8 char boundary while not at boundary (continuation bytes 0x80..0xBF). This handles tree-sitter error-recovery spans that land mid-character.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing test for stateful diagnostics pipeline: compute_diagnostics_with_state with bracket_source produces no errors; then with violating source (thickness=1mm) produces constraint violation diagnostic; then with valid source again clears violations. Verify EvalState maintains Engine across calls.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Implement EvalState struct (engine: Engine, last_module: Option<CompiledModule>, version_counter: u64) and compute_diagnostics_with_state(state, source, uri) \u2192 DiagnosticsResult. On each call: re-parse, re-compile, create fresh Engine (source change invalidates all state), eval, check_snapshot for constraint results. Convert constraint violations to explicit ERROR diagnostics. Store compiled module for future use.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write failing tests: (1) after did_open, ServerState.last_diagnostics_for(uri) returns captured diagnostics (valid source \u2192 no errors); (2) eval_state Mutex is poisoned via thread panic, then did_open still succeeds \u2014 recovers from poison and produces diagnostics.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Restructure server: add eval_state: Arc<Mutex<EvalState>> to ReifyLanguageServer (separate from RwLock). Add last_published_diagnostics to ServerState. Update did_open/did_change: narrow RwLock scope (brief write to store doc, release lock, then lock eval_state Mutex for eval, brief write to capture diagnostics). Recover from Mutex poison via unwrap_or_else(|e| e.into_inner()). Update did_close to clear captured diagnostics.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "[Review fix: missing_test_coverage] Write dedicated unit tests for compute_diagnostics_with_state in diagnostics.rs #[cfg(test)] mod tests (not integration tests). Single test function exercising the full three-phase stateful lifecycle: (1) call with bracket_source() \u2014 assert no ERROR diagnostics; (2) call with bracket_source_violating() on same EvalState \u2014 assert at least one ERROR diagnostic with message containing 'constraint' and 'violated'; (3) call with bracket_source() again on same EvalState \u2014 assert ERROR diagnostics are empty, verifying violations clear on valid source. Also assert EvalState.version_counter == 3 after three calls (confirms state persistence across invocations). Add a separate test that EvalState::new() starts with version_counter == 0.",
-      "status": "done",
-      "commit": "6ac0d4f"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "[Review fix: missing_test_coverage] Verify step-25 tests pass against existing compute_diagnostics_with_state implementation. If any tests fail, fix the underlying issues. The existing implementation should handle bracket_source_violating() (String coerced to &str) correctly. If version_counter is not accessible from tests (it is \u2014 same module), no changes needed. This step may be a no-op if the implementation is already correct for the tested scenarios.",
-      "status": "done",
-      "commit": "6ac0d4f"
-    },
-    {
-      "id": "step-27",
-      "type": "test",
-      "description": "[Review fix: silent_failure_at_boundary] Write tests in diagnostics.rs for check_snapshot fallback robustness: (1) assert that a fresh Engine (without prior eval call) has check_snapshot return None when given a compiled bracket module \u2014 validates the edge case exists; (2) test that compute_diagnostics_with_state with bracket_source_violating() ALWAYS produces at least one constraint violation ERROR diagnostic (regression guard ensuring the constraint pipeline is never silently skipped); (3) test that compute_diagnostics_with_state with an empty source ('') does not panic and produces a result (edge case where eval may not create a meaningful snapshot).",
-      "status": "done",
-      "commit": "0a519c8"
-    },
-    {
-      "id": "step-28",
-      "type": "impl",
-      "description": "[Review fix: silent_failure_at_boundary] In compute_diagnostics_with_state, replace `if let Some(check_result) = state.engine.check_snapshot(&compiled)` with a match that falls back to `state.engine.check(&compiled)` when check_snapshot returns None. Add eprintln!(\"[reify-lsp] check_snapshot returned None after eval, falling back to full check\") warning when the fallback is triggered. The fallback path calls check() which internally re-runs eval + constraint checking \u2014 slightly less efficient but ensures constraint violations are never silently dropped. The normal path (check_snapshot returns Some) is unchanged.",
-      "status": "done",
-      "commit": "8bba05f"
-    },
-    {
-      "id": "step-29",
-      "type": "test",
-      "description": "[Review fix: misleading_error_location] In crates/reify-compiler, write a test that compiles bracket_source() via parse+compile and asserts that each CompiledConstraint.span is non-zero and matches the corresponding ConstraintDecl.span from the parsed module. Specifically: parse bracket_source(), compile it, then for each template.constraints[i], assert constraint.span != SourceSpan::new(0,0). Also compare against known bracket fixture spans: constraint 0 span should be (232,258), constraint 1 span (263,295), constraint 2 span (300,340). This test currently fails because the compiler hardcodes span: SourceSpan::new(0, 0) at lib.rs:729.",
-      "status": "done",
-      "commit": "e460a73"
-    },
-    {
-      "id": "step-30",
-      "type": "impl",
-      "description": "[Review fix: misleading_error_location] In crates/reify-compiler/src/lib.rs at line 729, change `span: SourceSpan::new(0, 0)` to `span: constraint.span`, propagating the ConstraintDecl's source span (which tree-sitter correctly populates) into the CompiledConstraint. This is a one-line fix \u2014 the `constraint` variable is the ConstraintDecl which has a valid `.span` field with correct byte offsets.",
-      "status": "done",
-      "commit": "3433209"
-    },
-    {
-      "id": "step-31",
-      "type": "test",
-      "description": "[Review fix: misleading_error_location] In diagnostics.rs, write test that constraint violation diagnostics from compute_diagnostics_with_state have ranges pointing to the constraint declaration in source, NOT (0,0)\u2192(0,0). Use bracket_source_violating() and verify: (a) find the ERROR diagnostic whose message contains 'constraint' and 'violated', (b) assert its range.start.line > 0 (constraints are on lines 7-9 of bracket source, not line 0), (c) assert range != Range::default(). This test fails initially because the current code uses Range::default() for all constraint violation diagnostics.",
-      "status": "done",
-      "commit": "e92a3bb"
-    },
-    {
-      "id": "step-32",
-      "type": "impl",
-      "description": "[Review fix: misleading_error_location] In compute_diagnostics_with_state, after compiling, build a HashMap<ConstraintNodeId, SourceSpan> from compiled.templates.iter().flat_map(|t| t.constraints.iter()).map(|c| (c.id.clone(), c.span)). When emitting constraint violation diagnostics (the for loop over check_result.constraint_results), look up the span by entry.id in this map and use convert::span_to_range(source, span) for the diagnostic range instead of lsp_types::Range::default(). Fall back to Range::default() only if the span lookup fails (defensive, should not happen in practice).",
-      "status": "done",
-      "commit": "e92a3bb"
+      "commit": "4941425"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Full document sync (TextDocumentSyncKind::FULL) instead of incremental",
-      "rationale": "Full sync is simpler to implement and sufficient for M1 single-file scope. The entire document text arrives on each change, avoiding diff/patch complexity. Incremental sync can be added later as an optimization when document sizes warrant it."
+      "decision": "Reuse existing topological_sort from dirty.rs rather than implementing a new sort",
+      "rationale": "topological_sort already handles NodeId sets with DependencyTrace maps, handles duplicate reads (a*a), and has comprehensive unit tests. Using it for cold-start let evaluation requires only building the NodeId/trace inputs, not new sorting infrastructure."
     },
     {
-      "decision": "Separate RwLock for documents and Mutex for eval state",
-      "rationale": "Engine evaluation is expensive relative to document lookups. A single RwLock would block all document reads during eval. Separating them allows concurrent document reads (hover, goto-def, completion) while eval runs. The Mutex on EvalState serializes eval calls which is necessary since Engine is Send but not Sync."
+      "decision": "Sort only Let cells during topological ordering, not all value_cells",
+      "rationale": "Params are roots (no dependencies) and are already evaluated in pass 1 before any let evaluation. Auto params start as Undef. Only Let-to-Let forward references need reordering. The topological sort will naturally put lets with no let-dependencies first."
     },
     {
-      "decision": "Fresh Engine per source change in stateful pipeline",
-      "rationale": "Source text changes invalidate the entire compilation/evaluation graph. True source-level incrementality (diffing compiled modules, updating only changed topology) is complex and deferred to M4. For M1 single-file scope, cold-start eval is fast enough (<1ms for bracket.ri)."
+      "decision": "Apply topological sort to both cold-start evaluation and post-resolution re-evaluation",
+      "rationale": "Both code paths iterate value_cells in source order and are vulnerable to the same forward-reference bug. The post-resolution path re-evaluates let bindings after auto params are resolved — if a let references another let that depends on an auto param, source-order iteration uses the pre-resolution (Undef/stale) value instead of the freshly resolved one."
     },
     {
-      "decision": "Mutex poison recovery via into_inner()",
-      "rationale": "If eval panics (e.g., unexpected OCCT crash), the Mutex becomes poisoned. Rather than propagating the panic to all future LSP requests (effectively killing the server), we recover the inner EvalState and continue. A fresh Engine will be created on next eval anyway, so the recovered state is safe to use."
-    },
-    {
-      "decision": "UTF-8 boundary snapping in offset_to_position",
-      "rationale": "Tree-sitter error-recovery can produce byte offsets that land in the middle of multi-byte UTF-8 characters. Rather than panicking on invalid slice boundaries, we snap forward to the next valid char boundary. This is safe because it only affects the column position of error spans, and snapping forward to the next character is a reasonable approximation."
-    },
-    {
-      "decision": "UTF-16 character counting per LSP specification",
-      "rationale": "LSP Position.character uses UTF-16 code units, not bytes or Unicode scalar values. This matters for emoji (surrogate pairs = 2 UTF-16 units) and CJK characters. Correct handling via char::len_utf16() ensures editors display diagnostics at the right column."
-    },
-    {
-      "decision": "Constraint violations as explicit ERROR diagnostics",
-      "rationale": "CheckResult.constraint_results contains Satisfaction entries but these aren't Diagnostic objects. The LSP pipeline explicitly converts Violated constraints into ERROR diagnostics with descriptive messages ('constraint violated: <label>'), making them visible in the editor's problem panel alongside parse/compile errors."
-    },
-    {
-      "decision": "Fallback from check_snapshot to check() when snapshot is absent",
-      "rationale": "check_snapshot returns None when no evaluation snapshot exists. While eval() is always called before check_snapshot in the normal path (so None should be rare), silently dropping the constraint check makes violations invisible to the user with no indication. Falling back to check() (which internally re-runs eval + constraint check) is slightly less efficient but guarantees constraint results are always produced. An eprintln warning alerts developers to the unexpected condition without polluting the LSP diagnostic output."
-    },
-    {
-      "decision": "Constraint span resolution via CompiledModule lookup",
-      "rationale": "ConstraintCheckEntry (from Engine) carries id and label but no source span. CompiledConstraint (from CompiledModule) carries the span. Building a HashMap<ConstraintNodeId, SourceSpan> from the compiled module's templates and looking up by id when emitting violation diagnostics is O(n) construction + O(1) per lookup. With typical constraint counts < 20, this adds negligible overhead while ensuring violation diagnostics point to the actual constraint declaration in source."
-    },
-    {
-      "decision": "Fix compiler span propagation as part of this task",
-      "rationale": "The compiler hardcodes CompiledConstraint.span to SourceSpan::new(0,0) instead of using ConstraintDecl.span. This is a one-line bug fix (span: constraint.span) that is prerequisite for correct LSP constraint violation locations. While technically in crates/reify-compiler, the fix is trivial, self-contained, and required for the LSP task's correctness. Adding crates/reify-compiler to the module scope is justified."
+      "decision": "Place all tests in the existing incremental.rs test file",
+      "rationale": "The tests exercise Engine::eval() and Engine::edit_param() behavior, which is the same domain as existing incremental.rs tests. The test patterns (CompiledModuleBuilder, TopologyTemplateBuilder, expression builders) are already imported there. For 6 additional tests, co-location is cleaner than a separate file."
     }
   ],
   "reuse": [
     {
-      "what": "reify_syntax::parse(source, ModulePath) \u2192 ParsedModule",
-      "where": "crates/reify-syntax/src/lib.rs",
-      "how": "First stage of the diagnostics pipeline. ParsedModule.errors provides ParseError with SourceSpan for syntax error diagnostics."
+      "what": "topological_sort function",
+      "where": "crates/reify-eval/src/dirty.rs",
+      "how": "Call with HashSet<NodeId> of Let cells and HashMap<NodeId, DependencyTrace> built from their expressions. Returns Vec<NodeId> in dependency-first order. Used in cold-start eval to replace source-order iteration."
     },
     {
-      "what": "reify_compiler::compile(parsed) \u2192 CompiledModule",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "Second stage. CompiledModule.diagnostics provides type-check and scope-resolution errors as Diagnostic objects. CompiledModule.templates[].constraints[] provides CompiledConstraint with span for violation location resolution."
+      "what": "extract_dependency_trace function",
+      "where": "crates/reify-eval/src/deps.rs",
+      "how": "Call for each Let cell's default_expr to get its DependencyTrace (list of ValueCellId reads). Feed into topological_sort's trace map."
     },
     {
-      "what": "reify_eval::Engine::new(checker, kernel) + check/check_snapshot",
-      "where": "crates/reify-eval/src/lib.rs",
-      "how": "Third stage. Engine.check() runs eval + constraint checking (always returns CheckResult). check_snapshot() provides constraint check from current snapshot (returns Option). CheckResult.diagnostics + constraint_results feed the LSP diagnostic output."
+      "what": "TopologyTemplateBuilder and CompiledModuleBuilder",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Fluent builders for test fixtures. Use .let_binding() calls in specific orders to exercise forward references — the order of calls determines source order in value_cells."
     },
     {
-      "what": "reify_constraints::SimpleConstraintChecker",
-      "where": "crates/reify-constraints/src/lib.rs",
-      "how": "Default constraint checker for LSP. Evaluates constraint expressions against current values and reports Satisfied/Violated/Indeterminate."
+      "what": "Expression builders (literal, value_ref_typed, binop)",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Build CompiledExpr trees for let binding expressions and constraint expressions in tests."
     },
     {
-      "what": "reify_types::{Diagnostic, SourceSpan, Severity, ParseError}",
-      "where": "crates/reify-types/src/diagnostics.rs",
-      "how": "Source types for diagnostic conversion. Diagnostic has message, severity, labels[]. SourceSpan has start/end byte offsets. These are converted to LSP types by convert.rs."
-    },
-    {
-      "what": "tower-lsp framework",
-      "where": "Cargo.toml workspace dependency",
-      "how": "Provides LanguageServer trait, LspService, Server, Client, and all LSP type definitions. The async_trait macro enables async handler methods."
-    },
-    {
-      "what": "bracket_source() test fixture",
-      "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "Canonical test source for integration tests (did_open, did_change). Known to parse and compile cleanly, with 5 params, 1 let, 3 constraints for predictable diagnostic output."
-    },
-    {
-      "what": "bracket_source_violating() test fixture",
-      "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "Returns bracket source with thickness=1mm (violates 'thickness > 2mm' constraint). Returns String (not &str). Same byte length as bracket_source() so constraint span offsets are preserved. Used in steps 25, 27, 31 for testing constraint violation detection and span resolution."
-    },
-    {
-      "what": "LspService::new + service.inner() test pattern",
-      "where": "tower-lsp API",
-      "how": "Creates server instance for testing without actual stdin/stdout transport. service.inner() returns &ReifyLanguageServer for direct handler calls. Used in all server.rs integration tests."
-    },
-    {
-      "what": "ConstraintNodeId for constraint span lookup",
-      "where": "crates/reify-types/src/constraint.rs",
-      "how": "Unique identifier for constraints (e.g. 'Bracket#0'). Used as key in HashMap<ConstraintNodeId, SourceSpan> built from CompiledModule to resolve constraint violation locations. ConstraintCheckEntry.id matches CompiledConstraint.id."
+      "what": "MockConstraintChecker and MockConstraintSolver",
+      "where": "crates/reify-test-support/src/mocks.rs",
+      "how": "MockConstraintChecker for tests without constraints. MockConstraintSolver for the post-resolution forward-ref test (step-5) to provide resolved auto param values."
     }
   ]
 }
