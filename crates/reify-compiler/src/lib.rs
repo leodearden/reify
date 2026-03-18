@@ -726,7 +726,7 @@ fn compile_structure(
                     id,
                     label: constraint.label.clone(),
                     expr: compiled_expr,
-                    span: SourceSpan::new(0, 0),
+                    span: constraint.span,
                 });
                 constraint_index += 1;
             }

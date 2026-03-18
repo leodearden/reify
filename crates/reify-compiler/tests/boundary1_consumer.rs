@@ -49,6 +49,7 @@ fn reject_unresolved_type_names() {
 /// Compiled constraints should propagate spans from parsed ConstraintDecls.
 #[test]
 fn compiled_constraint_spans_match_parsed_spans() {
+    use reify_syntax::MemberDecl;
     use reify_types::SourceSpan;
 
     let source = bracket_source();
@@ -69,13 +70,28 @@ fn compiled_constraint_spans_match_parsed_spans() {
         );
     }
 
-    // Verify against known bracket source spans
-    // constraint 0: "constraint thickness > 2mm" at (232, 258)
-    assert_eq!(template.constraints[0].span, SourceSpan::new(232, 258));
-    // constraint 1: "constraint thickness < width / 4" at (263, 295)
-    assert_eq!(template.constraints[1].span, SourceSpan::new(263, 295));
-    // constraint 2: "constraint hole_diameter < thickness * 2" at (300, 340)
-    assert_eq!(template.constraints[2].span, SourceSpan::new(300, 340));
+    // Extract parsed constraint spans for comparison
+    let parsed_constraint_spans: Vec<SourceSpan> = match &parsed.declarations[0] {
+        reify_syntax::Declaration::Structure(s) => s
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                MemberDecl::Constraint(c) => Some(c.span),
+                _ => None,
+            })
+            .collect(),
+        _ => panic!("expected Structure"),
+    };
+    assert_eq!(parsed_constraint_spans.len(), 3);
+
+    // Compiled constraint spans must match parsed ConstraintDecl spans
+    for (i, constraint) in template.constraints.iter().enumerate() {
+        assert_eq!(
+            constraint.span, parsed_constraint_spans[i],
+            "constraint {} span should match parsed ConstraintDecl.span",
+            i
+        );
+    }
 }
 
 /// Handle ParsedModule with parse errors → process valid declarations.
