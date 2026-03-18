@@ -1,8 +1,11 @@
 {
   "task_id": "29",
   "title": "Concurrent evaluate() with async fan-out",
-  "modules": ["crates/reify-eval", "crates/reify-runtime"],
-  "analysis": "Task 29 adds concurrent evaluation to the Engine, where independent nodes within a topological level fan out to parallel tokio tasks. The foundation is already in place from tasks 25-27: reify-runtime has ConcurrentScheduler (level-based async execution), AsyncNodeEvaluator trait (immutable-ref async evaluation), and CancellationToken. The Engine in reify-eval is currently fully synchronous with a sequential edit_param() loop.\n\nThe key integration challenge is bridging Engine's mutable state (cache, journal, snapshot, values) with the concurrent scheduler's shared-immutable model. Engine holds Box<dyn ConstraintChecker> and other non-Send types, making it impossible to share via Arc directly.\n\nDesign approach: (1) Engine exposes prepare_concurrent_edit() which clones/extracts state into a ConcurrentEditSetup value type (cheap via PersistentMap O(1) clones), and apply_concurrent_edit() to merge results back. (2) A ConcurrentEvalAdapter in reify-runtime implements AsyncNodeEvaluator using interior mutability (Arc<RwLock<ValueMap>> for shared values, Arc<RwLock<HashSet>> for skip tracking). (3) Content hash comparison uses pre-extracted previous hashes from CacheStore, avoiding shared mutable cache during concurrent eval. (4) Results are batch-applied to cache/journal/snapshot after concurrent execution completes. (5) Early cutoff propagates between levels via a shared skip set checked by is_dirty(). This design keeps reify-eval free of tokio dependency while enabling full concurrency in reify-runtime.\n\nExisting ConcurrentScheduler already handles: level computation via Kahn's algorithm, spawning tokio tasks per level, joining before next level, cancellation checking between levels, and SchedulerError propagation for panics. The adapter just needs to implement the two-method AsyncNodeEvaluator trait.",
+  "modules": [
+    "crates/reify-eval",
+    "crates/reify-runtime"
+  ],
+  "analysis": "Task 29 adds concurrent evaluation to the Engine, where independent nodes within a topological level fan out to parallel tokio tasks. The foundation is already in place from tasks 25-27: reify-runtime has ConcurrentScheduler (level-based async execution), AsyncNodeEvaluator trait (immutable-ref async evaluation), and CancellationToken. The Engine in reify-eval is currently fully synchronous with a sequential edit_param() loop.\n\nThe key integration challenge is bridging Engine's mutable state (cache, journal, snapshot, values) with the concurrent scheduler's shared-immutable model. Engine holds Box<dyn ConstraintChecker> and other non-Send types, making it impossible to share via Arc directly.\n\nDesign approach: (1) Engine exposes prepare_concurrent_edit() which clones/extracts state into a ConcurrentEditSetup value type (cheap via PersistentMap O(1) clones), and apply_concurrent_edit() to merge results back. (2) A ConcurrentEvalAdapter in reify-runtime implements AsyncNodeEvaluator using interior mutability (Arc<RwLock<ValueMap>> for shared values, Arc<RwLock<HashSet>> for skip tracking). (3) Content hash comparison uses pre-extracted previous hashes from CacheStore, avoiding shared mutable cache during concurrent eval. (4) Results are batch-applied to cache/journal/snapshot after concurrent execution completes. (5) Early cutoff propagates between levels via a shared skip set checked by is_dirty(). This design keeps reify-eval free of tokio dependency while enabling full concurrency in reify-runtime.\n\nExisting ConcurrentScheduler already handles: level computation via Kahn's algorithm, spawning tokio tasks per level, joining before next level, cancellation checking between levels, and SchedulerError propagation for panics. The adapter just needs to implement the two-method AsyncNodeEvaluator trait.\n\n--- REVIEW FEEDBACK (blocking) ---\nreviewer_robustness/resource_leak_on_error_path: If ConcurrentScheduler::execute() returns Err (e.g. TaskPanicked), edit_param_concurrent propagates via ? at line 229. At that point prepare_concurrent_edit() has already called mark_pending() for all eval_set nodes (lib.rs:271-275), transitioning freshness from Final to Pending. Since apply_concurrent_edit() is never called on error, those nodes remain permanently stuck in Pending. This corrupts pending_transition_count, violates the Pending-is-transient invariant, and causes incorrect early-cutoff in subsequent edits. Fix: add Engine::rollback_concurrent_edit() that restores all eval_set nodes to Final, and call it on the error path in edit_param_concurrent().",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -37,7 +40,7 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in reify-eval tests/concurrent.rs: Engine::prepare_concurrent_edit() returns ConcurrentEditSetup with correct state. Use bracket topology: eval(), then prepare_concurrent_edit(width, new_value). Verify: (1) eval_set matches sequential dirty∩demand set (volume + C1 for width change), (2) previous_hashes contains entries for nodes in eval_set that had cache entries, (3) values map has all current parameter values, (4) graph.value_cells.len() == 6, (5) version is bumped from initial.",
+      "description": "Write failing test in reify-eval tests/concurrent.rs: Engine::prepare_concurrent_edit() returns ConcurrentEditSetup with correct state. Use bracket topology: eval(), then prepare_concurrent_edit(width, new_value). Verify: (1) eval_set matches sequential dirty\u2229demand set (volume + C1 for width change), (2) previous_hashes contains entries for nodes in eval_set that had cache entries, (3) values map has all current parameter values, (4) graph.value_cells.len() == 6, (5) version is bumped from initial.",
       "status": "done",
       "commit": "f607e90"
     },
@@ -65,7 +68,7 @@
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: edit_param_concurrent on a linear chain (param a → let b = a * 2) produces correct values. Build topology with builder, create Engine, eval(), then call edit_param_concurrent(engine, a_id, mm(50.0), cancel).await. Verify returned ConcurrentEditResult has correct values: a=50mm, b=100mm. Verify actual_eval_set contains NodeId::Value(b_id).",
+      "description": "Write failing test: edit_param_concurrent on a linear chain (param a \u2192 let b = a * 2) produces correct values. Build topology with builder, create Engine, eval(), then call edit_param_concurrent(engine, a_id, mm(50.0), cancel).await. Verify returned ConcurrentEditResult has correct values: a=50mm, b=100mm. Verify actual_eval_set contains NodeId::Value(b_id).",
       "status": "done",
       "commit": "a6064f5"
     },
@@ -86,7 +89,7 @@
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify concurrent safety of the adapter when multiple nodes at the same level evaluate simultaneously. Each node acquires write lock on values briefly (insert), then releases. Since ValueCellIds are distinct across nodes in a level, there's no logical contention—only lock contention which is brief. Ensure tests pass reliably with tokio multi-threaded runtime.",
+      "description": "Verify concurrent safety of the adapter when multiple nodes at the same level evaluate simultaneously. Each node acquires write lock on values briefly (insert), then releases. Since ValueCellIds are distinct across nodes in a level, there's no logical contention\u2014only lock contention which is brief. Ensure tests pass reliably with tokio multi-threaded runtime.",
       "status": "done",
       "commit": "a6064f5"
     },
@@ -107,7 +110,7 @@
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test: early cutoff in concurrent mode. Build topology: param a, let x = a - a (always 0), let y = x + 1. Change a from 5 to 7. x is dirty, evaluates to 0 (same as before) → Unchanged. y depends on x only, should be skipped. Verify: (1) x appears in actual_eval_set with outcome Unchanged, (2) y is in skipped set, (3) y does NOT appear in node_results, (4) y retains its value of 1.0 in the result values map.",
+      "description": "Write failing test: early cutoff in concurrent mode. Build topology: param a, let x = a - a (always 0), let y = x + 1. Change a from 5 to 7. x is dirty, evaluates to 0 (same as before) \u2192 Unchanged. y depends on x only, should be skipped. Verify: (1) x appears in actual_eval_set with outcome Unchanged, (2) y is in skipped set, (3) y does NOT appear in node_results, (4) y retains its value of 1.0 in the result values map.",
       "status": "done",
       "commit": "a6064f5"
     },
@@ -135,7 +138,7 @@
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test: cancellation stops concurrent evaluation between levels. Build topology: param a → let b (level 0), b → let c (level 1). Create a CancellationToken, trigger cancel inside a custom evaluator wrapper that cancels after evaluating b. Run edit_param_concurrent. Verify: (1) b appears in node_results, (2) c does NOT appear in node_results, (3) function returns Ok (scheduler's cooperative cancellation breaks between levels, not mid-task).",
+      "description": "Write failing test: cancellation stops concurrent evaluation between levels. Build topology: param a \u2192 let b (level 0), b \u2192 let c (level 1). Create a CancellationToken, trigger cancel inside a custom evaluator wrapper that cancels after evaluating b. Run edit_param_concurrent. Verify: (1) b appears in node_results, (2) c does NOT appear in node_results, (3) function returns Ok (scheduler's cooperative cancellation breaks between levels, not mid-task).",
       "status": "done",
       "commit": "a6064f5"
     },
@@ -159,6 +162,48 @@
       "description": "Fix any remaining edge cases exposed by the bracket integration test. Ensure non-Value nodes (Constraint, Realization) in the eval set are tracked in actual_eval_set but not evaluated by the adapter (return Unchanged, matching sequential behavior). Verify Param nodes without expressions are handled correctly (no-op evaluation). Ensure concurrent EvalResult values match sequential EvalResult values exactly.",
       "status": "done",
       "commit": "a6064f5"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing test in reify-eval tests/concurrent.rs: Engine::rollback_concurrent_edit() restores all eval_set nodes from Pending back to Final. Setup: build bracket topology, eval(), call prepare_concurrent_edit(width, new_value) to mark nodes Pending. Verify nodes are in Pending state. Then call engine.rollback_concurrent_edit(&setup). Verify: (1) all nodes in setup.eval_set have freshness=Final (not Pending), (2) cache entries still contain their original result_hash values (rollback doesn't destroy cached content), (3) version and snapshot IDs are rolled back to pre-prepare values, (4) subsequent call to edit_param() on the same Engine succeeds and produces correct values (engine is not corrupted).",
+      "status": "done",
+      "commit": "9a534ee"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Implement Engine::rollback_concurrent_edit(&mut self, setup: &ConcurrentEditSetup) in reify-eval/src/lib.rs. Iterate setup.eval_set and call self.cache.restore_final(node_id) for each node. Also roll back the snapshot_id and version_id bumps done in prepare_concurrent_edit (decrement self.next_snapshot_id and self.next_version_id) so that version numbering stays contiguous. This restores the engine to a consistent state as if prepare_concurrent_edit was never called.",
+      "status": "done",
+      "commit": "9a534ee"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing test in reify-runtime tests/concurrent_eval.rs: edit_param_concurrent rolls back Pending state when scheduler returns Err(TaskPanicked). Setup: build a topology with param a, let b = a * 2. Create an Engine, eval(). Use the lower-level API: call engine.prepare_concurrent_edit(), create a custom AsyncNodeEvaluator that panics during evaluate(), run ConcurrentScheduler::execute() which returns Err(TaskPanicked). Then call engine.rollback_concurrent_edit(&setup). Verify: (1) all nodes in eval_set have freshness=Final (not stuck in Pending), (2) call engine.edit_param(a, new_value) sequentially and verify it succeeds with correct values (engine is usable after error recovery).",
+      "status": "done",
+      "commit": "952bfbf"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Update edit_param_concurrent() in reify-runtime/src/concurrent_eval.rs to call engine.rollback_concurrent_edit(&setup) on the error path before returning Err. Change the scheduler.execute().await? on line 229 to use a match instead: on Ok(_changed), proceed as before to extract results; on Err(e), call engine.rollback_concurrent_edit(&setup) then return Err(e). This ensures nodes marked Pending are restored to Final before the error propagates, preventing the resource leak.",
+      "status": "done",
+      "commit": "952bfbf"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write test in reify-runtime tests/concurrent_eval.rs: repeated error-then-success cycle validates full recovery. Setup: build topology (param a, let b = a*2, let c = b+1), eval(). First: prepare_concurrent_edit, run scheduler with panicking adapter \u2192 Err, rollback. Second: call edit_param_concurrent normally \u2192 returns Ok with correct values. Third: apply_concurrent_edit on second result \u2192 verify engine state is fully correct (cache freshness=Final, correct values, correct version). This validates that rollback truly restores the engine to a reusable state across multiple edit cycles.",
+      "status": "done",
+      "commit": "56bea8a"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Verify the repeated error-then-success cycle test passes. The rollback implementation from step-20 should fully restore engine state (cache freshness, version/snapshot IDs). If the version/snapshot ID rollback causes issues with monotonicity expectations elsewhere, adjust: either don't roll back IDs (accept gaps in numbering) or document the gap. Ensure all existing tests (steps 1-18) still pass alongside new tests.",
+      "status": "done",
+      "commit": "56bea8a"
     }
   ],
   "design_decisions": [
@@ -193,6 +238,14 @@
     {
       "decision": "Journal events recorded during apply phase with approximate timestamps, not during concurrent evaluation",
       "rationale": "Recording events during concurrent eval would require Arc<Mutex<EventJournal>> with contention across tasks. Instead, collect evaluation metadata (which nodes, outcomes, durations) in ConcurrentNodeResult, then replay as journal events during the synchronous apply phase. Timestamps are approximate but ordering is preserved."
+    },
+    {
+      "decision": "Add Engine::rollback_concurrent_edit() as explicit rollback method rather than moving mark_pending into apply phase",
+      "rationale": "The reviewer suggested two options: (a) rollback on error, or (b) defer mark_pending to after success. Option (a) is chosen because mark_pending during prepare is intentional — it prevents other code from treating nodes as Final while concurrent eval is in progress (defensive correctness). The rollback method is simple (iterate eval_set, call restore_final for each), explicit (callers see the error handling), and testable in isolation. Option (b) would remove the safety net of Pending state during eval and could allow stale cache reads if any code path inspects cache freshness during concurrent execution."
+    },
+    {
+      "decision": "Roll back version/snapshot ID bumps during rollback to keep numbering contiguous",
+      "rationale": "prepare_concurrent_edit bumps next_snapshot_id and next_version_id. If the concurrent eval fails and we rollback, those IDs were consumed for nothing. Rolling them back keeps version numbering contiguous and avoids confusing gaps. This is safe because no external observer has seen the bumped IDs yet (they're only in the ConcurrentEditSetup which is being discarded)."
     }
   ],
   "reuse": [
@@ -214,7 +267,7 @@
     {
       "what": "compute_dirty_cone, compute_eval_set",
       "where": "reify-eval/src/dirty.rs lines 22-117",
-      "how": "Reuse in prepare_concurrent_edit() to compute the eval set identically to the sequential path. dirty∩demand intersection with topological sorting produces the same eval_set for both sequential and concurrent execution."
+      "how": "Reuse in prepare_concurrent_edit() to compute the eval set identically to the sequential path. dirty\u2229demand intersection with topological sorting produces the same eval_set for both sequential and concurrent execution."
     },
     {
       "what": "extract_dependency_trace",
@@ -239,7 +292,7 @@
     {
       "what": "CacheStore::record_evaluation() and restore_final()",
       "where": "reify-eval/src/cache.rs lines 213-357",
-      "how": "Called during apply_concurrent_edit() to batch-update cache entries with concurrent evaluation results and restore freshness for skipped nodes."
+      "how": "Called during apply_concurrent_edit() to batch-update cache entries with concurrent evaluation results and restore freshness for skipped nodes. restore_final() is also reused in the new rollback_concurrent_edit() to restore all eval_set nodes to Final on error."
     },
     {
       "what": "TopologyTemplateBuilder, bracket_compiled_module, MockConstraintChecker",
