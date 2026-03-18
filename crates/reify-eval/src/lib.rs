@@ -681,6 +681,13 @@ impl Engine {
                     if let Some(CachedResult::Value(val, _)) =
                         self.cache.try_fast_path(&node_id, version)
                     {
+                        self.journal.record(EvalEvent {
+                            timestamp: Instant::now(),
+                            node_id,
+                            kind: EventKind::CacheHit,
+                            version,
+                            payload: None,
+                        });
                         values.insert(cell.id.clone(), val);
                         stats.cache_hits += 1;
                         continue;
@@ -697,16 +704,32 @@ impl Engine {
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
                         self.cache.record_evaluation(
-                            node_id,
+                            node_id.clone(),
                             result,
                             version,
                             trace,
                         );
+                        self.journal.record(EvalEvent {
+                            timestamp: Instant::now(),
+                            node_id,
+                            kind: EventKind::CacheHit,
+                            version,
+                            payload: None,
+                        });
                         stats.cache_hits += 1;
                         continue;
                     }
 
                     stats.cache_misses += 1;
+
+                    let start = Instant::now();
+                    self.journal.record(EvalEvent {
+                        timestamp: start,
+                        node_id: node_id.clone(),
+                        kind: EventKind::Started,
+                        version,
+                        payload: None,
+                    });
 
                     // Use override if available, otherwise Undef with Auto determinacy
                     let (val, det) = if let Some(override_val) = self.param_overrides.get(&cell.id) {
@@ -719,7 +742,16 @@ impl Engine {
                     let cached_result = CachedResult::Value(val.clone(), det);
                     let outcome =
                         self.cache
-                            .record_evaluation(node_id, cached_result, version, trace);
+                            .record_evaluation(node_id.clone(), cached_result, version, trace);
+
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id,
+                        kind: EventKind::Completed { outcome },
+                        version,
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
+
                     if outcome == EvalOutcome::Unchanged {
                         stats.early_cutoffs += 1;
                     }
@@ -732,6 +764,13 @@ impl Engine {
                     if let Some(CachedResult::Value(val, _)) =
                         self.cache.try_fast_path(&node_id, version)
                     {
+                        self.journal.record(EvalEvent {
+                            timestamp: Instant::now(),
+                            node_id,
+                            kind: EventKind::CacheHit,
+                            version,
+                            payload: None,
+                        });
                         values.insert(cell.id.clone(), val);
                         stats.cache_hits += 1;
                         continue;
@@ -749,16 +788,32 @@ impl Engine {
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
                         self.cache.record_evaluation(
-                            node_id,
+                            node_id.clone(),
                             result,
                             version,
                             trace,
                         );
+                        self.journal.record(EvalEvent {
+                            timestamp: Instant::now(),
+                            node_id,
+                            kind: EventKind::CacheHit,
+                            version,
+                            payload: None,
+                        });
                         stats.cache_hits += 1;
                         continue;
                     }
 
                     stats.cache_misses += 1;
+
+                    let start = Instant::now();
+                    self.journal.record(EvalEvent {
+                        timestamp: start,
+                        node_id: node_id.clone(),
+                        kind: EventKind::Started,
+                        version,
+                        payload: None,
+                    });
 
                     // Use override if available, otherwise evaluate default
                     let val = if let Some(override_val) = self.param_overrides.get(&cell.id) {
@@ -776,7 +831,16 @@ impl Engine {
                         CachedResult::Value(val.clone(), DeterminacyState::Determined);
                     let outcome =
                         self.cache
-                            .record_evaluation(node_id, cached_result, version, trace);
+                            .record_evaluation(node_id.clone(), cached_result, version, trace);
+
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id,
+                        kind: EventKind::Completed { outcome },
+                        version,
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
+
                     if outcome == EvalOutcome::Unchanged {
                         stats.early_cutoffs += 1;
                     }
@@ -796,6 +860,13 @@ impl Engine {
                     if let Some(CachedResult::Value(val, _)) =
                         self.cache.try_fast_path(&node_id, version)
                     {
+                        self.journal.record(EvalEvent {
+                            timestamp: Instant::now(),
+                            node_id,
+                            kind: EventKind::CacheHit,
+                            version,
+                            payload: None,
+                        });
                         values.insert(cell.id.clone(), val);
                         stats.cache_hits += 1;
                         continue;
@@ -813,17 +884,34 @@ impl Engine {
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
                         self.cache.record_evaluation(
-                            node_id,
+                            node_id.clone(),
                             result,
                             version,
                             trace,
                         );
+                        self.journal.record(EvalEvent {
+                            timestamp: Instant::now(),
+                            node_id,
+                            kind: EventKind::CacheHit,
+                            version,
+                            payload: None,
+                        });
                         stats.cache_hits += 1;
                         continue;
                     }
 
                     stats.cache_misses += 1;
                     self.cache.clear_dirty(&node_id);
+
+                    let start = Instant::now();
+                    self.journal.record(EvalEvent {
+                        timestamp: start,
+                        node_id: node_id.clone(),
+                        kind: EventKind::Started,
+                        version,
+                        payload: None,
+                    });
+
                     let val = reify_expr::eval_expr(expr, &values);
 
                     // Build dependency trace from expression refs
@@ -833,7 +921,16 @@ impl Engine {
                         CachedResult::Value(val.clone(), DeterminacyState::Determined);
                     let outcome =
                         self.cache
-                            .record_evaluation(node_id, cached_result, version, trace);
+                            .record_evaluation(node_id.clone(), cached_result, version, trace);
+
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id,
+                        kind: EventKind::Completed { outcome },
+                        version,
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
+
                     if outcome == EvalOutcome::Unchanged {
                         stats.early_cutoffs += 1;
                         // Early cutoff: clear dirty flags on nodes that
