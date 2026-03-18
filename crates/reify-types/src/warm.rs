@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::fmt;
 
 /// Type-erased container for warm-start state.
 ///
@@ -8,6 +9,14 @@ use std::any::Any;
 pub struct OpaqueState {
     inner: Box<dyn Any + Send>,
     estimated_size: usize,
+}
+
+impl fmt::Debug for OpaqueState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpaqueState")
+            .field("estimated_size", &self.estimated_size)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OpaqueState {

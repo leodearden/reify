@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use reify_types::{
-    ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId,
+    ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId, OpaqueState,
     RealizationNodeId, ResolutionNodeId, Satisfaction, Value, ValueCellId, VersionId,
 };
 
@@ -100,7 +100,7 @@ pub enum EvalOutcome {
 }
 
 /// Per-node cache entry storing the evaluation result and metadata.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct NodeCache {
     /// The cached evaluation result.
     pub result: CachedResult,
@@ -112,6 +112,22 @@ pub struct NodeCache {
     pub dependency_trace: DependencyTrace,
     /// The version at which this cache entry was last validated.
     pub basis_version: VersionId,
+    /// Optional warm-start state for the evaluator (type-erased).
+    /// Transient: not preserved across clones (warm state is an optimization hint).
+    pub warm_state: Option<OpaqueState>,
+}
+
+impl Clone for NodeCache {
+    fn clone(&self) -> Self {
+        Self {
+            result: self.result.clone(),
+            result_hash: self.result_hash,
+            freshness: self.freshness.clone(),
+            dependency_trace: self.dependency_trace.clone(),
+            basis_version: self.basis_version,
+            warm_state: None, // warm state is transient, not preserved across clones
+        }
+    }
 }
 
 impl NodeCache {
@@ -129,6 +145,7 @@ impl NodeCache {
             freshness,
             dependency_trace,
             basis_version,
+            warm_state: None,
         }
     }
 }
@@ -209,10 +226,11 @@ impl CacheStore {
             existing.basis_version = version;
             existing.dependency_trace = trace;
             existing.freshness = Freshness::Final;
+            existing.warm_state = None; // old warm state is stale after re-evaluation
             return EvalOutcome::Unchanged;
         }
 
-        // Changed or cold start: store full entry
+        // Changed or cold start: store full entry (clear any old warm state)
         self.caches.insert(
             node,
             NodeCache {
@@ -221,6 +239,7 @@ impl CacheStore {
                 freshness: Freshness::Final,
                 dependency_trace: trace,
                 basis_version: version,
+                warm_state: None,
             },
         );
         EvalOutcome::Changed
