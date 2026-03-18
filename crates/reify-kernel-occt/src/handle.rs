@@ -61,6 +61,10 @@ enum OcctRequest {
 /// context**. Use the `_async` variants (`execute_async`, `query_async`,
 /// `export_async`, `tessellate_async`) from async code.
 ///
+/// The `WarmStartable` trait methods (`warm_state`, `with_warm_state`) are
+/// safe to call from both sync and async contexts — they detect the runtime
+/// and use `block_in_place` when needed.
+///
 /// # Drop behaviour
 ///
 /// When dropped inside an async context, the handle detaches the kernel
@@ -368,27 +372,54 @@ impl OcctKernelHandle {
     }
 }
 
+/// Send a request and wait for the reply, safely handling both sync and
+/// async calling contexts.
+///
+/// When called from outside a tokio runtime, uses `blocking_send` /
+/// `blocking_recv` directly. When called from within an async runtime,
+/// dispatches the blocking work to a helper `std::thread` to avoid
+/// panicking (tokio's blocking primitives panic inside an async context).
+fn send_recv<T: Send + 'static>(
+    tx: &mpsc::Sender<OcctRequest>,
+    request: OcctRequest,
+    reply_rx: oneshot::Receiver<T>,
+) -> Option<T> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // Inside an async runtime — cannot use blocking_send/blocking_recv.
+        // Clone the sender and move everything to a helper OS thread.
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            tx.blocking_send(request).ok()?;
+            reply_rx.blocking_recv().ok()
+        })
+        .join()
+        .ok()?
+    } else {
+        tx.blocking_send(request).ok()?;
+        reply_rx.blocking_recv().ok()
+    }
+}
+
 impl WarmStartable for OcctKernelHandle {
     fn warm_state(&self) -> Option<OpaqueState> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .blocking_send(OcctRequest::WarmState { reply: reply_tx })
-            .ok()?;
-        reply_rx.blocking_recv().ok()?
+        send_recv(
+            &self.tx,
+            OcctRequest::WarmState { reply: reply_tx },
+            reply_rx,
+        )?
     }
 
     fn with_warm_state(&mut self, state: OpaqueState) {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .tx
-            .blocking_send(OcctRequest::WithWarmState {
+        let (reply_tx, reply_rx) = oneshot::channel::<()>();
+        send_recv(
+            &self.tx,
+            OcctRequest::WithWarmState {
                 state,
                 reply: reply_tx,
-            })
-            .is_ok()
-        {
-            let _ = reply_rx.blocking_recv();
-        }
+            },
+            reply_rx,
+        );
     }
 }
 
@@ -1031,6 +1062,43 @@ mod tests {
         // No ops executed — warm_state should return None
         let state = handle.warm_state();
         assert!(state.is_none(), "empty kernel should have no warm state");
+    }
+
+    #[tokio::test]
+    async fn warm_startable_trait_safe_in_async_context() {
+        use reify_types::WarmStartable;
+        // Calling the sync WarmStartable trait methods from an async context
+        // must not panic (previously used blocking_send/blocking_recv which
+        // panicked inside tokio runtime).
+        let mut handle_a = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        handle_a.execute_async(&op).await.unwrap();
+
+        // Call sync warm_state() from async context — must not panic
+        let state = handle_a.warm_state().expect("should have warm state");
+
+        // Call sync with_warm_state() from async context — must not panic
+        let mut handle_b = super::OcctKernelHandle::spawn();
+        handle_b.with_warm_state(state);
+
+        // Verify restored state works
+        let vol = handle_b
+            .query_async(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .await
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 6000.0).abs() < 1.0,
+                    "expected volume ~6000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
     }
 
     #[test]
