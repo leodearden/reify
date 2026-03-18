@@ -52,6 +52,33 @@ pub struct OcctKernelHandle {
 }
 
 impl OcctKernelHandle {
+    /// Export a geometry handle to the given format, writing bytes to `writer`.
+    ///
+    /// The kernel thread serializes to a `Vec<u8>` internally, then sends the
+    /// bytes back through the channel. The handle writes them to the caller's
+    /// writer. This avoids sending the `!Send` `&mut dyn Write` across threads.
+    pub fn export(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .blocking_send(OcctRequest::Export {
+                handle,
+                format,
+                reply: reply_tx,
+            })
+            .map_err(|_| ExportError::IoError("kernel thread died".into()))?;
+        let bytes = reply_rx
+            .blocking_recv()
+            .map_err(|_| ExportError::IoError("kernel thread died".into()))??;
+        writer
+            .write_all(&bytes)
+            .map_err(|e| ExportError::IoError(e.to_string()))
+    }
+
     /// Run a query against a geometry handle on the kernel thread.
     pub fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         let (reply_tx, reply_rx) = oneshot::channel();
