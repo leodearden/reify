@@ -192,4 +192,38 @@ mod tests {
             other => panic!("expected InvalidHandle, got {:?}", other),
         }
     }
+
+    #[test]
+    fn export_step_contains_iso_header() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute(&op).unwrap();
+        let mut buf = Vec::new();
+        handle
+            .export(gh.id, reify_types::ExportFormat::Step, &mut buf)
+            .unwrap();
+        let content = String::from_utf8(buf).unwrap();
+        assert!(
+            content.contains("ISO-10303-21"),
+            "STEP export should contain ISO-10303-21 header"
+        );
+    }
+
+    #[test]
+    fn export_unsupported_format_returns_error() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute(&op).unwrap();
+        let mut buf = Vec::new();
+        let result = handle.export(gh.id, reify_types::ExportFormat::Stl, &mut buf);
+        assert!(result.is_err());
+    }
 }
