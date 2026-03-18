@@ -353,6 +353,27 @@ impl CacheStore {
         self.pending_transition_count = 0;
     }
 
+    /// Store warm-start state on an existing cached node.
+    ///
+    /// Returns `true` if the node was found and warm state was set,
+    /// `false` if the node is not in the cache (no-op).
+    pub fn donate_warm_state(&mut self, node: &NodeId, state: OpaqueState) -> bool {
+        if let Some(entry) = self.caches.get_mut(node) {
+            entry.warm_state = Some(state);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Take the warm-start state out of a cached node (take semantics).
+    ///
+    /// Returns the `OpaqueState` if present, leaving `None` in its place.
+    /// A second call for the same node will return `None`.
+    pub fn get_warm_state(&mut self, node: &NodeId) -> Option<OpaqueState> {
+        self.caches.get_mut(node)?.warm_state.take()
+    }
+
     /// Version fast path: if the node is cached and its basis_version matches
     /// the current version, return a clone of the cached result without
     /// re-evaluation.
