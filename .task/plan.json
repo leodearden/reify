@@ -1,13 +1,13 @@
 {
   "task_id": "36",
   "title": "Reproduce and fix interactive edit-loop staleness after parameter edits",
-  "modules": ["crates/reify-eval", "crates/reify-test-support", "crates/reify-runtime"],
-  "analysis": "## Gap Analysis\n\n`Engine::edit_param()` (lib.rs:749-910) has three critical gaps that make the interactive edit loop incomplete:\n\n### 1. Constraints not evaluated\nLine 891-892 explicitly says: \"Constraint/Realization nodes: tracked in eval set but not evaluated (deferred to check()/build())\". Constraint nodes ARE in the eval_set (dirty cone includes them since ReverseDependencyIndex tracks constraint→value_cell edges), but edit_param only processes `NodeId::Value` nodes. It returns `diagnostics: Vec::new()` unconditionally.\n\n### 2. Auto-resolution never re-runs\nedit_param returns `resolved_params: HashMap::new()` unconditionally. When a param change affects constraints that govern auto parameters, the solver should re-run. Currently it only runs during cold-start `eval()`. The Engine has `self.solver` and the EvaluationGraph has `ConstraintNodeData.expr` — all infrastructure exists, it's just not wired.\n\n### 3. No incremental check/build\n`check()` always cold-starts via `eval()`. There's no `edit_check()` method that performs incremental constraint checking after `edit_param()`. Similarly, `build()` cold-starts via `check()` with no incremental path.\n\n### Data availability in edit_param\nedit_param works from the snapshot's EvaluationGraph (not the CompiledModule). The graph contains:\n- `value_cells` with `kind==Auto` → identifies auto params\n- `constraints` with `expr` → constraint expressions for re-evaluation\n- Constraint expressions → via `extract_dependency_trace()` can determine which constraints reference auto params\n- ValueCellId has entity/scope → can group auto params by scope for solver\n\nEngine already holds `constraint_checker` and `solver`. CachedResult already supports `Satisfaction` and `Resolution` variants. All infrastructure exists.\n\n### Resolution node gap\n`EvaluationGraph::from_templates()` does NOT populate `graph.resolutions` (despite the field existing and deps.rs/dirty.rs/demand.rs all having code to handle them). This means resolution nodes aren't tracked in the reverse index or dirty cone during production. For this task we don't need to fix this — edit_param can detect re-resolution need by checking if auto params exist and if their governing constraints are in the dirty cone, using the same pattern as eval().\n\n### Propagation after re-resolution\nWhen the solver produces new auto param values, let bindings depending on those auto params need re-evaluation. These let bindings may NOT be in the original dirty cone (which only propagated from the changed regular param). After re-resolution, a second propagation wave is needed: compute dirty cone from changed auto params, evaluate affected let bindings.",
+  "modules": ["crates/reify-eval", "crates/reify-runtime"],
+  "analysis": "## Current State\n\nSteps 1-12 from the prior plan are complete and committed. The sequential edit pipeline is fully working:\n- `edit_param()` handles auto-resolution, second-wave let-binding propagation, diagnostics\n- `edit_check()` adds constraint satisfaction checking\n- 365 tests pass\n\nThe concurrent edit path (`edit_param_concurrent`) calls `resolve_concurrent_edit()` which correctly updates `result.values` and `result.snapshot_values` in place — so values ARE correct after `apply_concurrent_edit()`. The test `edit_param_concurrent_re_resolves_auto_params` passes.\n\n## Remaining Staleness Gaps\n\n### Gap 1: ConcurrentEditResult discards resolution metadata\n`edit_param_concurrent` (concurrent_eval.rs:312-313):\n```rust\nlet (_resolved_params, _diagnostics) =\n    engine.resolve_concurrent_edit(&setup, &mut result);\n```\nThe returned `resolved_params` and `diagnostics` are assigned to underscore-prefixed variables and discarded. The `ConcurrentEditResult` struct (lib.rs:152-163) has no fields for these. Callers cannot tell what auto params were resolved or if the solver produced diagnostics.\n\n### Gap 2: No concurrent constraint checking\nThere is no `edit_check_concurrent` equivalent. After a concurrent edit, the only way to check constraint satisfaction is to call `check()` which does a full cold-start `eval()`. The sequential path has `edit_check()` which combines `edit_param()` + constraint checking, but the concurrent path has no equivalent.\n\n### Gap 3: Stale test comment\nThe test `edit_param_concurrent_re_resolves_auto_params` (concurrent_eval.rs:875) has a doc comment saying \"Currently FAILS because the concurrent edit path doesn't include a resolution phase.\" This is stale — the test passes.\n\n## Approach\n1. Add `resolved_params` and `diagnostics` fields to `ConcurrentEditResult`\n2. Wire `resolve_concurrent_edit` return values into the result in `edit_param_concurrent`\n3. Add `check_constraints_with_values` helper to Engine (factored from `edit_check`)\n4. Create `edit_check_concurrent` function in reify-runtime\n5. Fix stale comments\n\nAll changes are additive — no existing behavior is modified.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Verify existing test suite passes (cargo test in reify-eval and reify-runtime)",
-      "status": "pending",
+      "description": "Verify all existing tests pass (365 tests across workspace)",
+      "status": "done",
       "commit": null,
       "tests": []
     }
@@ -16,171 +16,140 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `edit_param_re_resolves_auto_params_when_constraints_dirty` in crates/reify-eval/tests/incremental.rs. Module: param `a` (default mm(3.0)), auto `x`, constraint `x > a`. MockConstraintSolver returns x=mm(5.0). Cold eval → solver resolves x to mm(5.0), resolved_params contains x. Edit `a` to mm(8.0) — constraint `x > a` is in dirty cone (depends on `a`). Assert: (1) result.resolved_params is non-empty, (2) result.resolved_params contains x with mm(5.0), (3) values[x] == mm(5.0). Currently FAILS because edit_param returns resolved_params: HashMap::new().",
-      "status": "pending",
-      "commit": null
+      "description": "Write failing test `concurrent_edit_result_includes_resolved_params` in crates/reify-runtime/tests/concurrent_eval.rs. Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`, constraint `x > a`. SequencedMockSolver: 1st call x=mm(5.0), 2nd call x=mm(20.0). Cold eval. Concurrent edit a→mm(8.0). Assert `result.resolved_params` is non-empty and contains x→mm(20.0). This test will NOT COMPILE because `ConcurrentEditResult` has no `resolved_params` field.",
+      "status": "done",
+      "commit": "a2feb1d"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add auto-resolution re-run to edit_param(). After the value-node evaluation loop (line 893), add resolution phase: (1) Iterate graph.value_cells to find auto params grouped by scope (entity name). (2) For each scope with auto params, find constraints from graph.constraints that reference auto params (via extract_dependency_trace). (3) Check if any of those constraints are in the dirty_cone. (4) If yes, build ResolutionProblem from graph data and call self.solver.solve(). (5) On SolveResult::Solved: update values map, snapshot values (with Determined state), param_overrides, and resolved_params. (6) On Infeasible/NoProgress: add diagnostics.",
-      "status": "pending",
-      "commit": null
+      "description": "Add `resolved_params: HashMap<ValueCellId, Value>` and `diagnostics: Vec<Diagnostic>` fields to `ConcurrentEditResult` in crates/reify-eval/src/lib.rs. Initialize to empty defaults in `ConcurrentEvalAdapter::into_result()` and `build_result_shared()` in crates/reify-runtime/src/concurrent_eval.rs. Update `edit_param_concurrent` to capture the return value of `resolve_concurrent_edit` and set `result.resolved_params` and `result.diagnostics` before returning.",
+      "status": "done",
+      "commit": "a013e8c"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test `edit_param_let_binding_re_evaluates_after_re_resolution` in crates/reify-eval/tests/incremental.rs. Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`, constraint `x > a`. Solver returns x=mm(5.0). Cold eval → y = mm(5.0)*2 = 0.01 SI. Edit `a` to mm(8.0) → solver re-resolves x (still mm(5.0) from fixed mock). Assert y is re-evaluated to 0.01 SI (confirming let binding was re-run with resolved auto param, not stale Undef). To make this test more discriminating, use a solver that returns a different value: create a second variant where solver returns x=mm(10.0). Cold eval x=mm(10.0), y=0.02. Edit a → re-resolve → y should still be 0.02. Currently FAILS because let bindings depending on auto params are not re-evaluated after re-resolution in edit_param.",
-      "status": "pending",
-      "commit": null
+      "description": "Write failing test `concurrent_edit_result_includes_diagnostics_on_infeasible` in crates/reify-runtime/tests/concurrent_eval.rs. Module: param `a` (default mm(1.0)), auto `x`, constraint `x > a`. SequencedMockSolver: 1st call Solved x=mm(5.0), 2nd call Infeasible with diagnostic message. Cold eval. Concurrent edit a→mm(10.0). Assert `result.diagnostics` is non-empty and contains the infeasibility message. This verifies solver diagnostics flow through the concurrent path.",
+      "status": "done",
+      "commit": "5268c85"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "After solver re-resolution in edit_param(), propagate auto param changes: (1) Compute a second dirty cone from the set of re-resolved auto param IDs using the reverse_index. (2) Compute eval set for this second cone (intersect with demand, topologically sort). (3) Evaluate value nodes in this second eval set with updated values (including resolved auto params). (4) Update snapshot values and cache entries for these re-evaluated nodes.",
-      "status": "pending",
-      "commit": null
+      "description": "Verify step-3 test passes with step-2 implementation (diagnostics should already flow through since resolve_concurrent_edit returns them and edit_param_concurrent now captures them). Fix if needed.",
+      "status": "done",
+      "commit": "5268c85"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test `edit_param_solver_diagnostics_propagated` in crates/reify-eval/tests/incremental.rs. Module: param `a` (default mm(1.0)), auto `x`, constraint `x > a`. MockConstraintSolver returns Infeasible with diagnostic 'constraints are infeasible'. Cold eval → diagnostics from solver. Edit `a` to mm(5.0) (constraint still in dirty cone). Assert result.diagnostics is non-empty and contains 'infeasible'. Currently FAILS because edit_param returns diagnostics: Vec::new().",
-      "status": "pending",
-      "commit": null
+      "description": "Write failing test `edit_check_concurrent_reports_constraint_satisfaction` in crates/reify-runtime/tests/concurrent_eval.rs. Uses SimpleConstraintChecker (from reify-constraints). Module: param `width` (default mm(10.0)), constraint `width > mm(5.0)`. Cold check(). Call new function `edit_check_concurrent(engine, width_id, mm(2.0), cancel)`. Assert: (1) CheckResult.constraint_results[0].satisfaction == Violated, (2) values[width] == mm(2.0), (3) resolved_params is empty (no auto params). This test will NOT COMPILE because `edit_check_concurrent` doesn't exist.",
+      "status": "done",
+      "commit": "2a02a32"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Ensure solver diagnostic propagation works in edit_param. This should already be handled by step-2's implementation (Infeasible/NoProgress branches add diagnostics). If step-5 still fails, wire up the diagnostic collection from the resolution phase.",
-      "status": "pending",
-      "commit": null
+      "description": "Add `check_constraints_with_values(&self, values: &ValueMap) -> (Vec<ConstraintCheckEntry>, Vec<Diagnostic>)` public method to Engine in crates/reify-eval/src/lib.rs. Factor the constraint-checking logic from `edit_check` into this method: iterate snapshot.graph.constraints, build ConstraintInput, call self.constraint_checker.check(), collect results. Refactor `edit_check` to use this new helper. Then create `edit_check_concurrent` async function in crates/reify-runtime/src/concurrent_eval.rs: calls edit_param_concurrent, clones resolved_params and diagnostics from result, calls engine.apply_concurrent_edit, calls engine.check_constraints_with_values, returns CheckResult.",
+      "status": "done",
+      "commit": "adcdfef"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test `edit_check_returns_incremental_constraint_satisfaction` in crates/reify-eval/tests/incremental.rs. Uses SimpleConstraintChecker (real checker). Module: param `width` (default mm(10.0)), constraint `width > mm(5.0)`. Cold check() → Satisfied. Call new method edit_check(width_id, mm(2.0)). Assert: (1) CheckResult.constraint_results[0].satisfaction == Violated, (2) values[width] == mm(2.0). Currently FAILS because edit_check() doesn't exist.",
-      "status": "pending",
-      "commit": null
+      "description": "Write test `edit_check_concurrent_constraint_transitions` in crates/reify-runtime/tests/concurrent_eval.rs. Uses SimpleConstraintChecker. Module: param `width` (default mm(10.0)), constraint `width > mm(5.0)`. Cold check → Satisfied. edit_check_concurrent(width, mm(2.0)) → Violated. edit_check_concurrent(width, mm(8.0)) → Satisfied. Verifies constraint transitions work correctly through the concurrent path across multiple consecutive edits.",
+      "status": "done",
+      "commit": "bcca88b"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add `edit_check(&mut self, cell: ValueCellId, new_value: Value) -> CheckResult` method to Engine. Implementation: (1) Call edit_param(cell, new_value) to get updated EvalResult. (2) Evaluate ALL constraint nodes in the graph (not just dirty ones) against updated values using self.constraint_checker, mirroring the check() pattern but using graph.constraints instead of module.templates.constraints. (3) Combine into CheckResult with constraint_results, merged diagnostics, resolved_params.",
-      "status": "pending",
-      "commit": null
+      "description": "Fix any issues with concurrent constraint transitions. Ensure engine state is correctly updated between consecutive edit_check_concurrent calls (snapshot, cache, param_overrides all consistent).",
+      "status": "done",
+      "commit": "bcca88b"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test `edit_check_constraint_transitions_satisfied_to_violated_and_back` in crates/reify-eval/tests/incremental.rs. Uses SimpleConstraintChecker. Module: param `width` (default mm(10.0)), constraint `width > mm(5.0)`. Cold check → Satisfied. edit_check(width, mm(2.0)) → Violated. edit_check(width, mm(8.0)) → Satisfied again. Assert correct satisfaction at each step. Verifies the edit loop handles multiple consecutive edits correctly.",
-      "status": "pending",
-      "commit": null
+      "description": "Write test `edit_check_concurrent_with_resolution_and_constraints` — end-to-end concurrent interactive loop. Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`, constraint `x > a`, constraint `y < mm(100.0)`. SequencedMockSolver returns x=mm(5.0) then x=mm(20.0). Cold eval+check. edit_check_concurrent(a, mm(8.0)). Assert: (1) resolved_params contains x→mm(20.0), (2) values[y] = 0.04 SI (re-evaluated from resolved x), (3) constraint `x > a` is Satisfied (via checker), (4) constraint `y < mm(100)` is Satisfied. This is the comprehensive coherence test: concurrent edit → resolution → let-binding propagation → constraint checking, all in one interactive update.",
+      "status": "done",
+      "commit": "86a9969"
     },
     {
       "id": "step-10",
-      "type": "test",
-      "description": "Write test `edit_param_no_re_resolution_when_auto_constraints_not_dirty` in crates/reify-eval/tests/incremental.rs. Regression guard. Module: param `a` (default mm(1.0)), param `b` (default mm(2.0)), auto `x`, let `y = b * 2.0`, constraint `x > a`. Solver returns x=mm(5.0). Cold eval → x resolved. Edit `b` to mm(3.0) — constraint `x > a` is NOT in dirty cone (doesn't depend on `b`). Assert: (1) result.resolved_params is empty (solver not re-run), (2) y = mm(3.0) * 2.0 = 0.006 SI (re-evaluated), (3) x remains mm(5.0) in values. Confirms solver is only called when governing constraints are actually dirty.",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write test `edit_param_snapshot_updated_after_re_resolution` in crates/reify-eval/tests/incremental.rs. Module: param `a`, auto `x`, let `y = x * 2.0`, constraint `x > a`. Solver returns x=mm(5.0). Cold eval. Edit `a`. Assert: (1) snapshot exists, (2) snapshot.values contains x with resolved value (not Undef), (3) snapshot.values contains y with re-evaluated value, (4) snapshot provenance is Edit (not Initial).",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-12",
-      "type": "test",
-      "description": "Write test `edit_param_concurrent_re_resolves_auto_params` in crates/reify-runtime/tests/concurrent_eval.rs. Same module as step-1 but via edit_param_concurrent. Cold eval, then concurrent edit of param `a`. Assert resolved values are correct in the ConcurrentEditResult. This may require extending prepare_concurrent_edit/apply_concurrent_edit to handle resolution, or extending edit_param_concurrent to include a resolution phase.",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-13",
       "type": "impl",
-      "description": "Extend the concurrent edit path to support re-resolution. Options: (1) Run resolution as a post-processing step in edit_param_concurrent after ConcurrentScheduler completes but before apply_concurrent_edit, or (2) add resolution handling inside apply_concurrent_edit. The sequential solver call is acceptable since NLopt is single-threaded. Update apply_concurrent_edit to propagate resolved values and re-evaluate affected let bindings.",
-      "status": "pending",
-      "commit": null
+      "description": "Fix any coherence issues found by step-9. Update the stale doc comment on `edit_param_concurrent_re_resolves_auto_params` test (remove 'Currently FAILS' note). Clean up any remaining underscore-prefixed variable names from the old discard pattern.",
+      "status": "done",
+      "commit": "57d26db"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Re-resolution in edit_param uses same pattern as eval() — iterate graph.value_cells/constraints to find auto params and governing constraints rather than relying on graph.resolutions",
-      "rationale": "EvaluationGraph.from_templates() does not populate the resolutions map in production. Rather than fixing that (which would be a prerequisite and scope expansion), we replicate the eval() pattern: find Auto cells by kind, find constraints referencing them via extract_dependency_trace, group by scope. This is self-contained within edit_param and doesn't require graph schema changes."
+      "decision": "Add resolved_params/diagnostics as fields on ConcurrentEditResult rather than returning them separately from edit_param_concurrent",
+      "rationale": "Keeping all edit output in one struct mirrors the EvalResult pattern, prevents callers from losing track of associated data, and means existing callers just get additional fields (backward-compatible). The struct already carries values and snapshot_values; adding resolution metadata completes it."
     },
     {
-      "decision": "Two-wave propagation after re-resolution: first dirty cone from edited param, then second dirty cone from re-resolved auto params",
-      "rationale": "Let bindings depending on auto params may not be in the original dirty cone (the changed regular param may not be an ancestor of those let bindings). After the solver updates auto param values, we need a second propagation pass to update their dependents. This is conceptually a second edit_param for the auto params, but we inline it for efficiency."
+      "decision": "Factor constraint checking into Engine::check_constraints_with_values helper, reuse in both edit_check and edit_check_concurrent",
+      "rationale": "Avoids duplicating constraint-checking logic. edit_check currently inlines the constraint loop; factoring it out makes it available to the concurrent path without copying. Both paths need identical constraint evaluation logic — only the value-computation step differs (sequential vs concurrent)."
     },
     {
-      "decision": "edit_check() evaluates ALL constraints (not just dirty ones) to produce complete CheckResult",
-      "rationale": "Constraint satisfaction for non-dirty constraints doesn't change, but the caller expects a complete picture. Re-evaluating all constraints is cheap (expression evaluation is microseconds) and avoids complex caching of per-constraint satisfaction state. This mirrors how check() evaluates all constraints after eval()."
+      "decision": "edit_check_concurrent is a free function in reify-runtime (not an Engine method)",
+      "rationale": "Matches the existing edit_param_concurrent pattern. Keeps async code in the runtime crate rather than making Engine depend on tokio. The function orchestrates Engine methods (prepare, apply, check) without owning any state."
     },
     {
-      "decision": "edit_param() handles resolution and diagnostics; edit_check() adds constraint satisfaction",
-      "rationale": "This mirrors the eval()/check() separation: eval() runs the solver and reports solver diagnostics, check() adds constraint satisfaction results. edit_param() fills in the EvalResult fields that eval() already fills (resolved_params, diagnostics). edit_check() wraps edit_param() and adds constraint_results, returning CheckResult."
+      "decision": "edit_check_concurrent applies the concurrent edit before checking constraints (apply-then-check, not check-with-temporary-values)",
+      "rationale": "Applying first ensures the engine state is fully updated for subsequent operations. The caller gets a consistent engine state plus a complete CheckResult. This matches edit_check's pattern where edit_param updates engine state before constraint checking reads from it."
     },
     {
-      "decision": "MockConstraintSolver with fixed results is sufficient for testing the pipeline wiring",
-      "rationale": "The tests verify that the solver IS called during edit_param (resolved_params non-empty) and that its results are propagated (auto param values and dependent let bindings updated). Solver correctness is tested separately in reify-constraints. The fixed mock proves the pipeline is complete without needing a stateful solver."
+      "decision": "Defer incremental geometry realization to a separate task",
+      "rationale": "The task mentions 'realized outputs' but geometry realization requires OCCT kernel integration with thread-safety constraints (M4 'Living Design' scope). The 'realized outputs' gap for this task is addressed by ensuring let-binding values that feed realization (e.g., volume) are correctly updated in the interactive loop. Incremental geometry belongs to a dedicated task."
     },
     {
-      "decision": "Concurrent resolution runs solver synchronously after ConcurrentScheduler completes, before apply_concurrent_edit",
-      "rationale": "NLopt (the production solver) is single-threaded. Running the solver as a post-processing step after concurrent value evaluation is architecturally clean: the concurrent scheduler handles parallelizable value evaluation, then the solver runs sequentially with all values finalized. This avoids mixing async and sync concerns."
+      "decision": "Use SimpleConstraintChecker (real checker) for edit_check_concurrent tests, not MockConstraintChecker",
+      "rationale": "The concurrent constraint tests need to verify actual satisfaction transitions (Satisfied→Violated→Satisfied). MockConstraintChecker returns predetermined results regardless of values, which wouldn't test the pipeline. SimpleConstraintChecker evaluates constraint expressions against actual values, proving the full pipeline is coherent."
     }
   ],
   "reuse": [
     {
-      "what": "TopologyTemplateBuilder + CompiledModuleBuilder + expression helpers",
+      "what": "TopologyTemplateBuilder, CompiledModuleBuilder, expression helpers (binop, gt, literal, value_ref)",
       "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Build test modules with .param(), .auto_param(), .let_binding(), .constraint() and expression builders (binop, value_ref, literal, gt, lt). Exact same pattern used in resolution.rs tests."
+      "how": "Build test modules with .param(), .auto_param(), .let_binding(), .constraint(). Same pattern used in all existing concurrent_eval.rs and resolution.rs tests."
     },
     {
-      "what": "MockConstraintChecker and MockConstraintSolver",
+      "what": "MockConstraintChecker, SequencedMockConstraintSolver",
       "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "MockConstraintChecker for Engine construction, MockConstraintSolver::new_solved/new_infeasible for solver result injection. Used throughout resolution.rs tests."
+      "how": "MockConstraintChecker for Engine construction in resolution tests. SequencedMockSolver for multi-phase resolution testing (cold eval → edit). Already used in edit_param_concurrent_re_resolves_auto_params test."
     },
     {
-      "what": "SimpleConstraintChecker (real checker)",
+      "what": "SimpleConstraintChecker (real constraint evaluator)",
       "where": "crates/reify-constraints/src/lib.rs",
-      "how": "For edit_check tests that need actual constraint evaluation (not mock results). Already used in resolution.rs::check_reports_satisfied_after_resolution."
+      "how": "For edit_check_concurrent tests that need actual constraint evaluation. Already used in edit_check_constraint_transitions_satisfied_to_violated_and_back test in incremental.rs."
     },
     {
-      "what": "mm() value helper",
+      "what": "mm() value constructor",
       "where": "crates/reify-test-support/src/values.rs",
-      "how": "Create length values in millimeters (converted to SI internally). mm(5.0) = 0.005 SI."
+      "how": "Create length values in millimeters. mm(5.0) → Value::Scalar { si_value: 0.005, dimension: LENGTH }."
     },
     {
-      "what": "extract_dependency_trace() for identifying constraint→auto_param relationships",
-      "where": "crates/reify-eval/src/deps.rs:13",
-      "how": "In the edit_param resolution phase, extract dependency traces from constraint expressions to determine if they reference auto params. Same pattern used in eval()'s resolution phase (lib.rs:583-584)."
+      "what": "edit_param_concurrent() existing function",
+      "where": "crates/reify-runtime/src/concurrent_eval.rs:282-324",
+      "how": "edit_check_concurrent wraps edit_param_concurrent with constraint checking, following the same composition pattern as edit_check wraps edit_param."
     },
     {
-      "what": "compute_dirty_cone() for second propagation wave",
-      "where": "crates/reify-eval/src/dirty.rs:22",
-      "how": "After re-resolution, compute a second dirty cone from the set of re-resolved auto param ValueCellIds to find let bindings that need re-evaluation."
+      "what": "edit_check() constraint-checking logic",
+      "where": "crates/reify-eval/src/lib.rs:1218-1261",
+      "how": "Factor the constraint-checking loop (lines 1228-1253) into check_constraints_with_values helper. The helper takes &self and &ValueMap, accesses self.current_snapshot.graph.constraints and self.constraint_checker."
     },
     {
-      "what": "compute_eval_set() for topological ordering of second wave",
-      "where": "crates/reify-eval/src/dirty.rs",
-      "how": "Topologically sort the second-wave dirty∩demand nodes for correct evaluation order."
+      "what": "ConcurrentEvalAdapter::into_result() and build_result_shared()",
+      "where": "crates/reify-runtime/src/concurrent_eval.rs:111-167",
+      "how": "Update these to initialize new resolved_params and diagnostics fields to empty defaults. The resolution metadata is set after the adapter produces the result, in edit_param_concurrent."
     },
     {
-      "what": "edit_param_concurrent() helper function",
-      "where": "crates/reify-runtime/src/concurrent_eval.rs",
-      "how": "For the concurrent resolution test (step-12), reuse the existing async wrapper that handles prepare/execute/apply lifecycle."
-    },
-    {
-      "what": "EvalResult, CheckResult, ConstraintCheckEntry types",
+      "what": "CheckResult, ConstraintCheckEntry, EvalResult types",
       "where": "crates/reify-eval/src/lib.rs:68-90",
-      "how": "edit_param returns EvalResult (existing), edit_check returns CheckResult (existing type). No new result types needed."
-    },
-    {
-      "what": "Existing incremental_fast_path_works_after_resolution test pattern",
-      "where": "crates/reify-eval/tests/resolution.rs:478",
-      "how": "This test demonstrates the pattern: cold eval with solver, then edit_param. It verifies let bindings and cache state. Our tests extend this pattern to verify that edit_param itself runs re-resolution (which this test doesn't check — it edits a param that doesn't affect auto constraints)."
+      "how": "edit_check_concurrent returns CheckResult (same as edit_check). No new result types needed."
     }
   ]
 }
