@@ -391,6 +391,100 @@ mod tests {
     }
 
     #[test]
+    fn warm_start_roundtrip_multi_shape() {
+        let mut kernel_a = OcctKernel::new();
+
+        // Create box (10x20x30), handle ID 1
+        kernel_a
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // Create cylinder (r=5, h=20), handle ID 2
+        kernel_a
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+
+        // Boolean union, handle ID 3
+        kernel_a
+            .execute(&GeometryOp::Union {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            })
+            .unwrap();
+
+        // Extract warm state
+        let state = kernel_a.warm_state().expect("should have warm state");
+
+        // Create fresh kernel B and restore
+        let mut kernel_b = OcctKernel::new();
+        kernel_b.with_warm_state(state);
+
+        // Verify box volume (~6000)
+        let vol_box = kernel_b
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match vol_box {
+            Value::Real(v) => assert!((v - 6000.0).abs() < 1.0, "box vol: {v}"),
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // Verify cylinder volume (~pi*25*20 ≈ 1570.8)
+        let vol_cyl = kernel_b
+            .query(&GeometryQuery::Volume(GeometryHandleId(2)))
+            .unwrap();
+        match vol_cyl {
+            Value::Real(v) => assert!((v - 1570.8).abs() < 1.0, "cyl vol: {v}"),
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // Verify union volume (positive)
+        let vol_union = kernel_b
+            .query(&GeometryQuery::Volume(GeometryHandleId(3)))
+            .unwrap();
+        match vol_union {
+            Value::Real(v) => assert!(v > 0.0, "union vol should be positive: {v}"),
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // Verify next_id restored: new sphere should get handle ID 4
+        let sphere_h = kernel_b
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(5.0),
+            })
+            .unwrap();
+        assert_eq!(sphere_h.id, GeometryHandleId(4), "next_id should be restored");
+    }
+
+    #[test]
+    fn with_warm_state_ignores_wrong_type() {
+        let mut kernel = OcctKernel::new();
+        // Pass a String instead of OcctWarmState — should be silently ignored
+        kernel.with_warm_state(OpaqueState::new(String::from("garbage"), 8));
+        // Kernel should still function normally
+        let gh = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(gh.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => assert!((v - 6000.0).abs() < 1.0, "vol: {v}"),
+            other => panic!("expected Real, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn brep_serialization_roundtrip() {
         // Create a box shape
         let shape = ffi::ffi::make_box(10.0, 20.0, 30.0).unwrap();
