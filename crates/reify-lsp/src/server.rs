@@ -289,6 +289,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_recovers_from_eval_state_lock_poisoning() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+        let uri = test_uri();
+
+        // Get the eval_state Arc and poison the Mutex by panicking while holding the lock
+        let eval_state_arc = server.eval_state().clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = eval_state_arc.lock().unwrap();
+            panic!("intentional panic to poison the mutex");
+        });
+        // Wait for the thread to finish (it panicked)
+        let _ = handle.join();
+
+        // Confirm the lock is poisoned
+        assert!(
+            server.eval_state().lock().is_err(),
+            "lock should be poisoned after panic"
+        );
+
+        // did_open should recover from the poisoned lock, not panic
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: reify_test_support::bracket_source().to_string(),
+                },
+            })
+            .await;
+
+        // Verify diagnostics were captured (server recovered successfully)
+        let state = server.state().read().await;
+        let captured = state
+            .last_diagnostics_for(&uri)
+            .expect("diagnostics should be captured even after poison recovery");
+        // Valid bracket source should have no ERROR-severity diagnostics
+        let errors: Vec<_> = captured
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "valid source should have no errors after poison recovery, got: {errors:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn did_close_removes_document_from_store() {
         let (service, _socket) = LspService::new(ReifyLanguageServer::new);
         let server = service.inner();
