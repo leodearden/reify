@@ -865,6 +865,26 @@ mod tests {
         assert_eq!(result.id, GeometryHandleId(1)); // fresh kernel, fresh ids
     }
 
+    // --- Warm-start tests ---
+
+    #[test]
+    fn handle_warm_state_returns_some_after_op() {
+        use reify_types::WarmStartable;
+        let mut handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        handle.execute(&op).unwrap();
+        let state = handle.warm_state();
+        assert!(state.is_some(), "handle with shapes should have warm state");
+        assert!(
+            state.unwrap().estimated_size_bytes() > 0,
+            "estimated size should be positive"
+        );
+    }
+
     #[test]
     fn sync_drop_still_joins_thread() {
         // Sync (non-async) Drop should preserve existing join behavior
