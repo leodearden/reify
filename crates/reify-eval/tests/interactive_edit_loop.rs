@@ -178,3 +178,55 @@ fn edit_param_constraint_violation_detected() {
         "thickness < width/4 should be satisfied when thickness=1mm"
     );
 }
+
+#[test]
+fn edit_param_then_build_snapshot_updates_geometry() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mock_kernel = MockGeometryKernel::new();
+    let ops_ref = mock_kernel.operations_ref();
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(mock_kernel)));
+
+    // Cold-start eval + initial build_snapshot
+    let _eval_result = engine.eval(&module);
+    let _initial_build = engine.build_snapshot(&module, ExportFormat::Step)
+        .expect("initial build_snapshot should work");
+
+    let initial_ops_count = ops_ref.lock().unwrap().len();
+    assert!(initial_ops_count > 0, "initial build should produce geometry ops");
+
+    // Edit width: 80mm → 100mm (0.1m)
+    let _edit_result = engine.edit_param(vcid("Bracket", "width"), Value::length(0.1));
+
+    // build_snapshot after edit should produce new geometry
+    let build = engine.build_snapshot(&module, ExportFormat::Step)
+        .expect("build_snapshot after edit should work");
+
+    // Geometry output should be present
+    assert!(build.geometry_output.is_some(), "should have geometry output after edit");
+    assert_eq!(
+        build.geometry_output.as_deref(),
+        Some(b"MOCK_EXPORT_DATA".as_slice()),
+    );
+
+    // Mock kernel should have received NEW operations (count increased)
+    let total_ops = ops_ref.lock().unwrap().len();
+    assert!(
+        total_ops > initial_ops_count,
+        "should have new geometry ops after edit: total={total_ops}, initial={initial_ops_count}"
+    );
+
+    // The most recent box op should use the updated width value (0.1m)
+    let ops = ops_ref.lock().unwrap();
+    let last_op = &ops[ops.len() - 1];
+    match &last_op.op {
+        reify_types::GeometryOp::Box { width, .. } => {
+            assert_eq!(
+                *width,
+                Value::length(0.1),
+                "box width should be updated to 0.1m"
+            );
+        }
+        other => panic!("expected Box op, got {:?}", other),
+    }
+}
