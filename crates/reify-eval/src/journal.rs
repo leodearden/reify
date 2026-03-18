@@ -126,6 +126,48 @@ mod tests {
         let _ = c.clone();
     }
 
+    fn make_event(node_name: &str, kind: EventKind, version: u64) -> EvalEvent {
+        EvalEvent {
+            timestamp: Instant::now(),
+            node_id: NodeId::Value(reify_types::ValueCellId::new("Test", node_name)),
+            kind,
+            version: VersionId(version),
+            payload: None,
+        }
+    }
+
+    #[test]
+    fn journal_new_is_empty() {
+        let journal = EventJournal::new();
+        assert_eq!(journal.len(), 0);
+        assert!(journal.is_empty());
+    }
+
+    #[test]
+    fn journal_record_increments_len() {
+        let mut journal = EventJournal::new();
+        journal.record(make_event("x", EventKind::Started, 0));
+        assert_eq!(journal.len(), 1);
+        assert!(!journal.is_empty());
+
+        journal.record(make_event("y", EventKind::Started, 0));
+        assert_eq!(journal.len(), 2);
+    }
+
+    #[test]
+    fn journal_record_maintains_insertion_order() {
+        let mut journal = EventJournal::new();
+        journal.record(make_event("a", EventKind::Started, 0));
+        journal.record(make_event("b", EventKind::CacheHit, 0));
+        journal.record(make_event("c", EventKind::Cancelled, 0));
+
+        let events = journal.all_events();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].node_id, NodeId::Value(reify_types::ValueCellId::new("Test", "a")));
+        assert_eq!(events[1].node_id, NodeId::Value(reify_types::ValueCellId::new("Test", "b")));
+        assert_eq!(events[2].node_id, NodeId::Value(reify_types::ValueCellId::new("Test", "c")));
+    }
+
     #[test]
     fn eval_event_construction() {
         let event = EvalEvent {
