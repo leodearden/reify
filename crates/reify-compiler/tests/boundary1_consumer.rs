@@ -46,6 +46,38 @@ fn reject_unresolved_type_names() {
     assert!(!compiled.diagnostics.is_empty(), "should have diagnostics for unresolved type");
 }
 
+/// Compiled constraints should propagate spans from parsed ConstraintDecls.
+#[test]
+fn compiled_constraint_spans_match_parsed_spans() {
+    use reify_types::SourceSpan;
+
+    let source = bracket_source();
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
+    let compiled = reify_compiler::compile(&parsed);
+
+    assert_eq!(compiled.templates.len(), 1);
+    let template = &compiled.templates[0];
+    assert_eq!(template.constraints.len(), 3);
+
+    // Each constraint span must be non-zero (not the hardcoded (0,0) default)
+    for (i, constraint) in template.constraints.iter().enumerate() {
+        assert_ne!(
+            constraint.span,
+            SourceSpan::new(0, 0),
+            "constraint {} span should not be (0,0) — must propagate from ConstraintDecl",
+            i
+        );
+    }
+
+    // Verify against known bracket source spans
+    // constraint 0: "constraint thickness > 2mm" at (232, 258)
+    assert_eq!(template.constraints[0].span, SourceSpan::new(232, 258));
+    // constraint 1: "constraint thickness < width / 4" at (263, 295)
+    assert_eq!(template.constraints[1].span, SourceSpan::new(263, 295));
+    // constraint 2: "constraint hole_diameter < thickness * 2" at (300, 340)
+    assert_eq!(template.constraints[2].span, SourceSpan::new(300, 340));
+}
+
 /// Handle ParsedModule with parse errors → process valid declarations.
 #[test]
 fn handle_parse_errors_gracefully() {
