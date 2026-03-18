@@ -1,14 +1,33 @@
 {
-  "task_id": "32",
-  "title": "LSP server \u2014 core infrastructure",
-  "modules": ["crates/reify-lsp", "crates/reify-cli", "crates/reify-compiler"],
-  "analysis": "This task builds the foundational LSP server for Reify: tower-lsp based initialization, full-sync document management (didOpen/didChange/didClose), and a diagnostic pipeline that feeds parse\u2192compile\u2192eval\u2192check results back to the editor.\n\nThe existing codebase already provides: reify-syntax (tree-sitter parser \u2192 ParsedModule), reify-compiler (compile \u2192 CompiledModule with diagnostics), reify-eval (Engine with eval/check/check_snapshot), reify-constraints (SimpleConstraintChecker), and reify-types (Diagnostic, SourceSpan, Severity, ParseError). The LSP crate exists in the workspace Cargo.toml with tower-lsp 0.20 and tokio as workspace dependencies.\n\nCore architecture:\n1. **convert.rs** \u2014 Bidirectional byte-offset \u2194 LSP Position conversion (handling UTF-16 per LSP spec), span_to_range, and Diagnostic/ParseError \u2192 LSP Diagnostic conversion. Must handle UTF-8 boundary safety (tree-sitter error-recovery can produce mid-character byte offsets).\n2. **document.rs** \u2014 HashMap-backed DocumentStore holding open document text+version, keyed by URI.\n3. **diagnostics.rs** \u2014 Two pipelines: (a) stateless compute_diagnostics (fresh Engine per call), (b) stateful compute_diagnostics_with_state (EvalState holding persistent Engine for incremental potential). Both run parse\u2192compile\u2192eval\u2192check_snapshot, converting all diagnostics (parse errors, compiler diagnostics, eval diagnostics, constraint violations) to LSP format.\n4. **server.rs** \u2014 ReifyLanguageServer wrapping Arc<RwLock<ServerState>> for documents + Arc<Mutex<EvalState>> for eval. Handlers: initialize (advertise FULL sync), did_open/did_change (update doc store, run diagnostics, publish), did_close (remove doc, clear diagnostics), shutdown. Lock strategy: narrow RwLock for document access, separate Mutex for eval (avoids blocking concurrent reads during expensive eval). Mutex poison recovery via unwrap_or_else(into_inner).\n5. **lib.rs** \u2014 run_server() async entry point using tokio stdin/stdout.\n6. **reify-cli** \u2014 'reify lsp' subcommand that creates a tokio Runtime and block_on(run_server()).\n\nKey design constraint: Engine is Send but not Sync (holds Box<dyn ConstraintChecker>). The EvalState wraps it in Mutex for thread safety. For M1 single-file scope, creating a fresh Engine per source change is acceptable; true incrementality (diffing compiled modules) is future work.\n\n**Post-review additions (steps 25\u201332):** Three blocking issues identified by review:\n1. compute_diagnostics_with_state has no dedicated unit tests in diagnostics.rs despite step-21 being marked done. Integration tests exist in tests/interactive_edit_loop.rs but do not verify EvalState internals (version_counter persistence) or the three-phase state-clearing cycle within a single test.\n2. check_snapshot returning None is silently ignored (line 87), causing constraint violations to be invisible to the user. Fix: fall back to engine.check() when check_snapshot returns None.\n3. Constraint violation diagnostics always report Range::default() (0,0)\u2192(0,0) because (a) the compiler hardcodes CompiledConstraint.span to SourceSpan::new(0,0) instead of propagating ConstraintDecl.span, and (b) the LSP diagnostic emitter uses Range::default() instead of looking up constraint spans. Fix requires a one-line compiler fix and a span lookup in the diagnostics pipeline.",
+  "task_id": "37",
+  "title": "Ensure architecture-critical language features: imports, sub-structures, stdlib functions",
+  "modules": [
+    "crates/reify-stdlib",
+    "crates/reify-expr",
+    "crates/reify-compiler",
+    "crates/reify-test-support"
+  ],
+  "analysis": "Three architecture-critical language features are stubbed out with silent no-ops or Undef returns:\n\n1. **Import handling** (compiler/lib.rs:576-578): `Declaration::Import(_) => {}` \u2014 imports are parsed into ImportDecl by tree-sitter but silently dropped during compilation. The CompiledModule has no record of them.\n\n2. **Sub-structure compilation** (compiler/lib.rs:733-735): `MemberDecl::Sub(_) => {}` \u2014 sub-declarations are parsed into SubDecl (with name, structure_name, args) but silently dropped. TopologyTemplate has no sub-component representation.\n\n3. **Stdlib function evaluation** (expr/lib.rs:23-28): `CompiledExprKind::FunctionCall { .. } => Value::Undef` \u2014 all function calls unconditionally return Undef. The stdlib crate is an empty stub. This means expressions like `sin(45deg)` or `abs(-5)` produce Undef, cascading into broken constraint evaluation and let bindings.\n\nThe fix requires:\n- Implementing a function dispatch table in reify-stdlib with core math functions (abs, sqrt, sin, cos, tan, min, max, floor, ceil, round, log, exp, etc.)\n- Wiring reify-expr's FunctionCall evaluation to dispatch through reify-stdlib\n- Adding CompiledImport to CompiledModule so imports participate in compilation (with diagnostics since module resolution is not yet implemented)\n- Adding SubComponentDecl to TopologyTemplate so sub-declarations compile into the runtime model (with compiled arg expressions)\n\nThe EvaluationGraph (reify-eval/src/graph.rs) accesses TopologyTemplate fields individually via iteration (not destructuring), so adding sub_components won't break existing eval code. Similarly, the engine processes CompiledModule.templates but not imports, so adding imports is safe.\n\nExisting test patterns use ParsedModule construction (both hand-built AST and tree-sitter parse), TopologyTemplateBuilder/CompiledModuleBuilder, MockConstraintChecker, and boundary tests across crate boundaries. We follow these established patterns.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create crates/reify-lsp crate skeleton: Cargo.toml with dependencies (reify-types, reify-syntax, reify-compiler, reify-eval, reify-constraints, tower-lsp, tokio, serde_json; dev: reify-test-support), empty lib.rs with module declarations. Ensure it compiles in the workspace.",
+      "description": "Add reify-stdlib as a workspace dependency of reify-expr in crates/reify-expr/Cargo.toml so eval_expr can dispatch function calls to stdlib implementations. Verify `cargo check -p reify-expr` succeeds.",
       "status": "done",
-      "commit": "6652574",
+      "commit": "c474f57",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Define CompiledImport struct (path: String, span: SourceSpan) in reify-compiler/src/lib.rs. Add `imports: Vec<CompiledImport>` field to CompiledModule. Initialize to empty vec in compile() and in CompiledModuleBuilder::build(). Run `cargo test -p reify-compiler -p reify-test-support` to verify no regressions.",
+      "status": "done",
+      "commit": "5b565e4",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Define SubComponentDecl struct (name: String, structure_name: String, args: Vec<(String, CompiledExpr)>, span: SourceSpan, content_hash: ContentHash) in reify-compiler/src/lib.rs. Add `sub_components: Vec<SubComponentDecl>` field to TopologyTemplate. Initialize to empty vec in compile_structure() and in TopologyTemplateBuilder::build(). Run `cargo test --workspace` to verify no regressions.",
+      "status": "done",
+      "commit": "4031828",
       "tests": []
     }
   ],
@@ -16,320 +35,223 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests in convert.rs for offset_to_position (byte offset \u2192 LSP Position): (1) offset 0 in empty string \u2192 Position(0,0); (2) offset within first line returns correct character; (3) offset on second line returns line=1, correct character; (4) offset at newline character returns end of line 0; (5) multiline bracket_source \u2014 offset 0 \u2192 (0,0), second line start \u2192 (1,0). Also test span_to_range: SourceSpan{6,12} in 'first\\nsecond\\nthird' \u2192 Range{(1,0),(1,6)}.",
+      "description": "Write unit tests in reify-stdlib/src/lib.rs #[cfg(test)] for eval_builtin() dispatching core numeric math functions: (1) abs(Real(-5.0)) -> Real(5.0), (2) abs(Int(-3)) -> Int(3), (3) abs(Scalar{-0.005, LENGTH}) -> Scalar{0.005, LENGTH} (preserves dimension), (4) sqrt(Real(9.0)) -> Real(3.0), (5) min(Real(3.0), Real(7.0)) -> Real(3.0), (6) max(Int(3), Int(7)) -> Int(7), (7) floor(Real(3.7)) -> Int(3), (8) ceil(Real(3.2)) -> Int(4), (9) round(Real(3.5)) -> Int(4), (10) log(Real(e)) -> Real(~1.0), (11) exp(Real(0.0)) -> Real(1.0), (12) sign(Real(-5.0)) -> Real(-1.0), (13) unknown function 'foo' returns Undef.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "9f23efd"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement offset_to_position(source, offset) \u2192 Position and span_to_range(source, SourceSpan) \u2192 Range in convert.rs. offset_to_position: iterate bytes counting newlines for line number, then count UTF-16 code units from line start to offset for character column. span_to_range: call offset_to_position for start and end.",
+      "description": "Implement pub fn eval_builtin(name: &str, args: &[Value]) -> Value in reify-stdlib/src/lib.rs. Match on function name, validate argument count, extract numeric values via as_f64() or pattern matching. Implement: abs (Int/Real/Scalar), sqrt (Real only, returns Real), min/max (two args, same-type), floor/ceil/round (Real -> Int), log/log10/exp (Real -> Real), sign (Real -> Real), pow (two args). Handle Scalar dimension for abs (preserve). Unknown functions return Value::Undef. Wrong argument count returns Value::Undef.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "b79bfa0"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests in convert.rs for diagnostic conversion: (1) convert_severity maps Error\u2192ERROR, Warning\u2192WARNING, Info\u2192INFORMATION; (2) convert_diagnostic with no labels produces range at origin (0,0)\u2192(0,0); (3) convert_diagnostic with one label uses label span for range; (4) convert_diagnostic with multiple labels puts first as primary range and rest as related_information; (5) convert_parse_error produces ERROR severity diagnostic with correct range from ParseError.span.",
+      "description": "Write unit tests in reify-stdlib for trig functions with dimensioned Angle input: (1) sin(Scalar{PI/4, ANGLE}) -> Real(~0.7071), (2) cos(Scalar{0.0, ANGLE}) -> Real(1.0), (3) tan(Scalar{PI/4, ANGLE}) -> Real(~1.0), (4) asin(Real(1.0)) -> Scalar{PI/2, ANGLE}, (5) acos(Real(0.0)) -> Scalar{PI/2, ANGLE}, (6) atan(Real(1.0)) -> Scalar{PI/4, ANGLE}, (7) atan2(Real(1.0), Real(1.0)) -> Scalar{PI/4, ANGLE}, (8) sinh(Real(0.0)) -> Real(0.0), (9) sin with non-Angle Scalar (e.g., LENGTH) returns Undef (dimension error).",
       "status": "done",
-      "commit": "6652574"
+      "commit": "82d3489"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement convert_severity, convert_diagnostic, and convert_parse_error in convert.rs. convert_diagnostic: use first label's span for primary range, remaining labels as DiagnosticRelatedInformation. convert_parse_error: map ParseError.span to range with ERROR severity. Both set source='reify'.",
+      "description": "Extend eval_builtin in reify-stdlib with trig functions. sin/cos/tan: accept Scalar with ANGLE dimension, extract si_value (already radians), call f64::sin/cos/tan, return Real. Also accept Real directly (treated as radians for convenience). asin/acos/atan: accept Real, return Scalar with ANGLE dimension. atan2: accept two Real or two same-dimension Scalar args, return Angle. sinh/cosh/tanh: accept Real, return Real. Return Undef if argument has wrong dimension.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "2e35bf1"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests in document.rs for DocumentStore: (1) open stores text and version, get returns them; (2) get returns Some after open; (3) update replaces text and version; (4) close removes entry, get returns None; (5) get returns None after close; (6) two documents stored independently.",
+      "description": "Write unit test in reify-expr/src/lib.rs #[cfg(test)] that constructs a CompiledExpr::FunctionCall for 'abs' with arg Literal(Real(-3.0)) and asserts eval_expr returns Real(3.0), not Undef. Also test FunctionCall for 'sin' with arg Literal(Scalar{si_value: PI/4, dimension: ANGLE}) returns Real close to 0.7071. These tests MUST FAIL against the current Undef stub, confirming they test new behavior.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "6bdb514"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement DocumentStore in document.rs: HashMap<Url, DocumentState> where DocumentState holds text: String and version: i32. Methods: new(), open(uri, text, version), update(uri, text, version), close(uri), get(uri) \u2192 Option<&DocumentState>.",
+      "description": "Wire reify-expr's eval_expr FunctionCall arm to call reify_stdlib::eval_builtin. Replace the Undef stub (lines 23-28) with: evaluate all arg expressions against the ValueMap, collect into Vec<Value>, call reify_stdlib::eval_builtin(&function.name, &evaluated_args), return the result. This makes step-5 tests pass.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "4d06d8a"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests in diagnostics.rs for compute_diagnostics pipeline: (1) valid bracket_source produces no ERROR-severity diagnostics; (2) syntax error 'structure {' produces at least one ERROR diagnostic; (3) unknown identifier in expression produces diagnostics; (4) empty source does not panic.",
+      "description": "Write tests in reify-expr verifying edge cases: (a) unknown function name 'nonexistent' still returns Undef gracefully, (b) Undef propagation \u2014 FunctionCall('abs', [Undef]) returns Undef (any Undef arg short-circuits), (c) function call with ValueRef args evaluates args against ValueMap before dispatch, (d) function call with zero args for function that expects args returns Undef.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "47018c5"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement compute_diagnostics(source, uri) \u2192 Vec<Diagnostic> in diagnostics.rs. Derives module_name from URI path (strip .ri suffix). Pipeline: parse \u2192 collect parse errors via convert_parse_error; compile \u2192 collect diagnostics via convert_diagnostic; create fresh Engine with SimpleConstraintChecker \u2192 check() \u2192 collect eval diagnostics.",
+      "description": "Add Undef propagation to the FunctionCall arm in eval_expr: after evaluating all arg expressions, check if any evaluated arg is Undef and return Undef immediately (consistent with strict Undef propagation for arithmetic). Only call eval_builtin if all args are defined. This makes step-7 propagation tests pass.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "8de5adc"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test in server.rs: after calling initialize(), the result capabilities must include text_document_sync = TextDocumentSyncKind::FULL.",
+      "description": "Write compiler test in reify-compiler/tests/ or inline: parse a source string containing `import \"std/math\"` followed by a structure, compile it, assert CompiledModule.imports.len() == 1 and imports[0].path == \"std/math\". Verify the import is NOT silently dropped.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "8ac2146"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement ReifyLanguageServer struct with client: Client, state: Arc<RwLock<ServerState>>. ServerState contains DocumentStore. Implement LanguageServer trait: initialize() returns ServerCapabilities with text_document_sync FULL; initialized() is no-op; shutdown() returns Ok(()).",
+      "description": "In compile() (compiler/lib.rs), replace the empty `Declaration::Import(_) => {}` arm with: create CompiledImport from ImportDecl.path and ImportDecl.span, push onto imports vec. Also emit a warning diagnostic: 'import \"<path>\" noted; module resolution not yet implemented' with the import's source span as label.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "cf0a877"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test: after did_open with bracket_source, the document should be stored in ServerState.documents with correct text and version.",
+      "description": "Write compiler test: parse source with `import \"fasteners/bolt\"`, compile it, assert diagnostics contain exactly one warning whose message mentions 'import' and 'fasteners/bolt'. Verify severity is Warning (not Error), confirming compilation continues cleanly for the rest of the module. Also test that structures after the import still compile correctly.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "8468429"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement did_open handler: extract uri/text/version from params, write-lock state to store document via documents.open(), then run compute_diagnostics and publish via client.publish_diagnostics().",
+      "description": "Verify step-11 test passes with the diagnostic emission from step-10. If the diagnostic severity or message format needs adjustment, fix it. This step may be a no-op if step-10's implementation already satisfies step-11's assertions.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "449dc96"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test: after did_open + did_change with new text, the stored document text and version should be updated.",
+      "description": "Write compiler test: parse source containing `structure Parent { param d: Scalar = 6mm  sub mount_hole : Hole(diameter: 6mm) }`, compile it, assert TopologyTemplate.sub_components.len() == 1. Verify sub_components[0] has name 'mount_hole', structure_name 'Hole', and args contains one entry ('diameter', compiled_expr).",
       "status": "done",
-      "commit": "6652574"
+      "commit": "4285ecd"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement did_change handler: full sync mode \u2014 take last content_change.text, write-lock state to update document, run compute_diagnostics and publish.",
+      "description": "In compile_structure() (compiler/lib.rs), replace the empty `MemberDecl::Sub(_) => {}` arm with: for each SubDecl, compile each arg expression through compile_expr (using the parent structure's scope for name resolution), create SubComponentDecl with name, structure_name, compiled args, span, and content_hash, push onto sub_components vec.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "1e37e16"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test: after did_open + did_close, the document should be removed from the store (get returns None).",
+      "description": "Write compiler test: parse source with sub-structure whose args reference parent params: `structure S { param t: Scalar = 5mm  sub rib : Rib(height: t * 0.8) }`. Compile and assert: (1) sub_components[0].args[0].0 == 'height', (2) the arg CompiledExpr contains a ValueRef to 't' (resolved, not unresolved string), (3) no error diagnostics are produced.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "1e792f1"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement did_close handler: write-lock state to close document, publish empty diagnostics to clear editor markers.",
+      "description": "Verify step-15 passes. compile_expr already handles identifier resolution through the CompilationScope. Since sub args are compiled in the second pass (after scope registration in the first pass), forward references should resolve. If they don't, ensure sub args are compiled after the scope registration loop.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "473d6aa"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write failing tests for run_server entry point: verify lib.rs exports run_server() as pub async fn, and that the CLI 'lsp' subcommand calls it via tokio Runtime. (Compile-time verification that the integration wires correctly.)",
+      "description": "Write E2E integration test in reify-eval/tests/ or reify-compiler/tests/: parse bracket-like source with a stdlib function call in a let binding (e.g., `structure S { param w: Scalar = 80mm  let half_w = abs(w / 2) }`), compile, evaluate through Engine.eval(). Assert the let binding 'half_w' produces a defined numeric value (not Undef). This validates the full pipeline: parse -> compile -> eval with stdlib dispatch.",
       "status": "done",
-      "commit": "6652574"
+      "commit": "3b7bab4"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Implement run_server() in lib.rs: create LspService from ReifyLanguageServer::new, serve on tokio stdin/stdout. Add cmd_lsp() to reify-cli main.rs: create tokio Runtime, block_on(run_server()), return SUCCESS. Wire 'lsp' match arm in CLI dispatch.",
+      "description": "Fix any issues discovered by the E2E test. Potential issues: (1) geometry function calls like box() may now be evaluated through stdlib instead of the realization pass \u2014 ensure is_geometry_let still skips them from value cells, (2) the compiler's function type inference may need adjustment for stdlib math functions. Ensure existing bracket tests still pass (cargo test --workspace).",
       "status": "done",
-      "commit": "6652574"
+      "commit": "3b37790"
     },
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write failing tests for UTF-8 boundary safety in offset_to_position: (1) 2-byte char '\u00e9' (U+00E9) \u2014 offset at continuation byte should not panic, snaps to next char boundary; (2) 3-byte char '\u4e16' (U+4E16) \u2014 offsets at continuation bytes snap forward; (3) 4-byte char '\ud83d\ude00' (U+1F600) \u2014 continuation byte offsets snap forward with correct UTF-16 surrogate pair handling (2 UTF-16 units); (4) exact char boundaries produce correct positions; (5) mid-char on second line still reports correct line; (6) span_to_range with mid-multibyte span does not panic.",
+      "description": "Write comprehensive integration test: source with all three features \u2014 an import, a sub-structure, and a stdlib function call in the same module. Example: `import \"std/math\"  structure Bracket { param w: Scalar = 80mm  param h: Scalar = 100mm  let diag = sqrt(w * w + h * h)  sub base : Base(width: w)  constraint diag > 0mm }`. Compile and verify: imports has 1 entry, sub_components has 1 entry, eval produces non-Undef 'diag' value. Assert only the expected import warning diagnostic (no errors).",
       "status": "done",
-      "commit": "6652574"
+      "commit": "98069ae"
     },
     {
       "id": "step-20",
       "type": "impl",
-      "description": "Harden offset_to_position: after clamping to source length, snap forward to next valid UTF-8 char boundary while not at boundary (continuation bytes 0x80..0xBF). This handles tree-sitter error-recovery spans that land mid-character.",
+      "description": "Fix any final issues from step-19. Add sub_component() builder method to TopologyTemplateBuilder for test convenience. Add import() builder method to CompiledModuleBuilder. Run `cargo test --workspace` to verify all existing tests pass with the new code.",
       "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing test for stateful diagnostics pipeline: compute_diagnostics_with_state with bracket_source produces no errors; then with violating source (thickness=1mm) produces constraint violation diagnostic; then with valid source again clears violations. Verify EvalState maintains Engine across calls.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Implement EvalState struct (engine: Engine, last_module: Option<CompiledModule>, version_counter: u64) and compute_diagnostics_with_state(state, source, uri) \u2192 DiagnosticsResult. On each call: re-parse, re-compile, create fresh Engine (source change invalidates all state), eval, check_snapshot for constraint results. Convert constraint violations to explicit ERROR diagnostics. Store compiled module for future use.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write failing tests: (1) after did_open, ServerState.last_diagnostics_for(uri) returns captured diagnostics (valid source \u2192 no errors); (2) eval_state Mutex is poisoned via thread panic, then did_open still succeeds \u2014 recovers from poison and produces diagnostics.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Restructure server: add eval_state: Arc<Mutex<EvalState>> to ReifyLanguageServer (separate from RwLock). Add last_published_diagnostics to ServerState. Update did_open/did_change: narrow RwLock scope (brief write to store doc, release lock, then lock eval_state Mutex for eval, brief write to capture diagnostics). Recover from Mutex poison via unwrap_or_else(|e| e.into_inner()). Update did_close to clear captured diagnostics.",
-      "status": "done",
-      "commit": "6652574"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "[Review fix: missing_test_coverage] Write dedicated unit tests for compute_diagnostics_with_state in diagnostics.rs #[cfg(test)] mod tests (not integration tests). Single test function exercising the full three-phase stateful lifecycle: (1) call with bracket_source() \u2014 assert no ERROR diagnostics; (2) call with bracket_source_violating() on same EvalState \u2014 assert at least one ERROR diagnostic with message containing 'constraint' and 'violated'; (3) call with bracket_source() again on same EvalState \u2014 assert ERROR diagnostics are empty, verifying violations clear on valid source. Also assert EvalState.version_counter == 3 after three calls (confirms state persistence across invocations). Add a separate test that EvalState::new() starts with version_counter == 0.",
-      "status": "done",
-      "commit": "6ac0d4f"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "[Review fix: missing_test_coverage] Verify step-25 tests pass against existing compute_diagnostics_with_state implementation. If any tests fail, fix the underlying issues. The existing implementation should handle bracket_source_violating() (String coerced to &str) correctly. If version_counter is not accessible from tests (it is \u2014 same module), no changes needed. This step may be a no-op if the implementation is already correct for the tested scenarios.",
-      "status": "done",
-      "commit": "6ac0d4f"
-    },
-    {
-      "id": "step-27",
-      "type": "test",
-      "description": "[Review fix: silent_failure_at_boundary] Write tests in diagnostics.rs for check_snapshot fallback robustness: (1) assert that a fresh Engine (without prior eval call) has check_snapshot return None when given a compiled bracket module \u2014 validates the edge case exists; (2) test that compute_diagnostics_with_state with bracket_source_violating() ALWAYS produces at least one constraint violation ERROR diagnostic (regression guard ensuring the constraint pipeline is never silently skipped); (3) test that compute_diagnostics_with_state with an empty source ('') does not panic and produces a result (edge case where eval may not create a meaningful snapshot).",
-      "status": "done",
-      "commit": "0a519c8"
-    },
-    {
-      "id": "step-28",
-      "type": "impl",
-      "description": "[Review fix: silent_failure_at_boundary] In compute_diagnostics_with_state, replace `if let Some(check_result) = state.engine.check_snapshot(&compiled)` with a match that falls back to `state.engine.check(&compiled)` when check_snapshot returns None. Add eprintln!(\"[reify-lsp] check_snapshot returned None after eval, falling back to full check\") warning when the fallback is triggered. The fallback path calls check() which internally re-runs eval + constraint checking \u2014 slightly less efficient but ensures constraint violations are never silently dropped. The normal path (check_snapshot returns Some) is unchanged.",
-      "status": "done",
-      "commit": "8bba05f"
-    },
-    {
-      "id": "step-29",
-      "type": "test",
-      "description": "[Review fix: misleading_error_location] In crates/reify-compiler, write a test that compiles bracket_source() via parse+compile and asserts that each CompiledConstraint.span is non-zero and matches the corresponding ConstraintDecl.span from the parsed module. Specifically: parse bracket_source(), compile it, then for each template.constraints[i], assert constraint.span != SourceSpan::new(0,0). Also compare against known bracket fixture spans: constraint 0 span should be (232,258), constraint 1 span (263,295), constraint 2 span (300,340). This test currently fails because the compiler hardcodes span: SourceSpan::new(0, 0) at lib.rs:729.",
-      "status": "done",
-      "commit": "e460a73"
-    },
-    {
-      "id": "step-30",
-      "type": "impl",
-      "description": "[Review fix: misleading_error_location] In crates/reify-compiler/src/lib.rs at line 729, change `span: SourceSpan::new(0, 0)` to `span: constraint.span`, propagating the ConstraintDecl's source span (which tree-sitter correctly populates) into the CompiledConstraint. This is a one-line fix \u2014 the `constraint` variable is the ConstraintDecl which has a valid `.span` field with correct byte offsets.",
-      "status": "done",
-      "commit": "3433209"
-    },
-    {
-      "id": "step-31",
-      "type": "test",
-      "description": "[Review fix: misleading_error_location] In diagnostics.rs, write test that constraint violation diagnostics from compute_diagnostics_with_state have ranges pointing to the constraint declaration in source, NOT (0,0)\u2192(0,0). Use bracket_source_violating() and verify: (a) find the ERROR diagnostic whose message contains 'constraint' and 'violated', (b) assert its range.start.line > 0 (constraints are on lines 7-9 of bracket source, not line 0), (c) assert range != Range::default(). This test fails initially because the current code uses Range::default() for all constraint violation diagnostics.",
-      "status": "done",
-      "commit": "e92a3bb"
-    },
-    {
-      "id": "step-32",
-      "type": "impl",
-      "description": "[Review fix: misleading_error_location] In compute_diagnostics_with_state, after compiling, build a HashMap<ConstraintNodeId, SourceSpan> from compiled.templates.iter().flat_map(|t| t.constraints.iter()).map(|c| (c.id.clone(), c.span)). When emitting constraint violation diagnostics (the for loop over check_result.constraint_results), look up the span by entry.id in this map and use convert::span_to_range(source, span) for the diagnostic range instead of lsp_types::Range::default(). Fall back to Range::default() only if the span lookup fails (defensive, should not happen in practice).",
-      "status": "done",
-      "commit": "e92a3bb"
+      "commit": "133e937"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Full document sync (TextDocumentSyncKind::FULL) instead of incremental",
-      "rationale": "Full sync is simpler to implement and sufficient for M1 single-file scope. The entire document text arrives on each change, avoiding diff/patch complexity. Incremental sync can be added later as an optimization when document sizes warrant it."
+      "decision": "Implement stdlib function dispatch in reify-stdlib crate, add it as dependency of reify-expr",
+      "rationale": "reify-stdlib already exists as the architecturally intended location for built-in functions. Adding it as a dependency of reify-expr is a clean one-way dependency (no cycles). This keeps eval_expr's match arm simple: evaluate args, delegate to stdlib. Alternative of inlining all functions in reify-expr would work but violates the crate separation design."
     },
     {
-      "decision": "Separate RwLock for documents and Mutex for eval state",
-      "rationale": "Engine evaluation is expensive relative to document lookups. A single RwLock would block all document reads during eval. Separating them allows concurrent document reads (hover, goto-def, completion) while eval runs. The Mutex on EvalState serializes eval calls which is necessary since Engine is Send but not Sync."
+      "decision": "Function dispatch by simple name match on function.name, not qualified_name",
+      "rationale": "The compiler currently generates qualified_name as format!('std::{}', name) which is a placeholder convention. Matching on the simple name field is more robust since it matches what the user actually writes (e.g., 'sin', not 'std::sin'). The qualified_name field remains available for future dispatch when the module system is implemented."
     },
     {
-      "decision": "Fresh Engine per source change in stateful pipeline",
-      "rationale": "Source text changes invalidate the entire compilation/evaluation graph. True source-level incrementality (diffing compiled modules, updating only changed topology) is complex and deferred to M4. For M1 single-file scope, cold-start eval is fast enough (<1ms for bracket.ri)."
+      "decision": "Strict Undef propagation for function calls: if any arg is Undef, result is Undef",
+      "rationale": "Consistent with the existing strict Undef propagation for arithmetic operations (expr/lib.rs:58-60). Function calls should have the same semantics \u2014 they are not boolean connectives, so Kleene three-valued logic does not apply. This prevents confusing partial results from functions where some args are undetermined."
     },
     {
-      "decision": "Mutex poison recovery via into_inner()",
-      "rationale": "If eval panics (e.g., unexpected OCCT crash), the Mutex becomes poisoned. Rather than propagating the panic to all future LSP requests (effectively killing the server), we recover the inner EvalState and continue. A fresh Engine will be created on next eval anyway, so the recovered state is safe to use."
+      "decision": "Trig functions accept Angle-dimensioned Scalar, extract si_value (radians), return dimensionless Real",
+      "rationale": "Matches the stdlib reference spec (Section 1.2): 'sin(x: Angle) -> Real'. The SI value of an Angle scalar is already in radians, so no conversion needed. This enforces the dimensional distinction between angles and dimensionless reals that the language spec requires. Also accept bare Real as a convenience for computed radians."
     },
     {
-      "decision": "UTF-8 boundary snapping in offset_to_position",
-      "rationale": "Tree-sitter error-recovery can produce byte offsets that land in the middle of multi-byte UTF-8 characters. Rather than panicking on invalid slice boundaries, we snap forward to the next valid char boundary. This is safe because it only affects the column position of error spans, and snapping forward to the next character is a reasonable approximation."
+      "decision": "Imports produce a warning diagnostic rather than being silently dropped or producing an error",
+      "rationale": "Module resolution is not implemented (M5 scope), so imports cannot be resolved. But silently dropping them is the current bug \u2014 users get no feedback. A warning is appropriate: it acknowledges the import, doesn't block compilation, and clearly communicates the limitation. The import path is recorded in CompiledModule.imports for future module resolution use."
     },
     {
-      "decision": "UTF-16 character counting per LSP specification",
-      "rationale": "LSP Position.character uses UTF-16 code units, not bytes or Unicode scalar values. This matters for emoji (surrogate pairs = 2 UTF-16 units) and CJK characters. Correct handling via char::len_utf16() ensures editors display diagnostics at the right column."
+      "decision": "Sub-structures are compiled into SubComponentDecl but not integrated into EvaluationGraph",
+      "rationale": "Full sub-structure evaluation requires schema nodes, containment trees, and member access resolution \u2014 all M5+ scope. For this task, the goal is that sub-declarations 'compile into the runtime model' (not silently dropped). Recording them in TopologyTemplate with compiled arg expressions is sufficient. The EvaluationGraph (reify-eval/src/graph.rs) iterates template fields individually and simply won't process sub_components, so no eval changes needed."
     },
     {
-      "decision": "Constraint violations as explicit ERROR diagnostics",
-      "rationale": "CheckResult.constraint_results contains Satisfaction entries but these aren't Diagnostic objects. The LSP pipeline explicitly converts Violated constraints into ERROR diagnostics with descriptive messages ('constraint violated: <label>'), making them visible in the editor's problem panel alongside parse/compile errors."
+      "decision": "sqrt on Scalar values returns Real (dimension handling deferred)",
+      "rationale": "Full dimensional sqrt (halving exponents) requires DimensionVector::pow with fractional exponents. While DimensionVector supports this via Rational, the complexity of returning a correctly-typed Scalar from sqrt is non-trivial. For v0.1, sqrt accepts Real and returns Real. Dimensioned sqrt (e.g., sqrt(area) -> length) is deferred to M5 when the full type system is in place."
     },
     {
-      "decision": "Fallback from check_snapshot to check() when snapshot is absent",
-      "rationale": "check_snapshot returns None when no evaluation snapshot exists. While eval() is always called before check_snapshot in the normal path (so None should be rare), silently dropping the constraint check makes violations invisible to the user with no indication. Falling back to check() (which internally re-runs eval + constraint check) is slightly less efficient but guarantees constraint results are always produced. An eprintln warning alerts developers to the unexpected condition without polluting the LSP diagnostic output."
-    },
-    {
-      "decision": "Constraint span resolution via CompiledModule lookup",
-      "rationale": "ConstraintCheckEntry (from Engine) carries id and label but no source span. CompiledConstraint (from CompiledModule) carries the span. Building a HashMap<ConstraintNodeId, SourceSpan> from the compiled module's templates and looking up by id when emitting violation diagnostics is O(n) construction + O(1) per lookup. With typical constraint counts < 20, this adds negligible overhead while ensuring violation diagnostics point to the actual constraint declaration in source."
-    },
-    {
-      "decision": "Fix compiler span propagation as part of this task",
-      "rationale": "The compiler hardcodes CompiledConstraint.span to SourceSpan::new(0,0) instead of using ConstraintDecl.span. This is a one-line bug fix (span: constraint.span) that is prerequisite for correct LSP constraint violation locations. While technically in crates/reify-compiler, the fix is trivial, self-contained, and required for the LSP task's correctness. Adding crates/reify-compiler to the module scope is justified."
+      "decision": "Core v0.1 function set: abs, min, max, sqrt, pow, log, log10, exp, sign, floor, ceil, round, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh",
+      "rationale": "These are the functions from std.math.numeric and std.math.trig in the stdlib reference that are commonly needed in engineering expressions. clamp and lerp can be added later as they're compositional (clamp = min(max(x,lo),hi)). Linear algebra, complex, and geometry query functions are deferred to later milestones."
     }
   ],
   "reuse": [
     {
-      "what": "reify_syntax::parse(source, ModulePath) \u2192 ParsedModule",
-      "where": "crates/reify-syntax/src/lib.rs",
-      "how": "First stage of the diagnostics pipeline. ParsedModule.errors provides ParseError with SourceSpan for syntax error diagnostics."
+      "what": "CompilationScope for name resolution in sub-structure args",
+      "where": "crates/reify-compiler/src/lib.rs (CompilationScope struct, lines 307-329)",
+      "how": "Sub-structure arg expressions are compiled via compile_expr() which already uses CompilationScope for identifier resolution. Sub args like `height: thickness * 0.8` will resolve 'thickness' through the parent structure's scope, exactly as let and constraint expressions do."
     },
     {
-      "what": "reify_compiler::compile(parsed) \u2192 CompiledModule",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "Second stage. CompiledModule.diagnostics provides type-check and scope-resolution errors as Diagnostic objects. CompiledModule.templates[].constraints[] provides CompiledConstraint with span for violation location resolution."
+      "what": "compile_expr() for sub-structure arg compilation",
+      "where": "crates/reify-compiler/src/lib.rs (compile_expr function, lines 334-551)",
+      "how": "Each sub-structure arg is an Expr that can be compiled using the existing compile_expr. No new expression compilation logic needed."
     },
     {
-      "what": "reify_eval::Engine::new(checker, kernel) + check/check_snapshot",
-      "where": "crates/reify-eval/src/lib.rs",
-      "how": "Third stage. Engine.check() runs eval + constraint checking (always returns CheckResult). check_snapshot() provides constraint check from current snapshot (returns Option). CheckResult.diagnostics + constraint_results feed the LSP diagnostic output."
+      "what": "TopologyTemplateBuilder for test construction",
+      "where": "crates/reify-test-support/src/builders.rs (TopologyTemplateBuilder, lines 141-248)",
+      "how": "Extend with a sub_component() builder method following the same pattern as param(), let_binding(), constraint(), realization()."
     },
     {
-      "what": "reify_constraints::SimpleConstraintChecker",
-      "where": "crates/reify-constraints/src/lib.rs",
-      "how": "Default constraint checker for LSP. Evaluates constraint expressions against current values and reports Satisfied/Violated/Indeterminate."
+      "what": "CompiledModuleBuilder for test construction",
+      "where": "crates/reify-test-support/src/builders.rs (CompiledModuleBuilder, lines 270-305)",
+      "how": "The build() method needs updating to initialize the new imports field to Vec::new(). Optionally add an import() builder method."
     },
     {
-      "what": "reify_types::{Diagnostic, SourceSpan, Severity, ParseError}",
-      "where": "crates/reify-types/src/diagnostics.rs",
-      "how": "Source types for diagnostic conversion. Diagnostic has message, severity, labels[]. SourceSpan has start/end byte offsets. These are converted to LSP types by convert.rs."
+      "what": "Rust std math functions for stdlib implementation",
+      "where": "Rust standard library (f64 methods)",
+      "how": "eval_builtin delegates to f64::abs(), f64::sqrt(), f64::sin(), f64::cos(), etc. Value::as_f64() extracts the numeric value. No external math library needed for the v0.1 function set."
     },
     {
-      "what": "tower-lsp framework",
-      "where": "Cargo.toml workspace dependency",
-      "how": "Provides LanguageServer trait, LspService, Server, Client, and all LSP type definitions. The async_trait macro enables async handler methods."
+      "what": "Value::as_f64() for numeric extraction in stdlib dispatch",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "Already implemented on Value enum \u2014 extracts f64 from Int, Real, or Scalar variants. Used throughout eval_expr for comparisons. eval_builtin will use it to extract function arguments for f64 math operations."
     },
     {
-      "what": "bracket_source() test fixture",
-      "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "Canonical test source for integration tests (did_open, did_change). Known to parse and compile cleanly, with 5 params, 1 let, 3 constraints for predictable diagnostic output."
+      "what": "DimensionVector::ANGLE constant for trig return types",
+      "where": "crates/reify-types/src/dimension.rs",
+      "how": "DimensionVector::ANGLE is already defined. Used in unit_to_scalar() for 'deg'/'rad' units. Trig inverse functions (asin, acos, atan) return Scalar with this dimension."
     },
     {
-      "what": "bracket_source_violating() test fixture",
-      "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "Returns bracket source with thickness=1mm (violates 'thickness > 2mm' constraint). Returns String (not &str). Same byte length as bracket_source() so constraint span offsets are preserved. Used in steps 25, 27, 31 for testing constraint violation detection and span resolution."
+      "what": "Tree-sitter parser for integration test source parsing",
+      "where": "crates/reify-syntax/src/ts_parser.rs",
+      "how": "Integration tests use reify_syntax::parse(source, path) to parse .ri source strings. The parser already handles import_declaration and sub_decl grammar nodes. Tests for import and sub compilation use parse() directly rather than hand-building AST."
     },
     {
-      "what": "LspService::new + service.inner() test pattern",
-      "where": "tower-lsp API",
-      "how": "Creates server instance for testing without actual stdin/stdout transport. service.inner() returns &ReifyLanguageServer for direct handler calls. Used in all server.rs integration tests."
-    },
-    {
-      "what": "ConstraintNodeId for constraint span lookup",
-      "where": "crates/reify-types/src/constraint.rs",
-      "how": "Unique identifier for constraints (e.g. 'Bracket#0'). Used as key in HashMap<ConstraintNodeId, SourceSpan> built from CompiledModule to resolve constraint violation locations. ConstraintCheckEntry.id matches CompiledConstraint.id."
+      "what": "Existing boundary test patterns (boundary2_producer.rs)",
+      "where": "crates/reify-compiler/tests/boundary2_producer.rs",
+      "how": "Follow the established pattern: construct or parse a module, compile it, assert on CompiledModule fields and diagnostics. New tests for imports and sub-structures follow this exact pattern."
     }
   ]
 }
