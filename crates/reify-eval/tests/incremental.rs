@@ -1851,3 +1851,73 @@ fn forward_let_ref_incremental_edit_param() {
         "y = x + 1 = 30 + 1 = 31"
     );
 }
+
+/// Cold-start and incremental evaluation produce identical results
+/// for templates with forward let-binding references.
+///
+/// Template: param a (default 3, Int)
+///   let c = b * 2  (forward ref to b)
+///   let b = a + 7
+///
+/// Cold-start with a=3: b=10, c=20.
+/// Edit a→13: b=20, c=40.
+/// Fresh cold-start with a=13: b=20, c=40. Must match incremental result.
+#[test]
+fn forward_let_ref_cold_start_matches_incremental() {
+    let a_id = ValueCellId::new("S", "a");
+    let b_id = ValueCellId::new("S", "b");
+    let c_id = ValueCellId::new("S", "c");
+
+    // c = b * 2 (forward reference to b)
+    let c_expr = binop(BinOp::Mul, value_ref("S", "b"), literal(Value::Int(2)));
+    // b = a + 7
+    let b_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(7)));
+
+    // ── Incremental path ──
+    let template1 = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(3))))
+        .let_binding("S", "c", Type::Int, c_expr.clone())
+        .let_binding("S", "b", Type::Int, b_expr.clone())
+        .build();
+
+    let module1 = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template1)
+        .build();
+
+    let mut engine1 = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result1 = engine1.eval(&module1);
+
+    // Cold-start: b=10, c=20
+    assert_eq!(*result1.values.get(&b_id).unwrap(), Value::Int(10));
+    assert_eq!(*result1.values.get(&c_id).unwrap(), Value::Int(20));
+
+    // Edit a → 13: b=20, c=40
+    let edit_result = engine1.edit_param(a_id.clone(), Value::Int(13));
+    let incr_b = edit_result.values.get(&b_id).unwrap().clone();
+    let incr_c = edit_result.values.get(&c_id).unwrap().clone();
+
+    // ── Fresh cold-start with a=13 ──
+    let c_expr2 = binop(BinOp::Mul, value_ref("S", "b"), literal(Value::Int(2)));
+    let b_expr2 = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(7)));
+
+    let template2 = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(13))))
+        .let_binding("S", "c", Type::Int, c_expr2)
+        .let_binding("S", "b", Type::Int, b_expr2)
+        .build();
+
+    let module2 = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template2)
+        .build();
+
+    let mut engine2 = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result2 = engine2.eval(&module2);
+
+    let fresh_b = result2.values.get(&b_id).unwrap().clone();
+    let fresh_c = result2.values.get(&c_id).unwrap().clone();
+
+    assert_eq!(incr_b, fresh_b, "incremental b should match fresh cold-start b");
+    assert_eq!(incr_c, fresh_c, "incremental c should match fresh cold-start c");
+    assert_eq!(fresh_b, Value::Int(20), "b = a + 7 = 13 + 7 = 20");
+    assert_eq!(fresh_c, Value::Int(40), "c = b * 2 = 20 * 2 = 40");
+}
