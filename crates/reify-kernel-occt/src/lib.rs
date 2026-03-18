@@ -485,6 +485,61 @@ mod tests {
     }
 
     #[test]
+    fn with_warm_state_preserves_state_on_total_deserialization_failure() {
+        // Create a kernel with a box
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // Verify box works
+        let vol = kernel.query(&GeometryQuery::Volume(box_h.id)).unwrap();
+        match &vol {
+            Value::Real(v) => assert!((v - 6000.0).abs() < 1.0, "box vol: {v}"),
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // Construct a corrupted OcctWarmState manually
+        let mut corrupted_shapes = HashMap::new();
+        corrupted_shapes.insert(1, "INVALID_BREP_DATA".to_string());
+        corrupted_shapes.insert(2, "ALSO_GARBAGE".to_string());
+        let corrupted_warm = OcctWarmState {
+            shapes: corrupted_shapes,
+            next_id: 99,
+        };
+        let corrupted_state = OpaqueState::new(corrupted_warm, 64);
+
+        // Apply corrupted warm state — should NOT destroy existing state
+        kernel.with_warm_state(corrupted_state);
+
+        // The original box should still be queryable
+        let vol_after = kernel.query(&GeometryQuery::Volume(GeometryHandleId(1))).unwrap();
+        match vol_after {
+            Value::Real(v) => assert!(
+                (v - 6000.0).abs() < 1.0,
+                "box volume should survive corrupted warm state, got {v}"
+            ),
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // next_id should NOT have been advanced to 99 — new sphere should get ID 2
+        let sphere_h = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(5.0),
+            })
+            .unwrap();
+        assert_eq!(
+            sphere_h.id,
+            GeometryHandleId(2),
+            "next_id should not advance on total deserialization failure"
+        );
+    }
+
+    #[test]
     fn brep_serialization_roundtrip() {
         // Create a box shape
         let shape = ffi::ffi::make_box(10.0, 20.0, 30.0).unwrap();
