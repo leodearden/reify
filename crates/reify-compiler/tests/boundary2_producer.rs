@@ -424,6 +424,27 @@ fn mul_div_different_dimensions_no_diagnostic() {
     );
 }
 
+/// Import declarations should be compiled into CompiledModule.imports, not silently dropped.
+#[test]
+fn import_compiles_into_module_imports() {
+    let source = r#"import "std/math"
+
+structure S {
+    param w: Scalar = 80mm
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_import"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert_eq!(
+        compiled.imports.len(),
+        1,
+        "expected 1 import, got {}",
+        compiled.imports.len()
+    );
+    assert_eq!(compiled.imports[0].path, "std/math");
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
