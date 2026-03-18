@@ -18,6 +18,18 @@ use reify_types::{
 
 use crate::concurrent::{AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerError};
 
+/// Combined skip state for atomic check-and-modify in concurrent early cutoff.
+///
+/// A single Mutex wrapping both `skipped` and `has_changed_parent` prevents
+/// TOCTOU races between concurrent tasks at the same topological level that
+/// could otherwise interleave the has_changed_parent check and skipped insert.
+struct SkipState {
+    /// Nodes to skip due to early cutoff of upstream nodes.
+    skipped: HashSet<NodeId>,
+    /// Nodes that have at least one Changed parent (should never be skipped).
+    has_changed_parent: HashSet<NodeId>,
+}
+
 /// Adapter that implements `AsyncNodeEvaluator` for concurrent evaluation.
 ///
 /// Wraps Engine state extracted by `prepare_concurrent_edit()` in interior-mutable
@@ -36,8 +48,9 @@ pub struct ConcurrentEvalAdapter {
     previous_hashes: Arc<HashMap<NodeId, ContentHash>>,
     /// Reverse dependency index for early cutoff propagation.
     reverse_index: Arc<ReverseDependencyIndex>,
-    /// Nodes to skip due to early cutoff of upstream nodes.
-    skipped: Arc<RwLock<HashSet<NodeId>>>,
+    /// Combined skip state: skipped set + has_changed_parent set, behind a
+    /// single Mutex for atomic check-and-modify in concurrent evaluation.
+    skip_state: Arc<Mutex<SkipState>>,
     /// Collected evaluation results.
     results: Arc<Mutex<Vec<ConcurrentNodeResult>>>,
     /// Version for this evaluation.
@@ -47,14 +60,29 @@ pub struct ConcurrentEvalAdapter {
 
 impl ConcurrentEvalAdapter {
     /// Create an adapter from a `ConcurrentEditSetup`.
+    ///
+    /// Seeds `has_changed_parent` with dependents of the changed cells.
+    /// This ensures nodes that read the changed param directly are never
+    /// incorrectly skipped by early cutoff from an unchanged intermediary.
     pub fn from_setup(setup: &ConcurrentEditSetup) -> Self {
+        // Seed has_changed_parent from changed_cells' dependents
+        let mut has_changed_parent = HashSet::new();
+        for changed_cell in &setup.changed_cells {
+            for dependent in setup.reverse_index.dependents_of(changed_cell) {
+                has_changed_parent.insert(dependent.clone());
+            }
+        }
+
         Self {
             graph: Arc::new(setup.graph.clone()),
             values: Arc::new(RwLock::new(setup.values.clone())),
             snapshot_values: Arc::new(RwLock::new(setup.snapshot_values.clone())),
             previous_hashes: Arc::new(setup.previous_hashes.clone()),
             reverse_index: Arc::new(setup.reverse_index.clone()),
-            skipped: Arc::new(RwLock::new(HashSet::new())),
+            skip_state: Arc::new(Mutex::new(SkipState {
+                skipped: HashSet::new(),
+                has_changed_parent,
+            })),
             results: Arc::new(Mutex::new(Vec::new())),
             version: setup.version,
         }
@@ -72,7 +100,7 @@ impl ConcurrentEvalAdapter {
 
     /// Get the set of skipped nodes (for testing/inspection).
     pub fn skipped(&self) -> HashSet<NodeId> {
-        self.skipped.read().unwrap().clone()
+        self.skip_state.lock().unwrap().skipped.clone()
     }
 
     /// Build a `ConcurrentEditResult` via shared references (cloning).
@@ -84,7 +112,7 @@ impl ConcurrentEvalAdapter {
         let values = self.values.read().unwrap().clone();
         let snapshot_values = self.snapshot_values.read().unwrap().clone();
         let node_results = self.results.lock().unwrap().clone();
-        let skipped = self.skipped.read().unwrap().clone();
+        let skipped = self.skip_state.lock().unwrap().skipped.clone();
 
         let actual_eval_set: Vec<NodeId> = eval_set
             .iter()
@@ -117,9 +145,9 @@ impl ConcurrentEvalAdapter {
             Ok(lock) => lock.into_inner().unwrap(),
             Err(arc) => arc.lock().unwrap().clone(),
         };
-        let skipped = match Arc::try_unwrap(self.skipped) {
-            Ok(lock) => lock.into_inner().unwrap(),
-            Err(arc) => arc.read().unwrap().clone(),
+        let skipped = match Arc::try_unwrap(self.skip_state) {
+            Ok(lock) => lock.into_inner().unwrap().skipped,
+            Err(arc) => arc.lock().unwrap().skipped.clone(),
         };
 
         // actual_eval_set = eval_set nodes that weren't skipped
@@ -141,7 +169,7 @@ impl ConcurrentEvalAdapter {
 
 impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
     fn is_dirty(&self, node: &NodeId) -> bool {
-        !self.skipped.read().unwrap().contains(node)
+        !self.skip_state.lock().unwrap().skipped.contains(node)
     }
 
     async fn evaluate(&self, node: NodeId) -> EvalOutcome {
@@ -198,13 +226,28 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
                 );
             }
 
-            // Early cutoff: if unchanged, mark dependents for skipping
-            if outcome == EvalOutcome::Unchanged {
+            // Early cutoff with mixed fan-in protection (atomic via Mutex):
+            // - Changed: propagate has_changed_parent to dependents,
+            //   remove them from skipped (in case an earlier Unchanged
+            //   parent at the same level added them prematurely).
+            // - Unchanged: only add dependents to skipped if they do NOT
+            //   have a Changed parent.
+            {
                 let dependents = self.reverse_index.dependents_of(vcid);
                 if !dependents.is_empty() {
-                    let mut skipped = self.skipped.write().unwrap();
-                    for dep in dependents {
-                        skipped.insert(dep.clone());
+                    let mut state = self.skip_state.lock().unwrap();
+                    if outcome == EvalOutcome::Changed {
+                        for dep in dependents {
+                            state.has_changed_parent.insert(dep.clone());
+                            state.skipped.remove(dep);
+                        }
+                    } else {
+                        // Unchanged
+                        for dep in dependents {
+                            if !state.has_changed_parent.contains(dep) {
+                                state.skipped.insert(dep.clone());
+                            }
+                        }
                     }
                 }
             }

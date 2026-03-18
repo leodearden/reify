@@ -807,6 +807,19 @@ impl Engine {
         let mut skipped: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
         let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
 
+        // Track nodes that have at least one Changed parent. Seeded with
+        // dependents of the original changed param (the param itself IS a
+        // change, even though it's not in the eval set). This prevents
+        // incorrectly skipping nodes that read both an Unchanged intermediary
+        // AND the changed param directly (mixed fan-in).
+        let mut has_changed_parent: std::collections::HashSet<NodeId> =
+            std::collections::HashSet::new();
+        if let Some(rev_idx) = &self.reverse_index {
+            for dependent in rev_idx.dependents_of(&cell) {
+                has_changed_parent.insert(dependent.clone());
+            }
+        }
+
         for node_id in &eval_set {
             if skipped.contains(node_id) {
                 continue;
@@ -852,13 +865,26 @@ impl Engine {
                     payload: Some(EventPayload::Duration(start.elapsed())),
                 });
 
-                // Early cutoff: if result unchanged, remove downstream
-                // dependents from remaining eval set
-                if outcome == EvalOutcome::Unchanged
-                    && let Some(rev_idx) = &self.reverse_index
-                {
-                    for dependent in rev_idx.dependents_of(vcid) {
-                        skipped.insert(dependent.clone());
+                // Early cutoff with mixed fan-in protection:
+                // - Changed: propagate has_changed_parent to dependents,
+                //   remove them from skipped (in case an earlier Unchanged
+                //   parent added them prematurely).
+                // - Unchanged: only add dependents to skipped if they do NOT
+                //   have a Changed parent (i.e., not in has_changed_parent).
+                if let Some(rev_idx) = &self.reverse_index {
+                    let dependents = rev_idx.dependents_of(vcid);
+                    if outcome == EvalOutcome::Changed {
+                        for dependent in dependents {
+                            has_changed_parent.insert(dependent.clone());
+                            skipped.remove(dependent);
+                        }
+                    } else {
+                        // Unchanged
+                        for dependent in dependents {
+                            if !has_changed_parent.contains(dependent) {
+                                skipped.insert(dependent.clone());
+                            }
+                        }
                     }
                 }
             }

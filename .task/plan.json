@@ -1,72 +1,128 @@
 {
-  "task_id": "37",
-  "title": "Reproduce and fix OCCT STEP export regressions",
-  "modules": ["crates/reify-kernel-occt"],
-  "analysis": "Four handle.rs STEP export tests fail when run in parallel but pass with --test-threads=1: export_step_contains_iso_header, export_async_returns_step_bytes, multi_operation_sequence, and async_multi_op_sequence. All fail with 'STEPControl_Writer::Write failed' or 'OCCT export_step: StepSelect_StepType / InterfaceModel : AddWithRefs'. Root cause: OCCT's STEPControl_Writer (and Transfer/Write pipeline) uses process-global state (XSAlgo session, interface model, shape naming tables) that is not thread-safe. Each test spawns its own OcctKernelHandle with its own dedicated OS thread, but when multiple kernel threads call export_step() concurrently, they collide on OCCT's global STEP writer state. The fix is a process-wide C++ mutex around the entire export_step() function body. This serializes STEP exports across all kernel threads without changing the Rust API or the dedicated-thread architecture. The mutex lives in the C++ wrapper because that is where the OCCT global state contention happens — it is the narrowest correct scope. Lib.rs tests all pass because OcctKernel is used single-threaded (no dedicated thread spawning). Additionally, we should add a focused regression test that explicitly spawns multiple OcctKernelHandle instances and exports concurrently, to ensure parallel export is safe going forward.",
-  "prerequisites": [],
+  "task_id": "35",
+  "title": "Reproduce and fix mixed fan-in early-cutoff invalidation",
+  "modules": ["crates/reify-eval", "crates/reify-runtime"],
+  "analysis": "## Bug Analysis\n\nThe incremental evaluation engine has two code paths for early cutoff that propagate 'unchanged' signals incorrectly in mixed fan-in graphs.\n\n### Root Cause\n\nIn `edit_param` (lib.rs:855-863), when a Value node evaluates to `Unchanged`, ALL its dependents are unconditionally added to the `skipped` set via `reverse_index.dependents_of(vcid)`. The same pattern exists in `ConcurrentEvalAdapter::evaluate` (concurrent_eval.rs:202-210). This is incorrect when a dependent reads BOTH an unchanged intermediary AND a changed param directly (mixed fan-in).\n\nExample: param `a`, let `x = if a > 0 then 1 else 1` (reads a, always produces 1), let `y = a + x` (reads both a and x). When `a` changes from 5 to 10: x is dirty, re-evaluates, produces same value → Unchanged. y is added to `skipped` because x is Unchanged. But y also reads `a` directly, and `a` changed! y should re-evaluate to 10 + 1 = 11 but incorrectly returns the stale cached value of 6.\n\n### Why eval_cached Is Correct (But edit_param Is Not)\n\nThe `eval_cached` path uses `clear_dependents_dirty(&cell.id)` which tracks per-reason dirty state. It only removes the specific unchanged cell as a dirty reason, and a node becomes clean only when ALL its reasons are resolved. The diamond_dependency_early_cutoff_correctness test in cache.rs confirms this works for eval_cached. But no equivalent test exists for `edit_param`.\n\n### Fix Strategy\n\nTrack which eval-set nodes have at least one Changed parent via a `has_changed_parent: HashSet<NodeId>`. Seed it with all dependents of the originally changed param (since the param's value was explicitly overwritten — it IS a change). When a node evaluates to Changed, add its dependents to has_changed_parent and remove from skipped. When Unchanged, only add dependents to skipped if they're NOT in has_changed_parent.\n\nFor the concurrent path, use a combined `Mutex<SkipState>` to avoid TOCTOU races between concurrent tasks at the same topological level that could otherwise interleave the has_changed_parent check and skipped insert.\n\n### Correctness Argument\n\nThe fix is correct regardless of evaluation order among same-level nodes:\n- If Changed parent processed first: dependent added to has_changed_parent, later Unchanged parent sees it there and does NOT add to skipped.\n- If Unchanged parent processed first: dependent added to skipped, but later Changed parent removes it from skipped and adds to has_changed_parent.\n- If ALL parents Unchanged: dependent stays in skipped (correct — no input changed).\n- Seeding with changed-param dependents ensures direct readers are never incorrectly skipped even if only eval-set parents are Unchanged.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Verify existing test suite passes before making changes (cargo test in reify-eval and reify-runtime)",
+      "status": "done",
+      "commit": "b505b94",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write a failing test in handle.rs that explicitly reproduces the parallel STEP export race: spawn N (e.g. 4) OcctKernelHandle instances each on their own thread, each creates a box and exports to STEP concurrently via std::thread::scope, asserts all exports contain ISO-10303-21 header. This test should fail reliably under the current code because multiple kernel threads hit export_step() simultaneously.",
+      "description": "Write failing test `mixed_fan_in_edit_param_unchanged_upstream_does_not_skip_shared_downstream` in crates/reify-eval/tests/incremental.rs. Graph: param a, let x = if a>0 then 1 else 1 (reads a, always 1), let y = a + x (reads a AND x). Cold start a=5 → x=1, y=6. Edit a to 10 → x still 1 (Unchanged), but y should re-evaluate to 10+1=11. Assert y IS in eval_set and y == 11.",
       "status": "done",
-      "commit": "d5685b3"
+      "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add a process-global std::mutex in occt_wrapper.cpp that guards the entire export_step() function body. Wrap the existing try block contents (STEPControl_Writer creation, Transfer, mkstemp, Write, file read, cleanup) inside a std::lock_guard<std::mutex> using a file-static mutex. This serializes all concurrent STEP export calls across all kernel threads. Add #include <mutex> to the includes.",
+      "description": "Fix edit_param early-cutoff in crates/reify-eval/src/lib.rs. Add `has_changed_parent: HashSet<NodeId>` seeded with `reverse_index.dependents_of(&cell)` (the changed param's direct dependents). In the eval loop: on Unchanged, only add dependents to skipped if NOT in has_changed_parent; on Changed, add dependents to has_changed_parent AND remove from skipped.",
       "status": "done",
-      "commit": "f146879"
+      "commit": "ddb7e27"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Verify the new concurrent_export_step_from_multiple_handles test now passes, and re-run the full handle.rs test suite (cargo test -p reify-kernel-occt) to confirm all 4 previously-failing tests (export_step_contains_iso_header, export_async_returns_step_bytes, multi_operation_sequence, async_multi_op_sequence) now pass in parallel mode.",
+      "description": "Write failing test `mixed_fan_in_concurrent_unchanged_upstream_does_not_skip_shared_downstream` in crates/reify-runtime/tests/concurrent_eval.rs. Same diamond topology as step-1 but via edit_param_concurrent. Assert y is in actual_eval_set and y == 11.",
       "status": "done",
-      "commit": "91434cc"
+      "commit": "454bbeb"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Run the full workspace test suite (cargo test --workspace or at least the crates that use STEP export: reify-kernel-occt, reify-eval, reify-geometry) to ensure no regressions elsewhere. The eval boundary/e2e tests that do STEP export should also pass.",
+      "type": "impl",
+      "description": "Fix ConcurrentEvalAdapter in crates/reify-runtime/src/concurrent_eval.rs. Replace `skipped: Arc<RwLock<HashSet<NodeId>>>` with `skip_state: Arc<Mutex<SkipState>>` where `SkipState { skipped: HashSet<NodeId>, has_changed_parent: HashSet<NodeId> }`. In from_setup(), seed has_changed_parent from setup.changed_cells + setup.reverse_index. In evaluate(), acquire Mutex for atomic skip logic: Unchanged → add to skipped only if not in has_changed_parent; Changed → add to has_changed_parent + remove from skipped. Update is_dirty(), skipped(), build_result_shared(), and into_result() to use skip_state.",
       "status": "done",
-      "commit": "91434cc"
+      "commit": "fd478a0"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test `triple_fan_in_mixed_changed_unchanged_edit_param` in crates/reify-eval/tests/incremental.rs. Graph: param a, let x = if a>0 then 1 else 1 (unchanged), let z = if a>0 then 2 else 2 (unchanged), let y = a + x + z (reads a, x, z). Edit a from 5 to 10 → x=1, z=2 (both Unchanged), but y must re-evaluate to 10+1+2=13. Verify y IS in eval_set.",
+      "status": "done",
+      "commit": "671f2d9"
+    },
+    {
+      "id": "step-6",
+      "type": "test",
+      "description": "Write test `freshness_all_final_after_mixed_fan_in_edit_param` in crates/reify-eval/tests/incremental.rs. Same diamond graph as step-1. After edit_param, assert ALL nodes (a, x, y) have Freshness::Final — no node left in Pending state.",
+      "status": "done",
+      "commit": "d366e0b"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test `linear_chain_early_cutoff_still_skips_after_fix` in crates/reify-eval/tests/incremental.rs. Regression guard: linear chain a → x = a-a → y = x+1. Edit a → x Unchanged → y correctly skipped. Confirms the fix didn't break the valid early-cutoff case. (Should pass immediately after step-2 fix.)",
+      "status": "done",
+      "commit": "379319e"
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Write test `concurrent_triple_fan_in_mixed_early_cutoff` in crates/reify-runtime/tests/concurrent_eval.rs. Same triple fan-in as step-5 but via concurrent path. Verify y is in actual_eval_set and y == 13. Regression guard for concurrent early-cutoff fix.",
+      "status": "done",
+      "commit": "aa9bcef"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Place the mutex in C++ (occt_wrapper.cpp) rather than in Rust (handle.rs or lib.rs)",
-      "rationale": "The contention is in OCCT's C++ global state, not in Rust. A C++ file-static std::mutex is the narrowest correct scope — it protects exactly the OCCT calls that share global state. Putting it in Rust would require a global Mutex visible across all OcctKernel instances, which is more invasive and less obviously correct (it would need to be in a static, adding lifetime concerns). The C++ mutex is invisible to Rust and requires no API changes."
+      "decision": "Use has_changed_parent set seeded from changed param's dependents rather than per-node dirty-reason tracking",
+      "rationale": "The eval_cached path already uses per-reason dirty tracking (invalidate_dependents + clear_dependents_dirty). Porting that approach to edit_param would require significant restructuring. The has_changed_parent approach achieves the same correctness with minimal code change: seed with reverse_index.dependents_of(changed_cell), then propagate Changed signals forward through the eval loop. This is O(E) where E = edges in eval subgraph."
     },
     {
-      "decision": "Use std::mutex (not a Rust-side serialization approach like a global channel)",
-      "rationale": "Each OcctKernelHandle already has its own dedicated thread. We don't want to funnel all export work through a single global thread (that would be M4's architecture). A simple mutex serializes just the STEP export call, allowing other kernel operations (execute, query, tessellate) to remain fully parallel across handles. This is the minimal fix."
+      "decision": "Use Mutex<SkipState> instead of two separate RwLocks for concurrent path",
+      "rationale": "Two concurrent tasks at the same topological level could race: task X (Unchanged) reads has_changed_parent (Y absent), then task A (Changed) writes has_changed_parent (Y present) + removes Y from skipped, then task X writes Y to skipped. Result: Y incorrectly skipped. A single Mutex wrapping both HashSets makes the check-and-modify atomic. The lock is held only for HashSet operations (microseconds), so contention is negligible."
     },
     {
-      "decision": "Guard only export_step, not all OCCT FFI functions",
-      "rationale": "Per the memory note (feedback_occt_thread_safety.md), BRep operations also use hidden global state. However, only STEP export is currently failing. The dedicated-thread pattern already serializes operations within each kernel instance. Cross-kernel contention on BRep ops hasn't been observed to fail because BRep operations touch less shared global state than STEP's Transfer/Write pipeline. If other operations start failing under concurrency, the same mutex pattern can be extended. For now, fix only what's broken."
+      "decision": "Seed has_changed_parent from the original changed param, not just from eval-set parents",
+      "rationale": "The changed param is NOT in the eval_set (it's the edit target, not a downstream node). But dependents that read it directly have a genuine 'changed input'. Without seeding, a dependent reading both the changed param and an Unchanged intermediary would be incorrectly skipped because its only eval-set parent (the intermediary) was Unchanged. Seeding ensures direct readers are never skipped."
     },
     {
-      "decision": "Add an explicit parallel-export regression test rather than relying on implicit test parallelism",
-      "rationale": "The existing tests fail only because cargo test happens to run them in parallel. That's a fragile way to catch a race condition. An explicit test that spawns multiple handles and exports concurrently is a deterministic regression guard that documents the known concurrency hazard."
+      "decision": "Changed nodes propagate to has_changed_parent (not just the seed)",
+      "rationale": "For multi-hop chains like a → b → c → d where b changes, c and d should not be skipped. When b evaluates to Changed, c is added to has_changed_parent. When c evaluates (possibly to Changed), d is added. This propagation handles arbitrarily deep graphs correctly."
     }
   ],
   "reuse": [
     {
-      "what": "OcctKernelHandle::spawn() and existing export()/export_async() methods",
-      "where": "crates/reify-kernel-occt/src/handle.rs",
-      "how": "The new regression test reuses the existing spawn/execute/export API — no new Rust infrastructure needed. The fix is entirely in the C++ layer."
+      "what": "TopologyTemplateBuilder + CompiledModuleBuilder from reify-test-support",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Construct diamond/fan-in test graphs with .param(), .let_binding(), expression builders (binop, value_ref_typed, literal, gt, conditional)"
     },
     {
-      "what": "Existing test patterns in handle.rs",
-      "where": "crates/reify-kernel-occt/src/handle.rs tests module",
-      "how": "The new test follows the same pattern as export_step_contains_iso_header (spawn handle, create box, export, check ISO-10303-21) but in a parallel loop with multiple handles."
+      "what": "MockConstraintChecker from reify-test-support",
+      "where": "crates/reify-test-support/src/mocks.rs",
+      "how": "No-op constraint checker for Engine construction in tests"
     },
     {
-      "what": "std::mutex from C++ standard library",
-      "where": "occt_wrapper.cpp",
-      "how": "File-static std::mutex with std::lock_guard RAII pattern — standard C++ concurrency primitive, no new dependencies."
+      "what": "Existing conditional expression pattern from diamond_dependency_early_cutoff_correctness",
+      "where": "crates/reify-eval/src/cache.rs:1216-1231",
+      "how": "Reuse the `if a > 0 then 1 else 1` pattern (CompiledExprKind::Conditional with both branches returning same literal) as the 'always unchanged' expression for test nodes"
+    },
+    {
+      "what": "ConcurrentEditSetup.changed_cells field",
+      "where": "crates/reify-eval/src/lib.rs:132",
+      "how": "Already contains the changed ValueCellIds — use to seed has_changed_parent in ConcurrentEvalAdapter::from_setup()"
+    },
+    {
+      "what": "edit_param_concurrent helper function",
+      "where": "crates/reify-runtime/src/concurrent_eval.rs:239",
+      "how": "Reuse in concurrent tests — handles prepare/execute/apply lifecycle"
+    },
+    {
+      "what": "CancellationToken::new() for concurrent test setup",
+      "where": "crates/reify-runtime/src/concurrent.rs",
+      "how": "Create non-cancelled token for normal concurrent test execution"
+    },
+    {
+      "what": "ReverseDependencyIndex.dependents_of()",
+      "where": "crates/reify-eval/src/deps.rs:87",
+      "how": "Use in the fix to seed has_changed_parent from the changed param's direct dependents"
     }
   ]
 }

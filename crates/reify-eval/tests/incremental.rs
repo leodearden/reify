@@ -9,10 +9,10 @@ use reify_eval::cache::NodeId;
 use reify_test_support::bracket_compiled_module;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_test_support::builders::{literal, value_ref_typed, binop};
+use reify_test_support::builders::{literal, value_ref_typed, binop, gt};
 use reify_types::{
-    BinOp, ConstraintNodeId, Freshness, ModulePath, SnapshotId, SnapshotProvenance, Type,
-    Value, ValueCellId,
+    BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, Freshness,
+    ModulePath, SnapshotId, SnapshotProvenance, Type, Value, ValueCellId,
 };
 
 /// Canary backward-compatibility test: verifies that cold-start eval()
@@ -668,5 +668,341 @@ fn consecutive_edit_param_only_reevaluates_affected_nodes() {
         cache.pending_transition_count(),
         1,
         "second edit's eval_set has exactly one Value node (volume), no early cutoff"
+    );
+}
+
+/// Mixed fan-in: when an unchanged intermediary's dependents ALSO read the
+/// changed param directly, early cutoff must NOT skip them.
+///
+/// Graph:
+///   param a (Int, default 5)
+///   let x = if a > 0 then 1 else 1   (reads a, always produces 1 → Unchanged)
+///   let y = a + x                      (reads BOTH a and x → mixed fan-in)
+///
+/// Cold start: a=5, x=1, y=5+1=6
+/// Edit a → 10: x re-evals to 1 (Unchanged), but y MUST re-eval to 10+1=11.
+/// Bug: y was being added to `skipped` because x is Unchanged, even though
+/// y also reads a directly and a changed.
+#[test]
+fn mixed_fan_in_edit_param_unchanged_upstream_does_not_skip_shared_downstream() {
+    let e = "T";
+
+    // Build conditional: if a > 0 then 1 else 1 (always 1, reads a)
+    let condition = gt(
+        value_ref_typed(e, "a", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let then_branch = literal(Value::Int(1));
+    let else_branch = literal(Value::Int(1));
+    let conditional = CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(condition),
+            then_branch: Box::new(then_branch),
+            else_branch: Box::new(else_branch),
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of_str("if_a_gt_0_then_1_else_1"),
+    };
+
+    // let y = a + x (reads both a and x — diamond/mixed fan-in)
+    let y_expr = binop(
+        BinOp::Add,
+        value_ref_typed(e, "a", Type::Int),
+        value_ref_typed(e, "x", Type::Int),
+    );
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(
+            TopologyTemplateBuilder::new(e)
+                .param(e, "a", Type::Int, Some(literal(Value::Int(5))))
+                .let_binding(e, "x", Type::Int, conditional)
+                .let_binding(e, "y", Type::Int, y_expr)
+                .build(),
+        )
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start: a=5, x=1, y=6
+    let initial = engine.eval(&module);
+    assert_eq!(
+        initial.values.get(&ValueCellId::new(e, "x")),
+        Some(&Value::Int(1)),
+        "x should be 1"
+    );
+    assert_eq!(
+        initial.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Int(6)),
+        "y should be 5 + 1 = 6"
+    );
+
+    // Edit a from 5 to 10
+    let a_id = ValueCellId::new(e, "a");
+    let result = engine.edit_param(a_id, Value::Int(10));
+
+    let eval_set = engine.last_eval_set();
+
+    // x IS in eval set (reads a)
+    assert!(
+        eval_set.contains(&NodeId::Value(ValueCellId::new(e, "x"))),
+        "x should be in eval set (reads a)"
+    );
+
+    // y MUST be in eval set — it reads a directly, and a changed.
+    // The bug was that y was incorrectly added to `skipped` because
+    // x (its other parent) was Unchanged.
+    assert!(
+        eval_set.contains(&NodeId::Value(ValueCellId::new(e, "y"))),
+        "y should be in eval set (reads changed param a directly, \
+         even though x is Unchanged)"
+    );
+
+    // y must have the correct re-evaluated value: 10 + 1 = 11
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Int(11)),
+        "y should be 10 + 1 = 11, NOT stale 6"
+    );
+}
+
+/// Triple fan-in: two unchanged intermediaries plus a changed param all
+/// feed into the same downstream node. Early cutoff must not skip it.
+///
+/// Graph:
+///   param a (Int, default 5)
+///   let x = if a > 0 then 1 else 1   (reads a, always 1 → Unchanged)
+///   let z = if a > 0 then 2 else 2   (reads a, always 2 → Unchanged)
+///   let y = a + x + z                 (reads a, x, AND z → triple fan-in)
+///
+/// Cold start: a=5, x=1, z=2, y=5+1+2=8
+/// Edit a → 10: x=1 (Unchanged), z=2 (Unchanged), y MUST re-eval to 10+1+2=13.
+#[test]
+fn triple_fan_in_mixed_changed_unchanged_edit_param() {
+    let e = "T";
+
+    // Build conditional: if a > 0 then 1 else 1 (always 1)
+    let x_cond = gt(
+        value_ref_typed(e, "a", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let x_expr = CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(x_cond),
+            then_branch: Box::new(literal(Value::Int(1))),
+            else_branch: Box::new(literal(Value::Int(1))),
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of_str("if_a_gt_0_then_1_else_1"),
+    };
+
+    // Build conditional: if a > 0 then 2 else 2 (always 2)
+    let z_cond = gt(
+        value_ref_typed(e, "a", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let z_expr = CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(z_cond),
+            then_branch: Box::new(literal(Value::Int(2))),
+            else_branch: Box::new(literal(Value::Int(2))),
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of_str("if_a_gt_0_then_2_else_2"),
+    };
+
+    // let y = a + x + z  →  (a + x) + z
+    let a_plus_x = binop(
+        BinOp::Add,
+        value_ref_typed(e, "a", Type::Int),
+        value_ref_typed(e, "x", Type::Int),
+    );
+    let y_expr = binop(
+        BinOp::Add,
+        a_plus_x,
+        value_ref_typed(e, "z", Type::Int),
+    );
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(
+            TopologyTemplateBuilder::new(e)
+                .param(e, "a", Type::Int, Some(literal(Value::Int(5))))
+                .let_binding(e, "x", Type::Int, x_expr)
+                .let_binding(e, "z", Type::Int, z_expr)
+                .let_binding(e, "y", Type::Int, y_expr)
+                .build(),
+        )
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start: a=5, x=1, z=2, y=8
+    let initial = engine.eval(&module);
+    assert_eq!(
+        initial.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Int(8)),
+        "y should be 5 + 1 + 2 = 8"
+    );
+
+    // Edit a from 5 to 10
+    let a_id = ValueCellId::new(e, "a");
+    let result = engine.edit_param(a_id, Value::Int(10));
+
+    let eval_set = engine.last_eval_set();
+
+    // y MUST be in eval set despite both x and z being Unchanged
+    assert!(
+        eval_set.contains(&NodeId::Value(ValueCellId::new(e, "y"))),
+        "y should be in eval set (reads changed param a directly)"
+    );
+
+    // y must have the correct value: 10 + 1 + 2 = 13
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Int(13)),
+        "y should be 10 + 1 + 2 = 13, NOT stale 8"
+    );
+}
+
+/// After mixed fan-in edit_param, ALL nodes must have Freshness::Final.
+/// No node should be left in Pending state.
+///
+/// Same diamond graph as mixed_fan_in_edit_param test:
+///   param a (Int, 5), let x = if a>0 then 1 else 1, let y = a + x
+/// Edit a → 10: x Unchanged, y re-evaluated.
+#[test]
+fn freshness_all_final_after_mixed_fan_in_edit_param() {
+    let e = "T";
+
+    let condition = gt(
+        value_ref_typed(e, "a", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let conditional = CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(condition),
+            then_branch: Box::new(literal(Value::Int(1))),
+            else_branch: Box::new(literal(Value::Int(1))),
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of_str("if_a_gt_0_then_1_else_1"),
+    };
+
+    let y_expr = binop(
+        BinOp::Add,
+        value_ref_typed(e, "a", Type::Int),
+        value_ref_typed(e, "x", Type::Int),
+    );
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(
+            TopologyTemplateBuilder::new(e)
+                .param(e, "a", Type::Int, Some(literal(Value::Int(5))))
+                .let_binding(e, "x", Type::Int, conditional)
+                .let_binding(e, "y", Type::Int, y_expr)
+                .build(),
+        )
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start
+    engine.eval(&module);
+
+    // Edit a from 5 to 10
+    let a_id = ValueCellId::new(e, "a");
+    engine.edit_param(a_id, Value::Int(10));
+
+    let cache = engine.cache_store();
+
+    // ALL nodes must have Final freshness — none stuck in Pending
+    for name in ["a", "x", "y"] {
+        let node_id = NodeId::Value(ValueCellId::new(e, name));
+        let entry = cache.get(&node_id)
+            .unwrap_or_else(|| panic!("{} should be in cache", name));
+        assert_eq!(
+            entry.freshness,
+            Freshness::Final,
+            "{} should have Final freshness after mixed fan-in edit_param",
+            name
+        );
+    }
+}
+
+/// Regression guard: linear chain early cutoff must still work after the
+/// mixed fan-in fix. When there is NO mixed fan-in (no node reads the
+/// changed param directly), Unchanged intermediaries should still skip
+/// their downstream dependents.
+///
+/// Graph: param a (Real, 5.0), let x = a - a (always 0.0), let y = x + 1.0
+/// Edit a → 7.0: x dirty, re-evals to 0.0 (Unchanged) → y correctly skipped.
+/// y does NOT read a directly, only x, so no mixed fan-in.
+#[test]
+fn linear_chain_early_cutoff_still_skips_after_fix() {
+    let e = "T";
+
+    // let x = a - a (always 0.0)
+    let x_expr = binop(
+        BinOp::Sub,
+        value_ref_typed(e, "a", Type::Real),
+        value_ref_typed(e, "a", Type::Real),
+    );
+    // let y = x + 1.0
+    let y_expr = binop(
+        BinOp::Add,
+        value_ref_typed(e, "x", Type::Real),
+        literal(Value::Real(1.0)),
+    );
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(
+            TopologyTemplateBuilder::new(e)
+                .param(e, "a", Type::Real, Some(literal(Value::Real(5.0))))
+                .let_binding(e, "x", Type::Real, x_expr)
+                .let_binding(e, "y", Type::Real, y_expr)
+                .build(),
+        )
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start
+    let initial = engine.eval(&module);
+    assert_eq!(
+        initial.values.get(&ValueCellId::new(e, "x")),
+        Some(&Value::Real(0.0)),
+    );
+    assert_eq!(
+        initial.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Real(1.0)),
+    );
+
+    // Edit a from 5.0 to 7.0
+    let a_id = ValueCellId::new(e, "a");
+    let result = engine.edit_param(a_id, Value::Real(7.0));
+
+    let eval_set = engine.last_eval_set();
+
+    // x IS in eval set (reads a)
+    assert!(
+        eval_set.contains(&NodeId::Value(ValueCellId::new(e, "x"))),
+        "x should be in eval set"
+    );
+
+    // y should NOT be in eval set — x Unchanged and y does NOT read a directly.
+    // This confirms the fix didn't break valid early cutoff.
+    assert!(
+        !eval_set.contains(&NodeId::Value(ValueCellId::new(e, "y"))),
+        "y should NOT be in eval set (x unchanged, y doesn't read a directly)"
+    );
+
+    // y's value should still be 1.0
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Real(1.0)),
+        "y should retain cached value 1.0"
     );
 }
