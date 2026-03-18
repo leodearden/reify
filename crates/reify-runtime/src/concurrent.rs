@@ -3,6 +3,10 @@
 //! Provides `ConcurrentScheduler` which groups eval_set nodes by topological
 //! level and spawns all nodes within a level concurrently using tokio tasks.
 
+use std::future::Future;
+
+use reify_eval::cache::{EvalOutcome, NodeId};
+
 /// A cancellation token for cooperative cancellation of async tasks.
 ///
 /// Thin wrapper around `tokio_util::sync::CancellationToken` providing a
@@ -41,6 +45,22 @@ impl CancellationToken {
     pub async fn cancelled(&self) {
         self.inner.cancelled().await;
     }
+}
+
+/// Trait for evaluating individual nodes asynchronously during concurrent scheduling.
+///
+/// Like [`crate::NodeEvaluator`] but takes `&self` (not `&mut self`) because concurrent
+/// evaluation shares the evaluator across multiple spawned tasks via `Arc<E>`.
+/// Implementors should use interior mutability (Mutex, RwLock) as needed.
+///
+/// `evaluate` takes `NodeId` by value (not by reference) to avoid lifetime issues
+/// when moving data into spawned tasks.
+pub trait AsyncNodeEvaluator: Send + Sync {
+    /// Check if a node is still dirty (may have been cleared by upstream early cutoff).
+    fn is_dirty(&self, node: &NodeId) -> bool;
+
+    /// Evaluate a node asynchronously and return whether its result changed.
+    fn evaluate(&self, node: NodeId) -> impl Future<Output = EvalOutcome> + Send;
 }
 
 impl Default for CancellationToken {
