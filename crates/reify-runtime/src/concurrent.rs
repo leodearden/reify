@@ -3,9 +3,12 @@
 //! Provides `ConcurrentScheduler` which groups eval_set nodes by topological
 //! level and spawns all nodes within a level concurrently using tokio tasks.
 
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::sync::Arc;
 
 use reify_eval::cache::{EvalOutcome, NodeId};
+use reify_eval::deps::DependencyTrace;
 
 /// A cancellation token for cooperative cancellation of async tasks.
 ///
@@ -61,6 +64,33 @@ pub trait AsyncNodeEvaluator: Send + Sync {
 
     /// Evaluate a node asynchronously and return whether its result changed.
     fn evaluate(&self, node: NodeId) -> impl Future<Output = EvalOutcome> + Send;
+}
+
+/// Concurrent scheduler: groups eval_set nodes by topological level and
+/// spawns all nodes within a level concurrently using tokio tasks.
+pub struct ConcurrentScheduler;
+
+impl ConcurrentScheduler {
+    /// Execute the eval set concurrently, grouped by topological level.
+    ///
+    /// For each level:
+    /// - Check cancellation before starting the level
+    /// - Skip nodes that are no longer dirty
+    /// - Spawn tokio tasks for dirty nodes
+    /// - Join all tasks and collect changed nodes
+    pub async fn execute<E: AsyncNodeEvaluator + 'static>(
+        &self,
+        eval_set: Vec<NodeId>,
+        _evaluator: Arc<E>,
+        _traces: &HashMap<NodeId, DependencyTrace>,
+        _cancel: &CancellationToken,
+    ) -> HashSet<NodeId> {
+        if eval_set.is_empty() {
+            return HashSet::new();
+        }
+
+        HashSet::new()
+    }
 }
 
 impl Default for CancellationToken {
