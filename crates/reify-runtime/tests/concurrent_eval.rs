@@ -861,3 +861,93 @@ async fn concurrent_triple_fan_in_mixed_early_cutoff() {
         "y should be 10 + 1 + 2 = 13, NOT stale 8"
     );
 }
+
+/// After concurrent edit of a param that affects constraints governing auto params,
+/// the solver should re-run and resolved values should be propagated.
+///
+/// Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`,
+/// constraint `x > a`. SequencedMockSolver: 1st call x=mm(5.0), 2nd x=mm(20.0).
+///
+/// Cold eval → x=mm(5.0)=0.005 SI, y = 0.01 SI.
+/// Concurrent edit a→mm(8.0) → solver re-resolves x to mm(20.0)=0.02 SI.
+/// After apply: y should be 0.04 SI, x should be 0.02 SI.
+///
+/// Currently FAILS because the concurrent edit path doesn't include a resolution phase.
+#[tokio::test]
+async fn edit_param_concurrent_re_resolves_auto_params() {
+    use reify_test_support::builders::{binop, gt, literal, value_ref};
+    use reify_test_support::mocks::SequencedMockConstraintSolver;
+    use reify_test_support::mm;
+    use reify_types::SolveResult;
+
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // Sequenced solver: first x=mm(5.0), second x=mm(20.0)
+    let mut solved1 = HashMap::new();
+    solved1.insert(x_id.clone(), mm(5.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(x_id.clone(), mm(20.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1 },
+        SolveResult::Solved { values: solved2 },
+    ]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(3.0))))
+        .auto_param("S", "x", Type::length())
+        .let_binding(
+            "S",
+            "y",
+            Type::length(),
+            binop(BinOp::Mul, value_ref("S", "x"), literal(Value::Real(2.0))),
+        )
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None)
+        .with_solver(Box::new(solver));
+
+    // Cold eval: x resolved to mm(5.0), y = 0.005*2 = 0.01
+    let cold = engine.eval(&module);
+    assert!(
+        !cold.resolved_params.is_empty(),
+        "cold eval should resolve auto params"
+    );
+
+    let cancel = CancellationToken::new();
+
+    // Concurrent edit: change a from mm(3.0) to mm(8.0)
+    let (setup, result) = edit_param_concurrent(
+        &mut engine,
+        a_id.clone(),
+        mm(8.0),
+        &cancel,
+    ).await.unwrap();
+
+    // Apply the concurrent edit
+    engine.apply_concurrent_edit(&setup, result);
+
+    // After apply, check engine snapshot values
+    let snap = engine.snapshot().expect("snapshot should exist");
+
+    // x should be re-resolved to mm(20.0) = 0.02 SI
+    let (x_val, _) = snap.values.get(&x_id).expect("x should be in snapshot");
+    assert!(
+        matches!(x_val, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
+        "expected x = mm(20.0) = 0.02 SI after concurrent edit, got {:?}",
+        x_val
+    );
+
+    // y should be re-evaluated: mm(20.0)*2 = 0.04 SI
+    let (y_val, _) = snap.values.get(&y_id).expect("y should be in snapshot");
+    assert!(
+        matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.04).abs() < 1e-10),
+        "expected y = 0.04 SI after concurrent edit with re-resolution, got {:?}",
+        y_val
+    );
+}
