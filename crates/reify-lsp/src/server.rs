@@ -129,4 +129,48 @@ mod tests {
         assert_eq!(doc.text, source);
         assert_eq!(doc.version, 1);
     }
+
+    #[tokio::test]
+    async fn did_change_updates_document_text() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+        let uri = test_uri();
+
+        // Open with valid source
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: reify_test_support::bracket_source().to_string(),
+                },
+            })
+            .await;
+
+        // Change to broken source
+        let broken_source = "structure {";
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: broken_source.to_string(),
+                }],
+            })
+            .await;
+
+        // Verify document text was updated
+        let state = server.state().read().await;
+        let doc = state
+            .documents
+            .get(&uri)
+            .expect("document should exist after change");
+        assert_eq!(doc.text, broken_source);
+        assert_eq!(doc.version, 2);
+    }
 }
