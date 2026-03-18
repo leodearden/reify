@@ -8,7 +8,14 @@ use tower_lsp::lsp_types::{self, DiagnosticRelatedInformation, DiagnosticSeverit
 pub fn offset_to_position(source: &str, offset: u32) -> Position {
     let offset = offset as usize;
     let bytes = source.as_bytes();
-    let clamped = offset.min(bytes.len());
+    let mut clamped = offset.min(bytes.len());
+
+    // Snap forward to the next valid UTF-8 character boundary if we
+    // landed mid-character (e.g., on a continuation byte 0x80..0xBF).
+    // Tree-sitter error-recovery spans routinely produce such offsets.
+    while clamped < bytes.len() && !source.is_char_boundary(clamped) {
+        clamped += 1;
+    }
 
     let mut line = 0u32;
     let mut line_start = 0usize;
@@ -20,7 +27,10 @@ pub fn offset_to_position(source: &str, offset: u32) -> Position {
         }
     }
 
-    // Count UTF-16 code units from line_start to offset
+    // Count UTF-16 code units from line_start to offset.
+    // line_start is always at a char boundary (after '\n' which is a
+    // single-byte ASCII character), and clamped is now snapped to a
+    // char boundary, so this slice is always valid UTF-8.
     let line_slice = &source[line_start..clamped];
     let character: u32 = line_slice.chars().map(|c| c.len_utf16() as u32).sum();
 
