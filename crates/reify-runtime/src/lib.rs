@@ -1,5 +1,7 @@
 // Stub — M1 implementation pending
 
+pub mod concurrent;
+
 use std::collections::HashSet;
 
 use reify_eval::cache::{EvalOutcome, NodeId};
