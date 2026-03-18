@@ -103,6 +103,18 @@ impl EventJournal {
         &self.events
     }
 
+    /// Events within a time range, in insertion order.
+    pub fn events_in_range(&self, range: impl std::ops::RangeBounds<Instant>) -> Vec<&EvalEvent> {
+        let mut indices: Vec<usize> = self
+            .by_time
+            .range(range)
+            .flat_map(|(_, idxs)| idxs.iter().copied())
+            .collect();
+        indices.sort_unstable();
+        indices.dedup();
+        indices.iter().map(|&idx| &self.events[idx]).collect()
+    }
+
     /// Events for a specific node, in insertion order.
     pub fn events_for_node(&self, node_id: &NodeId) -> Vec<&EvalEvent> {
         self.by_node
