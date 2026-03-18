@@ -1226,6 +1226,57 @@ fn edit_check_returns_incremental_constraint_satisfaction() {
     );
 }
 
+/// Verify constraint satisfaction transitions correctly across multiple
+/// edit_check calls: Satisfied → Violated → Satisfied.
+///
+/// Uses SimpleConstraintChecker. Module: param `width` (default mm(10.0)),
+/// constraint `width > mm(5.0)`.
+/// Cold check → Satisfied. edit_check(width, mm(2.0)) → Violated.
+/// edit_check(width, mm(8.0)) → Satisfied again.
+#[test]
+fn edit_check_constraint_transitions_satisfied_to_violated_and_back() {
+    use reify_types::Satisfaction;
+
+    let width_id = ValueCellId::new("S", "width");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "width", Type::length(), Some(literal(mm(10.0))))
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "width"), literal(mm(5.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold check: width=mm(10.0) > mm(5.0) → Satisfied
+    let result = engine.check(&module);
+    assert_eq!(result.constraint_results[0].satisfaction, Satisfaction::Satisfied);
+
+    // edit_check: width=mm(2.0) < mm(5.0) → Violated
+    let result2 = engine.edit_check(width_id.clone(), mm(2.0));
+    assert_eq!(
+        result2.constraint_results[0].satisfaction,
+        Satisfaction::Violated,
+        "constraint should be Violated when width=mm(2.0) < mm(5.0)"
+    );
+
+    // edit_check: width=mm(8.0) > mm(5.0) → Satisfied again
+    let result3 = engine.edit_check(width_id.clone(), mm(8.0));
+    assert_eq!(
+        result3.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "constraint should be Satisfied when width=mm(8.0) > mm(5.0)"
+    );
+}
+
 /// When the solver returns Infeasible during re-resolution in edit_param,
 /// the diagnostics must be propagated in the EvalResult.
 ///
