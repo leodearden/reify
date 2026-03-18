@@ -1,6 +1,10 @@
+pub mod analysis;
+pub mod completion;
 pub mod convert;
 pub mod diagnostics;
 pub mod document;
+pub mod goto_def;
+pub mod hover;
 pub mod server;
 
 use tower_lsp::{LspService, Server};

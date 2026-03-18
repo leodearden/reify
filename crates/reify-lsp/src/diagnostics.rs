@@ -3,6 +3,7 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_types::{ModulePath, Satisfaction};
 use tower_lsp::lsp_types::{self, Url};
 
+use crate::analysis::module_name_from_uri;
 use crate::convert;
 
 /// Persistent evaluation state maintained across edits.
@@ -121,11 +122,7 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
     let mut result = Vec::new();
 
     // Derive a module name from the URI
-    let module_name = uri
-        .path_segments()
-        .and_then(|mut segs| segs.next_back())
-        .and_then(|name| name.strip_suffix(".ri"))
-        .unwrap_or("unnamed");
+    let module_name = module_name_from_uri(uri);
 
     // Parse
     let parsed = reify_syntax::parse(source, ModulePath::single(module_name));

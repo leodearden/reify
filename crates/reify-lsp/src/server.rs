@@ -70,6 +70,9 @@ impl LanguageServer for ReifyLanguageServer {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
+                definition_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions::default()),
                 ..Default::default()
             },
             ..Default::default()
@@ -183,6 +186,53 @@ impl LanguageServer for ReifyLanguageServer {
             .await;
     }
 
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let state = self.state.read().await;
+        let text = match state.documents.get(&uri) {
+            Some(doc) => doc.text.clone(),
+            None => return Ok(None),
+        };
+        drop(state);
+
+        Ok(crate::hover::compute_hover(&text, &uri, position))
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let state = self.state.read().await;
+        let text = match state.documents.get(&uri) {
+            Some(doc) => doc.text.clone(),
+            None => return Ok(None),
+        };
+        drop(state);
+
+        let location = crate::goto_def::compute_goto_definition(&text, &uri, position);
+        Ok(location.map(GotoDefinitionResponse::Scalar))
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+
+        let state = self.state.read().await;
+        let text = match state.documents.get(&uri) {
+            Some(doc) => doc.text.clone(),
+            None => return Ok(None),
+        };
+        drop(state);
+
+        let items = crate::completion::compute_completions(&text, &uri, position);
+        Ok(Some(CompletionResponse::Array(items)))
+    }
+
     async fn shutdown(&self) -> Result<()> {
         Ok(())
     }
@@ -213,6 +263,27 @@ mod tests {
             }
             other => panic!("Expected TextDocumentSyncKind::FULL, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn initialize_advertises_hover_definition_completion() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+        let init_result = server.initialize(InitializeParams::default()).await.unwrap();
+
+        let caps = &init_result.capabilities;
+        assert!(
+            caps.hover_provider.is_some(),
+            "should advertise hover_provider"
+        );
+        assert!(
+            caps.definition_provider.is_some(),
+            "should advertise definition_provider"
+        );
+        assert!(
+            caps.completion_provider.is_some(),
+            "should advertise completion_provider"
+        );
     }
 
     #[tokio::test]
@@ -286,6 +357,107 @@ mod tests {
             .expect("document should exist after change");
         assert_eq!(doc.text, broken_source);
         assert_eq!(doc.version, 2);
+    }
+
+    // --- step-13: integration tests for hover/goto-def/completion handlers ---
+
+    async fn open_bracket_source(server: &ReifyLanguageServer) -> Url {
+        let source = reify_test_support::bracket_source();
+        let uri = test_uri();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: source.to_string(),
+                },
+            })
+            .await;
+        uri
+    }
+
+    #[tokio::test]
+    async fn hover_handler_returns_info_for_width() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        let hover_result = server
+            .hover(HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: Position::new(1, 10), // on 'width'
+                },
+                work_done_progress_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            hover_result.is_some(),
+            "hover should return info for 'width'"
+        );
+    }
+
+    #[tokio::test]
+    async fn goto_definition_handler_returns_location_for_thickness() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        let goto_result = server
+            .goto_definition(GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: Position::new(9, 15), // on 'thickness' in constraint
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            goto_result.is_some(),
+            "goto-def should return location for 'thickness'"
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_handler_returns_items() {
+        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        let comp_result = server
+            .completion(CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: Position::new(1, 0),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            comp_result.is_some(),
+            "completion should return items"
+        );
+        match comp_result.unwrap() {
+            CompletionResponse::Array(items) => {
+                assert!(!items.is_empty(), "completion should return non-empty items");
+            }
+            CompletionResponse::List(list) => {
+                assert!(
+                    !list.items.is_empty(),
+                    "completion should return non-empty items"
+                );
+            }
+        }
     }
 
     #[tokio::test]

@@ -1,296 +1,225 @@
 {
-  "task_id": "34",
-  "title": "M4 integration — interactive edit loop E2E",
-  "modules": ["crates/reify-eval", "crates/reify-lsp", "crates/reify-test-support"],
-  "analysis": "This task creates an end-to-end integration test verifying the interactive edit loop: LSP edit → incremental eval → updated diagnostics + geometry. The codebase currently has: (1) Engine with eval() for cold-start, edit_param() for incremental value re-evaluation, eval_cached() for cached re-eval, check() for constraint checking, and build() for geometry — but check/build always call eval() internally (cold start), so there's no way to check constraints or build geometry using incrementally-updated values after edit_param(). (2) LSP server with compute_diagnostics() that creates a fresh Engine per edit (no persistent state). (3) Event journal recording evaluation events. (4) Concurrent evaluation adapter for parallel re-eval.\n\nKey gap: After edit_param() updates values incrementally, there's no check_snapshot()/build_snapshot() to check constraints or produce geometry from the current snapshot. The edit_param() docstring even says 'Constraint/Realization nodes tracked in eval set but not evaluated (deferred to check()/build())' — but check() calls eval() which destroys the incremental state.\n\nPlan: (1) Add check_snapshot() and build_snapshot() methods to Engine that operate on current snapshot values without re-eval. (2) Write engine-level E2E test demonstrating true incrementality: eval → edit_param → check_snapshot → build_snapshot → verify values/constraints/geometry update correctly. (3) Add stateful diagnostics pipeline to LSP with persistent Engine. (4) Write LSP-level E2E test: open document → edit → verify diagnostics + geometry update through the server lifecycle.\n\nThe engine-level test proves incrementality (edit_param + check/build on snapshot). The LSP-level test proves the interactive loop works end-to-end (open → edit → diagnostics update). Together they form the complete E2E integration test for the interactive edit loop.\n\n--- POST-REVIEW ADDENDUM ---\n\nReview identified three blocking issues in the LSP server implementation:\n\n(A) test_does_not_test_what_it_claims: The capstone E2E test (step 17) creates independent EvalState instances as proxy checks instead of verifying the diagnostics the server actually publishes. If did_change always published empty diagnostics or panicked, the test would still pass. Fix: add diagnostics capture to ServerState, rewrite the test to assert on captured diagnostics.\n\n(B) mutex_poisoning: did_open/did_change call state.eval_state.lock().unwrap(). If compute_diagnostics_with_state panics while holding the lock, the Mutex becomes poisoned and every subsequent LSP request panics permanently. Fix: use .lock().unwrap_or_else(|e| e.into_inner()) to recover from poisoned locks.\n\n(C) lock_held_during_blocking_computation: The tokio::sync::RwLock write guard is held across the entire compute_diagnostics_with_state() call (parse + compile + eval + constraint check). All concurrent LSP requests are fully blocked during this potentially expensive computation. Fix: extract eval_state from ServerState into its own Arc<Mutex<EvalState>> on ReifyLanguageServer. The RwLock then only guards DocumentStore + captured diagnostics with brief critical sections, while eval runs outside the RwLock.\n\nSteps 19-24 address these issues in TDD order.",
+  "task_id": "33",
+  "title": "LSP features — hover, go-to-def, completions",
+  "modules": ["crates/reify-lsp"],
+  "analysis": "Task 32 built the LSP server foundation: ReifyLanguageServer with full-sync document management, diagnostic pipeline (parse→compile→check→convert), and bidirectional position/span conversion utilities including position_to_offset() and find_word_at_offset() (added as pre-1 for this task, already committed as 70772d8).\n\nThis task adds three interactive LSP features: hover, go-to-definition, and completions.\n\n**Architecture:** All three features need the same underlying data: ParsedModule (for declaration names and source spans), CompiledModule (for resolved types via ValueCellDecl.cell_type), and optionally CheckResult (for evaluated runtime values). Rather than duplicating the pipeline in each module, a shared AnalysisContext struct runs parse→compile→check once and provides structured accessors. This context also extracts the module_name_from_uri helper currently inlined in diagnostics.rs.\n\n**Key constraint — compiler discards spans:** The compiler sets ALL spans to SourceSpan::new(0,0) in ValueCellDecl, CompiledConstraint, and RealizationDecl. Go-to-definition MUST use ParsedModule spans (ParamDecl.span, LetDecl.span) which retain accurate byte offsets from tree-sitter. For type info, CompiledModule.templates[].value_cells[] provides cell_type: Type.\n\n**Symbol lookup strategy:** Word-based extraction via find_word_at_offset, then name matching against known symbols. This is pragmatic because: (a) ParsedModule declaration spans cover entire declarations, not individual name tokens; (b) it handles both declaration-site and reference-site hovers uniformly; (c) no need for full AST position walking.\n\n**Value formatting:** Value doesn't implement Display. A local format_value() helper in the analysis module handles user-friendly formatting (Scalar{si_value: 0.08, dimension: LENGTH} → '0.08 m').\n\n**Test strategy:** All tests use bracket_source() fixture with known byte offsets from bracket_parsed_module(): width param at (24,42), height at (47,74), thickness at (79,107), volume let at (187,226), 'width' ident ref at (200,205), 'thickness' ref in constraint at (243,252). Tests verify exact hover content, goto-def target locations, and completion item counts/kinds.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add bracket_source_with_width(width_str: &str) and bracket_source_violating() fixture helpers to crates/reify-test-support/src/fixtures.rs. bracket_source_with_width replaces '80mm' width default via string replacement. bracket_source_violating sets thickness=1mm to trigger constraint violation (thickness > 2mm). Add self-consistency tests for both.",
+      "description": "Add position_to_offset (LSP Position → byte offset) and find_word_at_offset (extract identifier word at byte offset) utilities to convert.rs. Foundational for all three features.",
       "status": "done",
-      "commit": "71e9dff",
-      "tests": ["reify-test-support::fixtures::tests::bracket_source_with_width_replaces_default", "reify-test-support::fixtures::tests::bracket_source_violating_has_small_thickness"]
+      "commit": "70772d8",
+      "tests": [
+        "position_to_offset first line returns correct byte offset",
+        "position_to_offset second line accounts for newline",
+        "position_to_offset at origin returns 0",
+        "position_to_offset past end returns source.len()",
+        "position_to_offset handles UTF-16 multibyte (emoji)",
+        "find_word_at_offset returns full word from middle position",
+        "find_word_at_offset at non-ident returns None",
+        "find_word_at_offset at start/end of word returns full word",
+        "find_word_at_offset on keyword 'param' returns keyword string"
+      ]
     },
     {
       "id": "pre-2",
-      "description": "Ensure crates/reify-lsp/Cargo.toml has reify-eval in dev-dependencies (already in deps) and that reify-test-support dev-dep is available. No new external deps needed — MockGeometryKernel is already in reify-test-support.",
+      "description": "Create analysis.rs module with shared AnalysisContext that runs parse→compile→check pipeline once and provides structured accessors. Includes: module_name_from_uri(uri) helper extracted from diagnostics.rs; AnalysisContext struct holding source ref, uri ref, ParsedModule, CompiledModule, CheckResult; methods: new(source, uri) -> Self, find_member_decl(name) -> Option<MemberInfo> (returns kind, type, span from ParsedModule+CompiledModule), structure_names() -> Vec<(&str, member counts)>, member_names() -> Vec<(&str, ValueCellKind, &Type)>, get_value(entity, member) -> Option<&Value>; format_value(value: &Value) -> String helper. Update diagnostics.rs to use module_name_from_uri. Register module in lib.rs.",
       "status": "done",
-      "commit": "71e9dff",
-      "tests": []
+      "commit": "5d8ce86",
+      "tests": [
+        "analysis context builds without panic on bracket_source",
+        "analysis context builds without panic on empty source",
+        "find_member_decl('width') returns Param kind, Scalar[Length] type, span (24,42)",
+        "find_member_decl('volume') returns Let kind with inferred type",
+        "find_member_decl('nonexistent') returns None",
+        "member_names returns all 6 value cells (5 params + volume)",
+        "structure_names returns [('Bracket', 5 params, 1 let, 3 constraints)]",
+        "get_value returns evaluated Value for 'width' (Scalar 0.08m)",
+        "format_value formats Scalar LENGTH as SI meters",
+        "format_value formats Bool/Int/Real/String/Undef correctly",
+        "module_name_from_uri extracts 'test' from 'file:///test.ri'"
+      ]
     }
   ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in crates/reify-eval/tests/interactive_edit_loop.rs: check_snapshot_returns_constraint_results_from_current_values. Create Engine with MockConstraintChecker (default Satisfied), call eval() with bracket_compiled_module(), then call engine.check_snapshot(&module). Verify it returns Some(CheckResult) with 3 constraint entries all Satisfied, values map has 6 entries matching eval() output. This tests the new check_snapshot() method that checks constraints from the current snapshot without re-calling eval().",
+      "description": "Write failing tests for hover on param declaration: (1) hover at Position corresponding to byte ~30 ('width' in 'param width: Scalar = 80mm') returns Some(Hover) with markdown containing 'param', 'width', 'Scalar[Length]'; (2) hover at Position for 'thickness' returns similar info; (3) hover at whitespace/operator position returns None.",
       "status": "done",
-      "commit": "6cd0809"
+      "commit": "1616bd9"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add Engine::check_snapshot(&self, module: &CompiledModule) -> Option<CheckResult> method to crates/reify-eval/src/lib.rs. Returns None if self.current_snapshot is None. Otherwise: extract values from snapshot (build ValueMap from snapshot.values), iterate template constraints, call self.constraint_checker.check() with values, collect ConstraintCheckEntry results. Return Some(CheckResult { values, constraint_results, diagnostics: vec![], resolved_params }).",
+      "description": "Create hover.rs with compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hover>. Uses position_to_offset → find_word_at_offset → build AnalysisContext → look up word via find_member_decl → format markdown with kind, name, type, and evaluated value. Returns Hover with MarkupContent::markdown and range covering the matched word. Register module in lib.rs.",
       "status": "done",
-      "commit": "a6db531"
+      "commit": "0ced4b4"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: build_snapshot_produces_geometry_from_current_values. Create Engine with MockConstraintChecker + MockGeometryKernel, eval() bracket_compiled_module() (which has a realization with box op), then call engine.build_snapshot(&module, ExportFormat::Step). Verify geometry_output is Some containing mock export data (b'MOCK_EXPORT_DATA'), constraint results are present, and the mock kernel's operations() list is non-empty (box op was executed).",
+      "description": "Write failing tests for hover on let binding and ident references: (1) hover on 'volume' (at byte ~193) shows 'let', 'volume', computed type; (2) hover on 'thickness' at byte 243 (inside constraint expression 'constraint thickness > 2mm') shows param type info identical to hovering at declaration site; (3) hover on 'width' at byte 200 (inside 'let volume = width * ...') shows param info.",
       "status": "done",
-      "commit": "a0b49fe"
+      "commit": "871b554"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add Engine::build_snapshot(&mut self, module: &CompiledModule, format: ExportFormat) -> Option<BuildResult> method. Returns None if no snapshot. Otherwise: get values from snapshot, check constraints (same as check_snapshot), then execute geometry operations from module realizations using self.geometry_kernel (reuse existing compile_geometry_op helper), export result. Return Some(BuildResult { values, constraint_results, geometry_output, diagnostics }).",
+      "description": "Extend hover.rs to include evaluated values from CheckResult in the hover output. For lets, show the computed value. For params, show the default value. Verify that word-based lookup correctly handles ident references (same member name match whether at declaration or reference site).",
       "status": "done",
-      "commit": "e330aa6"
+      "commit": "871b554"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: edit_param_then_check_snapshot_reflects_updated_values. Eval bracket module, then edit_param(ValueCellId::new('Bracket','width'), Value::length(0.1)). Call check_snapshot() and verify: width=0.1m in returned values, volume recomputed to 0.1*0.1*0.005=5e-5 m³, all 3 constraints still Satisfied (width 100mm doesn't violate any constraint). Also verify height/thickness/fillet_radius/hole_diameter unchanged.",
+      "description": "Write failing tests for hover edge cases: (1) hover on structure name 'Bracket' (byte ~10) shows structure summary with member counts; (2) hover on keyword 'param' (byte 24) shows keyword description; (3) hover on keyword 'constraint' shows keyword description; (4) hover on unknown/non-identifier word returns None; (5) hover on empty source returns None.",
       "status": "done",
-      "commit": "03ce384"
+      "commit": "57d95c6"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Integration test — should pass with check_snapshot() already reading from self.current_snapshot which was updated by edit_param(). If not, ensure check_snapshot() reads from current_snapshot.values (which edit_param updates) rather than any stale source.",
+      "description": "Extend hover.rs: after member lookup, check if word matches a structure name → show 'structure Bracket (5 params, 1 let, 3 constraints)'. Then check keyword list → show brief description. Keywords: structure, param, let, constraint, sub, import, if, then, else, and, or, not, true, false, auto. Return None for unrecognized words.",
       "status": "done",
-      "commit": "03ce384"
+      "commit": "537e7e8"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test: edit_param_constraint_violation_detected. Eval bracket module, then edit_param(ValueCellId::new('Bracket','thickness'), Value::length(0.001)) — thickness=1mm violates 'thickness > 2mm'. Call check_snapshot() and verify: constraint 0 (thickness > 2mm) has Satisfaction::Violated. Also verify thickness value is 0.001m in the results. This proves the interactive loop detects constraint violations after incremental param edits.",
+      "description": "Write failing tests for go-to-definition: (1) goto-def on 'thickness' at byte 243 (in 'constraint thickness > 2mm') returns Location with range corresponding to span (79,107); (2) goto-def on 'width' at byte 286 (in 'width / 4') returns Location for span (24,42); (3) goto-def on 'volume' reference returns Location for span (187,226); (4) goto-def on keyword 'param' returns None; (5) goto-def on structure name 'Bracket' returns None; (6) goto-def on unknown word returns None.",
       "status": "done",
-      "commit": "4aa3b24"
+      "commit": "afabb81"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Integration test — should pass since check_snapshot() uses the real constraint checker (SimpleConstraintChecker or MockConstraintChecker with default Satisfied won't work here). This test needs SimpleConstraintChecker to evaluate the actual constraint expression (thickness > 2mm). Update the test or Engine setup to use SimpleConstraintChecker from reify-constraints for constraint violation detection.",
+      "description": "Create goto_def.rs with compute_goto_definition(source: &str, uri: &Url, position: Position) -> Option<Location>. Uses find_word_at_offset → parse source → iterate ParsedModule declarations → for each StructureDef search members for ParamDecl/LetDecl with matching name → return Location(uri, span_to_range(decl.span)). Only needs ParsedModule (no compile/check needed). Register module in lib.rs.",
       "status": "done",
-      "commit": "4aa3b24"
+      "commit": "9116fcd"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test: edit_param_then_build_snapshot_updates_geometry. Create Engine with MockConstraintChecker + MockGeometryKernel. Eval bracket_compiled_module(), record initial mock kernel operations count. Then edit_param(width, Value::length(0.1)). Call build_snapshot(). Verify: geometry_output is Some, mock kernel received NEW geometry ops (operations count increased), and the box op arguments include the updated width value (0.1m).",
+      "description": "Write failing tests for completions: (1) completions include all 12+ keywords with CompletionItemKind::KEYWORD; (2) completions include 6 scope identifiers (width, height, thickness, fillet_radius, hole_diameter, volume) with VARIABLE kind and type detail string; (3) completions include 'Bracket' with STRUCT kind; (4) completions include built-in functions (box, cylinder, sphere, sin, cos, sqrt, abs, min, max) with FUNCTION kind; (5) completions include type names (Scalar, Bool, Int, Real, String) with CLASS kind; (6) completions on empty source still includes keywords and built-ins.",
       "status": "done",
-      "commit": "8a348db"
+      "commit": "bb5bf8c"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Integration test — should pass if build_snapshot() correctly reads updated values from current snapshot. If the mock kernel's operations don't reflect updated values, verify that compile_geometry_op receives the post-edit ValueMap from the snapshot.",
+      "description": "Create completion.rs with compute_completions(source: &str, uri: &Url, position: Position) -> Vec<CompletionItem>. Builds AnalysisContext, collects: (a) keywords as KEYWORD items, (b) value_cell members as VARIABLE items with cell_type.to_string() as detail, (c) structure names as STRUCT items, (d) built-in function names as FUNCTION items, (e) type names as CLASS items. Returns flat list for client-side filtering. Register module in lib.rs.",
       "status": "done",
-      "commit": "8a348db"
+      "commit": "3572f37"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test: journal_records_full_edit_cycle_events. Eval bracket module, then edit_param(width, 0.1m). Query engine.journal().events_for_node(NodeId::Value(vcid('Bracket','volume'))) and verify: at least 2 Started events (one from eval, one from edit_param re-eval since volume depends on width). Query journal for width node: should have 1 Started event from eval only (width is the changed param, not re-evaluated in edit_param). Verify total edit_param events < total eval events (proves incremental — fewer nodes evaluated).",
+      "description": "Write failing test: after server.initialize(), capabilities should include hover_provider (Some), definition_provider (Some), and completion_provider (Some). Uses existing LspService::new(ReifyLanguageServer::new) + service.inner() pattern.",
       "status": "done",
-      "commit": "57977b0"
+      "commit": "a9c81a3"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Integration test — should pass since EventJournal is already wired into both eval() and edit_param(). If any events are missing, add journal.record() calls at the appropriate points.",
+      "description": "Update server.rs initialize() to advertise: hover_provider: Some(HoverProviderCapability::Simple(true)), definition_provider: Some(OneOf::Left(true)), completion_provider: Some(CompletionOptions::default()). Existing text_document_sync unchanged.",
       "status": "done",
-      "commit": "57977b0"
+      "commit": "d61e14f"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test in crates/reify-lsp/tests/interactive_edit_loop.rs: lsp_stateful_diagnostics_initial_eval. Create an EvalState via EvalState::new(), call compute_diagnostics_with_state(&mut state, bracket_source(), &test_uri()). Verify: returns DiagnosticsResult with no error-severity diagnostics (same as existing compute_diagnostics). This tests the new stateful pipeline entry point.",
+      "description": "Write failing integration tests: (1) open bracket_source, call hover() with position at 'width' → returns Ok(Some(Hover)) with non-empty contents; (2) open bracket_source, call goto_definition() at 'thickness' in constraint → returns Ok(Some(GotoDefinitionResponse)); (3) open bracket_source, call completion() → returns Ok(Some(CompletionResponse)) with items. These tests verify end-to-end wiring through the server handlers.",
       "status": "done",
-      "commit": "db675d7"
+      "commit": "d30c54e"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Add EvalState struct to crates/reify-lsp/src/diagnostics.rs holding: engine: Engine, last_module: Option<CompiledModule>, version_counter: u64. Add EvalState::new() that creates Engine with SimpleConstraintChecker and no geometry kernel. Add DiagnosticsResult { diagnostics: Vec<lsp_types::Diagnostic>, geometry_output: Option<Vec<u8>> }. Add pub fn compute_diagnostics_with_state(state: &mut EvalState, source: &str, uri: &Url) -> DiagnosticsResult. First impl: parse → compile → engine.eval() → engine.check_snapshot() → convert diagnostics → return result. Store compiled module in state.",
+      "description": "Wire handlers in server.rs: (1) async fn hover(&self, params: HoverParams) → reads document from state, calls hover::compute_hover(text, uri, position), returns result; (2) async fn goto_definition(&self, params: GotoDefinitionParams) → calls goto_def::compute_goto_definition, wraps in GotoDefinitionResponse::Scalar; (3) async fn completion(&self, params: CompletionParams) → calls completion::compute_completions, wraps in CompletionResponse::Array. Each follows existing did_open pattern of state.read().await → documents.get().",
       "status": "done",
-      "commit": "74550ac"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing test: lsp_stateful_diagnostics_after_edit_detects_violation. Create EvalState, call compute_diagnostics_with_state with bracket_source() (no errors). Then call again with bracket_source_violating() (thickness=1mm). Verify second call returns at least one error-severity diagnostic indicating constraint violation. This proves the stateful pipeline correctly updates diagnostics when source changes.",
-      "status": "done",
-      "commit": "6a4d2b2"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Extend compute_diagnostics_with_state() to handle subsequent calls correctly: re-parse, re-compile, call engine.eval() with new module (cold start — source text change invalidates all cached state), then check_snapshot(), convert diagnostics. Update stored last_module. Since full text sync means source changes completely each time, cold-start eval is correct here.",
-      "status": "done",
-      "commit": "6a4d2b2"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing test: lsp_server_e2e_interactive_edit_loop. Full lifecycle through tower-lsp: (1) create LspService with ReifyLanguageServer, (2) initialize, (3) did_open with bracket_source() — verify via compute_diagnostics proxy that no errors exist, (4) did_change with bracket_source_violating() — verify diagnostics now include constraint violation, (5) did_change back to bracket_source() — verify diagnostics clear (no errors), (6) did_close + shutdown. This is the capstone E2E test proving the interactive edit loop works through the LSP server.",
-      "status": "done",
-      "commit": "bb6e0e8"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Add EvalState to ServerState in crates/reify-lsp/src/server.rs (behind the existing Arc<RwLock<>>). Update did_open to use compute_diagnostics_with_state() instead of stateless compute_diagnostics(). Update did_change similarly. The persistent EvalState survives across edits, enabling the server to maintain Engine state. did_close resets EvalState for the closed document (or leaves it — it will be rebuilt on next open).",
-      "status": "done",
-      "commit": "3697ff8"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write failing test in crates/reify-lsp/src/server.rs (mod tests): server_captures_published_diagnostics. Create LspService, call did_open with valid bracket source, then read server.state().read().await.last_diagnostics_for(&uri). Assert it returns Some (diagnostics were captured) and that the captured list contains no ERROR-severity diagnostics. This tests the new diagnostics capture mechanism in ServerState — currently fails because last_diagnostics_for() method and last_published_diagnostics field don't exist. [Addresses reviewer issue: test_does_not_test_what_it_claims]",
-      "status": "done",
-      "commit": "3121226"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Add diagnostics capture to ServerState in crates/reify-lsp/src/server.rs: (1) Add field last_published_diagnostics: HashMap<Url, Vec<lsp_types::Diagnostic>> to ServerState, initialized to empty in ReifyLanguageServer::new(). (2) Add pub fn last_diagnostics_for(&self, uri: &Url) -> Option<&Vec<lsp_types::Diagnostic>> accessor to ServerState. (3) In did_open, store diagnostics.clone() in last_published_diagnostics before calling client.publish_diagnostics(). (4) In did_change, same pattern. (5) In did_close, remove the URI entry from last_published_diagnostics. Add 'use std::collections::HashMap' import. Pass step-19 test.",
-      "status": "done",
-      "commit": "8ce76d8"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing test in crates/reify-lsp/src/server.rs (mod tests): server_recovers_from_eval_state_lock_poisoning. Create LspService. Access the eval_state Mutex through server.eval_state() (new test accessor that returns &Arc<Mutex<EvalState>>), clone the Arc, spawn a std::thread that locks the Mutex and panics to poison it. Verify lock().is_err() confirms the lock is poisoned. Then call did_open with valid bracket source — should succeed (recover from poison) rather than panic. Verify diagnostics were captured in last_diagnostics_for(&uri). Currently fails because: (a) eval_state() accessor doesn't exist on ReifyLanguageServer, and (b) .lock().unwrap() in did_open panics on poisoned lock. [Addresses reviewer issue: mutex_poisoning]",
-      "status": "done",
-      "commit": "c8d5919"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Restructure server to fix mutex poisoning and lock scope in crates/reify-lsp/src/server.rs: (1) Move eval_state out of ServerState into ReifyLanguageServer as a separate field: eval_state: Arc<Mutex<EvalState>>. ServerState now only holds documents + last_published_diagnostics. (2) Add #[cfg(test)] pub(crate) fn eval_state(&self) -> &Arc<Mutex<EvalState>> accessor. (3) Replace .lock().unwrap() with .lock().unwrap_or_else(|e| { eprintln!(\"eval_state lock poisoned, recovering\"); e.into_inner() }) in did_open and did_change. (4) Narrow RwLock scope in did_open: brief write lock for documents.open(), release, eval runs outside RwLock using only the eval_state Mutex, then brief write lock to store captured diagnostics. Same pattern for did_change. (5) Update ReifyLanguageServer::new() to initialize eval_state separately. This simultaneously fixes poison recovery (issue B) and lock contention (issue C). [Addresses reviewer issues: mutex_poisoning + lock_held_during_blocking_computation]",
-      "status": "done",
-      "commit": "d8961b8"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Rewrite the capstone E2E test lsp_server_e2e_interactive_edit_loop in crates/reify-lsp/tests/interactive_edit_loop.rs to assert on the server's actual published diagnostics instead of proxy EvalState checks. After each did_open/did_change, read server.state().read().await.last_diagnostics_for(&uri) and assert directly: (1) after did_open with valid bracket source → captured diagnostics exist and contain no ERROR-severity entries, (2) after did_change with bracket_source_violating() → captured diagnostics contain at least one ERROR with message mentioning 'constraint' or 'violated', (3) after did_change back to valid source → captured diagnostics have no errors. Remove all three proxy blocks that create independent EvalState instances (lines 113-122, 141-153, 171-180 of current file). Also verify did_close clears captured diagnostics for the URI. The last_diagnostics_for accessor must be pub (add to ServerState impl without #[cfg(test)]). [Addresses reviewer issue: test_does_not_test_what_it_claims]",
-      "status": "done",
-      "commit": "06b65c7"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Verification step: run the rewritten capstone E2E test. Should pass since steps 20 and 22 already implemented diagnostics capture and the restructured server correctly stores diagnostics before publishing. If test fails, diagnose: (a) check that last_diagnostics_for is accessible from integration tests (must be pub, not pub(crate)), (b) verify diagnostics are stored BEFORE client.publish_diagnostics() is called, (c) ensure did_close removes the entry from last_published_diagnostics. Fix any issues found.",
-      "status": "pending",
-      "commit": null
+      "commit": "51601b7"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add check_snapshot() and build_snapshot() methods rather than modifying check()/build()",
-      "rationale": "check() and build() always call eval() internally (cold start). Adding separate snapshot-based methods preserves backward compatibility and makes the incremental pipeline explicit: eval() → edit_param() → check_snapshot() → build_snapshot(). The comment in edit_param() already says 'Constraint/Realization nodes tracked in eval set but not evaluated (deferred to check()/build())' — these new methods fulfill that contract."
+      "decision": "Shared AnalysisContext runs the pipeline once per request",
+      "rationale": "Hover, goto-def (optionally), and completions all need ParsedModule, CompiledModule, and/or CheckResult. A shared context avoids duplicating the 5-line pipeline (derive module name, parse, compile, check). This also centralizes the module_name_from_uri extraction, reducing duplication with diagnostics.rs. The context is cheap to construct per-request given M1's single-file scope."
     },
     {
-      "decision": "LSP stateful pipeline uses cold-start eval() on each source edit, not eval_cached()",
-      "rationale": "eval_cached() is designed for the same compiled module with different versions. When source text changes via LSP full text sync, the CompiledModule changes (different expressions, content hashes). eval_cached() would incorrectly reuse stale cached values for changed expressions because nobody marks them dirty. True source-level incrementality (diffing compiled modules to detect what changed) is future work. The Engine-level edit_param() path IS truly incremental and is tested separately."
+      "decision": "Word-based symbol lookup rather than full AST position walking",
+      "rationale": "ParsedModule stores whole-declaration spans (e.g., ParamDecl.span covers entire 'param width: Scalar = 80mm', not just 'width'). Walking the AST to find which node contains the cursor offset would miss declaration-site name hovers and require complex tree traversal. Word extraction + name matching is simpler, covers all cases (declaration site, reference site, structure names, keywords), and handles the fact that expression-level ExprKind::Ident spans are only available deep in the AST."
     },
     {
-      "decision": "Engine-level and LSP-level tests are complementary, not redundant",
-      "rationale": "Engine-level tests (steps 1-12) prove true incrementality: edit_param → check_snapshot with journal verification showing fewer events than cold start. LSP-level tests (steps 13-18) prove the interactive loop works end-to-end through the server lifecycle: open → edit → diagnostics update. Together they form the complete E2E integration test suite."
+      "decision": "Go-to-definition uses ParsedModule spans exclusively",
+      "rationale": "The compiler sets ALL spans to SourceSpan::new(0,0) in compile_structure() (lines 669, 683, 705, 729, 751 in lib.rs). ParsedModule retains accurate tree-sitter byte offsets: ParamDecl.span for 'param width' is (24,42), LetDecl.span for 'let volume' is (187,226), etc. This is the only reliable source of declaration locations. Go-to-def only needs the parsed module, not the compiled one."
     },
     {
-      "decision": "check_snapshot() returns Option<CheckResult> (None if no snapshot)",
-      "rationale": "Making the snapshot requirement explicit via Option rather than panicking (like edit_param does with expect()) is safer for LSP integration where the server state may not have been initialized yet. Callers can handle None gracefully."
+      "decision": "Hover shows evaluated values from CheckResult",
+      "rationale": "The task description says 'type/value info'. Running the full pipeline through Engine::check() provides both Type (from CompiledModule) and evaluated Value (from CheckResult.values). For a CAD language, showing computed dimensions immediately on hover is high-value: 'param width: Scalar[Length] = 0.08 m'. The cost of running check() is negligible for M1 single-file sources."
     },
     {
-      "decision": "Place engine-level tests in new file interactive_edit_loop.rs rather than extending e2e_bracket.rs",
-      "rationale": "The existing e2e_bracket.rs tests the cold-start pipeline with real OCCT kernel and requires --test-threads=1. The interactive edit loop tests use MockGeometryKernel, test incremental behavior, and can run in parallel — a different concern deserving its own test file."
+      "decision": "Value formatting as a local helper, not cross-crate Display impl",
+      "rationale": "Value is defined in reify-types (outside module scope). Adding Display there would be a cross-crate change. A local format_value() in analysis.rs handles the LSP-specific formatting needs: Scalar shows SI value with dimension label, Bool shows true/false, Undef shows '(undefined)'. This can be promoted to a proper Display impl later if useful elsewhere."
     },
     {
-      "decision": "EvalState holds Engine and last CompiledModule together",
-      "rationale": "The Engine needs the CompiledModule for check_snapshot/build_snapshot calls. Storing it alongside the Engine in EvalState keeps the stateful pipeline self-contained and avoids re-compilation when only querying current state."
+      "decision": "Flat completion list with client-side filtering",
+      "rationale": "Always return all completions (keywords, identifiers, types, functions) regardless of cursor position. LSP clients perform their own fuzzy filtering on CompletionItem.label. Server-side context-aware filtering (only types after ':', only keywords at start of member) adds complexity with minimal benefit since clients already filter well. Can be added as a refinement later."
     },
     {
-      "decision": "Use SimpleConstraintChecker (not MockConstraintChecker) for constraint violation tests",
-      "rationale": "MockConstraintChecker returns predetermined Satisfaction values and doesn't evaluate constraint expressions. To test that 'thickness=1mm violates thickness > 2mm', we need SimpleConstraintChecker which actually evaluates the compiled expression against the ValueMap. Mock is used only when we don't care about real constraint semantics."
+      "decision": "Go-to-def returns None for structure names and keywords",
+      "rationale": "Structure names are self-referential (Bracket is its own definition). Keywords have no source definition. Only param/let member names provide meaningful navigation targets. This matches user expectations: clicking an identifier reference navigates to its declaration."
     },
     {
-      "decision": "Store published diagnostics in ServerState rather than mocking tower-lsp Client",
-      "rationale": "tower-lsp's Client is created internally by LspService::new() and cannot be easily mocked or intercepted without significant transport-level plumbing (mock JSON-RPC channels, message parsing, etc.). Instead, store the exact diagnostics Vec passed to client.publish_diagnostics() in a HashMap<Url, Vec<Diagnostic>> field on ServerState. Tests read this via last_diagnostics_for(). This proves the server computed and published the correct diagnostics — the same Vec is stored and then published, so the capture is faithful. This is simpler than tower_test::mock::Spawn and equally verifiable."
-    },
-    {
-      "decision": "Extract eval_state from ServerState into ReifyLanguageServer to fix lock contention",
-      "rationale": "The original design places eval_state: Mutex<EvalState> inside ServerState, which is guarded by Arc<RwLock<ServerState>>. This means the RwLock write guard must be held for the entire duration of compute_diagnostics_with_state (parse + compile + eval + constraint check). Moving eval_state to its own Arc<Mutex<EvalState>> on ReifyLanguageServer means: (1) RwLock is only held briefly for DocumentStore updates and diagnostics capture, (2) eval runs outside the RwLock using only the eval_state Mutex, (3) concurrent LSP requests that need document state (hover, completion, etc.) can proceed during eval. The Mutex on EvalState still serializes evaluations (correct, since Engine is not Sync), but doesn't block unrelated state reads."
-    },
-    {
-      "decision": "Use unwrap_or_else(|e| e.into_inner()) for Mutex poison recovery instead of custom error handling",
-      "rationale": "When the Mutex is poisoned (e.g., compute_diagnostics_with_state panicked), into_inner() extracts the last known good state. The Engine may be in an inconsistent state, but compute_diagnostics_with_state immediately creates a fresh Engine (line 80-81 of diagnostics.rs: 'state.engine = reify_eval::Engine::new(...)'), so any stale state from the poisoned lock is discarded on the next call. This makes poison recovery safe without needing to rebuild EvalState from scratch."
+      "decision": "Fresh Engine per request, consistent with diagnostics pattern",
+      "rationale": "Engine is not Send (holds Box<dyn ConstraintChecker>). Persisting across async handler calls would require a dedicated thread, Mutex, or architectural change. For M1 single-file sources the per-request cost is negligible. M4 'Living Design' task will address persistent Engine state for warm-starting and incremental evaluation."
     }
   ],
   "reuse": [
     {
-      "what": "bracket_compiled_module() fixture",
-      "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "Used for engine-level tests as the CompiledModule input. Has 5 params, 1 let binding (volume), 3 constraints, and 1 realization (box). Already used in 15+ existing tests."
+      "what": "position_to_offset(source, Position) -> usize",
+      "where": "crates/reify-lsp/src/convert.rs:44-85",
+      "how": "Convert incoming LSP cursor position to byte offset for word extraction. First step in all three feature handlers. Added in pre-1 (commit 70772d8)."
     },
     {
-      "what": "MockConstraintChecker, MockGeometryKernel",
-      "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "MockConstraintChecker (default Satisfied) for tests not checking real constraint semantics. MockGeometryKernel for geometry build tests — tracks operations via Arc<Mutex<Vec>>, returns dummy MOCK_EXPORT_DATA on export, incrementing handle IDs."
+      "what": "find_word_at_offset(source, offset) -> Option<(usize, &str)>",
+      "where": "crates/reify-lsp/src/convert.rs:92-117",
+      "how": "Extract identifier word at cursor position. Used by hover and goto-def to find the symbol name under cursor. Added in pre-1 (commit 70772d8)."
     },
     {
-      "what": "Engine::eval() + Engine::edit_param() pipeline",
-      "where": "crates/reify-eval/src/lib.rs",
-      "how": "Existing incremental evaluation infrastructure. eval() bootstraps snapshot + cache + dependency structures. edit_param() computes dirty cone, evaluates only affected Value nodes with early cutoff. The new check_snapshot/build_snapshot operate on the snapshot left behind by these methods."
+      "what": "span_to_range(source, SourceSpan) -> Range",
+      "where": "crates/reify-lsp/src/convert.rs:125-130",
+      "how": "Convert ParsedModule declaration spans to LSP Range for goto-def Location results and hover word Range."
     },
     {
-      "what": "EventJournal query methods",
-      "where": "crates/reify-eval/src/journal.rs",
-      "how": "events_for_node() and events_since() for verifying that the journal records the correct sequence of evaluation events through the edit cycle. events_for_node(volume_node) should show 2 Started events (eval + edit_param)."
+      "what": "diagnostics.rs pipeline pattern",
+      "where": "crates/reify-lsp/src/diagnostics.rs:8-45",
+      "how": "The module_name_from_uri derivation (uri.path_segments()...strip_suffix('.ri')) and the parse→compile→check sequence are extracted into AnalysisContext. diagnostics.rs is updated to use the shared helper."
     },
     {
-      "what": "compute_diagnostics() pipeline logic",
-      "where": "crates/reify-lsp/src/diagnostics.rs",
-      "how": "Existing parse → compile → check pipeline. The new compute_diagnostics_with_state() follows the same structure (parse, compile, eval, check, convert) but uses a persistent Engine stored in EvalState instead of creating a fresh one."
+      "what": "Type::Display implementation",
+      "where": "crates/reify-types/src/ty.rs:46-62",
+      "how": "Type implements Display: Bool→'Bool', Scalar{LENGTH}→'Scalar[Length]', etc. Used in hover markdown and completion item detail strings via .to_string()."
     },
     {
-      "what": "convert module (convert_diagnostic, convert_parse_error, etc.)",
-      "where": "crates/reify-lsp/src/convert.rs",
-      "how": "Reused unchanged for converting eval/constraint diagnostics to LSP format in the stateful pipeline."
+      "what": "bracket_source() and bracket_parsed_module() test fixtures",
+      "where": "crates/reify-test-support/src/fixtures.rs:8-264",
+      "how": "Primary test fixture with known byte offsets: width param (24,42), height (47,74), thickness (79,107), fillet_radius (112,144), hole_diameter (149,181), volume let (187,226), body let (346,385), 'width' ident in volume expr (200,205), 'thickness' ident in constraint (243,252)."
     },
     {
-      "what": "tower-lsp LspService::new() test pattern",
-      "where": "crates/reify-lsp/tests/lifecycle.rs",
-      "how": "Existing pattern: LspService::new(ReifyLanguageServer::new), service.inner() to get server ref, call LSP methods directly (initialize, did_open, did_change, etc.). Reused for the capstone E2E LSP lifecycle test."
+      "what": "LspService::new server test pattern",
+      "where": "crates/reify-lsp/src/server.rs:118-130",
+      "how": "Integration tests use LspService::new(ReifyLanguageServer::new), service.inner() for direct handler calls, did_open to load documents. Existing pattern reused for hover/goto_def/completion handler tests."
     },
     {
-      "what": "compile_geometry_op() helper function",
-      "where": "crates/reify-eval/src/lib.rs (line 1327)",
-      "how": "Existing private fn that compiles CompiledGeometryOp into GeometryOp by evaluating expressions against a ValueMap. Reused by build_snapshot() for geometry execution. May need to be made pub(crate) or extracted for shared use."
+      "what": "CompiledModule topology iteration",
+      "where": "crates/reify-compiler/src/lib.rs (TopologyTemplate, ValueCellDecl)",
+      "how": "TopologyTemplate.value_cells provides cell_type: Type and kind: ValueCellKind for each declared member. ValueCellDecl.id.member gives the name. Used by AnalysisContext to build symbol→type mapping for hover and completions."
     },
     {
-      "what": "bracket_source() fixture",
-      "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "Canonical bracket.ri source for LSP tests as the initial document. The new bracket_source_with_width() and bracket_source_violating() are string-replace derivatives of this."
-    },
-    {
-      "what": "SimpleConstraintChecker",
-      "where": "crates/reify-constraints/src/lib.rs",
-      "how": "Real constraint checker that evaluates compiled boolean expressions against ValueMap. Used in constraint violation tests and in the LSP EvalState (same as the current compute_diagnostics pipeline)."
-    },
-    {
-      "what": "Existing server test patterns (state accessor, LspService setup)",
-      "where": "crates/reify-lsp/src/server.rs (mod tests)",
-      "how": "Existing #[cfg(test)] state() accessor and test_uri() helper. Extended with eval_state() accessor for poison recovery testing. The pattern of creating LspService, calling server.inner(), and exercising handlers directly is reused for all new server tests."
-    },
-    {
-      "what": "std::sync::Mutex poison recovery pattern",
-      "where": "Rust standard library",
-      "how": "PoisonError::into_inner() extracts the guarded data from a poisoned Mutex. Combined with unwrap_or_else, this is the standard Rust pattern for recovering from panics that occurred while holding a lock."
+      "what": "CheckResult.values (ValueMap)",
+      "where": "crates/reify-eval/src/lib.rs:77-82",
+      "how": "CheckResult.values is a ValueMap (PersistentMap<ValueCellId, Value>) providing evaluated runtime values. Used by hover to show computed values alongside types."
     }
   ]
 }

@@ -37,6 +37,90 @@ pub fn offset_to_position(source: &str, offset: u32) -> Position {
     Position::new(line, character)
 }
 
+/// Convert an LSP Position (line, character) to a byte offset in `source`.
+///
+/// The character offset uses UTF-16 code units per LSP spec.
+/// Returns `source.len()` if the position is past the end.
+pub fn position_to_offset(source: &str, position: Position) -> usize {
+    let target_line = position.line as usize;
+    let target_char = position.character as usize;
+
+    let mut current_line = 0usize;
+    let mut byte_offset = 0usize;
+
+    // Advance to the target line
+    if target_line > 0 {
+        for (i, &byte) in source.as_bytes().iter().enumerate() {
+            if byte == b'\n' {
+                current_line += 1;
+                if current_line == target_line {
+                    byte_offset = i + 1;
+                    break;
+                }
+            }
+        }
+        // If target line not found, return end
+        if current_line < target_line {
+            return source.len();
+        }
+    }
+
+    // Now advance target_char UTF-16 code units within the line
+    let line_slice = &source[byte_offset..];
+    let mut utf16_units = 0usize;
+    for (i, ch) in line_slice.char_indices() {
+        if ch == '\n' || utf16_units >= target_char {
+            return byte_offset + i;
+        }
+        utf16_units += ch.len_utf16();
+    }
+
+    // Past end of line/source
+    if utf16_units < target_char {
+        source.len()
+    } else {
+        // Exactly at the end after consuming all chars
+        source.len()
+    }
+}
+
+/// Extract the identifier word at the given byte offset.
+///
+/// Returns `Some((start, word))` where `start` is the byte offset of the word's
+/// first character, or `None` if the offset doesn't point at an identifier character.
+/// Identifier characters: alphanumeric or underscore.
+pub fn find_word_at_offset(source: &str, offset: usize) -> Option<(usize, &str)> {
+    if offset >= source.len() {
+        return None;
+    }
+
+    let bytes = source.as_bytes();
+
+    // Check if the byte at offset is an identifier character
+    if !is_ident_byte(bytes[offset]) {
+        return None;
+    }
+
+    // Scan backward to find word start
+    let mut start = offset;
+    while start > 0 && is_ident_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+
+    // Scan forward to find word end
+    let mut end = offset + 1;
+    while end < bytes.len() && is_ident_byte(bytes[end]) {
+        end += 1;
+    }
+
+    Some((start, &source[start..end]))
+}
+
+/// Check if a byte is an identifier character (alphanumeric or underscore).
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
 /// Convert a SourceSpan to an LSP Range.
 pub fn span_to_range(source: &str, span: SourceSpan) -> tower_lsp::lsp_types::Range {
     tower_lsp::lsp_types::Range {
@@ -327,5 +411,106 @@ mod tests {
         assert_eq!(lsp_diag.message, "unexpected token");
         assert_eq!(lsp_diag.range.start, Position::new(1, 0));
         assert_eq!(lsp_diag.range.end, Position::new(1, 5));
+    }
+
+    // --- position_to_offset tests (pre-1) ---
+
+    #[test]
+    fn position_to_offset_first_line() {
+        let source = "hello world";
+        assert_eq!(position_to_offset(source, Position::new(0, 6)), 6);
+    }
+
+    #[test]
+    fn position_to_offset_second_line() {
+        let source = "first\nsecond";
+        // Position(1, 3) → byte 6 + 3 = 9
+        assert_eq!(position_to_offset(source, Position::new(1, 3)), 9);
+    }
+
+    #[test]
+    fn position_to_offset_origin() {
+        let source = "hello";
+        assert_eq!(position_to_offset(source, Position::new(0, 0)), 0);
+    }
+
+    #[test]
+    fn position_to_offset_past_end() {
+        let source = "hi";
+        assert_eq!(position_to_offset(source, Position::new(5, 0)), source.len());
+    }
+
+    #[test]
+    fn position_to_offset_utf16_multibyte() {
+        // '😀' is U+1F600: 4 bytes in UTF-8, 2 code units in UTF-16
+        // "a😀b" = [0x61, 0xF0, 0x9F, 0x98, 0x80, 0x62]
+        let source = "a\u{1F600}b";
+        // Position(0, 1) → byte 1 (start of '😀')
+        assert_eq!(position_to_offset(source, Position::new(0, 1)), 1);
+        // Position(0, 3) → byte 5 (start of 'b'; '😀' is 2 UTF-16 units, so col 3)
+        assert_eq!(position_to_offset(source, Position::new(0, 3)), 5);
+    }
+
+    // --- find_word_at_offset tests (pre-1) ---
+
+    #[test]
+    fn find_word_middle_of_source() {
+        let source = "let volume = width * height";
+        // "volume" starts at 4
+        let result = find_word_at_offset(source, 6); // 'l' in volume
+        assert_eq!(result, Some((4, "volume")));
+    }
+
+    #[test]
+    fn find_word_at_non_ident_returns_none() {
+        let source = "a > b";
+        // offset 2 is '>'
+        assert_eq!(find_word_at_offset(source, 2), None);
+        // offset 1 is ' '
+        assert_eq!(find_word_at_offset(source, 1), None);
+    }
+
+    #[test]
+    fn find_word_at_start_of_word() {
+        let source = "hello world";
+        let result = find_word_at_offset(source, 0);
+        assert_eq!(result, Some((0, "hello")));
+    }
+
+    #[test]
+    fn find_word_at_end_of_word() {
+        let source = "hello world";
+        // offset 4 is 'o' in hello (last char)
+        let result = find_word_at_offset(source, 4);
+        assert_eq!(result, Some((0, "hello")));
+    }
+
+    #[test]
+    fn find_word_keyword_param() {
+        let source = "param width: Scalar = 80mm";
+        let result = find_word_at_offset(source, 2); // 'r' in param
+        assert_eq!(result, Some((0, "param")));
+    }
+
+    #[test]
+    fn find_word_underscore_ident() {
+        let source = "let fillet_radius = 3mm";
+        let result = find_word_at_offset(source, 8); // 'l' in fillet_radius
+        assert_eq!(result, Some((4, "fillet_radius")));
+    }
+
+    #[test]
+    fn find_word_at_quantity_digits() {
+        // '80mm' — digits and letters are identifier chars, so this finds '80mm' as a word
+        let source = "= 80mm";
+        let result = find_word_at_offset(source, 2); // '8' in 80mm
+        assert_eq!(result, Some((2, "80mm")));
+    }
+
+    #[test]
+    fn find_word_past_end() {
+        let source = "abc";
+        assert_eq!(find_word_at_offset(source, 3), None);
+        assert_eq!(find_word_at_offset(source, 100), None);
     }
 }
