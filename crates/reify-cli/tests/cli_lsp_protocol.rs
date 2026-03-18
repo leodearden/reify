@@ -10,30 +10,6 @@ fn send_jsonrpc(stdin: &mut impl Write, body: &str) {
     stdin.flush().expect("flush stdin");
 }
 
-/// Read a JSON-RPC response from stdout (Content-Length framing).
-/// Returns the parsed JSON body.
-fn read_jsonrpc(reader: &mut BufReader<impl std::io::Read>) -> serde_json::Value {
-    // Read headers until blank line
-    let mut content_length: usize = 0;
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).expect("read header line");
-        let line = line.trim_end();
-        if line.is_empty() {
-            break;
-        }
-        if let Some(val) = line.strip_prefix("Content-Length: ") {
-            content_length = val.parse().expect("parse content length");
-        }
-    }
-
-    assert!(content_length > 0, "expected Content-Length header");
-
-    // Read exactly content_length bytes
-    let mut body = vec![0u8; content_length];
-    std::io::Read::read_exact(reader, &mut body).expect("read body");
-    serde_json::from_slice(&body).expect("parse JSON body")
-}
 
 #[test]
 fn lsp_initialize_returns_capabilities() {
