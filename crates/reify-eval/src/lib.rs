@@ -210,6 +210,149 @@ impl Engine {
         &self.journal
     }
 
+    /// Prepare state for concurrent evaluation after a parameter change.
+    ///
+    /// Extracts all Clone-able, Send+Sync state needed by the concurrent
+    /// adapter. Uses PersistentMap O(1) clones for graph, values, and
+    /// snapshot_values. Pre-extracts content hashes from CacheStore for
+    /// Changed/Unchanged determination during concurrent eval.
+    ///
+    /// Requires a prior call to eval() to establish baseline state.
+    pub fn prepare_concurrent_edit(
+        &mut self,
+        cell: ValueCellId,
+        new_value: Value,
+    ) -> ConcurrentEditSetup {
+        let snapshot = self.current_snapshot.as_ref()
+            .expect("prepare_concurrent_edit requires a prior call to eval()");
+        let reverse_index = self.reverse_index.as_ref()
+            .expect("prepare_concurrent_edit requires reverse_index from eval()");
+        let trace_map = self.trace_map.as_ref()
+            .expect("prepare_concurrent_edit requires trace_map from eval()");
+
+        // Clone snapshot (O(1) via PersistentMap)
+        let parent_id = snapshot.id;
+        let mut new_snapshot_values = snapshot.values.clone();
+
+        // Update the changed cell's value in snapshot
+        new_snapshot_values.insert(
+            cell.clone(),
+            (new_value.clone(), DeterminacyState::Determined),
+        );
+
+        // Compute dirty cone and eval set
+        let mut changed_set = HashSet::new();
+        changed_set.insert(cell.clone());
+        let dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, reverse_index);
+        let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, trace_map);
+
+        // Build the full ValueMap from snapshot values
+        let mut values = ValueMap::new();
+        for (id, (val, _det)) in new_snapshot_values.iter() {
+            values.insert(id.clone(), val.clone());
+        }
+        // Overwrite with the new param value
+        values.insert(cell.clone(), new_value);
+
+        // Bump snapshot/version IDs
+        let snapshot_id = self.next_snapshot_id;
+        self.next_snapshot_id += 1;
+        let version_id = self.next_version_id;
+        self.next_version_id += 1;
+
+        // Extract previous content hashes from CacheStore for nodes in eval set
+        let mut previous_hashes = HashMap::new();
+        for node_id in &eval_set {
+            if let Some(entry) = self.cache.get(node_id) {
+                previous_hashes.insert(node_id.clone(), entry.result_hash);
+            }
+        }
+
+        // Mark all nodes in the eval set as Pending
+        self.cache.reset_pending_transition_count();
+        for node_id in &eval_set {
+            self.cache.mark_pending(node_id);
+        }
+
+        ConcurrentEditSetup {
+            eval_set,
+            graph: snapshot.graph.clone(),
+            values,
+            snapshot_values: new_snapshot_values,
+            traces: trace_map.clone(),
+            reverse_index: reverse_index.clone(),
+            previous_hashes,
+            version: VersionId(version_id),
+            snapshot_id: SnapshotId(snapshot_id),
+            parent_snapshot_id: parent_id,
+            changed_cells: changed_set,
+        }
+    }
+
+    /// Apply the results of concurrent evaluation back to the Engine.
+    ///
+    /// Updates cache entries, journal, snapshot, and last_eval_set from the
+    /// concurrent evaluation results. Called after edit_param_concurrent()
+    /// completes to synchronize Engine state.
+    pub fn apply_concurrent_edit(
+        &mut self,
+        setup: &ConcurrentEditSetup,
+        result: ConcurrentEditResult,
+    ) {
+        // Record cache entries and journal events for each evaluated node
+        for node_result in &result.node_results {
+            let start = Instant::now();
+            self.journal.record(EvalEvent {
+                timestamp: start,
+                node_id: node_result.node.clone(),
+                kind: EventKind::Started,
+                version: setup.version,
+                payload: None,
+            });
+
+            let trace = node_result.trace.clone();
+            let cached_result = CachedResult::Value(
+                node_result.value.clone(),
+                node_result.determinacy,
+            );
+            self.cache.record_evaluation(
+                node_result.node.clone(),
+                cached_result,
+                setup.version,
+                trace,
+            );
+
+            self.journal.record(EvalEvent {
+                timestamp: Instant::now(),
+                node_id: node_result.node.clone(),
+                kind: EventKind::Completed { outcome: node_result.outcome },
+                version: setup.version,
+                payload: Some(EventPayload::Duration(start.elapsed())),
+            });
+        }
+
+        // Restore freshness to Final for skipped nodes
+        for node_id in &result.skipped {
+            self.cache.restore_final(node_id);
+        }
+
+        // Update current snapshot
+        let snapshot = self.current_snapshot.as_ref()
+            .expect("apply_concurrent_edit requires snapshot from eval()");
+        let mut new_snapshot = snapshot.clone();
+        new_snapshot.id = setup.snapshot_id;
+        new_snapshot.version = setup.version;
+        new_snapshot.values = result.snapshot_values;
+        new_snapshot.provenance = SnapshotProvenance::Edit {
+            changed: setup.changed_cells.clone(),
+            parent: setup.parent_snapshot_id,
+        };
+        self.current_snapshot = Some(new_snapshot);
+
+        // Update last eval set
+        self.last_eval_set = result.actual_eval_set;
+    }
+
     /// Set a parameter override and invalidate cache entries that depend on it.
     pub fn set_param_and_invalidate(
         &mut self,
