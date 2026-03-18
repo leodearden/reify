@@ -1,0 +1,218 @@
+{
+  "task_id": "26",
+  "title": "OCCT dedicated kernel thread",
+  "modules": ["crates/reify-kernel-occt", "crates/reify-eval", "crates/reify-cli"],
+  "analysis": "OcctKernel (lib.rs:22-31) has an unsound `unsafe impl Send + Sync` that works only because nothing currently shares the kernel across threads. OCCT uses process-global state (memory allocators, shape naming tables, Standard_Failure exception state, STEP writer state) making concurrent access UB. M4's concurrent evaluation will spawn multiple async tasks that could access the kernel simultaneously.\n\nThe fix is a dedicated-thread actor pattern. OcctKernelHandle holds a tokio::sync::mpsc::Sender<OcctRequest> to communicate with a std::thread that owns the real OcctKernel. Each GeometryKernel method sends a request with a oneshot reply channel and awaits the response via blocking_recv. OcctKernelHandle is naturally Send+Sync (Sender<T> is Send+Sync when T: Send).\n\nKey complications: (1) export() takes `&mut dyn Write` which is !Send — the kernel thread exports to Vec<u8>, sends bytes back, handle writes to caller's writer. (2) After removing unsafe impls, OcctKernel can't satisfy GeometryKernel's Send+Sync supertraits (cxx::UniquePtr<OcctShape> is !Send), so method bodies become inherent methods. (3) Three external call sites (cli/main.rs:134, e2e_bracket.rs:42, boundary4_geometry.rs occt_tests with 9 instances) must migrate to OcctKernelHandle.\n\nThe implementation uses std::thread::spawn (not tokio::spawn) because OCCT operations are blocking CPU-bound FFI calls that would starve the tokio runtime. Channel shutdown is signaled by dropping the Sender (idiomatic Rust — no explicit Shutdown variant needed). All existing OcctKernel method bodies are preserved verbatim as inherent methods.\n\nAll types crossing the channel (GeometryOp, GeometryQuery, GeometryHandle, Value, Mesh, all error types) are already Send. GeometryOp and GeometryQuery are Clone (needed for channel send). tokio is already a workspace dep with the 'sync' feature providing mpsc and oneshot channels.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add tokio = { workspace = true } dependency to crates/reify-kernel-occt/Cargo.toml. Tokio is already a workspace dep with 'sync' feature (Cargo.toml:43) which provides mpsc and oneshot channels.",
+      "status": "done",
+      "commit": "4051883",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write compile-time Send+Sync assertion test for OcctKernelHandle (similar to DispatchPlanner pattern in reify-geometry/src/lib.rs:20-23). Write unit test that OcctKernelHandle::spawn() returns a handle and does not panic. Test in a new module `handle` within lib.rs or a new file handle.rs.",
+      "status": "done",
+      "commit": "bf43a16"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Create OcctRequest enum with variants: Execute{op: GeometryOp, reply: oneshot::Sender<Result<GeometryHandle, GeometryError>>}, Query{query: GeometryQuery, reply: oneshot::Sender<Result<Value, QueryError>>}, Export{handle: GeometryHandleId, format: ExportFormat, reply: oneshot::Sender<Result<Vec<u8>, ExportError>>}, Tessellate{handle: GeometryHandleId, tolerance: f64, reply: oneshot::Sender<Result<Mesh, TessError>>}. Create OcctKernelHandle struct with tx: tokio::sync::mpsc::Sender<OcctRequest> and thread: Option<std::thread::JoinHandle<()>>. Implement spawn() that creates mpsc channel, spawns std::thread with recv loop, returns handle.",
+      "status": "done",
+      "commit": "f91c151"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write test: handle.execute() creates a box primitive and returns a valid GeometryHandle with id=GeometryHandleId(1) and repr=Solid. Uses blocking channel send/recv.",
+      "status": "done",
+      "commit": "02c0fe3"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Implement execute() on OcctKernelHandle: creates oneshot channel, sends Execute request via tx.blocking_send(), receives result via reply_rx.blocking_recv(). Handle channel errors by converting to GeometryError::OperationFailed. Implement Execute handling in kernel thread loop: call self.kernel.execute(op), send result on reply channel.",
+      "status": "done",
+      "commit": "6260dfa"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test: handle.query() — create box, query Volume, verify result is Value::Real with correct volume. Also test query with invalid handle returns QueryError::InvalidHandle.",
+      "status": "done",
+      "commit": "e0e4e5d"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Implement query() on OcctKernelHandle: sends Query request, blocks on reply. Implement Query handling in kernel thread loop.",
+      "status": "done",
+      "commit": "ef24e93"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test: handle.export() — create box, export to STEP, verify output contains ISO-10303-21 header. Also test export with unsupported format returns ExportError.",
+      "status": "done",
+      "commit": "fc96443"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Implement export() on OcctKernelHandle: sends Export request (with handle id and format, no writer). Kernel thread calls OcctKernel::export() with a Vec<u8> as writer, sends Vec<u8> back. Handle receives bytes and writes them to caller's &mut dyn Write. Implement Export handling in kernel thread loop.",
+      "status": "done",
+      "commit": "4ca735f"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write test: handle.tessellate() — create box, tessellate with tolerance 0.1, verify mesh has vertices (len > 0), indices (len > 0, divisible by 3), and normals.",
+      "status": "done",
+      "commit": "1eaa1b0"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Implement tessellate() on OcctKernelHandle: sends Tessellate request, blocks on reply. Implement Tessellate handling in kernel thread loop.",
+      "status": "done",
+      "commit": "a2ea2c3"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write test: OcctKernelHandle implements GeometryKernel — box it as Box<dyn GeometryKernel>, execute an op through trait interface, verify success. Compile-time const assertion that OcctKernelHandle: GeometryKernel + Send + Sync.",
+      "status": "done",
+      "commit": "da071d6"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Implement `impl GeometryKernel for OcctKernelHandle`. Each trait method delegates to the channel-based inherent methods. execute(&mut self) calls self.execute(), query(&self) calls self.query(), etc. The handle methods only need &self (channel send is &self on Sender) so &mut self for execute works trivially.",
+      "status": "done",
+      "commit": "b0d20dd"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write test: error propagation — Chamfer (unimplemented) returns GeometryError::OperationFailed through channel. Export with invalid handle returns ExportError::InvalidHandle. Tessellate with invalid handle returns TessError::InvalidHandle.",
+      "status": "done",
+      "commit": "73260ef"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Ensure all error variants propagate correctly through channels. Add kernel-thread-died error handling: if oneshot recv fails (thread panicked), return appropriate error type with message 'kernel thread died'.",
+      "status": "done",
+      "commit": "73260ef"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write test: drop OcctKernelHandle, verify thread exits cleanly. Create handle, execute an op (verify kernel thread is alive), drop handle, verify no panic/leak. Test that creating multiple handles sequentially works (each gets its own thread).",
+      "status": "done",
+      "commit": "6d95b74"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement Drop for OcctKernelHandle: drop the Sender (causes kernel thread recv to return Err/None), then join the thread via self.thread.take().map(|t| t.join()). Handle join errors gracefully (thread may have panicked).",
+      "status": "done",
+      "commit": "f6fab20"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write test: multi-operation sequence through handle — create box, create cylinder, boolean union, fillet, query volume, tessellate, export STEP. Verifies stateful kernel operations work correctly across channel boundary with handle reuse.",
+      "status": "done",
+      "commit": "25aeedb"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Remove `unsafe impl Send for OcctKernel` and `unsafe impl Sync for OcctKernel` (lines 30-31 of lib.rs). Convert `impl GeometryKernel for OcctKernel` block to inherent methods: pub fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError>, pub fn query(&self, ...), pub fn export(&self, ...), pub fn tessellate(&self, ...). Bodies stay identical. OcctKernel is now !Send+!Sync naturally (cxx::UniquePtr is !Send).",
+      "status": "done",
+      "commit": "ae4f183"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Update boundary4_geometry.rs occt_tests (lines 130-380+): replace `use reify_kernel_occt::OcctKernel` with `use reify_kernel_occt::OcctKernelHandle` and `OcctKernel::new()` with `OcctKernelHandle::spawn()`. Remove `use reify_types::GeometryKernel` import since handle methods can be called directly or through the trait. Update e2e_bracket.rs:42 similarly. Update cli/main.rs:134 to use OcctKernelHandle::spawn(). Verify all tests pass.",
+      "status": "done",
+      "commit": "13a989b"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Final cleanup: add module-level documentation to handle.rs explaining the dedicated-thread pattern and why it's needed. Export OcctKernelHandle prominently from lib.rs. Add doc comment to OcctKernel noting it is !Send+!Sync and should be used via OcctKernelHandle for cross-thread scenarios. Run full test suite to verify no regressions.",
+      "status": "done",
+      "commit": "a50b1f9"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use tokio::sync::mpsc + tokio::sync::oneshot for channels with blocking_recv()/blocking_send() on the sync side",
+      "rationale": "GeometryKernel trait methods are synchronous (not async). The handle must block waiting for the kernel thread's reply. tokio::sync channels are already available (workspace dep) and their blocking_recv() method works outside async context. This avoids adding std::sync::mpsc as a separate dependency. The kernel thread uses blocking recv on the mpsc receiver naturally."
+    },
+    {
+      "decision": "Use std::thread::spawn for the kernel thread, not tokio::spawn",
+      "rationale": "OCCT operations are CPU-bound blocking FFI calls. Running them on a tokio task would block the async runtime's thread pool. A dedicated OS thread is correct — it has its own stack and never contends with async work. The thread runs a simple synchronous loop: recv request → execute on kernel → send reply."
+    },
+    {
+      "decision": "Export serialization happens on the kernel thread, raw bytes returned via channel",
+      "rationale": "GeometryKernel::export() takes `&mut dyn Write` which is !Send (trait objects with non-Send are !Send). We cannot send the writer to the kernel thread. Instead, the kernel thread writes to a Vec<u8> on the kernel thread, sends the Vec<u8> back through the channel, and the handle writes the bytes to the caller's writer. This adds one memory copy but maintains complete thread safety."
+    },
+    {
+      "decision": "Convert OcctKernel's GeometryKernel trait impl to inherent methods",
+      "rationale": "GeometryKernel trait has `Send + Sync` supertraits. Once we remove `unsafe impl Send + Sync`, OcctKernel can't implement GeometryKernel (cxx::UniquePtr<OcctShape> is !Send). Rather than modifying the trait definition in reify-types (which would affect all consumers), we move the method bodies to inherent methods with identical signatures. The kernel thread calls these directly. Only OcctKernelHandle implements GeometryKernel."
+    },
+    {
+      "decision": "OcctKernelHandle stores Option<JoinHandle> and joins on Drop",
+      "rationale": "Clean shutdown: dropping the handle drops the mpsc Sender, the kernel thread's recv loop sees the channel closed (recv returns None) and exits cleanly, then Drop joins the thread. This ensures OCCT resources (shapes, allocators) are properly freed. The Option wrapper allows take() in Drop."
+    },
+    {
+      "decision": "Channel errors (kernel thread panic) map to domain-specific error types",
+      "rationale": "If the kernel thread panics (e.g., OCCT triggers an unhandled C++ exception), the oneshot receiver gets a RecvError. We convert this to GeometryError::OperationFailed('kernel thread died'), QueryError::QueryFailed('kernel thread died'), etc. rather than panicking the caller. This keeps error handling composable."
+    },
+    {
+      "decision": "Keep OcctKernel pub but document it as !Send+!Sync",
+      "rationale": "Advanced single-threaded test code may want direct access without channel overhead. OcctKernel remains pub with inherent methods but documented as !Send+!Sync and not implementing GeometryKernel. OcctKernelHandle is the recommended API for all cross-thread usage."
+    },
+    {
+      "decision": "Migrate external call sites (boundary4, e2e_bracket, CLI) to OcctKernelHandle",
+      "rationale": "Since OcctKernel no longer implements GeometryKernel (missing Send+Sync bounds), it can't be passed as Box<dyn GeometryKernel> to Engine. All external sites that create OcctKernel for use with Engine must switch to OcctKernelHandle::spawn(). This is a mechanical change: replace `OcctKernel::new()` with `OcctKernelHandle::spawn()`."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "tokio::sync::mpsc and tokio::sync::oneshot channels",
+      "where": "Workspace dependency (Cargo.toml:43), already used in crates/reify-runtime for concurrent scheduling",
+      "how": "Add `tokio = { workspace = true }` to reify-kernel-occt/Cargo.toml. Use mpsc::channel(32) for request stream, oneshot::channel() for per-request replies. Use blocking_send/blocking_recv for sync GeometryKernel trait methods."
+    },
+    {
+      "what": "GeometryKernel trait definition and all error types",
+      "where": "crates/reify-types/src/geometry.rs lines 212-235 (trait), 128-210 (error types)",
+      "how": "OcctKernelHandle implements the existing GeometryKernel trait unchanged. All error types (GeometryError, QueryError, ExportError, TessError) are Clone and Send, flowing through channels as-is."
+    },
+    {
+      "what": "Existing OcctKernel method implementations",
+      "where": "crates/reify-kernel-occt/src/lib.rs lines 67-238",
+      "how": "Method bodies stay identical — only change is moving from `impl GeometryKernel for OcctKernel` to inherent `impl OcctKernel`. The kernel thread calls these directly."
+    },
+    {
+      "what": "DispatchPlanner compile-time Send+Sync assertion pattern",
+      "where": "crates/reify-geometry/src/lib.rs lines 20-23",
+      "how": "Copy the `const _: fn() = || { fn must_be_send_sync<T: Send + Sync>() {} must_be_send_sync::<OcctKernelHandle>(); };` pattern for OcctKernelHandle."
+    },
+    {
+      "what": "Test patterns from boundary4_geometry.rs and reify-geometry tests",
+      "where": "crates/reify-eval/tests/boundary4_geometry.rs, crates/reify-geometry/src/lib.rs tests",
+      "how": "Follow same structure: create kernel handle, execute ops, verify handles/results, test error paths. The OcctKernelHandle tests mirror these patterns through the channel layer."
+    }
+  ]
+}
