@@ -119,4 +119,33 @@ mod tests {
         parent.cancel();
         assert!(child.is_cancelled());
     }
+
+    #[tokio::test]
+    async fn concurrent_scheduler_empty_eval_set() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        struct MockAsyncEvaluator;
+
+        impl AsyncNodeEvaluator for MockAsyncEvaluator {
+            fn is_dirty(&self, _node: &NodeId) -> bool {
+                true
+            }
+
+            async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+                EvalOutcome::Changed
+            }
+        }
+
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(MockAsyncEvaluator);
+        let traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        let cancel = CancellationToken::new();
+        let eval_set = vec![];
+
+        let changed = scheduler.execute(eval_set, evaluator, &traces, &cancel).await;
+        assert!(changed.is_empty());
+    }
 }
