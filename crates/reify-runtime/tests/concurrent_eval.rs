@@ -675,3 +675,84 @@ async fn repeated_error_then_success_cycle() {
     let (c_val, _) = snapshot.values.get(&ValueCellId::new(e, "c")).unwrap();
     assert_eq!(*c_val, Value::Real(41.0), "snapshot c should be 41");
 }
+
+/// Mixed fan-in in concurrent mode: when an unchanged intermediary's
+/// dependents ALSO read the changed param directly, early cutoff must
+/// NOT skip them.
+///
+/// Graph:
+///   param a (Int, default 5)
+///   let x = if a > 0 then 1 else 1  (reads a, always 1 → Unchanged)
+///   let y = a + x                    (reads BOTH a and x → mixed fan-in)
+///
+/// Edit a → 10: x re-evals to 1 (Unchanged), y MUST re-eval to 11.
+#[tokio::test]
+async fn mixed_fan_in_concurrent_unchanged_upstream_does_not_skip_shared_downstream() {
+    use reify_types::{CompiledExpr, CompiledExprKind, ContentHash};
+
+    let e = "T";
+
+    // Build conditional: if a > 0 then 1 else 1 (always 1, reads a)
+    let condition = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+    let conditional = CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(condition),
+            then_branch: Box::new(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            else_branch: Box::new(CompiledExpr::literal(Value::Int(1), Type::Int)),
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of_str("if_a_gt_0_then_1_else_1"),
+    };
+
+    // let y = a + x (reads both a and x)
+    let y_expr = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Int),
+        CompiledExpr::value_ref(ValueCellId::new(e, "x"), Type::Int),
+        Type::Int,
+    );
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "a", Type::Int, Some(CompiledExpr::literal(Value::Int(5), Type::Int)))
+        .let_binding(e, "x", Type::Int, conditional)
+        .let_binding(e, "y", Type::Int, y_expr)
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let _initial = engine.eval(&module);
+
+    let a_id = ValueCellId::new(e, "a");
+    let cancel = CancellationToken::new();
+
+    // Concurrent edit: change a from 5 to 10
+    let (_setup, result) = edit_param_concurrent(
+        &mut engine,
+        a_id.clone(),
+        Value::Int(10),
+        &cancel,
+    ).await.unwrap();
+
+    let y_node = NodeId::Value(ValueCellId::new(e, "y"));
+
+    // y MUST be in actual_eval_set (not skipped)
+    assert!(
+        result.actual_eval_set.contains(&y_node),
+        "y should be in actual_eval_set (reads changed param a directly, \
+         even though x is Unchanged). actual_eval_set: {:?}",
+        result.actual_eval_set
+    );
+
+    // y must have the correct re-evaluated value: 10 + 1 = 11
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Int(11)),
+        "y should be 10 + 1 = 11, NOT stale 6"
+    );
+}
