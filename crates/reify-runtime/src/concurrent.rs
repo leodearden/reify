@@ -151,6 +151,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_scheduler_single_dirty_node() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        struct AllDirtyChanged;
+
+        impl AsyncNodeEvaluator for AllDirtyChanged {
+            fn is_dirty(&self, _node: &NodeId) -> bool {
+                true
+            }
+
+            async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+                EvalOutcome::Changed
+            }
+        }
+
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(AllDirtyChanged);
+        let node = NodeId::Value(reify_types::ValueCellId::new("A", "x"));
+        let eval_set = vec![node.clone()];
+        let mut traces = HashMap::new();
+        traces.insert(node.clone(), DependencyTrace::default());
+        let cancel = CancellationToken::new();
+
+        let changed = scheduler.execute(eval_set, evaluator, &traces, &cancel).await;
+        assert_eq!(changed.len(), 1);
+        assert!(changed.contains(&node));
+    }
+
+    #[tokio::test]
     async fn concurrent_scheduler_empty_eval_set() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
