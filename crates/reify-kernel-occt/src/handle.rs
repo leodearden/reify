@@ -16,7 +16,7 @@
 
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
+    GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -39,6 +39,13 @@ enum OcctRequest {
         handle: GeometryHandleId,
         tolerance: f64,
         reply: oneshot::Sender<Result<Mesh, TessError>>,
+    },
+    WarmState {
+        reply: oneshot::Sender<Option<OpaqueState>>,
+    },
+    WithWarmState {
+        state: OpaqueState,
+        reply: oneshot::Sender<()>,
     },
 }
 
@@ -197,6 +204,14 @@ impl OcctKernelHandle {
                         let result = kernel.tessellate(handle, tolerance);
                         let _ = reply.send(result);
                     }
+                    OcctRequest::WarmState { reply } => {
+                        let result = kernel.warm_state();
+                        let _ = reply.send(result);
+                    }
+                    OcctRequest::WithWarmState { state, reply } => {
+                        kernel.with_warm_state(state);
+                        let _ = reply.send(());
+                    }
                 }
             }
             // Channel closed (sender dropped) → exit cleanly.
@@ -320,6 +335,30 @@ impl OcctKernelHandle {
             let _ = tokio::task::spawn_blocking(move || thread.join()).await;
         }
         // self.thread is now None, so Drop will be a no-op.
+    }
+}
+
+impl WarmStartable for OcctKernelHandle {
+    fn warm_state(&self) -> Option<OpaqueState> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .blocking_send(OcctRequest::WarmState { reply: reply_tx })
+            .ok()?;
+        reply_rx.blocking_recv().ok()?
+    }
+
+    fn with_warm_state(&mut self, state: OpaqueState) {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .tx
+            .blocking_send(OcctRequest::WithWarmState {
+                state,
+                reply: reply_tx,
+            })
+            .is_ok()
+        {
+            let _ = reply_rx.blocking_recv();
+        }
     }
 }
 
