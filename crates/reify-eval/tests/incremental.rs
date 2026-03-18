@@ -765,3 +765,102 @@ fn mixed_fan_in_edit_param_unchanged_upstream_does_not_skip_shared_downstream() 
         "y should be 10 + 1 = 11, NOT stale 6"
     );
 }
+
+/// Triple fan-in: two unchanged intermediaries plus a changed param all
+/// feed into the same downstream node. Early cutoff must not skip it.
+///
+/// Graph:
+///   param a (Int, default 5)
+///   let x = if a > 0 then 1 else 1   (reads a, always 1 → Unchanged)
+///   let z = if a > 0 then 2 else 2   (reads a, always 2 → Unchanged)
+///   let y = a + x + z                 (reads a, x, AND z → triple fan-in)
+///
+/// Cold start: a=5, x=1, z=2, y=5+1+2=8
+/// Edit a → 10: x=1 (Unchanged), z=2 (Unchanged), y MUST re-eval to 10+1+2=13.
+#[test]
+fn triple_fan_in_mixed_changed_unchanged_edit_param() {
+    let e = "T";
+
+    // Build conditional: if a > 0 then 1 else 1 (always 1)
+    let x_cond = gt(
+        value_ref_typed(e, "a", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let x_expr = CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(x_cond),
+            then_branch: Box::new(literal(Value::Int(1))),
+            else_branch: Box::new(literal(Value::Int(1))),
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of_str("if_a_gt_0_then_1_else_1"),
+    };
+
+    // Build conditional: if a > 0 then 2 else 2 (always 2)
+    let z_cond = gt(
+        value_ref_typed(e, "a", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let z_expr = CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(z_cond),
+            then_branch: Box::new(literal(Value::Int(2))),
+            else_branch: Box::new(literal(Value::Int(2))),
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of_str("if_a_gt_0_then_2_else_2"),
+    };
+
+    // let y = a + x + z  →  (a + x) + z
+    let a_plus_x = binop(
+        BinOp::Add,
+        value_ref_typed(e, "a", Type::Int),
+        value_ref_typed(e, "x", Type::Int),
+    );
+    let y_expr = binop(
+        BinOp::Add,
+        a_plus_x,
+        value_ref_typed(e, "z", Type::Int),
+    );
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(
+            TopologyTemplateBuilder::new(e)
+                .param(e, "a", Type::Int, Some(literal(Value::Int(5))))
+                .let_binding(e, "x", Type::Int, x_expr)
+                .let_binding(e, "z", Type::Int, z_expr)
+                .let_binding(e, "y", Type::Int, y_expr)
+                .build(),
+        )
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start: a=5, x=1, z=2, y=8
+    let initial = engine.eval(&module);
+    assert_eq!(
+        initial.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Int(8)),
+        "y should be 5 + 1 + 2 = 8"
+    );
+
+    // Edit a from 5 to 10
+    let a_id = ValueCellId::new(e, "a");
+    let result = engine.edit_param(a_id, Value::Int(10));
+
+    let eval_set = engine.last_eval_set();
+
+    // y MUST be in eval set despite both x and z being Unchanged
+    assert!(
+        eval_set.contains(&NodeId::Value(ValueCellId::new(e, "y"))),
+        "y should be in eval set (reads changed param a directly)"
+    );
+
+    // y must have the correct value: 10 + 1 + 2 = 13
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Int(13)),
+        "y should be 10 + 1 + 2 = 13, NOT stale 8"
+    );
+}
