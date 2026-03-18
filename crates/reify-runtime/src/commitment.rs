@@ -82,6 +82,63 @@ impl TaskProgress {
     }
 }
 
+/// Decision returned by [`check_commitment`] indicating the current
+/// commitment status of a running task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitmentDecision {
+    /// Task has not yet met commitment thresholds — may be cancelled.
+    NotYet,
+    /// Task is committed — should run to completion.
+    Committed,
+    /// Task should never be committed (e.g., AlwaysCancelWhenStale override
+    /// or OnlyRunOnFinalInputs with intermediate inputs).
+    NeverCommit,
+}
+
+/// Check whether a running task should be committed based on policy, override,
+/// progress, and input finality.
+///
+/// This is a pure function — takes all inputs explicitly and returns a decision.
+/// The [`CommitmentTracker`] calls this internally.
+///
+/// Logic:
+/// 1. `AlwaysCancelWhenStale` override → `NeverCommit`
+/// 2. `OnlyRunOnFinalInputs` with intermediate inputs → `NeverCommit`
+/// 3. Elapsed > `always_commit_after` → `Committed`
+/// 4. Estimated progress > `commit_when_proportion_done` → `Committed`
+/// 5. Otherwise → `NotYet`
+pub fn check_commitment(
+    policy: &CommitmentPolicy,
+    override_: NodeCommitmentOverride,
+    progress: &TaskProgress,
+    has_intermediate_inputs: bool,
+) -> CommitmentDecision {
+    // 1. AlwaysCancelWhenStale always returns NeverCommit
+    if override_ == NodeCommitmentOverride::AlwaysCancelWhenStale {
+        return CommitmentDecision::NeverCommit;
+    }
+
+    // 2. OnlyRunOnFinalInputs with intermediate inputs → NeverCommit
+    if override_ == NodeCommitmentOverride::OnlyRunOnFinalInputs && has_intermediate_inputs {
+        return CommitmentDecision::NeverCommit;
+    }
+
+    // 3. Time threshold: unconditionally commit after elapsed time
+    if progress.elapsed >= policy.always_commit_after {
+        return CommitmentDecision::Committed;
+    }
+
+    // 4. Progress threshold: commit when estimated progress exceeds threshold
+    if let Some(estimate) = progress.progress_estimate() {
+        if estimate >= policy.commit_when_proportion_done {
+            return CommitmentDecision::Committed;
+        }
+    }
+
+    // 5. Below both thresholds
+    CommitmentDecision::NotYet
+}
+
 impl Default for CommitmentPolicy {
     fn default() -> Self {
         Self {
