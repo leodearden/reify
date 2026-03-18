@@ -930,3 +930,79 @@ fn freshness_all_final_after_mixed_fan_in_edit_param() {
         );
     }
 }
+
+/// Regression guard: linear chain early cutoff must still work after the
+/// mixed fan-in fix. When there is NO mixed fan-in (no node reads the
+/// changed param directly), Unchanged intermediaries should still skip
+/// their downstream dependents.
+///
+/// Graph: param a (Real, 5.0), let x = a - a (always 0.0), let y = x + 1.0
+/// Edit a → 7.0: x dirty, re-evals to 0.0 (Unchanged) → y correctly skipped.
+/// y does NOT read a directly, only x, so no mixed fan-in.
+#[test]
+fn linear_chain_early_cutoff_still_skips_after_fix() {
+    let e = "T";
+
+    // let x = a - a (always 0.0)
+    let x_expr = binop(
+        BinOp::Sub,
+        value_ref_typed(e, "a", Type::Real),
+        value_ref_typed(e, "a", Type::Real),
+    );
+    // let y = x + 1.0
+    let y_expr = binop(
+        BinOp::Add,
+        value_ref_typed(e, "x", Type::Real),
+        literal(Value::Real(1.0)),
+    );
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(
+            TopologyTemplateBuilder::new(e)
+                .param(e, "a", Type::Real, Some(literal(Value::Real(5.0))))
+                .let_binding(e, "x", Type::Real, x_expr)
+                .let_binding(e, "y", Type::Real, y_expr)
+                .build(),
+        )
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start
+    let initial = engine.eval(&module);
+    assert_eq!(
+        initial.values.get(&ValueCellId::new(e, "x")),
+        Some(&Value::Real(0.0)),
+    );
+    assert_eq!(
+        initial.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Real(1.0)),
+    );
+
+    // Edit a from 5.0 to 7.0
+    let a_id = ValueCellId::new(e, "a");
+    let result = engine.edit_param(a_id, Value::Real(7.0));
+
+    let eval_set = engine.last_eval_set();
+
+    // x IS in eval set (reads a)
+    assert!(
+        eval_set.contains(&NodeId::Value(ValueCellId::new(e, "x"))),
+        "x should be in eval set"
+    );
+
+    // y should NOT be in eval set — x Unchanged and y does NOT read a directly.
+    // This confirms the fix didn't break valid early cutoff.
+    assert!(
+        !eval_set.contains(&NodeId::Value(ValueCellId::new(e, "y"))),
+        "y should NOT be in eval set (x unchanged, y doesn't read a directly)"
+    );
+
+    // y's value should still be 1.0
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Real(1.0)),
+        "y should retain cached value 1.0"
+    );
+}
