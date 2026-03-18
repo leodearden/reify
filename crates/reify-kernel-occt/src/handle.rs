@@ -925,6 +925,76 @@ mod tests {
     }
 
     #[test]
+    fn cross_handle_warm_start_transfer() {
+        use reify_types::WarmStartable;
+        // Handle A: create box
+        let mut handle_a = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        handle_a.execute(&op).unwrap();
+
+        // Extract warm state from handle A
+        let state = handle_a.warm_state().expect("should have warm state");
+
+        // Handle B: restore warm state
+        let mut handle_b = super::OcctKernelHandle::spawn();
+        handle_b.with_warm_state(state);
+
+        // Query volume on handle B using handle ID 1
+        let vol = handle_b
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 6000.0).abs() < 1.0,
+                    "expected volume ~6000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn async_warm_start_roundtrip() {
+        let mut handle_a = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        handle_a.execute_async(&op).await.unwrap();
+
+        // Extract warm state via async
+        let state = handle_a
+            .warm_state_async()
+            .await
+            .expect("should have warm state");
+
+        // Restore on new handle via async
+        let mut handle_b = super::OcctKernelHandle::spawn();
+        handle_b.with_warm_state_async(state).await;
+
+        // Query volume via async
+        let vol = handle_b
+            .query_async(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .await
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 6000.0).abs() < 1.0,
+                    "expected volume ~6000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn sync_drop_still_joins_thread() {
         // Sync (non-async) Drop should preserve existing join behavior
         let handle = super::OcctKernelHandle::spawn();
