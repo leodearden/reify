@@ -47,7 +47,9 @@ fn lsp_initialize_returns_capabilities() {
 
     let mut stdin = child.stdin.take().expect("stdin");
     let stdout = child.stdout.take().expect("stdout");
-    let mut reader = BufReader::new(stdout);
+
+    // Use spawn_reader + wait_for_response to handle notifications and timeouts
+    let rx = spawn_reader(stdout);
 
     // Send initialize request
     let init_request = serde_json::json!({
@@ -62,8 +64,8 @@ fn lsp_initialize_returns_capabilities() {
     });
     send_jsonrpc(&mut stdin, &init_request.to_string());
 
-    // Read initialize response
-    let response = read_jsonrpc(&mut reader);
+    // Read initialize response (filters by id, skips notifications, has timeout)
+    let response = wait_for_response(&rx, 1);
 
     // Verify capabilities include textDocumentSync
     let capabilities = &response["result"]["capabilities"];
@@ -90,8 +92,8 @@ fn lsp_initialize_returns_capabilities() {
     });
     send_jsonrpc(&mut stdin, &shutdown.to_string());
 
-    // Read shutdown response
-    let _shutdown_response = read_jsonrpc(&mut reader);
+    // Read shutdown response (filters by id=2, skips notifications, has timeout)
+    let _shutdown_response = wait_for_response(&rx, 2);
 
     // Send exit notification
     let exit = serde_json::json!({
