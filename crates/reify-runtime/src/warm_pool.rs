@@ -223,4 +223,66 @@ mod tests {
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().downcast::<i32>(), Some(42));
     }
+
+    #[test]
+    fn donate_same_node_id_replaces_and_adjusts_used_bytes() {
+        let mut pool = WarmStatePool::new(1024);
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+
+        pool.donate(node.clone(), OpaqueState::new(1i32, 100));
+        assert_eq!(pool.used_bytes(), 100);
+
+        // Replace with a larger item
+        pool.donate(node.clone(), OpaqueState::new(2i32, 300));
+        assert_eq!(pool.used_bytes(), 300);
+
+        // Should get the new value
+        let retrieved = pool.retrieve(&node).unwrap();
+        assert_eq!(retrieved.downcast::<i32>(), Some(2));
+    }
+
+    #[test]
+    fn zero_budget_still_accepts_first_item() {
+        let mut pool = WarmStatePool::new(0);
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        pool.donate(node.clone(), OpaqueState::new(42i32, 100));
+
+        let retrieved = pool.retrieve(&node);
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().downcast::<i32>(), Some(42));
+    }
+
+    #[test]
+    fn clear_resets_pool() {
+        let mut pool = WarmStatePool::new(1024);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
+
+        pool.donate(node_a.clone(), OpaqueState::new(1i32, 100));
+        pool.donate(node_b.clone(), OpaqueState::new(2i32, 200));
+        assert_eq!(pool.len(), 2);
+        assert_eq!(pool.used_bytes(), 300);
+
+        pool.clear();
+        assert_eq!(pool.len(), 0);
+        assert_eq!(pool.used_bytes(), 0);
+        assert!(pool.is_empty());
+        assert!(pool.retrieve(&node_a).is_none());
+    }
+
+    #[test]
+    fn len_and_is_empty() {
+        let mut pool = WarmStatePool::new(1024);
+        assert_eq!(pool.len(), 0);
+        assert!(pool.is_empty());
+
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        pool.donate(node.clone(), OpaqueState::new(1i32, 4));
+        assert_eq!(pool.len(), 1);
+        assert!(!pool.is_empty());
+
+        pool.retrieve(&node);
+        assert_eq!(pool.len(), 0);
+        assert!(pool.is_empty());
+    }
 }
