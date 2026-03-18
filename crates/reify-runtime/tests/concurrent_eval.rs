@@ -951,3 +951,86 @@ async fn edit_param_concurrent_re_resolves_auto_params() {
         y_val
     );
 }
+
+/// After a concurrent edit that triggers auto-resolution, the returned
+/// `ConcurrentEditResult` should include `resolved_params` with the solver's
+/// resolved values.
+///
+/// Module: param `a` (default mm(3.0)), auto `x`, let `y = x * 2.0`,
+/// constraint `x > a`. SequencedMockSolver: 1st call x=mm(5.0), 2nd x=mm(20.0).
+///
+/// Cold eval → x=mm(5.0). Concurrent edit a→mm(8.0) → solver re-resolves x to mm(20.0).
+/// Assert result.resolved_params contains x→mm(20.0).
+#[tokio::test]
+async fn concurrent_edit_result_includes_resolved_params() {
+    use reify_test_support::builders::{binop, gt, literal, value_ref};
+    use reify_test_support::mocks::SequencedMockConstraintSolver;
+    use reify_test_support::mm;
+    use reify_types::SolveResult;
+
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // Sequenced solver: first x=mm(5.0), second x=mm(20.0)
+    let mut solved1 = HashMap::new();
+    solved1.insert(x_id.clone(), mm(5.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(x_id.clone(), mm(20.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1 },
+        SolveResult::Solved { values: solved2 },
+    ]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(3.0))))
+        .auto_param("S", "x", Type::length())
+        .let_binding(
+            "S",
+            "y",
+            Type::length(),
+            binop(BinOp::Mul, value_ref("S", "x"), literal(Value::Real(2.0))),
+        )
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None)
+        .with_solver(Box::new(solver));
+
+    // Cold eval: x resolved to mm(5.0)
+    let cold = engine.eval(&module);
+    assert!(!cold.resolved_params.is_empty(), "cold eval should resolve auto params");
+
+    let cancel = CancellationToken::new();
+
+    // Concurrent edit: change a from mm(3.0) to mm(8.0)
+    let (_setup, result) = edit_param_concurrent(
+        &mut engine,
+        a_id.clone(),
+        mm(8.0),
+        &cancel,
+    ).await.unwrap();
+
+    // The ConcurrentEditResult should carry resolved_params
+    assert!(
+        !result.resolved_params.is_empty(),
+        "ConcurrentEditResult should include resolved_params after re-resolution"
+    );
+    let resolved_x = result.resolved_params.get(&x_id)
+        .expect("resolved_params should contain x");
+    assert!(
+        matches!(resolved_x, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
+        "expected resolved x = mm(20.0) = 0.02 SI, got {:?}",
+        resolved_x
+    );
+
+    // diagnostics should be empty (successful solve)
+    assert!(
+        result.diagnostics.is_empty(),
+        "diagnostics should be empty on successful solve, got {:?}",
+        result.diagnostics
+    );
+}
