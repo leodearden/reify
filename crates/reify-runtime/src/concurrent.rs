@@ -275,6 +275,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancellation_stops_evaluation() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use reify_types::ValueCellId;
+        use std::collections::HashMap;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let e = "C";
+        let a = NodeId::Value(ValueCellId::new(e, "a"));
+        let b = NodeId::Value(ValueCellId::new(e, "b"));
+
+        // b depends on a → a at level 0, b at level 1
+        let mut traces = HashMap::new();
+        traces.insert(a.clone(), DependencyTrace::default());
+        traces.insert(
+            b.clone(),
+            DependencyTrace {
+                reads: vec![ValueCellId::new(e, "a")],
+            },
+        );
+
+        let cancel = CancellationToken::new();
+
+        struct CancellingAsyncEvaluator {
+            cancel: CancellationToken,
+            eval_count: AtomicUsize,
+        }
+
+        impl AsyncNodeEvaluator for CancellingAsyncEvaluator {
+            fn is_dirty(&self, _node: &NodeId) -> bool {
+                true
+            }
+
+            async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+                self.eval_count.fetch_add(1, Ordering::SeqCst);
+                // Cancel after evaluating (node a triggers cancellation)
+                self.cancel.cancel();
+                EvalOutcome::Changed
+            }
+        }
+
+        let evaluator = Arc::new(CancellingAsyncEvaluator {
+            cancel: cancel.clone(),
+            eval_count: AtomicUsize::new(0),
+        });
+
+        let scheduler = ConcurrentScheduler;
+        let eval_set = vec![a.clone(), b.clone()];
+        let changed = scheduler
+            .execute(eval_set, evaluator.clone(), &traces, &cancel)
+            .await;
+
+        // a should have been evaluated
+        assert!(changed.contains(&a));
+        // b should NOT have been evaluated (cancelled between levels)
+        assert!(!changed.contains(&b));
+        // Only 1 evaluation should have happened
+        assert_eq!(evaluator.eval_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn concurrent_matches_sequential_bracket_topology() {
         use crate::{NodeEvaluator, SequentialScheduler};
         use reify_eval::cache::{EvalOutcome, NodeId};
