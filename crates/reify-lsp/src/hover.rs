@@ -151,4 +151,71 @@ mod tests {
             "hover on whitespace should return None"
         );
     }
+
+    // --- step-5: hover edge cases ---
+
+    #[test]
+    fn hover_on_structure_name_shows_summary() {
+        let source = reify_test_support::bracket_source();
+        // 'Bracket' is on line 0: "structure Bracket {"
+        let position = Position::new(0, 12); // on 'Bracket'
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for structure name");
+        assert!(
+            md.contains("Bracket"),
+            "should mention 'Bracket', got: {md}"
+        );
+        assert!(
+            md.contains("5 params"),
+            "should mention param count, got: {md}"
+        );
+    }
+
+    #[test]
+    fn hover_on_keyword_param_shows_description() {
+        let source = reify_test_support::bracket_source();
+        // 'param' keyword on line 1
+        let position = Position::new(1, 6); // on 'param'
+        let md =
+            hover_markdown(source, position).expect("hover should return info for keyword param");
+        assert!(
+            md.to_lowercase().contains("param"),
+            "should describe param keyword, got: {md}"
+        );
+    }
+
+    #[test]
+    fn hover_on_keyword_constraint_shows_description() {
+        let source = reify_test_support::bracket_source();
+        // 'constraint' keyword on line 9
+        let position = Position::new(9, 6); // on 'constraint'
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for keyword constraint");
+        assert!(
+            md.to_lowercase().contains("constraint"),
+            "should describe constraint keyword, got: {md}"
+        );
+    }
+
+    #[test]
+    fn hover_on_unknown_word_returns_none() {
+        // A source where a word is not a member, structure, or keyword
+        let source = "structure Foo {\n  param x: Scalar = unknownword\n}";
+        // 'unknownword' is on line 1 around char 22
+        let position = Position::new(1, 22);
+        // unknownword is not a recognized keyword, member, or structure
+        // (it may cause a compile error, but hover should handle it)
+        let result = compute_hover(source, &test_uri(), position);
+        // unknownword isn't a keyword, member, or structure — should be None
+        assert!(
+            result.is_none(),
+            "unknown word should return None hover"
+        );
+    }
+
+    #[test]
+    fn hover_on_empty_source_returns_none() {
+        let result = compute_hover("", &test_uri(), Position::new(0, 0));
+        assert!(result.is_none(), "empty source should return None hover");
+    }
 }
