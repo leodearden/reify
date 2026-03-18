@@ -10,6 +10,36 @@ pub struct OpaqueState {
     estimated_size: usize,
 }
 
+impl OpaqueState {
+    /// Create a new `OpaqueState` wrapping the given value.
+    ///
+    /// `estimated_size_bytes` is a caller-provided hint of how much memory
+    /// the value occupies (including heap allocations). Used by
+    /// `WarmStatePool` for budget enforcement.
+    pub fn new<T: Any + Send>(value: T, estimated_size_bytes: usize) -> Self {
+        Self {
+            inner: Box::new(value),
+            estimated_size: estimated_size_bytes,
+        }
+    }
+
+    /// Return the estimated size in bytes provided at construction.
+    pub fn estimated_size_bytes(&self) -> usize {
+        self.estimated_size
+    }
+
+    /// Consume the container and attempt to downcast to the concrete type.
+    /// Returns `None` if the inner type does not match `T`.
+    pub fn downcast<T: Any>(self) -> Option<T> {
+        self.inner.downcast::<T>().ok().map(|b| *b)
+    }
+
+    /// Borrow the inner value as `&T` if the type matches.
+    pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        self.inner.downcast_ref::<T>()
+    }
+}
+
 /// Trait for types that can produce and consume warm-start state.
 ///
 /// Implementors stash solver/kernel state into an `OpaqueState` after
