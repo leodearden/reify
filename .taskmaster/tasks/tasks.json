@@ -512,14 +512,14 @@
           "26",
           "27"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-kernel-occt"
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-18T00:00:00.000Z"
+        "updatedAt": "2026-03-18T14:45:48.378Z"
       },
       {
         "id": "29",
@@ -533,14 +533,14 @@
           "26",
           "27"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-eval"
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-18T00:00:00.000Z"
+        "updatedAt": "2026-03-18T14:45:48.379Z"
       },
       {
         "id": "30",
@@ -647,9 +647,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-18T00:00:00.000Z",
+      "lastModified": "2026-03-18T14:45:48.379Z",
       "taskCount": 34,
-      "completedCount": 28,
+      "completedCount": 30,
       "tags": [
         "master"
       ]
