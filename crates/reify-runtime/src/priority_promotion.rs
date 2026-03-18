@@ -55,6 +55,41 @@ impl PriorityPromoter {
     pub fn remove(&mut self, node_id: &NodeId) {
         self.effective.remove(node_id);
     }
+
+    /// Promote all in-flight dependencies of a demanded node transitively.
+    ///
+    /// Walks dependency edges from `demanded_node` and promotes all in-flight
+    /// lower-priority tasks to the demanded node's priority level.
+    ///
+    /// `dependency_map` maps each node to its direct dependencies (forward edges).
+    /// Non-in-flight dependencies are silently ignored.
+    pub fn promote_for_demand(
+        &mut self,
+        demanded_node: &NodeId,
+        demand_priority: Priority,
+        dependency_map: &HashMap<NodeId, Vec<NodeId>>,
+    ) {
+        // BFS/DFS walk from demanded_node through dependency edges
+        let mut stack = Vec::new();
+        if let Some(deps) = dependency_map.get(demanded_node) {
+            stack.extend(deps.iter().cloned());
+        }
+
+        let mut visited = std::collections::HashSet::new();
+        while let Some(node) = stack.pop() {
+            if !visited.insert(node.clone()) {
+                continue;
+            }
+
+            // Promote if in-flight
+            self.promote(&node, demand_priority);
+
+            // Continue walking forward dependencies
+            if let Some(deps) = dependency_map.get(&node) {
+                stack.extend(deps.iter().cloned());
+            }
+        }
+    }
 }
 
 impl Default for PriorityPromoter {
