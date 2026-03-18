@@ -108,8 +108,8 @@
       "id": "step-14",
       "type": "impl",
       "description": "Verify step-13 test passes (it should, since edit_check_concurrent routes through the same check_constraints_with_values helper fixed in step-12). Run full test suite to confirm no regressions. Fix any compilation issues in test files that construct ConstraintNodeData without the new `label` field.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "bb812af"
     }
   ],
   "design_decisions": [
