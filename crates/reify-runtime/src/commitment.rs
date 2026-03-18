@@ -34,20 +34,15 @@ pub struct CommitmentPolicy {
 /// - `CommitIfSlow` (default): apply the dual-threshold policy
 /// - `AlwaysCancelWhenStale`: never commit, always cancel when stale
 /// - `OnlyRunOnFinalInputs`: skip intermediate inputs entirely
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NodeCommitmentOverride {
     /// Apply the dual-threshold commitment policy (default behavior).
+    #[default]
     CommitIfSlow,
     /// Never commit — always cancel when inputs become stale.
     AlwaysCancelWhenStale,
     /// Only run when all inputs are final (skip intermediate evaluations).
     OnlyRunOnFinalInputs,
-}
-
-impl Default for NodeCommitmentOverride {
-    fn default() -> Self {
-        Self::CommitIfSlow
-    }
 }
 
 /// Progress information for a running task, used by the commitment decision function.
@@ -132,10 +127,10 @@ pub fn check_commitment(
     }
 
     // 4. Progress threshold: commit when estimated progress exceeds threshold
-    if let Some(estimate) = progress.progress_estimate() {
-        if estimate >= policy.commit_when_proportion_done {
-            return CommitmentDecision::Committed;
-        }
+    if let Some(estimate) = progress.progress_estimate()
+        && estimate >= policy.commit_when_proportion_done
+    {
+        return CommitmentDecision::Committed;
     }
 
     // 5. Below both thresholds

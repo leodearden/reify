@@ -45,10 +45,10 @@ impl PriorityPromoter {
     /// Only raises priority (lower enum value = higher priority via Ord).
     /// Same-or-lower-priority promotions are no-ops.
     pub fn promote(&mut self, node_id: &NodeId, new_priority: Priority) {
-        if let Some(current) = self.effective.get_mut(node_id) {
-            if new_priority < *current {
-                *current = new_priority;
-            }
+        if let Some(current) = self.effective.get_mut(node_id)
+            && new_priority < *current
+        {
+            *current = new_priority;
         }
     }
 
