@@ -22,6 +22,10 @@ pub fn eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value {
 
         CompiledExprKind::FunctionCall { function, args } => {
             let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, values)).collect();
+            // Strict Undef propagation: if any arg is Undef, short-circuit
+            if evaluated_args.iter().any(|v| v.is_undef()) {
+                return Value::Undef;
+            }
             reify_stdlib::eval_builtin(&function.name, &evaluated_args)
         }
 
