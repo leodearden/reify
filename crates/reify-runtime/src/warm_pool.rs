@@ -71,10 +71,10 @@ impl WarmStatePool {
             .min_by_key(|(_, entry)| entry.last_accessed)
             .map(|(key, _)| key.clone());
 
-        if let Some(key) = lru_key {
-            if let Some(entry) = self.pool.remove(&key) {
-                self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
-            }
+        if let Some(key) = lru_key
+            && let Some(entry) = self.pool.remove(&key)
+        {
+            self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
         }
     }
 
