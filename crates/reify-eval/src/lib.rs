@@ -853,47 +853,65 @@ impl Engine {
                             parent: parent_snap_id,
                         };
 
-                        // Re-run let binding evaluation with resolved values
-                        for cell in &template.value_cells {
-                            if cell.kind == ValueCellKind::Let
-                                && let Some(ref expr) = cell.default_expr
-                            {
-                                let node_id = NodeId::Value(cell.id.clone());
-                                let start = Instant::now();
-                                self.journal.record(EvalEvent {
-                                    timestamp: start,
-                                    node_id: node_id.clone(),
-                                    kind: EventKind::Started,
-                                    version: VersionId(res_version_id),
-                                    payload: None,
-                                });
+                        // Re-run let binding evaluation in topological order
+                        // (handles forward references where a let declared earlier
+                        //  depends on a let declared later)
+                        let res_let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
+                            .value_cells
+                            .iter()
+                            .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
+                            .map(|c| (NodeId::Value(c.id.clone()), c.default_expr.as_ref().unwrap()))
+                            .collect();
 
-                                let val = reify_expr::eval_expr(expr, &values);
-                                values.insert(cell.id.clone(), val.clone());
+                        let res_let_node_ids: HashSet<NodeId> = res_let_cells.keys().cloned().collect();
+                        let res_let_traces: HashMap<NodeId, DependencyTrace> = res_let_cells
+                            .iter()
+                            .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
+                            .collect();
 
-                                snapshot.values.insert(
-                                    cell.id.clone(),
-                                    (val.clone(), DeterminacyState::Determined),
-                                );
+                        let res_sorted_lets = topological_sort(&res_let_node_ids, &res_let_traces);
 
-                                let trace = extract_dependency_trace(expr);
-                                let cached_result =
-                                    CachedResult::Value(val, DeterminacyState::Determined);
-                                let outcome = self.cache.record_evaluation(
-                                    node_id.clone(),
-                                    cached_result,
-                                    VersionId(res_version_id),
-                                    trace,
-                                );
+                        for node_id in res_sorted_lets {
+                            let expr = res_let_cells[&node_id];
+                            let cell_id = match &node_id {
+                                NodeId::Value(vcid) => vcid,
+                                _ => unreachable!(),
+                            };
 
-                                self.journal.record(EvalEvent {
-                                    timestamp: Instant::now(),
-                                    node_id,
-                                    kind: EventKind::Completed { outcome },
-                                    version: VersionId(res_version_id),
-                                    payload: Some(EventPayload::Duration(start.elapsed())),
-                                });
-                            }
+                            let start = Instant::now();
+                            self.journal.record(EvalEvent {
+                                timestamp: start,
+                                node_id: node_id.clone(),
+                                kind: EventKind::Started,
+                                version: VersionId(res_version_id),
+                                payload: None,
+                            });
+
+                            let val = reify_expr::eval_expr(expr, &values);
+                            values.insert(cell_id.clone(), val.clone());
+
+                            snapshot.values.insert(
+                                cell_id.clone(),
+                                (val.clone(), DeterminacyState::Determined),
+                            );
+
+                            let trace = extract_dependency_trace(expr);
+                            let cached_result =
+                                CachedResult::Value(val, DeterminacyState::Determined);
+                            let outcome = self.cache.record_evaluation(
+                                node_id.clone(),
+                                cached_result,
+                                VersionId(res_version_id),
+                                trace,
+                            );
+
+                            self.journal.record(EvalEvent {
+                                timestamp: Instant::now(),
+                                node_id,
+                                kind: EventKind::Completed { outcome },
+                                version: VersionId(res_version_id),
+                                payload: Some(EventPayload::Duration(start.elapsed())),
+                            });
                         }
                     }
                     SolveResult::Infeasible { diagnostics: solver_diags } => {
