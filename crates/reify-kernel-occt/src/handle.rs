@@ -93,6 +93,25 @@ impl OcctKernelHandle {
             .map_err(|_| QueryError::QueryFailed("kernel thread died".into()))?
     }
 
+    /// Tessellate a geometry handle into a mesh on the kernel thread.
+    pub fn tessellate(
+        &self,
+        handle: GeometryHandleId,
+        tolerance: f64,
+    ) -> Result<Mesh, TessError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .blocking_send(OcctRequest::Tessellate {
+                handle,
+                tolerance,
+                reply: reply_tx,
+            })
+            .map_err(|_| TessError::TessellationFailed("kernel thread died".into()))?;
+        reply_rx
+            .blocking_recv()
+            .map_err(|_| TessError::TessellationFailed("kernel thread died".into()))?
+    }
+
     /// Execute a geometry operation on the kernel thread.
     pub fn execute(&self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         let (reply_tx, reply_rx) = oneshot::channel();
