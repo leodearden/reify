@@ -1633,3 +1633,47 @@ fn forward_let_ref_cold_start_simple() {
     assert_eq!(*x_val, Value::Int(15), "x = a + 10 = 5 + 10 = 15");
     assert_eq!(*y_val, Value::Int(16), "y = x + 1 = 15 + 1 = 16");
 }
+
+/// Cold-start eval handles a fully reversed 3-deep dependency chain.
+///
+/// Template: param a (default 0, Int)
+///   let z = y + 1  (declared 1st — depends on y)
+///   let y = x + 1  (declared 2nd — depends on x)
+///   let x = a + 1  (declared 3rd — depends on a)
+///
+/// Expected: x = 1, y = 2, z = 3.
+#[test]
+fn forward_let_ref_cold_start_deep_reverse_chain() {
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+    let z_id = ValueCellId::new("S", "z");
+
+    // z = y + 1
+    let z_expr = binop(BinOp::Add, value_ref("S", "y"), literal(Value::Int(1)));
+    // y = x + 1
+    let y_expr = binop(BinOp::Add, value_ref("S", "x"), literal(Value::Int(1)));
+    // x = a + 1
+    let x_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(1)));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(0))))
+        .let_binding("S", "z", Type::Int, z_expr)  // z declared first
+        .let_binding("S", "y", Type::Int, y_expr)  // y declared second
+        .let_binding("S", "x", Type::Int, x_expr)  // x declared third
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result = engine.eval(&module);
+
+    let x_val = result.values.get(&x_id).expect("x should be in values");
+    let y_val = result.values.get(&y_id).expect("y should be in values");
+    let z_val = result.values.get(&z_id).expect("z should be in values");
+
+    assert_eq!(*x_val, Value::Int(1), "x = a + 1 = 0 + 1 = 1");
+    assert_eq!(*y_val, Value::Int(2), "y = x + 1 = 1 + 1 = 2");
+    assert_eq!(*z_val, Value::Int(3), "z = y + 1 = 2 + 1 = 3");
+}
