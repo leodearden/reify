@@ -4,12 +4,14 @@
 //! produces correct results, proper provenance, partial re-evaluation,
 //! early cutoff, and freshness transitions.
 
+use std::collections::HashMap;
+
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_test_support::bracket_compiled_module;
-use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_test_support::builders::{literal, value_ref_typed, binop, gt};
+use reify_test_support::mocks::{MockConstraintChecker, MockConstraintSolver};
+use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
+use reify_test_support::builders::{literal, value_ref, value_ref_typed, binop, gt};
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, Freshness,
     ModulePath, SnapshotId, SnapshotProvenance, Type, Value, ValueCellId,
@@ -1004,5 +1006,78 @@ fn linear_chain_early_cutoff_still_skips_after_fix() {
         result.values.get(&ValueCellId::new(e, "y")),
         Some(&Value::Real(1.0)),
         "y should retain cached value 1.0"
+    );
+}
+
+/// After edit_param changes a param that affects constraints governing auto
+/// params, the solver should re-run and resolved_params should be non-empty.
+///
+/// Module: param `a` (default mm(3.0)), auto `x`, constraint `x > a`.
+/// MockConstraintSolver returns x=mm(5.0).
+/// Cold eval → solver resolves x to mm(5.0), resolved_params contains x.
+/// Edit `a` to mm(8.0) → constraint `x > a` is in dirty cone (depends on `a`).
+/// Assert:
+///   (1) result.resolved_params is non-empty
+///   (2) result.resolved_params contains x with mm(5.0)
+///   (3) values[x] == mm(5.0)
+///
+/// Currently FAILS because edit_param returns resolved_params: HashMap::new().
+#[test]
+fn edit_param_re_resolves_auto_params_when_constraints_dirty() {
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(x_id.clone(), mm(5.0));
+
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(3.0))))
+        .auto_param("S", "x", Type::length())
+        // constraint: x > a  (references both x and a)
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    // Cold eval: solver resolves x to mm(5.0)
+    let result = engine.eval(&module);
+    assert!(
+        !result.resolved_params.is_empty(),
+        "cold eval should resolve auto params"
+    );
+    assert!(result.resolved_params.contains_key(&x_id));
+
+    // Edit a from mm(3.0) to mm(8.0)
+    // Constraint `x > a` depends on `a`, so it's in the dirty cone.
+    // Solver should re-run.
+    let result2 = engine.edit_param(a_id.clone(), mm(8.0));
+
+    // (1) resolved_params is non-empty (solver was re-run)
+    assert!(
+        !result2.resolved_params.is_empty(),
+        "edit_param should re-resolve auto params when constraints are dirty, \
+         got empty resolved_params"
+    );
+
+    // (2) resolved_params contains x
+    assert!(
+        result2.resolved_params.contains_key(&x_id),
+        "resolved_params should contain x, got {:?}",
+        result2.resolved_params
+    );
+
+    // (3) values[x] == mm(5.0) = 0.005 SI
+    let x_val = result2.values.get(&x_id).expect("x should be in values");
+    assert!(
+        matches!(x_val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
+        "expected x = mm(5.0) = 0.005 SI, got {:?}",
+        x_val
     );
 }
