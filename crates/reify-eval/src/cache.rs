@@ -1466,4 +1466,58 @@ mod tests {
         let val = entry.warm_state.as_ref().unwrap().downcast_ref::<i32>();
         assert_eq!(val, Some(&99));
     }
+
+    // --- CacheStore warm-state helper tests ---
+
+    #[test]
+    fn donate_warm_state_stores_and_get_retrieves_with_take_semantics() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        store.put(node.clone(), make_test_node_cache(42, 1));
+
+        let state = reify_types::OpaqueState::new(100i32, 4);
+        let donated = store.donate_warm_state(&node, state);
+        assert!(donated);
+
+        // First get: returns the state
+        let retrieved = store.get_warm_state(&node);
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().downcast::<i32>(), Some(100));
+
+        // Second get: take semantics — returns None
+        let retrieved2 = store.get_warm_state(&node);
+        assert!(retrieved2.is_none());
+    }
+
+    #[test]
+    fn donate_warm_state_on_nonexistent_node_returns_false() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "missing"));
+        let state = reify_types::OpaqueState::new(42i32, 4);
+        let donated = store.donate_warm_state(&node, state);
+        assert!(!donated);
+    }
+
+    #[test]
+    fn record_evaluation_clears_warm_state() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        store.put(node.clone(), make_test_node_cache(42, 1));
+
+        // Donate warm state
+        let state = reify_types::OpaqueState::new(100i32, 4);
+        store.donate_warm_state(&node, state);
+        assert!(store.get(&node).unwrap().warm_state.is_some());
+
+        // Re-evaluate (same result = early cutoff)
+        store.record_evaluation(
+            node.clone(),
+            CachedResult::Value(Value::Int(42), DeterminacyState::Determined),
+            VersionId(2),
+            DependencyTrace::default(),
+        );
+
+        // Warm state should be cleared after re-evaluation
+        assert!(store.get(&node).unwrap().warm_state.is_none());
+    }
 }
