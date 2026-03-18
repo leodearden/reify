@@ -263,3 +263,29 @@ impl OcctKernel {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn brep_serialization_roundtrip() {
+        // Create a box shape
+        let shape = ffi::ffi::make_box(10.0, 20.0, 30.0).unwrap();
+
+        // Serialize to BRep
+        let brep = ffi::ffi::serialize_brep(&shape).unwrap();
+        assert!(!brep.is_empty(), "BRep serialization should produce non-empty output");
+
+        // Deserialize from BRep
+        cxx::let_cxx_string!(brep_cxx = brep.as_str());
+        let restored = ffi::ffi::deserialize_brep(&brep_cxx).unwrap();
+
+        // Query volume of deserialized shape
+        let vol = ffi::ffi::query_volume(&restored).unwrap();
+        assert!(
+            (vol - 6000.0).abs() < 1.0,
+            "expected volume ~6000, got {vol}"
+        );
+    }
+}
