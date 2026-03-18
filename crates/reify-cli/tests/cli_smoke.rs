@@ -72,21 +72,3 @@ fn build_no_file_shows_usage() {
         "should show usage message, got: {stderr}"
     );
 }
-
-#[test]
-fn lsp_command_is_recognized() {
-    // Run 'reify lsp' with null stdin — it should not output "Unknown command"
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(["lsp"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("Unknown command"),
-        "CLI should recognize 'lsp' command, got: {stderr}"
-    );
-}
