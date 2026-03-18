@@ -52,6 +52,20 @@ pub struct OcctKernelHandle {
 }
 
 impl OcctKernelHandle {
+    /// Execute a geometry operation on the kernel thread.
+    pub fn execute(&self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .blocking_send(OcctRequest::Execute {
+                op: op.clone(),
+                reply: reply_tx,
+            })
+            .map_err(|_| GeometryError::OperationFailed("kernel thread died".into()))?;
+        reply_rx
+            .blocking_recv()
+            .map_err(|_| GeometryError::OperationFailed("kernel thread died".into()))?
+    }
+
     /// Spawn a new OCCT kernel on a dedicated OS thread and return a handle.
     pub fn spawn() -> Self {
         let (tx, mut rx) = mpsc::channel::<OcctRequest>(32);
