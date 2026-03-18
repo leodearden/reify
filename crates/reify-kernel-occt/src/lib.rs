@@ -20,8 +20,20 @@ use std::collections::HashMap;
 
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp,
-    GeometryQuery, Mesh, QueryError, ReprKind, TessError, Value,
+    GeometryQuery, Mesh, OpaqueState, QueryError, ReprKind, TessError, Value, WarmStartable,
 };
+
+/// Send-safe payload for OCCT warm-start state.
+///
+/// Contains BRep ASCII serializations of all shapes in the kernel, plus the
+/// next handle ID counter. BRep format is valid UTF-8 text, so `String` is
+/// used instead of `Vec<u8>`.
+struct OcctWarmState {
+    /// Map from handle ID to BRep ASCII string of the corresponding shape.
+    shapes: HashMap<u64, String>,
+    /// The next handle ID to assign (preserves ID namespace across warm-start).
+    next_id: u64,
+}
 
 /// Extract an f64 from a Value (Int, Real, or Scalar → SI value).
 fn extract_f64(v: &Value) -> Result<f64, GeometryError> {

@@ -70,6 +70,10 @@ pub mod ffi {
         // --- Export ---
         fn export_step(shape: &OcctShape) -> Result<String>;
 
+        // --- BRep serialization ---
+        fn serialize_brep(shape: &OcctShape) -> Result<String>;
+        fn deserialize_brep(data: &CxxString) -> Result<UniquePtr<OcctShape>>;
+
         // --- Tessellation ---
         fn tessellate_shape(shape: &OcctShape, tolerance: f64) -> Result<TessResult>;
     }

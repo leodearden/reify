@@ -35,6 +35,10 @@
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
 
+// OCCT BRep serialization
+#include <BRepTools.hxx>
+#include <BRep_Builder.hxx>
+
 // OCCT mesh
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Tool.hxx>
@@ -274,6 +278,37 @@ rust::String export_step(const OcctShape& shape) {
         return rust::String(content);
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT export_step: ") + e.GetMessageString());
+    }
+}
+
+// --- BRep serialization ---
+
+rust::String serialize_brep(const OcctShape& shape) {
+    try {
+        std::ostringstream oss;
+        ::BRepTools::Write(shape.shape, oss);
+        std::string content = oss.str();
+        if (content.empty()) {
+            throw std::runtime_error("BRepTools::Write produced empty output");
+        }
+        return rust::String(content);
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT serialize_brep: ") + e.GetMessageString());
+    }
+}
+
+std::unique_ptr<OcctShape> deserialize_brep(const std::string& data) {
+    try {
+        ::BRep_Builder builder;
+        auto result = std::make_unique<OcctShape>();
+        std::istringstream iss(data);
+        ::BRepTools::Read(result->shape, iss, builder);
+        if (result->shape.IsNull()) {
+            throw std::runtime_error("BRepTools::Read produced null shape");
+        }
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT deserialize_brep: ") + e.GetMessageString());
     }
 }
 
