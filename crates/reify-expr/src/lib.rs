@@ -1045,6 +1045,42 @@ mod tests {
     }
 
     #[test]
+    fn eval_eq_enum_same_type_different_variant() {
+        let left = enum_lit("Direction", "In");
+        let right = enum_lit("Direction", "Out");
+        let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Bool(false) => {}
+            other => panic!("expected Bool(false), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_eq_enum_different_types() {
+        let left = enum_lit("Direction", "In");
+        let right = enum_lit("ThreadSystem", "ISO");
+        let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Bool(false) => {}
+            other => panic!("expected Bool(false), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_ne_enum_variants() {
+        let left = enum_lit("Direction", "In");
+        let right = enum_lit("Direction", "Out");
+        let expr = CompiledExpr::binop(BinOp::Ne, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Bool(true) => {}
+            other => panic!("expected Bool(true), got {:?}", other),
+        }
+    }
+
+    #[test]
     fn div_same_dimension_yields_dimensionless() {
         // 80mm / 20mm = 4.0 (dimensionless Real)
         let left = lit(mm_val(80.0), Type::length());
