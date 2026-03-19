@@ -803,6 +803,80 @@ fn no_objective_when_absent() {
     assert_eq!(template.constraints.len(), 3);
 }
 
+/// E2E: parse source with auto params, constraints, lets, and minimize → compile → verify.
+#[test]
+fn e2e_minimize_round_trip() {
+    let source = r#"structure Bracket {
+    param width: Scalar = 80mm
+    param height: Scalar = 100mm
+    param thickness: Scalar = auto
+    let volume = width * height * thickness
+    constraint thickness > 2mm
+    constraint thickness < width
+    minimize thickness
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_e2e_min"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) no error diagnostics
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "should have no diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+
+    // (b) correct value_cells count: 3 params + 1 let = 4
+    assert_eq!(template.value_cells.len(), 4, "expected 4 value cells");
+
+    // (c) correct constraints count
+    assert_eq!(template.constraints.len(), 2, "expected 2 constraints");
+
+    // (d) objective is Some(Minimize(...))
+    let objective = template
+        .objective
+        .as_ref()
+        .expect("template should have an objective");
+    match objective {
+        reify_types::OptimizationObjective::Minimize(expr) => {
+            // (e) compiled expression references ValueCellId for thickness
+            match &expr.kind {
+                reify_types::CompiledExprKind::ValueRef(id) => {
+                    assert_eq!(id, &reify_types::ValueCellId::new("Bracket", "thickness"));
+                }
+                other => panic!("expected ValueRef to thickness, got {:?}", other),
+            }
+        }
+        other => panic!("expected Minimize, got {:?}", other),
+    }
+
+    // (f) existing constraints and value cells are unaffected
+    let auto_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.kind == ValueCellKind::Auto)
+        .collect();
+    assert_eq!(auto_cells.len(), 1, "expected 1 auto param");
+    assert_eq!(auto_cells[0].id, reify_types::ValueCellId::new("Bracket", "thickness"));
+
+    let param_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.kind == ValueCellKind::Param)
+        .collect();
+    assert_eq!(param_cells.len(), 2, "expected 2 regular params");
+
+    let let_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.kind == ValueCellKind::Let)
+        .collect();
+    assert_eq!(let_cells.len(), 1, "expected 1 let binding");
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
