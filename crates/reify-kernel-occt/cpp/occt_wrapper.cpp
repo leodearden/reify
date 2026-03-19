@@ -17,8 +17,11 @@
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 
-// OCCT loft / offset
+// OCCT loft / offset / shell / thicken
 #include <BRepOffsetAPI_ThruSections.hxx>
+#include <BRepOffsetAPI_MakeOffsetShape.hxx>
+#include <BRepOffsetAPI_MakeThickSolid.hxx>
+#include <TopTools_ListOfShape.hxx>
 
 // OCCT edge/wire construction
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -361,6 +364,59 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
         throw std::runtime_error(std::string("OCCT circular_pattern: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT circular_pattern: unknown C++ exception");
+    }
+}
+
+// --- Thicken / Shell ---
+
+std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset) {
+    try {
+        BRepOffsetAPI_MakeOffsetShape maker;
+        maker.PerformBySimple(shape.shape, offset);
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepOffsetAPI_MakeOffsetShape failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT thicken_shape: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT thicken_shape: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT thicken_shape: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
+    const rust::Vec<uint32_t>& face_indices) {
+    try {
+        // Collect the faces to remove
+        TopTools_ListOfShape faces_to_remove;
+        std::vector<TopoDS_Face> all_faces;
+        for (TopExp_Explorer ex(shape.shape, TopAbs_FACE); ex.More(); ex.Next()) {
+            all_faces.push_back(TopoDS::Face(ex.Current()));
+        }
+        for (auto idx : face_indices) {
+            if (idx < all_faces.size()) {
+                faces_to_remove.Append(all_faces[idx]);
+            }
+        }
+        BRepOffsetAPI_MakeThickSolid maker;
+        maker.MakeThickSolidByJoin(shape.shape, faces_to_remove, thickness, 1e-3);
+        maker.Build();
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepOffsetAPI_MakeThickSolid failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT shell_shape: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT shell_shape: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT shell_shape: unknown C++ exception");
     }
 }
 

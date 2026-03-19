@@ -333,10 +333,11 @@ impl OcctKernel {
                     "Draft not yet implemented".into(),
                 ));
             }
-            GeometryOp::Thicken { .. } => {
-                return Err(GeometryError::OperationFailed(
-                    "Thicken not yet implemented".into(),
-                ));
+            GeometryOp::Thicken { target, offset } => {
+                let shape = self.get_shape(*target)?;
+                let off = extract_f64(offset)?;
+                ffi::ffi::thicken_shape(shape, off)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Shell { .. } => {
                 return Err(GeometryError::OperationFailed(

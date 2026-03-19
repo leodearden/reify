@@ -93,6 +93,17 @@ pub mod ffi {
             total_angle: f64,
         ) -> Result<UniquePtr<OcctShape>>;
 
+        // --- Thicken / Shell ---
+        fn thicken_shape(
+            shape: &OcctShape,
+            offset: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn shell_shape(
+            shape: &OcctShape,
+            thickness: f64,
+            face_indices: &Vec<u32>,
+        ) -> Result<UniquePtr<OcctShape>>;
+
         // --- Wire helpers / Loft ---
         fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
         fn loft_two_profiles(

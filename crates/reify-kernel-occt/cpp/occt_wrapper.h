@@ -56,6 +56,13 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
     double ax, double ay, double az,
     uint32_t count, double total_angle);
 
+// --- Thicken / Shell ---
+
+std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset);
+
+std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
+    const rust::Vec<uint32_t>& face_indices);
+
 // --- Wire helpers / Loft ---
 
 /// Create a circular wire profile at a given Z height (for loft profiles).
