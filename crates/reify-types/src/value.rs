@@ -981,4 +981,30 @@ mod tests {
         };
         assert_eq!(format!("{}", v), "Color::Red");
     }
+
+    #[test]
+    fn value_display_list() {
+        let v = Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        assert_eq!(format!("{}", v), "[1, 2, 3]");
+        assert_eq!(format!("{}", Value::List(vec![])), "[]");
+    }
+
+    #[test]
+    fn value_display_set() {
+        use std::collections::BTreeSet;
+        let mut s = BTreeSet::new();
+        s.insert(Value::Int(1));
+        s.insert(Value::Int(2));
+        assert_eq!(format!("{}", Value::Set(s)), "{1, 2}");
+        assert_eq!(format!("{}", Value::Set(BTreeSet::new())), "{}");
+    }
+
+    #[test]
+    fn value_display_map() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("a".into()), Value::Int(1));
+        assert_eq!(format!("{}", Value::Map(m)), "{\"a\": 1}");
+        assert_eq!(format!("{}", Value::Map(BTreeMap::new())), "{}");
+    }
 }
