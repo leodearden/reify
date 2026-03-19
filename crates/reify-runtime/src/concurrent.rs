@@ -850,4 +850,81 @@ mod tests {
             result.skipped
         );
     }
+
+    /// All parents Unchanged → downstream d should be skipped.
+    /// Topology: param a (changed_cells), p1 and p2 read a (level 0, both
+    /// return Unchanged), d reads p1 and p2 (level 1).
+    /// After level 0, changed_vcids stays {a}; d's reads [p1, p2] don't
+    /// intersect {a}, so d is correctly skipped.
+    #[tokio::test]
+    async fn scheduler_precomputed_skip_all_unchanged_skips_downstream() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use reify_types::ValueCellId;
+        use std::collections::{HashMap, HashSet};
+        use std::sync::Arc;
+
+        let e = "U";
+        let a = ValueCellId::new(e, "a");
+        let p1_vcid = ValueCellId::new(e, "p1");
+        let p2_vcid = ValueCellId::new(e, "p2");
+        let d_vcid = ValueCellId::new(e, "d");
+
+        let p1 = NodeId::Value(p1_vcid.clone());
+        let p2 = NodeId::Value(p2_vcid.clone());
+        let d = NodeId::Value(d_vcid.clone());
+
+        // Traces: p1/p2 read a (level 0), d reads p1+p2 (level 1)
+        let mut traces = HashMap::new();
+        traces.insert(p1.clone(), DependencyTrace { reads: vec![a.clone()] });
+        traces.insert(p2.clone(), DependencyTrace { reads: vec![a.clone()] });
+        traces.insert(
+            d.clone(),
+            DependencyTrace {
+                reads: vec![p1_vcid.clone(), p2_vcid.clone()],
+            },
+        );
+
+        // Both p1 and p2 return Unchanged
+        let mut outcomes = HashMap::new();
+        outcomes.insert(p1.clone(), EvalOutcome::Unchanged);
+        outcomes.insert(p2.clone(), EvalOutcome::Unchanged);
+
+        struct UnchangedEvaluator {
+            outcomes: HashMap<NodeId, EvalOutcome>,
+        }
+
+        impl AsyncNodeEvaluator for UnchangedEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                self.outcomes.get(&node).copied().unwrap_or(EvalOutcome::Unchanged)
+            }
+        }
+
+        let evaluator = Arc::new(UnchangedEvaluator { outcomes });
+        let eval_set = vec![p1.clone(), p2.clone(), d.clone()];
+        let cancel = CancellationToken::new();
+
+        let mut changed_cells = HashSet::new();
+        changed_cells.insert(a);
+
+        let scheduler = ConcurrentScheduler;
+        let result = scheduler
+            .execute(eval_set, evaluator, &traces, &cancel, &changed_cells)
+            .await
+            .unwrap();
+
+        // d should be in skipped (p1 and p2 both Unchanged, so changed_vcids
+        // stays {a} and d's reads [p1, p2] don't intersect)
+        assert!(
+            result.skipped.contains(&d),
+            "d should be in skipped set: {:?}",
+            result.skipped
+        );
+        // d should NOT be in changed
+        assert!(
+            !result.changed.contains(&d),
+            "d should NOT be in changed set: {:?}",
+            result.changed
+        );
+    }
 }
