@@ -701,6 +701,46 @@ structure Bracket {
     );
 }
 
+/// Compile minimize → TopologyTemplate.objective is Some(Minimize(...)).
+#[test]
+fn compile_minimize_objective() {
+    let source = r#"structure S {
+    param x: Scalar = auto
+    constraint x > 2mm
+    minimize x
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_min_obj"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+
+    // Should have an objective
+    let objective = template
+        .objective
+        .as_ref()
+        .expect("template should have an objective");
+
+    match objective {
+        reify_types::OptimizationObjective::Minimize(expr) => {
+            // The expression should reference ValueCellId("S", "x")
+            match &expr.kind {
+                reify_types::CompiledExprKind::ValueRef(id) => {
+                    assert_eq!(id, &reify_types::ValueCellId::new("S", "x"));
+                }
+                other => panic!("expected ValueRef, got {:?}", other),
+            }
+        }
+        other => panic!("expected Minimize, got {:?}", other),
+    }
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
