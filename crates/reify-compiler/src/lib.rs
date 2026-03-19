@@ -263,6 +263,16 @@ fn resolve_type_name(name: &str) -> Option<Type> {
     }
 }
 
+/// Check if an argument type is compatible with a parameter type.
+/// Exact match always works. Int→Real widening is allowed.
+fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
+    if param_ty == arg_ty {
+        return true;
+    }
+    // Allow Int→Real widening coercion
+    matches!((param_ty, arg_ty), (Type::Real, Type::Int))
+}
+
 // --- BinOp resolution ---
 
 /// Parse a string operator into a `BinOp`.
@@ -375,6 +385,7 @@ fn compile_expr(
     expr: &reify_syntax::Expr,
     scope: &CompilationScope,
     enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledExpr {
     match &expr.kind {
@@ -423,8 +434,8 @@ fn compile_expr(
             }
         }
         reify_syntax::ExprKind::BinOp { op, left, right } => {
-            let compiled_left = compile_expr(left, scope, enum_defs, diagnostics);
-            let compiled_right = compile_expr(right, scope, enum_defs, diagnostics);
+            let compiled_left = compile_expr(left, scope, enum_defs, functions, diagnostics);
+            let compiled_right = compile_expr(right, scope, enum_defs, functions, diagnostics);
             match resolve_binop(op) {
                 Some(bin_op) => {
                     let result_type = infer_binop_type(
@@ -487,7 +498,7 @@ fn compile_expr(
             }
         }
         reify_syntax::ExprKind::UnOp { op, operand } => {
-            let compiled_operand = compile_expr(operand, scope, enum_defs, diagnostics);
+            let compiled_operand = compile_expr(operand, scope, enum_defs, functions, diagnostics);
             match resolve_unop(op) {
                 Some(un_op) => {
                     let result_type = match un_op {
@@ -508,49 +519,97 @@ fn compile_expr(
         reify_syntax::ExprKind::FunctionCall { name, args } => {
             let compiled_args: Vec<CompiledExpr> = args
                 .iter()
-                .map(|arg| compile_expr(arg, scope, enum_defs, diagnostics))
+                .map(|arg| compile_expr(arg, scope, enum_defs, functions, diagnostics))
                 .collect();
 
-            let resolved = ResolvedFunction {
-                name: name.clone(),
-                qualified_name: format!("std::{}", name),
-            };
+            // Check user-defined functions first: match on name, arg count, and arg types
+            let candidates: Vec<&CompiledFunction> = functions
+                .iter()
+                .filter(|f| {
+                    f.name == *name
+                        && f.params.len() == compiled_args.len()
+                        && f.params.iter().zip(compiled_args.iter()).all(
+                            |((_, param_ty), arg)| type_compatible(param_ty, &arg.result_type),
+                        )
+                })
+                .collect();
 
-            // Infer a result type — for geometry functions, use a placeholder
-            let result_type = if is_geometry_function(name) {
-                // Geometry functions produce geometry, not a scalar value.
-                // We use a dimensionless scalar as placeholder.
-                Type::dimensionless_scalar()
-            } else {
-                // For math functions, use the type of the first argument as a heuristic
-                compiled_args
-                    .first()
-                    .map(|a| a.result_type.clone())
-                    .unwrap_or(Type::Real)
-            };
-
-            let content_hash = {
-                let mut h = ContentHash::of(&[4])
-                    .combine(ContentHash::of_str(&resolved.qualified_name));
-                for arg in &compiled_args {
-                    h = h.combine(arg.content_hash);
+            if candidates.len() == 1 {
+                // Exactly one user fn matches — emit UserFunctionCall
+                let matched_fn = candidates[0];
+                let result_type = matched_fn.return_type.clone();
+                let content_hash = {
+                    let mut h = ContentHash::of(&[6])
+                        .combine(ContentHash::of_str(name));
+                    for arg in &compiled_args {
+                        h = h.combine(arg.content_hash);
+                    }
+                    h
+                };
+                CompiledExpr {
+                    kind: CompiledExprKind::UserFunctionCall {
+                        function_name: name.clone(),
+                        args: compiled_args,
+                    },
+                    result_type,
+                    content_hash,
                 }
-                h
-            };
+            } else if candidates.len() > 1 {
+                // Ambiguous overload
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "ambiguous function call: {} candidates match {}({})",
+                        candidates.len(),
+                        name,
+                        compiled_args
+                            .iter()
+                            .map(|a| format!("{}", a.result_type))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "ambiguous call")),
+                );
+                CompiledExpr::literal(Value::Undef, Type::Real)
+            } else {
+                // No user fn matches — fall through to stdlib FunctionCall
+                let resolved = ResolvedFunction {
+                    name: name.clone(),
+                    qualified_name: format!("std::{}", name),
+                };
 
-            CompiledExpr {
-                kind: CompiledExprKind::FunctionCall {
-                    function: resolved,
-                    args: compiled_args,
-                },
-                result_type,
-                content_hash,
+                // Infer a result type — for geometry functions, use a placeholder
+                let result_type = if is_geometry_function(name) {
+                    Type::dimensionless_scalar()
+                } else {
+                    compiled_args
+                        .first()
+                        .map(|a| a.result_type.clone())
+                        .unwrap_or(Type::Real)
+                };
+
+                let content_hash = {
+                    let mut h = ContentHash::of(&[4])
+                        .combine(ContentHash::of_str(&resolved.qualified_name));
+                    for arg in &compiled_args {
+                        h = h.combine(arg.content_hash);
+                    }
+                    h
+                };
+
+                CompiledExpr {
+                    kind: CompiledExprKind::FunctionCall {
+                        function: resolved,
+                        args: compiled_args,
+                    },
+                    result_type,
+                    content_hash,
+                }
             }
         }
         reify_syntax::ExprKind::MemberAccess { object, member } => {
             // For M1, compile the object expression but emit a diagnostic
             // since we don't yet support member access fully.
-            let _compiled_obj = compile_expr(object, scope, enum_defs, diagnostics);
+            let _compiled_obj = compile_expr(object, scope, enum_defs, functions, diagnostics);
             diagnostics.push(
                 Diagnostic::error(format!("member access not yet supported: .{}", member))
                     .with_label(DiagnosticLabel::new(expr.span, "unsupported in M1")),
@@ -597,9 +656,9 @@ fn compile_expr(
             then_branch,
             else_branch,
         } => {
-            let compiled_cond = compile_expr(condition, scope, enum_defs, diagnostics);
-            let compiled_then = compile_expr(then_branch, scope, enum_defs, diagnostics);
-            let compiled_else = compile_expr(else_branch, scope, enum_defs, diagnostics);
+            let compiled_cond = compile_expr(condition, scope, enum_defs, functions, diagnostics);
+            let compiled_then = compile_expr(then_branch, scope, enum_defs, functions, diagnostics);
+            let compiled_else = compile_expr(else_branch, scope, enum_defs, functions, diagnostics);
             let result_type = compiled_then.result_type.clone();
 
             let content_hash = ContentHash::of(&[5])
@@ -657,10 +716,21 @@ pub fn compile(
         );
     }
 
+    // Pre-pass: compile ALL function definitions before processing structures.
+    // This ensures order-independent declarations — a structure declared
+    // before a function can still call that function.
+    for decl in &parsed.declarations {
+        if let reify_syntax::Declaration::Function(fn_def) = decl {
+            if let Some(compiled_fn) = compile_function(fn_def, &enum_defs, &mut diagnostics) {
+                functions.push(compiled_fn);
+            }
+        }
+    }
+
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
-                let template = compile_structure(structure, &enum_defs, &mut diagnostics);
+                let template = compile_structure(structure, &enum_defs, &functions, &mut diagnostics);
                 templates.push(template);
             }
             reify_syntax::Declaration::Enum(_) => {
@@ -679,10 +749,8 @@ pub fn compile(
                     .with_label(DiagnosticLabel::new(import.span, "import")),
                 );
             }
-            reify_syntax::Declaration::Function(fn_def) => {
-                if let Some(compiled_fn) = compile_function(fn_def, &enum_defs, &mut diagnostics) {
-                    functions.push(compiled_fn);
-                }
+            reify_syntax::Declaration::Function(_) => {
+                // Already compiled in pre-pass above.
             }
         }
     }
@@ -761,6 +829,7 @@ pub fn compile(
 fn compile_structure(
     structure: &reify_syntax::StructureDef,
     enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> TopologyTemplate {
     let entity_name = &structure.name;
@@ -843,7 +912,7 @@ fn compile_structure(
                     let default_expr = param
                         .default
                         .as_ref()
-                        .map(|expr| compile_expr(expr, &scope, enum_defs, diagnostics));
+                        .map(|expr| compile_expr(expr, &scope, enum_defs, functions, diagnostics));
 
                     value_cells.push(ValueCellDecl {
                         id,
@@ -860,7 +929,7 @@ fn compile_structure(
                     continue;
                 }
 
-                let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, diagnostics);
+                let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 
@@ -876,7 +945,7 @@ fn compile_structure(
                 });
             }
             reify_syntax::MemberDecl::Constraint(constraint) => {
-                let compiled_expr = compile_expr(&constraint.expr, &scope, enum_defs, diagnostics);
+                let compiled_expr = compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
 
                 // Check that the constraint expression produces Bool
                 if compiled_expr.result_type != Type::Bool {
@@ -906,7 +975,7 @@ fn compile_structure(
                     .args
                     .iter()
                     .map(|(name, expr)| {
-                        (name.clone(), compile_expr(expr, &scope, enum_defs, diagnostics))
+                        (name.clone(), compile_expr(expr, &scope, enum_defs, functions, diagnostics))
                     })
                     .collect();
 
@@ -919,11 +988,11 @@ fn compile_structure(
                 });
             }
             reify_syntax::MemberDecl::Minimize(min_decl) => {
-                let compiled_expr = compile_expr(&min_decl.expr, &scope, enum_defs, diagnostics);
+                let compiled_expr = compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
                 objective = Some(OptimizationObjective::Minimize(compiled_expr));
             }
             reify_syntax::MemberDecl::Maximize(max_decl) => {
-                let compiled_expr = compile_expr(&max_decl.expr, &scope, enum_defs, diagnostics);
+                let compiled_expr = compile_expr(&max_decl.expr, &scope, enum_defs, functions, diagnostics);
                 objective = Some(OptimizationObjective::Maximize(compiled_expr));
             }
             reify_syntax::MemberDecl::GuardedGroup(_) => {
@@ -940,7 +1009,7 @@ fn compile_structure(
     for member in &structure.members {
         if let reify_syntax::MemberDecl::Let(let_decl) = member
             && is_geometry_let(&let_decl.value)
-            && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, enum_defs, diagnostics)
+            && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, enum_defs, functions, diagnostics)
         {
             realizations.push(RealizationDecl {
                 id: RealizationNodeId::new(entity_name, realization_index),
@@ -1034,7 +1103,7 @@ fn compile_function(
     // Compile body let bindings
     let mut compiled_lets = Vec::new();
     for let_decl in &fn_def.body.let_bindings {
-        let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, diagnostics);
+        let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, &[], diagnostics);
         let let_type = compiled_expr.result_type.clone();
         // Register the let binding in scope for subsequent bindings
         scope.register(&let_decl.name, let_type);
@@ -1042,7 +1111,7 @@ fn compile_function(
     }
 
     // Compile result expression
-    let result_expr = compile_expr(&fn_def.body.result_expr, &scope, enum_defs, diagnostics);
+    let result_expr = compile_expr(&fn_def.body.result_expr, &scope, enum_defs, &[], diagnostics);
 
     // Compute content hash
     let content_hash = {
@@ -1092,6 +1161,7 @@ fn compile_geometry_call(
     expr: &reify_syntax::Expr,
     scope: &CompilationScope,
     enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Vec<CompiledGeometryOp>> {
     let (name, args) = match &expr.kind {
@@ -1101,7 +1171,7 @@ fn compile_geometry_call(
 
     let compiled_args: Vec<CompiledExpr> = args
         .iter()
-        .map(|arg| compile_expr(arg, scope, enum_defs, diagnostics))
+        .map(|arg| compile_expr(arg, scope, enum_defs, functions, diagnostics))
         .collect();
 
     let named_args = match name {
