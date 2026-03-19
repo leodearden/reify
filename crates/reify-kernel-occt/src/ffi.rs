@@ -61,7 +61,7 @@ pub mod ffi {
             angle_rad: f64,
         ) -> Result<UniquePtr<OcctShape>>;
 
-        // --- Mirror / Pattern ---
+        // --- Mirror / Pattern / Circular pattern ---
         fn mirror_shape(
             shape: &OcctShape,
             ox: f64,
@@ -70,6 +70,27 @@ pub mod ffi {
             nx: f64,
             ny: f64,
             nz: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+
+        fn linear_pattern(
+            shape: &OcctShape,
+            dx: f64,
+            dy: f64,
+            dz: f64,
+            count: u32,
+            spacing: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+
+        fn circular_pattern(
+            shape: &OcctShape,
+            ox: f64,
+            oy: f64,
+            oz: f64,
+            ax: f64,
+            ay: f64,
+            az: f64,
+            count: u32,
+            total_angle: f64,
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Queries ---

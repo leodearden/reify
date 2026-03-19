@@ -49,6 +49,7 @@
 #include <sstream>
 #include <fstream>
 #include <cstdio>
+#include <cmath>
 #include <mutex>
 #include <stdexcept>
 
@@ -265,6 +266,93 @@ std::unique_ptr<OcctShape> mirror_shape(const OcctShape& shape,
         throw std::runtime_error(std::string("OCCT mirror_shape: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT mirror_shape: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
+    double dx, double dy, double dz,
+    uint32_t count, double spacing) {
+    try {
+        if (count < 1) {
+            throw std::runtime_error("linear_pattern: count must be >= 1");
+        }
+        // Normalize direction
+        double mag = std::sqrt(dx*dx + dy*dy + dz*dz);
+        if (mag < 1e-10) {
+            throw std::runtime_error("linear_pattern: direction must be non-zero");
+        }
+        double ndx = dx / mag, ndy = dy / mag, ndz = dz / mag;
+
+        // Start with the original shape
+        TopoDS_Shape accumulated = shape.shape;
+
+        for (uint32_t i = 1; i < count; ++i) {
+            double dist = spacing * static_cast<double>(i);
+            gp_Trsf trsf;
+            trsf.SetTranslation(gp_Vec(ndx * dist, ndy * dist, ndz * dist));
+            BRepBuilderAPI_Transform transform(shape.shape, trsf, true);
+            transform.Build();
+            if (!transform.IsDone()) {
+                throw std::runtime_error("linear_pattern: transform failed");
+            }
+            BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
+            fuse.Build();
+            if (!fuse.IsDone()) {
+                throw std::runtime_error("linear_pattern: fuse failed");
+            }
+            accumulated = fuse.Shape();
+        }
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = accumulated;
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT linear_pattern: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT linear_pattern: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT linear_pattern: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
+    double ox, double oy, double oz,
+    double ax, double ay, double az,
+    uint32_t count, double total_angle) {
+    try {
+        if (count < 1) {
+            throw std::runtime_error("circular_pattern: count must be >= 1");
+        }
+        gp_Ax1 axis(gp_Pnt(ox, oy, oz), gp_Dir(ax, ay, az));
+
+        TopoDS_Shape accumulated = shape.shape;
+
+        for (uint32_t i = 1; i < count; ++i) {
+            double angle_i = total_angle * static_cast<double>(i) / static_cast<double>(count);
+            gp_Trsf trsf;
+            trsf.SetRotation(axis, angle_i);
+            BRepBuilderAPI_Transform transform(shape.shape, trsf, true);
+            transform.Build();
+            if (!transform.IsDone()) {
+                throw std::runtime_error("circular_pattern: transform failed");
+            }
+            BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
+            fuse.Build();
+            if (!fuse.IsDone()) {
+                throw std::runtime_error("circular_pattern: fuse failed");
+            }
+            accumulated = fuse.Shape();
+        }
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = accumulated;
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT circular_pattern: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT circular_pattern: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT circular_pattern: unknown C++ exception");
     }
 }
 

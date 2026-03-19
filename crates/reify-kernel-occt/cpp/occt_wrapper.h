@@ -47,6 +47,15 @@ std::unique_ptr<OcctShape> mirror_shape(const OcctShape& shape,
     double ox, double oy, double oz,
     double nx, double ny, double nz);
 
+std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
+    double dx, double dy, double dz,
+    uint32_t count, double spacing);
+
+std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
+    double ox, double oy, double oz,
+    double ax, double ay, double az,
+    uint32_t count, double total_angle);
+
 // --- Queries ---
 
 double query_volume(const OcctShape& shape);

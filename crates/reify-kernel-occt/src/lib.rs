@@ -221,10 +221,28 @@ impl OcctKernel {
                 ffi::ffi::rotate_shape(shape, axis[0], axis[1], axis[2], *angle_rad)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            GeometryOp::LinearPattern { .. } => {
-                return Err(GeometryError::OperationFailed(
-                    "LinearPattern not yet implemented".into(),
-                ));
+            GeometryOp::LinearPattern {
+                target,
+                direction,
+                count,
+                spacing,
+            } => {
+                let shape = self.get_shape(*target)?;
+                let sp = extract_f64(spacing)?;
+                if *count == 0 {
+                    return Err(GeometryError::OperationFailed(
+                        "linear pattern count must be >= 1".into(),
+                    ));
+                }
+                ffi::ffi::linear_pattern(
+                    shape,
+                    direction[0],
+                    direction[1],
+                    direction[2],
+                    *count as u32,
+                    sp,
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::CircularPattern { .. } => {
                 return Err(GeometryError::OperationFailed(
