@@ -29,7 +29,7 @@ fn make_param_decl(entity: &str, member: &str, cell_type: Type, default: Value) 
 /// member param 'x' (default=5mm). After eval(), 'x' should be 0.005 (5mm SI).
 #[test]
 fn eval_guard_true_includes_members() {
-    let active_id = ValueCellId::new("S", "active");
+    let _active_id = ValueCellId::new("S", "active");
     let guard_id = ValueCellId::new("S", "__guard_0");
     let x_id = ValueCellId::new("S", "x");
 
@@ -147,5 +147,58 @@ fn eval_guard_false_includes_else() {
         result.values.get(&x_id),
         Some(&Value::Undef),
         "guarded member x should be Undef when guard is false"
+    );
+}
+
+/// Step 17: When guard is Undef (references an Auto param with no solver),
+/// all guarded members should have Undef values.
+#[test]
+fn eval_guard_undef_members_indeterminate() {
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // Guard expression references an Auto param (starts Undef, no solver)
+    let guard_expr = value_ref_typed("S", "flag", Type::Bool);
+    let x_decl = make_param_decl("S", "x", Type::length(), Value::length(0.005));
+    let y_decl = make_param_decl("S", "y", Type::length(), Value::length(0.01));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "flag", Type::Bool)
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![x_decl],       // members
+            vec![],             // constraints
+            vec![y_decl],       // else_members
+            vec![],             // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Guard cell should be Undef (since flag is Auto/Undef)
+    assert_eq!(
+        result.values.get(&guard_id),
+        Some(&Value::Undef),
+        "guard cell should evaluate to Undef when referencing unresolved Auto param"
+    );
+
+    // Both members and else_members should be Undef (indeterminate)
+    assert_eq!(
+        result.values.get(&x_id),
+        Some(&Value::Undef),
+        "guarded member x should be Undef when guard is Undef"
+    );
+    assert_eq!(
+        result.values.get(&y_id),
+        Some(&Value::Undef),
+        "else member y should be Undef when guard is Undef"
     );
 }
