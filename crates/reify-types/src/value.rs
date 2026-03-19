@@ -433,6 +433,65 @@ mod tests {
         assert_eq!(DeterminacyState::Auto as u8, 3);
     }
 
+    // --- Ord tests (step-1) ---
+
+    #[test]
+    fn value_ord_cross_type_ordering() {
+        // Undef < Bool < Int < Real < Scalar < String
+        let undef = Value::Undef;
+        let bool_f = Value::Bool(false);
+        let bool_t = Value::Bool(true);
+        let int0 = Value::Int(0);
+        let real0 = Value::Real(0.0);
+        let scalar = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let string = Value::String("z".into());
+
+        assert!(undef < bool_f);
+        assert!(bool_f < bool_t);
+        assert!(bool_t < int0);
+        assert!(int0 < real0);
+        assert!(real0 < scalar);
+        assert!(scalar < string);
+    }
+
+    #[test]
+    fn value_ord_within_int() {
+        assert!(Value::Int(1) < Value::Int(2));
+        assert!(Value::Int(-10) < Value::Int(0));
+        assert_eq!(Value::Int(5).cmp(&Value::Int(5)), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn value_ord_within_string() {
+        assert!(Value::String("a".into()) < Value::String("b".into()));
+        assert!(Value::String("abc".into()) < Value::String("abd".into()));
+    }
+
+    #[test]
+    fn value_ord_within_real_and_nan() {
+        // Normal ordering
+        assert!(Value::Real(1.0) < Value::Real(2.0));
+        // NaN consistency: NaN should have a defined position (via to_bits)
+        let nan = Value::Real(f64::NAN);
+        let inf = Value::Real(f64::INFINITY);
+        // Just verify it doesn't panic and gives consistent results
+        let _ = nan.cmp(&inf);
+        assert_eq!(nan.cmp(&nan), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn value_ord_neg_zero() {
+        // -0.0 and +0.0 have different bits, so they may have different ordering
+        // (consistent with PartialEq which uses to_bits)
+        let pos = Value::Real(0.0);
+        let neg = Value::Real(-0.0);
+        // They should have a defined comparison (not panic)
+        let _ = pos.cmp(&neg);
+    }
+
     #[test]
     fn satisfaction_content_hash_distinct_variants() {
         let satisfied = Satisfaction::Satisfied.content_hash();
