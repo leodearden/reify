@@ -188,6 +188,11 @@ impl OcctKernel {
                 dz,
             } => {
                 let shape = self.get_shape(*target)?;
+                if !dx.is_finite() || !dy.is_finite() || !dz.is_finite() {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "translate components must be finite values: dx={dx}, dy={dy}, dz={dz}"
+                    )));
+                }
                 ffi::ffi::translate_shape(shape, *dx, *dy, *dz)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -197,6 +202,22 @@ impl OcctKernel {
                 angle_rad,
             } => {
                 let shape = self.get_shape(*target)?;
+                if !axis[0].is_finite()
+                    || !axis[1].is_finite()
+                    || !axis[2].is_finite()
+                    || !angle_rad.is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "rotate parameters must be finite values: axis=[{}, {}, {}], angle_rad={}",
+                        axis[0], axis[1], axis[2], angle_rad
+                    )));
+                }
+                let mag_sq = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
+                if mag_sq == 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "rotation axis must not be zero-length".into(),
+                    ));
+                }
                 ffi::ffi::rotate_shape(shape, axis[0], axis[1], axis[2], *angle_rad)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -1008,6 +1029,227 @@ mod tests {
             Err(GeometryError::OperationFailed(_)) => {}
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for infinity-radius fillet"),
+        }
+    }
+
+    // --- Rotate NaN/infinity/zero-axis rejection tests (step-3) ---
+
+    #[test]
+    fn execute_rotate_nan_angle_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Rotate {
+            target: box_h.id,
+            axis: [0.0, 0.0, 1.0],
+            angle_rad: f64::NAN,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN angle in rotate"),
+        }
+    }
+
+    #[test]
+    fn execute_rotate_infinity_axis_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Rotate {
+            target: box_h.id,
+            axis: [f64::INFINITY, 0.0, 0.0],
+            angle_rad: 1.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity axis in rotate"),
+        }
+    }
+
+    #[test]
+    fn execute_rotate_zero_axis_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Rotate {
+            target: box_h.id,
+            axis: [0.0, 0.0, 0.0],
+            angle_rad: 1.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-length axis in rotate"),
+        }
+    }
+
+    // --- Error message quality regression tests (step-7) ---
+
+    #[test]
+    fn translate_error_message_mentions_finite() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Translate {
+            target: box_h.id,
+            dx: f64::NAN,
+            dy: 0.0,
+            dz: 0.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.to_lowercase().contains("finite"),
+                    "translate error should mention 'finite', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error"),
+        }
+    }
+
+    #[test]
+    fn rotate_error_message_mentions_axis_or_finite() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Rotate {
+            target: box_h.id,
+            axis: [0.0, 0.0, 0.0],
+            angle_rad: 1.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                let lower = msg.to_lowercase();
+                assert!(
+                    lower.contains("axis") || lower.contains("zero"),
+                    "rotate zero-axis error should mention 'axis' or 'zero', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error"),
+        }
+    }
+
+    // --- Fillet too-large radius regression test (step-5) ---
+
+    #[test]
+    fn execute_fillet_radius_too_large_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Radius 100.0 is much larger than any edge of the 10x10x10 box
+        let result = kernel.execute(&GeometryOp::Fillet {
+            target: box_h.id,
+            radius: Value::Real(100.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for too-large fillet radius"),
+        }
+    }
+
+    // --- Translate NaN/infinity rejection tests (step-1) ---
+
+    #[test]
+    fn execute_translate_nan_dx_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Translate {
+            target: box_h.id,
+            dx: f64::NAN,
+            dy: 0.0,
+            dz: 0.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN dx in translate"),
+        }
+    }
+
+    #[test]
+    fn execute_translate_infinity_dy_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Translate {
+            target: box_h.id,
+            dx: 0.0,
+            dy: f64::INFINITY,
+            dz: 0.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity dy in translate"),
+        }
+    }
+
+    #[test]
+    fn execute_translate_neg_infinity_dz_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Translate {
+            target: box_h.id,
+            dx: 0.0,
+            dy: 0.0,
+            dz: f64::NEG_INFINITY,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for neg-infinity dz in translate"),
         }
     }
 

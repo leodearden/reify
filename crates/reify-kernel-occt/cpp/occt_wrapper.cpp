@@ -49,6 +49,7 @@
 #include <fstream>
 #include <cstdio>
 #include <mutex>
+#include <stdexcept>
 
 namespace occt {
 
@@ -67,6 +68,10 @@ std::unique_ptr<OcctShape> make_box(double width, double height, double depth) {
         return result;
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT make_box: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_box: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_box: unknown C++ exception");
     }
 }
 
@@ -82,6 +87,10 @@ std::unique_ptr<OcctShape> make_cylinder(double radius, double height) {
         return result;
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT make_cylinder: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_cylinder: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_cylinder: unknown C++ exception");
     }
 }
 
@@ -97,6 +106,10 @@ std::unique_ptr<OcctShape> make_sphere(double radius) {
         return result;
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT make_sphere: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_sphere: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_sphere: unknown C++ exception");
     }
 }
 
@@ -114,6 +127,10 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
         return result;
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT boolean_fuse: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT boolean_fuse: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT boolean_fuse: unknown C++ exception");
     }
 }
 
@@ -129,6 +146,10 @@ std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& r
         return result;
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT boolean_cut: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT boolean_cut: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT boolean_cut: unknown C++ exception");
     }
 }
 
@@ -144,6 +165,10 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
         return result;
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT boolean_common: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT boolean_common: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT boolean_common: unknown C++ exception");
     }
 }
 
@@ -164,6 +189,10 @@ std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radiu
         return result;
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT fillet_all_edges: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT fillet_all_edges: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT fillet_all_edges: unknown C++ exception");
     }
 }
 
@@ -183,6 +212,10 @@ std::unique_ptr<OcctShape> translate_shape(const OcctShape& shape, double dx, do
         return result;
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT translate_shape: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT translate_shape: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT translate_shape: unknown C++ exception");
     }
 }
 
@@ -201,6 +234,10 @@ std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, doubl
         return result;
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT rotate_shape: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT rotate_shape: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT rotate_shape: unknown C++ exception");
     }
 }
 
@@ -213,6 +250,10 @@ double query_volume(const OcctShape& shape) {
         return props.Mass();
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT query_volume: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT query_volume: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT query_volume: unknown C++ exception");
     }
 }
 
@@ -223,6 +264,10 @@ double query_area(const OcctShape& shape) {
         return props.Mass();
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT query_area: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT query_area: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT query_area: unknown C++ exception");
     }
 }
 
@@ -234,6 +279,10 @@ Point3 query_centroid(const OcctShape& shape) {
         return Point3{c.X(), c.Y(), c.Z()};
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT query_centroid: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT query_centroid: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT query_centroid: unknown C++ exception");
     }
 }
 
@@ -246,6 +295,10 @@ BBox query_bbox(const OcctShape& shape) {
         return BBox{xmin, ymin, zmin, xmax, ymax, zmax};
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT query_bbox: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT query_bbox: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT query_bbox: unknown C++ exception");
     }
 }
 
@@ -286,6 +339,10 @@ rust::String export_step(const OcctShape& shape) {
         return rust::String(content);
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT export_step: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT export_step: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT export_step: unknown C++ exception");
     }
 }
 
@@ -302,6 +359,10 @@ rust::String serialize_brep(const OcctShape& shape) {
         return rust::String(content);
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT serialize_brep: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT serialize_brep: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT serialize_brep: unknown C++ exception");
     }
 }
 
@@ -317,6 +378,10 @@ std::unique_ptr<OcctShape> deserialize_brep(const std::string& data) {
         return result;
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT deserialize_brep: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT deserialize_brep: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT deserialize_brep: unknown C++ exception");
     }
 }
 
@@ -410,6 +475,10 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
         return result;
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT tessellate_shape: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT tessellate_shape: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT tessellate_shape: unknown C++ exception");
     }
 }
 
