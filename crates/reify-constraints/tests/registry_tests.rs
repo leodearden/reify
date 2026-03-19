@@ -3,7 +3,7 @@
 use reify_constraints::{DimensionalSolver, SolverRegistry};
 use reify_test_support::*;
 use reify_types::{
-    AutoParam, BinOp, ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem,
+    AutoParam, ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem,
     SolveResult, Type, Value, ValueMap,
 };
 

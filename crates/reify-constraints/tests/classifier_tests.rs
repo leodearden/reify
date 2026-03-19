@@ -4,8 +4,7 @@
 use reify_constraints::ConstraintClassifier;
 use reify_test_support::*;
 use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ConstraintDomain, ContentHash, DimensionVector,
-    ResolvedFunction, Type, Value,
+    CompiledExpr, CompiledExprKind, ConstraintDomain, ContentHash, ResolvedFunction, Type, Value,
 };
 
 // --- Helper: build a geometry function call expression ---

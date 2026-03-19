@@ -2,7 +2,7 @@
 
 use reify_constraints::decompose_into_components;
 use reify_test_support::*;
-use reify_types::{AutoParam, Type, ValueMap};
+use reify_types::{AutoParam, Type};
 
 /// 3 constraints each referencing a unique auto param → 3 components.
 #[test]
