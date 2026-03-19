@@ -327,4 +327,23 @@ mod tests {
         let result = len64.pow(2);
         assert_eq!(result.0[0], Rational { num: 128, den: 1 });
     }
+
+    #[test]
+    fn root_overflow_does_not_silently_wrap() {
+        // Rational exponent {1, 64} with root(3) → {1, 192}.
+        // With i8, den 64*3=192 overflows i8::MAX.
+        let mut v = [Rational::ZERO; 9];
+        v[0] = Rational { num: 1, den: 64 };
+        let dv = DimensionVector(v);
+        let result = dv.root(3);
+        assert_eq!(result.0[0], Rational { num: 1, den: 192 });
+    }
+
+    #[test]
+    fn rational_add_beyond_i8_range() {
+        // 100 + 100 = 200, which overflows i8::MAX (127).
+        let a = Rational::new(100, 1);
+        let b = Rational::new(100, 1);
+        assert_eq!(a + b, Rational::new(200, 1));
+    }
 }
