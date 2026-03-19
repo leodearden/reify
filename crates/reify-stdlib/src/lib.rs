@@ -28,6 +28,8 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "min" => binary(args, |a, b| match (a, b) {
             (Value::Int(x), Value::Int(y)) => Value::Int(*x.min(y)),
             (Value::Real(x), Value::Real(y)) => Value::Real(x.min(*y)),
+            (Value::Scalar { si_value: x, dimension: d1 }, Value::Scalar { si_value: y, dimension: d2 })
+                if d1 == d2 => Value::Scalar { si_value: x.min(*y), dimension: *d1 },
             _ => {
                 match (a.as_f64(), b.as_f64()) {
                     (Some(x), Some(y)) => Value::Real(x.min(y)),
@@ -38,6 +40,8 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "max" => binary(args, |a, b| match (a, b) {
             (Value::Int(x), Value::Int(y)) => Value::Int(*x.max(y)),
             (Value::Real(x), Value::Real(y)) => Value::Real(x.max(*y)),
+            (Value::Scalar { si_value: x, dimension: d1 }, Value::Scalar { si_value: y, dimension: d2 })
+                if d1 == d2 => Value::Scalar { si_value: x.max(*y), dimension: *d1 },
             _ => {
                 match (a.as_f64(), b.as_f64()) {
                     (Some(x), Some(y)) => Value::Real(x.max(y)),
