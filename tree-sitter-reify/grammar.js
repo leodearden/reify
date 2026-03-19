@@ -10,6 +10,15 @@ module.exports = grammar({
     $.block_comment,
   ],
 
+  conflicts: $ => [
+    [$.param_declaration],
+    [$.let_declaration],
+    [$.constraint_declaration],
+    [$.minimize_declaration],
+    [$.maximize_declaration],
+    [$.sub_declaration],
+  ],
+
   rules: {
     source_file: $ => repeat($._declaration),
 
@@ -40,6 +49,23 @@ module.exports = grammar({
       $.sub_declaration,
       $.minimize_declaration,
       $.maximize_declaration,
+      $.guarded_block,
+    ),
+
+    // ── Where clause (guard) ────────────────────────────────
+    where_clause: $ => seq(
+      'where',
+      field('condition', $._expression),
+    ),
+
+    // ── Guarded block ─────────────────────────────────────
+    guarded_block: $ => seq(
+      'where',
+      field('condition', $._expression),
+      '{',
+      repeat($._member),
+      '}',
+      optional(seq('else', '{', repeat($._member), '}')),
     ),
 
     // ── Param ───────────────────────────────────────────────
@@ -48,6 +74,7 @@ module.exports = grammar({
       field('name', $.identifier),
       optional(seq(':', field('type', $.type_expr))),
       optional(seq('=', field('default', choice($.auto_keyword, $._expression)))),
+      optional(field('guard', $.where_clause)),
     ),
 
     // ── Auto keyword (for solver-determined params) ───────
@@ -60,6 +87,7 @@ module.exports = grammar({
       optional(seq(':', field('type', $.type_expr))),
       '=',
       field('value', $._expression),
+      optional(field('guard', $.where_clause)),
     ),
 
     // ── Constraint ──────────────────────────────────────────
@@ -68,18 +96,21 @@ module.exports = grammar({
     constraint_declaration: $ => seq(
       'constraint',
       field('expr', $._expression),
+      optional(field('guard', $.where_clause)),
     ),
 
     // ── Minimize ───────────────────────────────────────────
     minimize_declaration: $ => seq(
       'minimize',
       field('expr', $._expression),
+      optional(field('guard', $.where_clause)),
     ),
 
     // ── Maximize ──────────────────────────────────────────
     maximize_declaration: $ => seq(
       'maximize',
       field('expr', $._expression),
+      optional(field('guard', $.where_clause)),
     ),
 
     // ── Sub ─────────────────────────────────────────────────
@@ -91,6 +122,7 @@ module.exports = grammar({
       '(',
       optional($.named_argument_list),
       ')',
+      optional(field('guard', $.where_clause)),
     ),
 
     named_argument_list: $ => seq(

@@ -357,6 +357,7 @@ fn all_spans_valid() {
             MemberDecl::Sub(s) => s.span,
             MemberDecl::Minimize(m) => m.span,
             MemberDecl::Maximize(m) => m.span,
+            MemberDecl::GuardedGroup(g) => g.span,
         };
         assert!(span.start < span.end, "span should be non-empty");
     }

@@ -192,6 +192,24 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    // ── Where clause lowering ─────────────────────────────────
+
+    fn lower_where_clause(&self, node: tree_sitter::Node) -> Option<WhereClause> {
+        // Find the where_clause child node within a member declaration
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "where_clause" {
+                let condition_node = child.child_by_field_name("condition")?;
+                let condition = self.lower_expr(condition_node)?;
+                return Some(WhereClause {
+                    condition,
+                    span: self.span(child),
+                });
+            }
+        }
+        None
+    }
+
     // ── Member lowering ─────────────────────────────────────
 
     fn lower_param(&self, node: tree_sitter::Node) -> Option<ParamDecl> {
@@ -220,10 +238,13 @@ impl<'a> Lowering<'a> {
                 }
             });
 
+        let where_clause = self.lower_where_clause(node);
+
         Some(ParamDecl {
             name,
             type_expr,
             default,
+            where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -248,10 +269,13 @@ impl<'a> Lowering<'a> {
         let value_node = node.child_by_field_name("value")?;
         let value = self.lower_expr(value_node)?;
 
+        let where_clause = self.lower_where_clause(node);
+
         Some(LetDecl {
             name,
             type_expr,
             value,
+            where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -261,9 +285,12 @@ impl<'a> Lowering<'a> {
         let expr_node = node.child_by_field_name("expr")?;
         let expr = self.lower_expr(expr_node)?;
 
+        let where_clause = self.lower_where_clause(node);
+
         Some(ConstraintDecl {
             label: None,
             expr,
+            where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -273,8 +300,11 @@ impl<'a> Lowering<'a> {
         let expr_node = node.child_by_field_name("expr")?;
         let expr = self.lower_expr(expr_node)?;
 
+        let where_clause = self.lower_where_clause(node);
+
         Some(MinimizeDecl {
             expr,
+            where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -284,8 +314,11 @@ impl<'a> Lowering<'a> {
         let expr_node = node.child_by_field_name("expr")?;
         let expr = self.lower_expr(expr_node)?;
 
+        let where_clause = self.lower_where_clause(node);
+
         Some(MaximizeDecl {
             expr,
+            where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -313,10 +346,13 @@ impl<'a> Lowering<'a> {
             }
         }
 
+        let where_clause = self.lower_where_clause(node);
+
         Some(SubDecl {
             name,
             structure_name,
             args,
+            where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -568,6 +604,7 @@ mod tests {
             MemberDecl::Sub(s) => format!("sub:{}", s.name),
             MemberDecl::Minimize(_) => "minimize".into(),
             MemberDecl::Maximize(_) => "maximize".into(),
+            MemberDecl::GuardedGroup(_) => "guarded_group".into(),
         }).collect();
         assert_eq!(names, vec![
             "param:width", "param:height", "param:thickness",
@@ -730,6 +767,7 @@ mod tests {
                 MemberDecl::Sub(s) => s.span,
                 MemberDecl::Minimize(m) => m.span,
                 MemberDecl::Maximize(m) => m.span,
+                MemberDecl::GuardedGroup(g) => g.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
             assert!((span.end as usize) <= source.len(), "member {} span overflows", i);
@@ -756,6 +794,9 @@ mod tests {
                 }
                 MemberDecl::Maximize(_) => {
                     assert!(text.starts_with("maximize"), "maximize member {} text: {:?}", i, text);
+                }
+                MemberDecl::GuardedGroup(_) => {
+                    assert!(text.starts_with("where"), "guarded_group member {} text: {:?}", i, text);
                 }
             }
         }
@@ -797,6 +838,7 @@ mod tests {
                 MemberDecl::Sub(s) => (s.span, s.content_hash),
                 MemberDecl::Minimize(m) => (m.span, m.content_hash),
                 MemberDecl::Maximize(m) => (m.span, m.content_hash),
+                MemberDecl::GuardedGroup(g) => (g.span, g.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
             assert_eq!(hash, ContentHash::of_str(text), "member {} hash from source text", i);
@@ -878,6 +920,7 @@ mod tests {
                 MemberDecl::Sub(s) => (s.content_hash, s.span),
                 MemberDecl::Minimize(m) => (m.content_hash, m.span),
                 MemberDecl::Maximize(m) => (m.content_hash, m.span),
+                MemberDecl::GuardedGroup(g) => (g.content_hash, g.span),
             };
             let (hash_b, span_b) = match m_b {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
@@ -886,6 +929,7 @@ mod tests {
                 MemberDecl::Sub(s) => (s.content_hash, s.span),
                 MemberDecl::Minimize(m) => (m.content_hash, m.span),
                 MemberDecl::Maximize(m) => (m.content_hash, m.span),
+                MemberDecl::GuardedGroup(g) => (g.content_hash, g.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
             assert_eq!(span_a, span_b, "member {} span determinism", i);

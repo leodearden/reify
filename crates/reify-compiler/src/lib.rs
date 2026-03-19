@@ -804,6 +804,10 @@ fn compile_structure(
                 let compiled_expr = compile_expr(&max_decl.expr, &scope, diagnostics);
                 objective = Some(OptimizationObjective::Maximize(compiled_expr));
             }
+            reify_syntax::MemberDecl::GuardedGroup(_) => {
+                // Guard evaluation semantics are not yet implemented in the compiler.
+                // Guarded groups will be handled in a future task.
+            }
         }
     }
 

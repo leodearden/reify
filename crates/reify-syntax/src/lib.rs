@@ -36,6 +36,24 @@ pub enum MemberDecl {
     Sub(SubDecl),
     Minimize(MinimizeDecl),
     Maximize(MaximizeDecl),
+    GuardedGroup(GuardedGroupDecl),
+}
+
+/// `where condition { ...members... } else { ...members... }`
+#[derive(Debug, Clone)]
+pub struct GuardedGroupDecl {
+    pub condition: Expr,
+    pub members: Vec<MemberDecl>,
+    pub else_members: Vec<MemberDecl>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// A `where` guard condition applied to a declaration or block.
+#[derive(Debug, Clone)]
+pub struct WhereClause {
+    pub condition: Expr,
+    pub span: SourceSpan,
 }
 
 /// `param width: Scalar = 80mm`
@@ -44,6 +62,7 @@ pub struct ParamDecl {
     pub name: String,
     pub type_expr: Option<TypeExpr>,
     pub default: Option<Expr>,
+    pub where_clause: Option<WhereClause>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -54,6 +73,7 @@ pub struct LetDecl {
     pub name: String,
     pub type_expr: Option<TypeExpr>,
     pub value: Expr,
+    pub where_clause: Option<WhereClause>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -63,6 +83,7 @@ pub struct LetDecl {
 pub struct ConstraintDecl {
     pub label: Option<String>,
     pub expr: Expr,
+    pub where_clause: Option<WhereClause>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -73,6 +94,7 @@ pub struct SubDecl {
     pub name: String,
     pub structure_name: String,
     pub args: Vec<(String, Expr)>,
+    pub where_clause: Option<WhereClause>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -81,6 +103,7 @@ pub struct SubDecl {
 #[derive(Debug, Clone)]
 pub struct MinimizeDecl {
     pub expr: Expr,
+    pub where_clause: Option<WhereClause>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -89,6 +112,7 @@ pub struct MinimizeDecl {
 #[derive(Debug, Clone)]
 pub struct MaximizeDecl {
     pub expr: Expr,
+    pub where_clause: Option<WhereClause>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
