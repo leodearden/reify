@@ -17,6 +17,11 @@
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 
+// OCCT edge/wire construction
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
+#include <Geom_Circle.hxx>
+
 // OCCT transforms
 #include <BRepBuilderAPI_Transform.hxx>
 #include <gp_Trsf.hxx>
@@ -353,6 +358,26 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
         throw std::runtime_error(std::string("OCCT circular_pattern: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT circular_pattern: unknown C++ exception");
+    }
+}
+
+// --- Wire helpers ---
+
+std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height) {
+    try {
+        gp_Ax2 axes(gp_Pnt(0, 0, z_height), gp_Dir(0, 0, 1));
+        Handle(Geom_Circle) circle = new Geom_Circle(axes, radius);
+        TopoDS_Edge edge = BRepBuilderAPI_MakeEdge(circle);
+        TopoDS_Wire wire = BRepBuilderAPI_MakeWire(edge);
+        auto result = std::make_unique<OcctShape>();
+        result->shape = wire;
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_circle_wire: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_circle_wire: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_circle_wire: unknown C++ exception");
     }
 }
 

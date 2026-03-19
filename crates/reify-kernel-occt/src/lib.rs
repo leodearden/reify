@@ -490,6 +490,12 @@ impl WarmStartable for OcctKernel {
 
 #[cfg(test)]
 impl OcctKernel {
+    /// Store a raw OcctShape and return its GeometryHandleId for testing.
+    fn store_raw(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandleId {
+        let h = self.store(shape);
+        h.id
+    }
+
     /// Inject a null `UniquePtr<OcctShape>` into the shapes map for testing.
     /// This simulates a corrupted shape handle (present in map but wrapping a
     /// null C++ pointer).
@@ -1457,6 +1463,40 @@ mod tests {
                     (v - 750.0).abs() < 50.0,
                     "expected circular pattern volume ~750, got {v}"
                 );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    // --- Loft tests ---
+
+    #[test]
+    fn loft_two_circles_creates_solid() {
+        let mut kernel = OcctKernel::new();
+        // Create two circle wire profiles at different heights using the FFI helper.
+        // make_circle_wire creates a TopoDS_Wire circle profile.
+        let wire1 = ffi::ffi::make_circle_wire(10.0, 0.0)
+            .expect("make_circle_wire should work for profile 1");
+        let id1 = kernel.store_raw(wire1);
+
+        let wire2 = ffi::ffi::make_circle_wire(5.0, 30.0)
+            .expect("make_circle_wire should work for profile 2");
+        let id2 = kernel.store_raw(wire2);
+
+        // Loft through both profiles
+        let loft_h = kernel
+            .execute(&GeometryOp::Loft {
+                profiles: vec![id1, id2],
+            })
+            .unwrap();
+
+        // Query volume - should be positive (a cone-like solid)
+        let vol = kernel
+            .query(&GeometryQuery::Volume(loft_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(v > 100.0, "loft volume should be positive and significant, got {v}");
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }

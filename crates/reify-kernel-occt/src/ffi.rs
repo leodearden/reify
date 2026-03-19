@@ -93,6 +93,9 @@ pub mod ffi {
             total_angle: f64,
         ) -> Result<UniquePtr<OcctShape>>;
 
+        // --- Wire helpers ---
+        fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
+
         // --- Queries ---
         fn query_volume(shape: &OcctShape) -> Result<f64>;
         fn query_area(shape: &OcctShape) -> Result<f64>;

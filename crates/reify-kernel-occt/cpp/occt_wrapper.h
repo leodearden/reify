@@ -56,6 +56,11 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
     double ax, double ay, double az,
     uint32_t count, double total_angle);
 
+// --- Wire helpers ---
+
+/// Create a circular wire profile at a given Z height (for loft profiles).
+std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
+
 // --- Queries ---
 
 double query_volume(const OcctShape& shape);
