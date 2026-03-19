@@ -390,6 +390,7 @@ fn compile_expr(
 ///
 /// When `current_guard` is Some, references to names guarded by a different
 /// guard will produce a diagnostic error about unsafe unguarded references.
+#[allow(clippy::only_used_in_recursion)]
 fn compile_expr_guarded(
     expr: &reify_syntax::Expr,
     scope: &CompilationScope,
