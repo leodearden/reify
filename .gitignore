@@ -5,6 +5,9 @@
 **/*.rs.bk
 Cargo.lock
 .task/
+.worktrees/
+.eval-worktrees/
+data/escalations/
 node_modules/
 package.json
 package-lock.json

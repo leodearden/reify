@@ -572,14 +572,14 @@
           "25",
           "29"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-runtime"
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-18T00:00:00.000Z"
+        "updatedAt": "2026-03-18T23:00:45.837Z"
       },
       {
         "id": "32",
@@ -592,7 +592,7 @@
           "29",
           "30"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-lsp",
@@ -600,7 +600,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-18T00:00:00.000Z"
+        "updatedAt": "2026-03-18T23:26:31.448Z"
       },
       {
         "id": "33",
@@ -612,14 +612,14 @@
         "dependencies": [
           "32"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-18T00:00:00.000Z"
+        "updatedAt": "2026-03-18T22:44:15.257Z"
       },
       {
         "id": "34",
@@ -633,7 +633,7 @@
           "30",
           "32"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-eval",
@@ -642,14 +642,56 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-18T00:00:00.000Z"
+        "updatedAt": "2026-03-18T22:19:04.613Z"
+      },
+      {
+        "id": "35",
+        "title": "Ensure that the M4 user-facing interactive surface has been implemented",
+        "description": "Ensure that the currently missing M4 user-facing interactive surface has been implemented, including the LSP server and CLI entry points needed to exercise the interactive loop.",
+        "details": "This follows the M4 E2E integration task. Confirm that the repo no longer has a stub LSP crate, that the relevant CLI interactive commands are available, and that the interactive loop is reachable through supported user-facing surfaces rather than only through internal test adapters.",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [
+          "34"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-03-18T23:56:37.254Z"
+      },
+      {
+        "id": "36",
+        "title": "Ensure that forward let-binding references have been implemented correctly",
+        "description": "Ensure that forward let-binding references have been implemented correctly in cold-start evaluation and are not dependent on declaration order.",
+        "details": "Add coverage for structures where a let binding references another let declared later in the same scope, and ensure cold-start and incremental evaluation both compute the correct values.",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [
+          "34"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-03-18T23:30:52.923Z"
+      },
+      {
+        "id": "37",
+        "title": "Ensure that the currently missing architecture-critical language features have been implemented",
+        "description": "Ensure that the currently missing architecture-critical language features identified in the review have been implemented: import handling, sub-structure compilation, and stdlib function evaluation.",
+        "details": "Close the gap between the implemented subset and the architecture by ensuring imports participate in compilation, sub-structures compile into the runtime model, and ordinary stdlib/function calls no longer collapse to Undef in expression evaluation.",
+        "testStrategy": "",
+        "status": "blocked",
+        "dependencies": [
+          "34"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-03-19T00:13:29.657Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-18T14:45:48.379Z",
-      "taskCount": 34,
-      "completedCount": 30,
+      "lastModified": "2026-03-19T00:13:29.657Z",
+      "taskCount": 37,
+      "completedCount": 35,
       "tags": [
         "master"
       ]
