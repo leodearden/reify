@@ -701,6 +701,28 @@ structure Bracket {
     );
 }
 
+/// Two different source texts with the same module path should produce different
+/// CompiledModule content_hashes — content changes must be reflected in the hash.
+#[test]
+fn different_content_same_path_different_hash() {
+    let path = reify_types::ModulePath::single("bracket");
+
+    let source_a = reify_test_support::bracket_source_with_width("80mm");
+    let parsed_a = reify_syntax::parse(&source_a, path.clone());
+    assert!(parsed_a.errors.is_empty(), "parse errors: {:?}", parsed_a.errors);
+    let compiled_a = reify_compiler::compile(&parsed_a);
+
+    let source_b = reify_test_support::bracket_source_with_width("120mm");
+    let parsed_b = reify_syntax::parse(&source_b, path.clone());
+    assert!(parsed_b.errors.is_empty(), "parse errors: {:?}", parsed_b.errors);
+    let compiled_b = reify_compiler::compile(&parsed_b);
+
+    assert_ne!(
+        compiled_a.content_hash, compiled_b.content_hash,
+        "different source content should produce different module content_hashes"
+    );
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
