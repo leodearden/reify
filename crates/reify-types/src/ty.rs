@@ -13,6 +13,18 @@ pub enum Type {
     String,
     /// Dimensioned scalar (e.g., 80mm has dimension LENGTH).
     Scalar { dimension: DimensionVector },
+    /// Named enum type.
+    Enum(String),
+    /// Homogeneous list type.
+    List(Box<Type>),
+    /// Homogeneous set type.
+    Set(Box<Type>),
+    /// Homogeneous map type (key, value).
+    Map(Box<Type>, Box<Type>),
+    /// Optional type.
+    Option(Box<Type>),
+    /// Function type.
+    Function { params: Vec<Type>, return_type: Box<Type> },
 }
 
 impl Type {
@@ -130,6 +142,15 @@ impl std::fmt::Display for Type {
                 } else {
                     write!(f, "Scalar[{}]", dimension)
                 }
+            }
+            Type::Enum(name) => write!(f, "Enum({})", name),
+            Type::List(inner) => write!(f, "List<{}>", inner),
+            Type::Set(inner) => write!(f, "Set<{}>", inner),
+            Type::Map(k, v) => write!(f, "Map<{}, {}>", k, v),
+            Type::Option(inner) => write!(f, "Option<{}>", inner),
+            Type::Function { params, return_type } => {
+                let params_str: Vec<String> = params.iter().map(|p| format!("{}", p)).collect();
+                write!(f, "Function({}) -> {}", params_str.join(", "), return_type)
             }
         }
     }
