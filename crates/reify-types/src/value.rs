@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::dimension::DimensionVector;
 use crate::hash::ContentHash;
@@ -20,6 +20,8 @@ pub enum Value {
     List(Vec<Value>),
     /// Ordered set of unique values.
     Set(BTreeSet<Value>),
+    /// Ordered map from values to values.
+    Map(BTreeMap<Value, Value>),
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -120,6 +122,14 @@ impl Value {
                 }
                 h
             }
+            Value::Map(entries) => {
+                let mut h = ContentHash::of(&[9]);
+                h = h.combine(ContentHash::of(&(entries.len() as u64).to_le_bytes()));
+                for (k, v) in entries {
+                    h = h.combine(k.content_hash()).combine(v.content_hash());
+                }
+                h
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -140,6 +150,7 @@ impl PartialEq for Value {
             }
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Set(a), Value::Set(b)) => a == b,
+            (Value::Map(a), Value::Map(b)) => a == b,
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -159,7 +170,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -171,6 +182,7 @@ impl Ord for Value {
                 Value::Enum { .. } => 6,
                 Value::List(_) => 7,
                 Value::Set(_) => 8,
+                Value::Map(_) => 9,
             }
         }
 
@@ -200,6 +212,10 @@ impl Ord for Value {
             }
             (Value::List(a), Value::List(b)) => a.cmp(b),
             (Value::Set(a), Value::Set(b)) => a.cmp(b),
+            (Value::Map(a), Value::Map(b)) => {
+                // Lexicographic on (key, value) pairs in sorted key order
+                a.iter().cmp(b.iter())
+            }
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -609,7 +625,7 @@ mod tests {
         m2.insert(Value::String("a".into()), Value::Int(1));
         let mut m3 = BTreeMap::new();
         m3.insert(Value::String("a".into()), Value::Int(2));
-        assert_eq!(Value::Map(m1), Value::Map(m2));
+        assert_eq!(Value::Map(m1), Value::Map(m2.clone()));
         assert_ne!(Value::Map(m2), Value::Map(m3));
     }
 
@@ -631,7 +647,7 @@ mod tests {
         m2.insert(Value::String("a".into()), Value::Int(1));
         let mut m3 = BTreeMap::new();
         m3.insert(Value::String("a".into()), Value::Int(2));
-        assert_eq!(Value::Map(m1).content_hash(), Value::Map(m2).content_hash());
+        assert_eq!(Value::Map(m1).content_hash(), Value::Map(m2.clone()).content_hash());
         assert_ne!(Value::Map(m2).content_hash(), Value::Map(m3).content_hash());
     }
 
