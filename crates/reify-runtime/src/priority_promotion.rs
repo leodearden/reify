@@ -118,22 +118,22 @@ impl SharedPriorityPromoter {
 
     /// Register an in-flight task with its initial priority.
     pub fn register(&self, node_id: NodeId, priority: Priority) {
-        self.inner.lock().unwrap().register(node_id, priority);
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).register(node_id, priority);
     }
 
     /// Get the current effective priority for a node.
     pub fn effective_priority(&self, node_id: &NodeId) -> Option<Priority> {
-        self.inner.lock().unwrap().effective_priority(node_id)
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).effective_priority(node_id)
     }
 
     /// Promote a node to a higher priority (lower enum value).
     pub fn promote(&self, node_id: &NodeId, new_priority: Priority) {
-        self.inner.lock().unwrap().promote(node_id, new_priority);
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).promote(node_id, new_priority);
     }
 
     /// Remove a node from the promoter.
     pub fn remove(&self, node_id: &NodeId) {
-        self.inner.lock().unwrap().remove(node_id);
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).remove(node_id);
     }
 
     /// Promote all in-flight dependencies of a demanded node transitively.
@@ -145,7 +145,7 @@ impl SharedPriorityPromoter {
     ) {
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .promote_for_demand(demanded_node, demand_priority, dependency_map);
     }
 }
