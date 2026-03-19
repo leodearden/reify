@@ -7,6 +7,7 @@ module.exports = grammar({
   extras: $ => [
     /\s/,
     $.line_comment,
+    $.block_comment,
   ],
 
   rules: {
@@ -200,5 +201,11 @@ module.exports = grammar({
 
     // ── Comments ────────────────────────────────────────────
     line_comment: $ => token(seq('//', /.*/)),
+
+    block_comment: $ => token(seq(
+      '/*',
+      /[^*]*\*+([^/*][^*]*\*+)*/,
+      '/',
+    )),
   },
 });
