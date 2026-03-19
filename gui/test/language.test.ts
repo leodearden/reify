@@ -59,6 +59,13 @@ describe('syntax highlighting', () => {
     expect(widthSpan).toBeDefined();
     expect(widthSpan!.classes).toContain('variableName');
   });
+
+  it('highlights M5 reserved keyword in expression context', () => {
+    const spans = getHighlightSpans('structure S { let x = trait }');
+    const traitSpan = spans.find(s => s.text === 'trait');
+    expect(traitSpan).toBeDefined();
+    expect(traitSpan!.classes).toContain('keyword');
+  });
 });
 
 describe('bracket matching', () => {

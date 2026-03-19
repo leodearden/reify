@@ -154,6 +154,7 @@ primaryExpression {
   FunctionCall |
   MemberAccess |
   Identifier |
+  ReservedWord |
   ParenthesizedExpression
 }
 
@@ -189,6 +190,18 @@ ArithOp<expr> { expr }
 CompareOp<expr> { expr }
 
 // ── M5 Reserved Keywords (forward-compat highlighting) ──
+// These use @specialize to replace Identifier with ReservedWord,
+// causing parse errors when used as identifiers (correct reserved-word behavior).
+// They parse correctly in expression context via the primaryExpression rule.
+ReservedWord {
+  @specialize[@name=ReservedWord]<Identifier,
+    "trait" | "fn" | "enum" | "match" | "connect" | "chain" |
+    "occurrence" | "purpose" | "field" | "pub" | "def" | "port" |
+    "type" | "module" | "unit" | "forall" | "exists" | "implies" |
+    "and" | "or" | "not" | "in" | "out" | "meta" | "self" |
+    "undef" | "some" | "none" | "set" | "map" | "as">
+}
+
 @external propSource reifyHighlighting from "./highlight"
 
 @precedence {
