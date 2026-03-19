@@ -1,0 +1,175 @@
+{
+  "task_id": "59",
+  "title": "Guard (where) \u2014 grammar, parser",
+  "files": [
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/guard_tests.rs",
+    "crates/reify-syntax/tests/boundary1_producer.rs"
+  ],
+  "modules": [
+    "crates/reify-syntax"
+  ],
+  "analysis": "Thorough codebase exploration reveals the task is partially complete. The tree-sitter grammar already defines both where_clause (per-declaration postfix guard, line 56) and guarded_block (block-level guard with optional else, line 62) rules in grammar.js. The generated parser.c (18 references to guarded_block), grammar.json, and node-types.json are all up to date. Per-declaration where clauses are fully implemented: WhereClause struct exists in lib.rs, all 6 declaration types have where_clause: Option<WhereClause> fields, and the lowering in ts_parser.rs correctly extracts where clauses via lower_where_clause (lines 197-211). Two guard tests already exist and pass: param_with_where_clause and bracket_source_no_guards.\n\nWhat remains is the block-level guarded group feature: (1) AST: Add GuardedGroupDecl struct and MemberDecl::GuardedGroup variant to lib.rs. (2) Lowering: Add lower_guarded_block method and handle guarded_block nodes in lower_structure. (3) Fix exhaustive match arms in ts_parser.rs internal tests (4 locations) and boundary1_producer.rs (1 location). (4) Tests: Block guard, guard with else, nested guards, complex guard expressions, additional per-declaration tests.\n\nThe compiler (reify-compiler/src/lib.rs line 807) already has a forward-looking MemberDecl::GuardedGroup(_) => {} stub. The LSP uses wildcard matches. No grammar, parser.c, fixtures.rs, or compiler changes needed.\n\nKey challenge: The guarded_block grammar uses two positional repeat($._member) groups without field names. Lowering must track position relative to the anonymous else keyword to separate main vs else members. The member dispatch logic should be refactored into a reusable lower_member_node helper for recursive guarded block nesting.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add GuardedGroupDecl struct to lib.rs (after WhereClause at line ~46) with fields: condition: Expr, members: Vec<MemberDecl>, else_members: Vec<MemberDecl>, span: SourceSpan, content_hash: ContentHash. Add #[derive(Debug, Clone)]. Add MemberDecl::GuardedGroup(GuardedGroupDecl) variant to the MemberDecl enum (after Maximize at line ~38). Required before any new tests can compile.",
+      "status": "done",
+      "commit": "66866d6",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Fix exhaustive match arms broken by new GuardedGroup variant. Five locations in crates/reify-syntax: (1) ts_parser.rs ts_parse_produces_correct_structure test ~line 600: add MemberDecl::GuardedGroup(_) => guarded.into(). (2) ts_parser.rs spans_are_valid test ~line 762: add MemberDecl::GuardedGroup(g) => g.span. (3) ts_parser.rs content_hashes test ~line 829: add MemberDecl::GuardedGroup(g) => (g.span, g.content_hash). (4) ts_parser.rs parse_deterministic test ~lines 910+918: add MemberDecl::GuardedGroup(g) => (g.content_hash, g.span) to both arms. (5) boundary1_producer.rs ~line 353: add MemberDecl::GuardedGroup(g) => g.span.",
+      "status": "done",
+      "commit": "66866d6",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test parse_basic_guarded_block in guard_tests.rs: parse 'structure S { where needs_cooling { param fan_size : Scalar = 50mm } }'. Assert: no parse errors, members.len()==1, members[0] matches MemberDecl::GuardedGroup(g) with g.condition being ExprKind::Ident(needs_cooling), g.members.len()==1 (ParamDecl fan_size), g.else_members.is_empty(). Fails because lower_structure doesn't handle guarded_block nodes yet.",
+      "status": "done",
+      "commit": "528bc6e"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Implement guarded block lowering in ts_parser.rs. (1) Extract member dispatch from lower_structure match block (lines 113-183) into lower_member_node(&mut self, child: Node) -> Option<MemberDecl> handling param/let/constraint/sub/minimize/maximize/guarded_block/ERROR with is_error checks. (2) Refactor lower_structure to call lower_member_node. (3) Add lower_guarded_block(&mut self, node: Node) -> Option<GuardedGroupDecl>: extract condition via child_by_field_name(condition) + lower_expr, iterate children with boolean in_else flag toggled on anonymous child with text else, collect members via lower_member_node into members or else_members, construct GuardedGroupDecl with span and content_hash.",
+      "status": "done",
+      "commit": "44d2310"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write test parse_guarded_block_with_else in guard_tests.rs: parse 'structure S { where cond { param a : Scalar = 1mm } else { param b : Scalar = 2mm } }'. Assert: condition is Ident(cond), members has 1 ParamDecl a, else_members has 1 ParamDecl b.",
+      "status": "done",
+      "commit": "528bc6e"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "If else test fails, debug lower_guarded_block else delimiter detection. Verify tree-sitter CST structure by inspecting child node kinds/text. The else keyword should appear as anonymous node. Adjust detection logic if needed (check node kind vs text comparison).",
+      "status": "done",
+      "commit": "44d2310"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test parse_nested_guarded_blocks in guard_tests.rs: parse 'structure S { where a { where b { param x : Scalar } } }'. Assert: outer GuardedGroupDecl has condition Ident(a), members[0] is GuardedGroup with condition Ident(b), inner members[0] is ParamDecl x.",
+      "status": "done",
+      "commit": "528bc6e"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Verify nested guards pass. Should already work via recursive lower_member_node dispatch. If failing, check guarded_block case in lower_member_node correctly invokes lower_guarded_block.",
+      "status": "done",
+      "commit": "44d2310"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test parse_guard_complex_expression in guard_tests.rs: (1) Per-declaration: 'param fan : Scalar = 50mm where x > 5mm && active', assert condition is BinOp(&&, BinOp(>, Ident(x), QuantityLiteral(5,mm)), Ident(active)). (2) Block-level: 'where needs_cooling || forced { param fan : Scalar = 50mm }', assert condition is BinOp(||, Ident(needs_cooling), Ident(forced)).",
+      "status": "done",
+      "commit": "528bc6e"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Verify complex guard expressions pass. Should work since condition uses $._expression supporting all operators. If failing, investigate expression boundary parsing.",
+      "status": "done",
+      "commit": "44d2310"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write additional per-declaration where tests in guard_tests.rs: (1) let_with_where_clause: 'let y = x * 2 where active' -> LetDecl.where_clause Ident(active). (2) constraint_with_where_clause: 'constraint x > 5mm where enabled' -> ConstraintDecl.where_clause Ident(enabled). (3) sub_with_where_clause: 'sub hole = Hole(diameter: 6mm) where needs_hole' -> SubDecl.where_clause Ident(needs_hole). Should pass immediately.",
+      "status": "done",
+      "commit": "528bc6e"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Verify per-declaration where tests pass. These exercise existing lowering (lower_where_clause called by lower_let, lower_constraint, lower_sub). If any fail, investigate.",
+      "status": "done",
+      "commit": "44d2310"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write test guard_free_declarations_backward_compat in guard_tests.rs: parse bracket_source(), verify no GuardedGroup variants in members, all where_clause fields are None, member count unchanged at 10, no errors.",
+      "status": "done",
+      "commit": "528bc6e"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Run cargo test -p reify-syntax then cargo test --workspace. Fix any remaining issues. Compiler with GuardedGroup stub and LSP with wildcards should pass cleanly.",
+      "status": "done",
+      "commit": "44d2310"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Grammar and generated parser are already complete - no grammar changes needed",
+      "rationale": "The tree-sitter grammar already defines both where_clause (line 56) and guarded_block (line 62) rules. parser.c was regenerated in prior commit 66866d6. The grammar handles ambiguity correctly: where expr followed by { parses as guarded_block; at end of declaration parses as where_clause."
+    },
+    {
+      "decision": "Refactor member dispatch into lower_member_node helper for reuse",
+      "rationale": "lower_structure has a monolithic match block for all member kinds. Guarded blocks need identical dispatch for nested members including recursive guarded blocks. Extracting lower_member_node eliminates duplication and enables clean recursion."
+    },
+    {
+      "decision": "Use positional iteration with else delimiter detection for main vs else member separation",
+      "rationale": "The guarded_block grammar uses two unnamed repeat($._member) groups without field names. Tree-sitter places all member children as direct children. The else keyword appears as anonymous child between groups. Iterate children toggling a boolean on else to partition into main and else vectors."
+    },
+    {
+      "decision": "Include content_hash on GuardedGroupDecl",
+      "rationale": "All 6 existing declaration types carry content_hash for incremental evaluation. GuardedGroupDecl follows the same pattern for consistency."
+    },
+    {
+      "decision": "Scope limited to crates/reify-syntax only",
+      "rationale": "Grammar is complete. Compiler has forward-looking GuardedGroup stub (line 807). LSP uses wildcards. Only reify-syntax needs changes: AST, lowering, tests."
+    },
+    {
+      "decision": "Per-declaration where clauses already support all 6 member types",
+      "rationale": "Existing implementation added where_clause to all 6 types (not just the 4 in task spec). Already done and tested. Plan preserves this."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Existing lower_where_clause method",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 197-211",
+      "how": "Already implemented for all 6 lowering functions. No changes needed. Guarded block uses direct child_by_field_name(condition) since it has its own condition field."
+    },
+    {
+      "what": "lower_expr recursive expression lowering",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 371-403",
+      "how": "Reuse for guarded_block condition. Supports all expression types needed for guard conditions."
+    },
+    {
+      "what": "Member dispatch pattern from lower_structure",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 113-183",
+      "how": "Extract into lower_member_node. Add guarded_block case. Reuse for both structure body and nested guarded block members."
+    },
+    {
+      "what": "span() and content_hash() helpers",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 53-60",
+      "how": "Reuse for GuardedGroupDecl construction, same pattern as all existing AST nodes."
+    },
+    {
+      "what": "parse_members test helper",
+      "where": "crates/reify-syntax/tests/guard_tests.rs lines 9-16",
+      "how": "Reuse for all new guard tests to parse source and extract members."
+    },
+    {
+      "what": "Test assertion patterns",
+      "where": "guard_tests.rs and ts_parser.rs mod tests",
+      "how": "Follow: parse source -> extract members -> match MemberDecl variant -> assert fields."
+    }
+  ],
+  "_schema_version": 1
+}
