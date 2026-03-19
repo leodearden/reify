@@ -229,3 +229,20 @@ fn engine_is_initialized_after_eval() {
     engine.eval(&module);
     assert!(engine.is_initialized());
 }
+
+/// edit_param before eval() returns Err(EngineError::NotInitialized).
+#[test]
+fn edit_param_before_eval_returns_error() {
+    use reify_types::ValueCellId;
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.edit_param(ValueCellId::new("S", "x"), mm(10.0));
+    assert!(result.is_err(), "edit_param before eval should return Err");
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, reify_eval::EngineError::NotInitialized),
+        "error should be NotInitialized, got {:?}",
+        err,
+    );
+}
