@@ -20,6 +20,11 @@ const FEASIBILITY_THRESHOLD: f64 = 1e-12;
 /// to steer the solution.
 const PENALTY_WEIGHT: f64 = 1e6;
 
+/// Penalty substituted when the objective expression evaluates to a non-numeric
+/// value (Undef, NaN, Inf). Large enough to repel Nelder-Mead from non-numeric
+/// regions, but not so large as to cause overflow when added to other penalties.
+const UNDEF_OBJECTIVE_PENALTY: f64 = f64::MAX / 2.0;
+
 /// Derivative-free constraint solver using Nelder-Mead optimization.
 ///
 /// Solves for auto parameters by minimizing a penalty function that
@@ -291,14 +296,17 @@ struct ConstraintCostFunction<'a> {
 
 /// Evaluate an optimization objective expression, returning its f64 value.
 /// For Minimize, returns the value directly. For Maximize, negates it.
-fn eval_objective(objective: &OptimizationObjective, values: &ValueMap) -> f64 {
+/// Returns None if the expression evaluates to a non-numeric value (Undef)
+/// or a non-finite float (NaN, Inf).
+fn eval_objective(objective: &OptimizationObjective, values: &ValueMap) -> Option<f64> {
     match objective {
-        OptimizationObjective::Minimize(expr) => {
-            reify_expr::eval_expr(expr, values).as_f64().unwrap_or(0.0)
-        }
-        OptimizationObjective::Maximize(expr) => {
-            -reify_expr::eval_expr(expr, values).as_f64().unwrap_or(0.0)
-        }
+        OptimizationObjective::Minimize(expr) => reify_expr::eval_expr(expr, values)
+            .as_f64()
+            .filter(|v| v.is_finite()),
+        OptimizationObjective::Maximize(expr) => reify_expr::eval_expr(expr, values)
+            .as_f64()
+            .filter(|v| v.is_finite())
+            .map(|v| -v),
     }
 }
 
@@ -323,9 +331,9 @@ impl CostFunction for ConstraintCostFunction<'_> {
         let cost = match self.objective {
             Some(obj) => {
                 // Combine objective with penalty for constraint violations and bounds
-                eval_objective(obj, &values)
-                    + PENALTY_WEIGHT * violation
-                    + PENALTY_WEIGHT * bound_penalty
+                let obj_value = eval_objective(obj, &values)
+                    .unwrap_or(UNDEF_OBJECTIVE_PENALTY);
+                obj_value + PENALTY_WEIGHT * violation + PENALTY_WEIGHT * bound_penalty
             }
             None => {
                 // Pure feasibility: minimize violations + bound penalty
@@ -476,6 +484,17 @@ impl ConstraintSolver for DimensionalSolver {
                     ),
                     labels: vec![],
                 }],
+            };
+        }
+
+        // Post-solve objective validation: if the objective is still non-numeric
+        // at the solution point, report NoProgress rather than Solved.
+        if let Some(obj) = &problem.objective
+            && eval_objective(obj, &final_values).is_none()
+        {
+            return SolveResult::NoProgress {
+                reason: "objective expression evaluated to undefined at solution point"
+                    .to_string(),
             };
         }
 
@@ -1472,6 +1491,57 @@ mod tests {
             cost_out > cost_in,
             "out-of-bounds param should have higher cost (in={:.2e}, out={:.2e})",
             cost_in, cost_out
+        );
+    }
+
+    #[test]
+    fn cost_function_penalizes_undef_objective() {
+        use super::ConstraintCostFunction;
+        use argmin::core::CostFunction;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector,
+            OptimizationObjective, Type, Value, ValueCellId,
+        };
+
+        let x_id = ValueCellId::new("Part", "x");
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+
+        // Trivially satisfied constraint: x > 0
+        let zero_scalar = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let constraint = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), zero_scalar, Type::Bool);
+
+        // Objective: minimize(x / 0) — always Undef
+        let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let div_by_zero = CompiledExpr::binop(BinOp::Div, x_ref, zero_int, Type::Real);
+        let objective = Some(OptimizationObjective::Minimize(div_by_zero));
+
+        let auto_params = vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 0.010)),
+        }];
+        let constraints = vec![(ConstraintNodeId::new("Part", 0), constraint)];
+        let base_values = ValueMap::new();
+
+        let cost_fn = ConstraintCostFunction {
+            auto_params: &auto_params,
+            constraints: &constraints,
+            base_values: &base_values,
+            objective: &objective,
+        };
+
+        // x=0.005 is in bounds and satisfies x > 0, but objective is Undef
+        let cost = cost_fn.cost(&vec![0.005]).unwrap();
+        assert!(
+            cost > 1e10,
+            "cost should be very large for Undef objective, got {:.2e}",
+            cost
         );
     }
 
