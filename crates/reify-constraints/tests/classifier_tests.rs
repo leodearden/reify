@@ -85,3 +85,54 @@ fn classify_geometry_function_as_geometric() {
     let domain = ConstraintClassifier::classify(&expr);
     assert_eq!(domain, ConstraintDomain::Geometric);
 }
+
+// --- Regression tests for type_system_inconsistency (String misclassification) ---
+
+/// String-typed ValueRefs must NOT set the numeric domain flag.
+///
+/// Type::is_numeric() explicitly excludes String (only Int|Real|Scalar are numeric),
+/// but the classifier's ValueRef arm incorrectly includes Type::String in the numeric
+/// match arm. A constraint with only String-typed ValueRefs should NOT set has_numeric.
+///
+/// With no domain flags set, into_domain() returns Dimensional by default, so a
+/// String-only expression still returns Dimensional. The observable bug manifests when
+/// String is mixed with Bool (see classify_string_does_not_contribute_numeric_flag).
+/// This test verifies String-only expressions produce Dimensional (the no-flags default)
+/// rather than CrossDomain or any other domain.
+#[test]
+fn classify_string_valueref_is_not_numeric() {
+    // Two String-typed ValueRefs compared via eq — no numeric or logical content.
+    let name_a = value_ref_typed("Part", "name", Type::String);
+    let name_b = value_ref_typed("Part", "label", Type::String);
+    let expr = eq(name_a, name_b);
+
+    let domain = ConstraintClassifier::classify(&expr);
+    // Both before and after the fix, String-only returns Dimensional (the default).
+    // The bug is that String incorrectly sets has_numeric; after fix, no flags are set
+    // but both paths yield Dimensional. The observable difference is tested below.
+    assert_eq!(domain, ConstraintDomain::Dimensional);
+}
+
+/// String-typed ValueRefs must NOT contribute the numeric flag.
+///
+/// When a String-typed ValueRef is combined with a Bool-typed ValueRef, the result
+/// should be Logical (only Bool contributes a domain flag). The current buggy code
+/// sets has_numeric=true for String, producing CrossDomain instead.
+#[test]
+fn classify_string_does_not_contribute_numeric_flag() {
+    // String-typed ValueRef — should NOT set has_numeric
+    let name = value_ref_typed("Part", "name", Type::String);
+    // Bool-typed ValueRef — sets has_logical
+    let flag = value_ref_typed("Part", "active", Type::Bool);
+    // Combine via and() — only Bool should contribute a domain flag
+    let expr = and(name, flag);
+
+    let domain = ConstraintClassifier::classify(&expr);
+    // Expected: Logical (only has_logical set)
+    // Buggy:   CrossDomain (has_numeric from String + has_logical from Bool)
+    assert_eq!(
+        domain,
+        ConstraintDomain::Logical,
+        "String ValueRef should not contribute numeric flag; only Bool's logical flag should be set"
+    );
+}
