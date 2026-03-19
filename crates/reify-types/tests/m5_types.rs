@@ -304,6 +304,29 @@ fn all_m5_types_exported_from_crate_root() {
     let _ = reify_types::PortDirection::Bidi;
 }
 
+// --- Eq bound tests (step-8) ---
+
+fn assert_eq_bound<T: Eq>(_: &T) {}
+
+#[test]
+fn trait_member_satisfies_eq() {
+    let member = reify_types::TraitMember::Constraint {
+        expr: "x > 0".into(),
+    };
+    assert_eq_bound(&member);
+}
+
+#[test]
+fn trait_def_satisfies_eq() {
+    let def = reify_types::TraitDef {
+        name: "Test".into(),
+        type_params: vec![],
+        refinements: vec![],
+        members: vec![],
+    };
+    assert_eq_bound(&def);
+}
+
 // --- Display integration tests (step-6) ---
 
 #[test]
