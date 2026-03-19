@@ -381,15 +381,19 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
     }
 
     // Try quantity literals (number + unit suffix)
+    // Units ordered by descending suffix length — longest match first.
+    // debug_assert! enforces this invariant.
     let unit_table: &[(&str, f64, DimensionVector)] = &[
+        ("deg", std::f64::consts::PI / 180.0, DimensionVector::ANGLE),
+        ("rad", 1.0, DimensionVector::ANGLE),
         ("mm", 0.001, DimensionVector::LENGTH),
         ("cm", 0.01, DimensionVector::LENGTH),
         ("m", 1.0, DimensionVector::LENGTH),
-        ("deg", std::f64::consts::PI / 180.0, DimensionVector::ANGLE),
-        ("rad", 1.0, DimensionVector::ANGLE),
     ];
-
-    // Try units from longest suffix to shortest to avoid "m" matching before "mm"/"cm"
+    debug_assert!(
+        unit_table.windows(2).all(|w| w[0].0.len() >= w[1].0.len()),
+        "unit_table must be sorted by descending suffix length"
+    );
     for &(unit, scale, dimension) in unit_table {
         if let Some(num_str) = s.strip_suffix(unit) {
             let num_str = num_str.trim();
