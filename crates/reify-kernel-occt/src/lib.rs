@@ -339,10 +339,17 @@ impl OcctKernel {
                 ffi::ffi::thicken_shape(shape, off)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            GeometryOp::Shell { .. } => {
-                return Err(GeometryError::OperationFailed(
-                    "Shell not yet implemented".into(),
-                ));
+            GeometryOp::Shell {
+                target,
+                thickness,
+                faces_to_remove,
+            } => {
+                let shape = self.get_shape(*target)?;
+                let th = extract_f64(thickness)?;
+                let face_indices: Vec<u32> =
+                    faces_to_remove.iter().map(|&i| i as u32).collect();
+                ffi::ffi::shell_shape(shape, th, &face_indices)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
         };
         Ok(self.store(shape))
