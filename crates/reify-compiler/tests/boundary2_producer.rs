@@ -1227,3 +1227,48 @@ fn scalar_plus_int_type_error() {
         compiled.diagnostics
     );
 }
+
+/// Forward reference: structure declared BEFORE the enum it references.
+/// Order-independent declarations require all enums to be available regardless of source order.
+#[test]
+fn compile_enum_forward_reference_order_independent() {
+    let source = r#"structure S { let d = Direction.In }
+enum Direction { In, Out, Bidi }"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_fwd"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // No error diagnostics expected — enum should be resolved despite forward reference
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no error diagnostics for forward enum ref, got: {:?}", errors);
+
+    let template = &compiled.templates[0];
+    let d_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d")
+        .expect("should have 'd' value cell");
+
+    let d_expr = d_cell.default_expr.as_ref().expect("let should have expr");
+
+    match &d_expr.kind {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
+            type_name,
+            variant,
+        }) => {
+            assert_eq!(type_name, "Direction");
+            assert_eq!(variant, "In");
+        }
+        other => panic!("expected Literal(Enum), got {:?}", other),
+    }
+
+    assert_eq!(
+        d_expr.result_type,
+        reify_types::Type::Enum("Direction".into())
+    );
+}
