@@ -555,6 +555,64 @@ mod tests {
         let _ = pos.cmp(&neg);
     }
 
+    // --- List tests (step-5) ---
+
+    #[test]
+    fn value_list_equality() {
+        let a = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        let b = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        let c = Value::List(vec![Value::Int(1), Value::Int(3)]);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn value_list_empty() {
+        let empty = Value::List(vec![]);
+        let non_empty = Value::List(vec![Value::Int(1)]);
+        assert_ne!(empty, non_empty);
+        assert_eq!(empty, Value::List(vec![]));
+    }
+
+    #[test]
+    fn value_list_nested() {
+        let nested = Value::List(vec![
+            Value::List(vec![Value::Int(1)]),
+            Value::List(vec![Value::Int(2)]),
+        ]);
+        let nested2 = Value::List(vec![
+            Value::List(vec![Value::Int(1)]),
+            Value::List(vec![Value::Int(2)]),
+        ]);
+        assert_eq!(nested, nested2);
+    }
+
+    #[test]
+    fn value_list_ordering() {
+        // Lexicographic ordering
+        let a = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        let b = Value::List(vec![Value::Int(1), Value::Int(3)]);
+        assert!(a < b);
+
+        // Shorter list < longer list with same prefix
+        let short = Value::List(vec![Value::Int(1)]);
+        let long = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        assert!(short < long);
+
+        // List sorts after Enum
+        let enum_val = Value::Enum { type_name: "Z".into(), variant: "Z".into() };
+        assert!(enum_val < Value::List(vec![]));
+    }
+
+    #[test]
+    fn value_list_content_hash() {
+        let a = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        let b = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        let c = Value::List(vec![Value::Int(2), Value::Int(1)]);
+        assert_eq!(a.content_hash(), b.content_hash());
+        assert_ne!(a.content_hash(), c.content_hash());
+    }
+
     // --- Enum tests (step-3) ---
 
     #[test]
