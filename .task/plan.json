@@ -169,57 +169,57 @@
       "id": "step-17",
       "type": "test",
       "description": "Write failing test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_user_function_call` — parse source `\"fn double(x: Real) -> Real { x + x }\\nstructure S { let v = double(3) }\"`, compile, assert: the 'v' value cell's default_expr.kind is `CompiledExprKind::UserFunctionCall { function_name: \"double\", args }` with args.len() == 1, and result_type == Type::Real. No error diagnostics. Fails because compile_expr currently emits stdlib FunctionCall for all function calls.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "159f934"
     },
     {
       "id": "step-18",
       "type": "impl",
       "description": "Add overload resolution to compile_expr's FunctionCall arm in crates/reify-compiler/src/lib.rs:\n(a) Thread compiled functions list (or a function registry) through compile_structure → compile_expr. Add `functions: &[CompiledFunction]` parameter to compile_expr (or pass via a new CompilationContext struct).\n(b) In the FunctionCall match arm, after compiling args: first check user-defined functions for a match (name matches AND arg count matches AND each compiled_arg.result_type matches the function param type). If exactly one user fn matches, emit `CompiledExprKind::UserFunctionCall { function_name, args }` with result_type from the matching function's return_type and an appropriate content_hash.\n(c) If no user fn matches, fall through to existing stdlib FunctionCall logic.\n(d) If multiple user fns match (ambiguous overload), emit a diagnostic.\nStep-17 test now passes.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "29fe982"
     },
     {
       "id": "step-19",
       "type": "test",
       "description": "Write test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_overload_resolution_picks_correct` — parse source with two overloaded user fns and a call that matches one: `\"fn process(x: Real) -> Real { x + 1 }\\nfn process(x: Int) -> Int { x }\\nstructure S { let a = process(3.14) }\"`, compile, assert: 'a' value cell expr is UserFunctionCall with function_name \"process\", result_type == Type::Real (matched the Real overload since 3.14 is Real). No error diagnostics.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "01c48e1"
     },
     {
       "id": "step-20",
       "type": "impl",
       "description": "Verify step-19 test passes with step-18 implementation. The overload resolution should match based on arg types: 3.14 compiles to Real, so it matches `process(x: Real)`. If it fails, check the arg type inference (3.14 should be Real not Int) and the type matching logic.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "01c48e1"
     },
     {
       "id": "step-21",
       "type": "test",
       "description": "Write test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_function_forward_reference` — parse source where a structure calls a function declared AFTER it: `\"structure S { let v = double(3) }\\nfn double(x: Real) -> Real { x + x }\"`, compile, assert: 'v' value cell expr is UserFunctionCall, no error diagnostics. This validates order-independent declarations. May fail if functions aren't collected in a pre-pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "2d0cd85"
     },
     {
       "id": "step-22",
       "type": "impl",
       "description": "Ensure forward references work by using a two-pass approach in compile():\n(a) Pre-pass: compile ALL function declarations first (before processing structures), so the full function registry is available when compiling structure members.\n(b) This mirrors the existing two-pass pattern for enum_defs.\nIf step-21 already passes because compile() processes all declarations in order and functions are compiled before structures in step-10's implementation, no changes needed. Otherwise, reorder to pre-compile functions.\nStep-21 test now passes.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "2d0cd85"
     },
     {
       "id": "step-23",
       "type": "test",
       "description": "Write E2E regression test in crates/reify-compiler/tests/boundary2_producer.rs: `e2e_function_with_structure_unchanged` — parse the existing bracket_source(), compile, verify all existing assertions still hold: 6 value cells, 3 constraints, 1 realization, no error diagnostics. Also verify compiled.functions.is_empty() (bracket has no fn declarations). This confirms backward compatibility.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "3205e00"
     },
     {
       "id": "step-24",
       "type": "impl",
       "description": "Verify step-23 passes. Run full `cargo test --workspace` to confirm no regressions across all crates. Fix any issues found.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "3205e00"
     }
   ],
   "design_decisions": [
