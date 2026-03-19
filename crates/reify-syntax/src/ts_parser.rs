@@ -1246,6 +1246,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_enum_missing_name_is_error() {
+        let source = "enum { }";
+        let module = parse(source, reify_types::ModulePath::single("test_enum_err"));
+        assert!(
+            !module.errors.is_empty(),
+            "expected parse errors for malformed enum"
+        );
+    }
+
+    #[test]
     fn tree_sitter_parses_bracket_source_without_errors() {
         let source = reify_test_support::bracket_source();
         let mut parser = tree_sitter::Parser::new();
