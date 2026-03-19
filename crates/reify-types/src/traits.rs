@@ -86,6 +86,19 @@ pub enum TraitMember {
     },
 }
 
+/// A complete trait definition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitDef {
+    /// The name of the trait.
+    pub name: String,
+    /// Type parameters on the trait.
+    pub type_params: Vec<TypeParam>,
+    /// Names of traits this refines (supertrait names).
+    pub refinements: Vec<String>,
+    /// Members declared in this trait.
+    pub members: Vec<TraitMember>,
+}
+
 impl EnumDef {
     /// Check if this enum contains a variant with the given name.
     pub fn contains_variant(&self, name: &str) -> bool {
