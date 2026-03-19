@@ -233,3 +233,25 @@ fn sub_component_params_appear_in_eval_result() {
         f
     );
 }
+
+/// Sub-component child let-bindings are evaluated and appear in the result.
+#[test]
+fn sub_component_child_lets_evaluated() {
+    use reify_types::ValueCellId;
+
+    let module = parent_child_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Parent.rib.half_h should be height / 2 = 40mm / 2 = 20mm = 0.02 SI
+    let scoped_id = ValueCellId::new("Parent.rib", "half_h");
+    let val = result.values.get(&scoped_id)
+        .expect("Parent.rib.half_h should be in eval result values");
+    let f = val.as_f64().expect("should be numeric");
+    assert!(
+        (f - 0.02).abs() < 1e-10,
+        "Parent.rib.half_h should be ~0.02 SI (20mm), got {}",
+        f
+    );
+}
