@@ -100,4 +100,53 @@ describe('bridge event listeners', () => {
 
     expect(mockListen).toHaveBeenCalledWith('evaluation-status', expect.any(Function));
   });
+
+  it('onMeshUpdate converts wire-format number[] arrays to typed arrays', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      // Simulate Tauri delivering raw JSON wire format (number[] arrays)
+      const rawPayload = {
+        entity_path: 'Bracket.body',
+        vertices: [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+        indices: [0, 1, 2],
+        normals: [0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+      };
+      (handler as (event: { payload: unknown }) => void)({ payload: rawPayload });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onMeshUpdate(callback);
+
+    const received = callback.mock.calls[0][0];
+    expect(received.entity_path).toBe('Bracket.body');
+    expect(received.vertices).toBeInstanceOf(Float32Array);
+    expect(received.indices).toBeInstanceOf(Uint32Array);
+    expect(received.normals).toBeInstanceOf(Float32Array);
+    expect(Array.from(received.vertices)).toEqual([0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    expect(Array.from(received.indices)).toEqual([0, 1, 2]);
+    expect(Array.from(received.normals)).toEqual([0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+  });
+
+  it('onMeshUpdate converts null normals correctly', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      const rawPayload = {
+        entity_path: 'Mount.body',
+        vertices: [1.0, 2.0, 3.0],
+        indices: [0, 1, 2],
+        normals: null,
+      };
+      (handler as (event: { payload: unknown }) => void)({ payload: rawPayload });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onMeshUpdate(callback);
+
+    const received = callback.mock.calls[0][0];
+    expect(received.vertices).toBeInstanceOf(Float32Array);
+    expect(received.indices).toBeInstanceOf(Uint32Array);
+    expect(received.normals).toBeNull();
+  });
 });
