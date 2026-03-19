@@ -1,130 +1,122 @@
 {
-  "task_id": "40",
-  "title": "Fix CompiledModule content hash to include actual content",
-  "modules": ["crates/reify-compiler", "crates/reify-test-support"],
-  "analysis": "The bug is in two locations: (1) compile() at lib.rs:612 computes CompiledModule content_hash from only the module path string, and (2) compile_structure() at lib.rs:803 computes TopologyTemplate content_hash from only the entity name. The same bug is replicated in the test-support builders (TopologyTemplateBuilder::build at builders.rs:259 and CompiledModuleBuilder::build at builders.rs:327). The fix uses ContentHash::combine/combine_all to fold in actual content: for TopologyTemplate, combine the name hash with hashes from all value cell default expressions, constraint expressions, and sub_component content_hashes; for CompiledModule, combine the path hash with all template content_hashes and import path hashes. The existing content_hash fields on CompiledExpr and SubComponentDecl already carry correct per-item hashes, so we just need to aggregate them. Tests use reify_syntax::parse() to compile real source text, then compare hashes across different inputs. No existing tests hardcode specific hash values from compile() — the boundary1_consumer tests construct ParsedModule manually with explicit hashes that are passed through, and boundary2_producer's content_hashes_present test just checks non-zero, so it will still pass.",
-  "prerequisites": [],
+  "task_id": "46",
+  "title": "Fix PoisonError handling consistency in runtime",
+  "modules": ["crates/reify-runtime"],
+  "analysis": "ConcurrentEvalAdapter and SharedPriorityPromoter have inconsistent PoisonError handling. The 'result extraction' paths (build_result_shared, into_result at lines 112-152) correctly use .unwrap_or_else(|e| e.into_inner()) to recover from poisoned locks, but accessor methods (values, take_results, skipped, is_dirty) and the evaluate() hot path use plain .unwrap(), which will cascade-panic if any concurrent task panics while holding a lock. SharedPriorityPromoter has the same issue across all 6 of its lock acquisitions. The fix is mechanical: replace all .unwrap() on Mutex::lock()/RwLock::read()/RwLock::write() with .unwrap_or_else(|e| e.into_inner()). For testing, we need to deliberately poison locks and verify recovery. ConcurrentEvalAdapter's locks are behind Arc, so we can add cfg-gated helpers that clone the relevant Arc and spawn a panicking thread to poison specific locks. SharedPriorityPromoter tests live in the same module so they can access the private `inner` field directly. Specifically: concurrent_eval.rs has 9 .unwrap() calls on lines 93, 98, 103, 176, 190, 220, 226, 242, 260 that need fixing; priority_promotion.rs has 6 .unwrap() calls on lines 121, 126, 131, 136, 147-148 that need fixing.\n\n**Post-review update:** The poison_* helper methods (lines 177-222 of concurrent_eval.rs) were implemented as `pub` in an unconditional `impl` block with only `#[doc(hidden)]`. This leaves state-corrupting methods in the production API surface. They must be gated behind `#[cfg(any(test, feature = \"test-utils\"))]` with a `test-utils` feature added to Cargo.toml. The integration tests that call these methods need `#[cfg(feature = \"test-utils\")]` gating since `#[cfg(test)]` only applies to unit tests within the crate, not integration tests in `tests/`.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add #[cfg(test)] poison helper methods to ConcurrentEvalAdapter (poison_skip_state, poison_results, poison_values, poison_snapshot_values) that clone the inner Arc, spawn a thread that acquires the lock and panics, thereby poisoning it. These are needed by integration tests in tests/concurrent_eval.rs to set up poisoned-lock scenarios.",
+      "status": "done",
+      "commit": "86d5014",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: two different source texts with same module path produce different CompiledModule content_hashes. In boundary2_producer.rs, create test 'different_content_same_path_different_hash' that parses two sources (e.g. bracket with width=80mm vs width=120mm) with the same ModulePath, compiles both, and asserts their content_hashes differ. This will FAIL because current hash only uses path.",
+      "description": "Write failing tests for adapter accessor methods recovering after lock poisoning. In tests/concurrent_eval.rs add: (1) `is_dirty_recovers_after_skip_state_poisoning` — poison skip_state, assert is_dirty() returns a bool without panicking; (2) `values_recovers_after_values_lock_poisoning` — poison values lock, assert values() returns a ValueMap; (3) `take_results_recovers_after_results_lock_poisoning` — poison results lock, assert take_results() returns a Vec; (4) `skipped_recovers_after_skip_state_poisoning` — poison skip_state, assert skipped() returns a HashSet. Each test creates a simple_setup adapter, poisons the relevant lock, then calls the accessor. These should FAIL because lines 93, 98, 103, 176 use .unwrap().",
       "status": "done",
-      "commit": "e693693"
+      "commit": "e09dbf5"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Write failing test: same source compiled twice produces identical content_hashes (determinism). In boundary2_producer.rs, create test 'same_content_same_hash_deterministic' that parses and compiles the same source twice and asserts content_hashes are equal. This should PASS even before the fix (path-only hash is deterministic), serving as a regression guard.",
+      "type": "impl",
+      "description": "Fix .unwrap() on accessor methods in concurrent_eval.rs: line 93 values.read().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 98 results.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 103 skip_state.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 176 skip_state.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()). All 4 step-1 tests should now pass.",
       "status": "done",
-      "commit": "58f7e9c"
+      "commit": "68a1138"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: changing a param default value changes content_hash. Create test 'param_default_change_changes_hash' — compile bracket source with thickness=5mm vs a version with thickness=10mm (same path), assert module content_hashes differ. Will FAIL with current path-only hash.",
+      "description": "Write failing test for evaluate() recovering with poisoned locks. In tests/concurrent_eval.rs add `evaluate_continues_after_lock_poisoning`: create adapter from simple_setup, poison the values RwLock, then call adapter.evaluate(b_node).await. Currently panics at line 190 (values.read().unwrap()). After fix, evaluate should complete (returning an EvalOutcome) without cascading panic. Also verify take_results() and build_result_shared() still work afterward (regression guard for already-fixed paths).",
       "status": "done",
-      "commit": "0a3d85e"
+      "commit": "554a1b6"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Write failing test: adding/removing a constraint changes content_hash. Create test 'add_constraint_changes_hash' — compile one source with 2 constraints and another with 3 constraints (same path and same params), assert module content_hashes differ. Will FAIL with current path-only hash.",
+      "type": "impl",
+      "description": "Fix .unwrap() in evaluate() method in concurrent_eval.rs: line 190 values.read().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 220 values.write().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 226 snapshot_values.write().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 242 skip_state.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 260 results.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()). Step-3 test should now pass.",
       "status": "done",
-      "commit": "2ecb4b5"
+      "commit": "c55c04e"
     },
     {
       "id": "step-5",
-      "type": "impl",
-      "description": "Fix compile_structure() in lib.rs: replace `ContentHash::of_str(entity_name)` with a proper content hash that combines the name hash with hashes from all compiled content. Use ContentHash::combine_all over: (1) name hash, (2) each value_cell's default_expr.content_hash (or a sentinel ContentHash(0) for None), (3) each constraint's expr.content_hash, (4) each sub_component's content_hash. This makes TopologyTemplate hashes content-sensitive.",
+      "type": "test",
+      "description": "Write failing test for SharedPriorityPromoter recovering after lock poisoning. In priority_promotion.rs mod tests add `shared_promoter_recovers_after_lock_poisoning`: create Arc<SharedPriorityPromoter>, register node_a at P3Speculative, spawn thread that acquires shared.inner.lock() and panics (private field accessible from unit tests in same module), then assert effective_priority() returns Some(P3Speculative), register() succeeds for new node, promote() succeeds, remove() succeeds, promote_for_demand() succeeds. Currently fails because all lock() calls use .unwrap().",
       "status": "done",
-      "commit": "290159e"
+      "commit": "67630a5"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Fix compile() in lib.rs: replace `ContentHash::of_str(&format!(\"{}\", parsed.path))` with a combined hash of: (1) the path hash, (2) all template content_hashes (via combine_all), (3) import path hashes. This makes CompiledModule hashes content-sensitive. All 4 new tests should now pass.",
+      "description": "Fix .unwrap() in SharedPriorityPromoter in priority_promotion.rs: line 121 inner.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 126 same, line 131 same, line 136 same, lines 146-148 same. All 6 Mutex::lock() calls get the recovery pattern. Step-5 test should now pass. All existing tests continue to pass since unwrap_or_else is a superset of unwrap behavior for non-poisoned locks.",
       "status": "done",
-      "commit": "0f45d56"
+      "commit": "5eb4f47"
     },
     {
       "id": "step-7",
       "type": "impl",
-      "description": "Fix TopologyTemplateBuilder::build() in test-support/src/builders.rs: replace `ContentHash::of_str(&self.name)` with a combined hash matching the same pattern as compile_structure() — fold in value_cells default_expr hashes, constraint expr hashes, and sub_components content hashes.",
+      "description": "Gate poison helper methods behind feature flag to exclude them from the production API. Three changes: (1) Add `[features]` section with `test-utils = []` to crates/reify-runtime/Cargo.toml. (2) In concurrent_eval.rs, change the `impl ConcurrentEvalAdapter` block at lines 176-222 (containing poison_skip_state, poison_results, poison_values, poison_snapshot_values) from `#[doc(hidden)]` to `#[cfg(any(test, feature = \"test-utils\"))]`. Remove `#[doc(hidden)]` since cfg-gating makes it unnecessary. (3) In tests/concurrent_eval.rs, wrap the 5 poison recovery tests (is_dirty_recovers_after_skip_state_poisoning, values_recovers_after_values_lock_poisoning, take_results_recovers_after_results_lock_poisoning, skipped_recovers_after_skip_state_poisoning, evaluate_continues_after_lock_poisoning) in a `#[cfg(feature = \"test-utils\")]` module block so they only compile when `--features test-utils` is passed. This is necessary because `#[cfg(test)]` on the impl block only activates for unit tests within the crate, not for integration tests in the `tests/` directory.",
       "status": "done",
-      "commit": "cb3958e"
+      "commit": "21ec973"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Fix CompiledModuleBuilder::build() in test-support/src/builders.rs: replace `ContentHash::of_str(&format!(\"{}\", self.path))` with a combined hash matching compile() — fold in template content_hashes and import path hashes.",
-      "status": "done",
-      "commit": "06c6780"
-    },
-    {
-      "id": "step-9",
       "type": "test",
-      "description": "Run full test suite for reify-compiler and reify-test-support crates to verify all existing tests still pass and all 4 new tests pass. Fix any regressions if found.",
+      "description": "Verify the feature gate works correctly. (1) Run `cargo check -p reify-runtime` (without test-utils feature) — must compile successfully, confirming the poison methods are excluded from the production binary and no other code depends on them unconditionally. (2) Run `cargo test -p reify-runtime --features test-utils` — all poison recovery tests must pass, confirming the feature flag correctly enables the test helpers. (3) Run `cargo test -p reify-runtime` (without feature) — all non-poison tests must pass, confirming no regression from the gating.",
       "status": "done",
-      "commit": "28e86b5"
+      "commit": "21ec973"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Combine hashes using ContentHash::combine_all over an iterator of sub-hashes, not by serializing the entire struct to a string",
-      "rationale": "Using combine_all is the established pattern in the codebase (see compile_expr which builds content_hash via combine). It's efficient (no allocation for serialization) and composable. The alternative of hashing a Debug/Display string would be fragile and dependent on formatting."
+      "decision": "Use .unwrap_or_else(|e| e.into_inner()) consistently for all lock acquisitions",
+      "rationale": "This is the existing recovery pattern already used in build_result_shared() and into_result() (lines 112-152). It extracts the last valid data from a poisoned lock, allowing the system to continue with potentially stale but structurally valid state rather than cascading panics. This is the right choice for a CAD engine where a transient evaluation failure should not crash the entire system."
     },
     {
-      "decision": "Include a sentinel hash (ContentHash(0)) for value cells with no default_expr (None) rather than skipping them",
-      "rationale": "If we skip None entries, adding an auto param (which has no default_expr) to an existing structure wouldn't change the hash if the other params remained the same. Using a sentinel ensures the hash reflects the full structure of the template including the count and position of value cells."
+      "decision": "Add #[cfg(test)] poison helper methods to ConcurrentEvalAdapter rather than exposing internal locks",
+      "rationale": "Integration tests (tests/concurrent_eval.rs) cannot access private fields. Rather than making locks pub(crate) or restructuring, cfg(test) helpers provide a clean testing interface. Each helper clones the relevant Arc<Mutex/RwLock>, spawns a thread that acquires the lock and panics, poisoning it. This pattern is zero-cost in release builds."
     },
     {
-      "decision": "Include import paths in the CompiledModule hash",
-      "rationale": "Adding/removing an import changes the module's semantics even if templates are unchanged. This is important for future module resolution — when imports actually resolve, their content will flow into template compilation. Including import paths now prevents cache staleness when import resolution is implemented."
+      "decision": "Test SharedPriorityPromoter poisoning via unit tests inside the module",
+      "rationale": "Unit tests in priority_promotion.rs mod tests can access the private `inner` field directly, avoiding the need for test helper methods. This is simpler and matches the existing test pattern in that module which already uses std::sync::Arc and std::thread for concurrency tests."
     },
     {
-      "decision": "Do NOT include diagnostics in the content hash",
-      "rationale": "Diagnostics are derived from the content — they're warnings/errors about the content, not part of it. Including them would make the hash unstable if diagnostic messages change (e.g., improved error text). The actual compiled content (templates, imports) is what matters for cache invalidation."
+      "decision": "Do not convert to Result-returning APIs",
+      "rationale": "The task scope is to make PoisonError handling consistent, not to change the API surface. Converting to Result<T, PoisonError> would require changing every call site and is a larger refactor. The unwrap_or_else pattern preserves the existing API while adding resilience."
     },
     {
-      "decision": "Fix the test-support builders to match the compiler's hashing logic",
-      "rationale": "The builders are used to construct expected CompiledModules in tests. If the builder produces path-only hashes while the compiler produces content-sensitive hashes, comparisons in tests would fail or, worse, silently use wrong hashes. Consistency between compiler and test infrastructure is essential."
-    },
-    {
-      "decision": "Use parse-then-compile (not manually constructed ParsedModule) for the new hash tests",
-      "rationale": "Using reify_syntax::parse() with real source text (like the existing compile_auto_param test does) is more realistic and less brittle than manually constructing AST nodes. It also tests the full pipeline and ensures the parser's content_hash fields feed correctly into the compiler's hash."
+      "decision": "Gate poison helpers with #[cfg(any(test, feature = \"test-utils\"))] and a Cargo feature, not just #[cfg(test)]",
+      "rationale": "#[cfg(test)] only applies during unit test compilation of the crate itself — it does NOT apply to integration tests in the tests/ directory or to downstream crates. Since the poison recovery integration tests live in tests/concurrent_eval.rs, they need a feature flag (test-utils) to enable the helpers. The dual gate `any(test, feature = \"test-utils\")` ensures the helpers are available both in unit tests (via cfg(test)) and in integration tests (via the feature). The integration tests themselves are wrapped in #[cfg(feature = \"test-utils\")] so they only compile when the feature is active."
     }
   ],
   "reuse": [
     {
-      "what": "ContentHash::combine and ContentHash::combine_all",
-      "where": "crates/reify-types/src/hash.rs",
-      "how": "Use combine_all to fold template hashes, value cell hashes, constraint hashes, and import hashes into a single module/template content hash"
+      "what": ".unwrap_or_else(|e| e.into_inner()) recovery pattern",
+      "where": "concurrent_eval.rs lines 112-152 (build_result_shared, into_result)",
+      "how": "Apply the same pattern to all remaining .unwrap() calls on lock acquisitions. This is the established convention in the codebase for PoisonError recovery."
     },
     {
-      "what": "CompiledExpr::content_hash field",
-      "where": "crates/reify-types/src/expr.rs (CompiledExpr struct)",
-      "how": "Each compiled expression already carries a content_hash. Use value_cell.default_expr.content_hash and constraint.expr.content_hash as inputs to the template hash"
+      "what": "simple_setup() test helper",
+      "where": "tests/concurrent_eval.rs lines 21-95",
+      "how": "Use the existing simple_setup() to create ConcurrentEvalAdapter instances for poison recovery tests, same as all other tests in the file."
     },
     {
-      "what": "SubComponentDecl::content_hash field",
-      "where": "crates/reify-compiler/src/lib.rs:45",
-      "how": "Sub-components already have content_hash from the parser. Include these in the TopologyTemplate hash via combine_all"
+      "what": "make_node() test helper and existing SharedPriorityPromoter test patterns",
+      "where": "priority_promotion.rs mod tests lines 164-369",
+      "how": "Follow the existing Arc<SharedPriorityPromoter> + thread::spawn pattern (used in shared_promoter_promote_from_another_thread and shared_promoter_concurrent_promotes) for the poison recovery test."
     },
     {
-      "what": "bracket_source_with_width() fixture",
-      "where": "crates/reify-test-support/src/fixtures.rs:29",
-      "how": "Use this to generate two different source texts with the same module path for the 'different content, different hash' test"
+      "what": "PanickingEvaluator test pattern",
+      "where": "tests/concurrent_eval.rs lines 537-545",
+      "how": "Reference the existing pattern of creating evaluators that intentionally panic, used in rollback_on_task_panicked and repeated_error_then_success_cycle tests."
     },
     {
-      "what": "reify_syntax::parse() function",
-      "where": "crates/reify-syntax/src/lib.rs:156",
-      "how": "Parse real source text in tests (same pattern as compile_auto_param and e2e_stdlib_function_in_let_binding tests) rather than manually constructing ParsedModule"
-    },
-    {
-      "what": "Existing boundary2_producer.rs test patterns",
-      "where": "crates/reify-compiler/tests/boundary2_producer.rs",
-      "how": "Follow the established test style — use reify_test_support fixtures, reify_syntax::parse(), and assert on CompiledModule properties"
+      "what": "Cargo feature gating pattern for test-only code",
+      "where": "Standard Rust idiom (cfg(any(test, feature = \"test-utils\")))",
+      "how": "Gate the poison helper impl block so it compiles only during unit tests or when test-utils feature is explicitly enabled. Integration tests use #[cfg(feature = \"test-utils\")] since cfg(test) doesn't apply to them."
     }
   ]
 }

@@ -298,6 +298,53 @@ fn false_negative_mixed_scale() {
     );
 }
 
+/// Bounds [0, 10mm], constraint x > 15mm. Cannot be satisfied within bounds.
+/// Solver must report Infeasible with diagnostics containing residual info.
+#[test]
+fn bounds_dont_hide_infeasibility() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // constraint: x > 0.015 (15mm)
+    let constraint = gt(x_ref, literal(Value::Scalar {
+        si_value: 0.015,
+        dimension: DimensionVector::LENGTH,
+    }));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 0.010)), // max 10mm
+        }],
+        constraints: vec![(cnid("Part", 0), constraint)],
+        current_values: ValueMap::new(),
+        objective: None,
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(
+                !diagnostics.is_empty(),
+                "should have diagnostic messages"
+            );
+            let msg = &diagnostics[0].message;
+            assert!(
+                msg.contains("residual"),
+                "diagnostic should mention residual, got: {}",
+                msg
+            );
+        }
+        other => panic!(
+            "expected Infeasible for constraint beyond bounds, got {:?}",
+            other
+        ),
+    }
+}
+
 #[test]
 fn compound_and_constraint() {
     let solver = DimensionalSolver;

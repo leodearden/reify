@@ -13,6 +13,9 @@ reify-compiler.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 
+[features]
+test-utils = []
+
 [dev-dependencies]
 reify-test-support.workspace = true
 reify-constraints.workspace = true
