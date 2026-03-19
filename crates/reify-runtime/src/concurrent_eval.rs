@@ -237,7 +237,7 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
 
             // Read current values (brief read lock)
             let current_values = {
-                self.values.read().unwrap().clone()
+                self.values.read().unwrap_or_else(|e| e.into_inner()).clone()
             };
 
             // Evaluate expression (pure, no lock held)
@@ -267,13 +267,13 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
 
             // Write result to shared values (brief write lock)
             {
-                let mut values = self.values.write().unwrap();
+                let mut values = self.values.write().unwrap_or_else(|e| e.into_inner());
                 values.insert(vcid.clone(), val.clone());
             }
 
             // Write to snapshot values (brief write lock)
             {
-                let mut sv = self.snapshot_values.write().unwrap();
+                let mut sv = self.snapshot_values.write().unwrap_or_else(|e| e.into_inner());
                 sv.insert(
                     vcid.clone(),
                     (val.clone(), DeterminacyState::Determined),
@@ -289,7 +289,7 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
             {
                 let dependents = self.reverse_index.dependents_of(vcid);
                 if !dependents.is_empty() {
-                    let mut state = self.skip_state.lock().unwrap();
+                    let mut state = self.skip_state.lock().unwrap_or_else(|e| e.into_inner());
                     if outcome == EvalOutcome::Changed {
                         for dep in dependents {
                             state.has_changed_parent.insert(dep.clone());
@@ -307,7 +307,7 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
             }
 
             // Record result
-            self.results.lock().unwrap().push(ConcurrentNodeResult {
+            self.results.lock().unwrap_or_else(|e| e.into_inner()).push(ConcurrentNodeResult {
                 node: node.clone(),
                 value: val,
                 determinacy: DeterminacyState::Determined,
