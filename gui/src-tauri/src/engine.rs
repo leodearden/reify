@@ -186,10 +186,9 @@ impl EngineSession {
         let compiled = self
             .compiled
             .as_ref()
-            .ok_or_else(|| "No module loaded".to_string())?
-            .clone();
+            .ok_or_else(|| "No module loaded".to_string())?;
 
-        let result = self.engine.build(&compiled, format);
+        let result = self.engine.build(compiled, format);
 
         for diag in &result.diagnostics {
             if diag.severity == Severity::Error {
