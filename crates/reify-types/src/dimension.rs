@@ -155,6 +155,19 @@ impl DimensionVector {
         DimensionVector(result)
     }
 
+    /// Take the nth root (divide all exponents by n).
+    ///
+    /// E.g., `AREA.root(2)` produces LENGTH (halves exponent from 2 to 1).
+    /// Fractional exponents are representable via `Rational`.
+    pub fn root(&self, n: i8) -> DimensionVector {
+        assert!(n != 0, "root degree must not be zero");
+        let mut result = [Rational::ZERO; 9];
+        for (i, slot) in result.iter_mut().enumerate() {
+            *slot = Rational::new(self.0[i].num, self.0[i].den * n);
+        }
+        DimensionVector(result)
+    }
+
     /// Raise to an integer power (multiply all exponents).
     pub fn pow(&self, n: i8) -> DimensionVector {
         let mut result = [Rational::ZERO; 9];
