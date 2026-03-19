@@ -511,6 +511,83 @@ mod tests {
         }
     }
 
+    // --- sqrt dimension-awareness tests (step-3, task 39) ---
+
+    #[test]
+    fn sqrt_scalar_area_to_length() {
+        // sqrt(Scalar{4.0, AREA}) must return Scalar{2.0, LENGTH}
+        let result = eval_builtin(
+            "sqrt",
+            &[Value::Scalar {
+                si_value: 4.0,
+                dimension: DimensionVector::AREA,
+            }],
+        );
+        match result {
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 2.0).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar{{2.0, LENGTH}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sqrt_scalar_length4_to_length2() {
+        // sqrt(Scalar{9.0, LENGTH^4}) must return Scalar{3.0, LENGTH^2}
+        let len4 = DimensionVector::LENGTH.pow(4);
+        let result = eval_builtin(
+            "sqrt",
+            &[Value::Scalar {
+                si_value: 9.0,
+                dimension: len4,
+            }],
+        );
+        match result {
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 3.0).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::AREA); // LENGTH^2 == AREA
+            }
+            other => panic!("expected Scalar{{3.0, AREA}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sqrt_scalar_length_to_fractional_exponent() {
+        use reify_types::Rational;
+        // sqrt(Scalar{4.0, LENGTH}) must return Scalar{2.0, LENGTH^(1/2)}
+        let result = eval_builtin(
+            "sqrt",
+            &[Value::Scalar {
+                si_value: 4.0,
+                dimension: DimensionVector::LENGTH,
+            }],
+        );
+        match result {
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 2.0).abs() < 1e-12);
+                assert_eq!(dimension.0[0], Rational::new(1, 2));
+                for i in 1..9 {
+                    assert!(dimension.0[i].is_zero());
+                }
+            }
+            other => panic!("expected Scalar{{2.0, LENGTH^(1/2)}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sqrt_negative_scalar_returns_undef() {
+        // sqrt of negative Scalar must return Undef (via sanitize_value catching NaN)
+        let result = eval_builtin(
+            "sqrt",
+            &[Value::Scalar {
+                si_value: -4.0,
+                dimension: DimensionVector::AREA,
+            }],
+        );
+        assert!(result.is_undef(), "sqrt of negative Scalar should be Undef, got {:?}", result);
+    }
+
     #[test]
     fn acos_boundary_valid() {
         let result = eval_builtin("acos", &[Value::Real(-1.0)]);
