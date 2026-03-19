@@ -1,294 +1,82 @@
 {
-  "task_id": "37",
-  "title": "Ensure architecture-critical language features: imports, sub-structures, stdlib functions",
-  "modules": [
-    "crates/reify-stdlib",
-    "crates/reify-expr",
-    "crates/reify-compiler",
-    "crates/reify-test-support"
-  ],
-  "analysis": "Three architecture-critical language features are stubbed out with silent no-ops or Undef returns:\n\n1. **Import handling** (compiler/lib.rs:576-578): `Declaration::Import(_) => {}` — imports are parsed into ImportDecl by tree-sitter but silently dropped during compilation. The CompiledModule has no record of them.\n\n2. **Sub-structure compilation** (compiler/lib.rs:733-735): `MemberDecl::Sub(_) => {}` — sub-declarations are parsed into SubDecl (with name, structure_name, args) but silently dropped. TopologyTemplate has no sub-component representation.\n\n3. **Stdlib function evaluation** (expr/lib.rs:23-28): `CompiledExprKind::FunctionCall { .. } => Value::Undef` — all function calls unconditionally return Undef. The stdlib crate is an empty stub. This means expressions like `sin(45deg)` or `abs(-5)` produce Undef, cascading into broken constraint evaluation and let bindings.\n\nThe fix requires:\n- Implementing a function dispatch table in reify-stdlib with core math functions (abs, sqrt, sin, cos, tan, min, max, floor, ceil, round, log, exp, etc.)\n- Wiring reify-expr's FunctionCall evaluation to dispatch through reify-stdlib\n- Adding CompiledImport to CompiledModule so imports participate in compilation (with diagnostics since module resolution is not yet implemented)\n- Adding SubComponentDecl to TopologyTemplate so sub-declarations compile into the runtime model (with compiled arg expressions)\n\nThe EvaluationGraph (reify-eval/src/graph.rs) accesses TopologyTemplate fields individually via iteration (not destructuring), so adding sub_components won't break existing eval code. Similarly, the engine processes CompiledModule.templates but not imports, so adding imports is safe.\n\nExisting test patterns use ParsedModule construction (both hand-built AST and tree-sitter parse), TopologyTemplateBuilder/CompiledModuleBuilder, MockConstraintChecker, and boundary tests across crate boundaries. We follow these established patterns.\n\n**Post-review addendum (steps 21-24):** Review identified that domain errors in math functions (sqrt, log, log10, asin, acos, pow, exp, sinh, cosh) produce NaN/inf as Value::Real or Value::Scalar instead of Value::Undef. Since Value::is_undef() only checks for Value::Undef (not NaN), these silently propagate through the evaluation graph. A constraint like `sqrt(x) > 0mm` where x is negative evaluates `NaN > 0` as `Bool(false)` rather than `Undef`, causing the constraint to report Violated instead of Indeterminate. This directly violates the strict Undef-propagation contract. Fix: add a `sanitize_value` helper that converts NaN/inf results to Undef, applied in `unary_f64` and `binary_f64` as a defense-in-depth catch-all.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Add reify-stdlib as a workspace dependency of reify-expr in crates/reify-expr/Cargo.toml so eval_expr can dispatch function calls to stdlib implementations. Verify `cargo check -p reify-expr` succeeds.",
-      "status": "done",
-      "commit": "c474f57",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Define CompiledImport struct (path: String, span: SourceSpan) in reify-compiler/src/lib.rs. Add `imports: Vec<CompiledImport>` field to CompiledModule. Initialize to empty vec in compile() and in CompiledModuleBuilder::build(). Run `cargo test -p reify-compiler -p reify-test-support` to verify no regressions.",
-      "status": "done",
-      "commit": "5b565e4",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Define SubComponentDecl struct (name: String, structure_name: String, args: Vec<(String, CompiledExpr)>, span: SourceSpan, content_hash: ContentHash) in reify-compiler/src/lib.rs. Add `sub_components: Vec<SubComponentDecl>` field to TopologyTemplate. Initialize to empty vec in compile_structure() and in TopologyTemplateBuilder::build(). Run `cargo test --workspace` to verify no regressions.",
-      "status": "done",
-      "commit": "4031828",
-      "tests": []
-    }
-  ],
+  "task_id": "39",
+  "title": "Fix sqrt to preserve and halve Scalar dimensions",
+  "modules": ["crates/reify-types", "crates/reify-stdlib"],
+  "analysis": "The sqrt function in reify-stdlib (line 18) uses `unary_f64(args, |x| Value::Real(x.sqrt()))` which extracts the f64 via `as_f64()` and wraps the result as `Value::Real`, discarding any Scalar dimension information. The fix requires two changes: (1) Add a `root(n: i8)` method to `DimensionVector` in reify-types that divides each rational exponent by n (e.g., root(2) halves exponents: AREA [2,0,...] → LENGTH [1,0,...]). (2) Replace the sqrt implementation in reify-stdlib to match on Scalar separately, computing `si_value.sqrt()` and `dimension.root(2)`, falling through to the existing Real behavior for non-Scalar numeric types. The `sanitize_value` function already handles NaN/inf for both Real and Scalar, so negative inputs will naturally produce Undef. DimensionVector already uses Rational exponents, so fractional exponents (e.g., LENGTH^(1/2)) are representable without any type changes. Existing tests for sqrt(Real) and sqrt(negative Real) already pass and should continue to pass unchanged.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write unit tests in reify-stdlib/src/lib.rs #[cfg(test)] for eval_builtin() dispatching core numeric math functions: (1) abs(Real(-5.0)) -> Real(5.0), (2) abs(Int(-3)) -> Int(3), (3) abs(Scalar{-0.005, LENGTH}) -> Scalar{0.005, LENGTH} (preserves dimension), (4) sqrt(Real(9.0)) -> Real(3.0), (5) min(Real(3.0), Real(7.0)) -> Real(3.0), (6) max(Int(3), Int(7)) -> Int(7), (7) floor(Real(3.7)) -> Int(3), (8) ceil(Real(3.2)) -> Int(4), (9) round(Real(3.5)) -> Int(4), (10) log(Real(e)) -> Real(~1.0), (11) exp(Real(0.0)) -> Real(1.0), (12) sign(Real(-5.0)) -> Real(-1.0), (13) unknown function 'foo' returns Undef.",
+      "description": "Write failing tests for DimensionVector::root() in crates/reify-types/src/dimension.rs: (a) root(2) of AREA → LENGTH (halve [2,0,...] to [1,0,...]), (b) root(2) of LENGTH^4 → LENGTH^2 (arbitrary even exponents), (c) root(2) of LENGTH → fractional exponent LENGTH^(1/2) with Rational(1,2), (d) root(2) of DIMENSIONLESS → DIMENSIONLESS",
       "status": "done",
-      "commit": "9f23efd"
+      "commit": "92718c5"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement pub fn eval_builtin(name: &str, args: &[Value]) -> Value in reify-stdlib/src/lib.rs. Match on function name, validate argument count, extract numeric values via as_f64() or pattern matching. Implement: abs (Int/Real/Scalar), sqrt (Real only, returns Real), min/max (two args, same-type), floor/ceil/round (Real -> Int), log/log10/exp (Real -> Real), sign (Real -> Real), pow (two args). Handle Scalar dimension for abs (preserve). Unknown functions return Value::Undef. Wrong argument count returns Value::Undef.",
+      "description": "Implement DimensionVector::root(n: i8) method in crates/reify-types/src/dimension.rs. For each exponent Rational{num, den}, compute Rational::new(num, den * n). This divides each dimension exponent by n, producing fractional exponents when needed.",
       "status": "done",
-      "commit": "b79bfa0"
+      "commit": "8a6f85e"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write unit tests in reify-stdlib for trig functions with dimensioned Angle input: (1) sin(Scalar{PI/4, ANGLE}) -> Real(~0.7071), (2) cos(Scalar{0.0, ANGLE}) -> Real(1.0), (3) tan(Scalar{PI/4, ANGLE}) -> Real(~1.0), (4) asin(Real(1.0)) -> Scalar{PI/2, ANGLE}, (5) acos(Real(0.0)) -> Scalar{PI/2, ANGLE}, (6) atan(Real(1.0)) -> Scalar{PI/4, ANGLE}, (7) atan2(Real(1.0), Real(1.0)) -> Scalar{PI/4, ANGLE}, (8) sinh(Real(0.0)) -> Real(0.0), (9) sin with non-Angle Scalar (e.g., LENGTH) returns Undef (dimension error).",
+      "description": "Write failing tests for dimension-aware sqrt in crates/reify-stdlib/src/lib.rs: (a) sqrt(Scalar{4.0, AREA}) must return Scalar{2.0, LENGTH}, (b) sqrt(Scalar{9.0, LENGTH^4}) must return Scalar{3.0, LENGTH^2}, (c) sqrt(Scalar{4.0, LENGTH}) must return Scalar{2.0, LENGTH^(1/2)} with fractional Rational exponent, (d) sqrt(Real(4.0)) must still return Real(2.0) — backward compat (existing test confirms), (e) sqrt(negative Scalar) must return Undef",
       "status": "done",
-      "commit": "82d3489"
+      "commit": "a9e988a"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Extend eval_builtin in reify-stdlib with trig functions. sin/cos/tan: accept Scalar with ANGLE dimension, extract si_value (already radians), call f64::sin/cos/tan, return Real. Also accept Real directly (treated as radians for convenience). asin/acos/atan: accept Real, return Scalar with ANGLE dimension. atan2: accept two Real or two same-dimension Scalar args, return Angle. sinh/cosh/tanh: accept Real, return Real. Return Undef if argument has wrong dimension.",
+      "description": "Replace sqrt implementation in crates/reify-stdlib/src/lib.rs line 18. Change from `unary_f64(args, |x| Value::Real(x.sqrt()))` to use `unary(args, |v| ...)` which matches on Value::Scalar to preserve/halve dimensions via dimension.root(2), and falls through to as_f64() → Value::Real for Int/Real inputs. Apply sanitize_value to catch NaN from negative inputs.",
       "status": "done",
-      "commit": "2e35bf1"
-    },
-    {
-      "id": "step-5",
-      "type": "test",
-      "description": "Write unit test in reify-expr/src/lib.rs #[cfg(test)] that constructs a CompiledExpr::FunctionCall for 'abs' with arg Literal(Real(-3.0)) and asserts eval_expr returns Real(3.0), not Undef. Also test FunctionCall for 'sin' with arg Literal(Scalar{si_value: PI/4, dimension: ANGLE}) returns Real close to 0.7071. These tests MUST FAIL against the current Undef stub, confirming they test new behavior.",
-      "status": "done",
-      "commit": "6bdb514"
-    },
-    {
-      "id": "step-6",
-      "type": "impl",
-      "description": "Wire reify-expr's eval_expr FunctionCall arm to call reify_stdlib::eval_builtin. Replace the Undef stub (lines 23-28) with: evaluate all arg expressions against the ValueMap, collect into Vec<Value>, call reify_stdlib::eval_builtin(&function.name, &evaluated_args), return the result. This makes step-5 tests pass.",
-      "status": "done",
-      "commit": "4d06d8a"
-    },
-    {
-      "id": "step-7",
-      "type": "test",
-      "description": "Write tests in reify-expr verifying edge cases: (a) unknown function name 'nonexistent' still returns Undef gracefully, (b) Undef propagation — FunctionCall('abs', [Undef]) returns Undef (any Undef arg short-circuits), (c) function call with ValueRef args evaluates args against ValueMap before dispatch, (d) function call with zero args for function that expects args returns Undef.",
-      "status": "done",
-      "commit": "47018c5"
-    },
-    {
-      "id": "step-8",
-      "type": "impl",
-      "description": "Add Undef propagation to the FunctionCall arm in eval_expr: after evaluating all arg expressions, check if any evaluated arg is Undef and return Undef immediately (consistent with strict Undef propagation for arithmetic). Only call eval_builtin if all args are defined. This makes step-7 propagation tests pass.",
-      "status": "done",
-      "commit": "8de5adc"
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Write compiler test in reify-compiler/tests/ or inline: parse a source string containing `import \"std/math\"` followed by a structure, compile it, assert CompiledModule.imports.len() == 1 and imports[0].path == \"std/math\". Verify the import is NOT silently dropped.",
-      "status": "done",
-      "commit": "8ac2146"
-    },
-    {
-      "id": "step-10",
-      "type": "impl",
-      "description": "In compile() (compiler/lib.rs), replace the empty `Declaration::Import(_) => {}` arm with: create CompiledImport from ImportDecl.path and ImportDecl.span, push onto imports vec. Also emit a warning diagnostic: 'import \"<path>\" noted; module resolution not yet implemented' with the import's source span as label.",
-      "status": "done",
-      "commit": "cf0a877"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write compiler test: parse source with `import \"fasteners/bolt\"`, compile it, assert diagnostics contain exactly one warning whose message mentions 'import' and 'fasteners/bolt'. Verify severity is Warning (not Error), confirming compilation continues cleanly for the rest of the module. Also test that structures after the import still compile correctly.",
-      "status": "done",
-      "commit": "8468429"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Verify step-11 test passes with the diagnostic emission from step-10. If the diagnostic severity or message format needs adjustment, fix it. This step may be a no-op if step-10's implementation already satisfies step-11's assertions.",
-      "status": "done",
-      "commit": "449dc96"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write compiler test: parse source containing `structure Parent { param d: Scalar = 6mm  sub mount_hole : Hole(diameter: 6mm) }`, compile it, assert TopologyTemplate.sub_components.len() == 1. Verify sub_components[0] has name 'mount_hole', structure_name 'Hole', and args contains one entry ('diameter', compiled_expr).",
-      "status": "done",
-      "commit": "4285ecd"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "In compile_structure() (compiler/lib.rs), replace the empty `MemberDecl::Sub(_) => {}` arm with: for each SubDecl, compile each arg expression through compile_expr (using the parent structure's scope for name resolution), create SubComponentDecl with name, structure_name, compiled args, span, and content_hash, push onto sub_components vec.",
-      "status": "done",
-      "commit": "1e37e16"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write compiler test: parse source with sub-structure whose args reference parent params: `structure S { param t: Scalar = 5mm  sub rib : Rib(height: t * 0.8) }`. Compile and assert: (1) sub_components[0].args[0].0 == 'height', (2) the arg CompiledExpr contains a ValueRef to 't' (resolved, not unresolved string), (3) no error diagnostics are produced.",
-      "status": "done",
-      "commit": "1e792f1"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Verify step-15 passes. compile_expr already handles identifier resolution through the CompilationScope. Since sub args are compiled in the second pass (after scope registration in the first pass), forward references should resolve. If they don't, ensure sub args are compiled after the scope registration loop.",
-      "status": "done",
-      "commit": "473d6aa"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write E2E integration test in reify-eval/tests/ or reify-compiler/tests/: parse bracket-like source with a stdlib function call in a let binding (e.g., `structure S { param w: Scalar = 80mm  let half_w = abs(w / 2) }`), compile, evaluate through Engine.eval(). Assert the let binding 'half_w' produces a defined numeric value (not Undef). This validates the full pipeline: parse -> compile -> eval with stdlib dispatch.",
-      "status": "done",
-      "commit": "3b7bab4"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Fix any issues discovered by the E2E test. Potential issues: (1) geometry function calls like box() may now be evaluated through stdlib instead of the realization pass — ensure is_geometry_let still skips them from value cells, (2) the compiler's function type inference may need adjustment for stdlib math functions. Ensure existing bracket tests still pass (cargo test --workspace).",
-      "status": "done",
-      "commit": "3b37790"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write comprehensive integration test: source with all three features — an import, a sub-structure, and a stdlib function call in the same module. Example: `import \"std/math\"  structure Bracket { param w: Scalar = 80mm  param h: Scalar = 100mm  let diag = sqrt(w * w + h * h)  sub base : Base(width: w)  constraint diag > 0mm }`. Compile and verify: imports has 1 entry, sub_components has 1 entry, eval produces non-Undef 'diag' value. Assert only the expected import warning diagnostic (no errors).",
-      "status": "done",
-      "commit": "98069ae"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Fix any final issues from step-19. Add sub_component() builder method to TopologyTemplateBuilder for test convenience. Add import() builder method to CompiledModuleBuilder. Run `cargo test --workspace` to verify all existing tests pass with the new code.",
-      "status": "done",
-      "commit": "133e937"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing unit tests in reify-stdlib/src/lib.rs #[cfg(test)] for domain-error inputs that currently produce NaN/inf instead of Undef. Tests: (1) sqrt_negative_returns_undef: sqrt(Real(-1.0)) -> Undef, (2) log_zero_returns_undef: log(Real(0.0)) -> Undef, (3) log_negative_returns_undef: log(Real(-1.0)) -> Undef, (4) log10_zero_returns_undef: log10(Real(0.0)) -> Undef, (5) log10_negative_returns_undef: log10(Real(-1.0)) -> Undef, (6) exp_overflow_returns_undef: exp(Real(1000.0)) -> Undef (overflow to inf), (7) pow_negative_base_fractional_exp_returns_undef: pow(Real(-2.0), Real(0.5)) -> Undef. All 7 tests MUST FAIL against the current implementation because unary_f64/binary_f64 pass NaN/inf through as Value::Real, confirming they detect the bug.",
-      "status": "done",
-      "commit": "15f9870"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Add a `sanitize_value(v: Value) -> Value` helper function in reify-stdlib/src/lib.rs that converts non-finite f64 values to Undef: if v is Value::Real(x) where x.is_nan() or x.is_infinite(), return Value::Undef; if v is Value::Scalar { si_value, .. } where si_value.is_nan() or si_value.is_infinite(), return Value::Undef; otherwise return v unchanged. Apply sanitize_value in `unary_f64` by wrapping the closure result: change `Some(x) => f(x)` to `Some(x) => sanitize_value(f(x))`. Apply the same in `binary_f64`: change `(Some(x), Some(y)) => f(x, y)` to `(Some(x), Some(y)) => sanitize_value(f(x, y))`. This makes all step-21 tests pass. Run `cargo test -p reify-stdlib` to confirm no regressions in the 36 existing tests (valid-domain inputs like sqrt(9.0), log(e), exp(0.0) still produce finite results and pass through sanitize_value unchanged).",
-      "status": "done",
-      "commit": "b8f1b41"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write unit tests in reify-stdlib/src/lib.rs for inverse-trig domain errors and hyperbolic overflow, verifying the sanitize_value fix handles Value::Scalar NaN cases too: (1) asin_out_of_range_positive: asin(Real(2.0)) -> Undef, (2) asin_out_of_range_negative: asin(Real(-2.0)) -> Undef, (3) acos_out_of_range_positive: acos(Real(2.0)) -> Undef, (4) acos_out_of_range_negative: acos(Real(-2.0)) -> Undef, (5) sinh_overflow: sinh(Real(1000.0)) -> Undef, (6) cosh_overflow: cosh(Real(1000.0)) -> Undef. Also verify boundary valid inputs still work: (7) asin_boundary_valid: asin(Real(1.0)) -> Scalar{PI/2, ANGLE} (unchanged), (8) acos_boundary_valid: acos(Real(-1.0)) -> Scalar{PI, ANGLE} (unchanged). Tests 1-6 should PASS after step-22's sanitize_value implementation since asin/acos route through unary_f64 and sinh/cosh route through unary_f64. Tests 7-8 confirm no regressions on valid boundary inputs.",
-      "status": "done",
-      "commit": "5ce0bd5"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Verify all step-23 tests pass (they should since sanitize_value in unary_f64 catches both Value::Real(NaN) from asin/acos domain errors and Value::Scalar{si_value: NaN} from the same, plus Value::Real(inf) from sinh/cosh overflow). If any fail, add explicit domain pre-checks. Run `cargo test --workspace` to confirm all tests pass across the entire workspace, including the E2E integration test from step-19 which uses sqrt in a constraint pipeline (sqrt with valid positive input should still produce correct results). This completes the NaN/inf domain-error hardening.",
-      "status": "done",
-      "commit": "cc15e8c"
+      "commit": "00a9c18"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Implement stdlib function dispatch in reify-stdlib crate, add it as dependency of reify-expr",
-      "rationale": "reify-stdlib already exists as the architecturally intended location for built-in functions. Adding it as a dependency of reify-expr is a clean one-way dependency (no cycles). This keeps eval_expr's match arm simple: evaluate args, delegate to stdlib. Alternative of inlining all functions in reify-expr would work but violates the crate separation design."
+      "decision": "Add DimensionVector::root(n) rather than Mul trait on Rational",
+      "rationale": "root(n) is the natural API for nth-root dimension operations (sqrt=root(2), cbrt=root(3)). It's more semantically clear than exposing general Rational multiplication. The implementation is trivial: divide each exponent by n via Rational::new(num, den*n). No need to add Mul for Rational since pow() already inlines the multiplication."
     },
     {
-      "decision": "Function dispatch by simple name match on function.name, not qualified_name",
-      "rationale": "The compiler currently generates qualified_name as format!('std::{}', name) which is a placeholder convention. Matching on the simple name field is more robust since it matches what the user actually writes (e.g., 'sin', not 'std::sin'). The qualified_name field remains available for future dispatch when the module system is implemented."
+      "decision": "Use unary() instead of unary_f64() for sqrt",
+      "rationale": "unary_f64 extracts as_f64() too early, losing the Value variant information. Using unary() allows pattern matching on Value::Scalar to preserve dimension info, matching the existing pattern used by abs(). The non-Scalar fallback still uses as_f64() for backward compatibility."
     },
     {
-      "decision": "Strict Undef propagation for function calls: if any arg is Undef, result is Undef",
-      "rationale": "Consistent with the existing strict Undef propagation for arithmetic operations (expr/lib.rs:58-60). Function calls should have the same semantics — they are not boolean connectives, so Kleene three-valued logic does not apply. This prevents confusing partial results from functions where some args are undetermined."
+      "decision": "Rely on sanitize_value for negative input handling",
+      "rationale": "(-x).sqrt() produces NaN in Rust, and sanitize_value already converts NaN/inf Scalars to Undef (line 103-105). No special-case needed for negative Scalar inputs — the existing defense-in-depth mechanism handles it uniformly for both Real and Scalar."
     },
     {
-      "decision": "Trig functions accept Angle-dimensioned Scalar, extract si_value (radians), return dimensionless Real",
-      "rationale": "Matches the stdlib reference spec (Section 1.2): 'sin(x: Angle) -> Real'. The SI value of an Angle scalar is already in radians, so no conversion needed. This enforces the dimensional distinction between angles and dimensionless reals that the language spec requires. Also accept bare Real as a convenience for computed radians."
-    },
-    {
-      "decision": "Imports produce a warning diagnostic rather than being silently dropped or producing an error",
-      "rationale": "Module resolution is not implemented (M5 scope), so imports cannot be resolved. But silently dropping them is the current bug — users get no feedback. A warning is appropriate: it acknowledges the import, doesn't block compilation, and clearly communicates the limitation. The import path is recorded in CompiledModule.imports for future module resolution use."
-    },
-    {
-      "decision": "Sub-structures are compiled into SubComponentDecl but not integrated into EvaluationGraph",
-      "rationale": "Full sub-structure evaluation requires schema nodes, containment trees, and member access resolution — all M5+ scope. For this task, the goal is that sub-declarations 'compile into the runtime model' (not silently dropped). Recording them in TopologyTemplate with compiled arg expressions is sufficient. The EvaluationGraph (reify-eval/src/graph.rs) iterates template fields individually and simply won't process sub_components, so no eval changes needed."
-    },
-    {
-      "decision": "sqrt on Scalar values returns Real (dimension handling deferred)",
-      "rationale": "Full dimensional sqrt (halving exponents) requires DimensionVector::pow with fractional exponents. While DimensionVector supports this via Rational, the complexity of returning a correctly-typed Scalar from sqrt is non-trivial. For v0.1, sqrt accepts Real and returns Real. Dimensioned sqrt (e.g., sqrt(area) -> length) is deferred to M5 when the full type system is in place."
-    },
-    {
-      "decision": "Core v0.1 function set: abs, min, max, sqrt, pow, log, log10, exp, sign, floor, ceil, round, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh",
-      "rationale": "These are the functions from std.math.numeric and std.math.trig in the stdlib reference that are commonly needed in engineering expressions. clamp and lerp can be added later as they're compositional (clamp = min(max(x,lo),hi)). Linear algebra, complex, and geometry query functions are deferred to later milestones."
-    },
-    {
-      "decision": "Post-computation sanitization via sanitize_value in unary_f64/binary_f64 rather than per-function domain pre-checks",
-      "rationale": "A sanitize_value helper that converts NaN/inf in Value::Real and Value::Scalar to Value::Undef, applied at the return point of unary_f64 and binary_f64, is a defense-in-depth catch-all. It handles all reported domain errors (sqrt of negative, log of non-positive, asin/acos outside [-1,1], pow with negative base and fractional exponent, exp/sinh/cosh overflow to inf) with a 2-line change in each helper. Per-function pre-checks would require N individual changes and risk missing edge cases for future functions. The sanitize approach also future-proofs: any new function routed through these helpers automatically gets NaN/inf protection. Both Value::Real(NaN/inf) and Value::Scalar{si_value: NaN/inf, ..} are caught. Valid-domain inputs produce finite results and pass through unchanged, so no regressions."
+      "decision": "Allow fractional dimension exponents from sqrt of odd-dimension values",
+      "rationale": "sqrt(LENGTH) produces LENGTH^(1/2) which is physically valid (used in e.g., fracture toughness MPa·√m). Rational already supports this representation. Rather than erroring, we let the type system propagate the fractional exponent and let downstream dimension-checking catch any mismatches."
     }
   ],
   "reuse": [
     {
-      "what": "CompilationScope for name resolution in sub-structure args",
-      "where": "crates/reify-compiler/src/lib.rs (CompilationScope struct, lines 307-329)",
-      "how": "Sub-structure arg expressions are compiled via compile_expr() which already uses CompilationScope for identifier resolution. Sub args like `height: thickness * 0.8` will resolve 'thickness' through the parent structure's scope, exactly as let and constraint expressions do."
+      "what": "unary() helper function",
+      "where": "crates/reify-stdlib/src/lib.rs:87-92",
+      "how": "Use unary() instead of unary_f64() for sqrt, same pattern as abs() which also matches on Value variants to preserve Scalar dimensions"
     },
     {
-      "what": "compile_expr() for sub-structure arg compilation",
-      "where": "crates/reify-compiler/src/lib.rs (compile_expr function, lines 334-551)",
-      "how": "Each sub-structure arg is an Expr that can be compiled using the existing compile_expr. No new expression compilation logic needed."
+      "what": "sanitize_value() function",
+      "where": "crates/reify-stdlib/src/lib.rs:100-108",
+      "how": "Already handles Scalar{NaN/inf} → Undef conversion, so negative Scalar inputs to sqrt are handled automatically without new code"
     },
     {
-      "what": "TopologyTemplateBuilder for test construction",
-      "where": "crates/reify-test-support/src/builders.rs (TopologyTemplateBuilder, lines 141-248)",
-      "how": "Extend with a sub_component() builder method following the same pattern as param(), let_binding(), constraint(), realization()."
+      "what": "Rational::new() normalization",
+      "where": "crates/reify-types/src/dimension.rs:18-26",
+      "how": "root(2) of AREA uses Rational::new(2, 2) which auto-normalizes to Rational{1,1} = ONE, correctly producing LENGTH"
     },
     {
-      "what": "CompiledModuleBuilder for test construction",
-      "where": "crates/reify-test-support/src/builders.rs (CompiledModuleBuilder, lines 270-305)",
-      "how": "The build() method needs updating to initialize the new imports field to Vec::new(). Optionally add an import() builder method."
+      "what": "DimensionVector constants (AREA, LENGTH, etc.)",
+      "where": "crates/reify-types/src/dimension.rs:112-122",
+      "how": "Use in tests to construct Scalar inputs and verify expected output dimensions"
     },
     {
-      "what": "Rust std math functions for stdlib implementation",
-      "where": "Rust standard library (f64 methods)",
-      "how": "eval_builtin delegates to f64::abs(), f64::sqrt(), f64::sin(), f64::cos(), etc. Value::as_f64() extracts the numeric value. No external math library needed for the v0.1 function set."
-    },
-    {
-      "what": "Value::as_f64() for numeric extraction in stdlib dispatch",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Already implemented on Value enum — extracts f64 from Int, Real, or Scalar variants. Used throughout eval_expr for comparisons. eval_builtin will use it to extract function arguments for f64 math operations."
-    },
-    {
-      "what": "DimensionVector::ANGLE constant for trig return types",
-      "where": "crates/reify-types/src/dimension.rs",
-      "how": "DimensionVector::ANGLE is already defined. Used in unit_to_scalar() for 'deg'/'rad' units. Trig inverse functions (asin, acos, atan) return Scalar with this dimension."
-    },
-    {
-      "what": "Tree-sitter parser for integration test source parsing",
-      "where": "crates/reify-syntax/src/ts_parser.rs",
-      "how": "Integration tests use reify_syntax::parse(source, path) to parse .ri source strings. The parser already handles import_declaration and sub_decl grammar nodes. Tests for import and sub compilation use parse() directly rather than hand-building AST."
-    },
-    {
-      "what": "Existing boundary test patterns (boundary2_producer.rs)",
-      "where": "crates/reify-compiler/tests/boundary2_producer.rs",
-      "how": "Follow the established pattern: construct or parse a module, compile it, assert on CompiledModule fields and diagnostics. New tests for imports and sub-structures follow this exact pattern."
-    },
-    {
-      "what": "Existing unary_f64 and binary_f64 helper functions as NaN/inf sanitization point",
-      "where": "crates/reify-stdlib/src/lib.rs (unary_f64 lines 91-99, binary_f64 lines 128-136)",
-      "how": "All functions that can produce NaN/inf (sqrt, log, log10, exp, pow, asin, acos, sinh, cosh) route through unary_f64 or binary_f64. Adding sanitize_value(f(x)) at the return point of these two helpers catches all domain-error NaN/inf with a minimal 2-line change per helper, rather than modifying each of the 15+ function dispatch arms individually."
+      "what": "abs() implementation pattern",
+      "where": "crates/reify-stdlib/src/lib.rs:9-17",
+      "how": "Follow same match-on-Scalar pattern for sqrt: match Value::Scalar to transform si_value while preserving/transforming dimension"
     }
   ]
 }
