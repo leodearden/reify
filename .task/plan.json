@@ -1,129 +1,82 @@
 {
-  "task_id": "38",
-  "title": "Fix eval_eq/eval_cmp to check Scalar dimensions",
-  "modules": ["crates/reify-expr"],
-  "analysis": "eval_eq() at lib.rs:321-334 handles Bool, Int, String explicitly but Scalar falls through to the wildcard `_ =>` arm which calls as_f64() on both sides—stripping the dimension. eval_cmp() at lib.rs:343-347 always calls as_f64() on both sides, also ignoring dimension. This means 5mm == 5kg evaluates to true and 3mm < 5kg evaluates to true. The fix is to add explicit (Value::Scalar, Value::Scalar) match arms in both functions that compare dimensions first. For eval_eq: return Bool(false) on dimension mismatch, then compare si_value. For eval_cmp: return Undef on dimension mismatch (comparing incompatible units is undefined), then compare si_value with the closure. The existing eval_ne() delegates to eval_eq(), so it automatically benefits. Cross-type Scalar-vs-Int/Real comparisons must also be addressed: the current as_f64() fallback treats Int/Real as dimensionless, which is arguably correct for DIMENSIONLESS Scalars but wrong for dimensioned ones. Dimensioned Scalar vs non-Scalar should return Bool(false) for eq and Undef for cmp. DIMENSIONLESS Scalars should continue falling through to as_f64(). The existing test `gt_comparison` (line 482) compares two same-dimension LENGTH scalars via eval_cmp—this already works and must continue working. The existing patterns for dimensional checks (eval_add/eval_sub check dimension equality returning Undef on mismatch at lines 137-179) provide the template.",
+  "task_id": "39",
+  "title": "Fix sqrt to preserve and halve Scalar dimensions",
+  "modules": ["crates/reify-types", "crates/reify-stdlib"],
+  "analysis": "The sqrt function in reify-stdlib (line 18) uses `unary_f64(args, |x| Value::Real(x.sqrt()))` which extracts the f64 via `as_f64()` and wraps the result as `Value::Real`, discarding any Scalar dimension information. The fix requires two changes: (1) Add a `root(n: i8)` method to `DimensionVector` in reify-types that divides each rational exponent by n (e.g., root(2) halves exponents: AREA [2,0,...] → LENGTH [1,0,...]). (2) Replace the sqrt implementation in reify-stdlib to match on Scalar separately, computing `si_value.sqrt()` and `dimension.root(2)`, falling through to the existing Real behavior for non-Scalar numeric types. The `sanitize_value` function already handles NaN/inf for both Real and Scalar, so negative inputs will naturally produce Undef. DimensionVector already uses Rational exponents, so fractional exponents (e.g., LENGTH^(1/2)) are representable without any type changes. Existing tests for sqrt(Real) and sqrt(negative Real) already pass and should continue to pass unchanged.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `eq_scalar_different_dimensions_is_false`: construct two Scalar literals with same si_value (0.005) but different dimensions (LENGTH vs MASS), build CompiledExpr::binop(BinOp::Eq, ...), assert eval_expr returns Bool(false). This currently returns Bool(true) because as_f64() strips dimension.",
+      "description": "Write failing tests for DimensionVector::root() in crates/reify-types/src/dimension.rs: (a) root(2) of AREA → LENGTH (halve [2,0,...] to [1,0,...]), (b) root(2) of LENGTH^4 → LENGTH^2 (arbitrary even exponents), (c) root(2) of LENGTH → fractional exponent LENGTH^(1/2) with Rational(1,2), (d) root(2) of DIMENSIONLESS → DIMENSIONLESS",
       "status": "done",
-      "commit": "50b5551"
+      "commit": "92718c5"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Write test `eq_scalar_same_dimension_same_value_is_true`: construct two LENGTH Scalars with identical si_value (0.08), build Eq binop, assert eval_expr returns Bool(true). This should already pass via as_f64() fallback but documents correct behavior.",
+      "type": "impl",
+      "description": "Implement DimensionVector::root(n: i8) method in crates/reify-types/src/dimension.rs. For each exponent Rational{num, den}, compute Rational::new(num, den * n). This divides each dimension exponent by n, producing fractional exponents when needed.",
       "status": "done",
-      "commit": "50b5551"
+      "commit": "8a6f85e"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `eq_scalar_same_dimension_different_value_is_false`: construct two LENGTH Scalars with different si_values (0.08 vs 0.10), build Eq binop, assert eval_expr returns Bool(false). Should already pass.",
+      "description": "Write failing tests for dimension-aware sqrt in crates/reify-stdlib/src/lib.rs: (a) sqrt(Scalar{4.0, AREA}) must return Scalar{2.0, LENGTH}, (b) sqrt(Scalar{9.0, LENGTH^4}) must return Scalar{3.0, LENGTH^2}, (c) sqrt(Scalar{4.0, LENGTH}) must return Scalar{2.0, LENGTH^(1/2)} with fractional Rational exponent, (d) sqrt(Real(4.0)) must still return Real(2.0) — backward compat (existing test confirms), (e) sqrt(negative Scalar) must return Undef",
       "status": "done",
-      "commit": "50b5551"
+      "commit": "a9e988a"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Write failing test `cmp_scalar_different_dimensions_is_undef`: construct two Scalars with same si_value but different dimensions (LENGTH vs MASS), build CompiledExpr::binop(BinOp::Lt, ...), assert eval_expr returns Undef. Currently returns Bool(false) because as_f64() compares 0.005 < 0.005.",
-      "status": "done",
-      "commit": "50b5551"
-    },
-    {
-      "id": "step-5",
-      "type": "test",
-      "description": "Write test `cmp_scalar_same_dimension_works`: construct two LENGTH Scalars (3mm=0.003 vs 5mm=0.005), build Lt binop, assert eval_expr returns Bool(true). Should already pass (and existing gt_comparison test covers this too).",
-      "status": "done",
-      "commit": "50b5551"
-    },
-    {
-      "id": "step-6",
-      "type": "test",
-      "description": "Write failing test `eq_dimensioned_scalar_vs_int_is_false`: construct Scalar{si_value: 5.0, dimension: LENGTH} and Int(5), build Eq binop, assert eval_expr returns Bool(false). Currently returns Bool(true) because both as_f64() return Some(5.0).",
-      "status": "done",
-      "commit": "50b5551"
-    },
-    {
-      "id": "step-7",
-      "type": "test",
-      "description": "Write test `ne_scalar_different_dimensions_is_true`: construct two Scalars with different dimensions, build Ne binop, assert eval_expr returns Bool(true). Verifies eval_ne correctly inverts the fixed eval_eq. Currently fails (returns Bool(false)).",
-      "status": "done",
-      "commit": "50b5551"
-    },
-    {
-      "id": "step-8",
       "type": "impl",
-      "description": "Add explicit Scalar match arm in eval_eq before the wildcard: match (Value::Scalar { si_value: a, dimension: da }, Value::Scalar { si_value: b, dimension: db }) => if da != db { Bool(false) } else { Bool(a == b) }. Also add arms for dimensioned Scalar vs non-Scalar: (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. }) where !dimension.is_dimensionless() => Bool(false). DIMENSIONLESS Scalars continue to fall through to the as_f64 wildcard. This fixes steps 1, 6, and 7.",
+      "description": "Replace sqrt implementation in crates/reify-stdlib/src/lib.rs line 18. Change from `unary_f64(args, |x| Value::Real(x.sqrt()))` to use `unary(args, |v| ...)` which matches on Value::Scalar to preserve/halve dimensions via dimension.root(2), and falls through to as_f64() → Value::Real for Int/Real inputs. Apply sanitize_value to catch NaN from negative inputs.",
       "status": "done",
-      "commit": "90c53a2"
-    },
-    {
-      "id": "step-9",
-      "type": "impl",
-      "description": "Add explicit Scalar match arm in eval_cmp before the as_f64 fallback: match (Value::Scalar { si_value: a, dimension: da }, Value::Scalar { si_value: b, dimension: db }) => if da != db { Undef } else { Bool(cmp(*a, *b)) }. Also add arms for dimensioned Scalar vs non-Scalar: (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. }) where !dimension.is_dimensionless() => Undef. DIMENSIONLESS Scalars continue to fall through to as_f64. This fixes step 4.",
-      "status": "done",
-      "commit": "90c53a2"
-    },
-    {
-      "id": "step-10",
-      "type": "test",
-      "description": "Run `cargo test -p reify-expr` to verify all new and existing tests pass (including existing gt_comparison which tests same-dimension cmp). Then run `cargo test --workspace` to ensure no regressions across the project.",
-      "status": "done",
-      "commit": "90c53a2"
+      "commit": "00a9c18"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Scalar-vs-Scalar with mismatched dimensions: eval_eq returns Bool(false), eval_cmp returns Undef",
-      "rationale": "Two values with different physical dimensions are definitively not equal (false is correct), but ordering them is meaningless (Undef is correct—you can't say 5mm < 5kg). This matches the existing pattern where add/sub of mismatched dimensions returns Undef, and is consistent with the strict Undef propagation contract."
+      "decision": "Add DimensionVector::root(n) rather than Mul trait on Rational",
+      "rationale": "root(n) is the natural API for nth-root dimension operations (sqrt=root(2), cbrt=root(3)). It's more semantically clear than exposing general Rational multiplication. The implementation is trivial: divide each exponent by n via Rational::new(num, den*n). No need to add Mul for Rational since pow() already inlines the multiplication."
     },
     {
-      "decision": "Dimensioned Scalar vs bare Int/Real: eval_eq returns Bool(false), eval_cmp returns Undef",
-      "rationale": "A dimensioned quantity like 5mm should not equal the bare number 5. Int and Real are implicitly dimensionless—comparing them to a dimensioned Scalar is a type mismatch. Only DIMENSIONLESS Scalars should compare against Int/Real via the existing as_f64 fallback."
+      "decision": "Use unary() instead of unary_f64() for sqrt",
+      "rationale": "unary_f64 extracts as_f64() too early, losing the Value variant information. Using unary() allows pattern matching on Value::Scalar to preserve dimension info, matching the existing pattern used by abs(). The non-Scalar fallback still uses as_f64() for backward compatibility."
     },
     {
-      "decision": "DIMENSIONLESS Scalar vs Int/Real continues to use as_f64 comparison",
-      "rationale": "A DIMENSIONLESS Scalar is conceptually just a real number, so comparing it to Int/Real via as_f64 is correct and preserves backward compatibility. The guard uses dimension.is_dimensionless() which already exists on DimensionVector."
+      "decision": "Rely on sanitize_value for negative input handling",
+      "rationale": "(-x).sqrt() produces NaN in Rust, and sanitize_value already converts NaN/inf Scalars to Undef (line 103-105). No special-case needed for negative Scalar inputs — the existing defense-in-depth mechanism handles it uniformly for both Real and Scalar."
     },
     {
-      "decision": "Use match guards with is_dimensionless() rather than separate DIMENSIONLESS match arms",
-      "rationale": "Match guards like `(Value::Scalar { dimension, .. }, _) if !dimension.is_dimensionless()` are more readable and maintainable than matching on the internal array representation of DimensionVector. The is_dimensionless() method already exists and is well-tested."
+      "decision": "Allow fractional dimension exponents from sqrt of odd-dimension values",
+      "rationale": "sqrt(LENGTH) produces LENGTH^(1/2) which is physically valid (used in e.g., fracture toughness MPa·√m). Rational already supports this representation. Rather than erroring, we let the type system propagate the fractional exponent and let downstream dimension-checking catch any mismatches."
     }
   ],
   "reuse": [
     {
-      "what": "mm_val() helper",
-      "where": "crates/reify-expr/src/lib.rs tests module (line 386)",
-      "how": "Reuse existing mm_val(v: f64) -> Value helper to create LENGTH scalars in tests"
+      "what": "unary() helper function",
+      "where": "crates/reify-stdlib/src/lib.rs:87-92",
+      "how": "Use unary() instead of unary_f64() for sqrt, same pattern as abs() which also matches on Value variants to preserve Scalar dimensions"
     },
     {
-      "what": "lit() helper",
-      "where": "crates/reify-expr/src/lib.rs tests module (line 378)",
-      "how": "Reuse existing lit(v: Value, ty: Type) -> CompiledExpr helper to wrap values as literal expressions"
+      "what": "sanitize_value() function",
+      "where": "crates/reify-stdlib/src/lib.rs:100-108",
+      "how": "Already handles Scalar{NaN/inf} → Undef conversion, so negative Scalar inputs to sqrt are handled automatically without new code"
     },
     {
-      "what": "DimensionVector constants (LENGTH, MASS, DIMENSIONLESS)",
-      "where": "crates/reify-types/src/dimension.rs (lines 112-118)",
-      "how": "Use existing constants for constructing test Scalar values and for dimension comparisons"
+      "what": "Rational::new() normalization",
+      "where": "crates/reify-types/src/dimension.rs:18-26",
+      "how": "root(2) of AREA uses Rational::new(2, 2) which auto-normalizes to Rational{1,1} = ONE, correctly producing LENGTH"
     },
     {
-      "what": "DimensionVector::is_dimensionless() method",
-      "where": "crates/reify-types/src/dimension.rs",
-      "how": "Use in match guards to distinguish dimensioned vs dimensionless Scalars for cross-type comparison fallthrough"
+      "what": "DimensionVector constants (AREA, LENGTH, etc.)",
+      "where": "crates/reify-types/src/dimension.rs:112-122",
+      "how": "Use in tests to construct Scalar inputs and verify expected output dimensions"
     },
     {
-      "what": "Existing test patterns (gt_comparison, add_different_dimensions_is_undef)",
-      "where": "crates/reify-expr/src/lib.rs tests module (lines 432-491)",
-      "how": "Follow same pattern: create lit() expressions, build CompiledExpr::binop, call eval_expr, match result. The mass Scalar construction pattern from add_different_dimensions_is_undef is directly reusable."
-    },
-    {
-      "what": "eval_ne delegation pattern",
-      "where": "crates/reify-expr/src/lib.rs (lines 336-341)",
-      "how": "eval_ne already delegates to eval_eq and inverts the result. Fixing eval_eq automatically fixes eval_ne—no changes needed there."
+      "what": "abs() implementation pattern",
+      "where": "crates/reify-stdlib/src/lib.rs:9-17",
+      "how": "Follow same match-on-Scalar pattern for sqrt: match Value::Scalar to transform si_value while preserving/transforming dimension"
     }
   ]
 }
