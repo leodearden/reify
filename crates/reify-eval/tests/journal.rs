@@ -1,7 +1,7 @@
 //! Integration tests for the EventJournal instrumentation in Engine.
 
-use reify_eval::cache::{EvalOutcome, NodeId};
-use reify_eval::journal::{EventJournal, EventKind};
+use reify_eval::cache::NodeId;
+use reify_eval::journal::EventKind;
 use reify_eval::Engine;
 use reify_test_support::bracket_compiled_module;
 use reify_test_support::mocks::MockConstraintChecker;
@@ -18,7 +18,7 @@ fn eval_populates_journal() {
 
     let journal = engine.journal();
     assert!(
-        journal.len() > 0,
+        !journal.is_empty(),
         "journal should have events after eval()"
     );
 
@@ -140,7 +140,7 @@ fn eval_cached_records_cache_hit_events() {
 
     // First call: cold start — should record Started/Completed
     let v0 = VersionId(0);
-    let result1 = engine.eval_cached(&module, v0);
+    let _result1 = engine.eval_cached(&module, v0);
     let events_after_cold = engine.journal().len();
     assert!(events_after_cold > 0, "cold start should record events");
 
@@ -152,7 +152,7 @@ fn eval_cached_records_cache_hit_events() {
     assert!(has_started, "cold start should have Started for width");
 
     // Second call with same version: should get CacheHit via fast path
-    let result2 = engine.eval_cached(&module, v0);
+    let _result2 = engine.eval_cached(&module, v0);
     let events_after_second = engine.journal().len();
     assert!(
         events_after_second > events_after_cold,
@@ -174,7 +174,7 @@ fn eval_cached_records_cache_hit_events() {
     engine.set_param_and_invalidate(&width_id, Value::length(0.1));
     let events_before_dirty = engine.journal().len();
     let v1 = VersionId(1);
-    let result3 = engine.eval_cached(&module, v1);
+    let _result3 = engine.eval_cached(&module, v1);
     let events_after_dirty = engine.journal().len();
     assert!(
         events_after_dirty > events_before_dirty,

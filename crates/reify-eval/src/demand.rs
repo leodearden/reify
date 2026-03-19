@@ -324,7 +324,7 @@ mod tests {
                 kind: ValueCellKind::Param,
                 cell_type: Type::Real,
                 default_expr: Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)),
-                content_hash: ContentHash::of_str(*name),
+                content_hash: ContentHash::of_str(name),
             });
         }
 

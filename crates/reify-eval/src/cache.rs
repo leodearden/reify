@@ -518,7 +518,7 @@ mod tests {
         );
 
         // Invalidate dependents of a
-        store.invalidate_dependents(&[a.clone()]);
+        store.invalidate_dependents(std::slice::from_ref(&a));
 
         // x should be marked dirty (depends on a) but entry still exists
         assert!(store.is_dirty(&node_x));

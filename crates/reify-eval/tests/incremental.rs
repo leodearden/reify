@@ -1605,7 +1605,7 @@ fn edit_check_preserves_constraint_labels() {
 /// Without topological sorting, y evaluates before x and gets Undef.
 #[test]
 fn forward_let_ref_cold_start_simple() {
-    let a_id = ValueCellId::new("S", "a");
+    let _a_id = ValueCellId::new("S", "a");
     let x_id = ValueCellId::new("S", "x");
     let y_id = ValueCellId::new("S", "y");
 
@@ -1737,9 +1737,7 @@ fn forward_let_ref_cold_start_diamond() {
 /// before b is re-evaluated with the resolved x, producing a stale result.
 #[test]
 fn forward_let_ref_post_resolution() {
-    use reify_types::SolveResult;
-
-    let p_id = ValueCellId::new("S", "p");
+    let _p_id = ValueCellId::new("S", "p");
     let x_id = ValueCellId::new("S", "x");
     let b_id = ValueCellId::new("S", "b");
     let c_id = ValueCellId::new("S", "c");
