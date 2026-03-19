@@ -862,6 +862,149 @@ mod tests {
         }
     }
 
+    // --- NaN / Infinity parameter rejection tests (step-9) ---
+
+    #[test]
+    fn execute_box_nan_dimension_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(f64::NAN),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN-width box"),
+        }
+    }
+
+    #[test]
+    fn execute_box_infinity_dimension_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(f64::INFINITY),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity-width box"),
+        }
+    }
+
+    #[test]
+    fn execute_box_neg_infinity_dimension_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(f64::NEG_INFINITY),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for neg-infinity-width box"),
+        }
+    }
+
+    #[test]
+    fn execute_cylinder_nan_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Cylinder {
+            radius: Value::Real(f64::NAN),
+            height: Value::Real(10.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN-radius cylinder"),
+        }
+    }
+
+    #[test]
+    fn execute_cylinder_infinity_height_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Cylinder {
+            radius: Value::Real(5.0),
+            height: Value::Real(f64::INFINITY),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity-height cylinder"),
+        }
+    }
+
+    #[test]
+    fn execute_sphere_nan_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Sphere {
+            radius: Value::Real(f64::NAN),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN-radius sphere"),
+        }
+    }
+
+    #[test]
+    fn execute_sphere_infinity_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Sphere {
+            radius: Value::Real(f64::INFINITY),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity-radius sphere"),
+        }
+    }
+
+    #[test]
+    fn execute_fillet_nan_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Fillet {
+            target: box_h.id,
+            radius: Value::Real(f64::NAN),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN-radius fillet"),
+        }
+    }
+
+    #[test]
+    fn execute_fillet_infinity_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Fillet {
+            target: box_h.id,
+            radius: Value::Real(f64::INFINITY),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity-radius fillet"),
+        }
+    }
+
     #[test]
     fn brep_serialization_roundtrip() {
         // Create a box shape
