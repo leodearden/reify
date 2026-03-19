@@ -157,6 +157,99 @@ impl EvaluationGraph {
                     graph.value_cells.insert(scoped_id, node);
                 }
             }
+
+            // Guarded groups: create guard ValueCell nodes, member/else nodes,
+            // constraint/else-constraint nodes, and store GuardedGroupInfo metadata.
+            for group in &template.guarded_groups {
+                // 1. Create ValueCellNode for the guard cell (Bool, Let kind)
+                let guard_id = &group.guard_value_cell;
+                let guard_id_hash = ContentHash::of_str(&format!("{}", guard_id));
+                let guard_expr_hash = group.guard_expr.content_hash;
+                let guard_node = ValueCellNode {
+                    id: guard_id.clone(),
+                    kind: reify_compiler::ValueCellKind::Let,
+                    cell_type: Type::Bool,
+                    default_expr: Some(group.guard_expr.clone()),
+                    content_hash: guard_id_hash.combine(guard_expr_hash),
+                };
+                graph.value_cells.insert(guard_id.clone(), guard_node);
+
+                // 2. Create ValueCellNodes for all members
+                let mut member_ids = Vec::new();
+                for cell in &group.members {
+                    let id_hash = ContentHash::of_str(&format!("{}", cell.id));
+                    let expr_hash = cell.default_expr.as_ref()
+                        .map(|e| e.content_hash)
+                        .unwrap_or(ContentHash(0));
+                    let node = ValueCellNode {
+                        id: cell.id.clone(),
+                        kind: cell.kind,
+                        cell_type: cell.cell_type.clone(),
+                        default_expr: cell.default_expr.clone(),
+                        content_hash: id_hash.combine(expr_hash),
+                    };
+                    graph.value_cells.insert(cell.id.clone(), node);
+                    member_ids.push(cell.id.clone());
+                }
+
+                // 3. Create ConstraintNodeData for guard-true constraints
+                let mut constraint_ids = Vec::new();
+                for constraint in &group.constraints {
+                    let id_hash = ContentHash::of_str(&format!("{}", constraint.id));
+                    let node = ConstraintNodeData {
+                        id: constraint.id.clone(),
+                        label: constraint.label.clone(),
+                        expr: constraint.expr.clone(),
+                        content_hash: id_hash.combine(constraint.expr.content_hash),
+                    };
+                    graph.constraints.insert(constraint.id.clone(), node);
+                    constraint_ids.push(constraint.id.clone());
+                }
+
+                // 4. Create ValueCellNodes for else_members
+                let mut else_member_ids = Vec::new();
+                for cell in &group.else_members {
+                    let id_hash = ContentHash::of_str(&format!("{}", cell.id));
+                    let expr_hash = cell.default_expr.as_ref()
+                        .map(|e| e.content_hash)
+                        .unwrap_or(ContentHash(0));
+                    let node = ValueCellNode {
+                        id: cell.id.clone(),
+                        kind: cell.kind,
+                        cell_type: cell.cell_type.clone(),
+                        default_expr: cell.default_expr.clone(),
+                        content_hash: id_hash.combine(expr_hash),
+                    };
+                    graph.value_cells.insert(cell.id.clone(), node);
+                    else_member_ids.push(cell.id.clone());
+                }
+
+                // 5. Create ConstraintNodeData for else constraints
+                let mut else_constraint_ids = Vec::new();
+                for constraint in &group.else_constraints {
+                    let id_hash = ContentHash::of_str(&format!("{}", constraint.id));
+                    let node = ConstraintNodeData {
+                        id: constraint.id.clone(),
+                        label: constraint.label.clone(),
+                        expr: constraint.expr.clone(),
+                        content_hash: id_hash.combine(constraint.expr.content_hash),
+                    };
+                    graph.constraints.insert(constraint.id.clone(), node);
+                    else_constraint_ids.push(constraint.id.clone());
+                }
+
+                // 6. Store GuardedGroupInfo
+                graph.guarded_groups.push(GuardedGroupInfo {
+                    guard_cell: guard_id.clone(),
+                    members: member_ids,
+                    constraints: constraint_ids,
+                    else_members: else_member_ids,
+                    else_constraints: else_constraint_ids,
+                });
+
+                // 7. Add guard cell to structure_controlling
+                graph.structure_controlling.insert(guard_id.clone());
+            }
         }
 
         graph

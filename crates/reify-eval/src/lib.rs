@@ -716,6 +716,102 @@ impl Engine {
             // (handles forward references where a let declared earlier
             //  depends on a let declared later)
             self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id);
+
+            // Third pass: evaluate guarded groups.
+            // Guard cells are Let-kind synthetic cells — evaluate their expressions,
+            // then conditionally evaluate members based on guard truth value.
+            for group in &template.guarded_groups {
+                // Evaluate the guard cell expression
+                let guard_val = reify_expr::eval_expr(&group.guard_expr, &values);
+                values.insert(group.guard_value_cell.clone(), guard_val.clone());
+
+                let guard_determinacy = match &guard_val {
+                    Value::Bool(_) => DeterminacyState::Determined,
+                    _ => DeterminacyState::Undetermined,
+                };
+                snapshot.values.insert(
+                    group.guard_value_cell.clone(),
+                    (guard_val.clone(), guard_determinacy),
+                );
+
+                let guard_is_true = matches!(&guard_val, Value::Bool(true));
+                let guard_is_false = matches!(&guard_val, Value::Bool(false));
+
+                // Evaluate members (active when guard is true)
+                for cell in &group.members {
+                    if guard_is_true {
+                        // Evaluate normally
+                        if cell.kind == ValueCellKind::Param
+                            || cell.kind == ValueCellKind::Let
+                        {
+                            if let Some(ref expr) = cell.default_expr {
+                                let val = reify_expr::eval_expr(expr, &values);
+                                values.insert(cell.id.clone(), val.clone());
+                                snapshot.values.insert(
+                                    cell.id.clone(),
+                                    (val, DeterminacyState::Determined),
+                                );
+                            } else {
+                                values.insert(cell.id.clone(), Value::Undef);
+                                snapshot.values.insert(
+                                    cell.id.clone(),
+                                    (Value::Undef, DeterminacyState::Undetermined),
+                                );
+                            }
+                        } else if cell.kind == ValueCellKind::Auto {
+                            values.insert(cell.id.clone(), Value::Undef);
+                            snapshot.values.insert(
+                                cell.id.clone(),
+                                (Value::Undef, DeterminacyState::Auto),
+                            );
+                        }
+                    } else {
+                        // Guard is false or Undef — member is inactive
+                        values.insert(cell.id.clone(), Value::Undef);
+                        snapshot.values.insert(
+                            cell.id.clone(),
+                            (Value::Undef, DeterminacyState::Undetermined),
+                        );
+                    }
+                }
+
+                // Evaluate else_members (active when guard is false)
+                for cell in &group.else_members {
+                    if guard_is_false {
+                        if cell.kind == ValueCellKind::Param
+                            || cell.kind == ValueCellKind::Let
+                        {
+                            if let Some(ref expr) = cell.default_expr {
+                                let val = reify_expr::eval_expr(expr, &values);
+                                values.insert(cell.id.clone(), val.clone());
+                                snapshot.values.insert(
+                                    cell.id.clone(),
+                                    (val, DeterminacyState::Determined),
+                                );
+                            } else {
+                                values.insert(cell.id.clone(), Value::Undef);
+                                snapshot.values.insert(
+                                    cell.id.clone(),
+                                    (Value::Undef, DeterminacyState::Undetermined),
+                                );
+                            }
+                        } else if cell.kind == ValueCellKind::Auto {
+                            values.insert(cell.id.clone(), Value::Undef);
+                            snapshot.values.insert(
+                                cell.id.clone(),
+                                (Value::Undef, DeterminacyState::Auto),
+                            );
+                        }
+                    } else {
+                        // Guard is true or Undef — else member is inactive
+                        values.insert(cell.id.clone(), Value::Undef);
+                        snapshot.values.insert(
+                            cell.id.clone(),
+                            (Value::Undef, DeterminacyState::Undetermined),
+                        );
+                    }
+                }
+            }
         }
 
         // Sub-component elaboration: evaluate child template params/lets
