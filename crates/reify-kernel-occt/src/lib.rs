@@ -326,6 +326,20 @@ impl WarmStartable for OcctKernel {
 }
 
 #[cfg(test)]
+impl OcctKernel {
+    /// Inject a null `UniquePtr<OcctShape>` into the shapes map for testing.
+    /// This simulates a corrupted shape handle (present in map but wrapping a
+    /// null C++ pointer).
+    fn insert_null_shape(&mut self, id: u64) {
+        self.shapes
+            .insert(id, cxx::UniquePtr::null());
+        if id >= self.next_id {
+            self.next_id = id + 1;
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
