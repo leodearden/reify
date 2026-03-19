@@ -1,8 +1,7 @@
 //! Guard compilation tests.
 //!
-//! Tests that per-declaration where clauses, block guards, nested guards,
-//! else blocks, and reference safety are compiled correctly into
-//! CompiledGuardedGroup entries on TopologyTemplate.
+//! Tests for compiling where-clauses and guarded blocks into
+//! CompiledGuardedGroup entries in TopologyTemplate.
 
 use reify_compiler::*;
 use reify_test_support::*;
