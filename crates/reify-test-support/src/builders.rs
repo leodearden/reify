@@ -305,7 +305,23 @@ impl TopologyTemplateBuilder {
 
             let sub_hashes = self.sub_components.iter().map(|s| s.content_hash);
 
-            let guard_hashes = self.guarded_groups.iter().map(|g| g.guard_expr.content_hash);
+            let guard_hashes = self.guarded_groups.iter().flat_map(|g| {
+                std::iter::once(g.guard_expr.content_hash)
+                    .chain(g.members.iter().map(|m| {
+                        m.default_expr
+                            .as_ref()
+                            .map(|e| e.content_hash)
+                            .unwrap_or(ContentHash(0))
+                    }))
+                    .chain(g.constraints.iter().map(|c| c.expr.content_hash))
+                    .chain(g.else_members.iter().map(|m| {
+                        m.default_expr
+                            .as_ref()
+                            .map(|e| e.content_hash)
+                            .unwrap_or(ContentHash(0))
+                    }))
+                    .chain(g.else_constraints.iter().map(|c| c.expr.content_hash))
+            });
 
             let all_hashes = std::iter::once(name_hash)
                 .chain(vc_hashes)
