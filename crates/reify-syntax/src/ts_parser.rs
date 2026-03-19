@@ -104,83 +104,114 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Lower a single member node (used by both lower_structure and lower_guarded_block).
+    fn lower_member(&mut self, child: tree_sitter::Node) -> Option<MemberDecl> {
+        match child.kind() {
+            "param_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid param: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_param(child).map(MemberDecl::Param)
+                }
+            }
+            "let_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid let: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_let(child).map(MemberDecl::Let)
+                }
+            }
+            "constraint_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid constraint: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_constraint(child).map(MemberDecl::Constraint)
+                }
+            }
+            "sub_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid sub: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_sub(child).map(MemberDecl::Sub)
+                }
+            }
+            "minimize_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid minimize: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_minimize(child).map(MemberDecl::Minimize)
+                }
+            }
+            "maximize_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid maximize: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_maximize(child).map(MemberDecl::Maximize)
+                }
+            }
+            "guarded_block" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid guarded block: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_guarded_block(child)
+                }
+            }
+            "ERROR" => {
+                self.errors.push(ParseError {
+                    message: format!("syntax error: {}", self.node_text(child)),
+                    span: self.span(child),
+                });
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Collect members from children of a node (structure body or guarded block body).
+    fn lower_members(&mut self, node: tree_sitter::Node) -> Vec<MemberDecl> {
+        let mut members = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(member) = self.lower_member(child) {
+                members.push(member);
+            }
+        }
+        members
+    }
+
     fn lower_structure(&mut self, node: tree_sitter::Node) -> Option<StructureDef> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
-        let mut members = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            match child.kind() {
-                "param_declaration" => {
-                    if child.is_error() || child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!("invalid param: {}", self.node_text(child)),
-                            span: self.span(child),
-                        });
-                    } else if let Some(p) = self.lower_param(child) {
-                        members.push(MemberDecl::Param(p));
-                    }
-                }
-                "let_declaration" => {
-                    if child.is_error() || child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!("invalid let: {}", self.node_text(child)),
-                            span: self.span(child),
-                        });
-                    } else if let Some(l) = self.lower_let(child) {
-                        members.push(MemberDecl::Let(l));
-                    }
-                }
-                "constraint_declaration" => {
-                    if child.is_error() || child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!("invalid constraint: {}", self.node_text(child)),
-                            span: self.span(child),
-                        });
-                    } else if let Some(c) = self.lower_constraint(child) {
-                        members.push(MemberDecl::Constraint(c));
-                    }
-                }
-                "sub_declaration" => {
-                    if child.is_error() || child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!("invalid sub: {}", self.node_text(child)),
-                            span: self.span(child),
-                        });
-                    } else if let Some(s) = self.lower_sub(child) {
-                        members.push(MemberDecl::Sub(s));
-                    }
-                }
-                "minimize_declaration" => {
-                    if child.is_error() || child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!("invalid minimize: {}", self.node_text(child)),
-                            span: self.span(child),
-                        });
-                    } else if let Some(m) = self.lower_minimize(child) {
-                        members.push(MemberDecl::Minimize(m));
-                    }
-                }
-                "maximize_declaration" => {
-                    if child.is_error() || child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!("invalid maximize: {}", self.node_text(child)),
-                            span: self.span(child),
-                        });
-                    } else if let Some(m) = self.lower_maximize(child) {
-                        members.push(MemberDecl::Maximize(m));
-                    }
-                }
-                "ERROR" => {
-                    self.errors.push(ParseError {
-                        message: format!("syntax error: {}", self.node_text(child)),
-                        span: self.span(child),
-                    });
-                }
-                _ => {}
-            }
-        }
+        let members = self.lower_members(node);
 
         let content_hash = self.content_hash(node);
 
@@ -190,6 +221,45 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash,
         })
+    }
+
+    // ── Guarded block lowering ─────────────────────────────────
+
+    fn lower_guarded_block(&mut self, node: tree_sitter::Node) -> Option<MemberDecl> {
+        let condition_node = node.child_by_field_name("condition")?;
+        let condition = self.lower_expr(condition_node)?;
+
+        // Collect members from the main block and else block.
+        // The grammar structure is: 'where' condition '{' members... '}' ['else' '{' members... '}']
+        // We need to distinguish main block members from else block members.
+        let mut main_members = Vec::new();
+        let mut else_members = Vec::new();
+        let mut in_else = false;
+        let mut cursor = node.walk();
+
+        for child in node.children(&mut cursor) {
+            // Track when we enter the else block
+            if !child.is_named() && self.node_text(child) == "else" {
+                in_else = true;
+                continue;
+            }
+
+            if let Some(member) = self.lower_member(child) {
+                if in_else {
+                    else_members.push(member);
+                } else {
+                    main_members.push(member);
+                }
+            }
+        }
+
+        Some(MemberDecl::GuardedGroup(GuardedGroupDecl {
+            condition,
+            members: main_members,
+            else_members,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        }))
     }
 
     // ── Where clause lowering ─────────────────────────────────
