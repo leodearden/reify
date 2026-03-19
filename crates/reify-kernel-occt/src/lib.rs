@@ -104,17 +104,37 @@ impl OcctKernel {
                 let w = extract_f64(width)?;
                 let h = extract_f64(height)?;
                 let d = extract_f64(depth)?;
+                if w <= 0.0 || h <= 0.0 || d <= 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "box dimensions must be greater than zero".into(),
+                    ));
+                }
                 ffi::ffi::make_box(w, h, d)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Cylinder { radius, height } => {
                 let r = extract_f64(radius)?;
                 let h = extract_f64(height)?;
+                if r <= 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "cylinder radius must be greater than zero".into(),
+                    ));
+                }
+                if h <= 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "cylinder height must be greater than zero".into(),
+                    ));
+                }
                 ffi::ffi::make_cylinder(r, h)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Sphere { radius } => {
                 let r = extract_f64(radius)?;
+                if r <= 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "sphere radius must be greater than zero".into(),
+                    ));
+                }
                 ffi::ffi::make_sphere(r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -139,6 +159,11 @@ impl OcctKernel {
             GeometryOp::Fillet { target, radius } => {
                 let shape = self.get_shape(*target)?;
                 let r = extract_f64(radius)?;
+                if r <= 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "fillet radius must be greater than zero".into(),
+                    ));
+                }
                 ffi::ffi::fillet_all_edges(shape, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
