@@ -1048,6 +1048,113 @@ fn e2e_minimize_round_trip() {
     assert_eq!(let_cells.len(), 1, "expected 1 let binding");
 }
 
+/// Enum declarations should be compiled into CompiledModule.enum_defs.
+#[test]
+fn compile_enum_populates_registry() {
+    let source = r#"enum Direction { In, Out, Bidi }
+structure S { param x: Scalar = 5mm }"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_reg"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert_eq!(
+        compiled.enum_defs.len(),
+        1,
+        "expected 1 enum_def, got {}",
+        compiled.enum_defs.len()
+    );
+    assert_eq!(compiled.enum_defs[0].name, "Direction");
+    assert_eq!(
+        compiled.enum_defs[0].variants,
+        vec!["In", "Out", "Bidi"]
+    );
+}
+
+/// Enum access expression should compile to a literal Value::Enum.
+#[test]
+fn compile_enum_access_to_literal() {
+    let source = r#"enum Direction { In, Out, Bidi }
+structure S { let d = Direction.In }"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_access"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // No error diagnostics expected
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+
+    let template = &compiled.templates[0];
+    let d_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d")
+        .expect("should have 'd' value cell");
+
+    let d_expr = d_cell.default_expr.as_ref().expect("let should have expr");
+
+    match &d_expr.kind {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
+            type_name,
+            variant,
+        }) => {
+            assert_eq!(type_name, "Direction");
+            assert_eq!(variant, "In");
+        }
+        other => panic!("expected Literal(Enum), got {:?}", other),
+    }
+
+    assert_eq!(
+        d_expr.result_type,
+        reify_types::Type::Enum("Direction".into())
+    );
+}
+
+/// Unknown enum type produces diagnostic (parser sees MemberAccess, not EnumAccess).
+#[test]
+fn compile_unknown_enum_produces_diagnostic() {
+    let source = r#"structure S { let d = UnknownEnum.Variant }"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_unknown_enum"));
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        !compiled.diagnostics.is_empty(),
+        "expected diagnostics for unknown enum access"
+    );
+}
+
+/// E2E: enum equality evaluates through full pipeline.
+#[test]
+fn e2e_enum_equality_eval() {
+    let source = r#"enum Direction { In, Out, Bidi }
+structure S { constraint Direction.In == Direction.In }"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_e2e"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // No error diagnostics
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+
+    let template = &compiled.templates[0];
+    assert_eq!(template.constraints.len(), 1);
+
+    let constraint_expr = &template.constraints[0].expr;
+    let result = reify_expr::eval_expr(constraint_expr, &reify_types::ValueMap::new());
+    match result {
+        reify_types::Value::Bool(true) => {}
+        other => panic!("expected Bool(true), got {:?}", other),
+    }
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
@@ -1119,4 +1226,132 @@ fn scalar_plus_int_type_error() {
         "diagnostics should mention type incompatibility, got: {:?}",
         compiled.diagnostics
     );
+}
+
+/// Forward reference: structure declared BEFORE the enum it references.
+/// Order-independent declarations require all enums to be available regardless of source order.
+#[test]
+fn compile_enum_forward_reference_order_independent() {
+    let source = r#"structure S { let d = Direction.In }
+enum Direction { In, Out, Bidi }"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_fwd"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // No error diagnostics expected — enum should be resolved despite forward reference
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no error diagnostics for forward enum ref, got: {:?}", errors);
+
+    let template = &compiled.templates[0];
+    let d_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d")
+        .expect("should have 'd' value cell");
+
+    let d_expr = d_cell.default_expr.as_ref().expect("let should have expr");
+
+    match &d_expr.kind {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
+            type_name,
+            variant,
+        }) => {
+            assert_eq!(type_name, "Direction");
+            assert_eq!(variant, "In");
+        }
+        other => panic!("expected Literal(Enum), got {:?}", other),
+    }
+
+    assert_eq!(
+        d_expr.result_type,
+        reify_types::Type::Enum("Direction".into())
+    );
+}
+
+/// Multiple enums and structures interleaved in various orders.
+/// Validates two-pass compilation handles forward and backward references.
+#[test]
+fn compile_enum_forward_reference_multiple_enums() {
+    let source = r#"structure A { let x = Color.Red }
+enum Direction { In, Out }
+structure B {
+    let y = Direction.In
+    let z = Color.Red
+}
+enum Color { Red, Green, Blue }"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_multi"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // No error diagnostics expected
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+
+    // Should have 2 enum_defs
+    assert_eq!(compiled.enum_defs.len(), 2, "expected 2 enum_defs");
+
+    // Template A: x → Value::Enum(Color, Red)
+    let template_a = &compiled.templates[0];
+    let x_cell = template_a
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("should have 'x' value cell");
+    let x_expr = x_cell.default_expr.as_ref().expect("let should have expr");
+    match &x_expr.kind {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
+            type_name,
+            variant,
+        }) => {
+            assert_eq!(type_name, "Color");
+            assert_eq!(variant, "Red");
+        }
+        other => panic!("A.x: expected Literal(Enum(Color, Red)), got {:?}", other),
+    }
+
+    // Template B: y → Value::Enum(Direction, In), z → Value::Enum(Color, Red)
+    let template_b = &compiled.templates[1];
+    let y_cell = template_b
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "y")
+        .expect("should have 'y' value cell");
+    let y_expr = y_cell.default_expr.as_ref().expect("let should have expr");
+    match &y_expr.kind {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
+            type_name,
+            variant,
+        }) => {
+            assert_eq!(type_name, "Direction");
+            assert_eq!(variant, "In");
+        }
+        other => panic!("B.y: expected Literal(Enum(Direction, In)), got {:?}", other),
+    }
+
+    let z_cell = template_b
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "z")
+        .expect("should have 'z' value cell");
+    let z_expr = z_cell.default_expr.as_ref().expect("let should have expr");
+    match &z_expr.kind {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
+            type_name,
+            variant,
+        }) => {
+            assert_eq!(type_name, "Color");
+            assert_eq!(variant, "Red");
+        }
+        other => panic!("B.z: expected Literal(Enum(Color, Red)), got {:?}", other),
+    }
 }

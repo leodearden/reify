@@ -340,6 +340,25 @@ fn eval_eq(lv: &Value, rv: &Value) -> Value {
                 Value::Bool(a == b)
             }
         }
+        // Enum-vs-Enum equality: same type → compare variant, different type → false
+        (
+            Value::Enum {
+                type_name: a,
+                variant: av,
+            },
+            Value::Enum {
+                type_name: b,
+                variant: bv,
+            },
+        ) => {
+            if a == b {
+                Value::Bool(av == bv)
+            } else {
+                Value::Bool(false)
+            }
+        }
+        // Enum vs non-Enum: always false
+        (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Bool(false),
         // Dimensioned Scalar vs non-Scalar: not equal
         (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
             if !dimension.is_dimensionless() =>
@@ -382,6 +401,8 @@ fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
                 Value::Bool(cmp(*a, *b))
             }
         }
+        // Enum comparison: no ordering on enums
+        (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Undef,
         // Dimensioned Scalar vs non-Scalar: incomparable
         (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
             if !dimension.is_dimensionless() =>
@@ -999,6 +1020,78 @@ mod tests {
             Value::Bool(true) => {}
             other => panic!("expected Bool(true), got {:?}", other),
         }
+    }
+
+    // ── Enum eval tests ──────────────────────────────────
+
+    fn enum_lit(type_name: &str, variant: &str) -> CompiledExpr {
+        lit(
+            Value::Enum {
+                type_name: type_name.into(),
+                variant: variant.into(),
+            },
+            Type::Enum(type_name.into()),
+        )
+    }
+
+    #[test]
+    fn eval_eq_enum_same_type_same_variant() {
+        let left = enum_lit("Direction", "In");
+        let right = enum_lit("Direction", "In");
+        let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Bool(true) => {}
+            other => panic!("expected Bool(true), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_eq_enum_same_type_different_variant() {
+        let left = enum_lit("Direction", "In");
+        let right = enum_lit("Direction", "Out");
+        let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Bool(false) => {}
+            other => panic!("expected Bool(false), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_eq_enum_different_types() {
+        let left = enum_lit("Direction", "In");
+        let right = enum_lit("ThreadSystem", "ISO");
+        let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Bool(false) => {}
+            other => panic!("expected Bool(false), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_ne_enum_variants() {
+        let left = enum_lit("Direction", "In");
+        let right = enum_lit("Direction", "Out");
+        let expr = CompiledExpr::binop(BinOp::Ne, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Bool(true) => {}
+            other => panic!("expected Bool(true), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_cmp_enum_returns_undef() {
+        let left = enum_lit("Direction", "In");
+        let right = enum_lit("Direction", "Out");
+        let expr = CompiledExpr::binop(BinOp::Lt, left, right, Type::Bool);
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &values).is_undef(),
+            "comparison on enums should return Undef"
+        );
     }
 
     #[test]

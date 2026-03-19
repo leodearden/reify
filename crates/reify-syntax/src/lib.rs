@@ -16,6 +16,7 @@ pub struct ParsedModule {
 pub enum Declaration {
     Structure(StructureDef),
     Import(ImportDecl),
+    Enum(EnumDecl),
 }
 
 /// A structure definition (the primary entity type in Reify).
@@ -124,6 +125,15 @@ pub struct ImportDecl {
     pub span: SourceSpan,
 }
 
+/// `enum Direction { In, Out, Bidi }`
+#[derive(Debug, Clone)]
+pub struct EnumDecl {
+    pub name: String,
+    pub variants: Vec<String>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
 /// An expression in the AST (pre-compilation).
 #[derive(Debug, Clone)]
 pub struct Expr {
@@ -167,6 +177,11 @@ pub enum ExprKind {
     MemberAccess {
         object: Box<Expr>,
         member: String,
+    },
+    /// Enum variant access: `Direction.In`
+    EnumAccess {
+        type_name: String,
+        variant: String,
     },
     /// Conditional: `if cond then a else b`
     Conditional {

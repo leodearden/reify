@@ -2,6 +2,8 @@
 //!
 //! Parses source text into tree-sitter CST, then lowers to the `ParsedModule` AST.
 
+use std::collections::HashSet;
+
 use crate::*;
 use reify_types::{ContentHash, ModulePath, SourceSpan};
 
@@ -33,6 +35,8 @@ struct Lowering<'a> {
     source: &'a str,
     declarations: Vec<Declaration>,
     errors: Vec<ParseError>,
+    /// Enum names collected in the first pass for disambiguation.
+    known_enums: HashSet<String>,
 }
 
 impl<'a> Lowering<'a> {
@@ -41,6 +45,7 @@ impl<'a> Lowering<'a> {
             source,
             declarations: Vec::new(),
             errors: Vec::new(),
+            known_enums: HashSet::new(),
         }
     }
 
@@ -62,6 +67,19 @@ impl<'a> Lowering<'a> {
     // ── Top-level lowering ──────────────────────────────────
 
     fn lower_source_file(&mut self, node: tree_sitter::Node) {
+        // First pass: collect enum names for disambiguation of member_access
+        // vs EnumAccess in expressions. This enables order-independent declarations.
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "enum_declaration"
+                && let Some(name_node) = child.child_by_field_name("name")
+            {
+                self.known_enums
+                    .insert(self.node_text(name_node).to_string());
+            }
+        }
+
+        // Second pass: lower all declarations.
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             match child.kind() {
@@ -73,6 +91,11 @@ impl<'a> Lowering<'a> {
                 "import_declaration" => {
                     if let Some(decl) = self.lower_import(child) {
                         self.declarations.push(Declaration::Import(decl));
+                    }
+                }
+                "enum_declaration" => {
+                    if let Some(decl) = self.lower_enum(child) {
+                        self.declarations.push(Declaration::Enum(decl));
                     }
                 }
                 "ERROR" => {
@@ -101,6 +124,27 @@ impl<'a> Lowering<'a> {
         Some(ImportDecl {
             path: path?,
             span: self.span(node),
+        })
+    }
+
+    fn lower_enum(&self, node: tree_sitter::Node) -> Option<EnumDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        // Collect variant identifiers — skip 'enum', name, '{', '}', ','
+        let mut variants = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" && child.id() != name_node.id() {
+                variants.push(self.node_text(child).to_string());
+            }
+        }
+
+        Some(EnumDecl {
+            name,
+            variants,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
         })
     }
 
@@ -605,6 +649,22 @@ impl<'a> Lowering<'a> {
     fn lower_member_access(&self, node: tree_sitter::Node) -> Option<Expr> {
         let object_node = node.child_by_field_name("object")?;
         let member_node = node.child_by_field_name("member")?;
+
+        // Check if the object is an identifier that matches a known enum name.
+        // If so, produce EnumAccess instead of MemberAccess.
+        if object_node.kind() == "identifier" {
+            let object_text = self.node_text(object_node);
+            if self.known_enums.contains(object_text) {
+                let variant = self.node_text(member_node).to_string();
+                return Some(Expr {
+                    kind: ExprKind::EnumAccess {
+                        type_name: object_text.to_string(),
+                        variant,
+                    },
+                    span: self.span(node),
+                });
+            }
+        }
 
         let object = self.lower_expr(object_node)?;
         let member = self.node_text(member_node).to_string();
@@ -1142,6 +1202,57 @@ mod tests {
             }
             other => panic!("expected Minimize, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn parse_enum_declaration() {
+        let source = "enum Direction { In, Out, Bidi }\nstructure S { param x: Scalar = 5mm }";
+        let module = parse(source, reify_types::ModulePath::single("test_enum"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert_eq!(module.declarations.len(), 2);
+
+        match &module.declarations[0] {
+            Declaration::Enum(e) => {
+                assert_eq!(e.name, "Direction");
+                assert_eq!(e.variants, vec!["In", "Out", "Bidi"]);
+            }
+            other => panic!("expected Enum, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_enum_access_expression() {
+        let source = "enum Direction { In, Out, Bidi }\nstructure S { let d = Direction.In }";
+        let module = parse(source, reify_types::ModulePath::single("test_enum_access"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+        let structure = module.declarations.iter().find_map(|d| match d {
+            Declaration::Structure(s) => Some(s),
+            _ => None,
+        }).expect("expected a structure");
+
+        let let_decl = match &structure.members[0] {
+            MemberDecl::Let(l) => l,
+            other => panic!("expected Let, got {:?}", other),
+        };
+        assert_eq!(let_decl.name, "d");
+        match &let_decl.value.kind {
+            ExprKind::EnumAccess { type_name, variant } => {
+                assert_eq!(type_name, "Direction");
+                assert_eq!(variant, "In");
+            }
+            other => panic!("expected EnumAccess, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_enum_missing_name_is_error() {
+        let source = "enum { }";
+        let module = parse(source, reify_types::ModulePath::single("test_enum_err"));
+        assert!(
+            !module.errors.is_empty(),
+            "expected parse errors for malformed enum"
+        );
     }
 
     #[test]
