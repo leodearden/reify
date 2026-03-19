@@ -1209,7 +1209,7 @@ fn edit_check_returns_incremental_constraint_satisfaction() {
     assert_eq!(result.constraint_results[0].satisfaction, Satisfaction::Satisfied);
 
     // edit_check: width=mm(2.0) < mm(5.0) → Violated
-    let result2 = engine.edit_check(width_id.clone(), mm(2.0));
+    let result2 = engine.edit_check(width_id.clone(), mm(2.0)).unwrap();
     assert_eq!(result2.constraint_results.len(), 1);
     assert_eq!(
         result2.constraint_results[0].satisfaction,
@@ -1261,7 +1261,7 @@ fn edit_check_constraint_transitions_satisfied_to_violated_and_back() {
     assert_eq!(result.constraint_results[0].satisfaction, Satisfaction::Satisfied);
 
     // edit_check: width=mm(2.0) < mm(5.0) → Violated
-    let result2 = engine.edit_check(width_id.clone(), mm(2.0));
+    let result2 = engine.edit_check(width_id.clone(), mm(2.0)).unwrap();
     assert_eq!(
         result2.constraint_results[0].satisfaction,
         Satisfaction::Violated,
@@ -1269,7 +1269,7 @@ fn edit_check_constraint_transitions_satisfied_to_violated_and_back() {
     );
 
     // edit_check: width=mm(8.0) > mm(5.0) → Satisfied again
-    let result3 = engine.edit_check(width_id.clone(), mm(8.0));
+    let result3 = engine.edit_check(width_id.clone(), mm(8.0)).unwrap();
     assert_eq!(
         result3.constraint_results[0].satisfaction,
         Satisfaction::Satisfied,
@@ -1560,7 +1560,7 @@ fn edit_check_preserves_constraint_labels() {
     assert_eq!(c1.satisfaction, Satisfaction::Satisfied);
 
     // edit_check: width=mm(2.0) — C0 Violated, C1 Satisfied
-    let result2 = engine.edit_check(width_id.clone(), mm(2.0));
+    let result2 = engine.edit_check(width_id.clone(), mm(2.0)).unwrap();
     assert_eq!(result2.constraint_results.len(), 2);
 
     let c0_edit = result2.constraint_results.iter()

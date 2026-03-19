@@ -234,6 +234,11 @@ impl Engine {
         self.eval_state.is_some()
     }
 
+    /// Access the consolidated evaluation state (for testing/inspection).
+    pub fn eval_state(&self) -> Option<&EvaluationState> {
+        self.eval_state.as_ref()
+    }
+
     /// Access the current snapshot (for testing/inspection).
     pub fn snapshot(&self) -> Option<&Snapshot> {
         self.eval_state.as_ref().map(|s| &s.snapshot)
@@ -1340,21 +1345,20 @@ impl Engine {
         &mut self,
         cell: ValueCellId,
         new_value: reify_types::Value,
-    ) -> CheckResult {
-        let eval_result = self.edit_param(cell, new_value)
-            .expect("edit_check requires a prior call to eval()");
+    ) -> Result<CheckResult, EngineError> {
+        let eval_result = self.edit_param(cell, new_value)?;
         let (constraint_results, constraint_diagnostics) =
             self.check_constraints_with_values(&eval_result.values);
 
         let mut diagnostics = eval_result.diagnostics;
         diagnostics.extend(constraint_diagnostics);
 
-        CheckResult {
+        Ok(CheckResult {
             values: eval_result.values,
             constraint_results,
             diagnostics,
             resolved_params: eval_result.resolved_params,
-        }
+        })
     }
 
     /// Evaluate a compiled module with caching and early cutoff.
