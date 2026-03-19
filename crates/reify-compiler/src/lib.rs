@@ -670,6 +670,7 @@ fn compile_structure(
     let mut structure_controlling: HashSet<ValueCellId> = HashSet::new();
     let mut objective: Option<OptimizationObjective> = None;
     let mut constraint_index: u32 = 0;
+    let mut guard_index: u32 = 0;
 
     // First pass: register all param and let names into the scope so they can
     // reference each other (forward references within the structure).
@@ -731,27 +732,42 @@ fn compile_structure(
                     Some(reify_syntax::Expr { kind: reify_syntax::ExprKind::Auto, .. })
                 );
 
-                if is_auto {
-                    value_cells.push(ValueCellDecl {
+                let decl = if is_auto {
+                    ValueCellDecl {
                         id,
                         kind: ValueCellKind::Auto,
                         cell_type,
                         default_expr: None,
                         span: param.span,
-                    });
+                    }
                 } else {
                     let default_expr = param
                         .default
                         .as_ref()
                         .map(|expr| compile_expr(expr, &scope, diagnostics));
 
-                    value_cells.push(ValueCellDecl {
+                    ValueCellDecl {
                         id,
                         kind: ValueCellKind::Param,
                         cell_type,
                         default_expr,
                         span: param.span,
-                    });
+                    }
+                };
+
+                if let Some(wc) = &param.where_clause {
+                    compile_per_decl_guard(
+                        entity_name,
+                        wc,
+                        decl,
+                        &scope,
+                        diagnostics,
+                        &mut guarded_groups,
+                        &mut structure_controlling,
+                        &mut guard_index,
+                    );
+                } else {
+                    value_cells.push(decl);
                 }
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
@@ -767,13 +783,28 @@ fn compile_structure(
                 // Update the scope with the inferred type
                 scope.register(&let_decl.name, cell_type.clone());
 
-                value_cells.push(ValueCellDecl {
+                let decl = ValueCellDecl {
                     id,
                     kind: ValueCellKind::Let,
                     cell_type,
                     default_expr: Some(compiled_expr),
                     span: let_decl.span,
-                });
+                };
+
+                if let Some(wc) = &let_decl.where_clause {
+                    compile_per_decl_guard(
+                        entity_name,
+                        wc,
+                        decl,
+                        &scope,
+                        diagnostics,
+                        &mut guarded_groups,
+                        &mut structure_controlling,
+                        &mut guard_index,
+                    );
+                } else {
+                    value_cells.push(decl);
+                }
             }
             reify_syntax::MemberDecl::Constraint(constraint) => {
                 let compiled_expr = compile_expr(&constraint.expr, &scope, diagnostics);
@@ -793,13 +824,28 @@ fn compile_structure(
                 }
 
                 let id = ConstraintNodeId::new(entity_name, constraint_index);
-                constraints.push(CompiledConstraint {
+                let cc = CompiledConstraint {
                     id,
                     label: constraint.label.clone(),
                     expr: compiled_expr,
                     span: constraint.span,
-                });
+                };
                 constraint_index += 1;
+
+                if let Some(wc) = &constraint.where_clause {
+                    compile_per_decl_constraint_guard(
+                        entity_name,
+                        wc,
+                        cc,
+                        &scope,
+                        diagnostics,
+                        &mut guarded_groups,
+                        &mut structure_controlling,
+                        &mut guard_index,
+                    );
+                } else {
+                    constraints.push(cc);
+                }
             }
             reify_syntax::MemberDecl::Sub(sub) => {
                 let compiled_args: Vec<(String, CompiledExpr)> = sub
@@ -892,6 +938,62 @@ fn compile_structure(
         objective,
         content_hash,
     }
+}
+
+/// Compile a per-declaration `where` clause into a single-member CompiledGuardedGroup.
+///
+/// Creates a synthetic guard ValueCell (Bool, Let kind) with the guard condition as
+/// its default expression, and wraps the member in a CompiledGuardedGroup.
+fn compile_per_decl_guard(
+    entity_name: &str,
+    wc: &reify_syntax::WhereClause,
+    member_decl: ValueCellDecl,
+    scope: &CompilationScope,
+    diagnostics: &mut Vec<Diagnostic>,
+    guarded_groups: &mut Vec<CompiledGuardedGroup>,
+    structure_controlling: &mut HashSet<ValueCellId>,
+    guard_index: &mut u32,
+) {
+    let guard_expr = compile_expr(&wc.condition, scope, diagnostics);
+    let guard_cell_id = ValueCellId::new(entity_name, &format!("__guard_{}", guard_index));
+    *guard_index += 1;
+
+    structure_controlling.insert(guard_cell_id.clone());
+    guarded_groups.push(CompiledGuardedGroup {
+        guard_expr,
+        guard_value_cell: guard_cell_id,
+        members: vec![member_decl],
+        constraints: vec![],
+        else_members: vec![],
+        else_constraints: vec![],
+    });
+}
+
+/// Compile a per-declaration `where` clause for a constraint into a single-constraint
+/// CompiledGuardedGroup.
+fn compile_per_decl_constraint_guard(
+    entity_name: &str,
+    wc: &reify_syntax::WhereClause,
+    constraint: CompiledConstraint,
+    scope: &CompilationScope,
+    diagnostics: &mut Vec<Diagnostic>,
+    guarded_groups: &mut Vec<CompiledGuardedGroup>,
+    structure_controlling: &mut HashSet<ValueCellId>,
+    guard_index: &mut u32,
+) {
+    let guard_expr = compile_expr(&wc.condition, scope, diagnostics);
+    let guard_cell_id = ValueCellId::new(entity_name, &format!("__guard_{}", guard_index));
+    *guard_index += 1;
+
+    structure_controlling.insert(guard_cell_id.clone());
+    guarded_groups.push(CompiledGuardedGroup {
+        guard_expr,
+        guard_value_cell: guard_cell_id,
+        members: vec![],
+        constraints: vec![constraint],
+        else_members: vec![],
+        else_constraints: vec![],
+    });
 }
 
 /// Check if a let declaration's value is a geometry-producing function call.
