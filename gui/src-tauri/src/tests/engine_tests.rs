@@ -4,7 +4,7 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{bracket_source, bracket_source_with_width, MockGeometryKernel};
 use reify_types::ExportFormat;
 
-use crate::engine::EngineSession;
+use crate::engine::{parse_value_string, EngineSession};
 
 #[test]
 fn engine_session_new_with_mock_kernel() {
@@ -461,4 +461,125 @@ fn get_source_location_uses_explicit_key_lookup() {
         loc.file, "bracket.ri",
         "get_source_location should return normalized module-name key"
     );
+}
+
+// --- Step 21: Unit table ordering tests ---
+
+/// Verify all supported unit suffixes parse correctly.
+#[test]
+fn parse_value_string_all_units_correct() {
+    use reify_types::{DimensionVector, Value};
+
+    // mm → 0.001 * value, LENGTH
+    let v = parse_value_string("5mm").expect("5mm should parse");
+    match v {
+        Value::Scalar { si_value, dimension } => {
+            assert!((si_value - 0.005).abs() < 1e-10, "5mm → 0.005, got {}", si_value);
+            assert_eq!(dimension, DimensionVector::LENGTH);
+        }
+        _ => panic!("5mm should be Scalar, got {:?}", v),
+    }
+
+    // cm → 0.01 * value, LENGTH
+    let v = parse_value_string("5cm").expect("5cm should parse");
+    match v {
+        Value::Scalar { si_value, dimension } => {
+            assert!((si_value - 0.05).abs() < 1e-10, "5cm → 0.05, got {}", si_value);
+            assert_eq!(dimension, DimensionVector::LENGTH);
+        }
+        _ => panic!("5cm should be Scalar, got {:?}", v),
+    }
+
+    // m → 1.0 * value, LENGTH
+    let v = parse_value_string("5m").expect("5m should parse");
+    match v {
+        Value::Scalar { si_value, dimension } => {
+            assert!((si_value - 5.0).abs() < 1e-10, "5m → 5.0, got {}", si_value);
+            assert_eq!(dimension, DimensionVector::LENGTH);
+        }
+        _ => panic!("5m should be Scalar, got {:?}", v),
+    }
+
+    // deg → PI/180 * value, ANGLE
+    let v = parse_value_string("90deg").expect("90deg should parse");
+    match v {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - std::f64::consts::FRAC_PI_2).abs() < 1e-10,
+                "90deg → PI/2, got {}",
+                si_value
+            );
+            assert_eq!(dimension, DimensionVector::ANGLE);
+        }
+        _ => panic!("90deg should be Scalar, got {:?}", v),
+    }
+
+    // rad → 1.0 * value, ANGLE
+    let v = parse_value_string("1rad").expect("1rad should parse");
+    match v {
+        Value::Scalar { si_value, dimension } => {
+            assert!((si_value - 1.0).abs() < 1e-10, "1rad → 1.0, got {}", si_value);
+            assert_eq!(dimension, DimensionVector::ANGLE);
+        }
+        _ => panic!("1rad should be Scalar, got {:?}", v),
+    }
+}
+
+/// Verify 'm' suffix does not shadow longer suffixes like 'cm'.
+/// '100cm' must produce si_value=1.0 (not 100.0 from 'm' matching 'cm' trailing).
+#[test]
+fn parse_value_string_m_does_not_shadow_longer_suffixes() {
+    use reify_types::{DimensionVector, Value};
+
+    let v = parse_value_string("100cm").expect("100cm should parse");
+    match v {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - 1.0).abs() < 1e-10,
+                "100cm → 1.0, got {} (would be 100.0 if 'm' shadowed 'cm')",
+                si_value
+            );
+            assert_eq!(dimension, DimensionVector::LENGTH);
+        }
+        _ => panic!("100cm should be Scalar, got {:?}", v),
+    }
+}
+
+/// Verify unit table ordering invariant:
+/// '5mm' must produce si_value 0.005 (not 5.0 from 'm' match).
+/// '45deg' must produce ANGLE (ensures 3-char suffixes work correctly).
+/// These tests document the ordering contract and will catch regressions.
+#[test]
+fn parse_value_string_unit_table_ordering_invariant() {
+    use reify_types::{DimensionVector, Value};
+
+    // '5mm' must be recognized as millimeters, not meters
+    let v = parse_value_string("5mm").expect("5mm should parse");
+    match v {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - 0.005).abs() < 1e-10,
+                "5mm → 0.005 (not 5.0 from 'm' match), got {}",
+                si_value
+            );
+            assert_eq!(dimension, DimensionVector::LENGTH);
+        }
+        _ => panic!("5mm should be Scalar, got {:?}", v),
+    }
+
+    // '45deg' must be recognized as degrees (ANGLE), not fail or parse incorrectly
+    let v = parse_value_string("45deg").expect("45deg should parse");
+    match v {
+        Value::Scalar { si_value, dimension } => {
+            let expected = 45.0 * std::f64::consts::PI / 180.0;
+            assert!(
+                (si_value - expected).abs() < 1e-10,
+                "45deg → {}, got {}",
+                expected,
+                si_value
+            );
+            assert_eq!(dimension, DimensionVector::ANGLE, "45deg should be ANGLE dimension");
+        }
+        _ => panic!("45deg should be Scalar, got {:?}", v),
+    }
 }
