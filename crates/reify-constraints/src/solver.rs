@@ -79,6 +79,42 @@ fn extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> {
         .collect()
 }
 
+/// Compute the absolute (L1) residual for a single comparison expression.
+///
+/// Returns the absolute distance by which the constraint is violated,
+/// or 0.0 if satisfied. No squaring, no epsilon offset. Used for
+/// accurate feasibility checking (not for optimization cost).
+fn comparison_residual(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap) -> f64 {
+    let lhs = reify_expr::eval_expr(left, values).as_f64();
+    let rhs = reify_expr::eval_expr(right, values).as_f64();
+
+    match (lhs, rhs) {
+        (Some(l), Some(r)) => match op {
+            BinOp::Gt => {
+                if l > r { 0.0 } else { r - l }
+            }
+            BinOp::Ge => {
+                if l >= r { 0.0 } else { r - l }
+            }
+            BinOp::Lt => {
+                if l < r { 0.0 } else { l - r }
+            }
+            BinOp::Le => {
+                if l <= r { 0.0 } else { l - r }
+            }
+            BinOp::Eq => {
+                let d = (l - r).abs();
+                if d < 1e-15 { 0.0 } else { d }
+            }
+            BinOp::Ne => {
+                if (l - r).abs() > 1e-15 { 0.0 } else { 1.0 }
+            }
+            _ => 1.0,
+        },
+        _ => 1.0,
+    }
+}
+
 /// Compute the violation magnitude for a single comparison expression.
 ///
 /// For comparison operators (Gt, Ge, Lt, Le), evaluates the left and right
@@ -1009,7 +1045,7 @@ mod tests {
     #[test]
     fn comparison_residual_gt_violated_small() {
         use super::comparison_residual;
-        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value, ValueCellId};
+        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
 
         // l=1.9999999, r=2.0: violated by 1e-7
         let l_expr = CompiledExpr::literal(
