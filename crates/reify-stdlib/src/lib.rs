@@ -87,13 +87,29 @@ fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
     f(&args[0])
 }
 
+/// Convert non-finite f64 values (NaN, inf) to Undef.
+///
+/// This is a defense-in-depth catch-all applied at the return point of
+/// `unary_f64` and `binary_f64` to ensure domain errors (e.g., sqrt(-1),
+/// log(0), exp(1000) overflow) produce Undef instead of silently propagating
+/// NaN or infinity through the evaluation graph.
+fn sanitize_value(v: Value) -> Value {
+    match &v {
+        Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,
+        Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
+            Value::Undef
+        }
+        _ => v,
+    }
+}
+
 /// Apply a function to a single f64 argument (extracted from any numeric Value).
 fn unary_f64(args: &[Value], f: impl FnOnce(f64) -> Value) -> Value {
     if args.len() != 1 {
         return Value::Undef;
     }
     match args[0].as_f64() {
-        Some(x) => f(x),
+        Some(x) => sanitize_value(f(x)),
         None => Value::Undef,
     }
 }
@@ -130,7 +146,7 @@ fn binary_f64(args: &[Value], f: impl FnOnce(f64, f64) -> Value) -> Value {
         return Value::Undef;
     }
     match (args[0].as_f64(), args[1].as_f64()) {
-        (Some(x), Some(y)) => f(x, y),
+        (Some(x), Some(y)) => sanitize_value(f(x, y)),
         _ => Value::Undef,
     }
 }
