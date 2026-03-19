@@ -1524,6 +1524,40 @@ mod tests {
         }
     }
 
+    // --- Thicken / Shell tests ---
+
+    #[test]
+    fn thicken_solid_increases_volume() {
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10 box (volume = 1000)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Thicken by offset=2.0 — result should have volume > 1000
+        let thickened_h = kernel
+            .execute(&GeometryOp::Thicken {
+                target: box_h.id,
+                offset: Value::Real(2.0),
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(thickened_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    v > 1000.0,
+                    "thickened volume should exceed original 1000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
     // --- Mirror tests ---
 
     #[test]
