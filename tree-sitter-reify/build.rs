@@ -1,5 +1,9 @@
 fn main() {
     let src_dir = std::path::Path::new("src");
+
+    // Re-run if the generated parser source changes (e.g. after `tree-sitter generate`).
+    println!("cargo:rerun-if-changed=src/parser.c");
+
     let mut c_config = cc::Build::new();
     c_config.include(src_dir);
     c_config
