@@ -104,9 +104,12 @@ impl OcctKernel {
                 let w = extract_f64(width)?;
                 let h = extract_f64(height)?;
                 let d = extract_f64(depth)?;
-                if !(w.is_finite() && w > 0.0)
-                    || !(h.is_finite() && h > 0.0)
-                    || !(d.is_finite() && d > 0.0)
+                if !(w.is_finite()
+                    && w > 0.0
+                    && h.is_finite()
+                    && h > 0.0
+                    && d.is_finite()
+                    && d > 0.0)
                 {
                     return Err(GeometryError::OperationFailed(
                         "box dimensions must be finite positive values".into(),
