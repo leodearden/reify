@@ -1145,6 +1145,22 @@ mod tests {
     }
 
     #[test]
+    fn parse_enum_declaration() {
+        let source = "enum Direction { In, Out, Bidi }\nstructure S { param x: Scalar = 5mm }";
+        let module = parse(source, reify_types::ModulePath::single("test_enum"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert_eq!(module.declarations.len(), 2);
+
+        match &module.declarations[0] {
+            Declaration::Enum(e) => {
+                assert_eq!(e.name, "Direction");
+                assert_eq!(e.variants, vec!["In", "Out", "Bidi"]);
+            }
+            other => panic!("expected Enum, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn tree_sitter_parses_bracket_source_without_errors() {
         let source = reify_test_support::bracket_source();
         let mut parser = tree_sitter::Parser::new();
