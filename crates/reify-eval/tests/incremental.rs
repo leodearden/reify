@@ -2008,3 +2008,65 @@ fn forward_let_ref_declaration_order_irrelevant() {
     assert_eq!(*edit_a.values.get(&x_id).unwrap(), Value::Int(30));
     assert_eq!(*edit_a.values.get(&y_id).unwrap(), Value::Int(31));
 }
+
+/// Diamond-shaped forward references update correctly through incremental edit.
+///
+/// Template: param a (default 10, Int)
+///   let d = b + c  (declared 1st — forward refs to both b and c)
+///   let b = a + 1  (declared 2nd)
+///   let c = a + 2  (declared 3rd)
+///
+/// Cold-start: b=11, c=12, d=23.
+/// Edit a→20: b=21, c=22, d=43.
+#[test]
+fn forward_let_ref_diamond_incremental_edit() {
+    let a_id = ValueCellId::new("S", "a");
+    let b_id = ValueCellId::new("S", "b");
+    let c_id = ValueCellId::new("S", "c");
+    let d_id = ValueCellId::new("S", "d");
+
+    // d = b + c (forward refs to both b and c)
+    let d_expr = binop(BinOp::Add, value_ref("S", "b"), value_ref("S", "c"));
+    // b = a + 1
+    let b_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(1)));
+    // c = a + 2
+    let c_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(2)));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(10))))
+        .let_binding("S", "d", Type::Int, d_expr)  // d declared first
+        .let_binding("S", "b", Type::Int, b_expr)  // b declared second
+        .let_binding("S", "c", Type::Int, c_expr)  // c declared third
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result = engine.eval(&module);
+
+    // Cold-start: b=11, c=12, d=23
+    assert_eq!(*result.values.get(&b_id).unwrap(), Value::Int(11));
+    assert_eq!(*result.values.get(&c_id).unwrap(), Value::Int(12));
+    assert_eq!(*result.values.get(&d_id).unwrap(), Value::Int(23));
+
+    // Incremental edit: a → 20
+    let edit_result = engine.edit_param(a_id.clone(), Value::Int(20));
+
+    assert_eq!(
+        *edit_result.values.get(&b_id).unwrap(),
+        Value::Int(21),
+        "b = a + 1 = 20 + 1 = 21"
+    );
+    assert_eq!(
+        *edit_result.values.get(&c_id).unwrap(),
+        Value::Int(22),
+        "c = a + 2 = 20 + 2 = 22"
+    );
+    assert_eq!(
+        *edit_result.values.get(&d_id).unwrap(),
+        Value::Int(43),
+        "d = b + c = 21 + 22 = 43"
+    );
+}
