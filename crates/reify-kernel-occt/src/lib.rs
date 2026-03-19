@@ -188,6 +188,11 @@ impl OcctKernel {
                 dz,
             } => {
                 let shape = self.get_shape(*target)?;
+                if !dx.is_finite() || !dy.is_finite() || !dz.is_finite() {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "translate components must be finite values: dx={dx}, dy={dy}, dz={dz}"
+                    )));
+                }
                 ffi::ffi::translate_shape(shape, *dx, *dy, *dz)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
