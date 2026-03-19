@@ -1525,3 +1525,117 @@ async fn three_plus_parent_mixed_fan_in_no_direct_param_read() {
         "d should be 20 + 1 + 2 = 23"
     );
 }
+
+/// Wide fan-in: 5 parents, only p1 Changed, others Unchanged.
+///
+/// Graph:
+///   param a (Int, default 5)
+///   let p1 = a * 2              (Changed: 10→20)
+///   let p2 = if a>0 then 1 else 1  (Unchanged: always 1)
+///   let p3 = if a>0 then 2 else 2  (Unchanged: always 2)
+///   let p4 = if a>0 then 3 else 3  (Unchanged: always 3)
+///   let p5 = if a>0 then 4 else 4  (Unchanged: always 4)
+///   let d = ((p1+p2)+(p3+p4))+p5  (reads ONLY p1-p5, NOT a)
+///
+/// Edit a: 5→10. Assert d is in actual_eval_set with value 20+1+2+3+4=30.
+#[tokio::test]
+async fn five_parent_fan_in_one_changed() {
+    use reify_types::{CompiledExpr, CompiledExprKind, ContentHash};
+
+    let e = "T";
+
+    // p1 = a * 2 (will change)
+    let p1_expr = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Int),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Int,
+    );
+
+    // Helper to build conditional: if a > 0 then K else K
+    let make_unchanged = |k: i64, label: &str| -> CompiledExpr {
+        let cond = CompiledExpr::binop(
+            BinOp::Gt,
+            CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Int),
+            CompiledExpr::literal(Value::Int(0), Type::Int),
+            Type::Bool,
+        );
+        CompiledExpr {
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(cond),
+                then_branch: Box::new(CompiledExpr::literal(Value::Int(k), Type::Int)),
+                else_branch: Box::new(CompiledExpr::literal(Value::Int(k), Type::Int)),
+            },
+            result_type: Type::Int,
+            content_hash: ContentHash::of_str(label),
+        }
+    };
+
+    let p2_expr = make_unchanged(1, "if_a_gt_0_then_1_else_1");
+    let p3_expr = make_unchanged(2, "if_a_gt_0_then_2_else_2");
+    let p4_expr = make_unchanged(3, "if_a_gt_0_then_3_else_3");
+    let p5_expr = make_unchanged(4, "if_a_gt_0_then_4_else_4");
+
+    // d = ((p1+p2) + (p3+p4)) + p5
+    let p1_plus_p2 = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(ValueCellId::new(e, "p1"), Type::Int),
+        CompiledExpr::value_ref(ValueCellId::new(e, "p2"), Type::Int),
+        Type::Int,
+    );
+    let p3_plus_p4 = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(ValueCellId::new(e, "p3"), Type::Int),
+        CompiledExpr::value_ref(ValueCellId::new(e, "p4"), Type::Int),
+        Type::Int,
+    );
+    let sum_4 = CompiledExpr::binop(BinOp::Add, p1_plus_p2, p3_plus_p4, Type::Int);
+    let d_expr = CompiledExpr::binop(
+        BinOp::Add,
+        sum_4,
+        CompiledExpr::value_ref(ValueCellId::new(e, "p5"), Type::Int),
+        Type::Int,
+    );
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "a", Type::Int, Some(CompiledExpr::literal(Value::Int(5), Type::Int)))
+        .let_binding(e, "p1", Type::Int, p1_expr)
+        .let_binding(e, "p2", Type::Int, p2_expr)
+        .let_binding(e, "p3", Type::Int, p3_expr)
+        .let_binding(e, "p4", Type::Int, p4_expr)
+        .let_binding(e, "p5", Type::Int, p5_expr)
+        .let_binding(e, "d", Type::Int, d_expr)
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let _initial = engine.eval(&module);
+
+    let a_id = ValueCellId::new(e, "a");
+    let cancel = CancellationToken::new();
+
+    // Edit a: 5 → 10
+    let (_setup, result) = edit_param_concurrent(
+        &mut engine,
+        a_id.clone(),
+        Value::Int(10),
+        &cancel,
+    ).await.unwrap();
+
+    let d_node = NodeId::Value(ValueCellId::new(e, "d"));
+
+    // d MUST be in actual_eval_set
+    assert!(
+        result.actual_eval_set.contains(&d_node),
+        "d should be in actual_eval_set (p1 is Changed). actual_eval_set: {:?}",
+        result.actual_eval_set
+    );
+
+    // d = 20 + 1 + 2 + 3 + 4 = 30
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "d")),
+        Some(&Value::Int(30)),
+        "d should be 20 + 1 + 2 + 3 + 4 = 30"
+    );
+}
