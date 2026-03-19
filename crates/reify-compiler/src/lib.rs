@@ -1135,7 +1135,7 @@ fn compile_geometry_call(
                 return None;
             }
             let profiles: Vec<GeomRef> = (0..compiled_args.len())
-                .map(|i| GeomRef::Step(i))
+                .map(GeomRef::Step)
                 .collect();
             let args: Vec<(String, CompiledExpr)> = compiled_args
                 .into_iter()
