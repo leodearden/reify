@@ -392,8 +392,8 @@ impl ConstraintSolver for DimensionalSolver {
                 &problem.auto_params,
                 &initial,
             );
-            let violation = compute_total_violation(&problem.constraints, &trial_values);
-            if violation <= FEASIBILITY_THRESHOLD {
+            let max_residual = max_constraint_residual(&problem.constraints, &trial_values);
+            if max_residual <= FEASIBILITY_THRESHOLD {
                 let mut values = HashMap::new();
                 for (param, &val) in problem.auto_params.iter().zip(initial.iter()) {
                     values.insert(
@@ -463,14 +463,14 @@ impl ConstraintSolver for DimensionalSolver {
             &problem.auto_params,
             &clamped,
         );
-        let final_violation = compute_total_violation(&problem.constraints, &final_values);
-        if final_violation > FEASIBILITY_THRESHOLD {
+        let final_max_residual = max_constraint_residual(&problem.constraints, &final_values);
+        if final_max_residual > FEASIBILITY_THRESHOLD {
             return SolveResult::Infeasible {
                 diagnostics: vec![reify_types::Diagnostic {
                     severity: reify_types::Severity::Error,
                     message: format!(
-                        "constraints could not be satisfied (residual: {:.2e})",
-                        final_violation
+                        "constraints could not be satisfied (max absolute residual: {:.2e})",
+                        final_max_residual
                     ),
                     labels: vec![],
                 }],
