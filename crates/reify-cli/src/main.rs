@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use reify_constraints::SimpleConstraintChecker;
 use reify_geometry::DispatchPlanner;
 use reify_kernel_occt::OcctKernelHandle;
-use reify_types::{ExportFormat, ModulePath, Satisfaction};
+use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -48,6 +48,7 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
         for err in &parsed.errors {
             eprintln!("Parse error: {}", err.message);
         }
+        return Err(ExitCode::FAILURE);
     }
 
     let compiled = reify_compiler::compile(&parsed);
@@ -69,6 +70,10 @@ fn cmd_check(args: &[String]) -> ExitCode {
         Ok(c) => c,
         Err(code) => return code,
     };
+
+    if compiled.diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return ExitCode::FAILURE;
+    }
 
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -131,6 +136,10 @@ fn cmd_build(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
+    if compiled.diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return ExitCode::FAILURE;
+    }
+
     let checker = SimpleConstraintChecker;
     let mut planner = DispatchPlanner::new();
     planner.register_kernel(Box::new(OcctKernelHandle::spawn()));
@@ -171,7 +180,14 @@ fn cmd_build(args: &[String]) -> ExitCode {
 }
 
 fn cmd_lsp() -> ExitCode {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    rt.block_on(reify_lsp::run_server());
-    ExitCode::SUCCESS
+    match tokio::runtime::Runtime::new() {
+        Ok(rt) => {
+            rt.block_on(reify_lsp::run_server());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Failed to create async runtime: {}", e);
+            ExitCode::FAILURE
+        }
+    }
 }

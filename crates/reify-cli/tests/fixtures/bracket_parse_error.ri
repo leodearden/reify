@@ -1,0 +1,3 @@
+structure Bracket {
+    @@@ not valid syntax
+}

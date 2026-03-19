@@ -2,7 +2,7 @@
 # Rust project — overrides dark-factory defaults
 
 # Concurrency
-max_concurrent_tasks: 6
+max_concurrent_tasks: 12
 max_per_module: 1
 lock_depth: 2
 module_overrides:
