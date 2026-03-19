@@ -536,6 +536,18 @@ fn compile_expr(
             );
             CompiledExpr::literal(Value::Undef, Type::Real)
         }
+        reify_syntax::ExprKind::EnumAccess { type_name, variant } => {
+            // Enum access compilation will be implemented in a later step.
+            // For now, emit a placeholder diagnostic.
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "enum access not yet compiled: {}.{}",
+                    type_name, variant
+                ))
+                .with_label(DiagnosticLabel::new(expr.span, "enum access")),
+            );
+            CompiledExpr::literal(Value::Undef, Type::Real)
+        }
         reify_syntax::ExprKind::Auto => {
             // Auto expressions should not appear inside compile_expr — they are
             // handled at the param compilation level. If we reach here, emit an
@@ -593,6 +605,9 @@ pub fn compile(
             reify_syntax::Declaration::Structure(structure) => {
                 let template = compile_structure(structure, &mut diagnostics);
                 templates.push(template);
+            }
+            reify_syntax::Declaration::Enum(_enum_decl) => {
+                // Enum declaration handling will be implemented in a later step.
             }
             reify_syntax::Declaration::Import(import) => {
                 imports.push(CompiledImport {
