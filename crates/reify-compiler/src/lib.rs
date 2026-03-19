@@ -355,6 +355,7 @@ impl CompilationScope {
 fn compile_expr(
     expr: &reify_syntax::Expr,
     scope: &CompilationScope,
+    enum_defs: &[reify_types::EnumDef],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledExpr {
     match &expr.kind {
@@ -403,8 +404,8 @@ fn compile_expr(
             }
         }
         reify_syntax::ExprKind::BinOp { op, left, right } => {
-            let compiled_left = compile_expr(left, scope, diagnostics);
-            let compiled_right = compile_expr(right, scope, diagnostics);
+            let compiled_left = compile_expr(left, scope, enum_defs, diagnostics);
+            let compiled_right = compile_expr(right, scope, enum_defs, diagnostics);
             match resolve_binop(op) {
                 Some(bin_op) => {
                     let result_type = infer_binop_type(
@@ -467,7 +468,7 @@ fn compile_expr(
             }
         }
         reify_syntax::ExprKind::UnOp { op, operand } => {
-            let compiled_operand = compile_expr(operand, scope, diagnostics);
+            let compiled_operand = compile_expr(operand, scope, enum_defs, diagnostics);
             match resolve_unop(op) {
                 Some(un_op) => {
                     let result_type = match un_op {
@@ -488,7 +489,7 @@ fn compile_expr(
         reify_syntax::ExprKind::FunctionCall { name, args } => {
             let compiled_args: Vec<CompiledExpr> = args
                 .iter()
-                .map(|arg| compile_expr(arg, scope, diagnostics))
+                .map(|arg| compile_expr(arg, scope, enum_defs, diagnostics))
                 .collect();
 
             let resolved = ResolvedFunction {
@@ -530,7 +531,7 @@ fn compile_expr(
         reify_syntax::ExprKind::MemberAccess { object, member } => {
             // For M1, compile the object expression but emit a diagnostic
             // since we don't yet support member access fully.
-            let _compiled_obj = compile_expr(object, scope, diagnostics);
+            let _compiled_obj = compile_expr(object, scope, enum_defs, diagnostics);
             diagnostics.push(
                 Diagnostic::error(format!("member access not yet supported: .{}", member))
                     .with_label(DiagnosticLabel::new(expr.span, "unsupported in M1")),
@@ -538,16 +539,33 @@ fn compile_expr(
             CompiledExpr::literal(Value::Undef, Type::Real)
         }
         reify_syntax::ExprKind::EnumAccess { type_name, variant } => {
-            // Enum access compilation will be implemented in a later step.
-            // For now, emit a placeholder diagnostic.
-            diagnostics.push(
-                Diagnostic::error(format!(
-                    "enum access not yet compiled: {}.{}",
-                    type_name, variant
-                ))
-                .with_label(DiagnosticLabel::new(expr.span, "enum access")),
-            );
-            CompiledExpr::literal(Value::Undef, Type::Real)
+            // Look up the enum type in the registry
+            if let Some(enum_def) = enum_defs.iter().find(|e| e.name == *type_name) {
+                if enum_def.contains_variant(variant) {
+                    CompiledExpr::literal(
+                        Value::Enum {
+                            type_name: type_name.clone(),
+                            variant: variant.clone(),
+                        },
+                        Type::Enum(type_name.clone()),
+                    )
+                } else {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unknown variant '{}' on enum '{}'",
+                            variant, type_name
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "unknown variant")),
+                    );
+                    CompiledExpr::literal(Value::Undef, Type::Enum(type_name.clone()))
+                }
+            } else {
+                diagnostics.push(
+                    Diagnostic::error(format!("unknown enum type '{}'", type_name))
+                        .with_label(DiagnosticLabel::new(expr.span, "unknown enum")),
+                );
+                CompiledExpr::literal(Value::Undef, Type::Real)
+            }
         }
         reify_syntax::ExprKind::Auto => {
             // Auto expressions should not appear inside compile_expr — they are
@@ -560,9 +578,9 @@ fn compile_expr(
             then_branch,
             else_branch,
         } => {
-            let compiled_cond = compile_expr(condition, scope, diagnostics);
-            let compiled_then = compile_expr(then_branch, scope, diagnostics);
-            let compiled_else = compile_expr(else_branch, scope, diagnostics);
+            let compiled_cond = compile_expr(condition, scope, enum_defs, diagnostics);
+            let compiled_then = compile_expr(then_branch, scope, enum_defs, diagnostics);
+            let compiled_else = compile_expr(else_branch, scope, enum_defs, diagnostics);
             let result_type = compiled_then.result_type.clone();
 
             let content_hash = ContentHash::of(&[5])
@@ -605,7 +623,7 @@ pub fn compile(
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
-                let template = compile_structure(structure, &mut diagnostics);
+                let template = compile_structure(structure, &enum_defs, &mut diagnostics);
                 templates.push(template);
             }
             reify_syntax::Declaration::Enum(enum_decl) => {
@@ -670,6 +688,7 @@ pub fn compile(
 /// Compile a single structure definition into a topology template.
 fn compile_structure(
     structure: &reify_syntax::StructureDef,
+    enum_defs: &[reify_types::EnumDef],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> TopologyTemplate {
     let entity_name = &structure.name;
@@ -752,7 +771,7 @@ fn compile_structure(
                     let default_expr = param
                         .default
                         .as_ref()
-                        .map(|expr| compile_expr(expr, &scope, diagnostics));
+                        .map(|expr| compile_expr(expr, &scope, enum_defs, diagnostics));
 
                     value_cells.push(ValueCellDecl {
                         id,
@@ -769,7 +788,7 @@ fn compile_structure(
                     continue;
                 }
 
-                let compiled_expr = compile_expr(&let_decl.value, &scope, diagnostics);
+                let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, diagnostics);
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 
@@ -785,7 +804,7 @@ fn compile_structure(
                 });
             }
             reify_syntax::MemberDecl::Constraint(constraint) => {
-                let compiled_expr = compile_expr(&constraint.expr, &scope, diagnostics);
+                let compiled_expr = compile_expr(&constraint.expr, &scope, enum_defs, diagnostics);
 
                 // Check that the constraint expression produces Bool
                 if compiled_expr.result_type != Type::Bool {
@@ -815,7 +834,7 @@ fn compile_structure(
                     .args
                     .iter()
                     .map(|(name, expr)| {
-                        (name.clone(), compile_expr(expr, &scope, diagnostics))
+                        (name.clone(), compile_expr(expr, &scope, enum_defs, diagnostics))
                     })
                     .collect();
 
@@ -828,11 +847,11 @@ fn compile_structure(
                 });
             }
             reify_syntax::MemberDecl::Minimize(min_decl) => {
-                let compiled_expr = compile_expr(&min_decl.expr, &scope, diagnostics);
+                let compiled_expr = compile_expr(&min_decl.expr, &scope, enum_defs, diagnostics);
                 objective = Some(OptimizationObjective::Minimize(compiled_expr));
             }
             reify_syntax::MemberDecl::Maximize(max_decl) => {
-                let compiled_expr = compile_expr(&max_decl.expr, &scope, diagnostics);
+                let compiled_expr = compile_expr(&max_decl.expr, &scope, enum_defs, diagnostics);
                 objective = Some(OptimizationObjective::Maximize(compiled_expr));
             }
             reify_syntax::MemberDecl::GuardedGroup(_) => {
@@ -849,7 +868,7 @@ fn compile_structure(
     for member in &structure.members {
         if let reify_syntax::MemberDecl::Let(let_decl) = member
             && is_geometry_let(&let_decl.value)
-            && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, diagnostics)
+            && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, enum_defs, diagnostics)
         {
             realizations.push(RealizationDecl {
                 id: RealizationNodeId::new(entity_name, realization_index),
@@ -914,6 +933,7 @@ fn is_geometry_let(expr: &reify_syntax::Expr) -> bool {
 fn compile_geometry_call(
     expr: &reify_syntax::Expr,
     scope: &CompilationScope,
+    enum_defs: &[reify_types::EnumDef],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Vec<CompiledGeometryOp>> {
     let (name, args) = match &expr.kind {
@@ -923,7 +943,7 @@ fn compile_geometry_call(
 
     let compiled_args: Vec<CompiledExpr> = args
         .iter()
-        .map(|arg| compile_expr(arg, scope, diagnostics))
+        .map(|arg| compile_expr(arg, scope, enum_defs, diagnostics))
         .collect();
 
     let named_args = match name {
