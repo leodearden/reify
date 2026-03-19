@@ -1048,6 +1048,28 @@ fn e2e_minimize_round_trip() {
     assert_eq!(let_cells.len(), 1, "expected 1 let binding");
 }
 
+/// Enum declarations should be compiled into CompiledModule.enum_defs.
+#[test]
+fn compile_enum_populates_registry() {
+    let source = r#"enum Direction { In, Out, Bidi }
+structure S { param x: Scalar = 5mm }"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_reg"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert_eq!(
+        compiled.enum_defs.len(),
+        1,
+        "expected 1 enum_def, got {}",
+        compiled.enum_defs.len()
+    );
+    assert_eq!(compiled.enum_defs[0].name, "Direction");
+    assert_eq!(
+        compiled.enum_defs[0].variants,
+        vec!["In", "Out", "Bidi"]
+    );
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
