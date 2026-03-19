@@ -162,6 +162,26 @@ pub fn format_value(value: &Value) -> String {
                 format!("{si_value} {unit}")
             }
         }
+        Value::Enum { type_name, variant } => format!("{type_name}::{variant}"),
+        Value::List(items) => {
+            let inner: Vec<String> = items.iter().map(format_value).collect();
+            format!("[{}]", inner.join(", "))
+        }
+        Value::Set(items) => {
+            let inner: Vec<String> = items.iter().map(format_value).collect();
+            format!("{{{}}}", inner.join(", "))
+        }
+        Value::Map(entries) => {
+            let inner: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("{}: {}", format_value(k), format_value(v)))
+                .collect();
+            format!("{{{}}}", inner.join(", "))
+        }
+        Value::Option(inner) => match inner {
+            None => "none".to_string(),
+            Some(v) => format!("some({})", format_value(v)),
+        },
         Value::Undef => "(undefined)".to_string(),
     }
 }
