@@ -7,6 +7,7 @@ description = "Expression evaluator for Reify compiled expressions"
 
 [dependencies]
 reify-types.workspace = true
+reify-stdlib.workspace = true
 
 [dev-dependencies]
 reify-test-support.workspace = true

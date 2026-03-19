@@ -132,8 +132,8 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 // --- Topology builders ---
 
 use reify_compiler::{
-    CompiledConstraint, CompiledGeometryOp, CompiledModule, RealizationDecl, TopologyTemplate,
-    ValueCellDecl, ValueCellKind,
+    CompiledConstraint, CompiledGeometryOp, CompiledImport, CompiledModule, RealizationDecl,
+    SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
 };
 use reify_types::{ConstraintNodeId, RealizationNodeId};
 
@@ -143,6 +143,7 @@ pub struct TopologyTemplateBuilder {
     value_cells: Vec<ValueCellDecl>,
     constraints: Vec<CompiledConstraint>,
     realizations: Vec<RealizationDecl>,
+    sub_components: Vec<SubComponentDecl>,
 }
 
 impl TopologyTemplateBuilder {
@@ -152,6 +153,7 @@ impl TopologyTemplateBuilder {
             value_cells: Vec::new(),
             constraints: Vec::new(),
             realizations: Vec::new(),
+            sub_components: Vec::new(),
         }
     }
 
@@ -235,6 +237,24 @@ impl TopologyTemplateBuilder {
         self
     }
 
+    pub fn sub_component(
+        mut self,
+        name: impl Into<String>,
+        structure_name: impl Into<String>,
+        args: Vec<(String, CompiledExpr)>,
+    ) -> Self {
+        let name = name.into();
+        let structure_name = structure_name.into();
+        self.sub_components.push(SubComponentDecl {
+            content_hash: ContentHash::of_str(&format!("sub {} = {}", name, structure_name)),
+            name,
+            structure_name,
+            args,
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
     pub fn build(self) -> TopologyTemplate {
         let content_hash = ContentHash::of_str(&self.name);
         TopologyTemplate {
@@ -242,6 +262,7 @@ impl TopologyTemplateBuilder {
             value_cells: self.value_cells,
             constraints: self.constraints,
             realizations: self.realizations,
+            sub_components: self.sub_components,
             content_hash,
         }
     }
@@ -269,6 +290,7 @@ mod tests {
 /// Builder for `CompiledModule`.
 pub struct CompiledModuleBuilder {
     path: reify_types::ModulePath,
+    imports: Vec<CompiledImport>,
     templates: Vec<TopologyTemplate>,
     diagnostics: Vec<reify_types::Diagnostic>,
 }
@@ -277,9 +299,18 @@ impl CompiledModuleBuilder {
     pub fn new(path: reify_types::ModulePath) -> Self {
         Self {
             path,
+            imports: Vec::new(),
             templates: Vec::new(),
             diagnostics: Vec::new(),
         }
+    }
+
+    pub fn import(mut self, path: impl Into<String>) -> Self {
+        self.imports.push(CompiledImport {
+            path: path.into(),
+            span: SourceSpan::new(0, 0),
+        });
+        self
     }
 
     pub fn template(mut self, template: TopologyTemplate) -> Self {
@@ -296,6 +327,7 @@ impl CompiledModuleBuilder {
         let content_hash = ContentHash::of_str(&format!("{}", self.path));
         CompiledModule {
             path: self.path,
+            imports: self.imports,
             templates: self.templates,
             diagnostics: self.diagnostics,
             content_hash,

@@ -1,110 +1,294 @@
 {
-  "task_id": "36",
-  "title": "Ensure that forward let-binding references have been implemented correctly",
-  "modules": ["crates/reify-eval"],
-  "analysis": "The cold-start evaluation path in Engine::eval() (lib.rs lines 679-722) evaluates Let bindings by iterating template.value_cells in source (declaration) order. When a let binding references another let declared later in the same scope, the referenced let hasn't been evaluated yet and its value is missing from the ValueMap. eval_expr calls values.get_or_undef(), which returns Value::Undef for missing references, producing incorrect results.\n\nThe same bug exists in the post-resolution re-evaluation loop (lib.rs lines 837-878), where let bindings are re-evaluated after auto param resolution, again in source order. If a forward-referencing let depends on another let that depends on a resolved auto param, the source-order re-evaluation produces stale/incorrect values.\n\nThe incremental path (edit_param) does NOT have this bug because it uses compute_eval_set() which calls topological_sort(), ensuring dependencies are evaluated before dependents regardless of declaration order.\n\nThe fix is to topologically sort let bindings before evaluating them in both cold-start locations. The topological_sort utility in dirty.rs and the extract_dependency_trace utility in deps.rs already exist and can be reused.\n\nNo existing tests exercise forward let-binding references — all existing tests declare let bindings in dependency order (e.g., x before y where y=x+1).",
-  "prerequisites": [],
+  "task_id": "37",
+  "title": "Ensure architecture-critical language features: imports, sub-structures, stdlib functions",
+  "modules": [
+    "crates/reify-stdlib",
+    "crates/reify-expr",
+    "crates/reify-compiler",
+    "crates/reify-test-support"
+  ],
+  "analysis": "Three architecture-critical language features are stubbed out with silent no-ops or Undef returns:\n\n1. **Import handling** (compiler/lib.rs:576-578): `Declaration::Import(_) => {}` — imports are parsed into ImportDecl by tree-sitter but silently dropped during compilation. The CompiledModule has no record of them.\n\n2. **Sub-structure compilation** (compiler/lib.rs:733-735): `MemberDecl::Sub(_) => {}` — sub-declarations are parsed into SubDecl (with name, structure_name, args) but silently dropped. TopologyTemplate has no sub-component representation.\n\n3. **Stdlib function evaluation** (expr/lib.rs:23-28): `CompiledExprKind::FunctionCall { .. } => Value::Undef` — all function calls unconditionally return Undef. The stdlib crate is an empty stub. This means expressions like `sin(45deg)` or `abs(-5)` produce Undef, cascading into broken constraint evaluation and let bindings.\n\nThe fix requires:\n- Implementing a function dispatch table in reify-stdlib with core math functions (abs, sqrt, sin, cos, tan, min, max, floor, ceil, round, log, exp, etc.)\n- Wiring reify-expr's FunctionCall evaluation to dispatch through reify-stdlib\n- Adding CompiledImport to CompiledModule so imports participate in compilation (with diagnostics since module resolution is not yet implemented)\n- Adding SubComponentDecl to TopologyTemplate so sub-declarations compile into the runtime model (with compiled arg expressions)\n\nThe EvaluationGraph (reify-eval/src/graph.rs) accesses TopologyTemplate fields individually via iteration (not destructuring), so adding sub_components won't break existing eval code. Similarly, the engine processes CompiledModule.templates but not imports, so adding imports is safe.\n\nExisting test patterns use ParsedModule construction (both hand-built AST and tree-sitter parse), TopologyTemplateBuilder/CompiledModuleBuilder, MockConstraintChecker, and boundary tests across crate boundaries. We follow these established patterns.\n\n**Post-review addendum (steps 21-24):** Review identified that domain errors in math functions (sqrt, log, log10, asin, acos, pow, exp, sinh, cosh) produce NaN/inf as Value::Real or Value::Scalar instead of Value::Undef. Since Value::is_undef() only checks for Value::Undef (not NaN), these silently propagate through the evaluation graph. A constraint like `sqrt(x) > 0mm` where x is negative evaluates `NaN > 0` as `Bool(false)` rather than `Undef`, causing the constraint to report Violated instead of Indeterminate. This directly violates the strict Undef-propagation contract. Fix: add a `sanitize_value` helper that converts NaN/inf results to Undef, applied in `unary_f64` and `binary_f64` as a defense-in-depth catch-all.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add reify-stdlib as a workspace dependency of reify-expr in crates/reify-expr/Cargo.toml so eval_expr can dispatch function calls to stdlib implementations. Verify `cargo check -p reify-expr` succeeds.",
+      "status": "done",
+      "commit": "c474f57",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Define CompiledImport struct (path: String, span: SourceSpan) in reify-compiler/src/lib.rs. Add `imports: Vec<CompiledImport>` field to CompiledModule. Initialize to empty vec in compile() and in CompiledModuleBuilder::build(). Run `cargo test -p reify-compiler -p reify-test-support` to verify no regressions.",
+      "status": "done",
+      "commit": "5b565e4",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Define SubComponentDecl struct (name: String, structure_name: String, args: Vec<(String, CompiledExpr)>, span: SourceSpan, content_hash: ContentHash) in reify-compiler/src/lib.rs. Add `sub_components: Vec<SubComponentDecl>` field to TopologyTemplate. Initialize to empty vec in compile_structure() and in TopologyTemplateBuilder::build(). Run `cargo test --workspace` to verify no regressions.",
+      "status": "done",
+      "commit": "4031828",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test forward_let_ref_cold_start_simple in incremental.rs: template with param a (default 5, Int), let y = x + 1 (forward ref to x, declared first), let x = a + 10 (declared second). Assert cold-start produces x=15, y=16. Currently fails because y evaluates before x and gets Undef via get_or_undef.",
+      "description": "Write unit tests in reify-stdlib/src/lib.rs #[cfg(test)] for eval_builtin() dispatching core numeric math functions: (1) abs(Real(-5.0)) -> Real(5.0), (2) abs(Int(-3)) -> Int(3), (3) abs(Scalar{-0.005, LENGTH}) -> Scalar{0.005, LENGTH} (preserves dimension), (4) sqrt(Real(9.0)) -> Real(3.0), (5) min(Real(3.0), Real(7.0)) -> Real(3.0), (6) max(Int(3), Int(7)) -> Int(7), (7) floor(Real(3.7)) -> Int(3), (8) ceil(Real(3.2)) -> Int(4), (9) round(Real(3.5)) -> Int(4), (10) log(Real(e)) -> Real(~1.0), (11) exp(Real(0.0)) -> Real(1.0), (12) sign(Real(-5.0)) -> Real(-1.0), (13) unknown function 'foo' returns Undef.",
       "status": "done",
-      "commit": "41094a3"
+      "commit": "9f23efd"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix cold-start let evaluation in Engine::eval() to topologically sort let bindings before evaluating. Replace the source-order 'for cell in &template.value_cells' loop (lines 679-722) with: (1) collect all Let cells with expressions into a HashSet<NodeId>, (2) build HashMap<NodeId, DependencyTrace> via extract_dependency_trace for each, (3) call topological_sort from dirty.rs, (4) iterate sorted result, looking up each cell from value_cells by ID to evaluate. This reuses existing infrastructure and makes step-1 pass.",
+      "description": "Implement pub fn eval_builtin(name: &str, args: &[Value]) -> Value in reify-stdlib/src/lib.rs. Match on function name, validate argument count, extract numeric values via as_f64() or pattern matching. Implement: abs (Int/Real/Scalar), sqrt (Real only, returns Real), min/max (two args, same-type), floor/ceil/round (Real -> Int), log/log10/exp (Real -> Real), sign (Real -> Real), pow (two args). Handle Scalar dimension for abs (preserve). Unknown functions return Value::Undef. Wrong argument count returns Value::Undef.",
       "status": "done",
-      "commit": "5a90b8b"
+      "commit": "b79bfa0"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test forward_let_ref_cold_start_deep_reverse_chain in incremental.rs: all let bindings in fully reversed dependency order. Template: param a (default 0, Int), let z = y + 1 (declared 1st), let y = x + 1 (declared 2nd), let x = a + 1 (declared 3rd). Assert x=1, y=2, z=3. Exercises 3-deep topological sort in cold-start. Should pass after step-2 fix.",
+      "description": "Write unit tests in reify-stdlib for trig functions with dimensioned Angle input: (1) sin(Scalar{PI/4, ANGLE}) -> Real(~0.7071), (2) cos(Scalar{0.0, ANGLE}) -> Real(1.0), (3) tan(Scalar{PI/4, ANGLE}) -> Real(~1.0), (4) asin(Real(1.0)) -> Scalar{PI/2, ANGLE}, (5) acos(Real(0.0)) -> Scalar{PI/2, ANGLE}, (6) atan(Real(1.0)) -> Scalar{PI/4, ANGLE}, (7) atan2(Real(1.0), Real(1.0)) -> Scalar{PI/4, ANGLE}, (8) sinh(Real(0.0)) -> Real(0.0), (9) sin with non-Angle Scalar (e.g., LENGTH) returns Undef (dimension error).",
       "status": "done",
-      "commit": "ef9f783"
+      "commit": "82d3489"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Write test forward_let_ref_cold_start_diamond in incremental.rs: diamond dependency with forward refs. Template: param a (default 10, Int), let d = b + c (forward refs to both, declared 1st), let b = a + 1 (declared 2nd), let c = a + 2 (declared 3rd). Assert b=11, c=12, d=23. Exercises converging forward references. Should pass after step-2 fix.",
+      "type": "impl",
+      "description": "Extend eval_builtin in reify-stdlib with trig functions. sin/cos/tan: accept Scalar with ANGLE dimension, extract si_value (already radians), call f64::sin/cos/tan, return Real. Also accept Real directly (treated as radians for convenience). asin/acos/atan: accept Real, return Scalar with ANGLE dimension. atan2: accept two Real or two same-dimension Scalar args, return Angle. sinh/cosh/tanh: accept Real, return Real. Return Undef if argument has wrong dimension.",
       "status": "done",
-      "commit": "8b3e572"
+      "commit": "2e35bf1"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test forward_let_ref_post_resolution in incremental.rs: forward ref during post-resolution re-evaluation. Template: param p (default mm(1.0), length), auto x (length), let c = b + x (forward ref to b, declared before b), let b = x + p (declared after c). MockConstraintSolver resolves x=mm(10.0). After cold-start: x=0.01 SI, b=x+p=0.01+0.001=0.011 SI, c=b+x=0.011+0.01=0.021 SI. Test asserts c has correct value. Fails because post-resolution re-eval iterates in source order, evaluating c before b is re-evaluated with resolved x.",
+      "description": "Write unit test in reify-expr/src/lib.rs #[cfg(test)] that constructs a CompiledExpr::FunctionCall for 'abs' with arg Literal(Real(-3.0)) and asserts eval_expr returns Real(3.0), not Undef. Also test FunctionCall for 'sin' with arg Literal(Scalar{si_value: PI/4, dimension: ANGLE}) returns Real close to 0.7071. These tests MUST FAIL against the current Undef stub, confirming they test new behavior.",
       "status": "done",
-      "commit": "54a9342"
+      "commit": "6bdb514"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Fix post-resolution let re-evaluation in Engine::eval() (lines 837-878) to topologically sort let bindings before re-evaluating. Apply the same pattern as step-2: collect Let cells into NodeId set, build trace map, topological_sort, then evaluate in sorted order. This makes step-5 pass.",
+      "description": "Wire reify-expr's eval_expr FunctionCall arm to call reify_stdlib::eval_builtin. Replace the Undef stub (lines 23-28) with: evaluate all arg expressions against the ValueMap, collect into Vec<Value>, call reify_stdlib::eval_builtin(&function.name, &evaluated_args), return the result. This makes step-5 tests pass.",
       "status": "done",
-      "commit": "967cd5e"
+      "commit": "4d06d8a"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test forward_let_ref_incremental_edit_param in incremental.rs: verify incremental path handles forward refs correctly. Template: param a (default 5, Int), let y = x + 1 (forward ref), let x = a + 10. Cold-start → x=15, y=16. Edit a from 5 to 20 → x=30, y=31. Confirms incremental topo sort (already present in compute_eval_set) handles forward-declared lets correctly after param edit.",
+      "description": "Write tests in reify-expr verifying edge cases: (a) unknown function name 'nonexistent' still returns Undef gracefully, (b) Undef propagation — FunctionCall('abs', [Undef]) returns Undef (any Undef arg short-circuits), (c) function call with ValueRef args evaluates args against ValueMap before dispatch, (d) function call with zero args for function that expects args returns Undef.",
       "status": "done",
-      "commit": "5321b0a"
+      "commit": "47018c5"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Write test forward_let_ref_cold_start_matches_incremental in incremental.rs: verify cold-start and incremental produce identical values for a forward-ref template. Template: param a (default 3, Int), let c = b * 2 (forward ref), let b = a + 7. Cold-start: b=10, c=20. Edit a to 13 → b=20, c=40. Then create a fresh Engine with a=13 as default and cold-start eval. Assert fresh cold-start values match incremental edit values. Proves both evaluation paths produce consistent results for forward-ref templates.",
+      "type": "impl",
+      "description": "Add Undef propagation to the FunctionCall arm in eval_expr: after evaluating all arg expressions, check if any evaluated arg is Undef and return Undef immediately (consistent with strict Undef propagation for arithmetic). Only call eval_builtin if all args are defined. This makes step-7 propagation tests pass.",
       "status": "done",
-      "commit": "4941425"
+      "commit": "8de5adc"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write compiler test in reify-compiler/tests/ or inline: parse a source string containing `import \"std/math\"` followed by a structure, compile it, assert CompiledModule.imports.len() == 1 and imports[0].path == \"std/math\". Verify the import is NOT silently dropped.",
+      "status": "done",
+      "commit": "8ac2146"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "In compile() (compiler/lib.rs), replace the empty `Declaration::Import(_) => {}` arm with: create CompiledImport from ImportDecl.path and ImportDecl.span, push onto imports vec. Also emit a warning diagnostic: 'import \"<path>\" noted; module resolution not yet implemented' with the import's source span as label.",
+      "status": "done",
+      "commit": "cf0a877"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write compiler test: parse source with `import \"fasteners/bolt\"`, compile it, assert diagnostics contain exactly one warning whose message mentions 'import' and 'fasteners/bolt'. Verify severity is Warning (not Error), confirming compilation continues cleanly for the rest of the module. Also test that structures after the import still compile correctly.",
+      "status": "done",
+      "commit": "8468429"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Verify step-11 test passes with the diagnostic emission from step-10. If the diagnostic severity or message format needs adjustment, fix it. This step may be a no-op if step-10's implementation already satisfies step-11's assertions.",
+      "status": "done",
+      "commit": "449dc96"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write compiler test: parse source containing `structure Parent { param d: Scalar = 6mm  sub mount_hole : Hole(diameter: 6mm) }`, compile it, assert TopologyTemplate.sub_components.len() == 1. Verify sub_components[0] has name 'mount_hole', structure_name 'Hole', and args contains one entry ('diameter', compiled_expr).",
+      "status": "done",
+      "commit": "4285ecd"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "In compile_structure() (compiler/lib.rs), replace the empty `MemberDecl::Sub(_) => {}` arm with: for each SubDecl, compile each arg expression through compile_expr (using the parent structure's scope for name resolution), create SubComponentDecl with name, structure_name, compiled args, span, and content_hash, push onto sub_components vec.",
+      "status": "done",
+      "commit": "1e37e16"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write compiler test: parse source with sub-structure whose args reference parent params: `structure S { param t: Scalar = 5mm  sub rib : Rib(height: t * 0.8) }`. Compile and assert: (1) sub_components[0].args[0].0 == 'height', (2) the arg CompiledExpr contains a ValueRef to 't' (resolved, not unresolved string), (3) no error diagnostics are produced.",
+      "status": "done",
+      "commit": "1e792f1"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Verify step-15 passes. compile_expr already handles identifier resolution through the CompilationScope. Since sub args are compiled in the second pass (after scope registration in the first pass), forward references should resolve. If they don't, ensure sub args are compiled after the scope registration loop.",
+      "status": "done",
+      "commit": "473d6aa"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write E2E integration test in reify-eval/tests/ or reify-compiler/tests/: parse bracket-like source with a stdlib function call in a let binding (e.g., `structure S { param w: Scalar = 80mm  let half_w = abs(w / 2) }`), compile, evaluate through Engine.eval(). Assert the let binding 'half_w' produces a defined numeric value (not Undef). This validates the full pipeline: parse -> compile -> eval with stdlib dispatch.",
+      "status": "done",
+      "commit": "3b7bab4"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Fix any issues discovered by the E2E test. Potential issues: (1) geometry function calls like box() may now be evaluated through stdlib instead of the realization pass — ensure is_geometry_let still skips them from value cells, (2) the compiler's function type inference may need adjustment for stdlib math functions. Ensure existing bracket tests still pass (cargo test --workspace).",
+      "status": "done",
+      "commit": "3b37790"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write comprehensive integration test: source with all three features — an import, a sub-structure, and a stdlib function call in the same module. Example: `import \"std/math\"  structure Bracket { param w: Scalar = 80mm  param h: Scalar = 100mm  let diag = sqrt(w * w + h * h)  sub base : Base(width: w)  constraint diag > 0mm }`. Compile and verify: imports has 1 entry, sub_components has 1 entry, eval produces non-Undef 'diag' value. Assert only the expected import warning diagnostic (no errors).",
+      "status": "done",
+      "commit": "98069ae"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Fix any final issues from step-19. Add sub_component() builder method to TopologyTemplateBuilder for test convenience. Add import() builder method to CompiledModuleBuilder. Run `cargo test --workspace` to verify all existing tests pass with the new code.",
+      "status": "done",
+      "commit": "133e937"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing unit tests in reify-stdlib/src/lib.rs #[cfg(test)] for domain-error inputs that currently produce NaN/inf instead of Undef. Tests: (1) sqrt_negative_returns_undef: sqrt(Real(-1.0)) -> Undef, (2) log_zero_returns_undef: log(Real(0.0)) -> Undef, (3) log_negative_returns_undef: log(Real(-1.0)) -> Undef, (4) log10_zero_returns_undef: log10(Real(0.0)) -> Undef, (5) log10_negative_returns_undef: log10(Real(-1.0)) -> Undef, (6) exp_overflow_returns_undef: exp(Real(1000.0)) -> Undef (overflow to inf), (7) pow_negative_base_fractional_exp_returns_undef: pow(Real(-2.0), Real(0.5)) -> Undef. All 7 tests MUST FAIL against the current implementation because unary_f64/binary_f64 pass NaN/inf through as Value::Real, confirming they detect the bug.",
+      "status": "done",
+      "commit": "15f9870"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Add a `sanitize_value(v: Value) -> Value` helper function in reify-stdlib/src/lib.rs that converts non-finite f64 values to Undef: if v is Value::Real(x) where x.is_nan() or x.is_infinite(), return Value::Undef; if v is Value::Scalar { si_value, .. } where si_value.is_nan() or si_value.is_infinite(), return Value::Undef; otherwise return v unchanged. Apply sanitize_value in `unary_f64` by wrapping the closure result: change `Some(x) => f(x)` to `Some(x) => sanitize_value(f(x))`. Apply the same in `binary_f64`: change `(Some(x), Some(y)) => f(x, y)` to `(Some(x), Some(y)) => sanitize_value(f(x, y))`. This makes all step-21 tests pass. Run `cargo test -p reify-stdlib` to confirm no regressions in the 36 existing tests (valid-domain inputs like sqrt(9.0), log(e), exp(0.0) still produce finite results and pass through sanitize_value unchanged).",
+      "status": "done",
+      "commit": "b8f1b41"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write unit tests in reify-stdlib/src/lib.rs for inverse-trig domain errors and hyperbolic overflow, verifying the sanitize_value fix handles Value::Scalar NaN cases too: (1) asin_out_of_range_positive: asin(Real(2.0)) -> Undef, (2) asin_out_of_range_negative: asin(Real(-2.0)) -> Undef, (3) acos_out_of_range_positive: acos(Real(2.0)) -> Undef, (4) acos_out_of_range_negative: acos(Real(-2.0)) -> Undef, (5) sinh_overflow: sinh(Real(1000.0)) -> Undef, (6) cosh_overflow: cosh(Real(1000.0)) -> Undef. Also verify boundary valid inputs still work: (7) asin_boundary_valid: asin(Real(1.0)) -> Scalar{PI/2, ANGLE} (unchanged), (8) acos_boundary_valid: acos(Real(-1.0)) -> Scalar{PI, ANGLE} (unchanged). Tests 1-6 should PASS after step-22's sanitize_value implementation since asin/acos route through unary_f64 and sinh/cosh route through unary_f64. Tests 7-8 confirm no regressions on valid boundary inputs.",
+      "status": "done",
+      "commit": "5ce0bd5"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Verify all step-23 tests pass (they should since sanitize_value in unary_f64 catches both Value::Real(NaN) from asin/acos domain errors and Value::Scalar{si_value: NaN} from the same, plus Value::Real(inf) from sinh/cosh overflow). If any fail, add explicit domain pre-checks. Run `cargo test --workspace` to confirm all tests pass across the entire workspace, including the E2E integration test from step-19 which uses sqrt in a constraint pipeline (sqrt with valid positive input should still produce correct results). This completes the NaN/inf domain-error hardening.",
+      "status": "done",
+      "commit": "cc15e8c"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Reuse existing topological_sort from dirty.rs rather than implementing a new sort",
-      "rationale": "topological_sort already handles NodeId sets with DependencyTrace maps, handles duplicate reads (a*a), and has comprehensive unit tests. Using it for cold-start let evaluation requires only building the NodeId/trace inputs, not new sorting infrastructure."
+      "decision": "Implement stdlib function dispatch in reify-stdlib crate, add it as dependency of reify-expr",
+      "rationale": "reify-stdlib already exists as the architecturally intended location for built-in functions. Adding it as a dependency of reify-expr is a clean one-way dependency (no cycles). This keeps eval_expr's match arm simple: evaluate args, delegate to stdlib. Alternative of inlining all functions in reify-expr would work but violates the crate separation design."
     },
     {
-      "decision": "Sort only Let cells during topological ordering, not all value_cells",
-      "rationale": "Params are roots (no dependencies) and are already evaluated in pass 1 before any let evaluation. Auto params start as Undef. Only Let-to-Let forward references need reordering. The topological sort will naturally put lets with no let-dependencies first."
+      "decision": "Function dispatch by simple name match on function.name, not qualified_name",
+      "rationale": "The compiler currently generates qualified_name as format!('std::{}', name) which is a placeholder convention. Matching on the simple name field is more robust since it matches what the user actually writes (e.g., 'sin', not 'std::sin'). The qualified_name field remains available for future dispatch when the module system is implemented."
     },
     {
-      "decision": "Apply topological sort to both cold-start evaluation and post-resolution re-evaluation",
-      "rationale": "Both code paths iterate value_cells in source order and are vulnerable to the same forward-reference bug. The post-resolution path re-evaluates let bindings after auto params are resolved — if a let references another let that depends on an auto param, source-order iteration uses the pre-resolution (Undef/stale) value instead of the freshly resolved one."
+      "decision": "Strict Undef propagation for function calls: if any arg is Undef, result is Undef",
+      "rationale": "Consistent with the existing strict Undef propagation for arithmetic operations (expr/lib.rs:58-60). Function calls should have the same semantics — they are not boolean connectives, so Kleene three-valued logic does not apply. This prevents confusing partial results from functions where some args are undetermined."
     },
     {
-      "decision": "Place all tests in the existing incremental.rs test file",
-      "rationale": "The tests exercise Engine::eval() and Engine::edit_param() behavior, which is the same domain as existing incremental.rs tests. The test patterns (CompiledModuleBuilder, TopologyTemplateBuilder, expression builders) are already imported there. For 6 additional tests, co-location is cleaner than a separate file."
+      "decision": "Trig functions accept Angle-dimensioned Scalar, extract si_value (radians), return dimensionless Real",
+      "rationale": "Matches the stdlib reference spec (Section 1.2): 'sin(x: Angle) -> Real'. The SI value of an Angle scalar is already in radians, so no conversion needed. This enforces the dimensional distinction between angles and dimensionless reals that the language spec requires. Also accept bare Real as a convenience for computed radians."
+    },
+    {
+      "decision": "Imports produce a warning diagnostic rather than being silently dropped or producing an error",
+      "rationale": "Module resolution is not implemented (M5 scope), so imports cannot be resolved. But silently dropping them is the current bug — users get no feedback. A warning is appropriate: it acknowledges the import, doesn't block compilation, and clearly communicates the limitation. The import path is recorded in CompiledModule.imports for future module resolution use."
+    },
+    {
+      "decision": "Sub-structures are compiled into SubComponentDecl but not integrated into EvaluationGraph",
+      "rationale": "Full sub-structure evaluation requires schema nodes, containment trees, and member access resolution — all M5+ scope. For this task, the goal is that sub-declarations 'compile into the runtime model' (not silently dropped). Recording them in TopologyTemplate with compiled arg expressions is sufficient. The EvaluationGraph (reify-eval/src/graph.rs) iterates template fields individually and simply won't process sub_components, so no eval changes needed."
+    },
+    {
+      "decision": "sqrt on Scalar values returns Real (dimension handling deferred)",
+      "rationale": "Full dimensional sqrt (halving exponents) requires DimensionVector::pow with fractional exponents. While DimensionVector supports this via Rational, the complexity of returning a correctly-typed Scalar from sqrt is non-trivial. For v0.1, sqrt accepts Real and returns Real. Dimensioned sqrt (e.g., sqrt(area) -> length) is deferred to M5 when the full type system is in place."
+    },
+    {
+      "decision": "Core v0.1 function set: abs, min, max, sqrt, pow, log, log10, exp, sign, floor, ceil, round, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh",
+      "rationale": "These are the functions from std.math.numeric and std.math.trig in the stdlib reference that are commonly needed in engineering expressions. clamp and lerp can be added later as they're compositional (clamp = min(max(x,lo),hi)). Linear algebra, complex, and geometry query functions are deferred to later milestones."
+    },
+    {
+      "decision": "Post-computation sanitization via sanitize_value in unary_f64/binary_f64 rather than per-function domain pre-checks",
+      "rationale": "A sanitize_value helper that converts NaN/inf in Value::Real and Value::Scalar to Value::Undef, applied at the return point of unary_f64 and binary_f64, is a defense-in-depth catch-all. It handles all reported domain errors (sqrt of negative, log of non-positive, asin/acos outside [-1,1], pow with negative base and fractional exponent, exp/sinh/cosh overflow to inf) with a 2-line change in each helper. Per-function pre-checks would require N individual changes and risk missing edge cases for future functions. The sanitize approach also future-proofs: any new function routed through these helpers automatically gets NaN/inf protection. Both Value::Real(NaN/inf) and Value::Scalar{si_value: NaN/inf, ..} are caught. Valid-domain inputs produce finite results and pass through unchanged, so no regressions."
     }
   ],
   "reuse": [
     {
-      "what": "topological_sort function",
-      "where": "crates/reify-eval/src/dirty.rs",
-      "how": "Call with HashSet<NodeId> of Let cells and HashMap<NodeId, DependencyTrace> built from their expressions. Returns Vec<NodeId> in dependency-first order. Used in cold-start eval to replace source-order iteration."
+      "what": "CompilationScope for name resolution in sub-structure args",
+      "where": "crates/reify-compiler/src/lib.rs (CompilationScope struct, lines 307-329)",
+      "how": "Sub-structure arg expressions are compiled via compile_expr() which already uses CompilationScope for identifier resolution. Sub args like `height: thickness * 0.8` will resolve 'thickness' through the parent structure's scope, exactly as let and constraint expressions do."
     },
     {
-      "what": "extract_dependency_trace function",
-      "where": "crates/reify-eval/src/deps.rs",
-      "how": "Call for each Let cell's default_expr to get its DependencyTrace (list of ValueCellId reads). Feed into topological_sort's trace map."
+      "what": "compile_expr() for sub-structure arg compilation",
+      "where": "crates/reify-compiler/src/lib.rs (compile_expr function, lines 334-551)",
+      "how": "Each sub-structure arg is an Expr that can be compiled using the existing compile_expr. No new expression compilation logic needed."
     },
     {
-      "what": "TopologyTemplateBuilder and CompiledModuleBuilder",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Fluent builders for test fixtures. Use .let_binding() calls in specific orders to exercise forward references — the order of calls determines source order in value_cells."
+      "what": "TopologyTemplateBuilder for test construction",
+      "where": "crates/reify-test-support/src/builders.rs (TopologyTemplateBuilder, lines 141-248)",
+      "how": "Extend with a sub_component() builder method following the same pattern as param(), let_binding(), constraint(), realization()."
     },
     {
-      "what": "Expression builders (literal, value_ref_typed, binop)",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Build CompiledExpr trees for let binding expressions and constraint expressions in tests."
+      "what": "CompiledModuleBuilder for test construction",
+      "where": "crates/reify-test-support/src/builders.rs (CompiledModuleBuilder, lines 270-305)",
+      "how": "The build() method needs updating to initialize the new imports field to Vec::new(). Optionally add an import() builder method."
     },
     {
-      "what": "MockConstraintChecker and MockConstraintSolver",
-      "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "MockConstraintChecker for tests without constraints. MockConstraintSolver for the post-resolution forward-ref test (step-5) to provide resolved auto param values."
+      "what": "Rust std math functions for stdlib implementation",
+      "where": "Rust standard library (f64 methods)",
+      "how": "eval_builtin delegates to f64::abs(), f64::sqrt(), f64::sin(), f64::cos(), etc. Value::as_f64() extracts the numeric value. No external math library needed for the v0.1 function set."
+    },
+    {
+      "what": "Value::as_f64() for numeric extraction in stdlib dispatch",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "Already implemented on Value enum — extracts f64 from Int, Real, or Scalar variants. Used throughout eval_expr for comparisons. eval_builtin will use it to extract function arguments for f64 math operations."
+    },
+    {
+      "what": "DimensionVector::ANGLE constant for trig return types",
+      "where": "crates/reify-types/src/dimension.rs",
+      "how": "DimensionVector::ANGLE is already defined. Used in unit_to_scalar() for 'deg'/'rad' units. Trig inverse functions (asin, acos, atan) return Scalar with this dimension."
+    },
+    {
+      "what": "Tree-sitter parser for integration test source parsing",
+      "where": "crates/reify-syntax/src/ts_parser.rs",
+      "how": "Integration tests use reify_syntax::parse(source, path) to parse .ri source strings. The parser already handles import_declaration and sub_decl grammar nodes. Tests for import and sub compilation use parse() directly rather than hand-building AST."
+    },
+    {
+      "what": "Existing boundary test patterns (boundary2_producer.rs)",
+      "where": "crates/reify-compiler/tests/boundary2_producer.rs",
+      "how": "Follow the established pattern: construct or parse a module, compile it, assert on CompiledModule fields and diagnostics. New tests for imports and sub-structures follow this exact pattern."
+    },
+    {
+      "what": "Existing unary_f64 and binary_f64 helper functions as NaN/inf sanitization point",
+      "where": "crates/reify-stdlib/src/lib.rs (unary_f64 lines 91-99, binary_f64 lines 128-136)",
+      "how": "All functions that can produce NaN/inf (sqrt, log, log10, exp, pow, asin, acos, sinh, cosh) route through unary_f64 or binary_f64. Adding sanitize_value(f(x)) at the return point of these two helpers catches all domain-error NaN/inf with a minimal 2-line change per helper, rather than modifying each of the 15+ function dispatch arms individually."
     }
   ]
 }

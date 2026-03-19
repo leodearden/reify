@@ -6,10 +6,18 @@ use reify_types::{
     Value, ValueCellId,
 };
 
+/// A compiled import declaration.
+#[derive(Debug, Clone)]
+pub struct CompiledImport {
+    pub path: String,
+    pub span: SourceSpan,
+}
+
 /// A compiled module — the output of the compiler.
 #[derive(Debug, Clone)]
 pub struct CompiledModule {
     pub path: reify_types::ModulePath,
+    pub imports: Vec<CompiledImport>,
     pub templates: Vec<TopologyTemplate>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
@@ -23,6 +31,17 @@ pub struct TopologyTemplate {
     pub value_cells: Vec<ValueCellDecl>,
     pub constraints: Vec<CompiledConstraint>,
     pub realizations: Vec<RealizationDecl>,
+    pub sub_components: Vec<SubComponentDecl>,
+    pub content_hash: ContentHash,
+}
+
+/// A sub-component declaration — compiled from a SubDecl.
+#[derive(Debug, Clone)]
+pub struct SubComponentDecl {
+    pub name: String,
+    pub structure_name: String,
+    pub args: Vec<(String, CompiledExpr)>,
+    pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
 
@@ -556,6 +575,7 @@ fn compile_expr(
 pub fn compile(
     parsed: &reify_syntax::ParsedModule,
 ) -> CompiledModule {
+    let mut imports = Vec::new();
     let mut templates = Vec::new();
     let mut diagnostics = Vec::new();
 
@@ -573,8 +593,18 @@ pub fn compile(
                 let template = compile_structure(structure, &mut diagnostics);
                 templates.push(template);
             }
-            reify_syntax::Declaration::Import(_) => {
-                // Imports are not yet handled in M1
+            reify_syntax::Declaration::Import(import) => {
+                imports.push(CompiledImport {
+                    path: import.path.clone(),
+                    span: import.span,
+                });
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "import \"{}\" noted; module resolution not yet implemented",
+                        import.path
+                    ))
+                    .with_label(DiagnosticLabel::new(import.span, "import")),
+                );
             }
         }
     }
@@ -583,6 +613,7 @@ pub fn compile(
 
     CompiledModule {
         path: parsed.path.clone(),
+        imports,
         templates,
         diagnostics,
         content_hash,
@@ -598,6 +629,7 @@ fn compile_structure(
     let mut scope = CompilationScope::new(entity_name);
     let mut value_cells = Vec::new();
     let mut constraints = Vec::new();
+    let mut sub_components = Vec::new();
     let mut constraint_index: u32 = 0;
 
     // First pass: register all param and let names into the scope so they can
@@ -730,8 +762,22 @@ fn compile_structure(
                 });
                 constraint_index += 1;
             }
-            reify_syntax::MemberDecl::Sub(_) => {
-                // Sub-components not yet handled in M1
+            reify_syntax::MemberDecl::Sub(sub) => {
+                let compiled_args: Vec<(String, CompiledExpr)> = sub
+                    .args
+                    .iter()
+                    .map(|(name, expr)| {
+                        (name.clone(), compile_expr(expr, &scope, diagnostics))
+                    })
+                    .collect();
+
+                sub_components.push(SubComponentDecl {
+                    name: sub.name.clone(),
+                    structure_name: sub.structure_name.clone(),
+                    args: compiled_args,
+                    span: sub.span,
+                    content_hash: sub.content_hash,
+                });
             }
         }
     }
@@ -761,6 +807,7 @@ fn compile_structure(
         value_cells,
         constraints,
         realizations,
+        sub_components,
         content_hash,
     }
 }

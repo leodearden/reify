@@ -11,3 +11,4 @@ reify-syntax.workspace = true
 
 [dev-dependencies]
 reify-test-support.workspace = true
+reify-expr.workspace = true

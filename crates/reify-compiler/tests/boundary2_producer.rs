@@ -424,6 +424,283 @@ fn mul_div_different_dimensions_no_diagnostic() {
     );
 }
 
+/// Import declarations should be compiled into CompiledModule.imports, not silently dropped.
+#[test]
+fn import_compiles_into_module_imports() {
+    let source = r#"import "std/math"
+
+structure S {
+    param w: Scalar = 80mm
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_import"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert_eq!(
+        compiled.imports.len(),
+        1,
+        "expected 1 import, got {}",
+        compiled.imports.len()
+    );
+    assert_eq!(compiled.imports[0].path, "std/math");
+}
+
+/// Import diagnostic: should produce exactly one warning mentioning the import path.
+/// Compilation should still succeed (structures after import compile correctly).
+#[test]
+fn import_produces_warning_diagnostic() {
+    let source = r#"import "fasteners/bolt"
+
+structure S {
+    param w: Scalar = 80mm
+    param h: Scalar = 100mm
+    constraint w > 0mm
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_import_diag"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // Should have exactly one diagnostic (the import warning)
+    assert_eq!(
+        compiled.diagnostics.len(),
+        1,
+        "expected 1 diagnostic, got {:?}",
+        compiled.diagnostics
+    );
+
+    let diag = &compiled.diagnostics[0];
+    assert_eq!(
+        diag.severity,
+        reify_types::Severity::Warning,
+        "import diagnostic should be Warning, not Error"
+    );
+    assert!(
+        diag.message.contains("import") && diag.message.contains("fasteners/bolt"),
+        "diagnostic should mention import and path, got: {}",
+        diag.message
+    );
+
+    // Structure after import should still compile correctly
+    assert_eq!(compiled.templates.len(), 1);
+    let template = &compiled.templates[0];
+    assert_eq!(template.name, "S");
+    assert_eq!(template.value_cells.len(), 2);
+    assert_eq!(template.constraints.len(), 1);
+}
+
+/// Sub-structure declarations should be compiled into TopologyTemplate.sub_components.
+#[test]
+fn sub_compiles_into_template_sub_components() {
+    let source = r#"structure Parent {
+    param d: Scalar = 6mm
+    sub mount_hole = Hole(diameter: 6mm)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sub"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let template = &compiled.templates[0];
+
+    assert_eq!(
+        template.sub_components.len(),
+        1,
+        "expected 1 sub_component, got {}",
+        template.sub_components.len()
+    );
+
+    let sub = &template.sub_components[0];
+    assert_eq!(sub.name, "mount_hole");
+    assert_eq!(sub.structure_name, "Hole");
+    assert_eq!(sub.args.len(), 1, "expected 1 arg");
+    assert_eq!(sub.args[0].0, "diameter");
+}
+
+/// Sub-structure args can reference parent params — expressions are compiled with
+/// the parent's scope for name resolution.
+#[test]
+fn sub_args_reference_parent_params() {
+    let source = r#"structure S {
+    param t: Scalar = 5mm
+    sub rib = Rib(height: t * 0.8)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sub_ref"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // No error diagnostics expected
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
+
+    let template = &compiled.templates[0];
+    assert_eq!(template.sub_components.len(), 1);
+
+    let sub = &template.sub_components[0];
+    assert_eq!(sub.args[0].0, "height");
+
+    // The arg expression should contain a ValueRef to 't' (resolved identifier)
+    fn contains_value_ref(expr: &reify_types::CompiledExpr, member: &str) -> bool {
+        use reify_types::CompiledExprKind;
+        match &expr.kind {
+            CompiledExprKind::ValueRef(id) => id.member == member,
+            CompiledExprKind::BinOp { left, right, .. } => {
+                contains_value_ref(left, member) || contains_value_ref(right, member)
+            }
+            CompiledExprKind::UnOp { operand, .. } => contains_value_ref(operand, member),
+            CompiledExprKind::FunctionCall { args, .. } => {
+                args.iter().any(|a| contains_value_ref(a, member))
+            }
+            _ => false,
+        }
+    }
+
+    assert!(
+        contains_value_ref(&sub.args[0].1, "t"),
+        "sub arg expression should contain ValueRef to 't'"
+    );
+}
+
+/// E2E: parse source with stdlib function in let binding, compile, eval_expr.
+/// Validates the full pipeline: parse → compile (FunctionCall) → eval → stdlib dispatch.
+#[test]
+fn e2e_stdlib_function_in_let_binding() {
+    let source = r#"structure S {
+    param w: Scalar = 80mm
+    let half_w = abs(w / 2)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_stdlib_e2e"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let template = &compiled.templates[0];
+
+    // Find the 'half_w' let binding
+    let half_w = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "half_w")
+        .expect("should have half_w value cell");
+    assert_eq!(half_w.kind, ValueCellKind::Let);
+    let half_w_expr = half_w.default_expr.as_ref().expect("let should have expr");
+
+    // Build a ValueMap with the param default value
+    let mut values = reify_types::ValueMap::new();
+    let w_id = reify_types::ValueCellId::new("S", "w");
+    // 80mm = 0.08m
+    values.insert(w_id, reify_types::Value::length(0.08));
+
+    // Evaluate the let expression — should produce a defined value, NOT Undef
+    let result = reify_expr::eval_expr(half_w_expr, &values);
+    assert!(
+        !result.is_undef(),
+        "half_w = abs(w / 2) should produce a defined value, got Undef"
+    );
+
+    // abs(0.08 / 2) = abs(0.04) = 0.04
+    let v = result.as_f64().unwrap();
+    assert!(
+        (v - 0.04).abs() < 1e-10,
+        "expected ~0.04, got {}",
+        v
+    );
+}
+
+/// Comprehensive: import + sub-structure + stdlib function in one module.
+#[test]
+fn comprehensive_all_three_features() {
+    let source = r#"import "std/math"
+
+structure Bracket {
+    param w: Scalar = 80mm
+    param h: Scalar = 100mm
+    let diag = sqrt(w * w + h * h)
+    sub base = Base(width: w)
+    constraint diag > 0mm
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_comprehensive"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // Imports: should have 1 entry
+    assert_eq!(compiled.imports.len(), 1);
+    assert_eq!(compiled.imports[0].path, "std/math");
+
+    // Only the import warning diagnostic (no errors)
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+
+    let warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Warning)
+        .collect();
+    assert_eq!(warnings.len(), 1, "expected 1 warning (import), got: {:?}", warnings);
+    assert!(warnings[0].message.contains("import"));
+
+    // Template structure
+    let template = &compiled.templates[0];
+    assert_eq!(template.name, "Bracket");
+
+    // Sub-components: should have 1 entry
+    assert_eq!(template.sub_components.len(), 1);
+    assert_eq!(template.sub_components[0].name, "base");
+    assert_eq!(template.sub_components[0].structure_name, "Base");
+
+    // Eval: 'diag' let binding should produce non-Undef
+    let diag_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "diag")
+        .expect("should have diag value cell");
+    let diag_expr = diag_cell.default_expr.as_ref().expect("let should have expr");
+
+    let mut values = reify_types::ValueMap::new();
+    values.insert(
+        reify_types::ValueCellId::new("Bracket", "w"),
+        reify_types::Value::length(0.08),
+    );
+    values.insert(
+        reify_types::ValueCellId::new("Bracket", "h"),
+        reify_types::Value::length(0.1),
+    );
+
+    let result = reify_expr::eval_expr(diag_expr, &values);
+    assert!(
+        !result.is_undef(),
+        "diag = sqrt(w*w + h*h) should produce non-Undef, got Undef"
+    );
+
+    // sqrt(0.08^2 + 0.1^2) = sqrt(0.0064 + 0.01) = sqrt(0.0164) ≈ 0.12806
+    let v = result.as_f64().unwrap();
+    assert!(
+        (v - 0.0164_f64.sqrt()).abs() < 1e-10,
+        "expected ~0.128, got {}",
+        v
+    );
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
