@@ -73,12 +73,21 @@ export function createEngineStore() {
   }
 
   async function subscribeToEvents(): Promise<() => void> {
-    const unlisteners = await Promise.all([
+    const results = await Promise.allSettled([
       onMeshUpdate(applyMeshUpdate),
       onValueUpdate((v) => applyValueUpdates([v])),
       onConstraintUpdate((c) => applyConstraintUpdates([c])),
       onEvaluationStatus(setEvalStatus),
     ]);
+
+    const unlisteners: (() => void)[] = [];
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        unlisteners.push(result.value);
+      } else {
+        console.warn('Failed to subscribe to event:', result.reason);
+      }
+    }
 
     return () => {
       for (const unlisten of unlisteners) {
