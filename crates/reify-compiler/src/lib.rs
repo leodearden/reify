@@ -609,7 +609,22 @@ pub fn compile(
         }
     }
 
-    let content_hash = ContentHash::of_str(&format!("{}", parsed.path));
+    // Build a content-sensitive hash by combining the path with all compiled content.
+    let content_hash = {
+        let path_hash = ContentHash::of_str(&format!("{}", parsed.path));
+
+        // Template content hashes
+        let template_hashes = templates.iter().map(|t| t.content_hash);
+
+        // Import path hashes
+        let import_hashes = imports.iter().map(|i| ContentHash::of_str(&i.path));
+
+        let all_hashes = std::iter::once(path_hash)
+            .chain(template_hashes)
+            .chain(import_hashes);
+
+        ContentHash::combine_all(all_hashes)
+    };
 
     CompiledModule {
         path: parsed.path.clone(),
