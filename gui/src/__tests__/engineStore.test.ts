@@ -35,9 +35,9 @@ beforeEach(() => {
 
 const sampleMesh: MeshData = {
   entity_path: 'Bracket.body',
-  vertices: [0, 1, 2, 3, 4, 5],
-  indices: [0, 1, 2],
-  normals: [0, 0, 1, 0, 0, 1],
+  vertices: new Float32Array([0, 1, 2, 3, 4, 5]),
+  indices: new Uint32Array([0, 1, 2]),
+  normals: new Float32Array([0, 0, 1, 0, 0, 1]),
 };
 
 const sampleValue: ValueData = {
@@ -94,9 +94,9 @@ describe('engineStore', () => {
       expect(state.meshes['Bracket.body']).toEqual(sampleMesh);
 
       // Update existing
-      const updated = { ...sampleMesh, vertices: [9, 8, 7] };
+      const updated = { ...sampleMesh, vertices: new Float32Array([9, 8, 7]) };
       applyMeshUpdate(updated);
-      expect(state.meshes['Bracket.body'].vertices).toEqual([9, 8, 7]);
+      expect(state.meshes['Bracket.body'].vertices).toEqual(new Float32Array([9, 8, 7]));
       dispose();
     });
   });

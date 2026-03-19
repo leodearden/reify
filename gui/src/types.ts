@@ -3,12 +3,30 @@
  * These mirror the Rust serialized types defined in the backend (Task 83).
  */
 
-/** Tessellated mesh data for 3D rendering. */
+/** Tessellated mesh data for 3D rendering (typed arrays for WebGL). */
 export interface MeshData {
+  entity_path: string;
+  vertices: Float32Array;
+  indices: Uint32Array;
+  normals: Float32Array | null;
+}
+
+/** Wire-format mesh data as received from Tauri IPC (JSON number arrays). */
+export interface RawMeshData {
   entity_path: string;
   vertices: number[];
   indices: number[];
   normals: number[] | null;
+}
+
+/** Convert wire-format mesh data to typed arrays for WebGL consumption. */
+export function convertRawMesh(raw: RawMeshData): MeshData {
+  return {
+    entity_path: raw.entity_path,
+    vertices: new Float32Array(raw.vertices),
+    indices: new Uint32Array(raw.indices),
+    normals: raw.normals ? new Float32Array(raw.normals) : null,
+  };
 }
 
 /** A parameter or computed value from the evaluation engine. */
@@ -45,12 +63,30 @@ export interface FileData {
   content: string;
 }
 
-/** Full GUI state snapshot from the backend. */
+/** Full GUI state snapshot from the backend (with typed arrays). */
 export interface GuiState {
   meshes: MeshData[];
   values: ValueData[];
   constraints: ConstraintData[];
   files: FileData[];
+}
+
+/** Wire-format GUI state as received from Tauri IPC. */
+export interface RawGuiState {
+  meshes: RawMeshData[];
+  values: ValueData[];
+  constraints: ConstraintData[];
+  files: FileData[];
+}
+
+/** Convert wire-format GUI state to typed arrays. */
+export function convertRawGuiState(raw: RawGuiState): GuiState {
+  return {
+    meshes: raw.meshes.map(convertRawMesh),
+    values: raw.values,
+    constraints: raw.constraints,
+    files: raw.files,
+  };
 }
 
 /** Current phase of the evaluation engine. */

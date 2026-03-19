@@ -5,6 +5,7 @@
  */
 import type {
   MeshData,
+  RawMeshData,
   ValueData,
   ConstraintData,
   SourceLocation,
@@ -15,21 +16,33 @@ import type {
   ValueUpdate,
   ConstraintUpdate,
 } from '../types';
+import { convertRawMesh } from '../types';
 
-// --- MeshData ---
+// --- MeshData (typed arrays for WebGL) ---
 const mesh: MeshData = {
+  entity_path: 'Bracket.body',
+  vertices: new Float32Array([0.0, 1.0, 2.0]),
+  indices: new Uint32Array([0, 1, 2]),
+  normals: new Float32Array([0.0, 0.0, 1.0]),
+};
+
+const meshNoNormals: MeshData = {
+  entity_path: 'Bracket.body',
+  vertices: new Float32Array([0.0, 1.0, 2.0]),
+  indices: new Uint32Array([0, 1, 2]),
+  normals: null,
+};
+
+// --- RawMeshData (wire format from Tauri IPC) ---
+const rawMesh: RawMeshData = {
   entity_path: 'Bracket.body',
   vertices: [0.0, 1.0, 2.0],
   indices: [0, 1, 2],
   normals: [0.0, 0.0, 1.0],
 };
 
-const meshNoNormals: MeshData = {
-  entity_path: 'Bracket.body',
-  vertices: [0.0, 1.0, 2.0],
-  indices: [0, 1, 2],
-  normals: null,
-};
+// --- convertRawMesh ---
+const converted: MeshData = convertRawMesh(rawMesh);
 
 // --- ValueData ---
 const value: ValueData = {
@@ -94,6 +107,8 @@ const constraintUpdate: ConstraintUpdate = constraint;
 // Suppress unused variable warnings — this file is only for type checking
 void mesh;
 void meshNoNormals;
+void rawMesh;
+void converted;
 void value;
 void constraint;
 void constraintWithDetails;

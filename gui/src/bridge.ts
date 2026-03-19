@@ -7,18 +7,22 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   GuiState,
   MeshData,
+  RawMeshData,
+  RawGuiState,
   ValueData,
   ConstraintData,
   EvaluationStatus,
   SourceLocation,
   FileData,
 } from './types';
+import { convertRawMesh, convertRawGuiState } from './types';
 
 // ── Commands (invoke wrappers) ──────────────────────────────────────
 
-/** Fetch the full initial GUI state from the backend. */
+/** Fetch the full initial GUI state from the backend. Converts mesh wire data to typed arrays. */
 export async function getInitialState(): Promise<GuiState> {
-  return invoke<GuiState>('get_initial_state');
+  const raw = await invoke<RawGuiState>('get_initial_state');
+  return convertRawGuiState(raw);
 }
 
 /** Set a parameter value by cell ID. */
@@ -63,12 +67,12 @@ export async function lspRequest(method: string, params: unknown): Promise<unkno
 
 // ── Event listeners (listen wrappers) ───────────────────────────────
 
-/** Subscribe to mesh update events. */
+/** Subscribe to mesh update events. Converts wire-format number[] to typed arrays. */
 export async function onMeshUpdate(
   callback: (data: MeshData) => void,
 ): Promise<UnlistenFn> {
-  return listen<MeshData>('mesh-update', (event) => {
-    callback(event.payload);
+  return listen<RawMeshData>('mesh-update', (event) => {
+    callback(convertRawMesh(event.payload));
   });
 }
 

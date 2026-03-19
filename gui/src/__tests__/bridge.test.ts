@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { GuiState, EvaluationStatus, MeshData, ValueData, ConstraintData } from '../types';
+import type { GuiState, EvaluationStatus } from '../types';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
@@ -66,29 +66,28 @@ describe('bridge event listeners', () => {
     expect(result).toBe(unlisten);
   });
 
-  it('onMeshUpdate extracts payload from event and calls callback', async () => {
+  it('onMeshUpdate extracts payload from event and calls callback with typed arrays', async () => {
     const unlisten = vi.fn();
     mockListen.mockImplementation(async (_event, handler) => {
-      // Simulate Tauri calling the handler with an event object
-      const mesh: MeshData = {
+      // Simulate Tauri calling the handler with raw wire-format data
+      const rawMesh = {
         entity_path: 'Bracket.body',
         vertices: [0, 1, 2],
         indices: [0, 1, 2],
         normals: null,
       };
-      (handler as (event: { payload: MeshData }) => void)({ payload: mesh });
+      (handler as (event: { payload: unknown }) => void)({ payload: rawMesh });
       return unlisten;
     });
 
     const callback = vi.fn();
     await onMeshUpdate(callback);
 
-    expect(callback).toHaveBeenCalledWith({
-      entity_path: 'Bracket.body',
-      vertices: [0, 1, 2],
-      indices: [0, 1, 2],
-      normals: null,
-    });
+    const received = callback.mock.calls[0][0];
+    expect(received.entity_path).toBe('Bracket.body');
+    expect(received.vertices).toBeInstanceOf(Float32Array);
+    expect(received.indices).toBeInstanceOf(Uint32Array);
+    expect(received.normals).toBeNull();
   });
 
   it('onEvaluationStatus calls listen with evaluation-status event', async () => {
