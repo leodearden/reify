@@ -1001,6 +1001,30 @@ mod tests {
         }
     }
 
+    // ── Enum eval tests ──────────────────────────────────
+
+    fn enum_lit(type_name: &str, variant: &str) -> CompiledExpr {
+        lit(
+            Value::Enum {
+                type_name: type_name.into(),
+                variant: variant.into(),
+            },
+            Type::Enum(type_name.into()),
+        )
+    }
+
+    #[test]
+    fn eval_eq_enum_same_type_same_variant() {
+        let left = enum_lit("Direction", "In");
+        let right = enum_lit("Direction", "In");
+        let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Bool(true) => {}
+            other => panic!("expected Bool(true), got {:?}", other),
+        }
+    }
+
     #[test]
     fn div_same_dimension_yields_dimensionless() {
         // 80mm / 20mm = 4.0 (dimensionless Real)
