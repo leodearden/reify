@@ -261,3 +261,71 @@ structure S {
         guard_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+/// Content hash must include guarded member default expressions, not just
+/// guard_expr hashes. Two structures identical except for a guarded member's
+/// default expression (5mm vs 10mm) must produce different content hashes.
+#[test]
+fn content_hash_includes_guarded_member_exprs() {
+    let source_a = r#"
+structure S {
+    param active : Bool = true
+    param x : Scalar = 5mm where active
+}
+"#;
+    let source_b = r#"
+structure S {
+    param active : Bool = true
+    param x : Scalar = 10mm where active
+}
+"#;
+
+    let (template_a, diag_a) = compile_first_template(source_a);
+    let (template_b, diag_b) = compile_first_template(source_b);
+
+    // No errors
+    assert!(diag_a.iter().all(|d| d.severity != Severity::Error));
+    assert!(diag_b.iter().all(|d| d.severity != Severity::Error));
+
+    // Content hashes should differ since guarded member defaults differ
+    assert_ne!(
+        template_a.content_hash,
+        template_b.content_hash,
+        "content_hash should differ when guarded member default expressions differ"
+    );
+}
+
+/// Content hash must also differ when a guarded constraint expression changes.
+#[test]
+fn content_hash_includes_guarded_constraint_exprs() {
+    let source_a = r#"
+structure S {
+    param active : Bool = true
+    where active {
+        param x : Scalar = 5mm
+        constraint x > 2mm
+    }
+}
+"#;
+    let source_b = r#"
+structure S {
+    param active : Bool = true
+    where active {
+        param x : Scalar = 5mm
+        constraint x > 3mm
+    }
+}
+"#;
+
+    let (template_a, diag_a) = compile_first_template(source_a);
+    let (template_b, diag_b) = compile_first_template(source_b);
+
+    assert!(diag_a.iter().all(|d| d.severity != Severity::Error));
+    assert!(diag_b.iter().all(|d| d.severity != Severity::Error));
+
+    assert_ne!(
+        template_a.content_hash,
+        template_b.content_hash,
+        "content_hash should differ when guarded constraint expressions differ"
+    );
+}
