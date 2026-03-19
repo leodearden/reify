@@ -1,3 +1,4 @@
+import { batch } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import type {
   MeshData,
@@ -52,15 +53,19 @@ export function createEngineStore() {
   }
 
   function applyValueUpdates(updates: ValueData[]) {
-    for (const v of updates) {
-      setState('values', v.cell_id, v);
-    }
+    batch(() => {
+      for (const v of updates) {
+        setState('values', v.cell_id, v);
+      }
+    });
   }
 
   function applyConstraintUpdates(updates: ConstraintData[]) {
-    for (const c of updates) {
-      setState('constraints', c.node_id, c);
-    }
+    batch(() => {
+      for (const c of updates) {
+        setState('constraints', c.node_id, c);
+      }
+    });
   }
 
   function setEvalStatus(status: EvaluationStatus) {
