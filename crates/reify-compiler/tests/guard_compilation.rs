@@ -329,3 +329,39 @@ structure S {
         "content_hash should differ when guarded constraint expressions differ"
     );
 }
+
+/// Reference safety: an else_member referencing a cell guarded under a different
+/// guard should produce a cross-guard diagnostic. Currently the cross-guard check
+/// only iterates group.members, missing else_members.
+#[test]
+fn reference_safety_else_member_cross_guard() {
+    let source = r#"
+structure S {
+    param a : Bool = true
+    param b : Bool = true
+    where a {
+        param x : Scalar = 5mm
+    }
+    where b {
+    } else {
+        let y = x
+    }
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    // Should contain a diagnostic about cross-guard or differently-guarded reference
+    let guard_warnings: Vec<_> = diagnostics.iter()
+        .filter(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("differently-guarded") || msg.contains("guarded")
+        })
+        .collect();
+
+    assert!(
+        !guard_warnings.is_empty(),
+        "expected diagnostic about cross-guard reference from else_member y to guarded cell x, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
