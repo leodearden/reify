@@ -273,4 +273,36 @@ mod tests {
             DimensionVector::LENGTH.content_hash()
         );
     }
+
+    #[test]
+    fn root_area_to_length() {
+        // root(2) of AREA [2,0,...] → LENGTH [1,0,...]
+        let result = DimensionVector::AREA.root(2);
+        assert_eq!(result, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn root_length_4_to_length_2() {
+        // root(2) of LENGTH^4 → LENGTH^2
+        let len4 = DimensionVector::LENGTH.pow(4);
+        let result = len4.root(2);
+        assert_eq!(result, DimensionVector::AREA); // LENGTH^2 == AREA
+    }
+
+    #[test]
+    fn root_length_to_fractional_exponent() {
+        // root(2) of LENGTH → LENGTH^(1/2)
+        let result = DimensionVector::LENGTH.root(2);
+        assert_eq!(result.0[0], Rational::new(1, 2));
+        // all other exponents should be zero
+        for i in 1..9 {
+            assert_eq!(result.0[i], Rational::ZERO);
+        }
+    }
+
+    #[test]
+    fn root_dimensionless_stays_dimensionless() {
+        let result = DimensionVector::DIMENSIONLESS.root(2);
+        assert_eq!(result, DimensionVector::DIMENSIONLESS);
+    }
 }
