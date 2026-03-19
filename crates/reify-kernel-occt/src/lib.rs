@@ -1100,6 +1100,64 @@ mod tests {
         }
     }
 
+    // --- Error message quality regression tests (step-7) ---
+
+    #[test]
+    fn translate_error_message_mentions_finite() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Translate {
+            target: box_h.id,
+            dx: f64::NAN,
+            dy: 0.0,
+            dz: 0.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.to_lowercase().contains("finite"),
+                    "translate error should mention 'finite', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error"),
+        }
+    }
+
+    #[test]
+    fn rotate_error_message_mentions_axis_or_finite() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Rotate {
+            target: box_h.id,
+            axis: [0.0, 0.0, 0.0],
+            angle_rad: 1.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                let lower = msg.to_lowercase();
+                assert!(
+                    lower.contains("axis") || lower.contains("zero"),
+                    "rotate zero-axis error should mention 'axis' or 'zero', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error"),
+        }
+    }
+
     // --- Fillet too-large radius regression test (step-5) ---
 
     #[test]
