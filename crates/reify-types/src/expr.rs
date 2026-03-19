@@ -41,6 +41,11 @@ pub enum CompiledExprKind {
         then_branch: Box<CompiledExpr>,
         else_branch: Box<CompiledExpr>,
     },
+    /// Call to a user-defined function.
+    UserFunctionCall {
+        function_name: String,
+        args: Vec<CompiledExpr>,
+    },
 }
 
 /// Binary operators.

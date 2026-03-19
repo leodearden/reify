@@ -13,12 +13,31 @@ pub struct CompiledImport {
     pub span: SourceSpan,
 }
 
+/// A compiled user-defined function.
+#[derive(Debug, Clone)]
+pub struct CompiledFunction {
+    pub name: String,
+    pub is_pub: bool,
+    pub params: Vec<(String, Type)>,
+    pub return_type: Type,
+    pub body: CompiledFnBody,
+    pub content_hash: ContentHash,
+}
+
+/// A compiled function body: let bindings followed by a result expression.
+#[derive(Debug, Clone)]
+pub struct CompiledFnBody {
+    pub let_bindings: Vec<(String, CompiledExpr)>,
+    pub result_expr: CompiledExpr,
+}
+
 /// A compiled module — the output of the compiler.
 #[derive(Debug, Clone)]
 pub struct CompiledModule {
     pub path: reify_types::ModulePath,
     pub imports: Vec<CompiledImport>,
     pub enum_defs: Vec<reify_types::EnumDef>,
+    pub functions: Vec<CompiledFunction>,
     pub templates: Vec<TopologyTemplate>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
@@ -608,6 +627,7 @@ pub fn compile(
     parsed: &reify_syntax::ParsedModule,
 ) -> CompiledModule {
     let mut imports = Vec::new();
+    let mut functions = Vec::new();
     let mut templates = Vec::new();
     let mut diagnostics = Vec::new();
 
@@ -684,10 +704,14 @@ pub fn compile(
             h
         });
 
+        // Function content hashes
+        let function_hashes = functions.iter().map(|f: &CompiledFunction| f.content_hash);
+
         let all_hashes = std::iter::once(path_hash)
             .chain(template_hashes)
             .chain(import_hashes)
-            .chain(enum_hashes);
+            .chain(enum_hashes)
+            .chain(function_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -696,6 +720,7 @@ pub fn compile(
         path: parsed.path.clone(),
         imports,
         enum_defs,
+        functions,
         templates,
         diagnostics,
         content_hash,
