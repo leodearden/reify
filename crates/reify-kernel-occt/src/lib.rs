@@ -1700,6 +1700,143 @@ mod tests {
         }
     }
 
+    // --- Integration tests ---
+
+    #[test]
+    fn new_ops_export_step() {
+        let mut kernel = OcctKernel::new();
+        // Mirror
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let translated = kernel
+            .execute(&GeometryOp::Translate { target: box_h.id, dx: 15.0, dy: 0.0, dz: 0.0 })
+            .unwrap();
+        let mirrored = kernel
+            .execute(&GeometryOp::Mirror {
+                target: translated.id,
+                plane_origin: [0.0, 0.0, 0.0],
+                plane_normal: [1.0, 0.0, 0.0],
+            })
+            .unwrap();
+        let mut buf = Vec::new();
+        kernel.export(mirrored.id, ExportFormat::Step, &mut buf).unwrap();
+        let content = String::from_utf8(buf).unwrap();
+        assert!(content.contains("ISO-10303-21"), "STEP should contain ISO header");
+
+        // LinearPattern
+        let pat = kernel
+            .execute(&GeometryOp::LinearPattern {
+                target: box_h.id,
+                direction: [1.0, 0.0, 0.0],
+                count: 3,
+                spacing: Value::Real(15.0),
+            })
+            .unwrap();
+        let mut buf2 = Vec::new();
+        kernel.export(pat.id, ExportFormat::Step, &mut buf2).unwrap();
+        let content2 = String::from_utf8(buf2).unwrap();
+        assert!(content2.contains("ISO-10303-21"), "pattern STEP should contain ISO header");
+    }
+
+    #[test]
+    fn new_ops_tessellate() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let translated = kernel
+            .execute(&GeometryOp::Translate { target: box_h.id, dx: 15.0, dy: 0.0, dz: 0.0 })
+            .unwrap();
+        let mirrored = kernel
+            .execute(&GeometryOp::Mirror {
+                target: translated.id,
+                plane_origin: [0.0, 0.0, 0.0],
+                plane_normal: [1.0, 0.0, 0.0],
+            })
+            .unwrap();
+        let mesh = kernel.tessellate(mirrored.id, 0.1).unwrap();
+        assert!(!mesh.vertices.is_empty(), "mirrored tessellation should have vertices");
+        assert!(mesh.indices.len() % 3 == 0, "indices should be divisible by 3");
+
+        // Loft
+        let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).unwrap();
+        let id1 = kernel.store_raw(w1);
+        let w2 = ffi::ffi::make_circle_wire(5.0, 20.0).unwrap();
+        let id2 = kernel.store_raw(w2);
+        let loft = kernel
+            .execute(&GeometryOp::Loft { profiles: vec![id1, id2] })
+            .unwrap();
+        let loft_mesh = kernel.tessellate(loft.id, 0.1).unwrap();
+        assert!(!loft_mesh.vertices.is_empty(), "loft tessellation should have vertices");
+        assert!(loft_mesh.indices.len() % 3 == 0, "loft indices divisible by 3");
+    }
+
+    #[test]
+    fn pattern_plus_boolean() {
+        let mut kernel = OcctKernel::new();
+        // Create plate: 100x60x10
+        let plate = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(100.0),
+                height: Value::Real(60.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let plate_vol = match kernel.query(&GeometryQuery::Volume(plate.id)).unwrap() {
+            Value::Real(v) => v,
+            _ => panic!("expected Real"),
+        };
+
+        // Create hole: small cylinder
+        let hole = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(3.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        // Move hole down so it passes through the plate
+        let hole_pos = kernel
+            .execute(&GeometryOp::Translate { target: hole.id, dx: -30.0, dy: 0.0, dz: -10.0 })
+            .unwrap();
+
+        // Pattern: 5 holes along X
+        let patterned = kernel
+            .execute(&GeometryOp::LinearPattern {
+                target: hole_pos.id,
+                direction: [1.0, 0.0, 0.0],
+                count: 5,
+                spacing: Value::Real(15.0),
+            })
+            .unwrap();
+
+        // Boolean difference: plate minus patterned holes
+        let result = kernel
+            .execute(&GeometryOp::Difference {
+                left: plate.id,
+                right: patterned.id,
+            })
+            .unwrap();
+
+        let result_vol = match kernel.query(&GeometryQuery::Volume(result.id)).unwrap() {
+            Value::Real(v) => v,
+            _ => panic!("expected Real"),
+        };
+        assert!(
+            result_vol < plate_vol,
+            "plate with holes ({result_vol}) should have less volume than solid plate ({plate_vol})"
+        );
+        assert!(result_vol > 0.0, "result should have positive volume");
+    }
+
     // --- Draft tests ---
 
     #[test]

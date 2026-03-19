@@ -1,37 +1,44 @@
 {
-  "task_id": "54",
-  "title": "Enum declarations — grammar, parser, compiler, eval",
+  "task_id": "74",
+  "title": "Geometry patterns + advanced operations",
   "files": [
-    "tree-sitter-reify/grammar.js",
-    "tree-sitter-reify/src/parser.c",
-    "tree-sitter-reify/src/grammar.json",
-    "tree-sitter-reify/src/node-types.json",
-    "crates/reify-syntax/src/lib.rs",
-    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-types/src/geometry.rs",
+    "crates/reify-kernel-occt/build.rs",
+    "crates/reify-kernel-occt/cpp/occt_wrapper.h",
+    "crates/reify-kernel-occt/cpp/occt_wrapper.cpp",
+    "crates/reify-kernel-occt/src/ffi.rs",
+    "crates/reify-kernel-occt/src/lib.rs",
     "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/boundary2_producer.rs",
-    "crates/reify-expr/src/lib.rs"
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/src/deps.rs"
   ],
   "modules": [
-    "tree-sitter-reify",
-    "crates/reify-syntax",
+    "crates/reify-types",
+    "crates/reify-kernel-occt",
     "crates/reify-compiler",
-    "crates/reify-expr"
+    "crates/reify-eval"
   ],
-  "analysis": "This task adds end-to-end enum type support: grammar rule, parser AST types + lowering, compiler registry + compilation, and expression evaluation.\n\n**Existing infrastructure (from task #53 / M5 types):**\n- `Value::Enum { type_name, variant }` already exists in reify-types/src/value.rs with PartialEq, Eq, Ord, Display, content_hash\n- `Type::Enum(String)` already exists in reify-types/src/ty.rs\n- `EnumDef { name, variants }` already exists in reify-types/src/traits.rs with contains_variant()\n- `CompiledExprKind::Literal(Value)` can carry Value::Enum values\n\n**What needs to be built:**\n\n1. **Grammar**: Add `enum_declaration` as a top-level declaration alongside `structure_definition` and `import_declaration`. The grammar uses `seq('enum', field('name', $.identifier), '{', ...)` with comma-separated identifier list for variants. No separate `enum_access` grammar rule needed — `member_access` already handles `Direction.In` as `Ident(Direction).In`. Disambiguation happens in the parser.\n\n2. **Parser**: Add `Declaration::Enum(EnumDecl)` with `EnumDecl { name, variants, span, content_hash }` (parser-level struct with span/hash, distinct from the simpler `reify_types::EnumDef`). Add `ExprKind::EnumAccess { type_name, variant }`. The lowering uses a two-pass approach: first pass collects enum names into a HashSet, second pass lowers everything. When lowering a `member_access` where the object is a plain identifier matching a known enum name, produce `EnumAccess` instead of `MemberAccess`.\n\n3. **Compiler**: Add `enum_defs: Vec<reify_types::EnumDef>` field to `CompiledModule`. When encountering `Declaration::Enum`, convert to `reify_types::EnumDef` and store in registry. When compiling `ExprKind::EnumAccess`, resolve against the registry — emit `CompiledExpr::literal(Value::Enum { ... }, Type::Enum(...))` on success, or a diagnostic on failure.\n\n4. **Evaluator**: Add `Value::Enum` match arms in `eval_eq()` (same type+variant → true, same type/diff variant → false, diff type → false). Add `Value::Enum` handling in `eval_cmp()` → Undef (no ordering on enums).\n\n**Review fix (steps 21-24):** The compiler's compile() function was single-pass, building enum_defs incrementally alongside structure compilation. This violates the project's order-independent declarations invariant — a structure declared before an enum would get an incomplete enum registry. The fix mirrors the parser's two-pass strategy: a pre-pass collects all enum defs before the main declaration loop begins.\n\n**Key existing patterns reused:**\n- The `lower_member()` helper (added in task #59 guard work) provides the member dispatch pattern used inside structure lowering.\n- The compiler's `compile_expr()` handles expressions with scope and diagnostics; a new match arm for `EnumAccess` follows the same pattern.\n- Tests follow established patterns: parser tests in ts_parser.rs inline mod, compiler tests in tests/boundary2_producer.rs, eval tests in lib.rs inline mod.",
+  "analysis": "This task adds 7 new GeometryOp variants (LinearPattern, CircularPattern, Mirror, Loft, Draft, Thicken, Shell) and 2 new GeometryQuery variants (Distance, MomentOfInertia) with full OCCT kernel implementations and compiler integration.\n\n## Architecture overview\n\nThe geometry pipeline flows: Compiler (CompiledGeometryOp) -> Eval (GeometryOp) -> Kernel (OCCT FFI) -> C++ (OCCT API).\n\n**Existing patterns:**\n- `GeometryOp` variants use `GeometryHandleId` for references and `Value` for user-visible parameters (like Fillet.radius) or `f64` for pre-evaluated params (like Translate.dx, Rotate.axis).\n- `GeometryQuery` variants take `GeometryHandleId` and return `Value`.\n- C++ functions in occt_wrapper.cpp follow try/catch(Standard_Failure/std::exception/...) pattern with OcctShape unique_ptr returns.\n- CXX bridge in ffi.rs declares C++ functions.\n- OcctKernel::execute() matches on GeometryOp variants, calls FFI, stores result via self.store().\n- OcctKernel::query() matches on GeometryQuery variants, calls FFI, wraps in Value.\n- Compiler has CompiledGeometryOp with categories: Primitive, Boolean, Modify, Transform.\n- Eval's compile_geometry_op() maps CompiledGeometryOp -> GeometryOp.\n- deps.rs extract_realization_dependencies() walks CompiledGeometryOp args for value refs.\n\n## Type design decisions\n\nFollowing existing conventions:\n- Pattern ops use `GeometryHandleId` for target, `[f64; 3]` for direction/axis vectors (like Rotate), `usize` for count, `Value` for spacing/angle (like Fillet.radius).\n- Mirror uses `[f64; 3]` for plane_origin and plane_normal.\n- Loft uses `Vec<GeometryHandleId>` for profiles.\n- Shell/Thicken/Draft use `Value` for thickness/offset/angle params.\n- Distance query takes two `GeometryHandleId`s.\n- MomentOfInertia takes `GeometryHandleId` + `[f64; 3]` axis.\n\n## OCCT libraries needed\n- TKOffset: for BRepOffsetAPI_ThruSections (Loft), BRepOffsetAPI_DraftAngle (Draft), BRepOffsetAPI_MakeThickSolid (Shell/Thicken)\n- Existing libs already cover: BRepBuilderAPI_Transform (patterns/mirror), BRepAlgoAPI_Fuse (pattern fusion), GProp_GProps (MomentOfInertia), BRepExtrema is in TKTopAlgo or may need its own link\n\n## Compiler additions\n- New `PatternKind` enum (Linear, Circular, Mirror) with `CompiledGeometryOp::Pattern` variant\n- New `SweepKind` enum (Loft) with `CompiledGeometryOp::Sweep` variant  \n- Extended `ModifyKind` with Shell, Draft, Thicken\n- New geometry function names in is_geometry_function() and compile_geometry_call()",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add `enum_declaration` rule to tree-sitter-reify/grammar.js: `enum_declaration: $ => seq('enum', field('name', $.identifier), '{', optional(seq($.identifier, repeat(seq(',', $.identifier)), optional(','))), '}')`. Add it to `_declaration` choice alongside `structure_definition` and `import_declaration`. Run `tree-sitter generate` in the tree-sitter-reify directory to regenerate parser.c, grammar.json, and node-types.json.",
+      "description": "Update crates/reify-kernel-occt/build.rs: Add 'TKOffset' to the occt_libs array (needed for BRepOffsetAPI_ThruSections, BRepOffsetAPI_DraftAngle, BRepOffsetAPI_MakeThickSolid). Verify the lib exists at the search path.",
       "status": "done",
-      "commit": "7e4c37d",
+      "commit": "7c35d07",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Add parser-level AST types to crates/reify-syntax/src/lib.rs: (a) Add `EnumDecl` struct with fields `name: String, variants: Vec<String>, span: SourceSpan, content_hash: ContentHash` and derive Debug, Clone (after ImportDecl). (b) Add `Declaration::Enum(EnumDecl)` variant to the Declaration enum. (c) Add `ExprKind::EnumAccess { type_name: String, variant: String }` variant to ExprKind enum (after MemberAccess). These are type-only changes with no logic.",
+      "description": "Add all new GeometryOp variants to crates/reify-types/src/geometry.rs: LinearPattern { target: GeometryHandleId, direction: [f64; 3], count: usize, spacing: Value }, CircularPattern { target: GeometryHandleId, axis_origin: [f64; 3], axis_dir: [f64; 3], count: usize, angle: Value }, Mirror { target: GeometryHandleId, plane_origin: [f64; 3], plane_normal: [f64; 3] }, Loft { profiles: Vec<GeometryHandleId> }, Draft { target: GeometryHandleId, angle: Value, plane: GeometryHandleId }, Thicken { target: GeometryHandleId, offset: Value }, Shell { target: GeometryHandleId, thickness: Value, faces_to_remove: Vec<usize> }. Add new GeometryQuery variants: Distance { from: GeometryHandleId, to: GeometryHandleId }, MomentOfInertia { handle: GeometryHandleId, axis: [f64; 3] }. Then add stub match arms returning OperationFailed/QueryFailed('not yet implemented') in OcctKernel::execute() and OcctKernel::query() in crates/reify-kernel-occt/src/lib.rs to keep code compiling. Also ensure the handle.rs OcctRequest enum doesn't need changes (it doesn't - it passes GeometryOp/GeometryQuery generically through channels).",
       "status": "done",
-      "commit": "5c6029d",
+      "commit": "674f789",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add new compiler types to crates/reify-compiler/src/lib.rs: (a) New PatternKind enum { Linear, Circular, Mirror } deriving Debug, Clone, Copy, PartialEq, Eq, Hash. (b) New SweepKind enum { Loft } deriving same. (c) Add Shell, Draft, Thicken to existing ModifyKind enum. (d) Add CompiledGeometryOp::Pattern { kind: PatternKind, target: GeomRef, args: Vec<(String, CompiledExpr)> } variant. (e) Add CompiledGeometryOp::Sweep { kind: SweepKind, profiles: Vec<GeomRef>, args: Vec<(String, CompiledExpr)> } variant. (f) Add stub match arms in deps.rs extract_realization_dependencies() for new Pattern and Sweep variants (extract args like Modify). (g) Add stub match arms in eval lib.rs compile_geometry_op() for new Pattern, Sweep variants and new ModifyKind values returning None initially.",
+      "status": "done",
+      "commit": "52560ab",
       "tests": []
     }
   ],
@@ -39,260 +46,237 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in crates/reify-expr/src/lib.rs: `eval_eq_enum_same_type_same_variant` — build two `CompiledExpr::literal(Value::Enum { type_name: \"Direction\".into(), variant: \"In\".into() }, Type::Enum(\"Direction\".into()))` values, wrap in `CompiledExpr::binop(BinOp::Eq, ...)`, call `eval_expr()`, assert result is `Value::Bool(true)`. Currently falls through to the catch-all in eval_eq which calls as_f64() → None → returns Undef.",
+      "description": "Write failing test in crates/reify-kernel-occt/src/lib.rs: `mirror_across_yz_plane`. Create a box at (5,0,0) offset (translate box by dx=5), mirror it across YZ plane (plane_origin=[0,0,0], plane_normal=[1,0,0]). Fuse original and mirrored. Query volume of fused result - should be approximately 2x the original box volume. Currently fails because Mirror stub returns OperationFailed.",
       "status": "done",
-      "commit": "8c08e5c"
+      "commit": "05efac0"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `Value::Enum` match arm in `eval_eq()` in crates/reify-expr/src/lib.rs. Insert before the existing catch-all: `(Value::Enum { type_name: a, variant: av }, Value::Enum { type_name: b, variant: bv }) => { if a == b { Value::Bool(av == bv) } else { Value::Bool(false) } }`. Also add cross-type arms: `(Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Bool(false)` for enum-vs-non-enum. Step-1 test now passes.",
+      "description": "Implement Mirror operation: (a) Add mirror_shape(shape, ox, oy, oz, nx, ny, nz) C++ function to occt_wrapper.h and occt_wrapper.cpp using gp_Ax2(gp_Pnt(ox,oy,oz), gp_Dir(nx,ny,nz)) with gp_Trsf::SetMirror and BRepBuilderAPI_Transform. (b) Add mirror_shape declaration to ffi.rs CXX bridge. (c) Replace Mirror stub in OcctKernel::execute() with: validate plane_normal is non-zero, call ffi::ffi::mirror_shape, store result. Step-1 test passes.",
       "status": "done",
-      "commit": "93622dc"
+      "commit": "8cb2fde"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write three additional enum equality tests in crates/reify-expr/src/lib.rs: (a) `eval_eq_enum_same_type_different_variant`: Direction.In == Direction.Out → Bool(false). (b) `eval_eq_enum_different_types`: Direction.In == ThreadSystem.ISO → Bool(false). (c) `eval_ne_enum_variants`: Direction.In != Direction.Out → Bool(true) (verifies eval_ne delegates to eval_eq correctly). All should pass with step-2 implementation.",
+      "description": "Write failing test in crates/reify-kernel-occt/src/lib.rs: `linear_pattern_4_boxes`. Create a 10x10x10 box. Apply LinearPattern with direction=[1,0,0], count=4, spacing=Value::Real(20.0). Query volume of result compound - should be approximately 4 * 1000 = 4000 (4 boxes of 10x10x10). Currently fails because LinearPattern stub returns OperationFailed.",
       "status": "done",
-      "commit": "f5c82ff"
+      "commit": "b951868"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify step-3 tests pass with step-2's implementation. No code changes expected — the eval_eq match arms and eval_ne delegation already handle these cases. If any fail, adjust match arm ordering.",
+      "description": "Implement LinearPattern operation: (a) Add linear_pattern(shape, dx, dy, dz, count, spacing) C++ function to occt_wrapper.h/.cpp: loop count-1 times, translate by i*spacing*direction and fuse with accumulated compound using BRepBuilderAPI_Transform + BRepAlgoAPI_Fuse. Build compound with BRep_Builder if fuse approach is problematic, or use TopoDS_Compound. (b) Add CXX bridge declaration. (c) Replace LinearPattern stub: extract direction, count, spacing via extract_f64, call FFI. Step-3 test passes.",
       "status": "done",
-      "commit": "f5c82ff"
+      "commit": "90ab8c5"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test in crates/reify-expr/src/lib.rs: `eval_cmp_enum_returns_undef` — build `CompiledExpr::binop(BinOp::Lt, enum_lit(Direction,In), enum_lit(Direction,Out), Type::Bool)`, call eval_expr, assert result is `Value::Undef`. Currently falls through to as_f64 → None → Undef, but test should be explicit.",
+      "description": "Write failing test in crates/reify-kernel-occt/src/lib.rs: `circular_pattern_6_instances`. Create a small box, translate it to (20,0,0). Apply CircularPattern with axis_origin=[0,0,0], axis_dir=[0,0,1], count=6, angle=Value::Real(2*PI) (full circle, 60 deg intervals). Query volume of result - should be approximately 6 * original box volume. Currently fails because CircularPattern stub returns OperationFailed.",
       "status": "done",
-      "commit": "ffe73cd"
+      "commit": "9843a2b"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add explicit `Value::Enum` handling in `eval_cmp()` in crates/reify-expr/src/lib.rs: insert `(Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Undef` before the existing catch-all to make the 'no ordering on enums' semantics explicit. Step-5 test passes.",
+      "description": "Implement CircularPattern operation: (a) Add circular_pattern(shape, ox, oy, oz, ax, ay, az, count, total_angle) C++ function: loop count-1 times, compute angle_i = total_angle * (i+1) / count, rotate around axis using gp_Ax1 + gp_Trsf::SetRotation + BRepBuilderAPI_Transform, fuse with original. (b) Add CXX bridge declaration. (c) Replace CircularPattern stub: extract params, call FFI. Step-5 test passes.",
       "status": "done",
-      "commit": "ffe73cd"
+      "commit": "5633295"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test in crates/reify-syntax/src/ts_parser.rs: `parse_enum_declaration` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { param x: Scalar = 5mm }\"`, assert: no parse errors, module.declarations.len() == 2, first declaration is Declaration::Enum(e) with e.name == \"Direction\" and e.variants == [\"In\", \"Out\", \"Bidi\"]. Fails because lower_source_file doesn't handle enum_declaration yet.",
+      "description": "Write failing test in crates/reify-kernel-occt/src/lib.rs: `loft_two_circles_creates_solid`. Create two circles (represented as cylinders with tiny height, or use a make_circle_wire FFI to create wire profiles). Apply Loft with both profile handles. Query volume of result - should be positive and represent a solid connecting the two profiles. Currently fails because Loft stub returns OperationFailed. NOTE: Loft via BRepOffsetAPI_ThruSections requires wire/face profiles. May need to create wire circles via make_circle_wire FFI function, or use edge profiles.",
       "status": "done",
-      "commit": "d115366"
+      "commit": "640e0e4"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add CST→AST lowering for enum_declaration in crates/reify-syntax/src/ts_parser.rs: (a) Add `known_enums: HashSet<String>` field to `Lowering` struct, initialize empty in `new()`. (b) Change `lower_source_file` to a two-pass approach: first pass iterates children and collects enum names from `enum_declaration` nodes (extract name from field name). (c) In the second pass, add `\"enum_declaration\"` match arm that calls `self.lower_enum(child)` and pushes `Declaration::Enum(...)`. (d) Implement `lower_enum()`: extract name field, iterate named children inside braces to collect identifiers as variants (skip 'enum', name, '{', '}', ','). Return `EnumDecl { name, variants, span, content_hash }`. Step-7 test passes.",
+      "description": "Implement Loft operation: (a) Add make_circle_wire(radius, z_height) C++ function to create a wire circle at height z (for test profile creation). Add loft_profiles(shapes, count) C++ function using BRepOffsetAPI_ThruSections: iterate shapes, add each as a wire section, build. (b) Add CXX bridge declarations including a make_circle_wire helper. (c) Add GeometryOp::MakeCircleWire { radius: Value, height: f64 } variant to types (or handle within test setup). (d) Replace Loft stub: get all profile shapes, call loft_profiles FFI. Step-7 test passes. If Loft requires wire profiles and existing shapes are solids, may need to extract wire from face - use a simpler approach like passing shape refs directly and letting C++ code extract the outer wire.",
       "status": "done",
-      "commit": "799a914"
+      "commit": "296795b"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test in crates/reify-syntax/src/ts_parser.rs: `parse_enum_access_expression` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { let d = Direction.In }\"`, extract the structure's let member, assert its value expression is `ExprKind::EnumAccess { type_name: \"Direction\", variant: \"In\" }` (not MemberAccess). Fails because lower_member_access doesn't check known_enums yet.",
+      "description": "Write failing test in crates/reify-kernel-occt/src/lib.rs: `thicken_surface`. Create a sphere, apply Thicken with offset=Value::Real(2.0). Query volume of result - thickened solid should have volume greater than the original sphere. Currently fails because Thicken stub returns OperationFailed.",
       "status": "done",
-      "commit": "3221948"
+      "commit": "f411cbc"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Add enum-aware expression lowering in crates/reify-syntax/src/ts_parser.rs: In `lower_member_access()`, before constructing the MemberAccess, check if the object_node is an `identifier` (not a complex expression) AND its text is in `self.known_enums`. If so, return `Expr { kind: ExprKind::EnumAccess { type_name: object_text, variant: member_text }, span }` instead of `MemberAccess`. Step-9 test passes.",
+      "description": "Implement Thicken operation: (a) Add thicken_shape(shape, offset) C++ function using BRepOffsetAPI_MakeThickSolid or BRepOffsetAPI_MakeOffsetShape for solid thickening. (b) Add CXX bridge declaration. (c) Replace Thicken stub: extract offset, call FFI. Step-9 test passes.",
       "status": "done",
-      "commit": "bf8f11d"
+      "commit": "7172b22"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test in crates/reify-syntax/src/ts_parser.rs: `parse_enum_missing_name_is_error` — parse source `\"enum { }\"`, assert the module has at least one error (tree-sitter ERROR node from missing required name field).",
+      "description": "Write failing test in crates/reify-kernel-occt/src/lib.rs: `shell_box_hollow`. Create a 20x20x20 box. Apply Shell with thickness=Value::Real(1.0) and faces_to_remove=vec![0] (remove one face to create hollow box). Query volume of result - should be less than original solid box (8000) but more than 0. Currently fails because Shell stub returns OperationFailed.",
       "status": "done",
-      "commit": "54a9fb6"
+      "commit": "eae3432"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Verify step-11 test passes — the grammar rule requires `field('name', $.identifier)` between 'enum' and '{', so `enum { }` should produce a tree-sitter ERROR node that lower_source_file captures. If test fails, inspect the actual CST and adjust the error detection or grammar.",
+      "description": "Implement Shell operation: (a) Add shell_shape(shape, thickness, face_indices_ptr, face_count) C++ function using BRepOffsetAPI_MakeThickSolid: enumerate faces with TopExp_Explorer, collect specified face indices into TopTools_ListOfShape, call MakeThickSolid. (b) Add CXX bridge declaration (pass face indices as Vec<u32> or similar). (c) Replace Shell stub: extract thickness and face indices, call FFI. Step-11 test passes.",
       "status": "done",
-      "commit": "54a9fb6"
+      "commit": "c16f37e"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_enum_populates_registry` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { param x: Scalar = 5mm }\"`, compile, assert compiled.enum_defs.len() == 1, compiled.enum_defs[0].name == \"Direction\", compiled.enum_defs[0].variants == [\"In\", \"Out\", \"Bidi\"]. Fails because CompiledModule has no enum_defs field yet.",
+      "description": "Write failing test in crates/reify-kernel-occt/src/lib.rs: `distance_between_shapes`. Create two boxes: box_a at origin, box_b translated by (50, 0, 0). Query Distance { from: box_a.id, to: box_b.id }. Result should be Value::Real with positive distance approximately equal to gap between boxes. Currently fails because Distance query stub returns QueryFailed.",
       "status": "done",
-      "commit": "11d5593"
+      "commit": "40a4a94"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Add enum support to crates/reify-compiler/src/lib.rs: (a) Add `pub enum_defs: Vec<reify_types::EnumDef>` field to `CompiledModule`. (b) In `compile()`, initialize an `enum_defs` vec. Add match arm for `reify_syntax::Declaration::Enum(enum_decl)`: convert to `reify_types::EnumDef { name: enum_decl.name.clone(), variants: enum_decl.variants.clone() }` and push. (c) Include enum_defs in module content_hash computation (chain enum name+variant hashes). (d) Pass `&[reify_types::EnumDef]` through to compile_structure and compile_expr (or store in CompilationScope). Step-13 test passes.",
+      "description": "Implement Distance query: (a) Add query_distance(shape1, shape2) C++ function using BRepExtrema_DistShapeShape: construct with both shapes, call Perform(), return Value(). (b) Add CXX bridge declaration. (c) Replace Distance stub in OcctKernel::query(): get both shapes, call FFI, wrap in Value::Real. Step-13 test passes. If BRepExtrema requires linking a separate OCCT library, add it to build.rs.",
       "status": "done",
-      "commit": "b27c4f7"
+      "commit": "cd938b3"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_enum_access_to_literal` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { let d = Direction.In }\"`, compile, find the 'd' value cell, assert its default_expr.kind is `CompiledExprKind::Literal(Value::Enum { type_name: \"Direction\", variant: \"In\" })` and default_expr.result_type is `Type::Enum(\"Direction\".into())`. No error diagnostics expected. Fails because compile_expr doesn't handle EnumAccess yet.",
+      "description": "Write failing test in crates/reify-kernel-occt/src/lib.rs: `moment_of_inertia_box`. Create a 10x10x10 box. Query MomentOfInertia { handle: box.id, axis: [0,0,1] } (around Z axis). Result should be Value::Real with a positive value. For a box of uniform density, the moment of inertia around Z through the centroid is M/12 * (w^2 + d^2). Since OCCT treats shape mass as volume (from GProp), expected value can be computed analytically. Currently fails because MomentOfInertia stub returns QueryFailed.",
       "status": "done",
-      "commit": "cfe9a0d"
+      "commit": "202b17c"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Add `ExprKind::EnumAccess` handling in `compile_expr()` in crates/reify-compiler/src/lib.rs: Match `reify_syntax::ExprKind::EnumAccess { type_name, variant }`. Look up type_name in the enum registry (passed via a new `enum_defs: &[reify_types::EnumDef]` parameter to compile_expr, or stored in CompilationScope). If found AND variant exists: produce `CompiledExpr::literal(Value::Enum { type_name: type_name.clone(), variant: variant.clone() }, Type::Enum(type_name.clone()))`. If type found but variant missing: emit diagnostic 'unknown variant X on enum Y', return Undef. If type not found: emit diagnostic 'unknown enum type X', return Undef. Step-15 test passes.",
+      "description": "Implement MomentOfInertia query: (a) Add query_moment_of_inertia(shape, ax, ay, az) C++ function: compute GProp_GProps via BRepGProp::VolumeProperties, then use gp_Ax1 with the axis direction and call props.MomentOfInertia(axis). (b) Add CXX bridge declaration. (c) Replace MomentOfInertia stub: get shape, call FFI, wrap in Value::Real. Step-15 test passes.",
       "status": "done",
-      "commit": "da028bf"
+      "commit": "38fcde3"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_unknown_enum_produces_diagnostic` — parse source `\"structure S { let d = UnknownEnum.Variant }\"` (no enum declaration), compile, assert diagnostics is non-empty. Since parser doesn't know UnknownEnum is an enum, it produces MemberAccess; the compiler's existing MemberAccess arm emits 'member access not yet supported'. Assert any diagnostic mentioning the access exists.",
+      "description": "Write test in crates/reify-kernel-occt/src/lib.rs: `draft_angle_on_box`. Create a 20x20x20 box. Create a plane reference (small flat box at z=0 or use a plane helper). Apply Draft with angle=Value::Real(0.1) (radians, ~5.7 degrees) and plane handle. The drafted solid should have positive volume different from the original box. Note: BRepOffsetAPI_DraftAngle can be finicky; if OCCT Draft is not practical at this stage, test should document expected behavior and the implementation may return OperationFailed for unsupported configurations. Currently fails because Draft stub returns OperationFailed.",
       "status": "done",
-      "commit": "4c8ac19"
+      "commit": "1a202ad"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Verify step-17 test passes with existing code. The parser produces MemberAccess for unknown enum types (they're not in known_enums), and the compiler's existing MemberAccess arm already emits a diagnostic. If test assertion needs adjustment, update to match the actual diagnostic message.",
+      "description": "Implement Draft operation: (a) Add draft_shape(shape, angle_rad, plane_shape) C++ function using BRepOffsetAPI_DraftAngle: extract neutral plane from plane_shape, iterate faces of target shape, add draft to qualifying faces. This is the most complex operation - if OCCT DraftAngle proves too brittle for the general case, implement a simplified version that drafts all vertical faces. (b) Add CXX bridge declaration. (c) Replace Draft stub. Step-17 test passes.",
       "status": "done",
-      "commit": "4c8ac19"
+      "commit": "6f540da"
     },
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write E2E test in crates/reify-compiler/tests/boundary2_producer.rs: `e2e_enum_equality_eval` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { constraint Direction.In == Direction.In }\"`, compile, assert no error diagnostics, find the compiled constraint, call `reify_expr::eval_expr(&constraint.expr, &ValueMap::new())`, assert result is `Value::Bool(true)`. Validates full pipeline: grammar → parser → compiler → eval.",
-      "status": "done",
-      "commit": "4c8ac19"
+      "description": "Write integration tests in crates/reify-kernel-occt/src/lib.rs: (a) `new_ops_export_step`: Create a mirror result and a linear pattern result, export each to STEP, assert output contains 'ISO-10303-21'. (b) `new_ops_tessellate`: Create a mirror result and a loft result, tessellate each, assert non-empty vertices, indices divisible by 3. (c) `pattern_plus_boolean`: Create a plate (100x60x10 box), create a small cylinder (r=3, h=20), apply LinearPattern to cylinder (count=5, spacing=15, direction=[1,0,0]), then boolean difference of plate minus each patterned hole. Verify volume is less than original plate. This tests compound operations.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-20",
       "type": "impl",
-      "description": "Verify step-19 E2E test passes. All pieces should be in place from prior steps. Fix any integration issues (e.g., enum_defs not threaded through correctly, constraint expression compilation, enum literal evaluation). Run `cargo test --workspace` to verify no regressions in existing tests.",
-      "status": "done",
-      "commit": "4c8ac19"
+      "description": "Verify integration tests pass. All new operations produce valid TopoDS_Shape results that can be exported to STEP and tessellated through existing export/tessellate code paths. Fix any issues with compound shapes not exporting correctly (compounds should work since STEP supports them). For pattern+boolean test, may need to iterate compound children or use the compound directly as a boolean operand. If compound boolean fails, adjust C++ pattern implementation to produce a single fused solid instead of a compound.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-21",
       "type": "test",
-      "description": "Write failing test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_enum_forward_reference_order_independent` — parse source where the structure is declared BEFORE the enum it references: `\"structure S { let d = Direction.In }\\nenum Direction { In, Out, Bidi }\"`. Compile, assert no error diagnostics (no spurious 'unknown enum type' errors), find the 'd' value cell, assert its default_expr.kind is `CompiledExprKind::Literal(Value::Enum { type_name: \"Direction\", variant: \"In\" })` and default_expr.result_type is `Type::Enum(\"Direction\".into())`. This test MUST FAIL with the current single-pass compile() implementation because enum_defs is empty when compile_structure is called for S, so Direction.In (an EnumAccess node from the parser's two-pass lowering) hits the 'unknown enum type' diagnostic branch.",
-      "status": "done",
-      "commit": "8b811c8"
+      "description": "Write failing tests for compiler integration in crates/reify-compiler/src/lib.rs (inline mod tests): (a) `compile_geometry_linear_pattern_recognized`: verify that the new geometry function name 'linear_pattern' is recognized by is_geometry_function(). (b) Similarly for 'circular_pattern', 'mirror', 'loft', 'shell', 'thicken', 'draft'. Currently fails because is_geometry_function only recognizes box/cylinder/sphere.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-22",
       "type": "impl",
-      "description": "Fix the order-independence violation in crates/reify-compiler/src/lib.rs compile() function. Replace the single-pass approach with a two-pass strategy that mirrors the parser's design (ts_parser.rs two-pass lowering): (1) Before the main `for decl in &parsed.declarations` loop, add a pre-pass that collects ALL enum defs: `let enum_defs: Vec<reify_types::EnumDef> = parsed.declarations.iter().filter_map(|d| { if let reify_syntax::Declaration::Enum(e) = d { Some(reify_types::EnumDef { name: e.name.clone(), variants: e.variants.clone() }) } else { None } }).collect();`. (2) In the main loop, change the `Declaration::Enum` arm to a no-op (skip, since already collected) — do NOT re-push to enum_defs. (3) Remove `let mut enum_defs = Vec::new();` since enum_defs is now populated by the pre-pass. This ensures compile_structure() always receives the complete enum registry regardless of source declaration order. Step-21 test now passes. All existing tests (steps 13-20) continue to pass since the full registry is a superset of the partial one.",
-      "status": "done",
-      "commit": "df54d3f"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_enum_forward_reference_multiple_enums` — parse source with multiple enums and structures interleaved in various orders: `\"structure A { let x = Color.Red }\\nenum Direction { In, Out }\\nstructure B { let y = Direction.In\\n  let z = Color.Red }\\nenum Color { Red, Green, Blue }\"`. Compile, assert no error diagnostics, verify all enum access expressions compiled correctly: A.x → Value::Enum(Color, Red), B.y → Value::Enum(Direction, In), B.z → Value::Enum(Color, Red). Also assert compiled.enum_defs.len() == 2. This validates the two-pass fix handles interleaved declarations with multiple forward and backward references.",
-      "status": "done",
-      "commit": "f0d6a1b"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Verify step-23 test passes with the two-pass implementation from step-22. No code changes expected — the pre-pass collects all enums regardless of interleaving. Run `cargo test --workspace` to confirm no regressions across the entire workspace.",
-      "status": "done",
-      "commit": "f0d6a1b"
+      "description": "Update crates/reify-compiler/src/lib.rs: (a) Extend is_geometry_function() to also match 'linear_pattern' | 'circular_pattern' | 'mirror' | 'loft' | 'shell' | 'thicken' | 'draft'. (b) Extend compile_geometry_call() to handle each new function name, mapping arguments to the appropriate CompiledGeometryOp variant (Pattern, Sweep, or extended Modify). For example, linear_pattern(target_ref, dx, dy, dz, count, spacing) maps to CompiledGeometryOp::Pattern { kind: PatternKind::Linear, ... }. (c) Update the eval compile_geometry_op() function in crates/reify-eval/src/lib.rs to map the new CompiledGeometryOp variants to the corresponding GeometryOp variants. Step-21 tests pass.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "No separate `enum_access` grammar rule — reuse existing `member_access` and disambiguate in the parser",
-      "rationale": "Adding an `enum_access` grammar rule like `seq(type_identifier, '.', identifier)` creates ambiguity with `member_access` (which is `seq(_expression, '.', identifier)`) since an identifier matches both and the patterns overlap. Tree-sitter conflict resolution would be fragile and could break existing member access parsing. Instead, the existing `member_access` rule naturally parses `Direction.In` as `member_access(identifier(Direction), In)`. The parser's two-pass lowering detects when the object is a known enum name and produces `ExprKind::EnumAccess` during lowering."
+      "decision": "Use f64 for vector components (direction, axis, plane_normal) and Value for scalar params (spacing, angle, thickness) in GeometryOp variants",
+      "rationale": "Follows existing conventions: Rotate.axis is [f64;3] and Translate.dx/dy/dz are f64 (pre-evaluated by eval layer), while Fillet.radius and Box.width are Value (passed through from user expressions). The eval layer's compile_geometry_op function pre-evaluates to f64 or passes Value depending on the category."
     },
     {
-      "decision": "Two-pass lowering in the parser to collect enum names before expression lowering",
-      "rationale": "Reify has order-independent declarations within modules (per project conventions). An enum may be declared after a structure that references it. A two-pass approach (first collect enum names into a HashSet, then lower all declarations with enum-aware expression lowering) ensures forward references work correctly."
+      "decision": "Use GeometryHandleId for all geometry references in GeometryOp (not GeomRef)",
+      "rationale": "GeomRef exists only in the compiler layer (reify_compiler::GeomRef = Step(usize) | Sub(String)). The kernel-level GeometryOp works with resolved handle IDs. The eval layer resolves GeomRef to GeometryHandleId during compile_geometry_op."
     },
     {
-      "decision": "Parser-level `EnumDecl` struct separate from `reify_types::EnumDef`",
-      "rationale": "The parser-level `EnumDecl` includes `span: SourceSpan` and `content_hash: ContentHash` for source location tracking, following the same pattern as `StructureDef`, `ParamDecl`, etc. The `reify_types::EnumDef` is a simpler compiled representation without source info. The compiler converts between them, mirroring the existing ParsedModule→CompiledModule pattern."
+      "decision": "LinearPattern and CircularPattern produce fused solids rather than TopoDS_Compound",
+      "rationale": "Fused solids work seamlessly with boolean operations (pattern of holes subtracted from plate), STEP export, and volume queries. Compounds would require special handling in boolean operations. The fuse loop is the documented approach in the task description."
     },
     {
-      "decision": "Enum equality: different enum types return `false`, not a type error/Undef",
-      "rationale": "The task spec says 'Different type_name → type error or false'. Choosing `false` is more lenient and avoids Undef propagation issues in constraint expressions. It matches the existing pattern where `Scalar(LENGTH) == Scalar(MASS)` returns `Bool(false)` rather than Undef in eval_eq."
+      "decision": "Add PatternKind and SweepKind as new enums rather than extending PrimitiveKind or TransformKind",
+      "rationale": "Patterns and sweeps are semantically distinct from primitives (which create from scratch) and transforms (which reposition). Patterns create multiple copies and combine them; sweeps create geometry from profiles. New enum categories keep the type system clean and match the domain semantics."
     },
     {
-      "decision": "Enum comparison (lt/le/gt/ge) returns Undef, not a type error",
-      "rationale": "Per the task spec: 'No ordering (eval_cmp on Enum → Undef or error)'. Returning Undef is consistent with existing handling of incomparable types (e.g., different-dimension scalars in eval_cmp). The explicit match arm documents the semantics clearly."
+      "decision": "Implement Mirror, LinearPattern, CircularPattern first, then Loft, then Shell/Thicken, with Draft last",
+      "rationale": "Mirror is the simplest (single gp_Trsf::SetMirror). Patterns build on existing translate/rotate FFI. Loft requires BRepOffsetAPI_ThruSections which needs wire profiles. Shell/Thicken use BRepOffsetAPI_MakeThickSolid. Draft (BRepOffsetAPI_DraftAngle) is the most complex and may need special face selection logic. This ordering minimizes risk - if later operations prove difficult, the simpler ones are already done."
     },
     {
-      "decision": "Unknown enum type in expression falls through to MemberAccess handling in compiler",
-      "rationale": "If the parser doesn't have the enum name in its known_enums set (because no enum declaration exists), it produces MemberAccess rather than EnumAccess. The compiler's existing MemberAccess arm emits an error diagnostic ('member access not yet supported'). This naturally handles the unknown enum case without special-casing. A future M5 member access implementation would need to add enum lookup to that arm."
+      "decision": "MomentOfInertia query takes handle + axis rather than just axis",
+      "rationale": "All existing GeometryQuery variants take a GeometryHandleId to identify which shape to query. MomentOfInertia needs both the shape reference and the axis specification. This is consistent with the query pattern and allows querying different shapes."
     },
     {
-      "decision": "Add enum_defs to CompiledModule, not TopologyTemplate",
-      "rationale": "Enums are module-level declarations (like imports), not structure-level members. They're declared alongside structures, not inside them. The compiled enum registry belongs at the module level, consistent with how `imports: Vec<CompiledImport>` is stored."
+      "decision": "Distance query returns a single f64 wrapped in Value::Real",
+      "rationale": "Consistent with existing query returns (Volume returns Value::Real, SurfaceArea returns Value::Real). BRepExtrema_DistShapeShape.Value() returns the minimum distance as a double."
     },
     {
-      "decision": "Start TDD with eval changes, then parser, then compiler",
-      "rationale": "Eval changes are fully independent of grammar/parser/compiler — they only need Value::Enum which already exists. Starting here gets the eval foundation in place. Parser changes need the grammar prerequisite. Compiler changes depend on both parser and eval types being ready."
-    },
-    {
-      "decision": "Two-pass compilation in compile() to mirror parser's two-pass lowering (review fix)",
-      "rationale": "The compiler's compile() function originally built enum_defs incrementally in a single pass, meaning compile_structure() received only enums declared before the current structure in source order. This violated the project's order-independent declarations invariant. The fix adds a pre-pass that collects all Declaration::Enum entries into enum_defs before the main loop begins, ensuring the full enum registry is available when any structure is compiled. This mirrors the parser's existing two-pass strategy in ts_parser.rs (lines 70-80) and restores the symmetry between parser and compiler."
+      "decision": "Loft may require a new MakeCircleWire primitive or profile extraction helper",
+      "rationale": "BRepOffsetAPI_ThruSections requires wire profiles (TopoDS_Wire), but existing primitives produce solids. Options: (a) add a MakeCircleWire GeometryOp for creating wire profiles, (b) extract outer wire from face of existing solid in C++. Option (b) is preferred as it keeps the GeometryOp enum smaller and makes Loft work with any existing shape's face."
     }
   ],
   "reuse": [
     {
-      "what": "reify_types::EnumDef",
-      "where": "crates/reify-types/src/traits.rs",
-      "how": "Already has `name: String` and `variants: Vec<String>` with `contains_variant()` method. Used in CompiledModule.enum_defs for the compiled registry. Compiler converts parser's EnumDecl to this type."
+      "what": "BRepBuilderAPI_Transform + gp_Trsf pattern",
+      "where": "crates/reify-kernel-occt/cpp/occt_wrapper.cpp (translate_shape, rotate_shape)",
+      "how": "Mirror uses the same BRepBuilderAPI_Transform with gp_Trsf::SetMirror instead of SetTranslation/SetRotation. LinearPattern and CircularPattern loop translate_shape/rotate_shape + boolean_fuse."
     },
     {
-      "what": "Value::Enum { type_name, variant }",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Already defined with PartialEq, Eq, Ord, Display, content_hash. Used directly as the runtime value for enum literals produced by the compiler."
+      "what": "GProp_GProps volume properties pattern",
+      "where": "crates/reify-kernel-occt/cpp/occt_wrapper.cpp (query_volume, query_centroid)",
+      "how": "MomentOfInertia uses the same GProp_GProps from BRepGProp::VolumeProperties, then calls props.MomentOfInertia(axis) instead of props.Mass()."
     },
     {
-      "what": "Type::Enum(String)",
-      "where": "crates/reify-types/src/ty.rs",
-      "how": "Already defined with Display showing 'Enum(name)'. Used as the result_type for compiled enum access expressions."
+      "what": "extract_f64 helper for Value \u2192 f64 conversion",
+      "where": "crates/reify-kernel-occt/src/lib.rs",
+      "how": "Reused for extracting spacing, angle, thickness, offset from Value parameters in new GeometryOp implementations."
     },
     {
-      "what": "CompiledExpr::literal() constructor",
-      "where": "crates/reify-types/src/expr.rs",
-      "how": "Used to create `CompiledExpr::literal(Value::Enum { type_name, variant }, Type::Enum(type_name))` from the compiler's EnumAccess handling."
+      "what": "OcctKernel::store() and get_shape() methods",
+      "where": "crates/reify-kernel-occt/src/lib.rs",
+      "how": "All new operations use get_shape(target) to look up input shapes and store(result) to register output shapes, same as existing ops."
     },
     {
-      "what": "Existing member_access grammar rule and lower_member_access()",
-      "where": "tree-sitter-reify/grammar.js line 224, crates/reify-syntax/src/ts_parser.rs",
-      "how": "Reused to parse `EnumName.Variant` syntax. Parser enhances lower_member_access to detect enum names and produce EnumAccess expression kind."
+      "what": "C++ try/catch(Standard_Failure/std::exception/...) error handling pattern",
+      "where": "crates/reify-kernel-occt/cpp/occt_wrapper.cpp (all functions)",
+      "how": "All new C++ functions follow the same three-level catch pattern: Standard_Failure, std::exception, catch-all, throwing std::runtime_error with descriptive prefix."
     },
     {
-      "what": "Compiler diagnostic pattern: Diagnostic::error().with_label()",
-      "where": "crates/reify-compiler/src/lib.rs (multiple locations)",
-      "how": "Same pattern reused for unknown enum type/variant errors and fallback to Undef literal."
+      "what": "CompiledGeometryOp::Modify pattern with args Vec",
+      "where": "crates/reify-compiler/src/lib.rs",
+      "how": "Shell, Draft, Thicken are added as ModifyKind variants using the same { kind, target, args } structure. The eval layer maps them to GeometryOp following the existing Fillet/Chamfer pattern."
     },
     {
-      "what": "Lowering struct helpers: node_text(), span(), content_hash()",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 48-60",
-      "how": "Reused in lower_enum() for extracting enum name/variants text and constructing EnumDecl with span and content hash."
+      "what": "Existing test patterns in lib.rs (create shape, query property, assert)",
+      "where": "crates/reify-kernel-occt/src/lib.rs mod tests",
+      "how": "All new tests follow the same structure: create OcctKernel, execute primitive op, execute target op, query volume/properties, assert expected values with tolerance."
     },
     {
-      "what": "Test patterns from boundary2_producer.rs",
-      "where": "crates/reify-compiler/tests/boundary2_producer.rs",
-      "how": "Pattern of parsing source string → compile → assert on templates/diagnostics/value_cells reused for all new compiler tests."
+      "what": "deps.rs extract_realization_dependencies pattern",
+      "where": "crates/reify-eval/src/deps.rs",
+      "how": "New Pattern and Sweep variants extract value cell dependencies from their args Vec using the same collect_value_refs() calls as existing Primitive/Modify/Transform arms."
     },
     {
-      "what": "Eval test helper: lit() function",
-      "where": "crates/reify-expr/src/lib.rs mod tests",
-      "how": "Reused to construct CompiledExpr::literal for enum values in eval tests."
-    },
-    {
-      "what": "Parser's two-pass lowering pattern",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 70-80",
-      "how": "The parser's strategy of pre-collecting enum names in a first pass before lowering expressions is mirrored in the compiler fix: pre-collect all Declaration::Enum into enum_defs before the main declaration processing loop. Same architectural pattern applied at a different layer."
+      "what": "compile_geometry_op eval_arg/eval_arg_f64 closures",
+      "where": "crates/reify-eval/src/lib.rs",
+      "how": "New eval dispatch arms for Pattern/Sweep/extended Modify use the same closure pattern to evaluate expression arguments from the CompiledGeometryOp."
     }
   ]
 }
