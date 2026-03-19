@@ -15,6 +15,7 @@ members = [
     "crates/reify-cli",
     "crates/reify-test-support",
     "tree-sitter-reify",
+    "gui/src-tauri",
 ]
 
 [workspace.package]
