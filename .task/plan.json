@@ -176,29 +176,29 @@
       "id": "step-21",
       "type": "test",
       "description": "Write failing unit tests in reify-stdlib/src/lib.rs #[cfg(test)] for domain-error inputs that currently produce NaN/inf instead of Undef. Tests: (1) sqrt_negative_returns_undef: sqrt(Real(-1.0)) -> Undef, (2) log_zero_returns_undef: log(Real(0.0)) -> Undef, (3) log_negative_returns_undef: log(Real(-1.0)) -> Undef, (4) log10_zero_returns_undef: log10(Real(0.0)) -> Undef, (5) log10_negative_returns_undef: log10(Real(-1.0)) -> Undef, (6) exp_overflow_returns_undef: exp(Real(1000.0)) -> Undef (overflow to inf), (7) pow_negative_base_fractional_exp_returns_undef: pow(Real(-2.0), Real(0.5)) -> Undef. All 7 tests MUST FAIL against the current implementation because unary_f64/binary_f64 pass NaN/inf through as Value::Real, confirming they detect the bug.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "15f9870"
     },
     {
       "id": "step-22",
       "type": "impl",
       "description": "Add a `sanitize_value(v: Value) -> Value` helper function in reify-stdlib/src/lib.rs that converts non-finite f64 values to Undef: if v is Value::Real(x) where x.is_nan() or x.is_infinite(), return Value::Undef; if v is Value::Scalar { si_value, .. } where si_value.is_nan() or si_value.is_infinite(), return Value::Undef; otherwise return v unchanged. Apply sanitize_value in `unary_f64` by wrapping the closure result: change `Some(x) => f(x)` to `Some(x) => sanitize_value(f(x))`. Apply the same in `binary_f64`: change `(Some(x), Some(y)) => f(x, y)` to `(Some(x), Some(y)) => sanitize_value(f(x, y))`. This makes all step-21 tests pass. Run `cargo test -p reify-stdlib` to confirm no regressions in the 36 existing tests (valid-domain inputs like sqrt(9.0), log(e), exp(0.0) still produce finite results and pass through sanitize_value unchanged).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "b8f1b41"
     },
     {
       "id": "step-23",
       "type": "test",
       "description": "Write unit tests in reify-stdlib/src/lib.rs for inverse-trig domain errors and hyperbolic overflow, verifying the sanitize_value fix handles Value::Scalar NaN cases too: (1) asin_out_of_range_positive: asin(Real(2.0)) -> Undef, (2) asin_out_of_range_negative: asin(Real(-2.0)) -> Undef, (3) acos_out_of_range_positive: acos(Real(2.0)) -> Undef, (4) acos_out_of_range_negative: acos(Real(-2.0)) -> Undef, (5) sinh_overflow: sinh(Real(1000.0)) -> Undef, (6) cosh_overflow: cosh(Real(1000.0)) -> Undef. Also verify boundary valid inputs still work: (7) asin_boundary_valid: asin(Real(1.0)) -> Scalar{PI/2, ANGLE} (unchanged), (8) acos_boundary_valid: acos(Real(-1.0)) -> Scalar{PI, ANGLE} (unchanged). Tests 1-6 should PASS after step-22's sanitize_value implementation since asin/acos route through unary_f64 and sinh/cosh route through unary_f64. Tests 7-8 confirm no regressions on valid boundary inputs.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5ce0bd5"
     },
     {
       "id": "step-24",
       "type": "impl",
       "description": "Verify all step-23 tests pass (they should since sanitize_value in unary_f64 catches both Value::Real(NaN) from asin/acos domain errors and Value::Scalar{si_value: NaN} from the same, plus Value::Real(inf) from sinh/cosh overflow). If any fail, add explicit domain pre-checks. Run `cargo test --workspace` to confirm all tests pass across the entire workspace, including the E2E integration test from step-19 which uses sqrt in a constraint pipeline (sqrt with valid positive input should still produce correct results). This completes the NaN/inf domain-error hardening.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "cc15e8c"
     }
   ],
   "design_decisions": [
