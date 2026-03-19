@@ -274,7 +274,10 @@ impl WarmStartable for OcctKernel {
         let mut warm_shapes = HashMap::new();
         let mut total_bytes: usize = 0;
         for (&id, shape) in &self.shapes {
-            match ffi::ffi::serialize_brep(shape.as_ref().unwrap()) {
+            let Some(shape_ref) = shape.as_ref() else {
+                continue; // Skip null shapes (best-effort, like serialization failures)
+            };
+            match ffi::ffi::serialize_brep(shape_ref) {
                 Ok(brep) => {
                     total_bytes += brep.len();
                     warm_shapes.insert(id, brep);
