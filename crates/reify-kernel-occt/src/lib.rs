@@ -221,6 +221,41 @@ impl OcctKernel {
                 ffi::ffi::rotate_shape(shape, axis[0], axis[1], axis[2], *angle_rad)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::LinearPattern { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "LinearPattern not yet implemented".into(),
+                ));
+            }
+            GeometryOp::CircularPattern { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "CircularPattern not yet implemented".into(),
+                ));
+            }
+            GeometryOp::Mirror { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "Mirror not yet implemented".into(),
+                ));
+            }
+            GeometryOp::Loft { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "Loft not yet implemented".into(),
+                ));
+            }
+            GeometryOp::Draft { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "Draft not yet implemented".into(),
+                ));
+            }
+            GeometryOp::Thicken { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "Thicken not yet implemented".into(),
+                ));
+            }
+            GeometryOp::Shell { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "Shell not yet implemented".into(),
+                ));
+            }
         };
         Ok(self.store(shape))
     }
@@ -265,6 +300,12 @@ impl OcctKernel {
                     "{{\"xmin\":{},\"ymin\":{},\"zmin\":{},\"xmax\":{},\"ymax\":{},\"zmax\":{}}}",
                     bb.xmin, bb.ymin, bb.zmin, bb.xmax, bb.ymax, bb.zmax
                 )))
+            }
+            GeometryQuery::Distance { .. } => {
+                Err(QueryError::QueryFailed("Distance not yet implemented".into()))
+            }
+            GeometryQuery::MomentOfInertia { .. } => {
+                Err(QueryError::QueryFailed("MomentOfInertia not yet implemented".into()))
             }
         }
     }
