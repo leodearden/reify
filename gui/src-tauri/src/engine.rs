@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_eval::{CheckResult, Engine};
 use reify_types::{
-    ConstraintChecker, DeterminacyState, GeometryKernel, ModulePath, Satisfaction, Severity,
-    ValueCellId,
+    ConstraintChecker, DeterminacyState, DimensionVector, GeometryKernel, ModulePath, Satisfaction,
+    Severity, Value, ValueCellId,
 };
 
 use crate::types::{
@@ -78,6 +78,40 @@ impl EngineSession {
         self.compiled = Some(compiled);
         self.last_check = Some(check_result);
 
+        self.build_gui_state()
+    }
+
+    /// Set a parameter value by cell ID string and value string.
+    ///
+    /// `cell_id_str` is "Entity.member" (e.g., "Bracket.width").
+    /// `value_str` is a quantity literal (e.g., "120mm"), plain number, or boolean.
+    pub fn set_parameter(
+        &mut self,
+        cell_id_str: &str,
+        value_str: &str,
+    ) -> Result<GuiState, String> {
+        let cell_id = parse_cell_id(cell_id_str)?;
+        let value = parse_value_string(value_str)?;
+
+        // Validate cell exists in compiled module
+        let compiled = self
+            .compiled
+            .as_ref()
+            .ok_or_else(|| "No module loaded".to_string())?;
+        let cell_exists = compiled
+            .templates
+            .iter()
+            .any(|t| t.value_cells.iter().any(|vc| vc.id == cell_id));
+        if !cell_exists {
+            return Err(format!("Unknown parameter '{}'", cell_id_str));
+        }
+
+        let check_result = self
+            .engine
+            .edit_check(cell_id, value)
+            .map_err(|e| format!("Engine error: {}", e))?;
+
+        self.last_check = Some(check_result);
         self.build_gui_state()
     }
 
@@ -168,4 +202,68 @@ impl EngineSession {
             files,
         })
     }
+}
+
+/// Parse a "Entity.member" string into a ValueCellId.
+fn parse_cell_id(s: &str) -> Result<ValueCellId, String> {
+    let parts: Vec<&str> = s.splitn(2, '.').collect();
+    if parts.len() != 2 {
+        return Err(format!(
+            "Invalid cell ID '{}': expected 'Entity.member' format",
+            s
+        ));
+    }
+    Ok(ValueCellId::new(parts[0], parts[1]))
+}
+
+/// Parse a value string into a Value.
+///
+/// Supported formats:
+/// - Quantity literals: "80mm", "100cm", "1.5m", "90deg", "1.57rad"
+/// - Plain numbers: "5.0" → Real, "5" → Int
+/// - Booleans: "true", "false"
+pub fn parse_value_string(s: &str) -> Result<Value, String> {
+    let s = s.trim();
+
+    // Booleans
+    if s == "true" {
+        return Ok(Value::Bool(true));
+    }
+    if s == "false" {
+        return Ok(Value::Bool(false));
+    }
+
+    // Try quantity literals (number + unit suffix)
+    let unit_table: &[(&str, f64, DimensionVector)] = &[
+        ("mm", 0.001, DimensionVector::LENGTH),
+        ("cm", 0.01, DimensionVector::LENGTH),
+        ("m", 1.0, DimensionVector::LENGTH),
+        ("deg", std::f64::consts::PI / 180.0, DimensionVector::ANGLE),
+        ("rad", 1.0, DimensionVector::ANGLE),
+    ];
+
+    // Try units from longest suffix to shortest to avoid "m" matching before "mm"/"cm"
+    for &(unit, scale, dimension) in unit_table {
+        if let Some(num_str) = s.strip_suffix(unit) {
+            let num_str = num_str.trim();
+            if let Ok(v) = num_str.parse::<f64>() {
+                return Ok(Value::Scalar {
+                    si_value: v * scale,
+                    dimension,
+                });
+            }
+        }
+    }
+
+    // Plain integer
+    if let Ok(i) = s.parse::<i64>() {
+        return Ok(Value::Int(i));
+    }
+
+    // Plain float
+    if let Ok(f) = s.parse::<f64>() {
+        return Ok(Value::Real(f));
+    }
+
+    Err(format!("Cannot parse value '{}'", s))
 }
