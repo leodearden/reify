@@ -1451,3 +1451,36 @@ enum Color { Red, Green, Blue }"#;
         other => panic!("B.z: expected Literal(Enum(Color, Red)), got {:?}", other),
     }
 }
+
+/// Calling a user-defined function from a structure should compile to UserFunctionCall.
+#[test]
+fn compile_user_function_call() {
+    let source = "fn double(x: Real) -> Real { x + x }\nstructure S { let v = double(3) }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_call"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    let v_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "v")
+        .expect("should have 'v' value cell");
+    let v_expr = v_cell.default_expr.as_ref().expect("let should have expr");
+
+    // Should be UserFunctionCall, not stdlib FunctionCall
+    match &v_expr.kind {
+        reify_types::CompiledExprKind::UserFunctionCall { function_name, args } => {
+            assert_eq!(function_name, "double");
+            assert_eq!(args.len(), 1);
+        }
+        other => panic!("expected UserFunctionCall, got {:?}", other),
+    }
+    assert_eq!(v_expr.result_type, reify_types::Type::Real);
+}
