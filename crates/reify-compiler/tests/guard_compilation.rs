@@ -203,3 +203,62 @@ structure S {
     // Same guard_value_cell
     assert!(template.structure_controlling.contains(&group.guard_value_cell));
 }
+
+/// Reference safety: unguarded `let y = x` referencing guarded `param x` should
+/// produce a diagnostic error about unsafe/unguarded reference.
+#[test]
+fn reference_safety_unguarded_to_guarded_error() {
+    let source = r#"
+structure S {
+    param active : Bool = true
+    param x : Scalar = 5mm where active
+    let y = x
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    // Should contain a diagnostic about unguarded reference
+    let guard_errors: Vec<_> = diagnostics.iter()
+        .filter(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("unguarded") || msg.contains("guarded")
+        })
+        .collect();
+
+    assert!(
+        !guard_errors.is_empty(),
+        "expected diagnostic about unguarded reference to guarded cell, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Reference safety: within the same guard block, references are safe.
+#[test]
+fn reference_safety_same_guard_ok() {
+    let source = r#"
+structure S {
+    param active : Bool = true
+    where active {
+        param x : Scalar = 5mm
+        let y = x
+    }
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    // No reference safety errors
+    let guard_errors: Vec<_> = diagnostics.iter()
+        .filter(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("unguarded") || msg.contains("guarded")
+        })
+        .collect();
+
+    assert!(
+        guard_errors.is_empty(),
+        "should not have reference safety errors for same-guard references: {:?}",
+        guard_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
