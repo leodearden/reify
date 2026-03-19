@@ -1,0 +1,176 @@
+//! Tests for SolverRegistry — multi-domain constraint dispatch.
+
+use reify_constraints::{DimensionalSolver, SolverRegistry};
+use reify_test_support::*;
+use reify_types::{
+    AutoParam, ConstraintSolver, ResolutionProblem, SolveResult, Type, ValueMap,
+};
+
+/// Basic dispatch: SolverRegistry with DimensionalSolver as fallback
+/// produces same results as DimensionalSolver alone for a simple problem.
+#[test]
+fn registry_matches_dimensional_solver_simple_feasibility() {
+    let dim_solver = DimensionalSolver;
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    let thickness_id = vcid("Bracket", "thickness");
+    let thickness_ref = value_ref("Bracket", "thickness");
+
+    // thickness > 2mm AND thickness < 20mm
+    let gt_expr = gt(thickness_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(thickness_ref, literal(mm(20.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: thickness_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+        }],
+        constraints: vec![
+            (cnid("Bracket", 0), gt_expr),
+            (cnid("Bracket", 1), lt_expr),
+        ],
+        current_values: ValueMap::new(),
+        objective: None,
+    };
+
+    // Both should produce Solved
+    let dim_result = dim_solver.solve(&problem);
+    let reg_result = registry.solve(&problem);
+
+    match (&dim_result, &reg_result) {
+        (SolveResult::Solved { values: v1 }, SolveResult::Solved { values: v2 }) => {
+            let si1 = v1.get(&thickness_id).unwrap().as_f64().unwrap();
+            let si2 = v2.get(&thickness_id).unwrap().as_f64().unwrap();
+            // Both should be in feasible range
+            assert!(si1 > 0.002 && si1 < 0.020, "dim_solver: got {}", si1);
+            assert!(si2 > 0.002 && si2 < 0.020, "registry: got {}", si2);
+        }
+        _ => panic!(
+            "expected both Solved, got dim={:?}, reg={:?}",
+            dim_result, reg_result
+        ),
+    }
+}
+
+/// Problem decomposed into 2 independent sub-problems → both solved,
+/// merged result contains all param values.
+#[test]
+fn registry_solves_independent_subproblems() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    let a_id = vcid("Part", "a");
+    let b_id = vcid("Part", "b");
+
+    // a > 5mm (independent sub-problem 1)
+    let c1 = gt(value_ref("Part", "a"), literal(mm(5.0)));
+    // b > 10mm (independent sub-problem 2)
+    let c2 = gt(value_ref("Part", "b"), literal(mm(10.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: a_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            },
+            AutoParam {
+                id: b_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            },
+        ],
+        constraints: vec![
+            (cnid("Part", 0), c1),
+            (cnid("Part", 1), c2),
+        ],
+        current_values: ValueMap::new(),
+        objective: None,
+    };
+
+    let result = registry.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            assert!(values.contains_key(&a_id), "should have value for a");
+            assert!(values.contains_key(&b_id), "should have value for b");
+
+            let a_val = values.get(&a_id).unwrap().as_f64().unwrap();
+            let b_val = values.get(&b_id).unwrap().as_f64().unwrap();
+            assert!(a_val > 0.005, "a should satisfy > 5mm, got {}", a_val);
+            assert!(b_val > 0.010, "b should satisfy > 10mm, got {}", b_val);
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
+
+/// Fallback solver is used when no specialized solver is registered
+/// for a domain (here using dimensional solver as universal fallback).
+#[test]
+fn registry_uses_fallback_for_all_domains() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    let x_id = vcid("Part", "x");
+
+    // Simple constraint through fallback
+    let c1 = gt(value_ref("Part", "x"), literal(mm(1.0)));
+    let c2 = lt(value_ref("Part", "x"), literal(mm(50.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+        }],
+        constraints: vec![
+            (cnid("Part", 0), c1),
+            (cnid("Part", 1), c2),
+        ],
+        current_values: ValueMap::new(),
+        objective: None,
+    };
+
+    let result = registry.solve(&problem);
+    assert!(
+        matches!(result, SolveResult::Solved { .. }),
+        "fallback should solve simple feasibility"
+    );
+}
+
+/// Backward compatibility: existing solver_integration test scenarios
+/// produce identical behavior through SolverRegistry.
+#[test]
+fn registry_backward_compat_compound_constraint() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    let x_id = vcid("Part", "x");
+
+    // (x > 5mm) AND (x < 50mm) — as a single compound constraint
+    let compound = and(
+        gt(value_ref("Part", "x"), literal(mm(5.0))),
+        lt(value_ref("Part", "x"), literal(mm(50.0))),
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+        }],
+        constraints: vec![(cnid("Part", 0), compound)],
+        current_values: ValueMap::new(),
+        objective: None,
+    };
+
+    let result = registry.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let x = values.get(&x_id).unwrap().as_f64().unwrap();
+            assert!(
+                x > 0.005 && x < 0.050,
+                "x should satisfy compound constraint, got {} m",
+                x
+            );
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
