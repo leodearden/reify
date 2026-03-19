@@ -5,7 +5,7 @@ use crate::ContentHash;
 
 /// Rational number as i16/i16 for dimension exponents.
 /// Uses i16 to prevent overflow when multiplying exponents (max i8 * i8 = 16,129 < i16::MAX).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Rational {
     pub num: i16,
     pub den: i16,
@@ -106,7 +106,7 @@ fn gcd(mut a: u16, mut b: u16) -> u16 {
 /// 6: Luminous intensity (cd)
 /// 7: Angle (rad, treated as dimension for engineering use)
 /// 8: Solid angle (sr)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DimensionVector(pub [Rational; 9]);
 
 impl DimensionVector {

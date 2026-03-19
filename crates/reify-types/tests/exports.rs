@@ -42,3 +42,100 @@ fn all_resolution_types_exported() {
     // ConstraintSolver trait — verify it exists as a trait object type
     fn _assert_trait_object(_: &dyn reify_types::ConstraintSolver) {}
 }
+
+#[test]
+fn all_m5_types_exported() {
+    // --- Value variants ---
+
+    // Value::Enum
+    let _ve = reify_types::Value::Enum {
+        type_name: "Color".into(),
+        variant: "Red".into(),
+    };
+
+    // Value::List
+    let _vl = reify_types::Value::List(vec![reify_types::Value::Int(1)]);
+
+    // Value::Set
+    let _vs = reify_types::Value::Set(std::collections::BTreeSet::new());
+
+    // Value::Map
+    let _vm = reify_types::Value::Map(std::collections::BTreeMap::new());
+
+    // Value::Option
+    let _vo = reify_types::Value::Option(Some(Box::new(reify_types::Value::Int(1))));
+    let _vn = reify_types::Value::Option(None);
+
+    // --- Type variants ---
+
+    // Type::Enum
+    let _te = reify_types::Type::Enum("Color".into());
+
+    // Type::List
+    let _tl = reify_types::Type::List(Box::new(reify_types::Type::Int));
+
+    // Type::Set
+    let _ts = reify_types::Type::Set(Box::new(reify_types::Type::String));
+
+    // Type::Map
+    let _tm = reify_types::Type::Map(
+        Box::new(reify_types::Type::String),
+        Box::new(reify_types::Type::Real),
+    );
+
+    // Type::Option
+    let _to = reify_types::Type::Option(Box::new(reify_types::Type::Int));
+
+    // Type::Function
+    let _tf = reify_types::Type::Function {
+        params: vec![reify_types::Type::Int],
+        return_type: Box::new(reify_types::Type::Real),
+    };
+
+    // --- Trait-related types ---
+
+    // EnumDef
+    let _ed = reify_types::EnumDef {
+        name: "Shape".into(),
+        variants: vec!["Circle".into()],
+    };
+
+    // PortDirection
+    let _pd = reify_types::PortDirection::In;
+
+    // TraitRef
+    let _tr = reify_types::TraitRef {
+        name: "Drawable".into(),
+        type_args: vec![],
+    };
+
+    // TraitBound
+    let _tb = reify_types::TraitBound {
+        trait_ref: reify_types::TraitRef {
+            name: "Measurable".into(),
+            type_args: vec![],
+        },
+    };
+
+    // TypeParam
+    let _tp = reify_types::TypeParam {
+        name: "T".into(),
+        bounds: vec![],
+        default: None,
+    };
+
+    // TraitMember
+    let _tmem = reify_types::TraitMember::Param {
+        name: "width".into(),
+        ty: reify_types::Type::Real,
+        default: None,
+    };
+
+    // TraitDef
+    let _td = reify_types::TraitDef {
+        name: "Component".into(),
+        type_params: vec![],
+        refinements: vec![],
+        members: vec![],
+    };
+}

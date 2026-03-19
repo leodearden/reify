@@ -14,6 +14,9 @@ pub fn literal(v: Value) -> CompiledExpr {
         Value::Scalar { dimension, .. } => Type::Scalar {
             dimension: *dimension,
         },
+        Value::Enum { .. } | Value::List(_) | Value::Set(_) | Value::Map(_) | Value::Option(_) => {
+            panic!("literal() not yet implemented for M5 type: {:?}. Use CompiledExpr::literal(value, type) directly.", v)
+        }
         Value::Undef => Type::Bool, // arbitrary for undef
     };
     CompiledExpr::literal(v, ty)
@@ -301,6 +304,40 @@ impl TopologyTemplateBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    #[should_panic(expected = "literal() not yet implemented for M5 type")]
+    fn literal_panics_on_enum_value() {
+        literal(Value::Enum {
+            type_name: "X".into(),
+            variant: "Y".into(),
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "literal() not yet implemented for M5 type")]
+    fn literal_panics_on_list_value() {
+        literal(Value::List(vec![]));
+    }
+
+    #[test]
+    #[should_panic(expected = "literal() not yet implemented for M5 type")]
+    fn literal_panics_on_set_value() {
+        literal(Value::Set(BTreeSet::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "literal() not yet implemented for M5 type")]
+    fn literal_panics_on_map_value() {
+        literal(Value::Map(BTreeMap::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "literal() not yet implemented for M5 type")]
+    fn literal_panics_on_option_value() {
+        literal(Value::Option(None));
+    }
 
     #[test]
     fn auto_param_builder() {
