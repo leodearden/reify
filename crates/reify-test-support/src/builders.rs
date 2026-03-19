@@ -14,6 +14,9 @@ pub fn literal(v: Value) -> CompiledExpr {
         Value::Scalar { dimension, .. } => Type::Scalar {
             dimension: *dimension,
         },
+        Value::Enum { .. } | Value::List(_) | Value::Set(_) | Value::Map(_) | Value::Option(_) => {
+            Type::Bool // placeholder for M5 collection/enum types
+        }
         Value::Undef => Type::Bool, // arbitrary for undef
     };
     CompiledExpr::literal(v, ty)

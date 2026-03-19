@@ -368,4 +368,51 @@ mod tests {
     fn format_value_undef() {
         assert_eq!(format_value(&Value::Undef), "(undefined)");
     }
+
+    // --- format_value for M5 types (step-13) ---
+
+    #[test]
+    fn format_value_enum() {
+        let v = Value::Enum {
+            type_name: "Color".into(),
+            variant: "Red".into(),
+        };
+        assert_eq!(format_value(&v), "Color::Red");
+    }
+
+    #[test]
+    fn format_value_list() {
+        let v = Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        assert_eq!(format_value(&v), "[1, 2, 3]");
+    }
+
+    #[test]
+    fn format_value_set() {
+        use std::collections::BTreeSet;
+        let mut s = BTreeSet::new();
+        s.insert(Value::Int(1));
+        s.insert(Value::Int(2));
+        let v = Value::Set(s);
+        assert_eq!(format_value(&v), "{1, 2}");
+    }
+
+    #[test]
+    fn format_value_map() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("a".into()), Value::Int(1));
+        let v = Value::Map(m);
+        assert_eq!(format_value(&v), "{\"a\": 1}");
+    }
+
+    #[test]
+    fn format_value_option_none() {
+        assert_eq!(format_value(&Value::Option(None)), "none");
+    }
+
+    #[test]
+    fn format_value_option_some() {
+        let v = Value::Option(Some(Box::new(Value::Int(42))));
+        assert_eq!(format_value(&v), "some(42)");
+    }
 }
