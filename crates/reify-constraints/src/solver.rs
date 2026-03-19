@@ -1147,6 +1147,127 @@ mod tests {
     }
 
     #[test]
+    fn constraint_residual_single_gt() {
+        use super::constraint_residual;
+        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value, ValueCellId};
+
+        // thickness > 2mm, thickness=1.9999999m (violated by 1e-7)
+        let thickness_ref = CompiledExpr::value_ref(ValueCellId::new("B", "t"), Type::length());
+        let two = CompiledExpr::literal(
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let expr = CompiledExpr::binop(BinOp::Gt, thickness_ref, two, Type::Bool);
+
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("B", "t"),
+            Value::Scalar { si_value: 1.9999999, dimension: DimensionVector::LENGTH },
+        );
+
+        let res = constraint_residual(&expr, &values);
+        assert!(
+            (res - 1e-7).abs() < 1e-12,
+            "single Gt constraint_residual should delegate correctly, got {:.2e}",
+            res
+        );
+    }
+
+    #[test]
+    fn constraint_residual_and_returns_max() {
+        use super::constraint_residual;
+        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value, ValueCellId};
+
+        // And(x > 2.0 [violated by 1e-7], y > 1.0 [violated by 1e-5])
+        let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
+        let two = CompiledExpr::literal(
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let gt_x = CompiledExpr::binop(BinOp::Gt, x_ref, two, Type::Bool);
+
+        let y_ref = CompiledExpr::value_ref(ValueCellId::new("P", "y"), Type::length());
+        let one = CompiledExpr::literal(
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let gt_y = CompiledExpr::binop(BinOp::Gt, y_ref, one, Type::Bool);
+
+        let and_expr = CompiledExpr::binop(BinOp::And, gt_x, gt_y, Type::Bool);
+
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("P", "x"),
+            Value::Scalar { si_value: 1.9999999, dimension: DimensionVector::LENGTH },
+        );
+        values.insert(
+            ValueCellId::new("P", "y"),
+            Value::Scalar { si_value: 0.99999, dimension: DimensionVector::LENGTH },
+        );
+
+        let res = constraint_residual(&and_expr, &values);
+        // max(1e-7, 1e-5) = 1e-5
+        assert!(
+            (res - 1e-5).abs() < 1e-10,
+            "And should return max of sub-residuals, got {:.2e}",
+            res
+        );
+    }
+
+    #[test]
+    fn constraint_residual_or_returns_min() {
+        use super::constraint_residual;
+        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value, ValueCellId};
+
+        // Or(x > 2.0 [violated by 1e-3], y > 1.0 [satisfied])
+        let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
+        let two = CompiledExpr::literal(
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let gt_x = CompiledExpr::binop(BinOp::Gt, x_ref, two, Type::Bool);
+
+        let y_ref = CompiledExpr::value_ref(ValueCellId::new("P", "y"), Type::length());
+        let one = CompiledExpr::literal(
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let gt_y = CompiledExpr::binop(BinOp::Gt, y_ref, one, Type::Bool);
+
+        let or_expr = CompiledExpr::binop(BinOp::Or, gt_x, gt_y, Type::Bool);
+
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("P", "x"),
+            Value::Scalar { si_value: 1.999, dimension: DimensionVector::LENGTH },
+        );
+        values.insert(
+            ValueCellId::new("P", "y"),
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+        );
+
+        let res = constraint_residual(&or_expr, &values);
+        assert_eq!(res, 0.0, "Or with one satisfied should return 0.0");
+    }
+
+    #[test]
+    fn constraint_residual_bool_literals() {
+        use super::constraint_residual;
+        use reify_types::{CompiledExpr, Type, Value};
+
+        let values = ValueMap::new();
+
+        let t = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        assert_eq!(constraint_residual(&t, &values), 0.0);
+
+        let f = CompiledExpr::literal(Value::Bool(false), Type::Bool);
+        assert_eq!(constraint_residual(&f, &values), 1.0);
+
+        let u = CompiledExpr::literal(Value::Undef, Type::Bool);
+        assert_eq!(constraint_residual(&u, &values), 10.0);
+    }
+
+    #[test]
     fn comparison_residual_non_numeric_fallback() {
         use super::comparison_residual;
         use reify_types::{BinOp, CompiledExpr, Type, Value};
