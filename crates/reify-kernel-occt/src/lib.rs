@@ -1340,6 +1340,43 @@ mod tests {
         );
     }
 
+    // --- Pattern tests ---
+
+    #[test]
+    fn linear_pattern_4_boxes() {
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10 box (volume = 1000)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Apply LinearPattern: 4 copies along X with spacing 20
+        let pattern_h = kernel
+            .execute(&GeometryOp::LinearPattern {
+                target: box_h.id,
+                direction: [1.0, 0.0, 0.0],
+                count: 4,
+                spacing: Value::Real(20.0),
+            })
+            .unwrap();
+        // Volume should be approximately 4 * 1000 = 4000
+        let vol = kernel
+            .query(&GeometryQuery::Volume(pattern_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 4000.0).abs() < 50.0,
+                    "expected linear pattern volume ~4000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
     // --- Mirror tests ---
 
     #[test]
