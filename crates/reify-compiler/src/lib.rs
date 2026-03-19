@@ -687,6 +687,34 @@ pub fn compile(
         }
     }
 
+    // Check for duplicate function signatures: same name + same param types
+    {
+        let mut seen: HashMap<(String, Vec<Type>), usize> = HashMap::new();
+        for (idx, f) in functions.iter().enumerate() {
+            let key = (
+                f.name.clone(),
+                f.params.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>(),
+            );
+            if let Some(prev_idx) = seen.get(&key) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "duplicate function signature: {}({})",
+                        f.name,
+                        f.params
+                            .iter()
+                            .map(|(_, t)| format!("{}", t))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )),
+                );
+                let _ = prev_idx;
+                let _ = idx;
+            } else {
+                seen.insert(key, idx);
+            }
+        }
+    }
+
     // Build a content-sensitive hash by combining the path with all compiled content.
     let content_hash = {
         let path_hash = ContentHash::of_str(&format!("{}", parsed.path));

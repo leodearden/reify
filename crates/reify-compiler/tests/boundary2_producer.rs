@@ -1186,6 +1186,71 @@ fn compile_simple_function() {
     assert_eq!(f.body.result_expr.result_type, reify_types::Type::Real);
 }
 
+/// Compile a function with let bindings in body.
+#[test]
+fn compile_function_with_let_bindings() {
+    let source = "fn f(x: Real) -> Real { let y = x + x; let z = y * y; z + 1 }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_lets"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let f = &compiled.functions[0];
+    assert_eq!(f.body.let_bindings.len(), 2);
+    assert_eq!(f.body.let_bindings[0].0, "y");
+    assert_eq!(f.body.let_bindings[1].0, "z");
+    // result_expr should compile without unresolved name errors
+    assert_eq!(f.body.result_expr.result_type, reify_types::Type::Real);
+}
+
+/// Two overloaded functions with the same name but different param types.
+#[test]
+fn compile_overloaded_functions() {
+    let source = "fn convert(x: Real) -> Real { x }\nfn convert(x: Int) -> Int { x }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_overload"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    assert_eq!(compiled.functions.len(), 2);
+    assert_eq!(compiled.functions[0].name, "convert");
+    assert_eq!(compiled.functions[1].name, "convert");
+    assert_eq!(compiled.functions[0].params, vec![("x".to_string(), reify_types::Type::Real)]);
+    assert_eq!(compiled.functions[1].params, vec![("x".to_string(), reify_types::Type::Int)]);
+}
+
+/// Two functions with identical name AND param types should produce a diagnostic.
+#[test]
+fn compile_duplicate_function_signature_error() {
+    let source = "fn f(x: Real) -> Real { x }\nfn f(x: Real) -> Int { x }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_dup"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        !compiled.diagnostics.is_empty(),
+        "expected diagnostics for duplicate function signature"
+    );
+    assert!(
+        compiled.diagnostics.iter().any(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("duplicate") || msg.contains("conflict")
+        }),
+        "diagnostics should mention duplicate, got: {:?}",
+        compiled.diagnostics
+    );
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
