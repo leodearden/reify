@@ -287,3 +287,31 @@ describe('Lezer grammar – comments', () => {
     expect(countNodes(tree, 'ParamDeclaration')).toBe(1);
   });
 });
+
+describe('Lezer grammar – error recovery', () => {
+  it('produces error nodes for missing closing brace', () => {
+    const src = 'structure S { param x = 1mm';
+    const tree = parser.parse(src);
+    // Parser should not crash
+    expect(tree.topNode.name).toBe('SourceFile');
+    // Should have at least one error node
+    expect(hasErrors(tree)).toBe(true);
+  });
+
+  it('recovers valid portions after syntax error', () => {
+    const src = 'structure S { param x = 1mm\nstructure T {}';
+    const tree = parser.parse(src);
+    // Parser should still produce some correct nodes despite the error
+    expect(tree.topNode.name).toBe('SourceFile');
+    // Should find at least one StructureDefinition
+    expect(countNodes(tree, 'StructureDefinition')).toBeGreaterThanOrEqual(1);
+  });
+
+  it('handles incomplete expression gracefully', () => {
+    const src = 'structure S { let x = }';
+    const tree = parser.parse(src);
+    expect(tree.topNode.name).toBe('SourceFile');
+    // Should have error node for missing expression
+    expect(hasErrors(tree)).toBe(true);
+  });
+});
