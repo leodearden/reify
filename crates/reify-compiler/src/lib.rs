@@ -715,7 +715,7 @@ fn compile_structure(
                         kind: ValueCellKind::Auto,
                         cell_type,
                         default_expr: None,
-                        span: SourceSpan::new(0, 0),
+                        span: param.span,
                     });
                 } else {
                     let default_expr = param
@@ -728,7 +728,7 @@ fn compile_structure(
                         kind: ValueCellKind::Param,
                         cell_type,
                         default_expr,
-                        span: SourceSpan::new(0, 0),
+                        span: param.span,
                     });
                 }
             }
@@ -750,7 +750,7 @@ fn compile_structure(
                     kind: ValueCellKind::Let,
                     cell_type,
                     default_expr: Some(compiled_expr),
-                    span: SourceSpan::new(0, 0),
+                    span: let_decl.span,
                 });
             }
             reify_syntax::MemberDecl::Constraint(constraint) => {
