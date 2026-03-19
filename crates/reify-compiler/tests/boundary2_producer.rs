@@ -741,6 +741,68 @@ fn compile_minimize_objective() {
     }
 }
 
+/// Compile maximize → TopologyTemplate.objective is Some(Maximize(...)).
+#[test]
+fn compile_maximize_objective() {
+    let source = r#"structure S {
+    param w: Scalar = 80mm
+    param h: Scalar = 100mm
+    let volume = w * h
+    maximize volume
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_max_obj"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+
+    let objective = template
+        .objective
+        .as_ref()
+        .expect("template should have an objective");
+
+    match objective {
+        reify_types::OptimizationObjective::Maximize(expr) => {
+            // The expression should reference ValueCellId("S", "volume")
+            match &expr.kind {
+                reify_types::CompiledExprKind::ValueRef(id) => {
+                    assert_eq!(id, &reify_types::ValueCellId::new("S", "volume"));
+                }
+                other => panic!("expected ValueRef, got {:?}", other),
+            }
+        }
+        other => panic!("expected Maximize, got {:?}", other),
+    }
+}
+
+/// Backward compatibility: bracket source (no minimize/maximize) → objective is None.
+#[test]
+fn no_objective_when_absent() {
+    let parsed = bracket_parsed_module();
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "bracket should compile cleanly: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    assert!(
+        template.objective.is_none(),
+        "bracket has no minimize/maximize, objective should be None"
+    );
+
+    // Verify existing structure is unaffected
+    assert_eq!(template.value_cells.len(), 6);
+    assert_eq!(template.constraints.len(), 3);
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
