@@ -835,6 +835,55 @@ mod tests {
     }
 
     #[test]
+    fn parse_minimize_declaration() {
+        let source = r#"structure S {
+    param volume: Scalar = 100mm
+    minimize volume
+}"#;
+        let module = parse(source, reify_types::ModulePath::single("test_min"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+
+        // Should have 2 members: param + minimize
+        assert_eq!(structure.members.len(), 2);
+
+        match &structure.members[1] {
+            MemberDecl::Minimize(m) => {
+                assert!(matches!(&m.expr.kind, ExprKind::Ident(name) if name == "volume"));
+            }
+            other => panic!("expected Minimize, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_maximize_declaration() {
+        let source = r#"structure S {
+    param thickness: Scalar = 5mm
+    maximize thickness
+}"#;
+        let module = parse(source, reify_types::ModulePath::single("test_max"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+
+        assert_eq!(structure.members.len(), 2);
+
+        match &structure.members[1] {
+            MemberDecl::Maximize(m) => {
+                assert!(matches!(&m.expr.kind, ExprKind::Ident(name) if name == "thickness"));
+            }
+            other => panic!("expected Maximize, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn tree_sitter_parses_bracket_source_without_errors() {
         let source = reify_test_support::bracket_source();
         let mut parser = tree_sitter::Parser::new();
