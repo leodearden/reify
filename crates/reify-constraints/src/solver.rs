@@ -249,6 +249,21 @@ fn constraint_violation(expr: &CompiledExpr, values: &ValueMap) -> f64 {
     }
 }
 
+/// Compute the maximum absolute residual across all constraints (L1 feasibility).
+///
+/// Returns the worst-case per-constraint absolute residual. Zero means
+/// all constraints are satisfied. Used for binary feasibility decisions
+/// instead of sum-of-squares (which can mask small violations).
+fn max_constraint_residual(
+    constraints: &[(ConstraintNodeId, CompiledExpr)],
+    values: &ValueMap,
+) -> f64 {
+    constraints
+        .iter()
+        .map(|(_, expr)| constraint_residual(expr, values))
+        .fold(0.0_f64, f64::max)
+}
+
 /// Compute the total violation across all constraints.
 ///
 /// Returns the sum of squared violations. Zero means all constraints
