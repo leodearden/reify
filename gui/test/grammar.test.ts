@@ -261,3 +261,29 @@ describe('Lezer grammar – expression precedence', () => {
     expect(topBin).toBe('a.b + c');
   });
 });
+
+describe('Lezer grammar – comments', () => {
+  it('handles line comment before structure', () => {
+    const src = '// line comment\nstructure S {}';
+    const tree = parser.parse(src);
+    expect(hasErrors(tree)).toBe(false);
+    expect(countNodes(tree, 'LineComment')).toBe(1);
+    expect(countNodes(tree, 'StructureDefinition')).toBe(1);
+  });
+
+  it('handles block comment before structure', () => {
+    const src = '/* block\ncomment */ structure S {}';
+    const tree = parser.parse(src);
+    expect(hasErrors(tree)).toBe(false);
+    expect(countNodes(tree, 'BlockComment')).toBe(1);
+    expect(countNodes(tree, 'StructureDefinition')).toBe(1);
+  });
+
+  it('handles inline block comment inside structure body', () => {
+    const src = 'structure S { /* inline */ param x = 1mm }';
+    const tree = parser.parse(src);
+    expect(hasErrors(tree)).toBe(false);
+    expect(countNodes(tree, 'BlockComment')).toBe(1);
+    expect(countNodes(tree, 'ParamDeclaration')).toBe(1);
+  });
+});
