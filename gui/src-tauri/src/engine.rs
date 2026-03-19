@@ -23,6 +23,7 @@ pub struct EngineSession {
     source_map: HashMap<String, String>,
     file_path: Option<PathBuf>,
     last_check: Option<CheckResult>,
+    module_name: Option<String>,
 }
 
 impl EngineSession {
@@ -37,6 +38,7 @@ impl EngineSession {
             source_map: HashMap::new(),
             file_path: None,
             last_check: None,
+            module_name: None,
         }
     }
 
@@ -68,9 +70,11 @@ impl EngineSession {
             return Err(format!("Compile errors: {}", msgs.join("; ")));
         }
 
-        // Store source
+        // Store source with normalized key; clear stale entries
+        self.source_map.clear();
         self.source_map
             .insert(format!("{}.ri", module_name), source.to_string());
+        self.module_name = Some(module_name.to_string());
 
         // Evaluate + check constraints
         let check_result = self.engine.check(&compiled);
@@ -139,8 +143,11 @@ impl EngineSession {
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
-        // Store updated source
-        self.source_map.insert(path.to_string(), content.to_string());
+        // Store updated source with normalized key; clear stale entries
+        let normalized_key = format!("{}.ri", module_name);
+        self.source_map.clear();
+        self.source_map.insert(normalized_key, content.to_string());
+        self.module_name = Some(module_name.to_string());
 
         // Re-parse and re-compile from scratch (topology may have changed)
         let parsed = reify_syntax::parse(content, ModulePath::single(module_name));
@@ -214,8 +221,15 @@ impl EngineSession {
         })?;
 
         // Convert byte offset to line/column using stored source
-        // Find the source file that contains this span
-        let (file, source) = self.source_map.iter().next()?;
+        // Look up source by module-name-derived key (deterministic), fall back to iter
+        let (file, source) = if let Some(ref name) = self.module_name {
+            let key = format!("{}.ri", name);
+            let src = self.source_map.get(&key)?;
+            (key, src.as_str())
+        } else {
+            let (k, v) = self.source_map.iter().next()?;
+            (k.clone(), v.as_str())
+        };
 
         let (line, col) = byte_offset_to_line_col(source, span.start as usize);
         let (end_line, end_col) = byte_offset_to_line_col(source, span.end as usize);
