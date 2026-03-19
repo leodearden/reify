@@ -1,82 +1,148 @@
 {
-  "task_id": "39",
-  "title": "Fix sqrt to preserve and halve Scalar dimensions",
-  "modules": ["crates/reify-types", "crates/reify-stdlib"],
-  "analysis": "The sqrt function in reify-stdlib (line 18) uses `unary_f64(args, |x| Value::Real(x.sqrt()))` which extracts the f64 via `as_f64()` and wraps the result as `Value::Real`, discarding any Scalar dimension information. The fix requires two changes: (1) Add a `root(n: i8)` method to `DimensionVector` in reify-types that divides each rational exponent by n (e.g., root(2) halves exponents: AREA [2,0,...] → LENGTH [1,0,...]). (2) Replace the sqrt implementation in reify-stdlib to match on Scalar separately, computing `si_value.sqrt()` and `dimension.root(2)`, falling through to the existing Real behavior for non-Scalar numeric types. The `sanitize_value` function already handles NaN/inf for both Real and Scalar, so negative inputs will naturally produce Undef. DimensionVector already uses Rational exponents, so fractional exponents (e.g., LENGTH^(1/2)) are representable without any type changes. Existing tests for sqrt(Real) and sqrt(negative Real) already pass and should continue to pass unchanged.",
-  "prerequisites": [],
+  "task_id": "43",
+  "title": "Add minimize/maximize declarations to grammar and compiler",
+  "modules": [
+    "tree-sitter-reify",
+    "crates/reify-syntax",
+    "crates/reify-compiler",
+    "crates/reify-test-support"
+  ],
+  "analysis": "The grammar currently has 4 member declaration types in _member (param, let, constraint, sub) at grammar.js:35-40. The keywords 'minimize' and 'maximize' are not recognized as declaration-level constructs, so they silently misparse as identifier expressions. The constraint solver already supports OptimizationObjective::Minimize/Maximize (reify-types/src/constraint.rs:46-53) via ResolutionProblem.objective, but there's no path from source code to that type. The fix threads minimize/maximize through three layers: (1) Grammar: add minimize_declaration and maximize_declaration rules following the constraint_declaration pattern (keyword + expression). (2) Syntax: add MinimizeDecl/MaximizeDecl structs and MemberDecl variants, plus CST→AST lowering methods mirroring lower_constraint(). (3) Compiler: add 'objective: Option<OptimizationObjective>' field to TopologyTemplate, handle new MemberDecl variants in compile_structure() by compiling the expression and wrapping in the appropriate OptimizationObjective variant. TopologyTemplate is only directly constructed in compile_structure() (lib.rs:805) and TopologyTemplateBuilder::build() (builders.rs:260), keeping the structural change contained. The eval layer currently hardcodes 'objective: None' when building ResolutionProblem — wiring objectives through is out of scope for this task.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add minimize_declaration and maximize_declaration rules to grammar.js. Add $.minimize_declaration and $.maximize_declaration to the _member choice list (lines 35-40). Define each as seq(keyword, field('expr', $._expression)) following the constraint_declaration pattern (lines 65-68). minimize_declaration uses 'minimize', maximize_declaration uses 'maximize'.",
+      "status": "done",
+      "commit": "6b4aefd",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Regenerate tree-sitter parser by running 'npx --yes tree-sitter-cli generate' in the tree-sitter-reify directory. This updates src/parser.c, src/grammar.json, and src/node-types.json to include the new minimize_declaration and maximize_declaration node types. Verify the generated node-types.json contains both new node types.",
+      "status": "done",
+      "commit": "f90a5aa",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for DimensionVector::root() in crates/reify-types/src/dimension.rs: (a) root(2) of AREA → LENGTH (halve [2,0,...] to [1,0,...]), (b) root(2) of LENGTH^4 → LENGTH^2 (arbitrary even exponents), (c) root(2) of LENGTH → fractional exponent LENGTH^(1/2) with Rational(1,2), (d) root(2) of DIMENSIONLESS → DIMENSIONLESS",
+      "description": "Write failing parse tests in crates/reify-syntax/src/ts_parser.rs #[cfg(test)] module: (a) parse_minimize_declaration: parse a structure containing 'minimize volume' and assert the resulting members include a MemberDecl::Minimize variant with expr ExprKind::Ident(\"volume\"). (b) parse_maximize_declaration: parse a structure containing 'maximize thickness' and assert MemberDecl::Maximize with expr ExprKind::Ident(\"thickness\"). Both tests fail to compile because MinimizeDecl/MaximizeDecl types and MemberDecl::Minimize/Maximize variants do not exist yet.",
       "status": "done",
-      "commit": "92718c5"
+      "commit": "a291c72"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement DimensionVector::root(n: i8) method in crates/reify-types/src/dimension.rs. For each exponent Rational{num, den}, compute Rational::new(num, den * n). This divides each dimension exponent by n, producing fractional exponents when needed.",
+      "description": "Implement AST types and CST→AST lowering for minimize/maximize: (1) In crates/reify-syntax/src/lib.rs, add MinimizeDecl struct with fields {expr: Expr, span: SourceSpan, content_hash: ContentHash} and identical MaximizeDecl struct. Add MemberDecl::Minimize(MinimizeDecl) and MemberDecl::Maximize(MaximizeDecl) variants. (2) In ts_parser.rs lower_structure() (lines 113-162), add match arms for 'minimize_declaration' and 'maximize_declaration' following the constraint_declaration pattern: error check → lower → push to members. (3) Add lower_minimize() and lower_maximize() methods following lower_constraint() pattern (lines 240-250): extract 'expr' field via child_by_field_name, call lower_expr(), construct MinimizeDecl/MaximizeDecl with span and content_hash. (4) Update any exhaustive match expressions on MemberDecl in existing tests (spans_are_valid, content_hashes) to handle the new variants. Step-1 tests should now pass.",
       "status": "done",
-      "commit": "8a6f85e"
+      "commit": "a826de2"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for dimension-aware sqrt in crates/reify-stdlib/src/lib.rs: (a) sqrt(Scalar{4.0, AREA}) must return Scalar{2.0, LENGTH}, (b) sqrt(Scalar{9.0, LENGTH^4}) must return Scalar{3.0, LENGTH^2}, (c) sqrt(Scalar{4.0, LENGTH}) must return Scalar{2.0, LENGTH^(1/2)} with fractional Rational exponent, (d) sqrt(Real(4.0)) must still return Real(2.0) — backward compat (existing test confirms), (e) sqrt(negative Scalar) must return Undef",
+      "description": "Write additional parse validation tests: (a) parse_minimize_complex_expression: parse 'minimize width * height' → assert expr is ExprKind::BinOp with op '*'. (b) parse_minimize_with_other_members: parse a structure with params, lets, constraints, and 'minimize thickness' → assert correct member count and that minimize is present alongside other members. (c) minimize_span_and_hash: verify span covers full 'minimize <expr>' text and content_hash matches source text. These should all pass after step-2.",
       "status": "done",
-      "commit": "a9e988a"
+      "commit": "b431e95"
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Replace sqrt implementation in crates/reify-stdlib/src/lib.rs line 18. Change from `unary_f64(args, |x| Value::Real(x.sqrt()))` to use `unary(args, |v| ...)` which matches on Value::Scalar to preserve/halve dimensions via dimension.root(2), and falls through to as_f64() → Value::Real for Int/Real inputs. Apply sanitize_value to catch NaN from negative inputs.",
+      "type": "test",
+      "description": "Write failing compile test in crates/reify-compiler/tests/boundary2_producer.rs: compile_minimize_objective: parse source 'structure S { param x: Scalar = auto\\n constraint x > 2mm\\n minimize x }' → compile → assert template.objective is Some(OptimizationObjective::Minimize(expr)) where the expr references ValueCellId(\"S\", \"x\"). This fails to compile because TopologyTemplate has no 'objective' field.",
       "status": "done",
-      "commit": "00a9c18"
+      "commit": "6c85782"
+    },
+    {
+      "id": "step-5",
+      "type": "impl",
+      "description": "Add objective support to compiler and builder: (1) In crates/reify-compiler/src/lib.rs, add 'pub objective: Option<reify_types::OptimizationObjective>' field to TopologyTemplate struct after constraints (line 32). Import OptimizationObjective from reify_types. (2) In compile_structure(), initialize 'let mut objective: Option<OptimizationObjective> = None'. Add match arms for MemberDecl::Minimize/Maximize: compile expr via compile_expr(), wrap in OptimizationObjective::Minimize/Maximize, assign to objective. Include 'objective' in the TopologyTemplate construction (line 805). (3) In crates/reify-test-support/src/builders.rs, add 'objective: Option<reify_types::OptimizationObjective>' to TopologyTemplateBuilder (default None). Add '.objective(obj: reify_types::OptimizationObjective) -> Self' method. Include field in build(). Step-4 test should now pass.",
+      "status": "done",
+      "commit": "119c08c"
+    },
+    {
+      "id": "step-6",
+      "type": "test",
+      "description": "Write compile test for maximize: compile_maximize_objective: parse source with 'maximize volume' where volume is a let binding → compile → assert template.objective is Some(OptimizationObjective::Maximize(expr)). Also write backward compatibility test: compile bracket_source() (no minimize/maximize) → assert template.objective is None, and all existing constraints/value_cells are still correct. Both should pass after step-5.",
+      "status": "done",
+      "commit": "51c8dd2"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write end-to-end round-trip integration test in boundary2_producer.rs: define source string with structure containing auto params, constraints, let bindings, and 'minimize thickness' → parse via reify_syntax::parse() → compile via reify_compiler::compile() → verify: (a) no error diagnostics, (b) correct value_cells count, (c) correct constraints count, (d) template.objective is Some(Minimize(...)), (e) the compiled expression inside the objective references the correct ValueCellId for thickness, (f) existing constraints and value cells are unaffected. This validates the full parse→compile pipeline.",
+      "status": "done",
+      "commit": "a69c317"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Run full 'cargo test' across the workspace to verify no regressions. Fix any compilation or test failures introduced by the new MemberDecl variants (exhaustive match patterns in other crates), the new TopologyTemplate field, or grammar changes. Ensure all 365+ existing tests continue to pass alongside the new tests.",
+      "status": "done",
+      "commit": "7ff647c"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add DimensionVector::root(n) rather than Mul trait on Rational",
-      "rationale": "root(n) is the natural API for nth-root dimension operations (sqrt=root(2), cbrt=root(3)). It's more semantically clear than exposing general Rational multiplication. The implementation is trivial: divide each exponent by n via Rational::new(num, den*n). No need to add Mul for Rational since pow() already inlines the multiplication."
+      "decision": "Use two separate AST types (MinimizeDecl, MaximizeDecl) rather than a single ObjectiveDecl with direction enum",
+      "rationale": "Follows the task description exactly ('add MinimizeDecl/MaximizeDecl to MemberDecl enum') and mirrors the grammar structure where minimize_declaration and maximize_declaration are separate rules. Consistent with how constraint_declaration is its own distinct type. Keeps the AST closely aligned with the CST for clarity."
     },
     {
-      "decision": "Use unary() instead of unary_f64() for sqrt",
-      "rationale": "unary_f64 extracts as_f64() too early, losing the Value variant information. Using unary() allows pattern matching on Value::Scalar to preserve dimension info, matching the existing pattern used by abs(). The non-Scalar fallback still uses as_f64() for backward compatibility."
+      "decision": "MinimizeDecl and MaximizeDecl have fields {expr, span, content_hash} — same as ConstraintDecl minus the label",
+      "rationale": "The grammar syntax is identical to constraint (keyword + expression). Labels on objectives don't make semantic sense. Fields match the existing pattern for all member declarations (every member decl has span and content_hash)."
     },
     {
-      "decision": "Rely on sanitize_value for negative input handling",
-      "rationale": "(-x).sqrt() produces NaN in Rust, and sanitize_value already converts NaN/inf Scalars to Undef (line 103-105). No special-case needed for negative Scalar inputs — the existing defense-in-depth mechanism handles it uniformly for both Real and Scalar."
+      "decision": "TopologyTemplate.objective is Option<OptimizationObjective> (singular optional, not Vec)",
+      "rationale": "ResolutionProblem.objective is already Option<OptimizationObjective> — singular. A structure logically has at most one optimization direction. Multiple minimize/maximize in one structure would be contradictory. If multiple are present, last-wins is simplest. This avoids unnecessary indirection — the compiler output maps directly to what the solver consumes."
     },
     {
-      "decision": "Allow fractional dimension exponents from sqrt of odd-dimension values",
-      "rationale": "sqrt(LENGTH) produces LENGTH^(1/2) which is physically valid (used in e.g., fracture toughness MPa·√m). Rational already supports this representation. Rather than erroring, we let the type system propagate the fractional exponent and let downstream dimension-checking catch any mismatches."
+      "decision": "Reuse OptimizationObjective from reify-types directly rather than defining a new CompiledObjective wrapper",
+      "rationale": "OptimizationObjective already wraps CompiledExpr (the compiled form). No additional metadata (like span or id) is needed on the objective at the TopologyTemplate level. A wrapper struct would add indirection with no benefit. The span is preserved in the MemberDecl for diagnostics."
+    },
+    {
+      "decision": "No compile-time type checking on minimize/maximize expressions (no warning for non-numeric objectives)",
+      "rationale": "Unlike constraints (which must produce Bool and get a warning if not), optimization objectives should accept any numeric expression (Scalar, Real, Int). The solver already interprets values as f64 via as_f64(). Adding type checking can be done later as a diagnostic improvement without changing the compiler structure."
+    },
+    {
+      "decision": "Wiring objectives from TopologyTemplate into ResolutionProblem in the eval layer is out of scope",
+      "rationale": "The eval layer currently hardcodes 'objective: None'. Threading objectives through requires changes to the eval graph, demand computation, and possibly the Engine API. This is a separate task — this task focuses on getting objectives from source code into the compiled output."
     }
   ],
   "reuse": [
     {
-      "what": "unary() helper function",
-      "where": "crates/reify-stdlib/src/lib.rs:87-92",
-      "how": "Use unary() instead of unary_f64() for sqrt, same pattern as abs() which also matches on Value variants to preserve Scalar dimensions"
+      "what": "constraint_declaration grammar rule pattern",
+      "where": "tree-sitter-reify/grammar.js lines 65-68",
+      "how": "minimize_declaration and maximize_declaration use the identical seq('keyword', field('expr', $._expression)) shape. Copy and replace keyword string."
     },
     {
-      "what": "sanitize_value() function",
-      "where": "crates/reify-stdlib/src/lib.rs:100-108",
-      "how": "Already handles Scalar{NaN/inf} → Undef conversion, so negative Scalar inputs to sqrt are handled automatically without new code"
+      "what": "lower_constraint() CST→AST lowering method",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 240-250",
+      "how": "lower_minimize() and lower_maximize() follow the same pattern: extract expr field via child_by_field_name('expr'), call lower_expr(), construct struct with span and content_hash. Only difference: return MinimizeDecl/MaximizeDecl instead of ConstraintDecl, and no label field."
     },
     {
-      "what": "Rational::new() normalization",
-      "where": "crates/reify-types/src/dimension.rs:18-26",
-      "how": "root(2) of AREA uses Rational::new(2, 2) which auto-normalizes to Rational{1,1} = ONE, correctly producing LENGTH"
+      "what": "constraint match arm in lower_structure()",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 135-143",
+      "how": "minimize_declaration and maximize_declaration match arms follow the identical error-check → lower → push-to-members pattern, routing to MemberDecl::Minimize/Maximize."
     },
     {
-      "what": "DimensionVector constants (AREA, LENGTH, etc.)",
-      "where": "crates/reify-types/src/dimension.rs:112-122",
-      "how": "Use in tests to construct Scalar inputs and verify expected output dimensions"
+      "what": "MemberDecl::Constraint compilation in compile_structure()",
+      "where": "crates/reify-compiler/src/lib.rs lines 739-763",
+      "how": "Minimize/Maximize handling reuses compile_expr() call, but wraps result in OptimizationObjective::{Minimize,Maximize} and assigns to objective instead of pushing to constraints vec."
     },
     {
-      "what": "abs() implementation pattern",
-      "where": "crates/reify-stdlib/src/lib.rs:9-17",
-      "how": "Follow same match-on-Scalar pattern for sqrt: match Value::Scalar to transform si_value while preserving/transforming dimension"
+      "what": "OptimizationObjective enum from reify-types",
+      "where": "crates/reify-types/src/constraint.rs lines 46-53",
+      "how": "Already defined with Minimize(CompiledExpr) and Maximize(CompiledExpr) variants. Import and use directly — no new types needed in reify-types."
+    },
+    {
+      "what": "TopologyTemplateBuilder fluent builder pattern",
+      "where": "crates/reify-test-support/src/builders.rs lines 140-269",
+      "how": "Add .objective() builder method following the same self-consuming builder pattern used by .param(), .constraint(), .realization(). Default to None."
+    },
+    {
+      "what": "compile_auto_param test pattern",
+      "where": "crates/reify-compiler/tests/boundary2_producer.rs lines 283-310",
+      "how": "Parse source string → compile → assert on compiled output structure. Reuse this approach for minimize/maximize compiler tests."
     }
   ]
 }
