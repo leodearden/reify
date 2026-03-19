@@ -1138,7 +1138,7 @@
         "members": [
           {
             "type": "STRING",
-            "value": "#"
+            "value": "//"
           },
           {
             "type": "PATTERN",
@@ -1162,5 +1162,6 @@
   "precedences": [],
   "externals": [],
   "inline": [],
-  "supertypes": []
+  "supertypes": [],
+  "reserved": {}
 }
