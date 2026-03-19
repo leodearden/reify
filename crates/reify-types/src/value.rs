@@ -133,8 +133,9 @@ impl Value {
                 h
             }
             Value::Option(inner) => match inner {
-                None => ContentHash::of(&[10, 0]),
-                Some(v) => ContentHash::of(&[10, 1]).combine(v.content_hash()),
+                // Tag [11] — tag [10] is exclusively reserved for Satisfaction
+                None => ContentHash::of(&[11, 0]),
+                Some(v) => ContentHash::of(&[11, 1]).combine(v.content_hash()),
             },
             Value::Undef => ContentHash::of(&[5]),
         }
@@ -311,7 +312,8 @@ pub enum Satisfaction {
 
 impl Satisfaction {
     /// Compute a content hash for incremental caching.
-    /// Domain-separated with tag byte [10] to avoid collisions with Value hashes.
+    /// Domain-separated with tag byte [10], exclusively reserved for Satisfaction
+    /// (Value tags use 0-9, 11+).
     pub fn content_hash(&self) -> ContentHash {
         match self {
             Satisfaction::Satisfied => ContentHash::of(&[10, 0]),
