@@ -159,6 +159,51 @@ fn comparison_violation(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, va
     }
 }
 
+/// Compute the absolute (L1) residual for a single constraint expression.
+///
+/// Same decomposition structure as `constraint_violation` but returns
+/// absolute residual values. For And composites, returns the max of
+/// sub-residuals (both must hold). For Or, returns the min (one suffices).
+fn constraint_residual(expr: &CompiledExpr, values: &ValueMap) -> f64 {
+    match &expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            match op {
+                BinOp::Gt | BinOp::Ge | BinOp::Lt | BinOp::Le | BinOp::Eq | BinOp::Ne => {
+                    comparison_residual(*op, left, right, values)
+                }
+                BinOp::And => {
+                    // AND: worst case (max) of sub-residuals
+                    let lr = constraint_residual(left, values);
+                    let rr = constraint_residual(right, values);
+                    lr.max(rr)
+                }
+                BinOp::Or => {
+                    // OR: best case (min) of sub-residuals
+                    let lr = constraint_residual(left, values);
+                    let rr = constraint_residual(right, values);
+                    lr.min(rr)
+                }
+                _ => {
+                    match reify_expr::eval_expr(expr, values) {
+                        Value::Bool(true) => 0.0,
+                        Value::Bool(false) => 1.0,
+                        Value::Undef => 10.0,
+                        _ => 1.0,
+                    }
+                }
+            }
+        }
+        _ => {
+            match reify_expr::eval_expr(expr, values) {
+                Value::Bool(true) => 0.0,
+                Value::Bool(false) => 1.0,
+                Value::Undef => 10.0,
+                _ => 1.0,
+            }
+        }
+    }
+}
+
 /// Compute the violation for a single constraint expression.
 ///
 /// Tries to decompose comparison expressions for continuous violation.
