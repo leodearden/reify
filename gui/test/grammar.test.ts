@@ -157,3 +157,107 @@ describe('Lezer grammar – additional syntax constructs', () => {
     expect(countNodes(tree, 'MemberAccess')).toBe(2);
   });
 });
+
+describe('Lezer grammar – expression precedence', () => {
+  /** Parse an expression inside a let declaration and return the expression's top node. */
+  function parseExpr(expr: string) {
+    const src = `structure S { let x = ${expr} }`;
+    const tree = parser.parse(src);
+    expect(hasErrors(tree)).toBe(false);
+    // Navigate: SourceFile > Declaration > StructureDefinition > Block > Member > LetDeclaration
+    const letDecl = tree.topNode
+      .getChild('Declaration')
+      ?.getChild('StructureDefinition')
+      ?.getChild('Block')
+      ?.getChild('Member')
+      ?.getChild('LetDeclaration');
+    expect(letDecl).not.toBeNull();
+    // The expression is the child after "=" (skip "let", Identifier, "=")
+    // In Lezer, the expression child of LetDeclaration is the rightmost Expression group child
+    const children: { name: string; from: number; to: number }[] = [];
+    for (let c = letDecl!.firstChild; c; c = c.nextSibling) {
+      children.push({ name: c.name, from: c.from, to: c.to });
+    }
+    // Find the expression (BinaryExpression, UnaryExpression, MemberAccess, etc.)
+    const exprNode = children.filter(
+      c => !['let', 'Identifier', '=', 'TypeAnnotation', 'WhereClause'].includes(c.name)
+    ).pop();
+    return { tree, letDecl: letDecl!, exprNode, src };
+  }
+
+  it('multiplication binds tighter than addition: a + b * c', () => {
+    const { letDecl, src } = parseExpr('a + b * c');
+    // Top expression should be BinaryExpression with +
+    // Find the top-level expression child of LetDeclaration
+    const topExpr = letDecl.lastChild?.prevSibling; // last non-} child
+    // The outermost BinaryExpression should be addition
+    const cursor = letDecl.cursor();
+    const binExprs: { text: string; from: number; to: number }[] = [];
+    do {
+      if (cursor.name === 'BinaryExpression') {
+        binExprs.push({ text: src.slice(cursor.from, cursor.to), from: cursor.from, to: cursor.to });
+      }
+    } while (cursor.next());
+    // Should have 2 binary expressions: 'a + b * c' (outer) and 'b * c' (inner)
+    expect(binExprs.length).toBe(2);
+    // The longer one is the outer addition
+    binExprs.sort((a, b) => (b.to - b.from) - (a.to - a.from));
+    expect(binExprs[0].text).toBe('a + b * c');
+    expect(binExprs[1].text).toBe('b * c');
+  });
+
+  it('&& binds tighter than ||: a || b && c', () => {
+    const { letDecl, src } = parseExpr('a || b && c');
+    const binExprs: string[] = [];
+    const cursor = letDecl.cursor();
+    do {
+      if (cursor.name === 'BinaryExpression') {
+        binExprs.push(src.slice(cursor.from, cursor.to));
+      }
+    } while (cursor.next());
+    binExprs.sort((a, b) => b.length - a.length);
+    expect(binExprs[0]).toBe('a || b && c');
+    expect(binExprs[1]).toBe('b && c');
+  });
+
+  it('comparison binds tighter than equality: a == b < c', () => {
+    const { letDecl, src } = parseExpr('a == b < c');
+    const binExprs: string[] = [];
+    const cursor = letDecl.cursor();
+    do {
+      if (cursor.name === 'BinaryExpression') {
+        binExprs.push(src.slice(cursor.from, cursor.to));
+      }
+    } while (cursor.next());
+    binExprs.sort((a, b) => b.length - a.length);
+    expect(binExprs[0]).toBe('a == b < c');
+    expect(binExprs[1]).toBe('b < c');
+  });
+
+  it('unary minus binds tighter than addition: -a + b', () => {
+    const { letDecl, src } = parseExpr('-a + b');
+    // Should have one UnaryExpression (-a) and one BinaryExpression (-a + b)
+    let hasUnary = false;
+    let topBin = '';
+    const cursor = letDecl.cursor();
+    do {
+      if (cursor.name === 'UnaryExpression') hasUnary = true;
+      if (cursor.name === 'BinaryExpression') topBin = src.slice(cursor.from, cursor.to);
+    } while (cursor.next());
+    expect(hasUnary).toBe(true);
+    expect(topBin).toBe('-a + b');
+  });
+
+  it('member access binds tighter than addition: a.b + c', () => {
+    const { letDecl, src } = parseExpr('a.b + c');
+    let hasMember = false;
+    let topBin = '';
+    const cursor = letDecl.cursor();
+    do {
+      if (cursor.name === 'MemberAccess') hasMember = true;
+      if (cursor.name === 'BinaryExpression') topBin = src.slice(cursor.from, cursor.to);
+    } while (cursor.next());
+    expect(hasMember).toBe(true);
+    expect(topBin).toBe('a.b + c');
+  });
+});
