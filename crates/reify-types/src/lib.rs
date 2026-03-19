@@ -29,5 +29,5 @@ pub use geometry::{
 pub use persistent::PersistentMap;
 pub use diagnostics::{Diagnostic, DiagnosticLabel, DiagnosticRef, Severity, SourceSpan};
 pub use provenance::SnapshotProvenance;
-pub use traits::EnumDef;
+pub use traits::{EnumDef, PortDirection};
 pub use warm::{OpaqueState, WarmStartable};

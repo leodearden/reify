@@ -11,6 +11,17 @@ pub struct EnumDef {
     pub variants: Vec<String>,
 }
 
+/// Direction of a port in a trait definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PortDirection {
+    /// Input port.
+    In,
+    /// Output port.
+    Out,
+    /// Bidirectional port.
+    Bidi,
+}
+
 impl EnumDef {
     /// Check if this enum contains a variant with the given name.
     pub fn contains_variant(&self, name: &str) -> bool {
