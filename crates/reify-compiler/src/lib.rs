@@ -608,9 +608,26 @@ pub fn compile(
     parsed: &reify_syntax::ParsedModule,
 ) -> CompiledModule {
     let mut imports = Vec::new();
-    let mut enum_defs = Vec::new();
     let mut templates = Vec::new();
     let mut diagnostics = Vec::new();
+
+    // Pre-pass: collect ALL enum defs before processing structures.
+    // This ensures order-independent declarations — a structure declared
+    // before an enum can still reference that enum's variants.
+    let enum_defs: Vec<reify_types::EnumDef> = parsed
+        .declarations
+        .iter()
+        .filter_map(|d| {
+            if let reify_syntax::Declaration::Enum(e) = d {
+                Some(reify_types::EnumDef {
+                    name: e.name.clone(),
+                    variants: e.variants.clone(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Forward parse errors as diagnostics
     for err in &parsed.errors {
@@ -626,11 +643,8 @@ pub fn compile(
                 let template = compile_structure(structure, &enum_defs, &mut diagnostics);
                 templates.push(template);
             }
-            reify_syntax::Declaration::Enum(enum_decl) => {
-                enum_defs.push(reify_types::EnumDef {
-                    name: enum_decl.name.clone(),
-                    variants: enum_decl.variants.clone(),
-                });
+            reify_syntax::Declaration::Enum(_) => {
+                // Already collected in pre-pass above.
             }
             reify_syntax::Declaration::Import(import) => {
                 imports.push(CompiledImport {
