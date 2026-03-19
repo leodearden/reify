@@ -49,6 +49,43 @@ pub struct TraitBound {
     pub trait_ref: TraitRef,
 }
 
+/// A member declaration within a trait definition.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TraitMember {
+    /// A parameter with a type and optional default value.
+    Param {
+        name: String,
+        ty: crate::ty::Type,
+        default: Option<crate::value::Value>,
+    },
+    /// A port with direction and type.
+    Port {
+        name: String,
+        ty: crate::ty::Type,
+        direction: PortDirection,
+    },
+    /// A sub-structure reference.
+    Sub {
+        name: String,
+        trait_ref: TraitRef,
+    },
+    /// A let binding with expression.
+    Let {
+        name: String,
+        ty: crate::ty::Type,
+        expr: String,
+    },
+    /// A constraint expression.
+    Constraint {
+        expr: String,
+    },
+    /// An associated type declaration.
+    AssociatedType {
+        name: String,
+        default: Option<crate::ty::Type>,
+    },
+}
+
 impl EnumDef {
     /// Check if this enum contains a variant with the given name.
     pub fn contains_variant(&self, name: &str) -> bool {
