@@ -95,6 +95,7 @@ fn main() {
         "TKGeomBase",
         "TKShHealing",
         "TKBool",
+        "TKOffset",
     ];
     for lib in &occt_libs {
         println!("cargo:rustc-link-lib=dylib={}", lib);
