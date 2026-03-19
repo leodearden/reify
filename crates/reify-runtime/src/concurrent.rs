@@ -721,4 +721,84 @@ mod tests {
         let changed = scheduler.execute(eval_set, evaluator, &traces, &cancel).await.unwrap();
         assert!(changed.is_empty());
     }
+
+    /// Pre-computed skip: 3 parents (p1 Changed, p2/p3 Unchanged) fan into
+    /// downstream d which reads ONLY p1/p2/p3 (not the changed param a).
+    /// d must be evaluated (not skipped) because p1 is Changed.
+    #[tokio::test]
+    async fn scheduler_precomputed_skip_three_parent_mixed_fan_in() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use reify_types::ValueCellId;
+        use std::collections::{HashMap, HashSet};
+        use std::sync::Arc;
+
+        let e = "M";
+        let a = ValueCellId::new(e, "a");
+        let p1_vcid = ValueCellId::new(e, "p1");
+        let p2_vcid = ValueCellId::new(e, "p2");
+        let p3_vcid = ValueCellId::new(e, "p3");
+        let d_vcid = ValueCellId::new(e, "d");
+
+        let p1 = NodeId::Value(p1_vcid.clone());
+        let p2 = NodeId::Value(p2_vcid.clone());
+        let p3 = NodeId::Value(p3_vcid.clone());
+        let d = NodeId::Value(d_vcid.clone());
+
+        // Traces: p1/p2/p3 read a (level 0), d reads p1+p2+p3 (level 1)
+        let mut traces = HashMap::new();
+        traces.insert(p1.clone(), DependencyTrace { reads: vec![a.clone()] });
+        traces.insert(p2.clone(), DependencyTrace { reads: vec![a.clone()] });
+        traces.insert(p3.clone(), DependencyTrace { reads: vec![a.clone()] });
+        traces.insert(
+            d.clone(),
+            DependencyTrace {
+                reads: vec![p1_vcid.clone(), p2_vcid.clone(), p3_vcid.clone()],
+            },
+        );
+
+        // Mock evaluator: p1→Changed, p2→Unchanged, p3→Unchanged, d→Changed
+        let mut outcomes = HashMap::new();
+        outcomes.insert(p1.clone(), EvalOutcome::Changed);
+        outcomes.insert(p2.clone(), EvalOutcome::Unchanged);
+        outcomes.insert(p3.clone(), EvalOutcome::Unchanged);
+        outcomes.insert(d.clone(), EvalOutcome::Changed);
+
+        struct MixedOutcomeEvaluator {
+            outcomes: HashMap<NodeId, EvalOutcome>,
+        }
+
+        impl AsyncNodeEvaluator for MixedOutcomeEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                self.outcomes.get(&node).copied().unwrap_or(EvalOutcome::Unchanged)
+            }
+        }
+
+        let evaluator = Arc::new(MixedOutcomeEvaluator { outcomes });
+
+        let eval_set = vec![p1.clone(), p2.clone(), p3.clone(), d.clone()];
+        let cancel = CancellationToken::new();
+
+        let mut changed_cells = HashSet::new();
+        changed_cells.insert(a);
+
+        let scheduler = ConcurrentScheduler;
+        let result = scheduler
+            .execute(eval_set, evaluator, &traces, &cancel, &changed_cells)
+            .await
+            .unwrap();
+
+        // d should be in changed (was evaluated, returned Changed)
+        assert!(
+            result.changed.contains(&d),
+            "d should be in changed set: {:?}",
+            result.changed
+        );
+        // d should NOT be in skipped
+        assert!(
+            !result.skipped.contains(&d),
+            "d should NOT be in skipped set: {:?}",
+            result.skipped
+        );
+    }
 }
