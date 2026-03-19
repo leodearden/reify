@@ -1,29 +1,36 @@
 {
-  "task_id": "59",
-  "title": "Guard (where) \u2014 grammar, parser",
+  "task_id": "83",
+  "title": "reify-gui crate: engine bridge + IPC types",
   "files": [
-    "crates/reify-syntax/src/lib.rs",
-    "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/guard_tests.rs",
-    "crates/reify-syntax/tests/boundary1_producer.rs"
+    "Cargo.toml",
+    "gui/src-tauri/Cargo.toml",
+    "gui/src-tauri/src/main.rs",
+    "gui/src-tauri/src/lib.rs",
+    "gui/src-tauri/src/engine.rs",
+    "gui/src-tauri/src/types.rs",
+    "gui/src-tauri/src/commands.rs",
+    "gui/src-tauri/src/tests/mod.rs",
+    "gui/src-tauri/src/tests/engine_tests.rs",
+    "gui/src-tauri/src/tests/types_tests.rs",
+    "gui/src-tauri/src/tests/commands_tests.rs"
   ],
   "modules": [
-    "crates/reify-syntax"
+    "gui/src-tauri"
   ],
-  "analysis": "Thorough codebase exploration reveals the task is partially complete. The tree-sitter grammar already defines both where_clause (per-declaration postfix guard, line 56) and guarded_block (block-level guard with optional else, line 62) rules in grammar.js. The generated parser.c (18 references to guarded_block), grammar.json, and node-types.json are all up to date. Per-declaration where clauses are fully implemented: WhereClause struct exists in lib.rs, all 6 declaration types have where_clause: Option<WhereClause> fields, and the lowering in ts_parser.rs correctly extracts where clauses via lower_where_clause (lines 197-211). Two guard tests already exist and pass: param_with_where_clause and bracket_source_no_guards.\n\nWhat remains is the block-level guarded group feature: (1) AST: Add GuardedGroupDecl struct and MemberDecl::GuardedGroup variant to lib.rs. (2) Lowering: Add lower_guarded_block method and handle guarded_block nodes in lower_structure. (3) Fix exhaustive match arms in ts_parser.rs internal tests (4 locations) and boundary1_producer.rs (1 location). (4) Tests: Block guard, guard with else, nested guards, complex guard expressions, additional per-declaration tests.\n\nThe compiler (reify-compiler/src/lib.rs line 807) already has a forward-looking MemberDecl::GuardedGroup(_) => {} stub. The LSP uses wildcard matches. No grammar, parser.c, fixtures.rs, or compiler changes needed.\n\nKey challenge: The guarded_block grammar uses two positional repeat($._member) groups without field names. Lowering must track position relative to the anonymous else keyword to separate main vs else members. The member dispatch logic should be refactored into a reusable lower_member_node helper for recursive guarded block nesting.",
+  "analysis": "This task implements the Rust backend for the Tauri GUI: an engine session wrapper, serializable IPC types, and Tauri command handlers bridging the reify evaluation engine to the frontend.\n\n**Existing codebase patterns:**\n- CLI crate (reify-cli/src/main.rs) shows the canonical pipeline: reify_syntax::parse() -> reify_compiler::compile() -> Engine::new(checker, kernel) -> engine.check/build. The GUI follows the same pipeline wrapped in a stateful session.\n- reify_eval::Engine provides: eval() for cold-start, edit_param()/edit_check() for incremental re-evaluation, check() for constraints, build() for geometry+export.\n- reify-test-support provides bracket_source(), bracket_source_with_width(), bracket_compiled_module(), MockGeometryKernel (single triangle mesh, MOCK_EXPORT_DATA), SimpleConstraintChecker.\n- Value types: Value::Scalar { si_value, dimension } with DimensionVector. ValueCellId { entity, member } with Display as entity.member. No Display on Value.\n- Geometry: GeometryKernel::tessellate(handle, tolerance) returns Mesh { vertices, indices, normals } mapping directly to MeshData.\n- Source spans: SourceSpan { start, end } byte offsets. ValueCellDecl/CompiledConstraint carry spans.\n- CompiledModule has templates with value_cells, constraints, realizations. ValueCellKind: Param/Let/Auto.\n- DimensionVector::Display renders m, kg, s, rad, dimensionless. CheckResult has values, constraint_results, diagnostics.\n\n**Architecture:**\nEngineSession owns Engine, Option<CompiledModule>, source_map, file_path, last CheckResult. Provides load_file, load_from_source, update_source, set_parameter, export, get_source_location. build_gui_state() converts engine state to serializable GuiState.\nCommands module: AppState { engine: Arc<Mutex<EngineSession>> } with thin #[tauri::command] wrappers.\nmain.rs wires Tauri with SimpleConstraintChecker + DispatchPlanner + OcctKernelHandle.\n\n**Testing:** Tests in separate files under tests/. MockGeometryKernel avoids OCCT. bracket_source() fixture. Commands tested via EngineSession methods. lib+bin crate enables cargo test -p reify-gui.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add GuardedGroupDecl struct to lib.rs (after WhereClause at line ~46) with fields: condition: Expr, members: Vec<MemberDecl>, else_members: Vec<MemberDecl>, span: SourceSpan, content_hash: ContentHash. Add #[derive(Debug, Clone)]. Add MemberDecl::GuardedGroup(GuardedGroupDecl) variant to the MemberDecl enum (after Maximize at line ~38). Required before any new tests can compile.",
+      "description": "Ensure gui/src-tauri scaffold exists from task 81. If not present, create minimal structure: gui/src-tauri/Cargo.toml with deps on reify-types, reify-syntax, reify-compiler, reify-eval, reify-constraints, reify-geometry, reify-kernel-occt, reify-stdlib, serde (derive), serde_json, tauri. Add reify-test-support dev-dep. Add gui/src-tauri to workspace members.",
       "status": "done",
-      "commit": "66866d6",
+      "commit": "d9c688a",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Fix exhaustive match arms broken by new GuardedGroup variant. Five locations in crates/reify-syntax: (1) ts_parser.rs ts_parse_produces_correct_structure test ~line 600: add MemberDecl::GuardedGroup(_) => guarded.into(). (2) ts_parser.rs spans_are_valid test ~line 762: add MemberDecl::GuardedGroup(g) => g.span. (3) ts_parser.rs content_hashes test ~line 829: add MemberDecl::GuardedGroup(g) => (g.span, g.content_hash). (4) ts_parser.rs parse_deterministic test ~lines 910+918: add MemberDecl::GuardedGroup(g) => (g.content_hash, g.span) to both arms. (5) boundary1_producer.rs ~line 353: add MemberDecl::GuardedGroup(g) => g.span.",
+      "description": "Create gui/src-tauri/src/lib.rs with module declarations, empty stubs for engine.rs, types.rs, commands.rs, and tests/ directory with mod.rs and sub-test files. Ensure cargo check -p reify-gui passes.",
       "status": "done",
-      "commit": "66866d6",
+      "commit": "7f6dfd4",
       "tests": []
     }
   ],
@@ -31,145 +38,170 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test parse_basic_guarded_block in guard_tests.rs: parse 'structure S { where needs_cooling { param fan_size : Scalar = 50mm } }'. Assert: no parse errors, members.len()==1, members[0] matches MemberDecl::GuardedGroup(g) with g.condition being ExprKind::Ident(needs_cooling), g.members.len()==1 (ParamDecl fan_size), g.else_members.is_empty(). Fails because lower_structure doesn't handle guarded_block nodes yet.",
+      "description": "Write failing tests for IPC types in tests/types_tests.rs: (1) GuiState serializes to JSON with meshes/values/constraints/files keys. (2) MeshData serializes with entity_path/vertices/indices/normals. (3) ValueData serializes with cell_id/name/value/unit/determinacy/entity_path. (4) ConstraintData serializes with node_id/expression/status/details/parameter_ids. (5) SourceLocation serializes with file/line/column/end_line/end_column. (6) FileData serializes with path/content.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "fb85c4e"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement guarded block lowering in ts_parser.rs. (1) Extract member dispatch from lower_structure match block (lines 113-183) into lower_member_node(&mut self, child: Node) -> Option<MemberDecl> handling param/let/constraint/sub/minimize/maximize/guarded_block/ERROR with is_error checks. (2) Refactor lower_structure to call lower_member_node. (3) Add lower_guarded_block(&mut self, node: Node) -> Option<GuardedGroupDecl>: extract condition via child_by_field_name(condition) + lower_expr, iterate children with boolean in_else flag toggled on anonymous child with text else, collect members via lower_member_node into members or else_members, construct GuardedGroupDecl with span and content_hash.",
+      "description": "Implement types.rs: Define all IPC structs with #[derive(Debug, Clone, Serialize, Deserialize)]: GuiState, MeshData, ValueData, ConstraintData, SourceLocation, FileData. Add format_value(Value) -> String, format_unit(Type) -> String, format_determinacy(DeterminacyState) -> String helpers. Add GuiState::empty().",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "fb85c4e"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test parse_guarded_block_with_else in guard_tests.rs: parse 'structure S { where cond { param a : Scalar = 1mm } else { param b : Scalar = 2mm } }'. Assert: condition is Ident(cond), members has 1 ParamDecl a, else_members has 1 ParamDecl b.",
+      "description": "Write failing tests for EngineSession in tests/engine_tests.rs: (1) new_for_test() creates session with is_loaded()==false. (2) load_from_source(bracket_source()) returns Ok(GuiState) with values.len()>=5, constraints.len()==3, files.len()==1. (3) Width value name is 'width' with correct SI value. (4) All constraints have status 'Satisfied'. (5) Invalid source returns Err.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "2c90f8a"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "If else test fails, debug lower_guarded_block else delimiter detection. Verify tree-sitter CST structure by inspecting child node kinds/text. The else keyword should appear as anonymous node. Adjust detection logic if needed (check node kind vs text comparison).",
+      "description": "Implement engine.rs: EngineSession struct with engine/compiled/source_map/file_path/last_check fields. new(), new_for_test(), is_loaded(), get_state(). load_from_source(): parse, compile, engine.check(), store state, build_gui_state(). build_gui_state(): iterate value_cells for ValueData, map constraint_results to ConstraintData, collect FileData from source_map.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "2c90f8a"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test parse_nested_guarded_blocks in guard_tests.rs: parse 'structure S { where a { where b { param x : Scalar } } }'. Assert: outer GuardedGroupDecl has condition Ident(a), members[0] is GuardedGroup with condition Ident(b), inner members[0] is ParamDecl x.",
+      "description": "Write failing tests for set_parameter: (1) set_parameter('Bracket.width','120mm') returns Ok with updated width (0.12 SI). (2) Volume is recomputed after width change. (3) Invalid cell_id returns Err. (4) Constraints remain Satisfied after valid parameter change.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "6359b08"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify nested guards pass. Should already work via recursive lower_member_node dispatch. If failing, check guarded_block case in lower_member_node correctly invokes lower_guarded_block.",
+      "description": "Implement set_parameter(cell_id, value_str) -> Result<GuiState>: parse_cell_id splits Entity.member, parse_value_string handles mm/cm/m/deg/rad suffixes + plain numbers + booleans, call engine.edit_check(), update last_check, return build_gui_state().",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "6359b08"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test parse_guard_complex_expression in guard_tests.rs: (1) Per-declaration: 'param fan : Scalar = 50mm where x > 5mm && active', assert condition is BinOp(&&, BinOp(>, Ident(x), QuantityLiteral(5,mm)), Ident(active)). (2) Block-level: 'where needs_cooling || forced { param fan : Scalar = 50mm }', assert condition is BinOp(||, Ident(needs_cooling), Ident(forced)).",
+      "description": "Write failing tests for update_source/load_file: (1) load_file(examples/bracket.ri) returns Ok(GuiState). (2) update_source with bracket_source_with_width('120mm') changes width. (3) Invalid source returns Err.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "5943f9c"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify complex guard expressions pass. Should work since condition uses $._expression supporting all operators. If failing, investigate expression boundary parsing.",
+      "description": "Implement load_file(path): read file, extract module name from stem, delegate to load_from_source. Implement update_source(path,content): create fresh Engine (cold start), re-parse, re-compile, re-evaluate. Implement export(format,path): engine.build(), write output. Implement get_source_location(entity_path): find span in compiled module, convert byte offset to line/col.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "5943f9c"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write additional per-declaration where tests in guard_tests.rs: (1) let_with_where_clause: 'let y = x * 2 where active' -> LetDecl.where_clause Ident(active). (2) constraint_with_where_clause: 'constraint x > 5mm where enabled' -> ConstraintDecl.where_clause Ident(enabled). (3) sub_with_where_clause: 'sub hole = Hole(diameter: 6mm) where needs_hole' -> SubDecl.where_clause Ident(needs_hole). Should pass immediately.",
+      "description": "Write failing tests for commands and integration: (1) AppState constructible with Arc<Mutex<EngineSession>>. (2) save_file/open_file roundtrip with temp file. (3) Constraint violation: set thickness to 1mm, verify Violated status. (4) get_source_location returns correct line for Bracket.width. (5) export writes file to temp path.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "297cfd4"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify per-declaration where tests pass. These exercise existing lowering (lower_where_clause called by lower_let, lower_constraint, lower_sub). If any fail, investigate.",
+      "description": "Implement commands.rs: AppState struct. All #[tauri::command] functions: get_initial_state, set_parameter, update_source, save_file, open_file, export, get_source_location, focus_entity (emit event), lsp_request (stub). All errors mapped to String.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "297cfd4"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test guard_free_declarations_backward_compat in guard_tests.rs: parse bracket_source(), verify no GuardedGroup variants in members, all where_clause fields are None, member count unchanged at 10, no errors.",
+      "description": "Write integration test: load bracket, set_parameter thickness=1mm (violates constraint), verify Violated. Set back to 5mm, verify all Satisfied. Verify get_source_location and export work end-to-end. Module structure verification: import all public types.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "3c4e78b"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Run cargo test -p reify-syntax then cargo test --workspace. Fix any remaining issues. Compiler with GuardedGroup stub and LSP with wildcards should pass cleanly.",
+      "description": "Fix any edge cases: constraint expression strings in ConstraintData, parameter_ids from dependency traces, determinacy state from snapshot. Ensure build_gui_state handles all Value variants correctly.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "d1de8fb"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write compile-verification test in tests/mod.rs: import AppState, EngineSession, GuiState, ValueData, MeshData, ConstraintData, SourceLocation, FileData. Assert types are Clone+Debug. Ensures public API is correct.",
+      "status": "done",
+      "commit": "3c4e78b"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Wire main.rs: Create SimpleConstraintChecker + DispatchPlanner + OcctKernelHandle. Build EngineSession. Check args/env for initial file. Build AppState. Configure tauri::Builder with .manage(state), .invoke_handler(generate_handler![...all commands...]). Ensure cargo check -p reify-gui passes.",
+      "status": "done",
+      "commit": "e2161ca"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Grammar and generated parser are already complete - no grammar changes needed",
-      "rationale": "The tree-sitter grammar already defines both where_clause (line 56) and guarded_block (line 62) rules. parser.c was regenerated in prior commit 66866d6. The grammar handles ambiguity correctly: where expr followed by { parses as guarded_block; at end of declaration parses as where_clause."
+      "decision": "EngineSession wraps Engine + CompiledModule + source text + last CheckResult",
+      "rationale": "GUI needs re-parse/re-compile on source changes and access to constraint results. Engine doesn't store results. EngineSession caches last CheckResult alongside compiled module and source text."
     },
     {
-      "decision": "Refactor member dispatch into lower_member_node helper for reuse",
-      "rationale": "lower_structure has a monolithic match block for all member kinds. Guarded blocks need identical dispatch for nested members including recursive guarded blocks. Extracting lower_member_node eliminates duplication and enables clean recursion."
+      "decision": "IPC types separate from engine types with explicit conversion",
+      "rationale": "Engine types (ValueMap, Snapshot, PersistentMap) don't derive Serialize. Separate IPC types with string values keep serialization clean."
     },
     {
-      "decision": "Use positional iteration with else delimiter detection for main vs else member separation",
-      "rationale": "The guarded_block grammar uses two unnamed repeat($._member) groups without field names. Tree-sitter places all member children as direct children. The else keyword appears as anonymous child between groups. Iterate children toggling a boolean on else to partition into main and else vectors."
+      "decision": "format_value() helper for Value display",
+      "rationale": "Value has no Display impl. format_value() centralizes conversion to user-friendly strings. DimensionVector::Display provides unit labels."
     },
     {
-      "decision": "Include content_hash on GuardedGroupDecl",
-      "rationale": "All 6 existing declaration types carry content_hash for incremental evaluation. GuardedGroupDecl follows the same pattern for consistency."
+      "decision": "Tests in separate files under tests/ directory",
+      "rationale": "Organized test files with mod.rs dispatcher. Allows selective test running and keeps source files focused."
     },
     {
-      "decision": "Scope limited to crates/reify-syntax only",
-      "rationale": "Grammar is complete. Compiler has forward-looking GuardedGroup stub (line 807). LSP uses wildcards. Only reify-syntax needs changes: AST, lowering, tests."
+      "decision": "MockGeometryKernel for all unit tests",
+      "rationale": "OCCT requires C++ libs and dedicated kernel thread. Mock provides predictable behavior for testing the bridge layer."
     },
     {
-      "decision": "Per-declaration where clauses already support all 6 member types",
-      "rationale": "Existing implementation added where_clause to all 6 types (not just the 4 in task spec). Already done and tested. Plan preserves this."
+      "decision": "parse_value_string handles common unit suffixes",
+      "rationale": "Frontend sends values as strings like '80mm'. Simple suffix parsing covers v1 without full syntax parser."
+    },
+    {
+      "decision": "Arc<Mutex<EngineSession>> (not RwLock)",
+      "rationale": "Almost all operations mutate state. Mutex is simpler. GUI operations are user-driven (low frequency)."
+    },
+    {
+      "decision": "build_gui_state() rebuilds complete state each time",
+      "rationale": "Simpler than incremental diffs. Negligible cost for small value/constraint counts."
+    },
+    {
+      "decision": "update_source creates fresh Engine (cold start)",
+      "rationale": "Source changes can alter topology. Incremental eval only works within same topology. Fresh Engine ensures correctness."
     }
   ],
   "reuse": [
     {
-      "what": "Existing lower_where_clause method",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 197-211",
-      "how": "Already implemented for all 6 lowering functions. No changes needed. Guarded block uses direct child_by_field_name(condition) since it has its own condition field."
+      "what": "reify_syntax::parse() + reify_compiler::compile()",
+      "where": "EngineSession load_from_source/update_source",
+      "how": "Same pipeline as CLI. Parse with ModulePath::single(), compile, check diagnostics."
     },
     {
-      "what": "lower_expr recursive expression lowering",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 371-403",
-      "how": "Reuse for guarded_block condition. Supports all expression types needed for guard conditions."
+      "what": "Engine::check/build/edit_check",
+      "where": "EngineSession methods",
+      "how": "check() for initial load, edit_check() for param changes, build() for export."
     },
     {
-      "what": "Member dispatch pattern from lower_structure",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 113-183",
-      "how": "Extract into lower_member_node. Add guarded_block case. Reuse for both structure body and nested guarded block members."
+      "what": "SimpleConstraintChecker, DispatchPlanner, OcctKernelHandle",
+      "where": "EngineSession construction, main.rs",
+      "how": "Same initialization pattern as CLI."
     },
     {
-      "what": "span() and content_hash() helpers",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 53-60",
-      "how": "Reuse for GuardedGroupDecl construction, same pattern as all existing AST nodes."
+      "what": "reify-test-support fixtures and mocks",
+      "where": "All test files",
+      "how": "bracket_source(), MockGeometryKernel, mm() for test inputs."
     },
     {
-      "what": "parse_members test helper",
-      "where": "crates/reify-syntax/tests/guard_tests.rs lines 9-16",
-      "how": "Reuse for all new guard tests to parse source and extract members."
+      "what": "Mesh struct, DimensionVector::Display, ValueCellId::Display",
+      "where": "build_gui_state(), format_unit(), ValueData.cell_id",
+      "how": "Direct field mapping from Mesh to MeshData. Display impls for unit/id strings."
     },
     {
-      "what": "Test assertion patterns",
-      "where": "guard_tests.rs and ts_parser.rs mod tests",
-      "how": "Follow: parse source -> extract members -> match MemberDecl variant -> assert fields."
+      "what": "SourceSpan from ValueCellDecl",
+      "where": "get_source_location()",
+      "how": "Byte offsets converted to line/column counting newlines in stored source."
     }
-  ],
-  "_schema_version": 1
+  ]
 }
