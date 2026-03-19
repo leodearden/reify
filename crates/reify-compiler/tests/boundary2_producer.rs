@@ -1114,6 +1114,47 @@ structure S { let d = Direction.In }"#;
     );
 }
 
+/// Unknown enum type produces diagnostic (parser sees MemberAccess, not EnumAccess).
+#[test]
+fn compile_unknown_enum_produces_diagnostic() {
+    let source = r#"structure S { let d = UnknownEnum.Variant }"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_unknown_enum"));
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        !compiled.diagnostics.is_empty(),
+        "expected diagnostics for unknown enum access"
+    );
+}
+
+/// E2E: enum equality evaluates through full pipeline.
+#[test]
+fn e2e_enum_equality_eval() {
+    let source = r#"enum Direction { In, Out, Bidi }
+structure S { constraint Direction.In == Direction.In }"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_e2e"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // No error diagnostics
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+
+    let template = &compiled.templates[0];
+    assert_eq!(template.constraints.len(), 1);
+
+    let constraint_expr = &template.constraints[0].expr;
+    let result = reify_expr::eval_expr(constraint_expr, &reify_types::ValueMap::new());
+    match result {
+        reify_types::Value::Bool(true) => {}
+        other => panic!("expected Bool(true), got {:?}", other),
+    }
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
