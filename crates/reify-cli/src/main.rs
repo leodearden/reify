@@ -48,6 +48,7 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
         for err in &parsed.errors {
             eprintln!("Parse error: {}", err.message);
         }
+        return Err(ExitCode::FAILURE);
     }
 
     let compiled = reify_compiler::compile(&parsed);
