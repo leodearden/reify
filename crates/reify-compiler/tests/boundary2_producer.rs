@@ -1160,6 +1160,32 @@ structure S { constraint Direction.In == Direction.In }"#;
     }
 }
 
+// ── User-defined function tests ────────────────────────────
+
+/// Compile a simple function definition.
+#[test]
+fn compile_simple_function() {
+    let source = "fn double(x: Real) -> Real { x + x }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    assert_eq!(compiled.functions.len(), 1, "expected 1 function");
+    let f = &compiled.functions[0];
+    assert_eq!(f.name, "double");
+    assert!(!f.is_pub);
+    assert_eq!(f.params, vec![("x".to_string(), reify_types::Type::Real)]);
+    assert_eq!(f.return_type, reify_types::Type::Real);
+    assert!(f.body.let_bindings.is_empty());
+    assert_eq!(f.body.result_expr.result_type, reify_types::Type::Real);
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
