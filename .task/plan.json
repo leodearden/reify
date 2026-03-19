@@ -1,29 +1,48 @@
 {
-  "task_id": "59",
-  "title": "Guard (where) \u2014 grammar, parser",
+  "task_id": "60",
+  "title": "Guard compilation + schema re-elaboration",
   "files": [
-    "crates/reify-syntax/src/lib.rs",
-    "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/guard_tests.rs",
-    "crates/reify-syntax/tests/boundary1_producer.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/guard_compilation.rs",
+    "crates/reify-eval/src/graph.rs",
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/src/snapshot.rs",
+    "crates/reify-eval/tests/guard_eval.rs",
+    "crates/reify-test-support/src/builders.rs"
   ],
   "modules": [
-    "crates/reify-syntax"
+    "crates/reify-compiler",
+    "crates/reify-eval",
+    "crates/reify-test-support"
   ],
-  "analysis": "Thorough codebase exploration reveals the task is partially complete. The tree-sitter grammar already defines both where_clause (per-declaration postfix guard, line 56) and guarded_block (block-level guard with optional else, line 62) rules in grammar.js. The generated parser.c (18 references to guarded_block), grammar.json, and node-types.json are all up to date. Per-declaration where clauses are fully implemented: WhereClause struct exists in lib.rs, all 6 declaration types have where_clause: Option<WhereClause> fields, and the lowering in ts_parser.rs correctly extracts where clauses via lower_where_clause (lines 197-211). Two guard tests already exist and pass: param_with_where_clause and bracket_source_no_guards.\n\nWhat remains is the block-level guarded group feature: (1) AST: Add GuardedGroupDecl struct and MemberDecl::GuardedGroup variant to lib.rs. (2) Lowering: Add lower_guarded_block method and handle guarded_block nodes in lower_structure. (3) Fix exhaustive match arms in ts_parser.rs internal tests (4 locations) and boundary1_producer.rs (1 location). (4) Tests: Block guard, guard with else, nested guards, complex guard expressions, additional per-declaration tests.\n\nThe compiler (reify-compiler/src/lib.rs line 807) already has a forward-looking MemberDecl::GuardedGroup(_) => {} stub. The LSP uses wildcard matches. No grammar, parser.c, fixtures.rs, or compiler changes needed.\n\nKey challenge: The guarded_block grammar uses two positional repeat($._member) groups without field names. Lowering must track position relative to the anonymous else keyword to separate main vs else members. The member dispatch logic should be refactored into a reusable lower_member_node helper for recursive guarded block nesting.",
+  "analysis": "This task implements guard compilation and schema re-elaboration for the Reify CAD language. Guards (where clauses) conditionally include/exclude declarations from the evaluation graph based on boolean expressions.\n\nCurrent State: reify-syntax already defines GuardedGroupDecl with condition, members, else_members (AST). ParamDecl, LetDecl, ConstraintDecl have where_clause: Option<WhereClause>. The compiler has a no-op stub for GuardedGroup (line 807-810). TopologyTemplate has no guard fields. EvaluationGraph has value_cells, constraints, realizations, resolutions PersistentMaps. DeterminacyState has Determined, Undetermined, Provisional, Auto.\n\nApproach: Compiler side adds CompiledGuardedGroup struct, guarded_groups and structure_controlling to TopologyTemplate. Implements per-declaration guards, block guards, nested guards (conjunction), else blocks, and reference safety. Eval side extends from_templates() and Engine::eval() for guard-conditional member evaluation, and Engine::edit_param() for re-elaboration when guards change.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add GuardedGroupDecl struct to lib.rs (after WhereClause at line ~46) with fields: condition: Expr, members: Vec<MemberDecl>, else_members: Vec<MemberDecl>, span: SourceSpan, content_hash: ContentHash. Add #[derive(Debug, Clone)]. Add MemberDecl::GuardedGroup(GuardedGroupDecl) variant to the MemberDecl enum (after Maximize at line ~38). Required before any new tests can compile.",
+      "description": "Add CompiledGuardedGroup struct and extend TopologyTemplate with guarded_groups: Vec<CompiledGuardedGroup> and structure_controlling: HashSet<ValueCellId> in reify-compiler/src/lib.rs. Update compile_structure() to initialize empty defaults. Update content_hash. Ensure existing tests compile.",
       "status": "done",
-      "commit": "66866d6",
+      "commit": "dd9ed7c",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Fix exhaustive match arms broken by new GuardedGroup variant. Five locations in crates/reify-syntax: (1) ts_parser.rs ts_parse_produces_correct_structure test ~line 600: add MemberDecl::GuardedGroup(_) => guarded.into(). (2) ts_parser.rs spans_are_valid test ~line 762: add MemberDecl::GuardedGroup(g) => g.span. (3) ts_parser.rs content_hashes test ~line 829: add MemberDecl::GuardedGroup(g) => (g.span, g.content_hash). (4) ts_parser.rs parse_deterministic test ~lines 910+918: add MemberDecl::GuardedGroup(g) => (g.content_hash, g.span) to both arms. (5) boundary1_producer.rs ~line 353: add MemberDecl::GuardedGroup(g) => g.span.",
+      "description": "Add guarded_group() builder method to TopologyTemplateBuilder in reify-test-support/src/builders.rs. Store guarded_groups and structure_controlling in builder; include in build() with proper content_hash.",
       "status": "done",
-      "commit": "66866d6",
+      "commit": "6e0a433",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add GuardedGroupInfo struct and guarded_groups/structure_controlling fields to EvaluationGraph in reify-eval/src/graph.rs. Update topology_fingerprint() and Default.",
+      "status": "done",
+      "commit": "476b784",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Create test files: crates/reify-compiler/tests/guard_compilation.rs and crates/reify-eval/tests/guard_eval.rs with basic imports. Verify cargo test --no-run succeeds.",
+      "status": "done",
+      "commit": "bffa04d",
       "tests": []
     }
   ],
@@ -31,145 +50,214 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test parse_basic_guarded_block in guard_tests.rs: parse 'structure S { where needs_cooling { param fan_size : Scalar = 50mm } }'. Assert: no parse errors, members.len()==1, members[0] matches MemberDecl::GuardedGroup(g) with g.condition being ExprKind::Ident(needs_cooling), g.members.len()==1 (ParamDecl fan_size), g.else_members.is_empty(). Fails because lower_structure doesn't handle guarded_block nodes yet.",
-      "status": "done",
-      "commit": "528bc6e"
+      "description": "Write failing test: compile_param_with_where_clause. Parse source with per-declaration where clause. Assert guarded_groups has 1 entry, guard references 'active', member is x, guard_value_cell in structure_controlling, x NOT in top-level value_cells.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement guarded block lowering in ts_parser.rs. (1) Extract member dispatch from lower_structure match block (lines 113-183) into lower_member_node(&mut self, child: Node) -> Option<MemberDecl> handling param/let/constraint/sub/minimize/maximize/guarded_block/ERROR with is_error checks. (2) Refactor lower_structure to call lower_member_node. (3) Add lower_guarded_block(&mut self, node: Node) -> Option<GuardedGroupDecl>: extract condition via child_by_field_name(condition) + lower_expr, iterate children with boolean in_else flag toggled on anonymous child with text else, collect members via lower_member_node into members or else_members, construct GuardedGroupDecl with span and content_hash.",
-      "status": "done",
-      "commit": "44d2310"
+      "description": "Implement per-declaration guard compilation. Check where_clause on ParamDecl/LetDecl/ConstraintDecl. Create synthetic guard ValueCell, CompiledGuardedGroup, add to structure_controlling.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test parse_guarded_block_with_else in guard_tests.rs: parse 'structure S { where cond { param a : Scalar = 1mm } else { param b : Scalar = 2mm } }'. Assert: condition is Ident(cond), members has 1 ParamDecl a, else_members has 1 ParamDecl b.",
-      "status": "done",
-      "commit": "528bc6e"
+      "description": "Write failing test: compile_block_guard. Parse source with GuardedGroupDecl containing two params and one constraint. Assert single guarded_group with 2 members and 1 constraint.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "If else test fails, debug lower_guarded_block else delimiter detection. Verify tree-sitter CST structure by inspecting child node kinds/text. The else keyword should appear as anonymous node. Adjust detection logic if needed (check node kind vs text comparison).",
-      "status": "done",
-      "commit": "44d2310"
+      "description": "Implement block guard compilation. Replace no-op GuardedGroup arm. Compile condition, create guard ValueCell, compile members/constraints into group.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test parse_nested_guarded_blocks in guard_tests.rs: parse 'structure S { where a { where b { param x : Scalar } } }'. Assert: outer GuardedGroupDecl has condition Ident(a), members[0] is GuardedGroup with condition Ident(b), inner members[0] is ParamDecl x.",
-      "status": "done",
-      "commit": "528bc6e"
+      "description": "Write failing test: compile_nested_guards. Assert inner group's guard_expr is BinOp::And(outer_guard, inner_condition).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify nested guards pass. Should already work via recursive lower_member_node dispatch. If failing, check guarded_block case in lower_member_node correctly invokes lower_guarded_block.",
-      "status": "done",
-      "commit": "44d2310"
+      "description": "Implement nested guard conjunction with outer_guard parameter. Inner guard = And(ValueRef(outer), inner_cond).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test parse_guard_complex_expression in guard_tests.rs: (1) Per-declaration: 'param fan : Scalar = 50mm where x > 5mm && active', assert condition is BinOp(&&, BinOp(>, Ident(x), QuantityLiteral(5,mm)), Ident(active)). (2) Block-level: 'where needs_cooling || forced { param fan : Scalar = 50mm }', assert condition is BinOp(||, Ident(needs_cooling), Ident(forced)).",
-      "status": "done",
-      "commit": "528bc6e"
+      "description": "Write failing test: compile_else_block. Assert guarded_groups[0] has members=[a] and else_members=[b].",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify complex guard expressions pass. Should work since condition uses $._expression supporting all operators. If failing, investigate expression boundary parsing.",
-      "status": "done",
-      "commit": "44d2310"
+      "description": "Implement else block compilation. Compile GuardedGroupDecl.else_members into else_members/else_constraints.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write additional per-declaration where tests in guard_tests.rs: (1) let_with_where_clause: 'let y = x * 2 where active' -> LetDecl.where_clause Ident(active). (2) constraint_with_where_clause: 'constraint x > 5mm where enabled' -> ConstraintDecl.where_clause Ident(enabled). (3) sub_with_where_clause: 'sub hole = Hole(diameter: 6mm) where needs_hole' -> SubDecl.where_clause Ident(needs_hole). Should pass immediately.",
-      "status": "done",
-      "commit": "528bc6e"
+      "description": "Write failing test: reference_safety_unguarded_to_guarded_error. Unguarded let references guarded param. Assert error diagnostic.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify per-declaration where tests pass. These exercise existing lowering (lower_where_clause called by lower_let, lower_constraint, lower_sub). If any fail, investigate.",
-      "status": "done",
-      "commit": "44d2310"
+      "description": "Implement reference safety. Extend CompilationScope names to include guard context. Check in compile_expr Ident arm.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test guard_free_declarations_backward_compat in guard_tests.rs: parse bracket_source(), verify no GuardedGroup variants in members, all where_clause fields are None, member count unchanged at 10, no errors.",
-      "status": "done",
-      "commit": "528bc6e"
+      "description": "Write test: reference_safety_same_guard_ok. Both cells under same guard. Assert no error diagnostics.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Run cargo test -p reify-syntax then cargo test --workspace. Fix any remaining issues. Compiler with GuardedGroup stub and LSP with wildcards should pass cleanly.",
-      "status": "done",
-      "commit": "44d2310"
+      "description": "Ensure same-guard references pass. Fix conjunction containment check edge cases.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test: eval_guard_true_includes_members. Guard=true, assert guarded member x evaluated to 0.005 SI.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Implement guard processing in from_templates() and eval(). Create guard nodes, conditionally evaluate members based on guard value.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test: eval_guard_false_includes_else. Guard=false, assert else_member y=0.01 and x=Undef.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement guard=false path. Evaluate else_members, set members to Undef/Undetermined.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing test: eval_guard_undef_indeterminate. Guard depends on Auto/Undef param. Assert all members Undef/Undetermined.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Handle guard=Undef. All guarded and else members set to Undef/Undetermined.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing test: guard_change_re_elaboration. eval() with guard=true, then edit_param to false. Assert topology_fingerprint changed, x=Undef, y present.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Implement re-elaboration in edit_param(). Detect structure_controlling changes, re-evaluate guard branches, update topology_fingerprint.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Grammar and generated parser are already complete - no grammar changes needed",
-      "rationale": "The tree-sitter grammar already defines both where_clause (line 56) and guarded_block (line 62) rules. parser.c was regenerated in prior commit 66866d6. The grammar handles ambiguity correctly: where expr followed by { parses as guarded_block; at end of declaration parses as where_clause."
+      "decision": "Synthetic guard ValueCells use naming '{entity}.__guard_{index}' with Bool type and Let kind",
+      "rationale": "Guard expressions need evaluation like any other expression. Double-underscore naming avoids user name collision. Let kind integrates with existing evaluation infrastructure."
     },
     {
-      "decision": "Refactor member dispatch into lower_member_node helper for reuse",
-      "rationale": "lower_structure has a monolithic match block for all member kinds. Guarded blocks need identical dispatch for nested members including recursive guarded blocks. Extracting lower_member_node eliminates duplication and enables clean recursion."
+      "decision": "Per-declaration where clauses desugar to single-member CompiledGuardedGroups",
+      "rationale": "Unifies per-declaration and block guards into one representation for the eval engine."
     },
     {
-      "decision": "Use positional iteration with else delimiter detection for main vs else member separation",
-      "rationale": "The guarded_block grammar uses two unnamed repeat($._member) groups without field names. Tree-sitter places all member children as direct children. The else keyword appears as anonymous child between groups. Iterate children toggling a boolean on else to partition into main and else vectors."
+      "decision": "Nested guards compose via conjunction (AND) into separate guard ValueCells per level",
+      "rationale": "Task spec: 'inner guard = outer_guard && inner_condition'. Each level gets own synthetic guard cell."
     },
     {
-      "decision": "Include content_hash on GuardedGroupDecl",
-      "rationale": "All 6 existing declaration types carry content_hash for incremental evaluation. GuardedGroupDecl follows the same pattern for consistency."
+      "decision": "Else members stored in CompiledGuardedGroup.else_members, not separate negated groups",
+      "rationale": "Structural mutual exclusivity guaranteed. Eval selects members when true, else_members when false."
     },
     {
-      "decision": "Scope limited to crates/reify-syntax only",
-      "rationale": "Grammar is complete. Compiler has forward-looking GuardedGroup stub (line 807). LSP uses wildcards. Only reify-syntax needs changes: AST, lowering, tests."
+      "decision": "Reference safety uses guard ValueCellId equality for v0.1",
+      "rationale": "Task spec: 'syntactic equality or conjunction containing the guard'. ID comparison suffices."
     },
     {
-      "decision": "Per-declaration where clauses already support all 6 member types",
-      "rationale": "Existing implementation added where_clause to all 6 types (not just the 4 in task spec). Already done and tested. Plan preserves this."
+      "decision": "All guarded members exist in EvaluationGraph; eval conditionally activates",
+      "rationale": "Simplifies dependency tracking. Inactive members set to Undef. PersistentMap makes clones cheap."
+    },
+    {
+      "decision": "Topology fingerprint includes guard cell values for schema change detection",
+      "rationale": "Guard true->false changes effective topology. Fingerprint must reflect this for downstream consumers."
     }
   ],
   "reuse": [
     {
-      "what": "Existing lower_where_clause method",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 197-211",
-      "how": "Already implemented for all 6 lowering functions. No changes needed. Guarded block uses direct child_by_field_name(condition) since it has its own condition field."
+      "what": "compile_expr() for guard condition compilation",
+      "where": "crates/reify-compiler/src/lib.rs:354",
+      "how": "Reuse directly for WhereClause.condition and GuardedGroupDecl.condition."
     },
     {
-      "what": "lower_expr recursive expression lowering",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 371-403",
-      "how": "Reuse for guarded_block condition. Supports all expression types needed for guard conditions."
+      "what": "CompilationScope register/resolve pattern",
+      "where": "crates/reify-compiler/src/lib.rs:328-349",
+      "how": "Extend names map to include guard context for reference safety."
     },
     {
-      "what": "Member dispatch pattern from lower_structure",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 113-183",
-      "how": "Extract into lower_member_node. Add guarded_block case. Reuse for both structure body and nested guarded block members."
+      "what": "TopologyTemplateBuilder fluent API",
+      "where": "crates/reify-test-support/src/builders.rs:141-298",
+      "how": "Extend with guarded_group() method."
     },
     {
-      "what": "span() and content_hash() helpers",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 53-60",
-      "how": "Reuse for GuardedGroupDecl construction, same pattern as all existing AST nodes."
+      "what": "CompiledExpr::binop(BinOp::And) and CompiledExpr::value_ref()",
+      "where": "crates/reify-types/src/expr.rs",
+      "how": "Use for nested guard conjunction and guard ValueRefs."
     },
     {
-      "what": "parse_members test helper",
-      "where": "crates/reify-syntax/tests/guard_tests.rs lines 9-16",
-      "how": "Reuse for all new guard tests to parse source and extract members."
+      "what": "EvaluationGraph::from_templates() iteration pattern",
+      "where": "crates/reify-eval/src/graph.rs:68-141",
+      "how": "Extend to process template.guarded_groups."
     },
     {
-      "what": "Test assertion patterns",
-      "where": "guard_tests.rs and ts_parser.rs mod tests",
-      "how": "Follow: parse source -> extract members -> match MemberDecl variant -> assert fields."
+      "what": "MockConstraintChecker for Engine tests",
+      "where": "crates/reify-test-support/src/mocks.rs",
+      "how": "Use in all eval guard tests."
+    },
+    {
+      "what": "Expression builder helpers (literal, value_ref, and, not)",
+      "where": "crates/reify-test-support/src/builders.rs:8-93",
+      "how": "Construct guard condition expressions in tests."
+    },
+    {
+      "what": "Engine::eval() two-pass evaluation pattern",
+      "where": "crates/reify-eval/src/lib.rs:632-718",
+      "how": "Guard cells in Let pass; conditional member eval added after."
     }
-  ],
-  "_schema_version": 1
+  ]
 }
