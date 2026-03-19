@@ -454,4 +454,68 @@ mod tests {
         let result = eval_builtin("pow", &[Value::Real(-2.0), Value::Real(0.5)]);
         assert!(result.is_undef(), "pow(-2, 0.5) should be Undef (NaN), got {:?}", result);
     }
+
+    // --- Inverse-trig domain errors and hyperbolic overflow (step-23) ---
+
+    #[test]
+    fn asin_out_of_range_positive() {
+        let result = eval_builtin("asin", &[Value::Real(2.0)]);
+        assert!(result.is_undef(), "asin(2.0) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn asin_out_of_range_negative() {
+        let result = eval_builtin("asin", &[Value::Real(-2.0)]);
+        assert!(result.is_undef(), "asin(-2.0) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn acos_out_of_range_positive() {
+        let result = eval_builtin("acos", &[Value::Real(2.0)]);
+        assert!(result.is_undef(), "acos(2.0) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn acos_out_of_range_negative() {
+        let result = eval_builtin("acos", &[Value::Real(-2.0)]);
+        assert!(result.is_undef(), "acos(-2.0) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn sinh_overflow_returns_undef() {
+        let result = eval_builtin("sinh", &[Value::Real(1000.0)]);
+        assert!(result.is_undef(), "sinh(1000) should be Undef (inf), got {:?}", result);
+    }
+
+    #[test]
+    fn cosh_overflow_returns_undef() {
+        let result = eval_builtin("cosh", &[Value::Real(1000.0)]);
+        assert!(result.is_undef(), "cosh(1000) should be Undef (inf), got {:?}", result);
+    }
+
+    // Boundary valid inputs: confirm no regressions on valid inputs
+
+    #[test]
+    fn asin_boundary_valid() {
+        let result = eval_builtin("asin", &[Value::Real(1.0)]);
+        match result {
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::ANGLE);
+            }
+            other => panic!("expected Angle Scalar, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn acos_boundary_valid() {
+        let result = eval_builtin("acos", &[Value::Real(-1.0)]);
+        match result {
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - std::f64::consts::PI).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::ANGLE);
+            }
+            other => panic!("expected Angle Scalar, got {:?}", other),
+        }
+    }
 }
