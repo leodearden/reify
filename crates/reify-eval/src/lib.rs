@@ -1258,6 +1258,83 @@ impl Engine {
             self.cache.restore_final(node_id);
         }
 
+        // ── Guard re-elaboration phase ────────────────────────────────
+        // If any structure_controlling cell changed, re-evaluate guarded groups
+        // to flip which branch is active/inactive, and recompute fingerprint.
+        {
+            let graph = &new_snapshot.graph;
+            let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
+                dirty_cone.contains(&NodeId::Value(sc_id.clone()))
+                    || changed_set.contains(sc_id)
+            });
+
+            if has_dirty_guards {
+                for group in &graph.guarded_groups {
+                    let guard_val = reify_expr::eval_expr(&group.guard_expr, &values);
+                    values.insert(group.guard_cell.clone(), guard_val.clone());
+                    let guard_det = if matches!(&guard_val, Value::Bool(_)) {
+                        DeterminacyState::Determined
+                    } else {
+                        DeterminacyState::Undetermined
+                    };
+                    new_snapshot.values.insert(
+                        group.guard_cell.clone(), (guard_val.clone(), guard_det),
+                    );
+
+                    let is_true = matches!(&guard_val, Value::Bool(true));
+                    let is_false = matches!(&guard_val, Value::Bool(false));
+
+                    for mid in &group.members {
+                        if is_true {
+                            if let Some(node) = graph.value_cells.get(mid) {
+                                if let Some(ref expr) = node.default_expr {
+                                    let val = reify_expr::eval_expr(expr, &values);
+                                    values.insert(mid.clone(), val.clone());
+                                    new_snapshot.values.insert(
+                                        mid.clone(), (val, DeterminacyState::Determined),
+                                    );
+                                }
+                            }
+                        } else {
+                            values.insert(mid.clone(), Value::Undef);
+                            new_snapshot.values.insert(
+                                mid.clone(), (Value::Undef, DeterminacyState::Undetermined),
+                            );
+                        }
+                    }
+                    for mid in &group.else_members {
+                        if is_false {
+                            if let Some(node) = graph.value_cells.get(mid) {
+                                if let Some(ref expr) = node.default_expr {
+                                    let val = reify_expr::eval_expr(expr, &values);
+                                    values.insert(mid.clone(), val.clone());
+                                    new_snapshot.values.insert(
+                                        mid.clone(), (val, DeterminacyState::Determined),
+                                    );
+                                }
+                            }
+                        } else {
+                            values.insert(mid.clone(), Value::Undef);
+                            new_snapshot.values.insert(
+                                mid.clone(), (Value::Undef, DeterminacyState::Undetermined),
+                            );
+                        }
+                    }
+                }
+
+                // Recompute topology fingerprint including guard states
+                let guard_state_hash = {
+                    let hashes = graph.guarded_groups.iter().map(|g| {
+                        let gv = values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef);
+                        ContentHash::of_str(&format!("{:?}", gv))
+                    });
+                    ContentHash::combine_all(hashes)
+                };
+                new_snapshot.topology_fingerprint =
+                    graph.topology_fingerprint().combine(guard_state_hash);
+            }
+        }
+
         // ── Resolution phase ───────────────────────────────────────────
         // If a solver is present, check whether any constraints governing
         // auto params are in the dirty cone. If so, re-run the solver
@@ -1400,6 +1477,90 @@ impl Engine {
                         }
                     }
                 }
+            }
+        }
+
+        // ── Guard re-elaboration phase ──────────────────────────────────
+        // If any structure-controlling (guard) cells changed boolean value,
+        // re-evaluate affected guarded group members: activate the correct
+        // branch (members or else_members) and deactivate the other.
+        // Finally, recompute topology fingerprint to reflect guard state.
+        {
+            let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
+                let new_val = values.get(&group.guard_cell);
+                let old_val = self.eval_state.as_ref()
+                    .and_then(|s| s.snapshot.values.get(&group.guard_cell))
+                    .map(|(v, _)| v);
+                new_val != old_val
+            });
+
+            if guard_changed {
+                // Re-evaluate each guarded group based on current guard values
+                for group in new_snapshot.graph.guarded_groups.clone() {
+                    let guard_val = values.get(&group.guard_cell).cloned()
+                        .unwrap_or(Value::Undef);
+                    let guard_is_true = matches!(&guard_val, Value::Bool(true));
+                    let guard_is_false = matches!(&guard_val, Value::Bool(false));
+
+                    // Process members (active when guard is true)
+                    for member_id in &group.members {
+                        if guard_is_true {
+                            // Re-evaluate member from its default_expr
+                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id) {
+                                if let Some(ref expr) = node.default_expr {
+                                    let val = reify_expr::eval_expr(expr, &values);
+                                    values.insert(member_id.clone(), val.clone());
+                                    new_snapshot.values.insert(
+                                        member_id.clone(),
+                                        (val, DeterminacyState::Determined),
+                                    );
+                                }
+                            }
+                        } else {
+                            // Deactivate: set to Undef
+                            values.insert(member_id.clone(), Value::Undef);
+                            new_snapshot.values.insert(
+                                member_id.clone(),
+                                (Value::Undef, DeterminacyState::Undetermined),
+                            );
+                        }
+                    }
+
+                    // Process else_members (active when guard is false)
+                    for member_id in &group.else_members {
+                        if guard_is_false {
+                            // Re-evaluate else member from its default_expr
+                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id) {
+                                if let Some(ref expr) = node.default_expr {
+                                    let val = reify_expr::eval_expr(expr, &values);
+                                    values.insert(member_id.clone(), val.clone());
+                                    new_snapshot.values.insert(
+                                        member_id.clone(),
+                                        (val, DeterminacyState::Determined),
+                                    );
+                                }
+                            }
+                        } else {
+                            // Deactivate: set to Undef
+                            values.insert(member_id.clone(), Value::Undef);
+                            new_snapshot.values.insert(
+                                member_id.clone(),
+                                (Value::Undef, DeterminacyState::Undetermined),
+                            );
+                        }
+                    }
+                }
+
+                // Recompute topology fingerprint to include guard states
+                let base_fingerprint = new_snapshot.graph.topology_fingerprint();
+                let guard_state_hashes: Vec<ContentHash> = new_snapshot.graph.guarded_groups.iter()
+                    .map(|g| {
+                        let val = values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef);
+                        ContentHash::of_str(&format!("guard:{}={:?}", g.guard_cell, val))
+                    })
+                    .collect();
+                let guard_states_hash = ContentHash::combine_all(guard_state_hashes);
+                new_snapshot.topology_fingerprint = base_fingerprint.combine(guard_states_hash);
             }
         }
 
