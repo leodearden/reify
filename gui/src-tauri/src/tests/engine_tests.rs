@@ -2,6 +2,7 @@ use std::path::Path;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{bracket_source, bracket_source_with_width, MockGeometryKernel};
+use reify_types::ExportFormat;
 
 use crate::engine::EngineSession;
 
@@ -194,4 +195,87 @@ fn update_source_with_invalid_source_returns_err() {
 
     let result = session.update_source("bad.ri", "this is not valid {{{}}}");
     assert!(result.is_err(), "invalid source should return Err");
+}
+
+// --- Step 11: Integration tests ---
+
+#[test]
+fn constraint_violation_roundtrip() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    // Set thickness=1mm → violates "thickness > 2mm"
+    let state = session
+        .set_parameter("Bracket.thickness", "1mm")
+        .expect("set thickness should succeed");
+
+    let violated = state
+        .constraints
+        .iter()
+        .any(|c| c.status == "Violated");
+    assert!(violated, "should have at least one violated constraint when thickness=1mm");
+
+    // Set back to 5mm → all satisfied again
+    let state = session
+        .set_parameter("Bracket.thickness", "5mm")
+        .expect("set thickness back should succeed");
+
+    for c in &state.constraints {
+        assert_eq!(
+            c.status, "Satisfied",
+            "constraint {} should be satisfied after restoring thickness",
+            c.node_id
+        );
+    }
+}
+
+#[test]
+fn get_source_location_end_to_end() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let loc = session
+        .get_source_location("Bracket.width")
+        .expect("should find source location for Bracket.width");
+
+    assert_eq!(loc.file, "bracket.ri");
+    // width is on line 2 of bracket_source() (line 1 = "structure Bracket {")
+    assert!(loc.line >= 2, "width should be on line 2 or later, got {}", loc.line);
+    assert!(loc.column >= 1, "column should be positive");
+    assert!(loc.end_line >= loc.line, "end_line should be >= line");
+}
+
+#[test]
+fn export_end_to_end() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let dir = std::env::temp_dir().join("reify-gui-test-export-e2e");
+    std::fs::create_dir_all(&dir).ok();
+    let path = dir.join("bracket.step");
+
+    let result = session.export(ExportFormat::Step, &path);
+    assert!(result.is_ok(), "export should succeed: {:?}", result.err());
+
+    let data = std::fs::read(&path).expect("exported file should be readable");
+    assert!(!data.is_empty(), "exported file should not be empty");
+
+    // Cleanup
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir(&dir);
 }
