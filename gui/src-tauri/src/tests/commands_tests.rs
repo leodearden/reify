@@ -28,9 +28,6 @@ fn app_state_constructible() {
 fn save_and_open_file_roundtrip() {
     use crate::commands::{open_file_impl, save_file_impl};
 
-    let session = make_loaded_session();
-    let engine = Arc::new(Mutex::new(session));
-
     let dir = std::env::temp_dir().join("reify-gui-test");
     std::fs::create_dir_all(&dir).ok();
     let path = dir.join("test_roundtrip.ri");
@@ -183,9 +180,6 @@ fn module_structure_all_public_types() {
     use crate::types::{
         ConstraintData, FileData, GuiState, MeshData, SourceLocation, ValueData,
     };
-    use crate::commands::AppState;
-    use crate::engine::EngineSession;
-
     // Verify types implement Clone + Debug (compile-time check)
     fn assert_clone_debug<T: Clone + std::fmt::Debug>() {}
     assert_clone_debug::<GuiState>();
