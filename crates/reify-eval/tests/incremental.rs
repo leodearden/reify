@@ -2132,3 +2132,65 @@ fn forward_let_ref_deep_chain_incremental_edit() {
         "z = y + 1 = 12 + 1 = 13"
     );
 }
+
+/// Mixed forward and backward references work correctly.
+///
+/// Template: param a (default 1, Int)
+///   let b = a + 1   (declared 1st — backward ref to a only)
+///   let d = c + b   (declared 2nd — forward ref to c, backward ref to b)
+///   let c = a + 2   (declared 3rd — backward ref to a only)
+///
+/// Cold-start: b=2, c=3, d=5.
+/// Edit a→10: b=11, c=12, d=23.
+#[test]
+fn forward_let_ref_mixed_forward_backward() {
+    let a_id = ValueCellId::new("S", "a");
+    let b_id = ValueCellId::new("S", "b");
+    let c_id = ValueCellId::new("S", "c");
+    let d_id = ValueCellId::new("S", "d");
+
+    // b = a + 1 (backward ref to a)
+    let b_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(1)));
+    // d = c + b (forward ref to c, backward ref to b)
+    let d_expr = binop(BinOp::Add, value_ref("S", "c"), value_ref("S", "b"));
+    // c = a + 2 (backward ref to a)
+    let c_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(2)));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(1))))
+        .let_binding("S", "b", Type::Int, b_expr)  // b first (backward ref only)
+        .let_binding("S", "d", Type::Int, d_expr)  // d second (forward ref to c)
+        .let_binding("S", "c", Type::Int, c_expr)  // c third
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result = engine.eval(&module);
+
+    // Cold-start: b=2, c=3, d=5
+    assert_eq!(*result.values.get(&b_id).unwrap(), Value::Int(2), "b = a + 1 = 1 + 1 = 2");
+    assert_eq!(*result.values.get(&c_id).unwrap(), Value::Int(3), "c = a + 2 = 1 + 2 = 3");
+    assert_eq!(*result.values.get(&d_id).unwrap(), Value::Int(5), "d = c + b = 3 + 2 = 5");
+
+    // Incremental edit: a → 10
+    let edit_result = engine.edit_param(a_id.clone(), Value::Int(10));
+
+    assert_eq!(
+        *edit_result.values.get(&b_id).unwrap(),
+        Value::Int(11),
+        "b = a + 1 = 10 + 1 = 11"
+    );
+    assert_eq!(
+        *edit_result.values.get(&c_id).unwrap(),
+        Value::Int(12),
+        "c = a + 2 = 10 + 2 = 12"
+    );
+    assert_eq!(
+        *edit_result.values.get(&d_id).unwrap(),
+        Value::Int(23),
+        "d = c + b = 12 + 11 = 23"
+    );
+}
