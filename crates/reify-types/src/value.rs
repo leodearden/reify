@@ -1007,4 +1007,27 @@ mod tests {
         assert_eq!(format!("{}", Value::Map(m)), "{\"a\": 1}");
         assert_eq!(format!("{}", Value::Map(BTreeMap::new())), "{}");
     }
+
+    #[test]
+    fn value_display_option() {
+        assert_eq!(format!("{}", Value::Option(None)), "None");
+        assert_eq!(
+            format!("{}", Value::Option(Some(Box::new(Value::Int(42))))),
+            "Some(42)"
+        );
+    }
+
+    #[test]
+    fn value_display_nested() {
+        // List containing Option and Enum values
+        let v = Value::List(vec![
+            Value::Option(Some(Box::new(Value::Int(1)))),
+            Value::Enum {
+                type_name: "Color".into(),
+                variant: "Red".into(),
+            },
+            Value::Option(None),
+        ]);
+        assert_eq!(format!("{}", v), "[Some(1), Color::Red, None]");
+    }
 }
