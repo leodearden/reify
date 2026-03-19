@@ -1295,14 +1295,14 @@ impl Engine {
 
                     for mid in &group.members {
                         if is_true {
-                            if let Some(node) = graph.value_cells.get(mid) {
-                                if let Some(ref expr) = node.default_expr {
-                                    let val = reify_expr::eval_expr(expr, &values);
-                                    values.insert(mid.clone(), val.clone());
-                                    new_snapshot.values.insert(
-                                        mid.clone(), (val, DeterminacyState::Determined),
-                                    );
-                                }
+                            if let Some(node) = graph.value_cells.get(mid)
+                                && let Some(ref expr) = node.default_expr
+                            {
+                                let val = reify_expr::eval_expr(expr, &values);
+                                values.insert(mid.clone(), val.clone());
+                                new_snapshot.values.insert(
+                                    mid.clone(), (val, DeterminacyState::Determined),
+                                );
                             }
                         } else {
                             values.insert(mid.clone(), Value::Undef);
@@ -1313,14 +1313,14 @@ impl Engine {
                     }
                     for mid in &group.else_members {
                         if is_false {
-                            if let Some(node) = graph.value_cells.get(mid) {
-                                if let Some(ref expr) = node.default_expr {
-                                    let val = reify_expr::eval_expr(expr, &values);
-                                    values.insert(mid.clone(), val.clone());
-                                    new_snapshot.values.insert(
-                                        mid.clone(), (val, DeterminacyState::Determined),
-                                    );
-                                }
+                            if let Some(node) = graph.value_cells.get(mid)
+                                && let Some(ref expr) = node.default_expr
+                            {
+                                let val = reify_expr::eval_expr(expr, &values);
+                                values.insert(mid.clone(), val.clone());
+                                new_snapshot.values.insert(
+                                    mid.clone(), (val, DeterminacyState::Determined),
+                                );
                             }
                         } else {
                             values.insert(mid.clone(), Value::Undef);
@@ -1515,15 +1515,15 @@ impl Engine {
                     for member_id in &group.members {
                         if guard_is_true {
                             // Re-evaluate member from its default_expr
-                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id) {
-                                if let Some(ref expr) = node.default_expr {
-                                    let val = reify_expr::eval_expr(expr, &values);
-                                    values.insert(member_id.clone(), val.clone());
-                                    new_snapshot.values.insert(
-                                        member_id.clone(),
-                                        (val, DeterminacyState::Determined),
-                                    );
-                                }
+                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
+                                && let Some(ref expr) = node.default_expr
+                            {
+                                let val = reify_expr::eval_expr(expr, &values);
+                                values.insert(member_id.clone(), val.clone());
+                                new_snapshot.values.insert(
+                                    member_id.clone(),
+                                    (val, DeterminacyState::Determined),
+                                );
                             }
                         } else {
                             // Deactivate: set to Undef
@@ -1539,15 +1539,15 @@ impl Engine {
                     for member_id in &group.else_members {
                         if guard_is_false {
                             // Re-evaluate else member from its default_expr
-                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id) {
-                                if let Some(ref expr) = node.default_expr {
-                                    let val = reify_expr::eval_expr(expr, &values);
-                                    values.insert(member_id.clone(), val.clone());
-                                    new_snapshot.values.insert(
-                                        member_id.clone(),
-                                        (val, DeterminacyState::Determined),
-                                    );
-                                }
+                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
+                                && let Some(ref expr) = node.default_expr
+                            {
+                                let val = reify_expr::eval_expr(expr, &values);
+                                values.insert(member_id.clone(), val.clone());
+                                new_snapshot.values.insert(
+                                    member_id.clone(),
+                                    (val, DeterminacyState::Determined),
+                                );
                             }
                         } else {
                             // Deactivate: set to Undef
