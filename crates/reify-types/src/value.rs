@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::dimension::DimensionVector;
 use crate::hash::ContentHash;
 use crate::identity::ValueCellId;
@@ -16,6 +18,8 @@ pub enum Value {
     Enum { type_name: String, variant: String },
     /// Ordered list of values.
     List(Vec<Value>),
+    /// Ordered set of unique values.
+    Set(BTreeSet<Value>),
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -108,6 +112,14 @@ impl Value {
                 }
                 h
             }
+            Value::Set(items) => {
+                let mut h = ContentHash::of(&[8]);
+                h = h.combine(ContentHash::of(&(items.len() as u64).to_le_bytes()));
+                for item in items {
+                    h = h.combine(item.content_hash());
+                }
+                h
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -127,6 +139,7 @@ impl PartialEq for Value {
                 a == b && av == bv
             }
             (Value::List(a), Value::List(b)) => a == b,
+            (Value::Set(a), Value::Set(b)) => a == b,
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -146,7 +159,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -157,6 +170,7 @@ impl Ord for Value {
                 Value::String(_) => 5,
                 Value::Enum { .. } => 6,
                 Value::List(_) => 7,
+                Value::Set(_) => 8,
             }
         }
 
@@ -185,6 +199,7 @@ impl Ord for Value {
                 a.cmp(b).then_with(|| av.cmp(bv))
             }
             (Value::List(a), Value::List(b)) => a.cmp(b),
+            (Value::Set(a), Value::Set(b)) => a.cmp(b),
             _ => unreachable!("same type tag but different variants"),
         }
     }
