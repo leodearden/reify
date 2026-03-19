@@ -171,6 +171,55 @@ impl ConcurrentEvalAdapter {
     }
 }
 
+// Test-only helpers that poison specific locks for recovery testing.
+#[cfg(test)]
+impl ConcurrentEvalAdapter {
+    /// Poison the `skip_state` Mutex by spawning a thread that acquires
+    /// the lock and panics while holding it.
+    pub fn poison_skip_state(&self) {
+        let arc = Arc::clone(&self.skip_state);
+        std::thread::spawn(move || {
+            let _guard = arc.lock().unwrap();
+            panic!("intentional panic to poison skip_state");
+        })
+        .join()
+        .ok();
+    }
+
+    /// Poison the `results` Mutex.
+    pub fn poison_results(&self) {
+        let arc = Arc::clone(&self.results);
+        std::thread::spawn(move || {
+            let _guard = arc.lock().unwrap();
+            panic!("intentional panic to poison results");
+        })
+        .join()
+        .ok();
+    }
+
+    /// Poison the `values` RwLock.
+    pub fn poison_values(&self) {
+        let arc = Arc::clone(&self.values);
+        std::thread::spawn(move || {
+            let _guard = arc.write().unwrap();
+            panic!("intentional panic to poison values");
+        })
+        .join()
+        .ok();
+    }
+
+    /// Poison the `snapshot_values` RwLock.
+    pub fn poison_snapshot_values(&self) {
+        let arc = Arc::clone(&self.snapshot_values);
+        std::thread::spawn(move || {
+            let _guard = arc.write().unwrap();
+            panic!("intentional panic to poison snapshot_values");
+        })
+        .join()
+        .ok();
+    }
+}
+
 impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
     fn is_dirty(&self, node: &NodeId) -> bool {
         !self.skip_state.lock().unwrap().skipped.contains(node)
