@@ -22,6 +22,22 @@ pub enum PortDirection {
     Bidi,
 }
 
+/// A reference to a trait, optionally with type arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraitRef {
+    /// The name of the referenced trait.
+    pub name: String,
+    /// Type arguments applied to the trait.
+    pub type_args: Vec<crate::ty::Type>,
+}
+
+/// A trait bound constraining a type parameter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraitBound {
+    /// The trait reference this bound requires.
+    pub trait_ref: TraitRef,
+}
+
 impl EnumDef {
     /// Check if this enum contains a variant with the given name.
     pub fn contains_variant(&self, name: &str) -> bool {
