@@ -66,12 +66,9 @@ pub struct Engine {
     cache: CacheStore,
     /// Overridden param values (set by set_param_and_invalidate).
     param_overrides: std::collections::HashMap<ValueCellId, reify_types::Value>,
-    /// Current snapshot from last eval() or edit_param().
-    current_snapshot: Option<Snapshot>,
-    /// Reverse dependency index for dirty cone computation.
-    reverse_index: Option<ReverseDependencyIndex>,
-    /// Forward dependency trace map for topological sort.
-    trace_map: Option<HashMap<NodeId, DependencyTrace>>,
+    /// Consolidated evaluation state from last eval() or edit_param().
+    /// None before the first eval() call; always Some after.
+    eval_state: Option<EvaluationState>,
     /// Demand registry tracking which nodes are demanded.
     demand: DemandRegistry,
     /// Counter for snapshot IDs.
@@ -212,9 +209,7 @@ impl Engine {
             solver: None,
             cache: CacheStore::new(),
             param_overrides: std::collections::HashMap::new(),
-            current_snapshot: None,
-            reverse_index: None,
-            trace_map: None,
+            eval_state: None,
             demand: DemandRegistry::new(),
             next_snapshot_id: 0,
             next_version_id: 0,
@@ -234,9 +229,14 @@ impl Engine {
         &self.cache
     }
 
+    /// Whether the engine has been initialized by a call to eval().
+    pub fn is_initialized(&self) -> bool {
+        self.eval_state.is_some()
+    }
+
     /// Access the current snapshot (for testing/inspection).
     pub fn snapshot(&self) -> Option<&Snapshot> {
-        self.current_snapshot.as_ref()
+        self.eval_state.as_ref().map(|s| &s.snapshot)
     }
 
     /// Access the eval set from the last eval() or edit_param() call.
@@ -262,16 +262,12 @@ impl Engine {
         cell: ValueCellId,
         new_value: Value,
     ) -> ConcurrentEditSetup {
-        let snapshot = self.current_snapshot.as_ref()
+        let state = self.eval_state.as_ref()
             .expect("prepare_concurrent_edit requires a prior call to eval()");
-        let reverse_index = self.reverse_index.as_ref()
-            .expect("prepare_concurrent_edit requires reverse_index from eval()");
-        let trace_map = self.trace_map.as_ref()
-            .expect("prepare_concurrent_edit requires trace_map from eval()");
 
         // Clone snapshot (O(1) via PersistentMap)
-        let parent_id = snapshot.id;
-        let mut new_snapshot_values = snapshot.values.clone();
+        let parent_id = state.snapshot.id;
+        let mut new_snapshot_values = state.snapshot.values.clone();
 
         // Update the changed cell's value in snapshot
         new_snapshot_values.insert(
@@ -282,8 +278,8 @@ impl Engine {
         // Compute dirty cone and eval set
         let mut changed_set = HashSet::new();
         changed_set.insert(cell.clone());
-        let dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, reverse_index);
-        let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, trace_map);
+        let dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, &state.reverse_index);
+        let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
         // Build the full ValueMap from snapshot values
         let mut values = ValueMap::new();
@@ -315,11 +311,11 @@ impl Engine {
 
         ConcurrentEditSetup {
             eval_set,
-            graph: snapshot.graph.clone(),
+            graph: state.snapshot.graph.clone(),
             values,
             snapshot_values: new_snapshot_values,
-            traces: trace_map.clone(),
-            reverse_index: reverse_index.clone(),
+            traces: state.trace_map.clone(),
+            reverse_index: state.reverse_index.clone(),
             previous_hashes,
             version: VersionId(version_id),
             snapshot_id: SnapshotId(snapshot_id),
@@ -406,9 +402,9 @@ impl Engine {
         }
 
         // Update current snapshot
-        let snapshot = self.current_snapshot.as_ref()
-            .expect("apply_concurrent_edit requires snapshot from eval()");
-        let mut new_snapshot = snapshot.clone();
+        let state = self.eval_state.as_mut()
+            .expect("apply_concurrent_edit requires eval_state from eval()");
+        let mut new_snapshot = state.snapshot.clone();
         new_snapshot.id = setup.snapshot_id;
         new_snapshot.version = setup.version;
         new_snapshot.values = result.snapshot_values;
@@ -416,7 +412,7 @@ impl Engine {
             changed: setup.changed_cells.clone(),
             parent: setup.parent_snapshot_id,
         };
-        self.current_snapshot = Some(new_snapshot);
+        state.snapshot = new_snapshot;
 
         // Update last eval set
         self.last_eval_set = result.actual_eval_set;
@@ -443,10 +439,10 @@ impl Engine {
         let mut diagnostics = Vec::new();
 
         if let Some(ref solver) = self.solver {
-            let reverse_index = self.reverse_index.as_ref()
-                .expect("resolve_concurrent_edit requires reverse_index from eval()");
-            let trace_map = self.trace_map.as_ref()
-                .expect("resolve_concurrent_edit requires trace_map from eval()");
+            let state = self.eval_state.as_ref()
+                .expect("resolve_concurrent_edit requires eval_state from eval()");
+            let reverse_index = &state.reverse_index;
+            let trace_map = &state.trace_map;
 
             // Collect auto param IDs from graph
             let mut auto_ids: HashSet<ValueCellId> = HashSet::new();
@@ -962,9 +958,11 @@ impl Engine {
         }
 
         // Store internal state for incremental evaluation
-        self.current_snapshot = Some(snapshot);
-        self.reverse_index = Some(reverse_index);
-        self.trace_map = Some(trace_map);
+        self.eval_state = Some(EvaluationState {
+            snapshot,
+            reverse_index,
+            trace_map,
+        });
         self.demand = demand;
         self.last_eval_set = Vec::new(); // Cold start: no incremental eval set
 
@@ -985,16 +983,27 @@ impl Engine {
         cell: ValueCellId,
         new_value: reify_types::Value,
     ) -> EvalResult {
-        let snapshot = self.current_snapshot.as_ref()
+        let state = self.eval_state.as_ref()
             .expect("edit_param requires a prior call to eval()");
-        let reverse_index = self.reverse_index.as_ref()
-            .expect("edit_param requires reverse_index from eval()");
-        let trace_map = self.trace_map.as_ref()
-            .expect("edit_param requires trace_map from eval()");
 
-        // Clone snapshot (O(1) via PersistentMap)
-        let parent_id = snapshot.id;
-        let mut new_snapshot = snapshot.clone();
+        // Clone snapshot and extract references (O(1) via PersistentMap)
+        let parent_id = state.snapshot.id;
+        let mut new_snapshot = state.snapshot.clone();
+
+        // Compute dirty cone and eval set while state borrow is active
+        let mut changed_set = std::collections::HashSet::new();
+        changed_set.insert(cell.clone());
+        let dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, &state.reverse_index);
+        let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
+
+        // Seed has_changed_parent from dependents of the changed param
+        let mut has_changed_parent: std::collections::HashSet<NodeId> =
+            std::collections::HashSet::new();
+        for dependent in state.reverse_index.dependents_of(&cell) {
+            has_changed_parent.insert(dependent.clone());
+        }
+        // Release the immutable borrow of eval_state so we can mutate later
+        let _ = state;
 
         // Update snapshot ID, version, and provenance
         let snapshot_id = self.next_snapshot_id;
@@ -1004,8 +1013,6 @@ impl Engine {
         new_snapshot.id = SnapshotId(snapshot_id);
         new_snapshot.version = VersionId(version_id);
 
-        let mut changed_set = std::collections::HashSet::new();
-        changed_set.insert(cell.clone());
         new_snapshot.provenance = SnapshotProvenance::Edit {
             changed: changed_set.clone(),
             parent: parent_id,
@@ -1016,10 +1023,6 @@ impl Engine {
             cell.clone(),
             (new_value.clone(), DeterminacyState::Determined),
         );
-
-        // Compute dirty cone and eval set
-        let dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, reverse_index);
-        let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, trace_map);
 
         // Build the full ValueMap from snapshot values
         let mut values = ValueMap::new();
@@ -1040,19 +1043,6 @@ impl Engine {
         // Track nodes to skip due to early cutoff of upstream nodes.
         let mut skipped: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
         let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
-
-        // Track nodes that have at least one Changed parent. Seeded with
-        // dependents of the original changed param (the param itself IS a
-        // change, even though it's not in the eval set). This prevents
-        // incorrectly skipping nodes that read both an Unchanged intermediary
-        // AND the changed param directly (mixed fan-in).
-        let mut has_changed_parent: std::collections::HashSet<NodeId> =
-            std::collections::HashSet::new();
-        if let Some(rev_idx) = &self.reverse_index {
-            for dependent in rev_idx.dependents_of(&cell) {
-                has_changed_parent.insert(dependent.clone());
-            }
-        }
 
         for node_id in &eval_set {
             if skipped.contains(node_id) {
@@ -1105,8 +1095,9 @@ impl Engine {
                 //   parent added them prematurely).
                 // - Unchanged: only add dependents to skipped if they do NOT
                 //   have a Changed parent (i.e., not in has_changed_parent).
-                if let Some(rev_idx) = &self.reverse_index {
-                    let dependents = rev_idx.dependents_of(vcid);
+                {
+                    let dependents = self.eval_state.as_ref().unwrap()
+                        .reverse_index.dependents_of(vcid);
                     if outcome == EvalOutcome::Changed {
                         for dependent in dependents {
                             has_changed_parent.insert(dependent.clone());
@@ -1224,14 +1215,15 @@ impl Engine {
                             // from the resolved auto param IDs and re-evaluate
                             // affected value nodes.
                             if !resolved_ids.is_empty() {
+                                let es = self.eval_state.as_ref().unwrap();
                                 let wave2_dirty = crate::dirty::compute_dirty_cone(
                                     &resolved_ids,
-                                    reverse_index,
+                                    &es.reverse_index,
                                 );
                                 let wave2_eval = crate::dirty::compute_eval_set(
                                     &wave2_dirty,
                                     &self.demand,
-                                    trace_map,
+                                    &es.trace_map,
                                 );
 
                                 for node_id in &wave2_eval {
@@ -1278,7 +1270,7 @@ impl Engine {
 
         // Store state (actual_eval_set excludes early-cutoff-skipped nodes)
         self.last_eval_set = actual_eval_set;
-        self.current_snapshot = Some(new_snapshot);
+        self.eval_state.as_mut().unwrap().snapshot = new_snapshot;
 
         EvalResult {
             values,
@@ -1305,10 +1297,10 @@ impl Engine {
         let mut constraint_results = Vec::new();
         let mut diagnostics = Vec::new();
 
-        let snapshot = self.current_snapshot.as_ref()
-            .expect("check_constraints_with_values requires a snapshot");
+        let state = self.eval_state.as_ref()
+            .expect("check_constraints_with_values requires a prior call to eval()");
 
-        let constraint_nodes: Vec<_> = snapshot
+        let constraint_nodes: Vec<_> = state.snapshot
             .graph
             .constraints
             .iter()
@@ -1668,11 +1660,11 @@ impl Engine {
         &self,
         module: &CompiledModule,
     ) -> Option<CheckResult> {
-        let snapshot = self.current_snapshot.as_ref()?;
+        let state = self.eval_state.as_ref()?;
 
         // Build ValueMap from snapshot values
         let mut values = ValueMap::new();
-        for (id, (val, _det)) in snapshot.values.iter() {
+        for (id, (val, _det)) in state.snapshot.values.iter() {
             values.insert(id.clone(), val.clone());
         }
 
@@ -1773,11 +1765,11 @@ impl Engine {
         module: &CompiledModule,
         format: ExportFormat,
     ) -> Option<BuildResult> {
-        let snapshot = self.current_snapshot.as_ref()?;
+        let state = self.eval_state.as_ref()?;
 
         // Build ValueMap from snapshot values
         let mut values = ValueMap::new();
-        for (id, (val, _det)) in snapshot.values.iter() {
+        for (id, (val, _det)) in state.snapshot.values.iter() {
             values.insert(id.clone(), val.clone());
         }
 
