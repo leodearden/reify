@@ -238,6 +238,27 @@ fn parse_mixed_auto_and_normal_params() {
     assert!(z.default.is_none());
 }
 
+/// Line comment with `//` on its own line should parse without errors.
+#[test]
+fn parse_line_comment_double_slash() {
+    let source = r#"structure S {
+    // this is a comment
+    param x: Scalar = 1mm
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
+}
+
+/// Line comment with `//` after a member (inline comment) should parse without errors.
+#[test]
+fn parse_line_comment_after_member() {
+    let source = r#"structure S {
+    param x: Scalar = 1mm // inline comment
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
+}
+
 /// Parse bracket → all members carry non-empty spans.
 #[test]
 fn all_spans_valid() {
