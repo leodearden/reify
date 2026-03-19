@@ -1274,4 +1274,30 @@ mod tests {
             root.to_sexp()
         );
     }
+
+    // ── Function definition tests ─────────────────────────────────
+
+    #[test]
+    fn parse_simple_function_definition() {
+        let source = "fn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
+        let module = parse(source, reify_types::ModulePath::single("test_fn"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert_eq!(module.declarations.len(), 1);
+
+        let f = match &module.declarations[0] {
+            Declaration::Function(f) => f,
+            other => panic!("expected Function, got {:?}", other),
+        };
+        assert_eq!(f.name, "area");
+        assert!(!f.is_pub);
+        assert_eq!(f.params.len(), 2);
+        assert_eq!(f.params[0].name, "w");
+        assert_eq!(f.params[0].type_expr.name, "Scalar");
+        assert_eq!(f.params[1].name, "h");
+        assert_eq!(f.params[1].type_expr.name, "Scalar");
+        assert!(f.return_type.is_some());
+        assert_eq!(f.return_type.as_ref().unwrap().name, "Scalar");
+        assert!(f.body.let_bindings.is_empty());
+        assert!(matches!(&f.body.result_expr.kind, ExprKind::BinOp { op, .. } if op == "*"));
+    }
 }
