@@ -1296,6 +1296,88 @@ mod tests {
     }
 
     #[test]
+    fn max_constraint_residual_picks_worst() {
+        use super::max_constraint_residual;
+        use reify_types::{BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId};
+
+        // Three constraints: satisfied, violated by 1e-7, violated by 1e-5
+        let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
+        let one = CompiledExpr::literal(
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        // x > 1.0, x=2.0 → satisfied
+        let c1 = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), one, Type::Bool);
+
+        let two = CompiledExpr::literal(
+            Value::Scalar { si_value: 2.0000001, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        // x > 2.0000001, x=2.0 → violated by 1e-7
+        let c2 = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), two, Type::Bool);
+
+        let three = CompiledExpr::literal(
+            Value::Scalar { si_value: 2.00001, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        // x > 2.00001, x=2.0 → violated by 1e-5
+        let c3 = CompiledExpr::binop(BinOp::Gt, x_ref, three, Type::Bool);
+
+        let constraints = vec![
+            (ConstraintNodeId::new("P", 0), c1),
+            (ConstraintNodeId::new("P", 1), c2),
+            (ConstraintNodeId::new("P", 2), c3),
+        ];
+
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("P", "x"),
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+        );
+
+        let res = max_constraint_residual(&constraints, &values);
+        assert!(
+            (res - 1e-5).abs() < 1e-10,
+            "should return worst violation ~1e-5, got {:.2e}",
+            res
+        );
+    }
+
+    #[test]
+    fn max_constraint_residual_all_satisfied() {
+        use super::max_constraint_residual;
+        use reify_types::{BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId};
+
+        let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
+        let one = CompiledExpr::literal(
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let c1 = CompiledExpr::binop(BinOp::Gt, x_ref, one, Type::Bool);
+
+        let constraints = vec![(ConstraintNodeId::new("P", 0), c1)];
+
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("P", "x"),
+            Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+        );
+
+        let res = max_constraint_residual(&constraints, &values);
+        assert_eq!(res, 0.0, "all satisfied should return 0.0");
+    }
+
+    #[test]
+    fn max_constraint_residual_empty() {
+        use super::max_constraint_residual;
+
+        let constraints = vec![];
+        let values = ValueMap::new();
+        let res = max_constraint_residual(&constraints, &values);
+        assert_eq!(res, 0.0, "empty constraints should return 0.0");
+    }
+
+    #[test]
     fn constraint_residual_bool_literals() {
         use super::constraint_residual;
         use reify_types::{CompiledExpr, Type, Value};
