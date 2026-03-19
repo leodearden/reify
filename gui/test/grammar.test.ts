@@ -107,3 +107,53 @@ describe('Lezer grammar – bracket.ri node structure', () => {
     expect(countNodes(tree, 'BinaryExpression')).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe('Lezer grammar – additional syntax constructs', () => {
+  it('parses import declaration', () => {
+    const tree = parser.parse('import "std/prelude"');
+    expect(hasErrors(tree)).toBe(false);
+    expect(countNodes(tree, 'ImportDeclaration')).toBe(1);
+    const text = findFirstNodeText(tree, 'String', 'import "std/prelude"');
+    expect(text).toBe('"std/prelude"');
+  });
+
+  it('parses sub declaration with named arguments', () => {
+    const src = 'structure S { sub h = Hole(diameter: 6mm) }';
+    const tree = parser.parse(src);
+    expect(hasErrors(tree)).toBe(false);
+    expect(countNodes(tree, 'SubDeclaration')).toBe(1);
+    expect(countNodes(tree, 'NamedArgument')).toBe(1);
+  });
+
+  it('parses where clause on param', () => {
+    const src = 'structure S { param x = 1mm where active }';
+    const tree = parser.parse(src);
+    expect(hasErrors(tree)).toBe(false);
+    expect(countNodes(tree, 'ParamDeclaration')).toBe(1);
+    expect(countNodes(tree, 'WhereClause')).toBe(1);
+  });
+
+  it('parses guarded block', () => {
+    const src = 'structure S { where cond { param x = 1mm } }';
+    const tree = parser.parse(src);
+    expect(hasErrors(tree)).toBe(false);
+    expect(countNodes(tree, 'GuardedBlock')).toBe(1);
+    // GuardedBlock contains a Block which contains a ParamDeclaration
+    expect(countNodes(tree, 'ParamDeclaration')).toBe(1);
+  });
+
+  it('parses conditional expression', () => {
+    const src = 'structure S { let x = if a then b else c }';
+    const tree = parser.parse(src);
+    expect(hasErrors(tree)).toBe(false);
+    expect(countNodes(tree, 'ConditionalExpression')).toBe(1);
+  });
+
+  it('parses member access', () => {
+    const src = 'structure S { let x = a.b.c }';
+    const tree = parser.parse(src);
+    expect(hasErrors(tree)).toBe(false);
+    // a.b.c = (a.b).c = two nested MemberAccess nodes
+    expect(countNodes(tree, 'MemberAccess')).toBe(2);
+  });
+});
