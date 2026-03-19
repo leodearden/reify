@@ -9,64 +9,64 @@
       "id": "step-1",
       "type": "test",
       "description": "Write failing test: two different source texts with same module path produce different CompiledModule content_hashes. In boundary2_producer.rs, create test 'different_content_same_path_different_hash' that parses two sources (e.g. bracket with width=80mm vs width=120mm) with the same ModulePath, compiles both, and asserts their content_hashes differ. This will FAIL because current hash only uses path.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "e693693"
     },
     {
       "id": "step-2",
       "type": "test",
       "description": "Write failing test: same source compiled twice produces identical content_hashes (determinism). In boundary2_producer.rs, create test 'same_content_same_hash_deterministic' that parses and compiles the same source twice and asserts content_hashes are equal. This should PASS even before the fix (path-only hash is deterministic), serving as a regression guard.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "58f7e9c"
     },
     {
       "id": "step-3",
       "type": "test",
       "description": "Write failing test: changing a param default value changes content_hash. Create test 'param_default_change_changes_hash' — compile bracket source with thickness=5mm vs a version with thickness=10mm (same path), assert module content_hashes differ. Will FAIL with current path-only hash.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "0a3d85e"
     },
     {
       "id": "step-4",
       "type": "test",
       "description": "Write failing test: adding/removing a constraint changes content_hash. Create test 'add_constraint_changes_hash' — compile one source with 2 constraints and another with 3 constraints (same path and same params), assert module content_hashes differ. Will FAIL with current path-only hash.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "2ecb4b5"
     },
     {
       "id": "step-5",
       "type": "impl",
       "description": "Fix compile_structure() in lib.rs: replace `ContentHash::of_str(entity_name)` with a proper content hash that combines the name hash with hashes from all compiled content. Use ContentHash::combine_all over: (1) name hash, (2) each value_cell's default_expr.content_hash (or a sentinel ContentHash(0) for None), (3) each constraint's expr.content_hash, (4) each sub_component's content_hash. This makes TopologyTemplate hashes content-sensitive.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "290159e"
     },
     {
       "id": "step-6",
       "type": "impl",
       "description": "Fix compile() in lib.rs: replace `ContentHash::of_str(&format!(\"{}\", parsed.path))` with a combined hash of: (1) the path hash, (2) all template content_hashes (via combine_all), (3) import path hashes. This makes CompiledModule hashes content-sensitive. All 4 new tests should now pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "0f45d56"
     },
     {
       "id": "step-7",
       "type": "impl",
       "description": "Fix TopologyTemplateBuilder::build() in test-support/src/builders.rs: replace `ContentHash::of_str(&self.name)` with a combined hash matching the same pattern as compile_structure() — fold in value_cells default_expr hashes, constraint expr hashes, and sub_components content hashes.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "cb3958e"
     },
     {
       "id": "step-8",
       "type": "impl",
       "description": "Fix CompiledModuleBuilder::build() in test-support/src/builders.rs: replace `ContentHash::of_str(&format!(\"{}\", self.path))` with a combined hash matching compile() — fold in template content_hashes and import path hashes.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "06c6780"
     },
     {
       "id": "step-9",
       "type": "test",
       "description": "Run full test suite for reify-compiler and reify-test-support crates to verify all existing tests still pass and all 4 new tests pass. Fix any regressions if found.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "28e86b5"
     }
   ],
   "design_decisions": [
