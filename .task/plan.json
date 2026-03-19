@@ -187,15 +187,15 @@
       "id": "step-21",
       "type": "test",
       "description": "Write failing tests for compiler integration in crates/reify-compiler/src/lib.rs (inline mod tests): (a) `compile_geometry_linear_pattern_recognized`: verify that the new geometry function name 'linear_pattern' is recognized by is_geometry_function(). (b) Similarly for 'circular_pattern', 'mirror', 'loft', 'shell', 'thicken', 'draft'. Currently fails because is_geometry_function only recognizes box/cylinder/sphere.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "7bfd145"
     },
     {
       "id": "step-22",
       "type": "impl",
       "description": "Update crates/reify-compiler/src/lib.rs: (a) Extend is_geometry_function() to also match 'linear_pattern' | 'circular_pattern' | 'mirror' | 'loft' | 'shell' | 'thicken' | 'draft'. (b) Extend compile_geometry_call() to handle each new function name, mapping arguments to the appropriate CompiledGeometryOp variant (Pattern, Sweep, or extended Modify). For example, linear_pattern(target_ref, dx, dy, dz, count, spacing) maps to CompiledGeometryOp::Pattern { kind: PatternKind::Linear, ... }. (c) Update the eval compile_geometry_op() function in crates/reify-eval/src/lib.rs to map the new CompiledGeometryOp variants to the corresponding GeometryOp variants. Step-21 tests pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "7b3420a"
     }
   ],
   "design_decisions": [
