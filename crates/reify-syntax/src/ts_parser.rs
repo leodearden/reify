@@ -942,6 +942,95 @@ mod tests {
     }
 
     #[test]
+    fn parse_minimize_complex_expression() {
+        let source = r#"structure S {
+    param width: Scalar = 80mm
+    param height: Scalar = 100mm
+    minimize width * height
+}"#;
+        let module = parse(source, reify_types::ModulePath::single("test_min_complex"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+
+        match &structure.members[2] {
+            MemberDecl::Minimize(m) => {
+                match &m.expr.kind {
+                    ExprKind::BinOp { op, .. } => assert_eq!(op, "*"),
+                    other => panic!("expected BinOp(*), got {:?}", other),
+                }
+            }
+            other => panic!("expected Minimize, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_minimize_with_other_members() {
+        let source = r#"structure S {
+    param w: Scalar = 80mm
+    param h: Scalar = 100mm
+    let vol = w * h
+    constraint w > 0mm
+    minimize w
+}"#;
+        let module = parse(source, reify_types::ModulePath::single("test_min_mixed"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+
+        // 2 params + 1 let + 1 constraint + 1 minimize = 5 members
+        assert_eq!(structure.members.len(), 5);
+
+        // Verify minimize is present alongside other members
+        assert!(
+            structure.members.iter().any(|m| matches!(m, MemberDecl::Minimize(_))),
+            "should contain a Minimize member"
+        );
+        assert!(
+            structure.members.iter().any(|m| matches!(m, MemberDecl::Constraint(_))),
+            "should contain a Constraint member"
+        );
+    }
+
+    #[test]
+    fn minimize_span_and_hash() {
+        let source = r#"structure S {
+    param x: Scalar = 5mm
+    minimize x
+}"#;
+        let module = parse(source, reify_types::ModulePath::single("test_min_span"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+
+        match &structure.members[1] {
+            MemberDecl::Minimize(m) => {
+                // Span should cover the full "minimize x" text
+                let text = &source[m.span.start as usize..m.span.end as usize];
+                assert!(text.starts_with("minimize"), "span text: {:?}", text);
+                assert!(text.contains("x"), "span text should contain 'x': {:?}", text);
+
+                // Content hash should match the source text of the node
+                assert_eq!(
+                    m.content_hash,
+                    reify_types::ContentHash::of_str(text),
+                    "content_hash should match source text"
+                );
+            }
+            other => panic!("expected Minimize, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn tree_sitter_parses_bracket_source_without_errors() {
         let source = reify_test_support::bracket_source();
         let mut parser = tree_sitter::Parser::new();
