@@ -1138,6 +1138,61 @@ mod tests {
     }
 
     #[test]
+    fn kernel_thread_responsive_after_errors() {
+        let handle = super::OcctKernelHandle::spawn();
+
+        // 1. Create a valid box (id=1) — should succeed
+        let box_h = handle
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        assert_eq!(box_h.id, GeometryHandleId(1));
+
+        // 2. Union with invalid handles — should return Err(InvalidReference)
+        let union_result = handle.execute(&GeometryOp::Union {
+            left: GeometryHandleId(999),
+            right: GeometryHandleId(998),
+        });
+        assert!(union_result.is_err());
+
+        // 3. Box with zero width — should return Err(OperationFailed) from validation
+        let zero_result = handle.execute(&GeometryOp::Box {
+            width: Value::Real(0.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        });
+        assert!(zero_result.is_err());
+
+        // 4. Query volume on invalid handle — should return Err
+        let query_result =
+            handle.query(&GeometryQuery::Volume(GeometryHandleId(999)));
+        assert!(query_result.is_err());
+
+        // 5. Create another valid box — proves kernel thread is still alive
+        let box2_h = handle
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // 6. Query volume of the new box — should return correct value
+        let vol = handle
+            .query(&GeometryQuery::Volume(box2_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!((v - 6000.0).abs() < 1.0, "expected ~6000, got {v}");
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn sync_drop_still_joins_thread() {
         // Sync (non-async) Drop should preserve existing join behavior
         let handle = super::OcctKernelHandle::spawn();

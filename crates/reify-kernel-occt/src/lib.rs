@@ -76,10 +76,12 @@ impl OcctKernel {
 
     /// Look up a shape by handle ID.
     fn get_shape(&self, id: GeometryHandleId) -> Result<&ffi::ffi::OcctShape, GeometryError> {
-        self.shapes
+        let ptr = self
+            .shapes
             .get(&id.0)
-            .map(|ptr| ptr.as_ref().unwrap())
-            .ok_or(GeometryError::InvalidReference(id))
+            .ok_or(GeometryError::InvalidReference(id))?;
+        ptr.as_ref()
+            .ok_or_else(|| GeometryError::OperationFailed("shape handle is null".into()))
     }
 }
 
@@ -102,17 +104,43 @@ impl OcctKernel {
                 let w = extract_f64(width)?;
                 let h = extract_f64(height)?;
                 let d = extract_f64(depth)?;
+                if !(w.is_finite()
+                    && w > 0.0
+                    && h.is_finite()
+                    && h > 0.0
+                    && d.is_finite()
+                    && d > 0.0)
+                {
+                    return Err(GeometryError::OperationFailed(
+                        "box dimensions must be finite positive values".into(),
+                    ));
+                }
                 ffi::ffi::make_box(w, h, d)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Cylinder { radius, height } => {
                 let r = extract_f64(radius)?;
                 let h = extract_f64(height)?;
+                if !(r.is_finite() && r > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "cylinder radius must be a finite positive value".into(),
+                    ));
+                }
+                if !(h.is_finite() && h > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "cylinder height must be a finite positive value".into(),
+                    ));
+                }
                 ffi::ffi::make_cylinder(r, h)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Sphere { radius } => {
                 let r = extract_f64(radius)?;
+                if !(r.is_finite() && r > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "sphere radius must be a finite positive value".into(),
+                    ));
+                }
                 ffi::ffi::make_sphere(r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -137,6 +165,11 @@ impl OcctKernel {
             GeometryOp::Fillet { target, radius } => {
                 let shape = self.get_shape(*target)?;
                 let r = extract_f64(radius)?;
+                if !(r.is_finite() && r > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "fillet radius must be a finite positive value".into(),
+                    ));
+                }
                 ffi::ffi::fillet_all_edges(shape, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -272,7 +305,10 @@ impl WarmStartable for OcctKernel {
         let mut warm_shapes = HashMap::new();
         let mut total_bytes: usize = 0;
         for (&id, shape) in &self.shapes {
-            match ffi::ffi::serialize_brep(shape.as_ref().unwrap()) {
+            let Some(shape_ref) = shape.as_ref() else {
+                continue; // Skip null shapes (best-effort, like serialization failures)
+            };
+            match ffi::ffi::serialize_brep(shape_ref) {
                 Ok(brep) => {
                     total_bytes += brep.len();
                     warm_shapes.insert(id, brep);
@@ -321,6 +357,20 @@ impl WarmStartable for OcctKernel {
         if !staged.is_empty() {
             self.shapes = staged;
             self.next_id = warm.next_id;
+        }
+    }
+}
+
+#[cfg(test)]
+impl OcctKernel {
+    /// Inject a null `UniquePtr<OcctShape>` into the shapes map for testing.
+    /// This simulates a corrupted shape handle (present in map but wrapping a
+    /// null C++ pointer).
+    fn insert_null_shape(&mut self, id: u64) {
+        self.shapes
+            .insert(id, cxx::UniquePtr::null());
+        if id >= self.next_id {
+            self.next_id = id + 1;
         }
     }
 }
@@ -631,6 +681,334 @@ mod tests {
             GeometryHandleId(10),
             "next_id should be updated to 10 after partial restore"
         );
+    }
+
+    #[test]
+    fn get_shape_null_ptr_returns_error_not_panic() {
+        let mut kernel = OcctKernel::new();
+        // Create a valid box (id=1)
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // Inject a null shape at id=42
+        kernel.insert_null_shape(42);
+
+        // Valid shape should still be accessible
+        assert!(kernel.get_shape(GeometryHandleId(1)).is_ok());
+
+        // Null shape should return Err(OperationFailed), not panic
+        let result = kernel.get_shape(GeometryHandleId(42));
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.to_lowercase().contains("null"),
+                    "error should mention null, got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for null shape, got Ok"),
+        }
+
+        // Non-existent key should still return InvalidReference
+        match kernel.get_shape(GeometryHandleId(999)) {
+            Err(GeometryError::InvalidReference(id)) => {
+                assert_eq!(id, GeometryHandleId(999));
+            }
+            Err(other) => panic!("expected InvalidReference, got {:?}", other),
+            Ok(_) => panic!("expected error for missing shape, got Ok"),
+        }
+    }
+
+    #[test]
+    fn warm_state_skips_null_shapes() {
+        let mut kernel = OcctKernel::new();
+
+        // Create a valid box (id=1)
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // Inject a null shape at id=2
+        kernel.insert_null_shape(2);
+
+        // warm_state should NOT panic and should return Some (valid shape exists)
+        let state = kernel.warm_state();
+        assert!(state.is_some(), "should serialize the valid shape");
+
+        // Roundtrip: restore in a new kernel
+        let mut kernel_b = OcctKernel::new();
+        kernel_b.with_warm_state(state.unwrap());
+
+        // Valid box should be preserved (volume ~6000)
+        let vol = kernel_b
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match vol {
+            Value::Real(v) => assert!((v - 6000.0).abs() < 1.0, "expected ~6000, got {v}"),
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // Null shape (id=2) should NOT be present in restored kernel
+        let result = kernel_b.query(&GeometryQuery::Volume(GeometryHandleId(2)));
+        assert!(result.is_err(), "null shape should not survive warm-start");
+    }
+
+    #[test]
+    fn execute_box_zero_dimension_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(0.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-width box"),
+        }
+    }
+
+    #[test]
+    fn execute_box_negative_dimension_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(-5.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for negative-width box"),
+        }
+    }
+
+    #[test]
+    fn execute_cylinder_zero_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Cylinder {
+            radius: Value::Real(0.0),
+            height: Value::Real(10.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-radius cylinder"),
+        }
+    }
+
+    #[test]
+    fn execute_cylinder_negative_height_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Cylinder {
+            radius: Value::Real(5.0),
+            height: Value::Real(-1.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for negative-height cylinder"),
+        }
+    }
+
+    #[test]
+    fn execute_sphere_zero_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Sphere {
+            radius: Value::Real(0.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-radius sphere"),
+        }
+    }
+
+    #[test]
+    fn execute_sphere_negative_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Sphere {
+            radius: Value::Real(-1.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for negative-radius sphere"),
+        }
+    }
+
+    #[test]
+    fn execute_fillet_zero_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        // Create a valid box first
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Fillet {
+            target: box_h.id,
+            radius: Value::Real(0.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-radius fillet"),
+        }
+    }
+
+    // --- NaN / Infinity parameter rejection tests (step-9) ---
+
+    #[test]
+    fn execute_box_nan_dimension_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(f64::NAN),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN-width box"),
+        }
+    }
+
+    #[test]
+    fn execute_box_infinity_dimension_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(f64::INFINITY),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity-width box"),
+        }
+    }
+
+    #[test]
+    fn execute_box_neg_infinity_dimension_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(f64::NEG_INFINITY),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for neg-infinity-width box"),
+        }
+    }
+
+    #[test]
+    fn execute_cylinder_nan_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Cylinder {
+            radius: Value::Real(f64::NAN),
+            height: Value::Real(10.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN-radius cylinder"),
+        }
+    }
+
+    #[test]
+    fn execute_cylinder_infinity_height_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Cylinder {
+            radius: Value::Real(5.0),
+            height: Value::Real(f64::INFINITY),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity-height cylinder"),
+        }
+    }
+
+    #[test]
+    fn execute_sphere_nan_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Sphere {
+            radius: Value::Real(f64::NAN),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN-radius sphere"),
+        }
+    }
+
+    #[test]
+    fn execute_sphere_infinity_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Sphere {
+            radius: Value::Real(f64::INFINITY),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity-radius sphere"),
+        }
+    }
+
+    #[test]
+    fn execute_fillet_nan_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Fillet {
+            target: box_h.id,
+            radius: Value::Real(f64::NAN),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN-radius fillet"),
+        }
+    }
+
+    #[test]
+    fn execute_fillet_infinity_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Fillet {
+            target: box_h.id,
+            radius: Value::Real(f64::INFINITY),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity-radius fillet"),
+        }
     }
 
     #[test]
