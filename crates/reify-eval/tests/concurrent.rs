@@ -249,7 +249,7 @@ fn rollback_concurrent_edit_restores_pending_to_final() {
     // prepare/edit uses the same IDs (no gaps).
     // We can verify this indirectly: calling edit_param should produce the
     // same version/snapshot IDs that the failed prepare would have used.
-    let seq_result = engine.edit_param(width_id.clone(), Value::length(0.1));
+    let seq_result = engine.edit_param(width_id.clone(), Value::length(0.1)).unwrap();
 
     // The snapshot after edit_param should have the same IDs as the setup had
     let post_snapshot = engine.snapshot().unwrap();

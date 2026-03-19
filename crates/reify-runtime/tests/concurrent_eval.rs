@@ -456,7 +456,7 @@ async fn bracket_concurrent_matches_sequential() {
     let width_id = ValueCellId::new(e, "width");
 
     // Sequential edit
-    let seq_result = engine_seq.edit_param(width_id.clone(), Value::length(0.1));
+    let seq_result = engine_seq.edit_param(width_id.clone(), Value::length(0.1)).unwrap();
 
     // Concurrent edit
     let cancel = CancellationToken::new();
@@ -560,7 +560,7 @@ async fn rollback_on_task_panicked_restores_engine_state() {
     );
 
     // (2) Sequential edit_param should succeed with correct values
-    let seq_result = engine.edit_param(a_id.clone(), Value::Real(50.0));
+    let seq_result = engine.edit_param(a_id.clone(), Value::Real(50.0)).unwrap();
     assert_eq!(
         seq_result.values.get(&ValueCellId::new(e, "b")),
         Some(&Value::Real(100.0)),

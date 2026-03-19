@@ -982,9 +982,9 @@ impl Engine {
         &mut self,
         cell: ValueCellId,
         new_value: reify_types::Value,
-    ) -> EvalResult {
+    ) -> Result<EvalResult, EngineError> {
         let state = self.eval_state.as_ref()
-            .expect("edit_param requires a prior call to eval()");
+            .ok_or(EngineError::NotInitialized)?;
 
         // Clone snapshot and extract references (O(1) via PersistentMap)
         let parent_id = state.snapshot.id;
@@ -1272,11 +1272,11 @@ impl Engine {
         self.last_eval_set = actual_eval_set;
         self.eval_state.as_mut().unwrap().snapshot = new_snapshot;
 
-        EvalResult {
+        Ok(EvalResult {
             values,
             diagnostics,
             resolved_params,
-        }
+        })
     }
 
     /// Incrementally re-evaluate and check constraints after changing a parameter.
@@ -1341,7 +1341,8 @@ impl Engine {
         cell: ValueCellId,
         new_value: reify_types::Value,
     ) -> CheckResult {
-        let eval_result = self.edit_param(cell, new_value);
+        let eval_result = self.edit_param(cell, new_value)
+            .expect("edit_check requires a prior call to eval()");
         let (constraint_results, constraint_diagnostics) =
             self.check_constraints_with_values(&eval_result.values);
 
