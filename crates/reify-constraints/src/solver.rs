@@ -1423,6 +1423,51 @@ mod tests {
     }
 
     #[test]
+    fn cost_function_penalizes_out_of_bounds() {
+        use super::ConstraintCostFunction;
+        use argmin::core::CostFunction;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
+            ValueCellId,
+        };
+
+        let x_id = ValueCellId::new("Part", "x");
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let zero = CompiledExpr::literal(
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        // Trivially satisfied constraint: x > 0.0
+        let constraint = CompiledExpr::binop(BinOp::Gt, x_ref, zero, Type::Bool);
+
+        let auto_params = vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 0.010)),
+        }];
+        let constraints = vec![(ConstraintNodeId::new("Part", 0), constraint)];
+        let base_values = ValueMap::new();
+
+        let cost_fn = ConstraintCostFunction {
+            auto_params: &auto_params,
+            constraints: &constraints,
+            base_values: &base_values,
+            objective: &None,
+        };
+
+        // In bounds: x=0.005
+        let cost_in = cost_fn.cost(&vec![0.005]).unwrap();
+        // Out of bounds: x=0.020 (above upper bound 0.010 by 0.010)
+        let cost_out = cost_fn.cost(&vec![0.020]).unwrap();
+
+        assert!(
+            cost_out > cost_in,
+            "out-of-bounds param should have higher cost (in={:.2e}, out={:.2e})",
+            cost_in, cost_out
+        );
+    }
+
+    #[test]
     fn already_satisfied_returns_solved_immediately() {
         use crate::DimensionalSolver;
         use reify_types::{
