@@ -137,19 +137,17 @@ impl EngineSession {
     ///
     /// Source changes can alter topology, so we create a fresh parse/compile/eval cycle.
     /// The existing engine state (snapshot, caches) is reused where possible via check().
+    ///
+    /// On error (parse or compile failure), the session state is left completely unchanged —
+    /// source_map, module_name, compiled, and last_check all retain their previous values.
     pub fn update_source(&mut self, path: &str, content: &str) -> Result<GuiState, String> {
         let module_name = Path::new(path)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
-        // Store updated source with normalized key; clear stale entries
-        let normalized_key = format!("{}.ri", module_name);
-        self.source_map.clear();
-        self.source_map.insert(normalized_key, content.to_string());
-        self.module_name = Some(module_name.to_string());
-
         // Re-parse and re-compile from scratch (topology may have changed)
+        // All state mutation is deferred until after successful parse+compile
         let parsed = reify_syntax::parse(content, ModulePath::single(module_name));
 
         if !parsed.errors.is_empty() {
@@ -172,6 +170,12 @@ impl EngineSession {
                 .collect();
             return Err(format!("Compile errors: {}", msgs.join("; ")));
         }
+
+        // Parse+compile succeeded — now atomically update all state
+        let normalized_key = format!("{}.ri", module_name);
+        self.source_map.clear();
+        self.source_map.insert(normalized_key, content.to_string());
+        self.module_name = Some(module_name.to_string());
 
         let check_result = self.engine.check(&compiled);
 
