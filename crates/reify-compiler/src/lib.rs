@@ -183,7 +183,18 @@ pub enum GeomRef {
 // --- Known geometry-producing functions (M1) ---
 /// Returns true if the function name refers to a geometry primitive.
 fn is_geometry_function(name: &str) -> bool {
-    matches!(name, "box" | "cylinder" | "sphere")
+    matches!(
+        name,
+        "box" | "cylinder"
+            | "sphere"
+            | "linear_pattern"
+            | "circular_pattern"
+            | "mirror"
+            | "loft"
+            | "shell"
+            | "thicken"
+            | "draft"
+    )
 }
 
 // --- Unit conversion ---

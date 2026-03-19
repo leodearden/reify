@@ -173,15 +173,15 @@
       "id": "step-19",
       "type": "test",
       "description": "Write integration tests in crates/reify-kernel-occt/src/lib.rs: (a) `new_ops_export_step`: Create a mirror result and a linear pattern result, export each to STEP, assert output contains 'ISO-10303-21'. (b) `new_ops_tessellate`: Create a mirror result and a loft result, tessellate each, assert non-empty vertices, indices divisible by 3. (c) `pattern_plus_boolean`: Create a plate (100x60x10 box), create a small cylinder (r=3, h=20), apply LinearPattern to cylinder (count=5, spacing=15, direction=[1,0,0]), then boolean difference of plate minus each patterned hole. Verify volume is less than original plate. This tests compound operations.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "129c7f5"
     },
     {
       "id": "step-20",
       "type": "impl",
       "description": "Verify integration tests pass. All new operations produce valid TopoDS_Shape results that can be exported to STEP and tessellated through existing export/tessellate code paths. Fix any issues with compound shapes not exporting correctly (compounds should work since STEP supports them). For pattern+boolean test, may need to iterate compound children or use the compound directly as a boolean operand. If compound boolean fails, adjust C++ pattern implementation to produce a single fused solid instead of a compound.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "129c7f5"
     },
     {
       "id": "step-21",
