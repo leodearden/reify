@@ -115,36 +115,36 @@
       "id": "step-10",
       "type": "impl",
       "description": "Implement reference safety checking. Extend CompilationScope.names to map name -> (ValueCellId, Type, Option<ValueCellId>) where the third element is the guard cell ID. Update register() to accept optional guard_cell. In compile_expr() for Ident, when resolved cell has a guard and current compilation context has no guard or weaker guard, push Diagnostic::error about unsafe reference. Pass guard context through compile of guarded group members.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "2551124"
     },
     {
       "id": "step-11",
       "type": "test",
       "description": "Write test: reference_safety_same_guard_ok. Parse `structure S { param active : Bool = true\\n where active { param x : Scalar = 5mm\\n let y = x } }`. Both x and y are under the same guard 'active'. Compile should produce no reference safety error diagnostics.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "2551124"
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "Ensure same-guard and stronger-guard references pass validation. When both referencing context and referenced cell share the same guard_value_cell ID, no error is emitted. For conjunction guards (step-6), check if the referenced cell's guard ID appears in the referencing context's guard chain. This may already work from step-10; verify and fix edge cases.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "2551124"
     },
     {
       "id": "step-13",
       "type": "test",
       "description": "Write failing test in guard_eval.rs: eval_guard_true_includes_members. Build a CompiledModule via builders: Bool param 'active' with default true, guarded_group with guard_expr=ValueRef(active), guard_value_cell='S.__guard_0', member param 'x' with default 5mm. Create Engine with MockConstraintChecker, call eval(). Assert 'x' value in result is 0.005 (5mm SI).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f84d91e"
     },
     {
       "id": "step-14",
       "type": "impl",
       "description": "Implement guard processing in EvaluationGraph::from_templates(). For each template.guarded_groups: (1) create ValueCellNode for guard_value_cell (Bool, Let, default_expr=guard_expr), (2) create ValueCellNodes for all members and else_members, (3) create ConstraintNodeData for all constraints and else_constraints, (4) store GuardedGroupInfo, (5) add guard_value_cell to structure_controlling. In Engine::eval(), evaluate guard ValueCells during the Let evaluation pass (they're Let kind), then evaluate guarded members only when guard evaluates to true (Bool(true)).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f84d91e"
     },
     {
       "id": "step-15",
