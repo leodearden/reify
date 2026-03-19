@@ -24,6 +24,40 @@ use crate::deps::{extract_dependency_trace, DependencyTrace, ReverseDependencyIn
 use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
 
+/// Error returned when an operation requires prior eval() but none has been performed.
+#[derive(Debug)]
+pub enum EngineError {
+    /// The engine has not been initialized — call eval() first.
+    NotInitialized,
+}
+
+impl std::fmt::Display for EngineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EngineError::NotInitialized => {
+                write!(f, "engine not initialized: call eval() before this operation")
+            }
+        }
+    }
+}
+
+impl std::error::Error for EngineError {}
+
+/// Consolidated evaluation state produced by eval().
+///
+/// Groups the snapshot, reverse dependency index, and trace map that are
+/// always set/unset atomically. This replaces three separate Option fields
+/// in Engine, enforcing the invariant that all three are present together.
+#[derive(Debug)]
+pub struct EvaluationState {
+    /// Current snapshot from last eval() or edit_param().
+    pub snapshot: Snapshot,
+    /// Reverse dependency index for dirty cone computation.
+    pub reverse_index: ReverseDependencyIndex,
+    /// Forward dependency trace map for topological sort.
+    pub trace_map: HashMap<NodeId, DependencyTrace>,
+}
+
 /// The engine facade — main entry point for evaluation.
 pub struct Engine {
     constraint_checker: Box<dyn ConstraintChecker>,
