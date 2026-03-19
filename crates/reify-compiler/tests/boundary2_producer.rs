@@ -1070,6 +1070,50 @@ structure S { param x: Scalar = 5mm }"#;
     );
 }
 
+/// Enum access expression should compile to a literal Value::Enum.
+#[test]
+fn compile_enum_access_to_literal() {
+    let source = r#"enum Direction { In, Out, Bidi }
+structure S { let d = Direction.In }"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_access"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // No error diagnostics expected
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+
+    let template = &compiled.templates[0];
+    let d_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d")
+        .expect("should have 'd' value cell");
+
+    let d_expr = d_cell.default_expr.as_ref().expect("let should have expr");
+
+    match &d_expr.kind {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
+            type_name,
+            variant,
+        }) => {
+            assert_eq!(type_name, "Direction");
+            assert_eq!(variant, "In");
+        }
+        other => panic!("expected Literal(Enum), got {:?}", other),
+    }
+
+    assert_eq!(
+        d_expr.result_type,
+        reify_types::Type::Enum("Direction".into())
+    );
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
