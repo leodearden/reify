@@ -1,209 +1,110 @@
 {
-  "task_id": "35",
-  "title": "Ensure that the M4 user-facing interactive surface has been implemented",
-  "modules": ["crates/reify-cli", "crates/reify-lsp"],
-  "analysis": "This task verifies and hardens the M4 user-facing interactive surface. The codebase already has a fully-implemented LSP server (tower-lsp with hover, goto-def, completion, stateful diagnostics, constraint violation reporting with source spans, Mutex poison recovery) and a CLI binary with `check`, `build`, and `lsp` commands.\n\nCurrent test coverage gaps that need filling:\n1. **CLI `reify check` has NO integration test** — The only CLI tests are for the `lsp` subcommand (command recognition + help text). There are no tests that actually run `reify check <file>` against a `.ri` fixture and verify output/exit-code.\n2. **CLI `reify lsp` test is superficial** — The existing `lsp_command_is_recognized` test sends null stdin and only checks stderr doesn't contain 'Unknown command'. It does NOT verify the LSP server actually handles JSON-RPC protocol messages through the binary entry point.\n3. **No test proves the interactive loop works through the CLI binary** — All interactive edit loop tests use `LspService::new(ReifyLanguageServer::new)` and call methods directly on the inner server. This tests the library code but not the stdio transport wiring that real users depend on.\n\nThe plan adds integration tests that exercise user-facing surfaces as real users would: spawning the binary, writing fixture files, sending JSON-RPC over stdin/stdout, and verifying outputs. The `reify build` command requires OCCT kernel availability, so its integration test is gated behind a cfg/env check.\n\nThe LSP is NOT a stub — it's a complete implementation with 580+ lines across server.rs, diagnostics.rs, convert.rs, document.rs, hover.rs, goto_def.rs, completion.rs, and analysis.rs. The CLI properly wires all three commands. The interactive loop (open → edit → diagnostics) works through the LSP server with stateful EvalState persistence. This task's job is to prove all of this through user-facing integration tests.\n\n**Post-review addendum:** Four blocking issues were identified: (1) `read_jsonrpc()` blocks indefinitely with no timeout, (2) `lsp_command_is_recognized` is duplicated in cli_smoke.rs and cli_lsp.rs, (3) `lsp_initialize_returns_capabilities` uses naive sequential reads instead of the spawn_reader+wait_for_response pattern that correctly filters by id, (4) `child.wait()` with no timeout in both protocol tests. Steps 13-18 address these issues.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Create a test fixture directory `crates/reify-cli/tests/fixtures/` with `bracket.ri` (valid bracket source) and `bracket_violating.ri` (thickness=1mm, violates constraint). These are file-system fixtures for CLI integration tests that invoke the binary with file paths.",
-      "status": "done",
-      "commit": "34d9147",
-      "tests": []
-    }
-  ],
+  "task_id": "36",
+  "title": "Ensure that forward let-binding references have been implemented correctly",
+  "modules": ["crates/reify-eval"],
+  "analysis": "The cold-start evaluation path in Engine::eval() (lib.rs lines 679-722) evaluates Let bindings by iterating template.value_cells in source (declaration) order. When a let binding references another let declared later in the same scope, the referenced let hasn't been evaluated yet and its value is missing from the ValueMap. eval_expr calls values.get_or_undef(), which returns Value::Undef for missing references, producing incorrect results.\n\nThe same bug exists in the post-resolution re-evaluation loop (lib.rs lines 837-878), where let bindings are re-evaluated after auto param resolution, again in source order. If a forward-referencing let depends on another let that depends on a resolved auto param, the source-order re-evaluation produces stale/incorrect values.\n\nThe incremental path (edit_param) does NOT have this bug because it uses compute_eval_set() which calls topological_sort(), ensuring dependencies are evaluated before dependents regardless of declaration order.\n\nThe fix is to topologically sort let bindings before evaluating them in both cold-start locations. The topological_sort utility in dirty.rs and the extract_dependency_trace utility in deps.rs already exist and can be reused.\n\nNo existing tests exercise forward let-binding references — all existing tests declare let bindings in dependency order (e.g., x before y where y=x+1).",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in `crates/reify-cli/tests/cli_check.rs`: `reify check fixtures/bracket.ri` exits with code 0, stdout contains 'All constraints satisfied', and stderr does NOT contain 'Unknown command'. Uses `Command::new(env!(\"CARGO_BIN_EXE_reify\"))` with `.args([\"check\", fixture_path])`. Fixture path is resolved relative to the test file using `CARGO_MANIFEST_DIR`.",
+      "description": "Write failing test forward_let_ref_cold_start_simple in incremental.rs: template with param a (default 5, Int), let y = x + 1 (forward ref to x, declared first), let x = a + 10 (declared second). Assert cold-start produces x=15, y=16. Currently fails because y evaluates before x and gets Undef via get_or_undef.",
       "status": "done",
-      "commit": "b51c486"
+      "commit": "41094a3"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Ensure `reify check` works correctly with the fixture file. The implementation already exists in `cmd_check()` — this step verifies it passes. If the test fails, diagnose and fix the issue (likely path resolution or missing fixture).",
+      "description": "Fix cold-start let evaluation in Engine::eval() to topologically sort let bindings before evaluating. Replace the source-order 'for cell in &template.value_cells' loop (lines 679-722) with: (1) collect all Let cells with expressions into a HashSet<NodeId>, (2) build HashMap<NodeId, DependencyTrace> via extract_dependency_trace for each, (3) call topological_sort from dirty.rs, (4) iterate sorted result, looking up each cell from value_cells by ID to evaluate. This reuses existing infrastructure and makes step-1 pass.",
       "status": "done",
-      "commit": "b51c486"
+      "commit": "5a90b8b"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test in `crates/reify-cli/tests/cli_check.rs`: `reify check fixtures/bracket_violating.ri` exits with non-zero code, stdout contains 'VIOLATED' and 'Some constraints violated'. Proves the CLI surfaces constraint violations to users.",
+      "description": "Write test forward_let_ref_cold_start_deep_reverse_chain in incremental.rs: all let bindings in fully reversed dependency order. Template: param a (default 0, Int), let z = y + 1 (declared 1st), let y = x + 1 (declared 2nd), let x = a + 1 (declared 3rd). Assert x=1, y=2, z=3. Exercises 3-deep topological sort in cold-start. Should pass after step-2 fix.",
       "status": "done",
-      "commit": "0d35347"
+      "commit": "ef9f783"
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Ensure `reify check` correctly reports constraint violations. The implementation should already handle this — verify and fix if needed.",
+      "type": "test",
+      "description": "Write test forward_let_ref_cold_start_diamond in incremental.rs: diamond dependency with forward refs. Template: param a (default 10, Int), let d = b + c (forward refs to both, declared 1st), let b = a + 1 (declared 2nd), let c = a + 2 (declared 3rd). Assert b=11, c=12, d=23. Exercises converging forward references. Should pass after step-2 fix.",
       "status": "done",
-      "commit": "0d35347"
+      "commit": "8b3e572"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test in `crates/reify-cli/tests/cli_check.rs`: `reify check nonexistent.ri` exits with non-zero code and stderr contains error message. Validates error handling for missing files.",
+      "description": "Write failing test forward_let_ref_post_resolution in incremental.rs: forward ref during post-resolution re-evaluation. Template: param p (default mm(1.0), length), auto x (length), let c = b + x (forward ref to b, declared before b), let b = x + p (declared after c). MockConstraintSolver resolves x=mm(10.0). After cold-start: x=0.01 SI, b=x+p=0.01+0.001=0.011 SI, c=b+x=0.011+0.01=0.021 SI. Test asserts c has correct value. Fails because post-resolution re-eval iterates in source order, evaluating c before b is re-evaluated with resolved x.",
       "status": "done",
-      "commit": "0d35347"
+      "commit": "54a9342"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Ensure `reify check` handles missing files gracefully. Already implemented via `std::fs::read_to_string` error handling in `parse_and_compile()` — verify it passes.",
+      "description": "Fix post-resolution let re-evaluation in Engine::eval() (lines 837-878) to topologically sort let bindings before re-evaluating. Apply the same pattern as step-2: collect Let cells into NodeId set, build trace map, topological_sort, then evaluate in sorted order. This makes step-5 pass.",
       "status": "done",
-      "commit": "0d35347"
+      "commit": "967cd5e"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test in `crates/reify-cli/tests/cli_lsp_protocol.rs`: Spawn `reify lsp` process with piped stdin/stdout, send a JSON-RPC initialize request (Content-Length header + JSON body with method 'initialize'), read the response, verify it contains 'textDocumentSync' capability. Then send shutdown + exit. This proves the LSP server is reachable as a user-facing surface via the CLI binary, not just through internal test adapters.",
+      "description": "Write test forward_let_ref_incremental_edit_param in incremental.rs: verify incremental path handles forward refs correctly. Template: param a (default 5, Int), let y = x + 1 (forward ref), let x = a + 10. Cold-start → x=15, y=16. Edit a from 5 to 20 → x=30, y=31. Confirms incremental topo sort (already present in compute_eval_set) handles forward-declared lets correctly after param edit.",
       "status": "done",
-      "commit": "1a01988"
+      "commit": "5321b0a"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Ensure the JSON-RPC protocol test passes through the CLI binary. The `cmd_lsp()` function already creates a tokio runtime and calls `run_server()`. If the test fails, it likely means the stdin/stdout wiring or JSON-RPC framing needs adjustment. Write a small helper function `send_jsonrpc(stdin, method, params) -> String` and `read_jsonrpc(stdout) -> serde_json::Value` for the test to use.",
-      "status": "done",
-      "commit": "1a01988"
-    },
-    {
-      "id": "step-9",
       "type": "test",
-      "description": "Write failing test in `crates/reify-cli/tests/cli_lsp_protocol.rs`: Full interactive loop through the binary's stdio transport. (1) Initialize, (2) send didOpen with valid bracket source, (3) send didChange with violating source, (4) send didChange back to valid source, (5) shutdown+exit. Verify the process exits cleanly with code 0. This is the capstone test proving the interactive loop is reachable through the user-facing CLI surface.",
+      "description": "Write test forward_let_ref_cold_start_matches_incremental in incremental.rs: verify cold-start and incremental produce identical values for a forward-ref template. Template: param a (default 3, Int), let c = b * 2 (forward ref), let b = a + 7. Cold-start: b=10, c=20. Edit a to 13 → b=20, c=40. Then create a fresh Engine with a=13 as default and cold-start eval. Assert fresh cold-start values match incremental edit values. Proves both evaluation paths produce consistent results for forward-ref templates.",
       "status": "done",
-      "commit": "397f14a"
-    },
-    {
-      "id": "step-10",
-      "type": "impl",
-      "description": "Ensure the full interactive loop test passes through the binary. May need to handle notification messages (didOpen/didChange are notifications, not requests) and published diagnostics (server→client notifications). If JSON-RPC framing or async issues arise, fix them.",
-      "status": "done",
-      "commit": "397f14a"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write test in `crates/reify-cli/tests/cli_smoke.rs`: Comprehensive smoke test verifying all user-facing CLI commands are available: (1) `reify` with no args lists all commands (check, build, lsp) in help text, (2) `reify check` with no file arg shows usage, (3) `reify build` with no file arg shows usage, (4) `reify lsp` is recognized (existing test moved here). Consolidates command availability verification.",
-      "status": "done",
-      "commit": "6f4e5b4"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Ensure all smoke tests pass. Verify help text includes all three commands. The existing `cli_lsp.rs` tests can remain as-is or be consolidated into the smoke test file. Fix any missing commands in help text.",
-      "status": "done",
-      "commit": "6f4e5b4"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "[Review fix: duplicate_test] Remove the duplicate `lsp_command_is_recognized` test from `crates/reify-cli/tests/cli_smoke.rs` (lines 76-92). This test is an exact duplicate of the one in `cli_lsp.rs` — same binary invocation, same stdin/stdout/stderr setup, same assertion. Having both causes silent redundancy. The test in `cli_lsp.rs` is the canonical location and should remain. Verify the remaining 3 tests in cli_smoke.rs still pass.",
-      "status": "done",
-      "commit": "878586c"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "[Review fix: unbounded_blocking + incorrect_message_routing] Refactor `lsp_initialize_returns_capabilities` in `cli_lsp_protocol.rs` to use `spawn_reader` + `wait_for_response` instead of direct `read_jsonrpc` calls. The current code uses naive sequential `read_jsonrpc` on lines 66 and 94 which (a) blocks indefinitely if the server stalls/crashes and (b) will misinterpret server-initiated notifications as responses because it doesn't filter by `id`. The `lsp_full_interactive_loop_through_binary` test already solves this correctly — apply the same pattern: call `spawn_reader(stdout)` to get an `mpsc::Receiver`, then use `wait_for_response(&rx, 1)` for initialize and `wait_for_response(&rx, 2)` for shutdown. This addresses both the timeout issue (recv_timeout of 10s in wait_for_response) and the message routing issue (id-matching loop).",
-      "status": "done",
-      "commit": "9a820e2"
-    },
-    {
-      "id": "step-15",
-      "type": "impl",
-      "description": "[Review fix: unbounded_blocking cleanup] Remove the `read_jsonrpc` function from `cli_lsp_protocol.rs` since it is now unused after step-14 migrated its only caller to `spawn_reader` + `wait_for_response`. This eliminates the unbounded blocking helper entirely, preventing future callers from accidentally using it.",
-      "status": "done",
-      "commit": "572abea"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "[Review fix: missing_timeout_hang_risk] Replace `child.wait()` with a timeout-guarded wait in `lsp_initialize_returns_capabilities` (line 107). Use a `try_wait` polling loop with an explicit 10-second deadline: `let deadline = Instant::now() + Duration::from_secs(10); loop { match child.try_wait()? { Some(s) => break s, None => { assert!(Instant::now() < deadline, \"child did not exit within 10s\"); thread::sleep(Duration::from_millis(50)); } } }`. If the deadline expires, the test panics with a clear message instead of hanging CI indefinitely.",
-      "status": "done",
-      "commit": "8fc0a7a"
-    },
-    {
-      "id": "step-17",
-      "type": "impl",
-      "description": "[Review fix: missing_timeout_hang_risk] Apply the same timeout-guarded wait pattern to `lsp_full_interactive_loop_through_binary` (line 310). Replace `child.wait()` with the same `try_wait` polling loop with a 10-second deadline. Extract a shared helper function `wait_for_exit(child: &mut Child, timeout_secs: u64) -> ExitStatus` to avoid duplicating the polling logic between the two tests.",
-      "status": "done",
-      "commit": "f65eba0"
-    },
-    {
-      "id": "step-18",
-      "type": "test",
-      "description": "[Review fix: verification] Run `cargo test -p reify-cli` to verify all fixes are correct: (1) cli_smoke.rs has 3 tests (no duplicate lsp_command_is_recognized), (2) lsp_initialize_returns_capabilities uses spawn_reader+wait_for_response and timeout-guarded exit, (3) lsp_full_interactive_loop_through_binary uses timeout-guarded exit, (4) read_jsonrpc is removed, (5) all tests pass without hanging. This is a verification-only step — no code changes.",
-      "status": "done",
-      "commit": "f65eba0"
+      "commit": "4941425"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Test the CLI binary as a subprocess, not just library code",
-      "rationale": "The task specifically requires proving the interactive loop is 'reachable through supported user-facing surfaces rather than only through internal test adapters'. Using `Command::new(env!(\"CARGO_BIN_EXE_reify\"))` tests the actual binary users will invoke, including CLI argument parsing, tokio runtime creation, and stdio transport — none of which are covered by the existing tower-lsp unit tests."
+      "decision": "Reuse existing topological_sort from dirty.rs rather than implementing a new sort",
+      "rationale": "topological_sort already handles NodeId sets with DependencyTrace maps, handles duplicate reads (a*a), and has comprehensive unit tests. Using it for cold-start let evaluation requires only building the NodeId/trace inputs, not new sorting infrastructure."
     },
     {
-      "decision": "JSON-RPC protocol test for LSP, not just command recognition",
-      "rationale": "The existing `lsp_command_is_recognized` test only checks that the command doesn't produce 'Unknown command' in stderr. This doesn't prove the LSP server actually works. Sending a real JSON-RPC initialize request and verifying the response proves the full stack: CLI dispatch → tokio runtime → tower-lsp → ReifyLanguageServer → capabilities response."
+      "decision": "Sort only Let cells during topological ordering, not all value_cells",
+      "rationale": "Params are roots (no dependencies) and are already evaluated in pass 1 before any let evaluation. Auto params start as Undef. Only Let-to-Let forward references need reordering. The topological sort will naturally put lets with no let-dependencies first."
     },
     {
-      "decision": "Skip `reify build` integration test for now",
-      "rationale": "The `reify build` command requires `OcctKernelHandle::spawn()` which needs the OCCT kernel binary available. This is environment-dependent and may not be available in CI. The `check` and `lsp` tests cover the interactive surface without geometry dependencies. Build testing is deferred to OCCT-specific test infrastructure."
+      "decision": "Apply topological sort to both cold-start evaluation and post-resolution re-evaluation",
+      "rationale": "Both code paths iterate value_cells in source order and are vulnerable to the same forward-reference bug. The post-resolution path re-evaluates let bindings after auto params are resolved — if a let references another let that depends on an auto param, source-order iteration uses the pre-resolution (Undef/stale) value instead of the freshly resolved one."
     },
     {
-      "decision": "File-based fixtures for CLI tests instead of stdin-piped source",
-      "rationale": "The `reify check` and `reify build` commands take file paths, not stdin. Creating actual `.ri` fixture files in the test directory mirrors real user workflows and tests the full file-reading path. Using CARGO_MANIFEST_DIR for path resolution ensures tests work regardless of working directory."
-    },
-    {
-      "decision": "Interactive loop capstone test verifies clean exit, not diagnostic content",
-      "rationale": "Verifying the actual diagnostic content published over JSON-RPC would require parsing server→client notifications from the stdout stream, which is complex and fragile (tower-lsp may interleave notifications). The capstone test verifies the interactive loop completes without crashes or hangs. Diagnostic content correctness is already thoroughly tested at the library level in reify-lsp integration tests."
-    },
-    {
-      "decision": "Unify both protocol tests on spawn_reader+wait_for_response pattern instead of fixing read_jsonrpc",
-      "rationale": "The reviewer identified two separate issues with read_jsonrpc: it blocks indefinitely (no timeout) and it doesn't filter by message id (notifications consumed as responses). Rather than patching read_jsonrpc to add timeout+id-matching (which would essentially re-implement wait_for_response), the better fix is to migrate lsp_initialize_returns_capabilities to the same spawn_reader+wait_for_response pattern that lsp_full_interactive_loop_through_binary already uses. This gives a single, well-tested code path for all message reading, and allows removing read_jsonrpc entirely."
-    },
-    {
-      "decision": "Extract wait_for_exit helper instead of duplicating try_wait loops",
-      "rationale": "Both protocol tests need timeout-guarded child process exit. Extracting a shared `wait_for_exit(child, timeout_secs)` helper keeps the fix DRY and ensures consistent timeout behavior (10s, 50ms poll interval, clear panic message) across all tests that spawn child processes."
-    },
-    {
-      "decision": "Remove duplicate test from cli_smoke.rs rather than cli_lsp.rs",
-      "rationale": "cli_lsp.rs is the original, purpose-built file for LSP command tests, with both lsp_command_is_recognized and help_text_includes_lsp. cli_smoke.rs duplicated lsp_command_is_recognized during step-11/12. The duplicate should be removed from the newer file (cli_smoke.rs) since cli_lsp.rs is the canonical location for LSP-specific command tests."
+      "decision": "Place all tests in the existing incremental.rs test file",
+      "rationale": "The tests exercise Engine::eval() and Engine::edit_param() behavior, which is the same domain as existing incremental.rs tests. The test patterns (CompiledModuleBuilder, TopologyTemplateBuilder, expression builders) are already imported there. For 6 additional tests, co-location is cleaner than a separate file."
     }
   ],
   "reuse": [
     {
-      "what": "env!(\"CARGO_BIN_EXE_reify\") for binary path in tests",
-      "where": "crates/reify-cli/tests/cli_lsp.rs",
-      "how": "Existing pattern for spawning the reify binary in CLI integration tests. Provides the correct path to the compiled binary regardless of build directory."
+      "what": "topological_sort function",
+      "where": "crates/reify-eval/src/dirty.rs",
+      "how": "Call with HashSet<NodeId> of Let cells and HashMap<NodeId, DependencyTrace> built from their expressions. Returns Vec<NodeId> in dependency-first order. Used in cold-start eval to replace source-order iteration."
     },
     {
-      "what": "bracket_source() and bracket_source_violating() fixtures",
-      "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "Write these to .ri files in the fixture directory for CLI tests. The bracket source is a known-good Reify program with 5 params and 3 constraints; violating version sets thickness=1mm which violates the thickness > 2mm constraint."
+      "what": "extract_dependency_trace function",
+      "where": "crates/reify-eval/src/deps.rs",
+      "how": "Call for each Let cell's default_expr to get its DependencyTrace (list of ValueCellId reads). Feed into topological_sort's trace map."
     },
     {
-      "what": "std::process::Command with piped stdin/stdout/stderr",
-      "where": "crates/reify-cli/tests/cli_lsp.rs",
-      "how": "Existing pattern for CLI integration tests. Extended with Stdio::piped() for stdin to enable JSON-RPC communication with the LSP server process."
+      "what": "TopologyTemplateBuilder and CompiledModuleBuilder",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Fluent builders for test fixtures. Use .let_binding() calls in specific orders to exercise forward references — the order of calls determines source order in value_cells."
     },
     {
-      "what": "tower-lsp JSON-RPC framing (Content-Length headers)",
-      "where": "LSP specification / tower-lsp internals",
-      "how": "JSON-RPC over LSP uses 'Content-Length: N\\r\\n\\r\\n<body>' framing. Test helpers will format requests in this framing and parse responses from stdout."
+      "what": "Expression builders (literal, value_ref_typed, binop)",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Build CompiledExpr trees for let binding expressions and constraint expressions in tests."
     },
     {
-      "what": "Existing cli_lsp.rs tests",
-      "where": "crates/reify-cli/tests/cli_lsp.rs",
-      "how": "The `lsp_command_is_recognized` and `help_text_includes_lsp` tests remain as-is. New tests in separate files (cli_check.rs, cli_lsp_protocol.rs, cli_smoke.rs) follow the same patterns."
-    },
-    {
-      "what": "spawn_reader + wait_for_response pattern from lsp_full_interactive_loop_through_binary",
-      "where": "crates/reify-cli/tests/cli_lsp_protocol.rs lines 117-177",
-      "how": "Already implemented for the second protocol test. Reuse the exact same pattern in lsp_initialize_returns_capabilities to replace direct read_jsonrpc calls, fixing both the timeout and message-routing issues."
+      "what": "MockConstraintChecker and MockConstraintSolver",
+      "where": "crates/reify-test-support/src/mocks.rs",
+      "how": "MockConstraintChecker for tests without constraints. MockConstraintSolver for the post-resolution forward-ref test (step-5) to provide resolved auto param values."
     }
   ]
 }

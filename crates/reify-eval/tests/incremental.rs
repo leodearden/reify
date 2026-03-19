@@ -1590,3 +1590,334 @@ fn edit_check_preserves_constraint_labels() {
         "C1 should be Satisfied when width=mm(2.0) < mm(100.0)"
     );
 }
+
+// ────────────────────────────────────────────────────────────────────
+//  Forward let-binding reference tests
+// ────────────────────────────────────────────────────────────────────
+
+/// Cold-start eval must handle forward let-binding references correctly.
+///
+/// Template: param a (default 5, Int)
+///   let y = x + 1   (forward ref to x — declared *before* x)
+///   let x = a + 10  (declared *after* y)
+///
+/// Expected: x = 15, y = 16.
+/// Without topological sorting, y evaluates before x and gets Undef.
+#[test]
+fn forward_let_ref_cold_start_simple() {
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // y = x + 1  (forward reference to x)
+    let y_expr = binop(BinOp::Add, value_ref("S", "x"), literal(Value::Int(1)));
+    // x = a + 10
+    let x_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(10)));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(5))))
+        .let_binding("S", "y", Type::Int, y_expr)  // y declared first (forward ref to x)
+        .let_binding("S", "x", Type::Int, x_expr)  // x declared second
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result = engine.eval(&module);
+
+    let x_val = result.values.get(&x_id).expect("x should be in values");
+    let y_val = result.values.get(&y_id).expect("y should be in values");
+
+    assert_eq!(*x_val, Value::Int(15), "x = a + 10 = 5 + 10 = 15");
+    assert_eq!(*y_val, Value::Int(16), "y = x + 1 = 15 + 1 = 16");
+}
+
+/// Cold-start eval handles a fully reversed 3-deep dependency chain.
+///
+/// Template: param a (default 0, Int)
+///   let z = y + 1  (declared 1st — depends on y)
+///   let y = x + 1  (declared 2nd — depends on x)
+///   let x = a + 1  (declared 3rd — depends on a)
+///
+/// Expected: x = 1, y = 2, z = 3.
+#[test]
+fn forward_let_ref_cold_start_deep_reverse_chain() {
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+    let z_id = ValueCellId::new("S", "z");
+
+    // z = y + 1
+    let z_expr = binop(BinOp::Add, value_ref("S", "y"), literal(Value::Int(1)));
+    // y = x + 1
+    let y_expr = binop(BinOp::Add, value_ref("S", "x"), literal(Value::Int(1)));
+    // x = a + 1
+    let x_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(1)));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(0))))
+        .let_binding("S", "z", Type::Int, z_expr)  // z declared first
+        .let_binding("S", "y", Type::Int, y_expr)  // y declared second
+        .let_binding("S", "x", Type::Int, x_expr)  // x declared third
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result = engine.eval(&module);
+
+    let x_val = result.values.get(&x_id).expect("x should be in values");
+    let y_val = result.values.get(&y_id).expect("y should be in values");
+    let z_val = result.values.get(&z_id).expect("z should be in values");
+
+    assert_eq!(*x_val, Value::Int(1), "x = a + 1 = 0 + 1 = 1");
+    assert_eq!(*y_val, Value::Int(2), "y = x + 1 = 1 + 1 = 2");
+    assert_eq!(*z_val, Value::Int(3), "z = y + 1 = 2 + 1 = 3");
+}
+
+/// Cold-start eval handles diamond-shaped forward references.
+///
+/// Template: param a (default 10, Int)
+///   let d = b + c  (declared 1st — forward refs to both b and c)
+///   let b = a + 1  (declared 2nd)
+///   let c = a + 2  (declared 3rd)
+///
+/// Expected: b = 11, c = 12, d = 23.
+#[test]
+fn forward_let_ref_cold_start_diamond() {
+    let b_id = ValueCellId::new("S", "b");
+    let c_id = ValueCellId::new("S", "c");
+    let d_id = ValueCellId::new("S", "d");
+
+    // d = b + c (forward refs to both b and c)
+    let d_expr = binop(BinOp::Add, value_ref("S", "b"), value_ref("S", "c"));
+    // b = a + 1
+    let b_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(1)));
+    // c = a + 2
+    let c_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(2)));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(10))))
+        .let_binding("S", "d", Type::Int, d_expr)  // d declared first
+        .let_binding("S", "b", Type::Int, b_expr)  // b declared second
+        .let_binding("S", "c", Type::Int, c_expr)  // c declared third
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result = engine.eval(&module);
+
+    let b_val = result.values.get(&b_id).expect("b should be in values");
+    let c_val = result.values.get(&c_id).expect("c should be in values");
+    let d_val = result.values.get(&d_id).expect("d should be in values");
+
+    assert_eq!(*b_val, Value::Int(11), "b = a + 1 = 10 + 1 = 11");
+    assert_eq!(*c_val, Value::Int(12), "c = a + 2 = 10 + 2 = 12");
+    assert_eq!(*d_val, Value::Int(23), "d = b + c = 11 + 12 = 23");
+}
+
+/// Post-resolution re-evaluation must handle forward let-binding references.
+///
+/// Template: param p (default mm(1.0), length), auto x (length)
+///   let c = b + x  (declared 1st — forward ref to b)
+///   let b = x + p  (declared 2nd)
+///   constraint: x > p
+///
+/// Solver resolves x = mm(10.0) = 0.01 SI.
+/// After resolution: b = x + p = 0.01 + 0.001 = 0.011 SI
+///                   c = b + x = 0.011 + 0.01 = 0.021 SI
+///
+/// Without topological sorting in the post-resolution re-eval, c evaluates
+/// before b is re-evaluated with the resolved x, producing a stale result.
+#[test]
+fn forward_let_ref_post_resolution() {
+    use reify_types::SolveResult;
+
+    let p_id = ValueCellId::new("S", "p");
+    let x_id = ValueCellId::new("S", "x");
+    let b_id = ValueCellId::new("S", "b");
+    let c_id = ValueCellId::new("S", "c");
+
+    // c = b + x (forward ref to b)
+    let c_expr = binop(BinOp::Add, value_ref("S", "b"), value_ref("S", "x"));
+    // b = x + p
+    let b_expr = binop(BinOp::Add, value_ref("S", "x"), value_ref("S", "p"));
+    // constraint: x > p
+    let constraint_expr = gt(value_ref("S", "x"), value_ref("S", "p"));
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(x_id.clone(), mm(10.0));
+
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "p", Type::length(), Some(literal(mm(1.0))))
+        .auto_param("S", "x", Type::length())
+        .let_binding("S", "c", Type::length(), c_expr)  // c declared first (forward ref to b)
+        .let_binding("S", "b", Type::length(), b_expr)  // b declared second
+        .constraint("S", 0, None, constraint_expr)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    // x resolved to mm(10.0) = 0.01 SI
+    let x_val = result.values.get(&x_id).expect("x should be in values");
+    assert!(
+        matches!(x_val, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-10),
+        "expected x = mm(10.0) = 0.01 SI, got {:?}",
+        x_val
+    );
+
+    // b = x + p = 0.01 + 0.001 = 0.011 SI
+    let b_val = result.values.get(&b_id).expect("b should be in values");
+    assert!(
+        matches!(b_val, Value::Scalar { si_value, .. } if (*si_value - 0.011).abs() < 1e-10),
+        "expected b = x + p = 0.011 SI, got {:?}",
+        b_val
+    );
+
+    // c = b + x = 0.011 + 0.01 = 0.021 SI
+    let c_val = result.values.get(&c_id).expect("c should be in values");
+    assert!(
+        matches!(c_val, Value::Scalar { si_value, .. } if (*si_value - 0.021).abs() < 1e-10),
+        "expected c = b + x = 0.021 SI, got {:?}",
+        c_val
+    );
+}
+
+/// Incremental edit_param handles forward let-binding references correctly.
+///
+/// The incremental path (compute_eval_set → topological_sort) already sorts
+/// by dependency, so this test confirms that forward-declared lets work
+/// correctly both in cold-start and after an incremental parameter edit.
+///
+/// Template: param a (default 5, Int)
+///   let y = x + 1  (forward ref to x)
+///   let x = a + 10
+///
+/// Cold-start: x = 15, y = 16.
+/// Edit a = 20: x = 30, y = 31.
+#[test]
+fn forward_let_ref_incremental_edit_param() {
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // y = x + 1 (forward reference to x)
+    let y_expr = binop(BinOp::Add, value_ref("S", "x"), literal(Value::Int(1)));
+    // x = a + 10
+    let x_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(10)));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(5))))
+        .let_binding("S", "y", Type::Int, y_expr)  // y declared first (forward ref)
+        .let_binding("S", "x", Type::Int, x_expr)  // x declared second
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result = engine.eval(&module);
+
+    // Cold-start: x = 15, y = 16
+    assert_eq!(*result.values.get(&x_id).unwrap(), Value::Int(15));
+    assert_eq!(*result.values.get(&y_id).unwrap(), Value::Int(16));
+
+    // Incremental edit: a = 20 → x = 30, y = 31
+    let edit_result = engine.edit_param(a_id.clone(), Value::Int(20));
+    assert_eq!(
+        *edit_result.values.get(&x_id).unwrap(),
+        Value::Int(30),
+        "x = a + 10 = 20 + 10 = 30"
+    );
+    assert_eq!(
+        *edit_result.values.get(&y_id).unwrap(),
+        Value::Int(31),
+        "y = x + 1 = 30 + 1 = 31"
+    );
+}
+
+/// Cold-start and incremental evaluation produce identical results
+/// for templates with forward let-binding references.
+///
+/// Template: param a (default 3, Int)
+///   let c = b * 2  (forward ref to b)
+///   let b = a + 7
+///
+/// Cold-start with a=3: b=10, c=20.
+/// Edit a→13: b=20, c=40.
+/// Fresh cold-start with a=13: b=20, c=40. Must match incremental result.
+#[test]
+fn forward_let_ref_cold_start_matches_incremental() {
+    let a_id = ValueCellId::new("S", "a");
+    let b_id = ValueCellId::new("S", "b");
+    let c_id = ValueCellId::new("S", "c");
+
+    // c = b * 2 (forward reference to b)
+    let c_expr = binop(BinOp::Mul, value_ref("S", "b"), literal(Value::Int(2)));
+    // b = a + 7
+    let b_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(7)));
+
+    // ── Incremental path ──
+    let template1 = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(3))))
+        .let_binding("S", "c", Type::Int, c_expr.clone())
+        .let_binding("S", "b", Type::Int, b_expr.clone())
+        .build();
+
+    let module1 = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template1)
+        .build();
+
+    let mut engine1 = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result1 = engine1.eval(&module1);
+
+    // Cold-start: b=10, c=20
+    assert_eq!(*result1.values.get(&b_id).unwrap(), Value::Int(10));
+    assert_eq!(*result1.values.get(&c_id).unwrap(), Value::Int(20));
+
+    // Edit a → 13: b=20, c=40
+    let edit_result = engine1.edit_param(a_id.clone(), Value::Int(13));
+    let incr_b = edit_result.values.get(&b_id).unwrap().clone();
+    let incr_c = edit_result.values.get(&c_id).unwrap().clone();
+
+    // ── Fresh cold-start with a=13 ──
+    let c_expr2 = binop(BinOp::Mul, value_ref("S", "b"), literal(Value::Int(2)));
+    let b_expr2 = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(7)));
+
+    let template2 = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(13))))
+        .let_binding("S", "c", Type::Int, c_expr2)
+        .let_binding("S", "b", Type::Int, b_expr2)
+        .build();
+
+    let module2 = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template2)
+        .build();
+
+    let mut engine2 = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result2 = engine2.eval(&module2);
+
+    let fresh_b = result2.values.get(&b_id).unwrap().clone();
+    let fresh_c = result2.values.get(&c_id).unwrap().clone();
+
+    assert_eq!(incr_b, fresh_b, "incremental b should match fresh cold-start b");
+    assert_eq!(incr_c, fresh_c, "incremental c should match fresh cold-start c");
+    assert_eq!(fresh_b, Value::Int(20), "b = a + 7 = 13 + 7 = 20");
+    assert_eq!(fresh_c, Value::Int(40), "c = b * 2 = 20 * 2 = 40");
+}
