@@ -17,7 +17,7 @@ describe('App', () => {
   it('renders viewport panel with label', () => {
     render(() => <App />);
     expect(screen.getByTestId('viewport-panel')).toBeTruthy();
-    expect(screen.getByText(/viewport/i)).toBeTruthy();
+    expect(screen.getByText('3D Viewport')).toBeTruthy();
   });
 
   it('renders side panel with Properties and Constraints sub-panels', () => {
