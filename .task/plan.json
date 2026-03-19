@@ -1,6 +1,6 @@
 {
-  "task_id": "54",
-  "title": "Enum declarations — grammar, parser, compiler, eval",
+  "task_id": "56",
+  "title": "User-defined fn — grammar, parser, compiler",
   "files": [
     "tree-sitter-reify/grammar.js",
     "tree-sitter-reify/src/parser.c",
@@ -10,28 +10,45 @@
     "crates/reify-syntax/src/ts_parser.rs",
     "crates/reify-compiler/src/lib.rs",
     "crates/reify-compiler/tests/boundary2_producer.rs",
+    "crates/reify-types/src/expr.rs",
+    "crates/reify-types/src/lib.rs",
     "crates/reify-expr/src/lib.rs"
   ],
   "modules": [
     "tree-sitter-reify",
     "crates/reify-syntax",
     "crates/reify-compiler",
+    "crates/reify-types",
     "crates/reify-expr"
   ],
-  "analysis": "This task adds end-to-end enum type support: grammar rule, parser AST types + lowering, compiler registry + compilation, and expression evaluation.\n\n**Existing infrastructure (from task #53 / M5 types):**\n- `Value::Enum { type_name, variant }` already exists in reify-types/src/value.rs with PartialEq, Eq, Ord, Display, content_hash\n- `Type::Enum(String)` already exists in reify-types/src/ty.rs\n- `EnumDef { name, variants }` already exists in reify-types/src/traits.rs with contains_variant()\n- `CompiledExprKind::Literal(Value)` can carry Value::Enum values\n\n**What needs to be built:**\n\n1. **Grammar**: Add `enum_declaration` as a top-level declaration alongside `structure_definition` and `import_declaration`. The grammar uses `seq('enum', field('name', $.identifier), '{', ...)` with comma-separated identifier list for variants. No separate `enum_access` grammar rule needed — `member_access` already handles `Direction.In` as `Ident(Direction).In`. Disambiguation happens in the parser.\n\n2. **Parser**: Add `Declaration::Enum(EnumDecl)` with `EnumDecl { name, variants, span, content_hash }` (parser-level struct with span/hash, distinct from the simpler `reify_types::EnumDef`). Add `ExprKind::EnumAccess { type_name, variant }`. The lowering uses a two-pass approach: first pass collects enum names into a HashSet, second pass lowers everything. When lowering a `member_access` where the object is a plain identifier matching a known enum name, produce `EnumAccess` instead of `MemberAccess`.\n\n3. **Compiler**: Add `enum_defs: Vec<reify_types::EnumDef>` field to `CompiledModule`. When encountering `Declaration::Enum`, convert to `reify_types::EnumDef` and store in registry. When compiling `ExprKind::EnumAccess`, resolve against the registry — emit `CompiledExpr::literal(Value::Enum { ... }, Type::Enum(...))` on success, or a diagnostic on failure.\n\n4. **Evaluator**: Add `Value::Enum` match arms in `eval_eq()` (same type+variant → true, same type/diff variant → false, diff type → false). Add `Value::Enum` handling in `eval_cmp()` → Undef (no ordering on enums).\n\n**Review fix (steps 21-24):** The compiler's compile() function was single-pass, building enum_defs incrementally alongside structure compilation. This violates the project's order-independent declarations invariant — a structure declared before an enum would get an incomplete enum registry. The fix mirrors the parser's two-pass strategy: a pre-pass collects all enum defs before the main declaration loop begins.\n\n**Key existing patterns reused:**\n- The `lower_member()` helper (added in task #59 guard work) provides the member dispatch pattern used inside structure lowering.\n- The compiler's `compile_expr()` handles expressions with scope and diagnostics; a new match arm for `EnumAccess` follows the same pattern.\n- Tests follow established patterns: parser tests in ts_parser.rs inline mod, compiler tests in tests/boundary2_producer.rs, eval tests in lib.rs inline mod.",
+  "analysis": "This task adds user-defined function declarations across three layers: grammar, parser, and compiler, with overload resolution for function calls.\n\n**Existing infrastructure:**\n- Grammar has `_declaration` choice with `structure_definition`, `import_declaration`, `enum_declaration`. Functions become a 4th top-level declaration.\n- Grammar has `let_declaration` as a structure member (no semicolons). Function bodies need a separate `fn_let_binding` rule with `;` separator to distinguish let bindings from the final result expression.\n- Grammar has `type_expr: $ => $.identifier` — simple identifier-based types, sufficient for fn param/return types.\n- Grammar has `function_call` expression rule with `argument_list` — already parses `name(args)`. Compiler currently emits `CompiledExprKind::FunctionCall` for stdlib calls; user fn calls need a new `CompiledExprKind::UserFunctionCall`.\n- Parser uses two-pass lowering: first pass collects enum names, second pass lowers everything. Functions will be collected in the first pass for forward reference support.\n- Compiler has `CompilationScope` for name resolution within structures. Function compilation needs its own scope with params + let bindings.\n- `CompiledExprKind` in reify-types/src/expr.rs needs a new `UserFunctionCall` variant; reify-expr match arms on that enum need updating.\n- Tests follow established pattern: parser tests in ts_parser.rs inline #[cfg(test)] mod, compiler tests in boundary2_producer.rs using parse-compile-assert pattern.\n\n**Key design:** Function bodies have `let_declaration`s terminated by `;` followed by a final result expression. Type parameters (`<T: Bound>`) are parsed structurally but not deeply type-checked in this task. Overload resolution matches compiled argument types against function parameter types. Exactly one candidate must match or an error is emitted.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add `enum_declaration` rule to tree-sitter-reify/grammar.js: `enum_declaration: $ => seq('enum', field('name', $.identifier), '{', optional(seq($.identifier, repeat(seq(',', $.identifier)), optional(','))), '}')`. Add it to `_declaration` choice alongside `structure_definition` and `import_declaration`. Run `tree-sitter generate` in the tree-sitter-reify directory to regenerate parser.c, grammar.json, and node-types.json.",
+      "description": "Add grammar rules to tree-sitter-reify/grammar.js:\n1. Add `function_definition` to `_declaration` choice.\n2. Define rules: `function_definition` (optional 'pub', 'fn', name, optional type_parameters, '(' params ')', optional return type, fn_body), `fn_param_list` (comma-separated fn_param with optional trailing comma), `fn_param` (name ':' type_expr), `fn_body` ('{' repeat(fn_let_binding) result_expression '}'), `fn_let_binding` (like let_declaration but with ';' terminator, no where clause), `type_parameters` ('<' comma-sep type_param_bound '>'), `type_param_bound` (identifier optional(':' trait_bound_list)), `trait_bound_list` (identifier repeat('+' identifier)).\n3. Add `[$.fn_param]` and `[$.fn_let_binding]` to conflicts array.\n4. Run `tree-sitter generate` to regenerate parser.c, grammar.json, node-types.json.\nNote: Use a separate `fn_let_binding` rule (not the existing `let_declaration`) because fn body lets end with ';' and have no where clause.",
       "status": "done",
-      "commit": "7e4c37d",
+      "commit": "a736572",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Add parser-level AST types to crates/reify-syntax/src/lib.rs: (a) Add `EnumDecl` struct with fields `name: String, variants: Vec<String>, span: SourceSpan, content_hash: ContentHash` and derive Debug, Clone (after ImportDecl). (b) Add `Declaration::Enum(EnumDecl)` variant to the Declaration enum. (c) Add `ExprKind::EnumAccess { type_name: String, variant: String }` variant to ExprKind enum (after MemberAccess). These are type-only changes with no logic.",
+      "description": "Add parser-level AST types to crates/reify-syntax/src/lib.rs:\n(a) Add `Declaration::Function(FnDef)` variant to Declaration enum.\n(b) Add `FnDef` struct: `name: String, is_pub: bool, type_params: Vec<TypeParamDecl>, params: Vec<FnParam>, return_type: Option<TypeExpr>, body: FnBody, span: SourceSpan, content_hash: ContentHash` (derive Debug, Clone).\n(c) Add `TypeParamDecl` struct: `name: String, bounds: Vec<String>` (derive Debug, Clone).\n(d) Add `FnParam` struct: `name: String, type_expr: TypeExpr, span: SourceSpan` (derive Debug, Clone).\n(e) Add `FnBody` struct: `let_bindings: Vec<LetDecl>, result_expr: Expr` (derive Debug, Clone). Reuses existing LetDecl for the body's let bindings.\nThese are type-only changes with no logic.",
       "status": "done",
-      "commit": "5c6029d",
+      "commit": "f9e1cfe",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add `CompiledExprKind::UserFunctionCall { function_name: String, args: Vec<CompiledExpr> }` variant to the CompiledExprKind enum in crates/reify-types/src/expr.rs. Also add compiled function types to crates/reify-compiler/src/lib.rs:\n(a) `CompiledFunction { name: String, is_pub: bool, params: Vec<(String, Type)>, return_type: Type, body: CompiledFnBody, content_hash: ContentHash }` (derive Debug, Clone).\n(b) `CompiledFnBody { let_bindings: Vec<(String, CompiledExpr)>, result_expr: CompiledExpr }` (derive Debug, Clone).\n(c) Add `pub functions: Vec<CompiledFunction>` field to `CompiledModule`.\nThese are type-only additions — compilation and initialization will come in TDD steps.",
+      "status": "done",
+      "commit": "864bfb0",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Add match arm for `CompiledExprKind::UserFunctionCall` in crates/reify-expr/src/lib.rs eval_expr function. For now, return `Value::Undef` (eval of user functions is a separate task). This prevents the exhaustive match from failing after adding the new variant. Also update the `assert_no_unresolved` helper in crates/reify-compiler/tests/boundary2_producer.rs to handle the new variant: recurse into args.",
+      "status": "done",
+      "commit": "60bce82",
       "tests": []
     }
   ],
@@ -39,260 +56,256 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in crates/reify-expr/src/lib.rs: `eval_eq_enum_same_type_same_variant` — build two `CompiledExpr::literal(Value::Enum { type_name: \"Direction\".into(), variant: \"In\".into() }, Type::Enum(\"Direction\".into()))` values, wrap in `CompiledExpr::binop(BinOp::Eq, ...)`, call `eval_expr()`, assert result is `Value::Bool(true)`. Currently falls through to the catch-all in eval_eq which calls as_f64() → None → returns Undef.",
+      "description": "Write failing test in crates/reify-syntax/src/ts_parser.rs: `parse_simple_function_definition` — parse source `\"fn area(w: Scalar, h: Scalar) -> Scalar { w * h }\"`, assert: no parse errors, module.declarations has 1 entry, it is `Declaration::Function(f)` with f.name == \"area\", f.is_pub == false, f.params.len() == 2, f.params[0].name == \"w\", f.params[0].type_expr.name == \"Scalar\", f.params[1].name == \"h\", f.return_type.is_some() with name \"Scalar\", f.body.let_bindings.is_empty(), f.body.result_expr is BinOp(*). Fails because lower_source_file doesn't handle function_definition yet.",
       "status": "done",
-      "commit": "8c08e5c"
+      "commit": "4a9988c"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `Value::Enum` match arm in `eval_eq()` in crates/reify-expr/src/lib.rs. Insert before the existing catch-all: `(Value::Enum { type_name: a, variant: av }, Value::Enum { type_name: b, variant: bv }) => { if a == b { Value::Bool(av == bv) } else { Value::Bool(false) } }`. Also add cross-type arms: `(Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Bool(false)` for enum-vs-non-enum. Step-1 test now passes.",
+      "description": "Add CST→AST lowering for function_definition in crates/reify-syntax/src/ts_parser.rs:\n(a) In lower_source_file second pass, add `\"function_definition\"` match arm that calls self.lower_function(child) and pushes Declaration::Function(...).\n(b) Implement lower_function(): check for 'pub' keyword in children, extract name field, extract optional type_parameters (lower_type_parameters helper), collect fn_param children from fn_param_list, extract optional return type after '->', lower fn_body (collect fn_let_binding children as LetDecl, lower final expression as result_expr). Return FnDef.\n(c) Implement lower_fn_param(): extract name field and type field.\n(d) Implement lower_fn_body(): iterate children, collect fn_let_binding nodes (lower name/value, create LetDecl without where_clause), find the trailing expression node and lower it as result_expr.\n(e) Implement lower_type_parameters(): iterate type_param_bound children, extract name and optional bounds.\nStep-1 test now passes.",
       "status": "done",
-      "commit": "93622dc"
+      "commit": "3a513e3"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write three additional enum equality tests in crates/reify-expr/src/lib.rs: (a) `eval_eq_enum_same_type_different_variant`: Direction.In == Direction.Out → Bool(false). (b) `eval_eq_enum_different_types`: Direction.In == ThreadSystem.ISO → Bool(false). (c) `eval_ne_enum_variants`: Direction.In != Direction.Out → Bool(true) (verifies eval_ne delegates to eval_eq correctly). All should pass with step-2 implementation.",
+      "description": "Write test in crates/reify-syntax/src/ts_parser.rs: `parse_pub_function_with_conditional` — parse source `\"pub fn clamp(x: Real, lo: Real, hi: Real) -> Real { if x < lo then lo else if x > hi then hi else x }\"`, assert: no parse errors, Declaration::Function(f) with f.is_pub == true, f.params.len() == 3 (x, lo, hi all with type Real), f.return_type name == \"Real\", f.body.result_expr is ExprKind::Conditional. Should pass with step-2 implementation.",
       "status": "done",
-      "commit": "f5c82ff"
+      "commit": "ca84e5c"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify step-3 tests pass with step-2's implementation. No code changes expected — the eval_eq match arms and eval_ne delegation already handle these cases. If any fail, adjust match arm ordering.",
+      "description": "Verify step-3 test passes with step-2 implementation. If it fails, fix any issues with pub keyword detection or conditional expression lowering within fn_body. The existing lower_expr already handles conditional_expression.",
       "status": "done",
-      "commit": "f5c82ff"
+      "commit": "ca84e5c"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test in crates/reify-expr/src/lib.rs: `eval_cmp_enum_returns_undef` — build `CompiledExpr::binop(BinOp::Lt, enum_lit(Direction,In), enum_lit(Direction,Out), Type::Bool)`, call eval_expr, assert result is `Value::Undef`. Currently falls through to as_f64 → None → Undef, but test should be explicit.",
+      "description": "Write test in crates/reify-syntax/src/ts_parser.rs: `parse_function_with_let_bindings` — parse source `\"fn f(x: Real) -> Real { let y = x * 2; y + 1 }\"`, assert: no parse errors, Declaration::Function(f) with f.params.len() == 1, f.body.let_bindings.len() == 1, f.body.let_bindings[0].name == \"y\", f.body.let_bindings[0].value is BinOp(*), f.body.result_expr is BinOp(+). Should pass with step-2 implementation.",
       "status": "done",
-      "commit": "ffe73cd"
+      "commit": "ca84e5c"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add explicit `Value::Enum` handling in `eval_cmp()` in crates/reify-expr/src/lib.rs: insert `(Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Undef` before the existing catch-all to make the 'no ordering on enums' semantics explicit. Step-5 test passes.",
+      "description": "Verify step-5 test passes with step-2 implementation. If it fails, fix fn_body lowering to correctly separate fn_let_binding nodes (which end with ';') from the final result expression. The key is that fn_let_binding is a named node kind distinct from the result expression.",
       "status": "done",
-      "commit": "ffe73cd"
+      "commit": "ca84e5c"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test in crates/reify-syntax/src/ts_parser.rs: `parse_enum_declaration` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { param x: Scalar = 5mm }\"`, assert: no parse errors, module.declarations.len() == 2, first declaration is Declaration::Enum(e) with e.name == \"Direction\" and e.variants == [\"In\", \"Out\", \"Bidi\"]. Fails because lower_source_file doesn't handle enum_declaration yet.",
+      "description": "Write test in crates/reify-syntax/src/ts_parser.rs: `parse_function_with_type_parameters` — parse source `\"fn identity<T>(x: T) -> T { x }\"`, assert: no parse errors, Declaration::Function(f) with f.type_params.len() == 1, f.type_params[0].name == \"T\", f.type_params[0].bounds.is_empty(). Also test with bounds: parse `\"fn add<T: Numeric>(a: T, b: T) -> T { a + b }\"`, assert f.type_params[0].bounds == [\"Numeric\"]. Should pass with step-2 implementation.",
       "status": "done",
-      "commit": "d115366"
+      "commit": "ca84e5c"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add CST→AST lowering for enum_declaration in crates/reify-syntax/src/ts_parser.rs: (a) Add `known_enums: HashSet<String>` field to `Lowering` struct, initialize empty in `new()`. (b) Change `lower_source_file` to a two-pass approach: first pass iterates children and collects enum names from `enum_declaration` nodes (extract name from field name). (c) In the second pass, add `\"enum_declaration\"` match arm that calls `self.lower_enum(child)` and pushes `Declaration::Enum(...)`. (d) Implement `lower_enum()`: extract name field, iterate named children inside braces to collect identifiers as variants (skip 'enum', name, '{', '}', ','). Return `EnumDecl { name, variants, span, content_hash }`. Step-7 test passes.",
+      "description": "Verify step-7 test passes. If it fails, fix lower_type_parameters() to correctly extract type param names and bounds from the CST. Type parameters are optional, so the simple function tests (steps 1-6) should still pass.",
       "status": "done",
-      "commit": "799a914"
+      "commit": "ca84e5c"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test in crates/reify-syntax/src/ts_parser.rs: `parse_enum_access_expression` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { let d = Direction.In }\"`, extract the structure's let member, assert its value expression is `ExprKind::EnumAccess { type_name: \"Direction\", variant: \"In\" }` (not MemberAccess). Fails because lower_member_access doesn't check known_enums yet.",
+      "description": "Write failing test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_simple_function` — parse source `\"fn double(x: Real) -> Real { x + x }\"`, compile, assert: compiled.functions.len() == 1, compiled.functions[0].name == \"double\", compiled.functions[0].is_pub == false, compiled.functions[0].params == [(\"x\", Type::Real)], compiled.functions[0].return_type == Type::Real, compiled.functions[0].body.let_bindings.is_empty(), compiled.functions[0].body.result_expr.result_type == Type::Real. No error diagnostics. Fails because compile() doesn't process Declaration::Function yet.",
       "status": "done",
-      "commit": "3221948"
+      "commit": "f455584"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Add enum-aware expression lowering in crates/reify-syntax/src/ts_parser.rs: In `lower_member_access()`, before constructing the MemberAccess, check if the object_node is an `identifier` (not a complex expression) AND its text is in `self.known_enums`. If so, return `Expr { kind: ExprKind::EnumAccess { type_name: object_text, variant: member_text }, span }` instead of `MemberAccess`. Step-9 test passes.",
+      "description": "Add function compilation to crates/reify-compiler/src/lib.rs:\n(a) In compile(), initialize `let mut functions = Vec::new();` and add match arm for `Declaration::Function(fn_def)`: call compile_function() and push result.\n(b) Include functions in CompiledModule construction and content_hash computation.\n(c) Implement compile_function(): resolve param types via resolve_type_name, resolve return type, create a CompilationScope with function params registered, compile each body let binding (adding each to scope), compile result_expr, build CompiledFunction.\n(d) compile_function returns CompiledFunction with content_hash computed from name + params + body.\nStep-9 test now passes.",
       "status": "done",
-      "commit": "bf8f11d"
+      "commit": "e27e82f"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test in crates/reify-syntax/src/ts_parser.rs: `parse_enum_missing_name_is_error` — parse source `\"enum { }\"`, assert the module has at least one error (tree-sitter ERROR node from missing required name field).",
+      "description": "Write test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_function_with_let_bindings` — parse source `\"fn f(x: Real) -> Real { let y = x + x; let z = y * y; z + 1 }\"`, compile, assert: compiled.functions[0].body.let_bindings.len() == 2, let_bindings[0].0 == \"y\", let_bindings[1].0 == \"z\", result_expr references z (is BinOp with ValueRef or at least compiles without 'unresolved name' errors). No error diagnostics. Should pass with step-10 implementation.",
       "status": "done",
-      "commit": "54a9fb6"
+      "commit": "9f0a59a"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Verify step-11 test passes — the grammar rule requires `field('name', $.identifier)` between 'enum' and '{', so `enum { }` should produce a tree-sitter ERROR node that lower_source_file captures. If test fails, inspect the actual CST and adjust the error detection or grammar.",
+      "description": "Verify step-11 test passes. Ensure that compile_function adds each let binding to the scope progressively so later bindings and the result expression can reference earlier bindings. If there are 'unresolved name' diagnostics for y or z, fix the scope registration order in compile_function.",
       "status": "done",
-      "commit": "54a9fb6"
+      "commit": "9f0a59a"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_enum_populates_registry` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { param x: Scalar = 5mm }\"`, compile, assert compiled.enum_defs.len() == 1, compiled.enum_defs[0].name == \"Direction\", compiled.enum_defs[0].variants == [\"In\", \"Out\", \"Bidi\"]. Fails because CompiledModule has no enum_defs field yet.",
+      "description": "Write test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_overloaded_functions` — parse source with two functions sharing the same name but different param types: `\"fn convert(x: Real) -> Real { x }\\nfn convert(x: Int) -> Int { x }\"`, compile, assert: compiled.functions.len() == 2, both have name \"convert\", first has params [(\"x\", Type::Real)], second has params [(\"x\", Type::Int)], no error diagnostics.",
       "status": "done",
-      "commit": "11d5593"
+      "commit": "9f0a59a"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Add enum support to crates/reify-compiler/src/lib.rs: (a) Add `pub enum_defs: Vec<reify_types::EnumDef>` field to `CompiledModule`. (b) In `compile()`, initialize an `enum_defs` vec. Add match arm for `reify_syntax::Declaration::Enum(enum_decl)`: convert to `reify_types::EnumDef { name: enum_decl.name.clone(), variants: enum_decl.variants.clone() }` and push. (c) Include enum_defs in module content_hash computation (chain enum name+variant hashes). (d) Pass `&[reify_types::EnumDef]` through to compile_structure and compile_expr (or store in CompilationScope). Step-13 test passes.",
+      "description": "Verify step-13 test passes. The current compile_function + push approach naturally allows multiple functions with the same name. If duplicates are being rejected, adjust. No additional logic needed for allowing overloads — just push all compiled functions without deduplication.",
       "status": "done",
-      "commit": "b27c4f7"
+      "commit": "9f0a59a"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_enum_access_to_literal` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { let d = Direction.In }\"`, compile, find the 'd' value cell, assert its default_expr.kind is `CompiledExprKind::Literal(Value::Enum { type_name: \"Direction\", variant: \"In\" })` and default_expr.result_type is `Type::Enum(\"Direction\".into())`. No error diagnostics expected. Fails because compile_expr doesn't handle EnumAccess yet.",
+      "description": "Write failing test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_duplicate_function_signature_error` — parse source with two functions having identical name AND param types: `\"fn f(x: Real) -> Real { x }\\nfn f(x: Real) -> Int { x }\"`, compile, assert: diagnostics is non-empty, at least one diagnostic mentions duplicate or conflict. Fails because compile() doesn't check for duplicate signatures yet.",
       "status": "done",
-      "commit": "cfe9a0d"
+      "commit": "9f0a59a"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Add `ExprKind::EnumAccess` handling in `compile_expr()` in crates/reify-compiler/src/lib.rs: Match `reify_syntax::ExprKind::EnumAccess { type_name, variant }`. Look up type_name in the enum registry (passed via a new `enum_defs: &[reify_types::EnumDef]` parameter to compile_expr, or stored in CompilationScope). If found AND variant exists: produce `CompiledExpr::literal(Value::Enum { type_name: type_name.clone(), variant: variant.clone() }, Type::Enum(type_name.clone()))`. If type found but variant missing: emit diagnostic 'unknown variant X on enum Y', return Undef. If type not found: emit diagnostic 'unknown enum type X', return Undef. Step-15 test passes.",
+      "description": "Add duplicate function signature detection in crates/reify-compiler/src/lib.rs compile():\nAfter compiling all functions, or during registration, maintain a HashMap<(String, Vec<Type>), usize> tracking (name, param_types) → index. Before inserting, check if the key already exists. If so, emit a diagnostic: 'duplicate function signature: fn_name(param_types)'. Still register the function (for error recovery) but flag the conflict.\nStep-15 test now passes.",
       "status": "done",
-      "commit": "da028bf"
+      "commit": "9f0a59a"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_unknown_enum_produces_diagnostic` — parse source `\"structure S { let d = UnknownEnum.Variant }\"` (no enum declaration), compile, assert diagnostics is non-empty. Since parser doesn't know UnknownEnum is an enum, it produces MemberAccess; the compiler's existing MemberAccess arm emits 'member access not yet supported'. Assert any diagnostic mentioning the access exists.",
-      "status": "done",
-      "commit": "4c8ac19"
+      "description": "Write failing test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_user_function_call` — parse source `\"fn double(x: Real) -> Real { x + x }\\nstructure S { let v = double(3) }\"`, compile, assert: the 'v' value cell's default_expr.kind is `CompiledExprKind::UserFunctionCall { function_name: \"double\", args }` with args.len() == 1, and result_type == Type::Real. No error diagnostics. Fails because compile_expr currently emits stdlib FunctionCall for all function calls.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Verify step-17 test passes with existing code. The parser produces MemberAccess for unknown enum types (they're not in known_enums), and the compiler's existing MemberAccess arm already emits a diagnostic. If test assertion needs adjustment, update to match the actual diagnostic message.",
-      "status": "done",
-      "commit": "4c8ac19"
+      "description": "Add overload resolution to compile_expr's FunctionCall arm in crates/reify-compiler/src/lib.rs:\n(a) Thread compiled functions list (or a function registry) through compile_structure → compile_expr. Add `functions: &[CompiledFunction]` parameter to compile_expr (or pass via a new CompilationContext struct).\n(b) In the FunctionCall match arm, after compiling args: first check user-defined functions for a match (name matches AND arg count matches AND each compiled_arg.result_type matches the function param type). If exactly one user fn matches, emit `CompiledExprKind::UserFunctionCall { function_name, args }` with result_type from the matching function's return_type and an appropriate content_hash.\n(c) If no user fn matches, fall through to existing stdlib FunctionCall logic.\n(d) If multiple user fns match (ambiguous overload), emit a diagnostic.\nStep-17 test now passes.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write E2E test in crates/reify-compiler/tests/boundary2_producer.rs: `e2e_enum_equality_eval` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { constraint Direction.In == Direction.In }\"`, compile, assert no error diagnostics, find the compiled constraint, call `reify_expr::eval_expr(&constraint.expr, &ValueMap::new())`, assert result is `Value::Bool(true)`. Validates full pipeline: grammar → parser → compiler → eval.",
-      "status": "done",
-      "commit": "4c8ac19"
+      "description": "Write test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_overload_resolution_picks_correct` — parse source with two overloaded user fns and a call that matches one: `\"fn process(x: Real) -> Real { x + 1 }\\nfn process(x: Int) -> Int { x }\\nstructure S { let a = process(3.14) }\"`, compile, assert: 'a' value cell expr is UserFunctionCall with function_name \"process\", result_type == Type::Real (matched the Real overload since 3.14 is Real). No error diagnostics.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-20",
       "type": "impl",
-      "description": "Verify step-19 E2E test passes. All pieces should be in place from prior steps. Fix any integration issues (e.g., enum_defs not threaded through correctly, constraint expression compilation, enum literal evaluation). Run `cargo test --workspace` to verify no regressions in existing tests.",
-      "status": "done",
-      "commit": "4c8ac19"
+      "description": "Verify step-19 test passes with step-18 implementation. The overload resolution should match based on arg types: 3.14 compiles to Real, so it matches `process(x: Real)`. If it fails, check the arg type inference (3.14 should be Real not Int) and the type matching logic.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-21",
       "type": "test",
-      "description": "Write failing test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_enum_forward_reference_order_independent` — parse source where the structure is declared BEFORE the enum it references: `\"structure S { let d = Direction.In }\\nenum Direction { In, Out, Bidi }\"`. Compile, assert no error diagnostics (no spurious 'unknown enum type' errors), find the 'd' value cell, assert its default_expr.kind is `CompiledExprKind::Literal(Value::Enum { type_name: \"Direction\", variant: \"In\" })` and default_expr.result_type is `Type::Enum(\"Direction\".into())`. This test MUST FAIL with the current single-pass compile() implementation because enum_defs is empty when compile_structure is called for S, so Direction.In (an EnumAccess node from the parser's two-pass lowering) hits the 'unknown enum type' diagnostic branch.",
-      "status": "done",
-      "commit": "8b811c8"
+      "description": "Write test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_function_forward_reference` — parse source where a structure calls a function declared AFTER it: `\"structure S { let v = double(3) }\\nfn double(x: Real) -> Real { x + x }\"`, compile, assert: 'v' value cell expr is UserFunctionCall, no error diagnostics. This validates order-independent declarations. May fail if functions aren't collected in a pre-pass.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-22",
       "type": "impl",
-      "description": "Fix the order-independence violation in crates/reify-compiler/src/lib.rs compile() function. Replace the single-pass approach with a two-pass strategy that mirrors the parser's design (ts_parser.rs two-pass lowering): (1) Before the main `for decl in &parsed.declarations` loop, add a pre-pass that collects ALL enum defs: `let enum_defs: Vec<reify_types::EnumDef> = parsed.declarations.iter().filter_map(|d| { if let reify_syntax::Declaration::Enum(e) = d { Some(reify_types::EnumDef { name: e.name.clone(), variants: e.variants.clone() }) } else { None } }).collect();`. (2) In the main loop, change the `Declaration::Enum` arm to a no-op (skip, since already collected) — do NOT re-push to enum_defs. (3) Remove `let mut enum_defs = Vec::new();` since enum_defs is now populated by the pre-pass. This ensures compile_structure() always receives the complete enum registry regardless of source declaration order. Step-21 test now passes. All existing tests (steps 13-20) continue to pass since the full registry is a superset of the partial one.",
-      "status": "done",
-      "commit": "df54d3f"
+      "description": "Ensure forward references work by using a two-pass approach in compile():\n(a) Pre-pass: compile ALL function declarations first (before processing structures), so the full function registry is available when compiling structure members.\n(b) This mirrors the existing two-pass pattern for enum_defs.\nIf step-21 already passes because compile() processes all declarations in order and functions are compiled before structures in step-10's implementation, no changes needed. Otherwise, reorder to pre-compile functions.\nStep-21 test now passes.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-23",
       "type": "test",
-      "description": "Write test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_enum_forward_reference_multiple_enums` — parse source with multiple enums and structures interleaved in various orders: `\"structure A { let x = Color.Red }\\nenum Direction { In, Out }\\nstructure B { let y = Direction.In\\n  let z = Color.Red }\\nenum Color { Red, Green, Blue }\"`. Compile, assert no error diagnostics, verify all enum access expressions compiled correctly: A.x → Value::Enum(Color, Red), B.y → Value::Enum(Direction, In), B.z → Value::Enum(Color, Red). Also assert compiled.enum_defs.len() == 2. This validates the two-pass fix handles interleaved declarations with multiple forward and backward references.",
-      "status": "done",
-      "commit": "f0d6a1b"
+      "description": "Write E2E regression test in crates/reify-compiler/tests/boundary2_producer.rs: `e2e_function_with_structure_unchanged` — parse the existing bracket_source(), compile, verify all existing assertions still hold: 6 value cells, 3 constraints, 1 realization, no error diagnostics. Also verify compiled.functions.is_empty() (bracket has no fn declarations). This confirms backward compatibility.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-24",
       "type": "impl",
-      "description": "Verify step-23 test passes with the two-pass implementation from step-22. No code changes expected — the pre-pass collects all enums regardless of interleaving. Run `cargo test --workspace` to confirm no regressions across the entire workspace.",
-      "status": "done",
-      "commit": "f0d6a1b"
+      "description": "Verify step-23 passes. Run full `cargo test --workspace` to confirm no regressions across all crates. Fix any issues found.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "No separate `enum_access` grammar rule — reuse existing `member_access` and disambiguate in the parser",
-      "rationale": "Adding an `enum_access` grammar rule like `seq(type_identifier, '.', identifier)` creates ambiguity with `member_access` (which is `seq(_expression, '.', identifier)`) since an identifier matches both and the patterns overlap. Tree-sitter conflict resolution would be fragile and could break existing member access parsing. Instead, the existing `member_access` rule naturally parses `Direction.In` as `member_access(identifier(Direction), In)`. The parser's two-pass lowering detects when the object is a known enum name and produces `ExprKind::EnumAccess` during lowering."
+      "decision": "Separate `fn_let_binding` grammar rule instead of reusing `let_declaration`",
+      "rationale": "Structure-level `let_declaration` has no semicolons and supports optional `where_clause`. Function body let bindings need `;` terminators to separate them from the final result expression, and don't support where clauses. A separate `fn_let_binding` rule avoids grammar conflicts and keeps the two contexts clean."
     },
     {
-      "decision": "Two-pass lowering in the parser to collect enum names before expression lowering",
-      "rationale": "Reify has order-independent declarations within modules (per project conventions). An enum may be declared after a structure that references it. A two-pass approach (first collect enum names into a HashSet, then lower all declarations with enum-aware expression lowering) ensures forward references work correctly."
+      "decision": "CompiledExprKind::UserFunctionCall separate from FunctionCall",
+      "rationale": "Per task spec: 'distinct from stdlib FunctionCall so eval can dispatch correctly'. User function calls need different eval semantics (body evaluation with argument substitution) vs stdlib calls (dispatch to reify_stdlib::eval_builtin). Keeping them as separate variants makes the dispatch clear and avoids runtime checks."
     },
     {
-      "decision": "Parser-level `EnumDecl` struct separate from `reify_types::EnumDef`",
-      "rationale": "The parser-level `EnumDecl` includes `span: SourceSpan` and `content_hash: ContentHash` for source location tracking, following the same pattern as `StructureDef`, `ParamDecl`, etc. The `reify_types::EnumDef` is a simpler compiled representation without source info. The compiler converts between them, mirroring the existing ParsedModule→CompiledModule pattern."
+      "decision": "Type parameters parsed structurally but not deeply type-checked",
+      "rationale": "The task specifies grammar and parser support for type parameters (`<T: Bound>`), but the test cases don't exercise generic type checking. Full generic/trait checking is a deeper M5 feature. We parse the type params into TypeParamDecl structs for future use, but the compiler ignores them for now beyond storing them in CompiledFunction."
     },
     {
-      "decision": "Enum equality: different enum types return `false`, not a type error/Undef",
-      "rationale": "The task spec says 'Different type_name → type error or false'. Choosing `false` is more lenient and avoids Undef propagation issues in constraint expressions. It matches the existing pattern where `Scalar(LENGTH) == Scalar(MASS)` returns `Bool(false)` rather than Undef in eval_eq."
+      "decision": "Function compilation happens in a pre-pass before structure compilation",
+      "rationale": "Order-independent declarations require that a structure can call a function declared after it. Following the established two-pass pattern used for enum_defs, functions are compiled in a pre-pass so the full function registry is available when compiling structure members."
     },
     {
-      "decision": "Enum comparison (lt/le/gt/ge) returns Undef, not a type error",
-      "rationale": "Per the task spec: 'No ordering (eval_cmp on Enum → Undef or error)'. Returning Undef is consistent with existing handling of incomparable types (e.g., different-dimension scalars in eval_cmp). The explicit match arm documents the semantics clearly."
+      "decision": "Overload resolution matches compiled argument types against function parameter types",
+      "rationale": "Since compile_expr already produces CompiledExpr with result_type, we can compare compiled arg types against function param types at compile time. This catches type mismatches early and selects the correct overload. Exactly one candidate must match — zero matches falls through to stdlib, multiple matches is an error."
     },
     {
-      "decision": "Unknown enum type in expression falls through to MemberAccess handling in compiler",
-      "rationale": "If the parser doesn't have the enum name in its known_enums set (because no enum declaration exists), it produces MemberAccess rather than EnumAccess. The compiler's existing MemberAccess arm emits an error diagnostic ('member access not yet supported'). This naturally handles the unknown enum case without special-casing. A future M5 member access implementation would need to add enum lookup to that arm."
+      "decision": "Function body let bindings reuse the existing LetDecl AST type",
+      "rationale": "The LetDecl struct already has name, type_expr, value, span, content_hash — everything needed for fn body let bindings. The only difference is fn body lets don't have where_clause (set to None). Reusing LetDecl avoids duplicating AST types and leverages existing lowering infrastructure."
     },
     {
-      "decision": "Add enum_defs to CompiledModule, not TopologyTemplate",
-      "rationale": "Enums are module-level declarations (like imports), not structure-level members. They're declared alongside structures, not inside them. The compiled enum registry belongs at the module level, consistent with how `imports: Vec<CompiledImport>` is stored."
+      "decision": "Thread function registry through compile_expr via additional parameter",
+      "rationale": "Adding `functions: &[CompiledFunction]` to compile_expr's parameter list follows the existing pattern of threading `enum_defs: &[reify_types::EnumDef]`. This keeps the compiler's functional style and avoids introducing mutable shared state."
     },
     {
-      "decision": "Start TDD with eval changes, then parser, then compiler",
-      "rationale": "Eval changes are fully independent of grammar/parser/compiler — they only need Value::Enum which already exists. Starting here gets the eval foundation in place. Parser changes need the grammar prerequisite. Compiler changes depend on both parser and eval types being ready."
-    },
-    {
-      "decision": "Two-pass compilation in compile() to mirror parser's two-pass lowering (review fix)",
-      "rationale": "The compiler's compile() function originally built enum_defs incrementally in a single pass, meaning compile_structure() received only enums declared before the current structure in source order. This violated the project's order-independent declarations invariant. The fix adds a pre-pass that collects all Declaration::Enum entries into enum_defs before the main loop begins, ensuring the full enum registry is available when any structure is compiled. This mirrors the parser's existing two-pass strategy in ts_parser.rs (lines 70-80) and restores the symmetry between parser and compiler."
+      "decision": "Duplicate detection uses (name, param_types) as key, not (name, param_types, return_type)",
+      "rationale": "Per task spec: 'Same name + same param types = error'. Return type alone doesn't distinguish overloads — you can't have two functions with the same name and param types but different return types. This matches standard overload resolution rules (C++, Java, etc.)."
     }
   ],
   "reuse": [
     {
-      "what": "reify_types::EnumDef",
-      "where": "crates/reify-types/src/traits.rs",
-      "how": "Already has `name: String` and `variants: Vec<String>` with `contains_variant()` method. Used in CompiledModule.enum_defs for the compiled registry. Compiler converts parser's EnumDecl to this type."
+      "what": "Two-pass lowering pattern in parser",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 69-110",
+      "how": "Extended to collect function names in the first pass (alongside enum names) for forward reference support. Second pass lowers function_definition nodes using the same dispatch pattern as structure/enum/import."
     },
     {
-      "what": "Value::Enum { type_name, variant }",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Already defined with PartialEq, Eq, Ord, Display, content_hash. Used directly as the runtime value for enum literals produced by the compiler."
+      "what": "Two-pass compilation pattern in compiler",
+      "where": "crates/reify-compiler/src/lib.rs lines 617-630 (enum_defs pre-pass)",
+      "how": "Extended to pre-compile all functions before processing structures, ensuring the full function registry is available for overload resolution. Same pattern as enum_defs collection."
     },
     {
-      "what": "Type::Enum(String)",
-      "where": "crates/reify-types/src/ty.rs",
-      "how": "Already defined with Display showing 'Enum(name)'. Used as the result_type for compiled enum access expressions."
+      "what": "CompilationScope for name resolution",
+      "where": "crates/reify-compiler/src/lib.rs lines 329-350",
+      "how": "Reused to create a function-local scope with params registered, then let bindings added progressively. compile_function creates a new CompilationScope(fn_name) and uses scope.register() for each param and let binding."
     },
     {
-      "what": "CompiledExpr::literal() constructor",
-      "where": "crates/reify-types/src/expr.rs",
-      "how": "Used to create `CompiledExpr::literal(Value::Enum { type_name, variant }, Type::Enum(type_name))` from the compiler's EnumAccess handling."
+      "what": "compile_expr() function",
+      "where": "crates/reify-compiler/src/lib.rs lines 355-602",
+      "how": "Reused as-is to compile function body expressions (both let binding values and result expression). Extended with an additional functions parameter for overload resolution in the FunctionCall arm."
     },
     {
-      "what": "Existing member_access grammar rule and lower_member_access()",
-      "where": "tree-sitter-reify/grammar.js line 224, crates/reify-syntax/src/ts_parser.rs",
-      "how": "Reused to parse `EnumName.Variant` syntax. Parser enhances lower_member_access to detect enum names and produce EnumAccess expression kind."
+      "what": "resolve_type_name() function",
+      "where": "crates/reify-compiler/src/lib.rs lines 236-245",
+      "how": "Reused to resolve fn param types and return types from TypeExpr names to Type values."
     },
     {
-      "what": "Compiler diagnostic pattern: Diagnostic::error().with_label()",
-      "where": "crates/reify-compiler/src/lib.rs (multiple locations)",
-      "how": "Same pattern reused for unknown enum type/variant errors and fallback to Undef literal."
+      "what": "Lowering helpers: node_text(), span(), content_hash()",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 53-65",
+      "how": "Reused in lower_function(), lower_fn_param(), lower_fn_body() for extracting text, building spans, and computing content hashes."
     },
     {
-      "what": "Lowering struct helpers: node_text(), span(), content_hash()",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 48-60",
-      "how": "Reused in lower_enum() for extracting enum name/variants text and constructing EnumDecl with span and content hash."
+      "what": "LetDecl AST type",
+      "where": "crates/reify-syntax/src/lib.rs lines 72-80",
+      "how": "Reused for fn body let bindings. FnBody.let_bindings is Vec<LetDecl> with where_clause set to None."
     },
     {
-      "what": "Test patterns from boundary2_producer.rs",
+      "what": "Existing test patterns in boundary2_producer.rs",
       "where": "crates/reify-compiler/tests/boundary2_producer.rs",
-      "how": "Pattern of parsing source string → compile → assert on templates/diagnostics/value_cells reused for all new compiler tests."
+      "how": "Parse source string → compile → assert on compiled.functions/diagnostics/templates. Same helper patterns (parse, assert no errors, extract fields)."
     },
     {
-      "what": "Eval test helper: lit() function",
-      "where": "crates/reify-expr/src/lib.rs mod tests",
-      "how": "Reused to construct CompiledExpr::literal for enum values in eval tests."
+      "what": "ContentHash::combine_all for hash computation",
+      "where": "crates/reify-types/src/hash.rs",
+      "how": "Used to build content hashes for CompiledFunction from name + param types + body expression hashes, following the same pattern as TopologyTemplate hash computation."
     },
     {
-      "what": "Parser's two-pass lowering pattern",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 70-80",
-      "how": "The parser's strategy of pre-collecting enum names in a first pass before lowering expressions is mirrored in the compiler fix: pre-collect all Declaration::Enum into enum_defs before the main declaration processing loop. Same architectural pattern applied at a different layer."
+      "what": "Diagnostic::error().with_label() pattern",
+      "where": "crates/reify-compiler/src/lib.rs (multiple locations)",
+      "how": "Same diagnostic pattern reused for duplicate function signature errors, unresolved type errors in fn params, and ambiguous overload resolution errors."
     }
   ]
 }
