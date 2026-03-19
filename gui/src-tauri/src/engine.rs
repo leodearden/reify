@@ -1,13 +1,13 @@
 // EngineSession — wraps Engine + CompiledModule + source text
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_eval::{CheckResult, Engine};
 use reify_types::{
-    ConstraintChecker, DeterminacyState, DimensionVector, GeometryKernel, ModulePath, Satisfaction,
-    Severity, Value, ValueCellId,
+    ConstraintChecker, DeterminacyState, DimensionVector, ExportFormat, GeometryKernel, ModulePath,
+    Satisfaction, Severity, Value, ValueCellId,
 };
 
 use crate::types::{
@@ -113,6 +113,120 @@ impl EngineSession {
 
         self.last_check = Some(check_result);
         self.build_gui_state()
+    }
+
+    /// Load a .ri file from disk.
+    pub fn load_file(&mut self, path: &Path) -> Result<GuiState, String> {
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| format!("Error reading {}: {}", path.display(), e))?;
+
+        let module_name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unnamed");
+
+        self.file_path = Some(path.to_path_buf());
+        self.load_from_source(&source, module_name)
+    }
+
+    /// Update source code and re-evaluate from scratch.
+    ///
+    /// Source changes can alter topology, so we create a fresh parse/compile/eval cycle.
+    /// The existing engine state (snapshot, caches) is reused where possible via check().
+    pub fn update_source(&mut self, path: &str, content: &str) -> Result<GuiState, String> {
+        let module_name = Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unnamed");
+
+        // Store updated source
+        self.source_map.insert(path.to_string(), content.to_string());
+
+        // Re-parse and re-compile from scratch (topology may have changed)
+        let parsed = reify_syntax::parse(content, ModulePath::single(module_name));
+
+        if !parsed.errors.is_empty() {
+            let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
+            return Err(format!("Parse errors: {}", msgs.join("; ")));
+        }
+
+        let compiled = reify_compiler::compile(&parsed);
+
+        let has_errors = compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error);
+        if has_errors {
+            let msgs: Vec<String> = compiled
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .map(|d| d.message.clone())
+                .collect();
+            return Err(format!("Compile errors: {}", msgs.join("; ")));
+        }
+
+        let check_result = self.engine.check(&compiled);
+
+        self.compiled = Some(compiled);
+        self.last_check = Some(check_result);
+
+        self.build_gui_state()
+    }
+
+    /// Export geometry to a file.
+    pub fn export(&mut self, format: ExportFormat, path: &Path) -> Result<(), String> {
+        let compiled = self
+            .compiled
+            .as_ref()
+            .ok_or_else(|| "No module loaded".to_string())?
+            .clone();
+
+        let result = self.engine.build(&compiled, format);
+
+        for diag in &result.diagnostics {
+            if diag.severity == Severity::Error {
+                return Err(format!("Build error: {}", diag.message));
+            }
+        }
+
+        match result.geometry_output {
+            Some(data) => {
+                std::fs::write(path, &data)
+                    .map_err(|e| format!("Error writing {}: {}", path.display(), e))?;
+                Ok(())
+            }
+            None => Err("No geometry output produced".to_string()),
+        }
+    }
+
+    /// Look up source location for an entity path (e.g., "Bracket.width").
+    pub fn get_source_location(&self, entity_path: &str) -> Option<crate::types::SourceLocation> {
+        let compiled = self.compiled.as_ref()?;
+        let cell_id = parse_cell_id(entity_path).ok()?;
+
+        // Find the span for this cell
+        let span = compiled.templates.iter().find_map(|t| {
+            t.value_cells
+                .iter()
+                .find(|vc| vc.id == cell_id)
+                .map(|vc| vc.span)
+        })?;
+
+        // Convert byte offset to line/column using stored source
+        // Find the source file that contains this span
+        let (file, source) = self.source_map.iter().next()?;
+
+        let (line, col) = byte_offset_to_line_col(source, span.start as usize);
+        let (end_line, end_col) = byte_offset_to_line_col(source, span.end as usize);
+
+        Some(crate::types::SourceLocation {
+            file: file.clone(),
+            line: line as u32,
+            column: col as u32,
+            end_line: end_line as u32,
+            end_column: end_col as u32,
+        })
     }
 
     /// Build the full GUI state from the current engine state.
@@ -266,4 +380,22 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
     }
 
     Err(format!("Cannot parse value '{}'", s))
+}
+
+/// Convert a byte offset in source text to (line, column), both 1-based.
+fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut col = 1;
+    for (i, ch) in source.char_indices() {
+        if i >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
 }
