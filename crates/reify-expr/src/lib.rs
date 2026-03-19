@@ -340,6 +340,25 @@ fn eval_eq(lv: &Value, rv: &Value) -> Value {
                 Value::Bool(a == b)
             }
         }
+        // Enum-vs-Enum equality: same type → compare variant, different type → false
+        (
+            Value::Enum {
+                type_name: a,
+                variant: av,
+            },
+            Value::Enum {
+                type_name: b,
+                variant: bv,
+            },
+        ) => {
+            if a == b {
+                Value::Bool(av == bv)
+            } else {
+                Value::Bool(false)
+            }
+        }
+        // Enum vs non-Enum: always false
+        (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Bool(false),
         // Dimensioned Scalar vs non-Scalar: not equal
         (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
             if !dimension.is_dimensionless() =>
