@@ -93,12 +93,26 @@ impl CancellationToken {
 ///
 /// `evaluate` takes `NodeId` by value (not by reference) to avoid lifetime issues
 /// when moving data into spawned tasks.
+///
+/// Note: dirty/skip decisions are made by the scheduler using pre-computed
+/// `changed_vcids` tracking, not by the evaluator. Evaluators are purely
+/// computational — they only implement `evaluate()`.
 pub trait AsyncNodeEvaluator: Send + Sync {
-    /// Check if a node is still dirty (may have been cleared by upstream early cutoff).
-    fn is_dirty(&self, node: &NodeId) -> bool;
-
     /// Evaluate a node asynchronously and return whether its result changed.
     fn evaluate(&self, node: NodeId) -> impl Future<Output = EvalOutcome> + Send;
+}
+
+/// Result of concurrent scheduler execution.
+///
+/// Contains the set of nodes that were evaluated and returned `Changed`,
+/// and the set of nodes that were skipped because none of their dependencies
+/// were in the `changed_vcids` set.
+#[derive(Debug)]
+pub struct SchedulerResult {
+    /// Nodes that were evaluated and returned `EvalOutcome::Changed`.
+    pub changed: HashSet<NodeId>,
+    /// Nodes that were skipped (not dirty per pre-computed changed_vcids).
+    pub skipped: HashSet<NodeId>,
 }
 
 /// Concurrent scheduler: groups eval_set nodes by topological level and
@@ -108,24 +122,38 @@ pub struct ConcurrentScheduler;
 impl ConcurrentScheduler {
     /// Execute the eval set concurrently, grouped by topological level.
     ///
+    /// Uses pre-computed skip logic: tracks `changed_vcids` seeded from
+    /// `changed_cells`. Before each level, a node is dirty if any of its
+    /// `trace.reads` intersects `changed_vcids` (or if traces are missing/empty
+    /// as a safety default). After each level, Changed outcomes' ValueCellIds
+    /// are added to `changed_vcids`. This makes the skip decision structurally
+    /// race-free with zero Mutex contention during evaluation.
+    ///
     /// For each level:
     /// - Check cancellation before starting the level
-    /// - Skip nodes that are no longer dirty
+    /// - Pre-compute which nodes are dirty vs skippable
     /// - Spawn tokio tasks for dirty nodes
-    /// - Join all tasks and collect changed nodes
+    /// - Join all tasks, collect changed/skipped sets
+    /// - Update changed_vcids for next level
     pub async fn execute<E: AsyncNodeEvaluator + 'static>(
         &self,
         eval_set: Vec<NodeId>,
         evaluator: Arc<E>,
         traces: &HashMap<NodeId, DependencyTrace>,
         cancel: &CancellationToken,
-    ) -> Result<HashSet<NodeId>, SchedulerError> {
+        changed_cells: &HashSet<ValueCellId>,
+    ) -> Result<SchedulerResult, SchedulerError> {
         if eval_set.is_empty() {
-            return Ok(HashSet::new());
+            return Ok(SchedulerResult {
+                changed: HashSet::new(),
+                skipped: HashSet::new(),
+            });
         }
 
         let levels = compute_levels(&eval_set, traces);
         let mut changed = HashSet::new();
+        let mut skipped = HashSet::new();
+        let mut changed_vcids: HashSet<ValueCellId> = changed_cells.clone();
 
         for level in levels {
             // Check cancellation before starting each level
@@ -133,13 +161,32 @@ impl ConcurrentScheduler {
                 break;
             }
 
+            // Pre-compute dirty/skip for this level
+            let mut dirty_nodes = Vec::new();
+            for node in level {
+                let is_dirty = if let Some(trace) = traces.get(&node) {
+                    if trace.reads.is_empty() {
+                        // No reads (e.g. param node) — treat as dirty (safety default)
+                        true
+                    } else {
+                        // Dirty if any read intersects changed_vcids
+                        trace.reads.iter().any(|r| changed_vcids.contains(r))
+                    }
+                } else {
+                    // No trace entry — safety default: treat as dirty
+                    true
+                };
+
+                if is_dirty {
+                    dirty_nodes.push(node);
+                } else {
+                    skipped.insert(node);
+                }
+            }
+
             // Spawn tasks for dirty nodes in this level
             let mut handles = Vec::new();
-            for node in level {
-                if !evaluator.is_dirty(&node) {
-                    continue;
-                }
-
+            for node in dirty_nodes {
                 let eval = Arc::clone(&evaluator);
                 let n = node.clone();
                 let handle = tokio::spawn(async move {
@@ -153,6 +200,10 @@ impl ConcurrentScheduler {
             for handle in handles {
                 match handle.await {
                     Ok((node, EvalOutcome::Changed)) => {
+                        // Add to changed_vcids for downstream dirty computation
+                        if let NodeId::Value(ref vcid) = node {
+                            changed_vcids.insert(vcid.clone());
+                        }
                         changed.insert(node);
                     }
                     Ok(_) => {} // Unchanged — skip
@@ -166,7 +217,7 @@ impl ConcurrentScheduler {
             }
         }
 
-        Ok(changed)
+        Ok(SchedulerResult { changed, skipped })
     }
 }
 
@@ -282,22 +333,16 @@ mod tests {
         use reify_types::ValueCellId;
 
         struct MockAsyncEvaluator {
-            all_dirty: bool,
             result: EvalOutcome,
         }
 
         impl AsyncNodeEvaluator for MockAsyncEvaluator {
-            fn is_dirty(&self, _node: &NodeId) -> bool {
-                self.all_dirty
-            }
-
             async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
                 self.result
             }
         }
 
         let mock = MockAsyncEvaluator {
-            all_dirty: true,
             result: EvalOutcome::Changed,
         };
 
@@ -346,10 +391,6 @@ mod tests {
         }
 
         impl AsyncNodeEvaluator for CancellingAsyncEvaluator {
-            fn is_dirty(&self, _node: &NodeId) -> bool {
-                true
-            }
-
             async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
                 self.eval_count.fetch_add(1, Ordering::SeqCst);
                 // Cancel after evaluating (node a triggers cancellation)
@@ -363,17 +404,22 @@ mod tests {
             eval_count: AtomicUsize::new(0),
         });
 
+        // Both a and b read nothing special — use changed_cells containing a's vcid
+        // so all nodes with reads containing "a" are dirty
+        let mut changed_cells = HashSet::new();
+        changed_cells.insert(ValueCellId::new(e, "a"));
+
         let scheduler = ConcurrentScheduler;
         let eval_set = vec![a.clone(), b.clone()];
-        let changed = scheduler
-            .execute(eval_set, evaluator.clone(), &traces, &cancel)
+        let result = scheduler
+            .execute(eval_set, evaluator.clone(), &traces, &cancel, &changed_cells)
             .await
             .unwrap();
 
-        // a should have been evaluated
-        assert!(changed.contains(&a));
+        // a should have been evaluated (it has empty reads → dirty by default)
+        assert!(result.changed.contains(&a));
         // b should NOT have been evaluated (cancelled between levels)
-        assert!(!changed.contains(&b));
+        assert!(!result.changed.contains(&b));
         // Only 1 evaluation should have happened
         assert_eq!(evaluator.eval_count.load(Ordering::SeqCst), 1);
     }
@@ -440,9 +486,6 @@ mod tests {
         // Concurrent scheduler
         struct AllChangedAsync;
         impl AsyncNodeEvaluator for AllChangedAsync {
-            fn is_dirty(&self, _node: &NodeId) -> bool {
-                true
-            }
             async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
                 EvalOutcome::Changed
             }
@@ -451,69 +494,85 @@ mod tests {
         let con_scheduler = ConcurrentScheduler;
         let con_evaluator = Arc::new(AllChangedAsync);
         let cancel = CancellationToken::new();
-        let con_changed = con_scheduler
-            .execute(eval_set, con_evaluator, &traces, &cancel)
+        // Use changed_cells containing both width and thickness so all nodes
+        // that read them are considered dirty
+        let mut changed_cells = HashSet::new();
+        changed_cells.insert(ValueCellId::new(e, "width"));
+        changed_cells.insert(ValueCellId::new(e, "thickness"));
+        let con_result = con_scheduler
+            .execute(eval_set, con_evaluator, &traces, &cancel, &changed_cells)
             .await
             .unwrap();
 
         // Both should produce the same changed set
-        assert_eq!(seq_changed, con_changed);
-        assert_eq!(con_changed.len(), 4);
-        assert!(con_changed.contains(&width));
-        assert!(con_changed.contains(&thickness));
-        assert!(con_changed.contains(&volume));
-        assert!(con_changed.contains(&c1));
+        assert_eq!(seq_changed, con_result.changed);
+        assert_eq!(con_result.changed.len(), 4);
+        assert!(con_result.changed.contains(&width));
+        assert!(con_result.changed.contains(&thickness));
+        assert!(con_result.changed.contains(&volume));
+        assert!(con_result.changed.contains(&c1));
     }
 
+    /// Tests skip via traces/changed_cells: node `a` reads the changed param
+    /// and is dirty; node `b` reads a different (unchanged) value and is skipped.
     #[tokio::test]
     async fn concurrent_scheduler_skips_non_dirty() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use std::collections::HashMap;
+        use reify_types::ValueCellId;
+        use std::collections::{HashMap, HashSet};
         use std::sync::Arc;
 
-        let dirty_node = NodeId::Value(reify_types::ValueCellId::new("A", "a"));
-        let clean_node = NodeId::Value(reify_types::ValueCellId::new("A", "b"));
+        let changed_param = ValueCellId::new("A", "param");
+        let other_param = ValueCellId::new("A", "other");
 
-        struct SelectiveDirty {
-            dirty_node: NodeId,
-        }
+        let dirty_node = NodeId::Value(ValueCellId::new("A", "a"));
+        let clean_node = NodeId::Value(ValueCellId::new("A", "b"));
 
-        impl AsyncNodeEvaluator for SelectiveDirty {
-            fn is_dirty(&self, node: &NodeId) -> bool {
-                *node == self.dirty_node
-            }
-
+        struct AllChangedAsync;
+        impl AsyncNodeEvaluator for AllChangedAsync {
             async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
                 EvalOutcome::Changed
             }
         }
 
-        let evaluator = Arc::new(SelectiveDirty {
-            dirty_node: dirty_node.clone(),
-        });
+        let evaluator = Arc::new(AllChangedAsync);
         let eval_set = vec![dirty_node.clone(), clean_node.clone()];
-        let mut traces = HashMap::new();
-        traces.insert(dirty_node.clone(), DependencyTrace::default());
-        traces.insert(clean_node.clone(), DependencyTrace::default());
-        let cancel = CancellationToken::new();
 
+        // dirty_node reads the changed param, clean_node reads something else
+        let mut traces = HashMap::new();
+        traces.insert(
+            dirty_node.clone(),
+            DependencyTrace { reads: vec![changed_param.clone()] },
+        );
+        traces.insert(
+            clean_node.clone(),
+            DependencyTrace { reads: vec![other_param] },
+        );
+
+        let mut changed_cells = HashSet::new();
+        changed_cells.insert(changed_param);
+
+        let cancel = CancellationToken::new();
         let scheduler = ConcurrentScheduler;
-        let changed = scheduler
-            .execute(eval_set, evaluator, &traces, &cancel)
+        let result = scheduler
+            .execute(eval_set, evaluator, &traces, &cancel, &changed_cells)
             .await
             .unwrap();
 
-        assert_eq!(changed.len(), 1);
-        assert!(changed.contains(&dirty_node));
-        assert!(!changed.contains(&clean_node));
+        assert_eq!(result.changed.len(), 1);
+        assert!(result.changed.contains(&dirty_node));
+        assert!(!result.changed.contains(&clean_node));
+        // clean_node should be in skipped
+        assert!(result.skipped.contains(&clean_node));
     }
 
     #[tokio::test]
     async fn concurrent_scheduler_multi_level_ordering() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use std::collections::HashMap;
+        use reify_types::ValueCellId;
+        use std::collections::{HashMap, HashSet};
         use std::sync::{Arc, Mutex};
 
         /// Tracks evaluation order via a shared vec.
@@ -522,10 +581,6 @@ mod tests {
         }
 
         impl AsyncNodeEvaluator for TrackingAsyncEvaluator {
-            fn is_dirty(&self, _node: &NodeId) -> bool {
-                true
-            }
-
             async fn evaluate(&self, node: NodeId) -> EvalOutcome {
                 self.eval_order.lock().unwrap().push(node);
                 EvalOutcome::Changed
@@ -538,9 +593,9 @@ mod tests {
         });
 
         let e = "T";
-        let a = NodeId::Value(reify_types::ValueCellId::new(e, "a"));
-        let b = NodeId::Value(reify_types::ValueCellId::new(e, "b"));
-        let c = NodeId::Value(reify_types::ValueCellId::new(e, "c"));
+        let a = NodeId::Value(ValueCellId::new(e, "a"));
+        let b = NodeId::Value(ValueCellId::new(e, "b"));
+        let c = NodeId::Value(ValueCellId::new(e, "c"));
 
         let eval_set = vec![a.clone(), b.clone(), c.clone()];
 
@@ -552,24 +607,28 @@ mod tests {
             c.clone(),
             DependencyTrace {
                 reads: vec![
-                    reify_types::ValueCellId::new(e, "a"),
-                    reify_types::ValueCellId::new(e, "b"),
+                    ValueCellId::new(e, "a"),
+                    ValueCellId::new(e, "b"),
                 ],
             },
         );
 
+        // a and b have empty reads → dirty by default.
+        // c reads a and b → dirty once a and b are in changed_vcids (after level 0).
+        let changed_cells = HashSet::new();
+
         let cancel = CancellationToken::new();
         let scheduler = ConcurrentScheduler;
-        let changed = scheduler
-            .execute(eval_set, evaluator, &traces, &cancel)
+        let result = scheduler
+            .execute(eval_set, evaluator, &traces, &cancel, &changed_cells)
             .await
             .unwrap();
 
         // All 3 nodes should be in the changed set
-        assert_eq!(changed.len(), 3);
-        assert!(changed.contains(&a));
-        assert!(changed.contains(&b));
-        assert!(changed.contains(&c));
+        assert_eq!(result.changed.len(), 3);
+        assert!(result.changed.contains(&a));
+        assert!(result.changed.contains(&b));
+        assert!(result.changed.contains(&c));
 
         // c must appear after both a and b in eval order
         let order = eval_order.lock().unwrap();
@@ -584,48 +643,42 @@ mod tests {
     async fn concurrent_scheduler_single_dirty_node() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use std::collections::HashMap;
+        use std::collections::{HashMap, HashSet};
         use std::sync::Arc;
 
-        struct AllDirtyChanged;
+        struct AllChangedAsync;
 
-        impl AsyncNodeEvaluator for AllDirtyChanged {
-            fn is_dirty(&self, _node: &NodeId) -> bool {
-                true
-            }
-
+        impl AsyncNodeEvaluator for AllChangedAsync {
             async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
                 EvalOutcome::Changed
             }
         }
 
         let scheduler = ConcurrentScheduler;
-        let evaluator = Arc::new(AllDirtyChanged);
+        let evaluator = Arc::new(AllChangedAsync);
         let node = NodeId::Value(reify_types::ValueCellId::new("A", "x"));
         let eval_set = vec![node.clone()];
         let mut traces = HashMap::new();
         traces.insert(node.clone(), DependencyTrace::default());
         let cancel = CancellationToken::new();
+        // Empty reads → dirty by default
+        let changed_cells = HashSet::new();
 
-        let changed = scheduler.execute(eval_set, evaluator, &traces, &cancel).await.unwrap();
-        assert_eq!(changed.len(), 1);
-        assert!(changed.contains(&node));
+        let result = scheduler.execute(eval_set, evaluator, &traces, &cancel, &changed_cells).await.unwrap();
+        assert_eq!(result.changed.len(), 1);
+        assert!(result.changed.contains(&node));
     }
 
     #[tokio::test]
     async fn execute_returns_error_on_task_panic() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use std::collections::HashMap;
+        use std::collections::{HashMap, HashSet};
         use std::sync::Arc;
 
         struct PanickingAsyncEvaluator;
 
         impl AsyncNodeEvaluator for PanickingAsyncEvaluator {
-            fn is_dirty(&self, _node: &NodeId) -> bool {
-                true
-            }
-
             async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
                 panic!("evaluator bug");
             }
@@ -638,9 +691,10 @@ mod tests {
         let mut traces = HashMap::new();
         traces.insert(node.clone(), DependencyTrace::default());
         let cancel = CancellationToken::new();
+        let changed_cells = HashSet::new();
 
         let result = scheduler
-            .execute(eval_set, evaluator, &traces, &cancel)
+            .execute(eval_set, evaluator, &traces, &cancel, &changed_cells)
             .await;
 
         assert!(result.is_err());
@@ -654,16 +708,12 @@ mod tests {
     async fn execute_panic_preserves_payload() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use std::collections::HashMap;
+        use std::collections::{HashMap, HashSet};
         use std::sync::Arc;
 
         struct PanickingWithPayload;
 
         impl AsyncNodeEvaluator for PanickingWithPayload {
-            fn is_dirty(&self, _node: &NodeId) -> bool {
-                true
-            }
-
             async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
                 panic!("kaboom from evaluator");
             }
@@ -676,9 +726,10 @@ mod tests {
         let mut traces = HashMap::new();
         traces.insert(node.clone(), DependencyTrace::default());
         let cancel = CancellationToken::new();
+        let changed_cells = HashSet::new();
 
         let result = scheduler
-            .execute(eval_set, evaluator, &traces, &cancel)
+            .execute(eval_set, evaluator, &traces, &cancel, &changed_cells)
             .await;
 
         assert!(result.is_err());
@@ -697,16 +748,12 @@ mod tests {
     async fn concurrent_scheduler_empty_eval_set() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use std::collections::HashMap;
+        use std::collections::{HashMap, HashSet};
         use std::sync::Arc;
 
         struct MockAsyncEvaluator;
 
         impl AsyncNodeEvaluator for MockAsyncEvaluator {
-            fn is_dirty(&self, _node: &NodeId) -> bool {
-                true
-            }
-
             async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
                 EvalOutcome::Changed
             }
@@ -717,9 +764,11 @@ mod tests {
         let traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
         let cancel = CancellationToken::new();
         let eval_set = vec![];
+        let changed_cells = HashSet::new();
 
-        let changed = scheduler.execute(eval_set, evaluator, &traces, &cancel).await.unwrap();
-        assert!(changed.is_empty());
+        let result = scheduler.execute(eval_set, evaluator, &traces, &cancel, &changed_cells).await.unwrap();
+        assert!(result.changed.is_empty());
+        assert!(result.skipped.is_empty());
     }
 
     /// Pre-computed skip: 3 parents (p1 Changed, p2/p3 Unchanged) fan into

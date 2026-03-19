@@ -172,10 +172,6 @@ impl ConcurrentEvalAdapter {
 }
 
 impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
-    fn is_dirty(&self, node: &NodeId) -> bool {
-        !self.skip_state.lock().unwrap().skipped.contains(node)
-    }
-
     async fn evaluate(&self, node: NodeId) -> EvalOutcome {
         // Only evaluate Value nodes with expressions
         if let NodeId::Value(ref vcid) = node
@@ -298,7 +294,7 @@ pub async fn edit_param_concurrent(
 
     let scheduler = ConcurrentScheduler;
     match scheduler
-        .execute(eval_set.clone(), Arc::clone(&adapter_arc), &traces, cancel)
+        .execute(eval_set.clone(), Arc::clone(&adapter_arc), &traces, cancel, &setup.changed_cells)
         .await
     {
         Ok(_changed) => {
