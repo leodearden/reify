@@ -91,3 +91,36 @@ fn trait_bound_wraps_trait_ref() {
     assert_eq!(bound, bound2);
     let _ = format!("{:?}", bound);
 }
+
+// --- TypeParam tests (step-23) ---
+
+#[test]
+fn type_param_construction() {
+    let tp = reify_types::TypeParam {
+        name: "T".into(),
+        bounds: vec![reify_types::TraitBound {
+            trait_ref: reify_types::TraitRef {
+                name: "Measurable".into(),
+                type_args: vec![],
+            },
+        }],
+        default: Some(reify_types::Type::Real),
+    };
+    assert_eq!(tp.name, "T");
+    assert_eq!(tp.bounds.len(), 1);
+    assert_eq!(tp.default, Some(reify_types::Type::Real));
+}
+
+#[test]
+fn type_param_no_bounds_no_default() {
+    let tp = reify_types::TypeParam {
+        name: "U".into(),
+        bounds: vec![],
+        default: None,
+    };
+    assert_eq!(tp.name, "U");
+    assert!(tp.bounds.is_empty());
+    assert!(tp.default.is_none());
+    let tp2 = tp.clone();
+    assert_eq!(tp, tp2);
+}
