@@ -1484,3 +1484,35 @@ fn compile_user_function_call() {
     }
     assert_eq!(v_expr.result_type, reify_types::Type::Real);
 }
+
+/// Overload resolution should pick the correct overload based on argument types.
+#[test]
+fn compile_overload_resolution_picks_correct() {
+    let source = "fn process(x: Real) -> Real { x + 1 }\nfn process(x: Int) -> Int { x }\nstructure S { let a = process(3.14) }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_overload_resolve"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    let a_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "a")
+        .expect("should have 'a' value cell");
+    let a_expr = a_cell.default_expr.as_ref().expect("let should have expr");
+
+    match &a_expr.kind {
+        reify_types::CompiledExprKind::UserFunctionCall { function_name, .. } => {
+            assert_eq!(function_name, "process");
+        }
+        other => panic!("expected UserFunctionCall, got {:?}", other),
+    }
+    // 3.14 is Real, so it matches the Real overload
+    assert_eq!(a_expr.result_type, reify_types::Type::Real);
+}
