@@ -396,8 +396,16 @@ impl OcctKernel {
                     bb.xmin, bb.ymin, bb.zmin, bb.xmax, bb.ymax, bb.zmax
                 )))
             }
-            GeometryQuery::Distance { .. } => {
-                Err(QueryError::QueryFailed("Distance not yet implemented".into()))
+            GeometryQuery::Distance { from, to } => {
+                let s1 = self
+                    .get_shape(*from)
+                    .map_err(|_| QueryError::InvalidHandle(*from))?;
+                let s2 = self
+                    .get_shape(*to)
+                    .map_err(|_| QueryError::InvalidHandle(*to))?;
+                let dist = ffi::ffi::query_distance(s1, s2)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Real(dist))
             }
             GeometryQuery::MomentOfInertia { .. } => {
                 Err(QueryError::QueryFailed("MomentOfInertia not yet implemented".into()))

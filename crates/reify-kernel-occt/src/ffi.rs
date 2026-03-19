@@ -122,6 +122,14 @@ pub mod ffi {
         fn query_centroid(shape: &OcctShape) -> Result<Point3>;
         fn query_bbox(shape: &OcctShape) -> Result<BBox>;
 
+        fn query_distance(shape1: &OcctShape, shape2: &OcctShape) -> Result<f64>;
+        fn query_moment_of_inertia(
+            shape: &OcctShape,
+            ax: f64,
+            ay: f64,
+            az: f64,
+        ) -> Result<f64>;
+
         // --- Export ---
         fn export_step(shape: &OcctShape) -> Result<String>;
 

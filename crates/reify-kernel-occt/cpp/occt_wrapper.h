@@ -81,6 +81,9 @@ double query_area(const OcctShape& shape);
 Point3 query_centroid(const OcctShape& shape);
 BBox query_bbox(const OcctShape& shape);
 
+double query_distance(const OcctShape& shape1, const OcctShape& shape2);
+double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
+
 // --- Export ---
 
 /// Export shape to STEP format, returns the STEP file content as a string.

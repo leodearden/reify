@@ -43,6 +43,9 @@
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>
 
+// OCCT distance
+#include <BRepExtrema_DistShapeShape.hxx>
+
 // OCCT STEP export
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
@@ -542,6 +545,37 @@ BBox query_bbox(const OcctShape& shape) {
         throw std::runtime_error(std::string("OCCT query_bbox: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT query_bbox: unknown C++ exception");
+    }
+}
+
+double query_distance(const OcctShape& shape1, const OcctShape& shape2) {
+    try {
+        BRepExtrema_DistShapeShape dist(shape1.shape, shape2.shape);
+        if (!dist.IsDone()) {
+            throw std::runtime_error("BRepExtrema_DistShapeShape failed");
+        }
+        return dist.Value();
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT query_distance: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT query_distance: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT query_distance: unknown C++ exception");
+    }
+}
+
+double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az) {
+    try {
+        GProp_GProps props;
+        BRepGProp::VolumeProperties(shape.shape, props);
+        gp_Ax1 axis(props.CentreOfMass(), gp_Dir(ax, ay, az));
+        return props.MomentOfInertia(axis);
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT query_moment_of_inertia: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT query_moment_of_inertia: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT query_moment_of_inertia: unknown C++ exception");
     }
 }
 
