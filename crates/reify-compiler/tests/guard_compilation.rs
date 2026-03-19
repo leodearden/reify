@@ -365,3 +365,33 @@ structure S {
         diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+/// Reference safety: a top-level constraint referencing a guarded param should
+/// produce a diagnostic. Currently the unguarded-reference check only walks
+/// value_cells, not top-level constraints.
+#[test]
+fn reference_safety_toplevel_constraint_to_guarded() {
+    let source = r#"
+structure S {
+    param active : Bool = true
+    param x : Scalar = 5mm where active
+    constraint x > 2mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    // Should contain a diagnostic about unguarded reference to guarded cell
+    let guard_warnings: Vec<_> = diagnostics.iter()
+        .filter(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("unguarded") || msg.contains("guarded")
+        })
+        .collect();
+
+    assert!(
+        !guard_warnings.is_empty(),
+        "expected diagnostic about unguarded constraint referencing guarded cell x, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
