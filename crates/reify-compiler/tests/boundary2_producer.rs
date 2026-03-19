@@ -723,6 +723,31 @@ fn different_content_same_path_different_hash() {
     );
 }
 
+/// Same source compiled twice should produce identical content_hashes (determinism).
+#[test]
+fn same_content_same_hash_deterministic() {
+    let path = reify_types::ModulePath::single("bracket");
+    let source = reify_test_support::bracket_source();
+
+    let parsed_1 = reify_syntax::parse(source, path.clone());
+    let compiled_1 = reify_compiler::compile(&parsed_1);
+
+    let parsed_2 = reify_syntax::parse(source, path.clone());
+    let compiled_2 = reify_compiler::compile(&parsed_2);
+
+    assert_eq!(
+        compiled_1.content_hash, compiled_2.content_hash,
+        "same source compiled twice should produce identical module content_hashes"
+    );
+
+    // Also check template-level hashes
+    assert_eq!(
+        compiled_1.templates[0].content_hash,
+        compiled_2.templates[0].content_hash,
+        "same source compiled twice should produce identical template content_hashes"
+    );
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
