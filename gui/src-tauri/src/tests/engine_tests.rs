@@ -279,3 +279,95 @@ fn export_end_to_end() {
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_dir(&dir);
 }
+
+// --- Step 15: Review bug regression tests ---
+
+/// Review bug #2: source_map key inconsistency.
+/// load_from_source inserts key "bracket.ri", but update_source inserts the raw path string.
+/// After load_file + update_source, files should have exactly 1 entry (not 2).
+#[test]
+fn source_map_consistent_after_load_file_then_update() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/bracket.ri");
+
+    session.load_file(&path).expect("load_file should succeed");
+
+    // Now update_source with the full path string — should normalize key, not create duplicate
+    let new_source = bracket_source_with_width("120mm");
+    let state = session
+        .update_source(path.to_str().unwrap(), &new_source)
+        .expect("update_source should succeed");
+
+    assert_eq!(
+        state.files.len(),
+        1,
+        "should have exactly 1 file entry after load_file + update_source, got {}: {:?}",
+        state.files.len(),
+        state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+}
+
+/// Review bug #3: get_source_location uses non-deterministic HashMap .iter().next().
+/// After load_file + update_source, get_source_location should return the correct (single) file.
+#[test]
+fn get_source_location_correct_after_load_file_then_update() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/bracket.ri");
+
+    session.load_file(&path).expect("load_file should succeed");
+
+    let new_source = bracket_source_with_width("120mm");
+    let state = session
+        .update_source(path.to_str().unwrap(), &new_source)
+        .expect("update_source should succeed");
+
+    let loc = session
+        .get_source_location("Bracket.width")
+        .expect("should find source location");
+
+    // The file in the location should match the single file entry
+    assert_eq!(state.files.len(), 1);
+    assert_eq!(
+        loc.file, state.files[0].path,
+        "get_source_location file should match the single file entry"
+    );
+}
+
+/// Review bug #3: get_source_location should use explicit key lookup, not .iter().next().
+/// After load_from_source, the file should be the normalized "bracket.ri" key.
+#[test]
+fn get_source_location_uses_explicit_key_lookup() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let loc = session
+        .get_source_location("Bracket.width")
+        .expect("should find source location");
+
+    // Should return the normalized module-name-based key
+    assert_eq!(
+        loc.file, "bracket.ri",
+        "get_source_location should return normalized module-name key"
+    );
+}
