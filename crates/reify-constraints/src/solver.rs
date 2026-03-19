@@ -489,13 +489,13 @@ impl ConstraintSolver for DimensionalSolver {
 
         // Post-solve objective validation: if the objective is still non-numeric
         // at the solution point, report NoProgress rather than Solved.
-        if let Some(obj) = &problem.objective {
-            if eval_objective(obj, &final_values).is_none() {
-                return SolveResult::NoProgress {
-                    reason: "objective expression evaluated to undefined at solution point"
-                        .to_string(),
-                };
-            }
+        if let Some(obj) = &problem.objective
+            && eval_objective(obj, &final_values).is_none()
+        {
+            return SolveResult::NoProgress {
+                reason: "objective expression evaluated to undefined at solution point"
+                    .to_string(),
+            };
         }
 
         // Build solution values
