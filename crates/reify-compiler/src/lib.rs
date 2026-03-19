@@ -18,6 +18,7 @@ pub struct CompiledImport {
 pub struct CompiledModule {
     pub path: reify_types::ModulePath,
     pub imports: Vec<CompiledImport>,
+    pub enum_defs: Vec<reify_types::EnumDef>,
     pub templates: Vec<TopologyTemplate>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
@@ -589,6 +590,7 @@ pub fn compile(
     parsed: &reify_syntax::ParsedModule,
 ) -> CompiledModule {
     let mut imports = Vec::new();
+    let mut enum_defs = Vec::new();
     let mut templates = Vec::new();
     let mut diagnostics = Vec::new();
 
@@ -606,8 +608,11 @@ pub fn compile(
                 let template = compile_structure(structure, &mut diagnostics);
                 templates.push(template);
             }
-            reify_syntax::Declaration::Enum(_enum_decl) => {
-                // Enum declaration handling will be implemented in a later step.
+            reify_syntax::Declaration::Enum(enum_decl) => {
+                enum_defs.push(reify_types::EnumDef {
+                    name: enum_decl.name.clone(),
+                    variants: enum_decl.variants.clone(),
+                });
             }
             reify_syntax::Declaration::Import(import) => {
                 imports.push(CompiledImport {
@@ -635,9 +640,19 @@ pub fn compile(
         // Import path hashes
         let import_hashes = imports.iter().map(|i| ContentHash::of_str(&i.path));
 
+        // Enum def hashes
+        let enum_hashes = enum_defs.iter().map(|e| {
+            let mut h = ContentHash::of_str(&e.name);
+            for v in &e.variants {
+                h = h.combine(ContentHash::of_str(v));
+            }
+            h
+        });
+
         let all_hashes = std::iter::once(path_hash)
             .chain(template_hashes)
-            .chain(import_hashes);
+            .chain(import_hashes)
+            .chain(enum_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -645,6 +660,7 @@ pub fn compile(
     CompiledModule {
         path: parsed.path.clone(),
         imports,
+        enum_defs,
         templates,
         diagnostics,
         content_hash,
