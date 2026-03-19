@@ -2194,3 +2194,70 @@ fn forward_let_ref_mixed_forward_backward() {
         "d = c + b = 12 + 11 = 23"
     );
 }
+
+/// Early cutoff works correctly with forward-declared bindings.
+///
+/// Template: param a (Real, default 5.0)
+///   let y = x + 1.0  (declared 1st — forward ref to x)
+///   let x = a - a    (declared 2nd — always 0.0 regardless of a)
+///
+/// Cold-start: x=0.0, y=1.0.
+/// Edit a→7.0: x re-evals to 0.0 (unchanged → early cutoff).
+///   y should NOT be re-evaluated because x didn't change.
+///   y must still be 1.0.
+#[test]
+fn forward_let_ref_early_cutoff_with_forward_decl() {
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // y = x + 1.0 (forward ref to x)
+    let y_expr = binop(BinOp::Add, value_ref("S", "x"), literal(Value::Real(1.0)));
+    // x = a - a (always 0.0)
+    let x_expr = binop(BinOp::Sub, value_ref("S", "a"), value_ref("S", "a"));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Real, Some(literal(Value::Real(5.0))))
+        .let_binding("S", "y", Type::Real, y_expr)  // y first (forward ref to x)
+        .let_binding("S", "x", Type::Real, x_expr)  // x second (always 0.0)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result = engine.eval(&module);
+
+    // Cold-start: x=0.0, y=1.0
+    assert_eq!(*result.values.get(&x_id).unwrap(), Value::Real(0.0), "x = a - a = 0.0");
+    assert_eq!(*result.values.get(&y_id).unwrap(), Value::Real(1.0), "y = x + 1.0 = 1.0");
+
+    // Incremental edit: a → 7.0
+    let edit_result = engine.edit_param(a_id.clone(), Value::Real(7.0));
+
+    // x still 0.0 (a-a = 0.0 regardless of a)
+    assert_eq!(
+        *edit_result.values.get(&x_id).unwrap(),
+        Value::Real(0.0),
+        "x = a - a = 0.0 (unchanged)"
+    );
+    // y still 1.0 (should not have been re-evaluated due to early cutoff on x)
+    assert_eq!(
+        *edit_result.values.get(&y_id).unwrap(),
+        Value::Real(1.0),
+        "y = x + 1.0 = 1.0 (unchanged, early cutoff on x)"
+    );
+
+    // Verify early cutoff: y should NOT be in the actual eval set
+    let eval_set = engine.last_eval_set();
+    assert!(
+        !eval_set.contains(&NodeId::Value(y_id.clone())),
+        "y should NOT be in eval set — early cutoff on x means y is not re-evaluated"
+    );
+    // x SHOULD be in the eval set (it was re-evaluated, found unchanged)
+    assert!(
+        eval_set.contains(&NodeId::Value(x_id.clone())),
+        "x should be in eval set — it was re-evaluated (though value unchanged)"
+    );
+}
