@@ -19,7 +19,7 @@
     "crates/reify-compiler",
     "crates/reify-types"
   ],
-  "analysis": "The task requires three interlocking pieces: (1) a ConstraintClassifier that walks CompiledExpr trees and determines ConstraintDomain, (2) a connected-component decomposer that builds a bipartite graph of constraints ↔ auto params and finds independent sub-problems, and (3) a SolverRegistry that combines classification + decomposition to dispatch sub-problems to domain-specific solvers.\n\nThe existing codebase is well-structured for this. ConstraintDomain already exists in reify-types::constraint (Dimensional, Geometric, Logical, CrossDomain). The DimensionalSolver implements the ConstraintSolver trait. The Engine in reify-eval holds an Option<Box<dyn ConstraintSolver>> and calls .solve() on it. The SolverRegistry itself will implement ConstraintSolver, making it a drop-in replacement — the Engine just receives a SolverRegistry as its solver instead of a DimensionalSolver directly.\n\nClassification logic: Walk the expression tree. Leaf types (Scalar with LENGTH/ANGLE dimensions → Dimensional, Bool/Int → Logical). If we encounter geometry function calls or geometry handle refs → Geometric. If mixed → CrossDomain. Since we don't yet have geometric constraints in the expression system (M5/M6), the classifier will classify most real constraints as Dimensional today, but the infrastructure must be ready.\n\nConnected-component decomposition: Build a bipartite graph where constraints and auto params are nodes. An edge exists between a constraint and an auto param if the constraint's expression references that param (via collect_value_refs from reify-eval/src/deps.rs). Then use union-find to identify connected components. Each component is an independent ResolutionProblem that can be solved separately.\n\nSolverRegistry implements ConstraintSolver by: (1) classifying each constraint, (2) decomposing into connected components, (3) determining domain for each component (unanimous domain → that domain; mixed → CrossDomain), (4) dispatching to appropriate solver, (5) merging results.\n\nThe compiler change is minimal: optionally tag CompiledConstraint with a ConstraintDomain field (computed lazily or at compile time). This is a non-breaking addition since the field can be Option<ConstraintDomain>.\n\nBackward compatibility is maintained because SolverRegistry implements ConstraintSolver and the DimensionalSolver is used as both the dimensional and fallback solver. When no geometric/logical solvers are registered, everything falls back to the existing behavior.",
+  "analysis": "This task has been FULLY IMPLEMENTED. All code, tests, and integration points are in place. The implementation consists of three interlocking pieces:\n\n1. **ConstraintClassifier** (classifier.rs): Walks CompiledExpr trees and determines ConstraintDomain by collecting DomainFlags from leaf value types (Scalar/Real/Int \u2192 numeric, Bool \u2192 logical) and function calls (std::geo::* \u2192 geometric). Classification: numeric-only \u2192 Dimensional, logical-only \u2192 Logical, geometric present \u2192 Geometric, mixed \u2192 CrossDomain.\n\n2. **Connected-component decomposition** (decompose.rs): Uses union-find to build bipartite graph of constraints \u2194 auto params. Each connected component becomes an independent SubProblem with its own auto_params, constraints, and domain classification. Constraints referencing no auto params are excluded.\n\n3. **SolverRegistry** (registry.rs): Implements ConstraintSolver trait as a drop-in replacement for DimensionalSolver. Holds domain-specific solvers (dimensional required, geometric/logical/fallback optional). solve() decomposes the problem, dispatches sub-problems to appropriate solvers, and merges results.\n\n4. **Compiler integration** (reify-compiler/src/lib.rs): CompiledConstraint has `domain: Option<ConstraintDomain>` field (default None), allowing optional pre-classification at compile time.\n\nAll 50+ tests pass. The existing DimensionalSolver is used as both the dimensional and fallback solver, maintaining full backward compatibility.\n\n**POST-REVIEW FIX:** registry.rs contains unnecessary `unsafe impl Send for SolverRegistry` and `unsafe impl Sync for SolverRegistry` blocks. Since `ConstraintSolver: Send + Sync` (reify-types/src/constraint.rs:108), all `Box<dyn ConstraintSolver>` fields are automatically Send + Sync, and Rust auto-derives Send + Sync for the struct. The unsafe impls must be removed to restore compiler safety checking.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -40,49 +40,49 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for ConstraintClassifier: classify `thickness > 2mm` (Scalar comparisons) → Dimensional, classify `x == true` (Bool literal eq) → Logical, classify `x > 2mm && y == true` (mixed) → CrossDomain, classify pure arithmetic on dimensionless Reals → Dimensional, classify expression with geometry function call → Geometric. Tests in crates/reify-constraints/tests/classifier_tests.rs",
+      "description": "Write failing tests for ConstraintClassifier: classify `thickness > 2mm` (Scalar comparisons) \u2192 Dimensional, classify `x == true` (Bool literal eq) \u2192 Logical, classify `x > 2mm && y == true` (mixed) \u2192 CrossDomain, classify pure arithmetic on dimensionless Reals \u2192 Dimensional, classify expression with geometry function call \u2192 Geometric. Tests in crates/reify-constraints/tests/classifier_tests.rs",
       "status": "done",
       "commit": "037def6"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement ConstraintClassifier in crates/reify-constraints/src/classifier.rs. Walk CompiledExpr tree, track leaf value types and operator types. Classification rules: (1) collect all leaf types via recursive traversal, (2) if any FunctionCall with geometry-related qualified_name → Geometric flag, (3) if all numeric Scalar leaves → Dimensional, (4) if all Bool/Int leaves with only logical ops → Logical, (5) if mixed flags → CrossDomain. Expose pub fn classify(expr: &CompiledExpr) -> ConstraintDomain",
+      "description": "Implement ConstraintClassifier in crates/reify-constraints/src/classifier.rs. Walk CompiledExpr tree, track leaf value types and operator types. Classification rules: (1) collect all leaf types via recursive traversal, (2) if any FunctionCall with geometry-related qualified_name \u2192 Geometric flag, (3) if all numeric Scalar leaves \u2192 Dimensional, (4) if all Bool/Int leaves with only logical ops \u2192 Logical, (5) if mixed flags \u2192 CrossDomain. Expose pub fn classify(expr: &CompiledExpr) -> ConstraintDomain",
       "status": "done",
       "commit": "e27f569"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for connected-component decomposition: (1) 3 constraints each referencing a unique auto param → 3 components, (2) 2 constraints sharing one auto param → 1 component, (3) chain: C1 refs {a,b}, C2 refs {b,c} → 1 component with all 3 params, (4) empty constraints → 0 components, (5) constraint referencing no auto params → excluded from components. Tests in crates/reify-constraints/tests/decompose_tests.rs",
+      "description": "Write failing tests for connected-component decomposition: (1) 3 constraints each referencing a unique auto param \u2192 3 components, (2) 2 constraints sharing one auto param \u2192 1 component, (3) chain: C1 refs {a,b}, C2 refs {b,c} \u2192 1 component with all 3 params, (4) empty constraints \u2192 0 components, (5) constraint referencing no auto params \u2192 excluded from components. Tests in crates/reify-constraints/tests/decompose_tests.rs",
       "status": "done",
       "commit": "add08d5"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement connected-component decomposition in crates/reify-constraints/src/decompose.rs. Define SubProblem struct {auto_params, constraints, domain: ConstraintDomain}. Use union-find: assign each auto param an index. For each constraint, collect ValueCellIds via expression tree walk (reuse collect_value_refs pattern), filter to auto param set, union all referenced params. Group constraints by component root. Determine per-component domain from individual constraint classifications (unanimous → that domain, mixed → CrossDomain). Return Vec<SubProblem>.",
+      "description": "Implement connected-component decomposition in crates/reify-constraints/src/decompose.rs. Define SubProblem struct {auto_params, constraints, domain: ConstraintDomain}. Use union-find: assign each auto param an index. For each constraint, collect ValueCellIds via expression tree walk (reuse collect_value_refs pattern), filter to auto param set, union all referenced params. Group constraints by component root. Determine per-component domain from individual constraint classifications (unanimous \u2192 that domain, mixed \u2192 CrossDomain). Return Vec<SubProblem>.",
       "status": "done",
       "commit": "637106a"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for SolverRegistry: (1) construct with DimensionalSolver as dimensional + fallback, no geometric/logical → dispatches to dimensional solver and gets same results as DimensionalSolver alone for a simple feasibility problem, (2) problem with no geometric solver registered → fallback used for geometric-classified constraints, (3) problem decomposed into 2 independent sub-problems → both solved, merged result contains all param values, (4) backward compat: existing auto resolution test cases (from solver_integration.rs) pass through SolverRegistry. Tests in crates/reify-constraints/tests/registry_tests.rs",
+      "description": "Write failing tests for SolverRegistry: (1) construct with DimensionalSolver as dimensional + fallback, no geometric/logical \u2192 dispatches to dimensional solver and gets same results as DimensionalSolver alone for a simple feasibility problem, (2) problem with no geometric solver registered \u2192 fallback used for geometric-classified constraints, (3) problem decomposed into 2 independent sub-problems \u2192 both solved, merged result contains all param values, (4) backward compat: existing auto resolution test cases (from solver_integration.rs) pass through SolverRegistry. Tests in crates/reify-constraints/tests/registry_tests.rs",
       "status": "done",
       "commit": "6a1cbb9"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement SolverRegistry in crates/reify-constraints/src/registry.rs. Struct holds dimensional: Box<dyn ConstraintSolver>, geometric: Option<Box<dyn ConstraintSolver>>, logical: Option<Box<dyn ConstraintSolver>>, fallback: Box<dyn ConstraintSolver>. Implement ConstraintSolver trait: (1) classify each constraint, (2) decompose into sub-problems, (3) for each sub-problem select solver by domain (geometric → geometric.unwrap_or(fallback), etc.), (4) construct ResolutionProblem per sub-problem with filtered auto_params and constraints and subset of current_values, (5) solve each, (6) merge SolveResult values into single HashMap, (7) if any sub-problem is Infeasible → whole is Infeasible, (8) handle objective by keeping it on the component that references the objective's expression vars.",
+      "description": "Implement SolverRegistry in crates/reify-constraints/src/registry.rs. Struct holds dimensional: Box<dyn ConstraintSolver>, geometric: Option<Box<dyn ConstraintSolver>>, logical: Option<Box<dyn ConstraintSolver>>, fallback: Option<Box<dyn ConstraintSolver>>. Implement ConstraintSolver trait: (1) classify each constraint, (2) decompose into sub-problems, (3) for each sub-problem select solver by domain (geometric \u2192 geometric.unwrap_or(dimensional), etc.), (4) construct ResolutionProblem per sub-problem with filtered auto_params and constraints, (5) solve each, (6) merge SolveResult values into single HashMap, (7) if any sub-problem is Infeasible \u2192 whole is Infeasible, (8) handle objective by keeping it on the component that references the objective's expression vars.",
       "status": "done",
       "commit": "d16a0ef"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test for cross-domain iteration: create a problem with 2 constraints — one Dimensional referencing params {a, b}, one that would be classified differently but shares param b. Verify SolverRegistry merges them into a single component (since they share b) and solves correctly via fallback.",
+      "description": "Write test for cross-domain iteration: create a problem with 2 constraints \u2014 one Dimensional referencing params {a, b}, one that would be classified differently but shares param b. Verify SolverRegistry merges them into a single component (since they share b) and solves correctly via fallback.",
       "status": "done",
       "commit": "d990ef9"
     },
@@ -103,14 +103,14 @@
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Add domain: Option<ConstraintDomain> field to CompiledConstraint in reify-compiler/src/lib.rs. Initialize to None in compile_structure(). Update all existing construction sites. This is a pure addition — no existing behavior changes.",
+      "description": "Add domain: Option<ConstraintDomain> field to CompiledConstraint in reify-compiler/src/lib.rs. Initialize to None in compile_structure(). Update all existing construction sites. This is a pure addition \u2014 no existing behavior changes.",
       "status": "done",
       "commit": "d140236"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write backward-compatibility integration test: run the full set of existing auto-resolution test scenarios (from solver_integration.rs) through a SolverRegistry wrapping DimensionalSolver. Verify identical results — Solved with same values, Infeasible for same infeasible problems.",
+      "description": "Write backward-compatibility integration test: run the full set of existing auto-resolution test scenarios (from solver_integration.rs) through a SolverRegistry wrapping DimensionalSolver. Verify identical results \u2014 Solved with same values, Infeasible for same infeasible problems.",
       "status": "done",
       "commit": "4fac5d2"
     },
@@ -120,16 +120,30 @@
       "description": "Export all new public types from reify-constraints/src/lib.rs: ConstraintClassifier, SolverRegistry, SubProblem, decompose_into_components. Update lib.rs module declarations. Ensure cargo test passes for entire workspace.",
       "status": "done",
       "commit": "e8f517a"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write a compile-time safety test in crates/reify-constraints/tests/registry_tests.rs that statically asserts SolverRegistry is Send + Sync using fn assert_send_sync<T: Send + Sync>() {} and calling assert_send_sync::<SolverRegistry>(). This test must pass both before AND after removing the unsafe impls, confirming the compiler auto-derives these bounds from the ConstraintSolver: Send + Sync supertrait.",
+      "status": "done",
+      "commit": "74f2165"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Remove the unnecessary `unsafe impl Send for SolverRegistry {}` and `unsafe impl Sync for SolverRegistry {}` blocks (lines 177-180) and the associated safety comment (line 177) from crates/reify-constraints/src/registry.rs. The compiler auto-derives Send + Sync because all fields are Box<dyn ConstraintSolver> where ConstraintSolver: Send + Sync. Removing these restores the compiler's ability to catch future violations if a non-Send/Sync field is ever added. Verify all tests pass including the new static assertion from step-13.",
+      "status": "done",
+      "commit": "1932c6d"
     }
   ],
   "design_decisions": [
     {
       "decision": "SolverRegistry implements ConstraintSolver trait",
-      "rationale": "This makes SolverRegistry a drop-in replacement for DimensionalSolver in the Engine. The Engine holds Option<Box<dyn ConstraintSolver>> and calls .solve() — no changes needed in reify-eval. Users can pass either DimensionalSolver or SolverRegistry."
+      "rationale": "This makes SolverRegistry a drop-in replacement for DimensionalSolver in the Engine. The Engine holds Option<Box<dyn ConstraintSolver>> and calls .solve() \u2014 no changes needed in reify-eval. Users can pass either DimensionalSolver or SolverRegistry."
     },
     {
       "decision": "Union-find for connected components instead of BFS/DFS on adjacency list",
-      "rationale": "Union-find is O(α(n)) per operation, simpler to implement correctly for bipartite constraint↔param graphs, and avoids building explicit adjacency lists. Well-suited for the merge-by-shared-param pattern."
+      "rationale": "Union-find is O(\u03b1(n)) per operation, simpler to implement correctly for bipartite constraint\u2194param graphs, and avoids building explicit adjacency lists. Well-suited for the merge-by-shared-param pattern."
     },
     {
       "decision": "Classification walks the expression tree rather than relying on compiler-assigned domain tags",
@@ -137,7 +151,7 @@
     },
     {
       "decision": "CrossDomain components use the fallback (dimensional) solver",
-      "rationale": "The dimensional solver (Nelder-Mead penalty method) is the most general solver — it handles arbitrary numeric constraints. When constraints span domains, falling back to it is safe. Future work can add cross-domain iteration strategies."
+      "rationale": "The dimensional solver (Nelder-Mead penalty method) is the most general solver \u2014 it handles arbitrary numeric constraints. When constraints span domains, falling back to it is safe. Future work can add cross-domain iteration strategies."
     },
     {
       "decision": "Objective stays with the component containing its referenced variables",
@@ -149,18 +163,22 @@
     },
     {
       "decision": "Collect ValueCellIds from expressions inline rather than depending on reify-eval::deps",
-      "rationale": "The collect_value_refs function in reify-eval/src/deps.rs does exactly what we need, but reify-constraints cannot depend on reify-eval (that would create a circular dependency). We'll implement a local version of the same walk in decompose.rs, or expose a shared utility via reify-types or reify-expr."
+      "rationale": "The collect_value_refs function in reify-eval/src/deps.rs does exactly what we need, but reify-constraints cannot depend on reify-eval (that would create a circular dependency). We implement a local version of the same walk in decompose.rs."
     },
     {
       "decision": "No changes to reify-types for this task",
       "rationale": "ConstraintDomain and all needed types already exist in reify-types. The SolverRegistry and classifier are implementation concerns that belong in reify-constraints. The only structural change is adding the optional domain field to CompiledConstraint in reify-compiler."
+    },
+    {
+      "decision": "Remove unnecessary unsafe impl Send/Sync for SolverRegistry",
+      "rationale": "ConstraintSolver trait has Send + Sync supertraits (reify-types/src/constraint.rs:108), so Box<dyn ConstraintSolver> is automatically Send + Sync. Since all SolverRegistry fields are Box<dyn ConstraintSolver> or Option<Box<dyn ConstraintSolver>>, the compiler auto-derives Send + Sync. The manual unsafe impls bypass future compiler safety checks: if a non-Send field is ever added, the compiler would silently accept it instead of emitting an error. A static assertion test is added first to prove auto-derivation works before removing the unsafe blocks."
     }
   ],
   "reuse": [
     {
       "what": "ConstraintDomain enum",
       "where": "crates/reify-types/src/constraint.rs:34-44",
-      "how": "Already defines Dimensional, Geometric, Logical, CrossDomain variants. Use directly for classification output."
+      "how": "Already defines Dimensional, Geometric, Logical, CrossDomain variants. Used directly for classification output."
     },
     {
       "what": "ConstraintSolver trait",
@@ -174,13 +192,13 @@
     },
     {
       "what": "CompiledExprKind tree structure",
-      "where": "crates/reify-types/src/expr.rs:17-44",
+      "where": "crates/reify-types/src/expr.rs",
       "how": "Classifier walks this tree to determine leaf types and operator domains. Same traversal pattern as collect_value_refs in reify-eval/src/deps.rs."
     },
     {
       "what": "collect_value_refs pattern (expression tree walk)",
-      "where": "crates/reify-eval/src/deps.rs:20-48",
-      "how": "The decomposer needs the same recursive walk to find which ValueCellIds a constraint references. Cannot import from reify-eval (circular dep), so will reimplement the same pattern locally using CompiledExprKind match arms."
+      "where": "crates/reify-eval/src/deps.rs",
+      "how": "The decomposer needs the same recursive walk to find which ValueCellIds a constraint references. Cannot import from reify-eval (circular dep), so reimplemented locally in decompose.rs."
     },
     {
       "what": "ResolutionProblem struct",
@@ -189,18 +207,13 @@
     },
     {
       "what": "Test helper patterns (mm(), vcid(), cnid(), expression builders)",
-      "where": "crates/reify-constraints/src/lib.rs:79-99 and tests/solver_integration.rs",
-      "how": "Reuse the same helper functions for constructing test expressions in new test files. Can also use CompiledExpr::literal(), ::value_ref(), ::binop() constructors."
+      "where": "crates/reify-test-support/src/values.rs and crates/reify-test-support/src/builders.rs",
+      "how": "Used extensively in all test files for constructing test expressions. Includes gt(), lt(), and(), eq(), value_ref(), literal(), value_ref_typed()."
     },
     {
       "what": "Engine::with_solver() builder pattern",
-      "where": "crates/reify-eval/src/lib.rs:221-225",
-      "how": "No changes needed — Engine already accepts Box<dyn ConstraintSolver>. SolverRegistry can be boxed and passed directly."
-    },
-    {
-      "what": "reify-expr::eval_expr for expression evaluation",
-      "where": "crates/reify-expr (already a dependency of reify-constraints)",
-      "how": "Used by the classifier if needed to evaluate constant sub-expressions, and by tests to verify constraint satisfaction."
+      "where": "crates/reify-eval/src/lib.rs",
+      "how": "No changes needed \u2014 Engine already accepts Box<dyn ConstraintSolver>. SolverRegistry can be boxed and passed directly."
     }
   ]
 }
