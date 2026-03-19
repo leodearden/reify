@@ -259,6 +259,31 @@ fn parse_line_comment_after_member() {
     assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
 }
 
+/// Simple `/* */` block comment in a structure body should parse without errors.
+#[test]
+fn parse_block_comment_simple() {
+    let source = r#"structure S {
+    /* a comment */
+    param x: Scalar = 1mm
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
+}
+
+/// Multi-line `/* */` block comment should parse without errors.
+#[test]
+fn parse_block_comment_multiline() {
+    let source = r#"structure S {
+    /*
+     * This is a multi-line
+     * block comment
+     */
+    param x: Scalar = 1mm
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
+}
+
 /// Parse bracket → all members carry non-empty spans.
 #[test]
 fn all_spans_valid() {
