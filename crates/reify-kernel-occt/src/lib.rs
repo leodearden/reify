@@ -1011,6 +1011,77 @@ mod tests {
         }
     }
 
+    // --- Translate NaN/infinity rejection tests (step-1) ---
+
+    #[test]
+    fn execute_translate_nan_dx_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Translate {
+            target: box_h.id,
+            dx: f64::NAN,
+            dy: 0.0,
+            dz: 0.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN dx in translate"),
+        }
+    }
+
+    #[test]
+    fn execute_translate_infinity_dy_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Translate {
+            target: box_h.id,
+            dx: 0.0,
+            dy: f64::INFINITY,
+            dz: 0.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity dy in translate"),
+        }
+    }
+
+    #[test]
+    fn execute_translate_neg_infinity_dz_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Translate {
+            target: box_h.id,
+            dx: 0.0,
+            dy: 0.0,
+            dz: f64::NEG_INFINITY,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for neg-infinity dz in translate"),
+        }
+    }
+
     #[test]
     fn brep_serialization_roundtrip() {
         // Create a box shape
