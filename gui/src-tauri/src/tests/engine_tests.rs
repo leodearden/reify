@@ -349,6 +349,38 @@ fn get_source_location_correct_after_load_file_then_update() {
     );
 }
 
+/// Review bug #1 regression: export should work without cloning CompiledModule.
+/// This test guards the refactor in step-18 that removes the unnecessary .clone().
+#[test]
+fn export_no_unnecessary_clone() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let dir = std::env::temp_dir().join("reify-gui-test-export-no-clone");
+    std::fs::create_dir_all(&dir).ok();
+    let path = dir.join("bracket.step");
+
+    let result = session.export(ExportFormat::Step, &path);
+    assert!(result.is_ok(), "export should succeed: {:?}", result.err());
+
+    // Verify output was written
+    let data = std::fs::read(&path).expect("exported file should be readable");
+    assert!(!data.is_empty(), "exported file should not be empty");
+
+    // Verify engine state is still usable after export (no moved/consumed fields)
+    let state = session.build_gui_state().expect("build_gui_state after export");
+    assert!(!state.values.is_empty(), "values should still be available after export");
+
+    // Cleanup
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir(&dir);
+}
+
 /// Review bug #3: get_source_location should use explicit key lookup, not .iter().next().
 /// After load_from_source, the file should be the normalized "bracket.ri" key.
 #[test]
