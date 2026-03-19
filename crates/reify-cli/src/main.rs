@@ -136,6 +136,10 @@ fn cmd_build(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
+    if compiled.diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return ExitCode::FAILURE;
+    }
+
     let checker = SimpleConstraintChecker;
     let mut planner = DispatchPlanner::new();
     planner.register_kernel(Box::new(OcctKernelHandle::spawn()));
