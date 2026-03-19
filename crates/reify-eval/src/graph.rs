@@ -781,4 +781,57 @@ mod tests {
             "fingerprint must domain-separate value_cells from resolutions"
         );
     }
+
+    #[test]
+    fn sub_component_nodes_in_evaluation_graph() {
+        use reify_test_support::TopologyTemplateBuilder;
+        use reify_types::{BinOp, CompiledExpr, Type, Value};
+
+        // Child: param height, let half_h = height / 2
+        let height_ref = || CompiledExpr::value_ref(ValueCellId::new("Child", "height"), Type::length());
+        let half_h_expr = CompiledExpr::binop(
+            BinOp::Div,
+            height_ref(),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            Type::length(),
+        );
+        let child = TopologyTemplateBuilder::new("Child")
+            .param("Child", "height", Type::length(), Some(CompiledExpr::literal(Value::length(0.01), Type::length())))
+            .let_binding("Child", "half_h", Type::length(), half_h_expr)
+            .build();
+
+        // Parent: param width, sub rib = Child(height: width * 0.5)
+        let width_ref = || CompiledExpr::value_ref(ValueCellId::new("Parent", "width"), Type::length());
+        let arg_expr = CompiledExpr::binop(
+            BinOp::Mul,
+            width_ref(),
+            CompiledExpr::literal(Value::Real(0.5), Type::Real),
+            Type::length(),
+        );
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .param("Parent", "width", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
+            .sub_component("rib", "Child", vec![("height".to_string(), arg_expr)])
+            .build();
+
+        let graph = EvaluationGraph::from_templates(&[child, parent]);
+
+        // Should have scoped entries for sub-component
+        let scoped_height = ValueCellId::new("Parent.rib", "height");
+        let scoped_half_h = ValueCellId::new("Parent.rib", "half_h");
+
+        assert!(
+            graph.value_cells.get(&scoped_height).is_some(),
+            "graph should contain scoped Parent.rib.height node"
+        );
+        assert!(
+            graph.value_cells.get(&scoped_half_h).is_some(),
+            "graph should contain scoped Parent.rib.half_h node"
+        );
+
+        // Verify kinds are preserved
+        let h_node = graph.value_cells.get(&scoped_height).unwrap();
+        assert_eq!(h_node.kind, ValueCellKind::Param);
+        let hh_node = graph.value_cells.get(&scoped_half_h).unwrap();
+        assert_eq!(hh_node.kind, ValueCellKind::Let);
+    }
 }
