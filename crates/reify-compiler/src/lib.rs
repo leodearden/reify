@@ -779,6 +779,9 @@ fn compile_structure(
                     content_hash: sub.content_hash,
                 });
             }
+            reify_syntax::MemberDecl::Minimize(_) | reify_syntax::MemberDecl::Maximize(_) => {
+                // Handled in step-5: objective compilation
+            }
         }
     }
 
