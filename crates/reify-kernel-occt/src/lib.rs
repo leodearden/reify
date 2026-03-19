@@ -1100,6 +1100,30 @@ mod tests {
         }
     }
 
+    // --- Fillet too-large radius regression test (step-5) ---
+
+    #[test]
+    fn execute_fillet_radius_too_large_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Radius 100.0 is much larger than any edge of the 10x10x10 box
+        let result = kernel.execute(&GeometryOp::Fillet {
+            target: box_h.id,
+            radius: Value::Real(100.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for too-large fillet radius"),
+        }
+    }
+
     // --- Translate NaN/infinity rejection tests (step-1) ---
 
     #[test]
