@@ -1594,6 +1594,54 @@ fn compile_fn_body_calls_other_user_fn() {
     }
 }
 
+/// Fn body let bindings can call other user-defined functions.
+#[test]
+fn compile_fn_body_calls_user_fn_in_let_binding() {
+    let source =
+        "fn double(x: Real) -> Real { x + x }\nfn calc(x: Real) -> Real { let y = double(x); y + 1 }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let compiled = reify_compiler::compile(&parsed);
+
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "no diagnostics expected: {:?}",
+        compiled.diagnostics
+    );
+    assert_eq!(compiled.functions.len(), 2);
+    assert_eq!(compiled.functions[1].name, "calc");
+
+    let calc_body = &compiled.functions[1].body;
+    assert_eq!(calc_body.let_bindings.len(), 1);
+
+    // let y = double(x); — should be UserFunctionCall
+    match &calc_body.let_bindings[0].1.kind {
+        reify_types::CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => {
+            assert_eq!(function_name, "double");
+            assert_eq!(args.len(), 1);
+            assert_eq!(
+                calc_body.let_bindings[0].1.result_type,
+                reify_types::Type::Real
+            );
+        }
+        other => panic!(
+            "expected UserFunctionCall in let binding, got {:?}",
+            other
+        ),
+    }
+
+    // result expr: y + 1 — should be BinOp with result_type Real
+    assert_eq!(calc_body.result_expr.result_type, reify_types::Type::Real);
+    match &calc_body.result_expr.kind {
+        reify_types::CompiledExprKind::BinOp { op, .. } => {
+            assert_eq!(*op, reify_types::BinOp::Add);
+        }
+        other => panic!("expected BinOp(+) for result expr, got {:?}", other),
+    }
+}
+
 /// E2E regression: bracket source (no fn declarations) compiles unchanged.
 #[test]
 fn e2e_function_with_structure_unchanged() {
