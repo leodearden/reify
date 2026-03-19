@@ -31,6 +31,17 @@ pub struct TraitRef {
     pub type_args: Vec<crate::ty::Type>,
 }
 
+/// A type parameter with optional bounds and default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeParam {
+    /// The name of the type parameter.
+    pub name: String,
+    /// Trait bounds on this type parameter.
+    pub bounds: Vec<TraitBound>,
+    /// Optional default type.
+    pub default: Option<crate::ty::Type>,
+}
+
 /// A trait bound constraining a type parameter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraitBound {
