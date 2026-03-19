@@ -648,6 +648,47 @@ mod tests {
     }
 
     #[test]
+    fn get_shape_null_ptr_returns_error_not_panic() {
+        let mut kernel = OcctKernel::new();
+        // Create a valid box (id=1)
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // Inject a null shape at id=42
+        kernel.insert_null_shape(42);
+
+        // Valid shape should still be accessible
+        assert!(kernel.get_shape(GeometryHandleId(1)).is_ok());
+
+        // Null shape should return Err(OperationFailed), not panic
+        let result = kernel.get_shape(GeometryHandleId(42));
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.to_lowercase().contains("null"),
+                    "error should mention null, got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for null shape, got Ok"),
+        }
+
+        // Non-existent key should still return InvalidReference
+        match kernel.get_shape(GeometryHandleId(999)) {
+            Err(GeometryError::InvalidReference(id)) => {
+                assert_eq!(id, GeometryHandleId(999));
+            }
+            Err(other) => panic!("expected InvalidReference, got {:?}", other),
+            Ok(_) => panic!("expected error for missing shape, got Ok"),
+        }
+    }
+
+    #[test]
     fn brep_serialization_roundtrip() {
         // Create a box shape
         let shape = ffi::ffi::make_box(10.0, 20.0, 30.0).unwrap();
