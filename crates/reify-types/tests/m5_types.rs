@@ -124,3 +124,83 @@ fn type_param_no_bounds_no_default() {
     let tp2 = tp.clone();
     assert_eq!(tp, tp2);
 }
+
+// --- TraitMember tests (step-25) ---
+
+#[test]
+fn trait_member_param() {
+    let m = reify_types::TraitMember::Param {
+        name: "width".into(),
+        ty: reify_types::Type::length(),
+        default: Some(reify_types::Value::length(0.08)),
+    };
+    if let reify_types::TraitMember::Param { name, ty, default } = &m {
+        assert_eq!(name, "width");
+        assert_eq!(*ty, reify_types::Type::length());
+        assert!(default.is_some());
+    } else {
+        panic!("expected Param");
+    }
+}
+
+#[test]
+fn trait_member_port() {
+    let m = reify_types::TraitMember::Port {
+        name: "input".into(),
+        ty: reify_types::Type::Real,
+        direction: reify_types::PortDirection::In,
+    };
+    if let reify_types::TraitMember::Port { name, direction, .. } = &m {
+        assert_eq!(name, "input");
+        assert_eq!(*direction, reify_types::PortDirection::In);
+    } else {
+        panic!("expected Port");
+    }
+}
+
+#[test]
+fn trait_member_sub() {
+    let m = reify_types::TraitMember::Sub {
+        name: "child".into(),
+        trait_ref: reify_types::TraitRef {
+            name: "Component".into(),
+            type_args: vec![],
+        },
+    };
+    if let reify_types::TraitMember::Sub { name, trait_ref } = &m {
+        assert_eq!(name, "child");
+        assert_eq!(trait_ref.name, "Component");
+    } else {
+        panic!("expected Sub");
+    }
+}
+
+#[test]
+fn trait_member_let_and_constraint() {
+    let _let = reify_types::TraitMember::Let {
+        name: "area".into(),
+        ty: reify_types::Type::Real,
+        expr: "width * height".into(),
+    };
+    let _constraint = reify_types::TraitMember::Constraint {
+        expr: "width > 0".into(),
+    };
+    let _ = format!("{:?}", _let);
+    let _ = format!("{:?}", _constraint);
+}
+
+#[test]
+fn trait_member_associated_type() {
+    let m = reify_types::TraitMember::AssociatedType {
+        name: "Output".into(),
+        default: Some(reify_types::Type::Int),
+    };
+    if let reify_types::TraitMember::AssociatedType { name, default } = &m {
+        assert_eq!(name, "Output");
+        assert_eq!(*default, Some(reify_types::Type::Int));
+    } else {
+        panic!("expected AssociatedType");
+    }
+    let m2 = m.clone();
+    assert_eq!(m, m2);
+}
