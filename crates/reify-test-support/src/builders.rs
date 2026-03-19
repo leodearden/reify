@@ -221,6 +221,7 @@ impl TopologyTemplateBuilder {
             label: label.map(String::from),
             expr,
             span: SourceSpan::new(0, 0),
+            domain: None,
         });
         self
     }

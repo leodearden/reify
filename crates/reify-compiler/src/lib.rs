@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, DimensionVector,
-    Diagnostic, DiagnosticLabel, OptimizationObjective, RealizationNodeId, ResolvedFunction,
-    SourceSpan, Type, UnOp, Value, ValueCellId,
+    BinOp, CompiledExpr, CompiledExprKind, ConstraintDomain, ConstraintNodeId, ContentHash,
+    DimensionVector, Diagnostic, DiagnosticLabel, OptimizationObjective, RealizationNodeId,
+    ResolvedFunction, SourceSpan, Type, UnOp, Value, ValueCellId,
 };
 
 /// A compiled import declaration.
@@ -73,6 +73,9 @@ pub struct CompiledConstraint {
     pub label: Option<String>,
     pub expr: CompiledExpr,
     pub span: SourceSpan,
+    /// Optional pre-classified constraint domain. When `None`, the
+    /// classifier determines the domain at solve time.
+    pub domain: Option<ConstraintDomain>,
 }
 
 /// A realization declaration — specifies geometry to produce.
@@ -776,6 +779,7 @@ fn compile_structure(
                     label: constraint.label.clone(),
                     expr: compiled_expr,
                     span: constraint.span,
+                    domain: None,
                 });
                 constraint_index += 1;
             }
