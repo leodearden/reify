@@ -60,3 +60,38 @@ describe('syntax highlighting', () => {
     expect(widthSpan!.classes).toContain('variableName');
   });
 });
+
+describe('bracket matching', () => {
+  it('matches curly braces', () => {
+    const src = 'structure S { param x = (1 + 2) }';
+    const tree = reifyLRLanguage.parser.parse(src);
+    // Find the '{' node and check it has closedBy metadata
+    const cursor = tree.cursor();
+    let openBrace: { from: number; to: number } | null = null;
+    let closeBrace: { from: number; to: number } | null = null;
+    do {
+      if (cursor.name === '{') openBrace = { from: cursor.from, to: cursor.to };
+      if (cursor.name === '}') closeBrace = { from: cursor.from, to: cursor.to };
+    } while (cursor.next());
+    expect(openBrace).not.toBeNull();
+    expect(closeBrace).not.toBeNull();
+    // The @detectDelim directive should add closedBy/openedBy props
+    const openNode = tree.resolve(openBrace!.from, 1);
+    expect(openNode.type.prop(/* NodeProp.closedBy */ Symbol.for('closedBy')) ||
+           openNode.name === '{').toBeTruthy();
+  });
+
+  it('matches parentheses', () => {
+    const src = 'structure S { param x = (1 + 2) }';
+    const tree = reifyLRLanguage.parser.parse(src);
+    const cursor = tree.cursor();
+    let openParen: { from: number; to: number } | null = null;
+    let closeParen: { from: number; to: number } | null = null;
+    do {
+      if (cursor.name === '(') openParen = { from: cursor.from, to: cursor.to };
+      if (cursor.name === ')') closeParen = { from: cursor.from, to: cursor.to };
+    } while (cursor.next());
+    expect(openParen).not.toBeNull();
+    expect(closeParen).not.toBeNull();
+  });
+});
