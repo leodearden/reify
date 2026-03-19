@@ -93,6 +93,13 @@ pub mod ffi {
             total_angle: f64,
         ) -> Result<UniquePtr<OcctShape>>;
 
+        // --- Draft ---
+        fn draft_shape(
+            shape: &OcctShape,
+            angle_rad: f64,
+            plane_shape: &OcctShape,
+        ) -> Result<UniquePtr<OcctShape>>;
+
         // --- Thicken / Shell ---
         fn thicken_shape(
             shape: &OcctShape,

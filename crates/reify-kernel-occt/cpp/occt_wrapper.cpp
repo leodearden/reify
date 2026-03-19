@@ -17,6 +17,9 @@
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 
+// OCCT draft
+#include <BRepOffsetAPI_DraftAngle.hxx>
+
 // OCCT loft / offset / shell / thicken
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepOffsetAPI_MakeOffsetShape.hxx>
@@ -420,6 +423,43 @@ std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
         throw std::runtime_error(std::string("OCCT shell_shape: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT shell_shape: unknown C++ exception");
+    }
+}
+
+// --- Draft ---
+
+std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
+    const OcctShape& /* plane_shape */) {
+    try {
+        // Use the Z-up direction as the neutral plane direction
+        gp_Dir pull_dir(0, 0, 1);
+        gp_Pln neutral_plane(gp_Pnt(0, 0, 0), pull_dir);
+
+        BRepOffsetAPI_DraftAngle drafter(shape.shape);
+
+        // Add draft to all faces
+        for (TopExp_Explorer ex(shape.shape, TopAbs_FACE); ex.More(); ex.Next()) {
+            TopoDS_Face face = TopoDS::Face(ex.Current());
+            drafter.Add(face, pull_dir, angle_rad, neutral_plane);
+            if (!drafter.AddDone()) {
+                // Some faces may not be draftable - skip them
+                drafter.Remove(face);
+            }
+        }
+
+        drafter.Build();
+        if (!drafter.IsDone()) {
+            throw std::runtime_error("BRepOffsetAPI_DraftAngle failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = drafter.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT draft_shape: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT draft_shape: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT draft_shape: unknown C++ exception");
     }
 }
 

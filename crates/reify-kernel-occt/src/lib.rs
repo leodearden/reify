@@ -328,10 +328,16 @@ impl OcctKernel {
                     }
                 }
             }
-            GeometryOp::Draft { .. } => {
-                return Err(GeometryError::OperationFailed(
-                    "Draft not yet implemented".into(),
-                ));
+            GeometryOp::Draft {
+                target,
+                angle,
+                plane,
+            } => {
+                let shape = self.get_shape(*target)?;
+                let angle_rad = extract_f64(angle)?;
+                let plane_shape = self.get_shape(*plane)?;
+                ffi::ffi::draft_shape(shape, angle_rad, plane_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Thicken { target, offset } => {
                 let shape = self.get_shape(*target)?;
