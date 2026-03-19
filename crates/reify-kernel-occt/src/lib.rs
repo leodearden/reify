@@ -407,8 +407,13 @@ impl OcctKernel {
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(dist))
             }
-            GeometryQuery::MomentOfInertia { .. } => {
-                Err(QueryError::QueryFailed("MomentOfInertia not yet implemented".into()))
+            GeometryQuery::MomentOfInertia { handle, axis } => {
+                let shape = self
+                    .get_shape(*handle)
+                    .map_err(|_| QueryError::InvalidHandle(*handle))?;
+                let moi = ffi::ffi::query_moment_of_inertia(shape, axis[0], axis[1], axis[2])
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Real(moi))
             }
         }
     }
