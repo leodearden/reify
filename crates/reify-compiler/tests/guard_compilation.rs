@@ -395,3 +395,64 @@ structure S {
         diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+/// Reference safety: cross-guard completeness.
+/// (A) Else-member referencing differently-guarded cell should produce diagnostic.
+/// (B) A guarded constraint referencing a differently-guarded cell should produce diagnostic.
+#[test]
+fn reference_safety_cross_guard_completeness() {
+    // Sub-case A: else_member cross-guard (already covered but included for completeness)
+    let source_a = r#"
+structure S {
+    param a : Bool = true
+    param b : Bool = true
+    where a {
+        param x : Scalar = 5mm
+    }
+    where b {
+    } else {
+        let y = x
+    }
+}
+"#;
+
+    let (_, diagnostics_a) = compile_first_template(source_a);
+    let guard_warnings_a: Vec<_> = diagnostics_a.iter()
+        .filter(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("differently-guarded") || msg.contains("guarded")
+        })
+        .collect();
+    assert!(
+        !guard_warnings_a.is_empty(),
+        "sub-case A: expected cross-guard diagnostic for else_member y referencing guarded x, got: {:?}",
+        diagnostics_a.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Sub-case B: guarded constraint referencing differently-guarded cell
+    let source_b = r#"
+structure S {
+    param a : Bool = true
+    param b : Bool = true
+    where a {
+        param x : Scalar = 5mm
+    }
+    where b {
+        constraint x > 0mm
+    }
+}
+"#;
+
+    let (_, diagnostics_b) = compile_first_template(source_b);
+    let guard_warnings_b: Vec<_> = diagnostics_b.iter()
+        .filter(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("differently-guarded") || msg.contains("guarded")
+        })
+        .collect();
+    assert!(
+        !guard_warnings_b.is_empty(),
+        "sub-case B: expected cross-guard diagnostic for guarded constraint referencing differently-guarded x, got: {:?}",
+        diagnostics_b.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
