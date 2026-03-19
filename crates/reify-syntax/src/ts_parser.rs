@@ -1498,4 +1498,73 @@ mod tests {
         assert!(f.body.let_bindings.is_empty());
         assert!(matches!(&f.body.result_expr.kind, ExprKind::BinOp { op, .. } if op == "*"));
     }
+
+    #[test]
+    fn parse_pub_function_with_conditional() {
+        let source = "pub fn clamp(x: Real, lo: Real, hi: Real) -> Real { if x < lo then lo else if x > hi then hi else x }";
+        let module = parse(source, reify_types::ModulePath::single("test_pub_fn"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert_eq!(module.declarations.len(), 1);
+
+        let f = match &module.declarations[0] {
+            Declaration::Function(f) => f,
+            other => panic!("expected Function, got {:?}", other),
+        };
+        assert!(f.is_pub);
+        assert_eq!(f.name, "clamp");
+        assert_eq!(f.params.len(), 3);
+        assert_eq!(f.params[0].name, "x");
+        assert_eq!(f.params[0].type_expr.name, "Real");
+        assert_eq!(f.params[1].name, "lo");
+        assert_eq!(f.params[2].name, "hi");
+        assert!(f.return_type.is_some());
+        assert_eq!(f.return_type.as_ref().unwrap().name, "Real");
+        assert!(matches!(&f.body.result_expr.kind, ExprKind::Conditional { .. }));
+    }
+
+    #[test]
+    fn parse_function_with_let_bindings() {
+        let source = "fn f(x: Real) -> Real { let y = x * 2; y + 1 }";
+        let module = parse(source, reify_types::ModulePath::single("test_fn_let"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert_eq!(module.declarations.len(), 1);
+
+        let f = match &module.declarations[0] {
+            Declaration::Function(f) => f,
+            other => panic!("expected Function, got {:?}", other),
+        };
+        assert_eq!(f.params.len(), 1);
+        assert_eq!(f.body.let_bindings.len(), 1);
+        assert_eq!(f.body.let_bindings[0].name, "y");
+        assert!(matches!(&f.body.let_bindings[0].value.kind, ExprKind::BinOp { op, .. } if op == "*"));
+        assert!(matches!(&f.body.result_expr.kind, ExprKind::BinOp { op, .. } if op == "+"));
+    }
+
+    #[test]
+    fn parse_function_with_type_parameters() {
+        let source = "fn identity<T>(x: T) -> T { x }";
+        let module = parse(source, reify_types::ModulePath::single("test_fn_tp"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+        let f = match &module.declarations[0] {
+            Declaration::Function(f) => f,
+            other => panic!("expected Function, got {:?}", other),
+        };
+        assert_eq!(f.type_params.len(), 1);
+        assert_eq!(f.type_params[0].name, "T");
+        assert!(f.type_params[0].bounds.is_empty());
+
+        // Also test with bounds
+        let source2 = "fn add<T: Numeric>(a: T, b: T) -> T { a + b }";
+        let module2 = parse(source2, reify_types::ModulePath::single("test_fn_tp2"));
+        assert!(module2.errors.is_empty(), "parse errors: {:?}", module2.errors);
+
+        let f2 = match &module2.declarations[0] {
+            Declaration::Function(f) => f,
+            other => panic!("expected Function, got {:?}", other),
+        };
+        assert_eq!(f2.type_params.len(), 1);
+        assert_eq!(f2.type_params[0].name, "T");
+        assert_eq!(f2.type_params[0].bounds, vec!["Numeric"]);
+    }
 }
