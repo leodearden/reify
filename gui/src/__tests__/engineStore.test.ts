@@ -233,4 +233,38 @@ describe('engineStore', () => {
       dispose();
     });
   });
+
+  it('subscribeToEvents handles partial listener failures without leaking', async () => {
+    await createRoot(async (dispose) => {
+      const unlistenMesh = vi.fn();
+      const unlistenValue = vi.fn();
+      const unlistenStatus = vi.fn();
+
+      mockOnMeshUpdate.mockResolvedValue(unlistenMesh);
+      mockOnValueUpdate.mockResolvedValue(unlistenValue);
+      // onConstraintUpdate rejects — simulating an unavailable event
+      mockOnConstraintUpdate.mockRejectedValue(new Error('event not available'));
+      mockOnEvaluationStatus.mockResolvedValue(unlistenStatus);
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const { subscribeToEvents } = createEngineStore();
+
+      // Should resolve (not reject) even with partial failure
+      const cleanup = await subscribeToEvents();
+      expect(typeof cleanup).toBe('function');
+
+      // Should warn about the failed subscription
+      expect(warnSpy).toHaveBeenCalled();
+
+      // Cleanup should call all successfully-registered unlisten fns
+      cleanup();
+      expect(unlistenMesh).toHaveBeenCalled();
+      expect(unlistenValue).toHaveBeenCalled();
+      expect(unlistenStatus).toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+      dispose();
+    });
+  });
 });
