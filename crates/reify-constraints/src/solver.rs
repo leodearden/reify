@@ -307,27 +307,29 @@ impl CostFunction for ConstraintCostFunction<'_> {
     type Output = f64;
 
     fn cost(&self, param: &Self::Param) -> Result<Self::Output, ArgminError> {
-        // Clamp parameters to effective bounds
-        let clamped: Vec<f64> = param
-            .iter()
-            .zip(self.auto_params.iter())
-            .map(|(&val, ap)| {
-                let (lo, hi) = effective_bounds(ap);
-                val.clamp(lo, hi)
-            })
-            .collect();
+        // Clamp parameters to effective bounds and accumulate bound penalty
+        let mut bound_penalty = 0.0;
+        let mut clamped = Vec::with_capacity(param.len());
+        for (&val, ap) in param.iter().zip(self.auto_params.iter()) {
+            let (lo, hi) = effective_bounds(ap);
+            let cv = val.clamp(lo, hi);
+            bound_penalty += (val - cv).powi(2);
+            clamped.push(cv);
+        }
 
         let values = build_trial_values(self.base_values, self.auto_params, &clamped);
         let violation = compute_total_violation(self.constraints, &values);
 
         let cost = match self.objective {
             Some(obj) => {
-                // Combine objective with penalty for constraint violations
-                eval_objective(obj, &values) + PENALTY_WEIGHT * violation
+                // Combine objective with penalty for constraint violations and bounds
+                eval_objective(obj, &values)
+                    + PENALTY_WEIGHT * violation
+                    + PENALTY_WEIGHT * bound_penalty
             }
             None => {
-                // Pure feasibility: just minimize violations
-                violation
+                // Pure feasibility: minimize violations + bound penalty
+                violation + PENALTY_WEIGHT * bound_penalty
             }
         };
 
