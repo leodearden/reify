@@ -110,6 +110,18 @@ pub enum CompiledGeometryOp {
         target: GeomRef,
         args: Vec<(String, CompiledExpr)>,
     },
+    /// Pattern a shape (linear, circular, mirror).
+    Pattern {
+        kind: PatternKind,
+        target: GeomRef,
+        args: Vec<(String, CompiledExpr)>,
+    },
+    /// Sweep operation (loft).
+    Sweep {
+        kind: SweepKind,
+        profiles: Vec<GeomRef>,
+        args: Vec<(String, CompiledExpr)>,
+    },
 }
 
 /// Primitive geometry kinds.
@@ -133,6 +145,9 @@ pub enum BooleanOp {
 pub enum ModifyKind {
     Fillet,
     Chamfer,
+    Shell,
+    Draft,
+    Thicken,
 }
 
 /// Transform operations.
@@ -140,6 +155,20 @@ pub enum ModifyKind {
 pub enum TransformKind {
     Translate,
     Rotate,
+}
+
+/// Pattern operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PatternKind {
+    Linear,
+    Circular,
+    Mirror,
+}
+
+/// Sweep operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SweepKind {
+    Loft,
 }
 
 /// Reference to a geometry result within a realization.

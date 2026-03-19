@@ -2128,6 +2128,9 @@ fn compile_geometry_op(
                     target: target_id,
                     distance: eval_arg("distance"),
                 }),
+                reify_compiler::ModifyKind::Shell => None, // not yet wired
+                reify_compiler::ModifyKind::Draft => None, // not yet wired
+                reify_compiler::ModifyKind::Thicken => None, // not yet wired
             }
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
@@ -2162,6 +2165,8 @@ fn compile_geometry_op(
                 }
             }
         }
+        CompiledGeometryOp::Pattern { .. } => None, // not yet wired
+        CompiledGeometryOp::Sweep { .. } => None, // not yet wired
     }
 }
 
