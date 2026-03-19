@@ -394,4 +394,48 @@ mod tests {
         );
         assert!(result.is_undef(), "sin of LENGTH scalar should be Undef");
     }
+
+    // --- Domain-error NaN/inf hardening tests (step-21) ---
+
+    #[test]
+    fn sqrt_negative_returns_undef() {
+        let result = eval_builtin("sqrt", &[Value::Real(-1.0)]);
+        assert!(result.is_undef(), "sqrt(-1) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn log_zero_returns_undef() {
+        let result = eval_builtin("log", &[Value::Real(0.0)]);
+        assert!(result.is_undef(), "log(0) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn log_negative_returns_undef() {
+        let result = eval_builtin("log", &[Value::Real(-1.0)]);
+        assert!(result.is_undef(), "log(-1) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn log10_zero_returns_undef() {
+        let result = eval_builtin("log10", &[Value::Real(0.0)]);
+        assert!(result.is_undef(), "log10(0) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn log10_negative_returns_undef() {
+        let result = eval_builtin("log10", &[Value::Real(-1.0)]);
+        assert!(result.is_undef(), "log10(-1) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn exp_overflow_returns_undef() {
+        let result = eval_builtin("exp", &[Value::Real(1000.0)]);
+        assert!(result.is_undef(), "exp(1000) should be Undef (inf), got {:?}", result);
+    }
+
+    #[test]
+    fn pow_negative_base_fractional_exp_returns_undef() {
+        let result = eval_builtin("pow", &[Value::Real(-2.0), Value::Real(0.5)]);
+        assert!(result.is_undef(), "pow(-2, 0.5) should be Undef (NaN), got {:?}", result);
+    }
 }
