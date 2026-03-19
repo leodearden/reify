@@ -150,43 +150,43 @@
       "id": "step-15",
       "type": "test",
       "description": "Write failing test: eval_guard_false_includes_else. Build template with Bool param 'active' default=false, guarded_group with member param 'x'=5mm and else_member param 'y'=10mm. After eval, assert 'y' value is 0.01 (10mm SI), and 'x' value is Undef.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f84d91e"
     },
     {
       "id": "step-16",
       "type": "impl",
       "description": "Implement conditional member evaluation in Engine::eval(). After evaluating guard cells: check EvaluationGraph.guarded_groups. For each group, look up guard_cell value. If true: evaluate members, set else_members to Undef. If false: evaluate else_members, set members to Undef. Update snapshot values with appropriate DeterminacyState.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f84d91e"
     },
     {
       "id": "step-17",
       "type": "test",
       "description": "Write failing test: eval_guard_undef_members_indeterminate. Build template where guard references an Auto param (starts Undef, no solver). After eval, guard cell is Undef. Assert all guarded members have Undef values and DeterminacyState::Undetermined in the snapshot.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "9321ec6"
     },
     {
       "id": "step-18",
       "type": "impl",
       "description": "Implement Undef guard handling. When guard evaluates to non-Bool (Undef or other), treat guard as indeterminate: include guarded members in graph with Undef values and DeterminacyState::Undetermined. Do not evaluate else_members either (both branches indeterminate). This is the initial state before guard resolution.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f84d91e"
     },
     {
       "id": "step-19",
       "type": "test",
       "description": "Write failing test: guard_change_triggers_re_elaboration. Engine::eval() with guard=true (member x present, value=5mm). Then edit_param to change 'active' Bool from true to false. Assert: (1) topology_fingerprint changed between snapshots, (2) x value is Undef in result, (3) else_member y is present with evaluated value, (4) structure_controlling cell detected the change.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "9321ec6"
     },
     {
       "id": "step-20",
       "type": "impl",
       "description": "Implement schema re-elaboration in Engine::edit_param(). After evaluating dirty nodes, check if any structure_controlling cells changed boolean value. If so: (1) re-evaluate guard ValueCells, (2) determine new active/inactive members from guarded_groups, (3) evaluate newly-activated members, (4) set newly-deactivated members to Undef, (5) recompute topology_fingerprint on the snapshot including current guard states. Ensure the dirty cone and eval set include dependents of affected guarded members.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "a607ffb"
     }
   ],
   "design_decisions": [

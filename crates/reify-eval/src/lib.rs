@@ -1270,7 +1270,16 @@ impl Engine {
 
             if has_dirty_guards {
                 for group in &graph.guarded_groups {
-                    let guard_val = reify_expr::eval_expr(&group.guard_expr, &values);
+                    // Re-evaluate the guard cell's expression
+                    let guard_val = if let Some(node) = graph.value_cells.get(&group.guard_cell) {
+                        if let Some(ref expr) = node.default_expr {
+                            reify_expr::eval_expr(expr, &values)
+                        } else {
+                            Value::Undef
+                        }
+                    } else {
+                        Value::Undef
+                    };
                     values.insert(group.guard_cell.clone(), guard_val.clone());
                     let guard_det = if matches!(&guard_val, Value::Bool(_)) {
                         DeterminacyState::Determined
