@@ -284,3 +284,74 @@ fn eval_state_available_atomically_after_eval() {
     let snap = engine.snapshot().expect("snapshot should be Some");
     assert_eq!(snap.id, state.snapshot.id);
 }
+
+/// Let bindings with forward references are evaluated correctly,
+/// including after auto-resolution phase. Serves as regression test
+/// for the let-binding evaluation helper extraction.
+#[test]
+fn let_binding_evaluation_produces_same_results_with_helper() {
+    use reify_types::{BinOp, CompiledExpr, ModulePath, Type, ValueCellId};
+
+    // Build module: param p = 3, let a = b + 1, let b = p * 2
+    // Forward ref: a references b which is declared after a.
+    // Expected: b = 3*2 = 6, a = 6+1 = 7
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S", "p", Type::Real,
+            Some(CompiledExpr::literal(reify_types::Value::Real(3.0), Type::Real)),
+        )
+        .let_binding(
+            "S", "a", Type::Real,
+            binop(
+                BinOp::Add,
+                value_ref("S", "b"),
+                CompiledExpr::literal(reify_types::Value::Real(1.0), Type::Real),
+            ),
+        )
+        .let_binding(
+            "S", "b", Type::Real,
+            binop(
+                BinOp::Mul,
+                value_ref("S", "p"),
+                CompiledExpr::literal(reify_types::Value::Real(2.0), Type::Real),
+            ),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Verify let binding values
+    let a_id = ValueCellId::new("S", "a");
+    let b_id = ValueCellId::new("S", "b");
+    let p_id = ValueCellId::new("S", "p");
+
+    let p_val = result.values.get(&p_id).expect("p should be in values");
+    assert_eq!(p_val.as_f64().unwrap(), 3.0, "p should be 3.0");
+
+    let b_val = result.values.get(&b_id).expect("b should be in values");
+    assert_eq!(b_val.as_f64().unwrap(), 6.0, "b should be p*2 = 6.0");
+
+    let a_val = result.values.get(&a_id).expect("a should be in values");
+    assert_eq!(a_val.as_f64().unwrap(), 7.0, "a should be b+1 = 7.0");
+
+    // Verify values also correct after edit_param
+    let result2 = engine.edit_param(p_id.clone(), reify_types::Value::Real(5.0)).unwrap();
+
+    let p_val2 = result2.values.get(&p_id).expect("p should be in values");
+    assert_eq!(p_val2.as_f64().unwrap(), 5.0, "p should be 5.0 after edit");
+
+    // Note: edit_param only re-evaluates dirty nodes in the eval set.
+    // Let bindings b and a should be re-evaluated since they depend on p.
+    // b = 5*2 = 10, a = 10+1 = 11
+    let b_val2 = result2.values.get(&b_id).expect("b should be in values");
+    assert_eq!(b_val2.as_f64().unwrap(), 10.0, "b should be p*2 = 10.0 after edit");
+
+    let a_val2 = result2.values.get(&a_id).expect("a should be in values");
+    assert_eq!(a_val2.as_f64().unwrap(), 11.0, "a should be b+1 = 11.0 after edit");
+}
