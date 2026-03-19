@@ -1272,3 +1272,86 @@ enum Direction { In, Out, Bidi }"#;
         reify_types::Type::Enum("Direction".into())
     );
 }
+
+/// Multiple enums and structures interleaved in various orders.
+/// Validates two-pass compilation handles forward and backward references.
+#[test]
+fn compile_enum_forward_reference_multiple_enums() {
+    let source = r#"structure A { let x = Color.Red }
+enum Direction { In, Out }
+structure B {
+    let y = Direction.In
+    let z = Color.Red
+}
+enum Color { Red, Green, Blue }"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_multi"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // No error diagnostics expected
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+
+    // Should have 2 enum_defs
+    assert_eq!(compiled.enum_defs.len(), 2, "expected 2 enum_defs");
+
+    // Template A: x → Value::Enum(Color, Red)
+    let template_a = &compiled.templates[0];
+    let x_cell = template_a
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("should have 'x' value cell");
+    let x_expr = x_cell.default_expr.as_ref().expect("let should have expr");
+    match &x_expr.kind {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
+            type_name,
+            variant,
+        }) => {
+            assert_eq!(type_name, "Color");
+            assert_eq!(variant, "Red");
+        }
+        other => panic!("A.x: expected Literal(Enum(Color, Red)), got {:?}", other),
+    }
+
+    // Template B: y → Value::Enum(Direction, In), z → Value::Enum(Color, Red)
+    let template_b = &compiled.templates[1];
+    let y_cell = template_b
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "y")
+        .expect("should have 'y' value cell");
+    let y_expr = y_cell.default_expr.as_ref().expect("let should have expr");
+    match &y_expr.kind {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
+            type_name,
+            variant,
+        }) => {
+            assert_eq!(type_name, "Direction");
+            assert_eq!(variant, "In");
+        }
+        other => panic!("B.y: expected Literal(Enum(Direction, In)), got {:?}", other),
+    }
+
+    let z_cell = template_b
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "z")
+        .expect("should have 'z' value cell");
+    let z_expr = z_cell.default_expr.as_ref().expect("let should have expr");
+    match &z_expr.kind {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
+            type_name,
+            variant,
+        }) => {
+            assert_eq!(type_name, "Color");
+            assert_eq!(variant, "Red");
+        }
+        other => panic!("B.z: expected Literal(Enum(Color, Red)), got {:?}", other),
+    }
+}
