@@ -104,9 +104,12 @@ impl OcctKernel {
                 let w = extract_f64(width)?;
                 let h = extract_f64(height)?;
                 let d = extract_f64(depth)?;
-                if w <= 0.0 || h <= 0.0 || d <= 0.0 {
+                if !(w.is_finite() && w > 0.0)
+                    || !(h.is_finite() && h > 0.0)
+                    || !(d.is_finite() && d > 0.0)
+                {
                     return Err(GeometryError::OperationFailed(
-                        "box dimensions must be greater than zero".into(),
+                        "box dimensions must be finite positive values".into(),
                     ));
                 }
                 ffi::ffi::make_box(w, h, d)
@@ -115,14 +118,14 @@ impl OcctKernel {
             GeometryOp::Cylinder { radius, height } => {
                 let r = extract_f64(radius)?;
                 let h = extract_f64(height)?;
-                if r <= 0.0 {
+                if !(r.is_finite() && r > 0.0) {
                     return Err(GeometryError::OperationFailed(
-                        "cylinder radius must be greater than zero".into(),
+                        "cylinder radius must be a finite positive value".into(),
                     ));
                 }
-                if h <= 0.0 {
+                if !(h.is_finite() && h > 0.0) {
                     return Err(GeometryError::OperationFailed(
-                        "cylinder height must be greater than zero".into(),
+                        "cylinder height must be a finite positive value".into(),
                     ));
                 }
                 ffi::ffi::make_cylinder(r, h)
@@ -130,9 +133,9 @@ impl OcctKernel {
             }
             GeometryOp::Sphere { radius } => {
                 let r = extract_f64(radius)?;
-                if r <= 0.0 {
+                if !(r.is_finite() && r > 0.0) {
                     return Err(GeometryError::OperationFailed(
-                        "sphere radius must be greater than zero".into(),
+                        "sphere radius must be a finite positive value".into(),
                     ));
                 }
                 ffi::ffi::make_sphere(r)
@@ -159,9 +162,9 @@ impl OcctKernel {
             GeometryOp::Fillet { target, radius } => {
                 let shape = self.get_shape(*target)?;
                 let r = extract_f64(radius)?;
-                if r <= 0.0 {
+                if !(r.is_finite() && r > 0.0) {
                     return Err(GeometryError::OperationFailed(
-                        "fillet radius must be greater than zero".into(),
+                        "fillet radius must be a finite positive value".into(),
                     ));
                 }
                 ffi::ffi::fillet_all_edges(shape, r)
