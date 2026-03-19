@@ -599,6 +599,50 @@ mod tests {
         let _ = pos.cmp(&neg);
     }
 
+    // --- Option tests (step-11) ---
+
+    #[test]
+    fn value_option_some_and_none() {
+        let some = Value::Option(Some(Box::new(Value::Int(42))));
+        let none = Value::Option(None);
+        assert_ne!(some, none);
+    }
+
+    #[test]
+    fn value_option_equality() {
+        let a = Value::Option(Some(Box::new(Value::Int(42))));
+        let b = Value::Option(Some(Box::new(Value::Int(42))));
+        let c = Value::Option(Some(Box::new(Value::Int(99))));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(Value::Option(None), Value::Option(None));
+    }
+
+    #[test]
+    fn value_option_ordering() {
+        // None < Some(anything)
+        assert!(Value::Option(None) < Value::Option(Some(Box::new(Value::Int(0)))));
+        // Some orders by inner value
+        assert!(
+            Value::Option(Some(Box::new(Value::Int(1))))
+                < Value::Option(Some(Box::new(Value::Int(2))))
+        );
+        // Option sorts after Map
+        let m = Value::Map(std::collections::BTreeMap::new());
+        assert!(m < Value::Option(None));
+    }
+
+    #[test]
+    fn value_option_content_hash() {
+        let some1 = Value::Option(Some(Box::new(Value::Int(1))));
+        let some2 = Value::Option(Some(Box::new(Value::Int(1))));
+        let some3 = Value::Option(Some(Box::new(Value::Int(2))));
+        let none = Value::Option(None);
+        assert_eq!(some1.content_hash(), some2.content_hash());
+        assert_ne!(some1.content_hash(), some3.content_hash());
+        assert_ne!(some1.content_hash(), none.content_hash());
+    }
+
     // --- Map tests (step-9) ---
 
     #[test]
