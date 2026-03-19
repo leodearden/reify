@@ -57,6 +57,11 @@ fused_memory:
     - "--transport"
     - "http"
 
+# Escalation — port 8100 (xxx0 range)
+escalation:
+  queue_dir: "data/escalations"
+  port: 8100
+
 # Git
 git:
   main_branch: "main"
