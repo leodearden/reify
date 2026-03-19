@@ -109,9 +109,6 @@ async fn adapter_evaluates_single_value_node() {
 
     let b_node = NodeId::Value(ValueCellId::new("T", "b"));
 
-    // b should be dirty
-    assert!(adapter.is_dirty(&b_node), "b should be dirty");
-
     // Evaluate b: should compute a * 2 = 10 * 2 = 20
     let outcome = adapter.evaluate(b_node.clone()).await;
 
@@ -402,10 +399,6 @@ async fn concurrent_cancellation_between_levels() {
     }
 
     impl AsyncNodeEvaluator for CancellingAdapter {
-        fn is_dirty(&self, node: &NodeId) -> bool {
-            self.inner.is_dirty(node)
-        }
-
         async fn evaluate(&self, node: NodeId) -> EvalOutcome {
             let outcome = self.inner.evaluate(node).await;
             // Cancel after evaluating (first node triggers cancellation)
@@ -421,8 +414,8 @@ async fn concurrent_cancellation_between_levels() {
     });
 
     let scheduler = ConcurrentScheduler;
-    let _changed = scheduler
-        .execute(eval_set.clone(), cancelling.clone(), &traces, &cancel)
+    let _result = scheduler
+        .execute(eval_set.clone(), cancelling.clone(), &traces, &cancel, &setup.changed_cells)
         .await
         .unwrap();
 
@@ -536,9 +529,6 @@ async fn rollback_on_task_panicked_restores_engine_state() {
     // Create a panicking evaluator
     struct PanickingEvaluator;
     impl AsyncNodeEvaluator for PanickingEvaluator {
-        fn is_dirty(&self, _node: &NodeId) -> bool {
-            true
-        }
         async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
             panic!("intentional panic in evaluator");
         }
@@ -550,7 +540,7 @@ async fn rollback_on_task_panicked_restores_engine_state() {
 
     // Execute — should return Err(TaskPanicked)
     let result = scheduler
-        .execute(setup.eval_set.clone(), panicking, &setup.traces, &cancel)
+        .execute(setup.eval_set.clone(), panicking, &setup.traces, &cancel, &setup.changed_cells)
         .await;
 
     assert!(result.is_err(), "scheduler should return error on panic");
@@ -621,7 +611,6 @@ async fn repeated_error_then_success_cycle() {
 
     struct PanickingEvaluator;
     impl AsyncNodeEvaluator for PanickingEvaluator {
-        fn is_dirty(&self, _node: &NodeId) -> bool { true }
         async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
             panic!("intentional panic in evaluator");
         }
@@ -630,7 +619,7 @@ async fn repeated_error_then_success_cycle() {
     let cancel = CancellationToken::new();
     let scheduler = ConcurrentScheduler;
     let err_result = scheduler
-        .execute(setup1.eval_set.clone(), Arc::new(PanickingEvaluator), &setup1.traces, &cancel)
+        .execute(setup1.eval_set.clone(), Arc::new(PanickingEvaluator), &setup1.traces, &cancel, &setup1.changed_cells)
         .await;
     assert!(matches!(err_result, Err(SchedulerError::TaskPanicked(_))));
 
@@ -1428,20 +1417,6 @@ mod poison_recovery {
     use super::*;
     use reify_runtime::concurrent::{AsyncNodeEvaluator};
 
-    /// is_dirty() should recover gracefully when skip_state lock is poisoned.
-    #[test]
-    fn is_dirty_recovers_after_skip_state_poisoning() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let b_node = NodeId::Value(ValueCellId::new("T", "b"));
-
-        // Poison the skip_state lock
-        adapter.poison_skip_state();
-
-        // is_dirty() should return a bool without panicking
-        let _dirty = adapter.is_dirty(&b_node);
-    }
-
     /// values() should recover gracefully when values RwLock is poisoned.
     #[test]
     fn values_recovers_after_values_lock_poisoning() {
@@ -1467,19 +1442,6 @@ mod poison_recovery {
 
         // take_results() should return a Vec without panicking
         let _results = adapter.take_results();
-    }
-
-    /// skipped() should recover gracefully when skip_state lock is poisoned.
-    #[test]
-    fn skipped_recovers_after_skip_state_poisoning() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-
-        // Poison the skip_state lock
-        adapter.poison_skip_state();
-
-        // skipped() should return a HashSet without panicking
-        let _skipped = adapter.skipped();
     }
 
     /// evaluate() should recover gracefully when the values RwLock is poisoned,
@@ -1509,7 +1471,239 @@ mod poison_recovery {
 
         // build_result_shared() should still work (regression guard for already-fixed paths)
         let eval_set = vec![b_node];
-        let result = adapter.build_result_shared(&eval_set);
+        let result = adapter.build_result_shared(&eval_set, HashSet::new());
         assert!(!result.values.is_empty(), "build_result_shared should return values");
     }
+}
+
+/// Critical test: 3+ parent mixed fan-in where downstream reads ONLY
+/// intermediaries — NOT the changed param a directly.
+///
+/// Graph:
+///   param a (Int, default 5)
+///   let p1 = a * 2              (reads a, Changed: 10→20)
+///   let p2 = if a > 0 then 1 else 1  (reads a, Unchanged: always 1)
+///   let p3 = if a > 0 then 2 else 2  (reads a, Unchanged: always 2)
+///   let d = p1 + p2 + p3        (reads ONLY p1, p2, p3 — NOT a directly)
+///
+/// Edit a: 5→10. d's dirtiness depends entirely on p1 being Changed
+/// propagating through changed_vcids. d must be evaluated with value
+/// 20 + 1 + 2 = 23.
+#[tokio::test]
+async fn three_plus_parent_mixed_fan_in_no_direct_param_read() {
+    use reify_types::{CompiledExpr, CompiledExprKind, ContentHash};
+
+    let e = "T";
+
+    // p1 = a * 2 (will change: 5*2=10 → 10*2=20)
+    let p1_expr = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Int),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Int,
+    );
+
+    // p2 = if a > 0 then 1 else 1 (always 1 → Unchanged)
+    let p2_cond = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+    let p2_expr = CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(p2_cond),
+            then_branch: Box::new(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            else_branch: Box::new(CompiledExpr::literal(Value::Int(1), Type::Int)),
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of_str("if_a_gt_0_then_1_else_1"),
+    };
+
+    // p3 = if a > 0 then 2 else 2 (always 2 → Unchanged)
+    let p3_cond = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+    let p3_expr = CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(p3_cond),
+            then_branch: Box::new(CompiledExpr::literal(Value::Int(2), Type::Int)),
+            else_branch: Box::new(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of_str("if_a_gt_0_then_2_else_2"),
+    };
+
+    // d = (p1 + p2) + p3 — reads ONLY p1, p2, p3, NOT a
+    let p1_plus_p2 = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(ValueCellId::new(e, "p1"), Type::Int),
+        CompiledExpr::value_ref(ValueCellId::new(e, "p2"), Type::Int),
+        Type::Int,
+    );
+    let d_expr = CompiledExpr::binop(
+        BinOp::Add,
+        p1_plus_p2,
+        CompiledExpr::value_ref(ValueCellId::new(e, "p3"), Type::Int),
+        Type::Int,
+    );
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "a", Type::Int, Some(CompiledExpr::literal(Value::Int(5), Type::Int)))
+        .let_binding(e, "p1", Type::Int, p1_expr)
+        .let_binding(e, "p2", Type::Int, p2_expr)
+        .let_binding(e, "p3", Type::Int, p3_expr)
+        .let_binding(e, "d", Type::Int, d_expr)
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let _initial = engine.eval(&module);
+
+    let a_id = ValueCellId::new(e, "a");
+    let cancel = CancellationToken::new();
+
+    // Edit a: 5 → 10
+    let (_setup, result) = edit_param_concurrent(
+        &mut engine,
+        a_id.clone(),
+        Value::Int(10),
+        &cancel,
+    ).await.unwrap();
+
+    let d_node = NodeId::Value(ValueCellId::new(e, "d"));
+
+    // d MUST be in actual_eval_set (not skipped) — its dirtiness depends
+    // entirely on p1 being Changed, propagated via changed_vcids
+    assert!(
+        result.actual_eval_set.contains(&d_node),
+        "d should be in actual_eval_set (p1 is Changed, making d dirty \
+         even though p2 and p3 are Unchanged). actual_eval_set: {:?}",
+        result.actual_eval_set
+    );
+
+    // d must have the correct value: p1=20, p2=1, p3=2 → d=23
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "d")),
+        Some(&Value::Int(23)),
+        "d should be 20 + 1 + 2 = 23"
+    );
+}
+
+/// Wide fan-in: 5 parents, only p1 Changed, others Unchanged.
+///
+/// Graph:
+///   param a (Int, default 5)
+///   let p1 = a * 2              (Changed: 10→20)
+///   let p2 = if a>0 then 1 else 1  (Unchanged: always 1)
+///   let p3 = if a>0 then 2 else 2  (Unchanged: always 2)
+///   let p4 = if a>0 then 3 else 3  (Unchanged: always 3)
+///   let p5 = if a>0 then 4 else 4  (Unchanged: always 4)
+///   let d = ((p1+p2)+(p3+p4))+p5  (reads ONLY p1-p5, NOT a)
+///
+/// Edit a: 5→10. Assert d is in actual_eval_set with value 20+1+2+3+4=30.
+#[tokio::test]
+async fn five_parent_fan_in_one_changed() {
+    use reify_types::{CompiledExpr, CompiledExprKind, ContentHash};
+
+    let e = "T";
+
+    // p1 = a * 2 (will change)
+    let p1_expr = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Int),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Int,
+    );
+
+    // Helper to build conditional: if a > 0 then K else K
+    let make_unchanged = |k: i64, label: &str| -> CompiledExpr {
+        let cond = CompiledExpr::binop(
+            BinOp::Gt,
+            CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Int),
+            CompiledExpr::literal(Value::Int(0), Type::Int),
+            Type::Bool,
+        );
+        CompiledExpr {
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(cond),
+                then_branch: Box::new(CompiledExpr::literal(Value::Int(k), Type::Int)),
+                else_branch: Box::new(CompiledExpr::literal(Value::Int(k), Type::Int)),
+            },
+            result_type: Type::Int,
+            content_hash: ContentHash::of_str(label),
+        }
+    };
+
+    let p2_expr = make_unchanged(1, "if_a_gt_0_then_1_else_1");
+    let p3_expr = make_unchanged(2, "if_a_gt_0_then_2_else_2");
+    let p4_expr = make_unchanged(3, "if_a_gt_0_then_3_else_3");
+    let p5_expr = make_unchanged(4, "if_a_gt_0_then_4_else_4");
+
+    // d = ((p1+p2) + (p3+p4)) + p5
+    let p1_plus_p2 = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(ValueCellId::new(e, "p1"), Type::Int),
+        CompiledExpr::value_ref(ValueCellId::new(e, "p2"), Type::Int),
+        Type::Int,
+    );
+    let p3_plus_p4 = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(ValueCellId::new(e, "p3"), Type::Int),
+        CompiledExpr::value_ref(ValueCellId::new(e, "p4"), Type::Int),
+        Type::Int,
+    );
+    let sum_4 = CompiledExpr::binop(BinOp::Add, p1_plus_p2, p3_plus_p4, Type::Int);
+    let d_expr = CompiledExpr::binop(
+        BinOp::Add,
+        sum_4,
+        CompiledExpr::value_ref(ValueCellId::new(e, "p5"), Type::Int),
+        Type::Int,
+    );
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "a", Type::Int, Some(CompiledExpr::literal(Value::Int(5), Type::Int)))
+        .let_binding(e, "p1", Type::Int, p1_expr)
+        .let_binding(e, "p2", Type::Int, p2_expr)
+        .let_binding(e, "p3", Type::Int, p3_expr)
+        .let_binding(e, "p4", Type::Int, p4_expr)
+        .let_binding(e, "p5", Type::Int, p5_expr)
+        .let_binding(e, "d", Type::Int, d_expr)
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let _initial = engine.eval(&module);
+
+    let a_id = ValueCellId::new(e, "a");
+    let cancel = CancellationToken::new();
+
+    // Edit a: 5 → 10
+    let (_setup, result) = edit_param_concurrent(
+        &mut engine,
+        a_id.clone(),
+        Value::Int(10),
+        &cancel,
+    ).await.unwrap();
+
+    let d_node = NodeId::Value(ValueCellId::new(e, "d"));
+
+    // d MUST be in actual_eval_set
+    assert!(
+        result.actual_eval_set.contains(&d_node),
+        "d should be in actual_eval_set (p1 is Changed). actual_eval_set: {:?}",
+        result.actual_eval_set
+    );
+
+    // d = 20 + 1 + 2 + 3 + 4 = 30
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "d")),
+        Some(&Value::Int(30)),
+        "d should be 20 + 1 + 2 + 3 + 4 = 30"
+    );
 }

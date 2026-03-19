@@ -3,13 +3,17 @@
 //! `ConcurrentEvalAdapter` implements `AsyncNodeEvaluator` using interior mutability
 //! (std::sync::RwLock for values, Mutex for results) to enable safe concurrent
 //! node evaluation across tokio tasks.
+//!
+//! Dirty/skip decisions are made by the scheduler using pre-computed `changed_vcids`
+//! tracking, not by the adapter. The adapter is purely computational — it evaluates
+//! expressions, computes content hashes, and records results.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
 use reify_compiler::ValueCellKind;
 use reify_eval::cache::{CachedResult, EvalOutcome, NodeId};
-use reify_eval::deps::{extract_dependency_trace, ReverseDependencyIndex};
+use reify_eval::deps::extract_dependency_trace;
 use reify_eval::graph::EvaluationGraph;
 use reify_eval::{CheckResult, ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
 use reify_types::{
@@ -18,18 +22,6 @@ use reify_types::{
 
 use crate::concurrent::{AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerError};
 
-/// Combined skip state for atomic check-and-modify in concurrent early cutoff.
-///
-/// A single Mutex wrapping both `skipped` and `has_changed_parent` prevents
-/// TOCTOU races between concurrent tasks at the same topological level that
-/// could otherwise interleave the has_changed_parent check and skipped insert.
-struct SkipState {
-    /// Nodes to skip due to early cutoff of upstream nodes.
-    skipped: HashSet<NodeId>,
-    /// Nodes that have at least one Changed parent (should never be skipped).
-    has_changed_parent: HashSet<NodeId>,
-}
-
 /// Adapter that implements `AsyncNodeEvaluator` for concurrent evaluation.
 ///
 /// Wraps Engine state extracted by `prepare_concurrent_edit()` in interior-mutable
@@ -37,6 +29,10 @@ struct SkipState {
 ///
 /// Uses `std::sync::RwLock` (not tokio's) because expression evaluation is CPU-bound
 /// and completes in microseconds — locks are never held across .await points.
+///
+/// The adapter is purely computational: it evaluates expressions, computes content
+/// hashes for Changed/Unchanged determination, and records results. Skip decisions
+/// are made by the scheduler via pre-computed `changed_vcids` tracking.
 pub struct ConcurrentEvalAdapter {
     /// The evaluation graph (immutable during evaluation).
     graph: Arc<EvaluationGraph>,
@@ -46,11 +42,6 @@ pub struct ConcurrentEvalAdapter {
     snapshot_values: Arc<RwLock<PersistentMap<ValueCellId, (Value, DeterminacyState)>>>,
     /// Pre-extracted content hashes for Changed/Unchanged determination.
     previous_hashes: Arc<HashMap<NodeId, ContentHash>>,
-    /// Reverse dependency index for early cutoff propagation.
-    reverse_index: Arc<ReverseDependencyIndex>,
-    /// Combined skip state: skipped set + has_changed_parent set, behind a
-    /// single Mutex for atomic check-and-modify in concurrent evaluation.
-    skip_state: Arc<Mutex<SkipState>>,
     /// Collected evaluation results.
     results: Arc<Mutex<Vec<ConcurrentNodeResult>>>,
     /// Version for this evaluation.
@@ -61,28 +52,14 @@ pub struct ConcurrentEvalAdapter {
 impl ConcurrentEvalAdapter {
     /// Create an adapter from a `ConcurrentEditSetup`.
     ///
-    /// Seeds `has_changed_parent` with dependents of the changed cells.
-    /// This ensures nodes that read the changed param directly are never
-    /// incorrectly skipped by early cutoff from an unchanged intermediary.
+    /// The adapter is purely computational — skip decisions are handled by the
+    /// scheduler. No skip state or reverse dependency index is needed here.
     pub fn from_setup(setup: &ConcurrentEditSetup) -> Self {
-        // Seed has_changed_parent from changed_cells' dependents
-        let mut has_changed_parent = HashSet::new();
-        for changed_cell in &setup.changed_cells {
-            for dependent in setup.reverse_index.dependents_of(changed_cell) {
-                has_changed_parent.insert(dependent.clone());
-            }
-        }
-
         Self {
             graph: Arc::new(setup.graph.clone()),
             values: Arc::new(RwLock::new(setup.values.clone())),
             snapshot_values: Arc::new(RwLock::new(setup.snapshot_values.clone())),
             previous_hashes: Arc::new(setup.previous_hashes.clone()),
-            reverse_index: Arc::new(setup.reverse_index.clone()),
-            skip_state: Arc::new(Mutex::new(SkipState {
-                skipped: HashSet::new(),
-                has_changed_parent,
-            })),
             results: Arc::new(Mutex::new(Vec::new())),
             version: setup.version,
         }
@@ -98,21 +75,17 @@ impl ConcurrentEvalAdapter {
         self.results.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Get the set of skipped nodes (for testing/inspection).
-    pub fn skipped(&self) -> HashSet<NodeId> {
-        self.skip_state.lock().unwrap_or_else(|e| e.into_inner()).skipped.clone()
-    }
-
     /// Build a `ConcurrentEditResult` via shared references (cloning).
     ///
     /// Used as a fallback when `Arc::try_unwrap` fails because outstanding
     /// references still exist. Slightly less efficient than `into_result`
     /// since it clones each inner container through locks.
-    pub fn build_result_shared(&self, eval_set: &[NodeId]) -> ConcurrentEditResult {
+    ///
+    /// The `skipped` set is provided by the scheduler's `SchedulerResult`.
+    pub fn build_result_shared(&self, eval_set: &[NodeId], skipped: HashSet<NodeId>) -> ConcurrentEditResult {
         let values = self.values.read().unwrap_or_else(|e| e.into_inner()).clone();
         let snapshot_values = self.snapshot_values.read().unwrap_or_else(|e| e.into_inner()).clone();
         let node_results = self.results.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let skipped = self.skip_state.lock().unwrap_or_else(|e| e.into_inner()).skipped.clone();
 
         let actual_eval_set: Vec<NodeId> = eval_set
             .iter()
@@ -133,8 +106,9 @@ impl ConcurrentEvalAdapter {
 
     /// Consume the adapter and produce a `ConcurrentEditResult`.
     ///
-    /// Extracts the final values, snapshot_values, results, and skipped set.
-    pub fn into_result(self, eval_set: &[NodeId]) -> ConcurrentEditResult {
+    /// Extracts the final values, snapshot_values, and results.
+    /// The `skipped` set is provided by the scheduler's `SchedulerResult`.
+    pub fn into_result(self, eval_set: &[NodeId], skipped: HashSet<NodeId>) -> ConcurrentEditResult {
         let values = match Arc::try_unwrap(self.values) {
             Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
             Err(arc) => arc.read().unwrap_or_else(|e| e.into_inner()).clone(),
@@ -146,10 +120,6 @@ impl ConcurrentEvalAdapter {
         let node_results = match Arc::try_unwrap(self.results) {
             Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
             Err(arc) => arc.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-        };
-        let skipped = match Arc::try_unwrap(self.skip_state) {
-            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()).skipped,
-            Err(arc) => arc.lock().unwrap_or_else(|e| e.into_inner()).skipped.clone(),
         };
 
         // actual_eval_set = eval_set nodes that weren't skipped
@@ -175,18 +145,6 @@ impl ConcurrentEvalAdapter {
 // Gated behind cfg(test) for unit tests and feature = "test-utils" for integration tests.
 #[cfg(any(test, feature = "test-utils"))]
 impl ConcurrentEvalAdapter {
-    /// Poison the `skip_state` Mutex by spawning a thread that acquires
-    /// the lock and panics while holding it.
-    pub fn poison_skip_state(&self) {
-        let arc = Arc::clone(&self.skip_state);
-        std::thread::spawn(move || {
-            let _guard = arc.lock().unwrap();
-            panic!("intentional panic to poison skip_state");
-        })
-        .join()
-        .ok();
-    }
-
     /// Poison the `results` Mutex.
     pub fn poison_results(&self) {
         let arc = Arc::clone(&self.results);
@@ -222,10 +180,6 @@ impl ConcurrentEvalAdapter {
 }
 
 impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
-    fn is_dirty(&self, node: &NodeId) -> bool {
-        !self.skip_state.lock().unwrap_or_else(|e| e.into_inner()).skipped.contains(node)
-    }
-
     async fn evaluate(&self, node: NodeId) -> EvalOutcome {
         // Only evaluate Value nodes with expressions
         if let NodeId::Value(ref vcid) = node
@@ -280,33 +234,8 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
                 );
             }
 
-            // Early cutoff with mixed fan-in protection (atomic via Mutex):
-            // - Changed: propagate has_changed_parent to dependents,
-            //   remove them from skipped (in case an earlier Unchanged
-            //   parent at the same level added them prematurely).
-            // - Unchanged: only add dependents to skipped if they do NOT
-            //   have a Changed parent.
-            {
-                let dependents = self.reverse_index.dependents_of(vcid);
-                if !dependents.is_empty() {
-                    let mut state = self.skip_state.lock().unwrap_or_else(|e| e.into_inner());
-                    if outcome == EvalOutcome::Changed {
-                        for dep in dependents {
-                            state.has_changed_parent.insert(dep.clone());
-                            state.skipped.remove(dep);
-                        }
-                    } else {
-                        // Unchanged
-                        for dep in dependents {
-                            if !state.has_changed_parent.contains(dep) {
-                                state.skipped.insert(dep.clone());
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Record result
+            // Record result (no early cutoff propagation — skip decisions
+            // are made by the scheduler using pre-computed changed_vcids)
             self.results.lock().unwrap_or_else(|e| e.into_inner()).push(ConcurrentNodeResult {
                 node: node.clone(),
                 value: val,
@@ -328,8 +257,8 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
 /// This is the main entry point for concurrent evaluation:
 /// 1. Call `engine.prepare_concurrent_edit()` to extract state
 /// 2. Create `ConcurrentEvalAdapter` from setup
-/// 3. Run through `ConcurrentScheduler::execute()`
-/// 4. Collect results into `ConcurrentEditResult`
+/// 3. Run through `ConcurrentScheduler::execute()` with pre-computed skip logic
+/// 4. Collect results into `ConcurrentEditResult` using scheduler's skipped set
 ///
 /// After this returns, the caller should call `engine.apply_concurrent_edit()`
 /// to merge the results back into the Engine.
@@ -348,16 +277,17 @@ pub async fn edit_param_concurrent(
 
     let scheduler = ConcurrentScheduler;
     match scheduler
-        .execute(eval_set.clone(), Arc::clone(&adapter_arc), &traces, cancel)
+        .execute(eval_set.clone(), Arc::clone(&adapter_arc), &traces, cancel, &setup.changed_cells)
         .await
     {
-        Ok(_changed) => {
-            // Extract result from adapter. After scheduler completes, the only
-            // remaining Arc reference should be ours — but if a spawned task
-            // retained a clone, fall back to building the result via shared access.
+        Ok(scheduler_result) => {
+            // Extract result from adapter, passing the scheduler's skipped set.
+            // After scheduler completes, the only remaining Arc reference should
+            // be ours — but if a spawned task retained a clone, fall back to
+            // building the result via shared access.
             let mut result = match Arc::try_unwrap(adapter_arc) {
-                Ok(adapter) => adapter.into_result(&eval_set),
-                Err(arc) => arc.build_result_shared(&eval_set),
+                Ok(adapter) => adapter.into_result(&eval_set, scheduler_result.skipped),
+                Err(arc) => arc.build_result_shared(&eval_set, scheduler_result.skipped),
             };
 
             // Resolution phase: run solver synchronously after concurrent
