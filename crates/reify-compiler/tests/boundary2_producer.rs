@@ -309,6 +309,50 @@ fn compile_auto_param() {
     assert!(y.default_expr.is_some(), "normal param should have default_expr");
 }
 
+/// Auto param ValueCellDecl span should be non-zero and match parsed ParamDecl span.
+#[test]
+fn compiled_auto_param_span_not_zero() {
+    use reify_types::SourceSpan;
+
+    let source = r#"structure S {
+    param x: Scalar = auto
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_auto_span"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    let x = &template.value_cells[0];
+    assert_eq!(x.kind, ValueCellKind::Auto);
+
+    // Auto param span must not be (0,0)
+    assert_ne!(
+        x.span,
+        SourceSpan::new(0, 0),
+        "auto param span should not be (0,0) — must propagate from ParamDecl"
+    );
+
+    // Extract parsed param span for comparison
+    let parsed_span = match &parsed.declarations[0] {
+        reify_syntax::Declaration::Structure(s) => match &s.members[0] {
+            reify_syntax::MemberDecl::Param(p) => p.span,
+            _ => panic!("expected Param"),
+        },
+        _ => panic!("expected Structure"),
+    };
+
+    assert_eq!(
+        x.span, parsed_span,
+        "auto param span should match parsed ParamDecl.span"
+    );
+}
+
 /// Regression: bracket fixture compiles with zero diagnostics.
 /// The dimension and constraint checks must not false-positive on valid expressions.
 #[test]

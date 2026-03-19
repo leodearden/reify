@@ -94,6 +94,110 @@ fn compiled_constraint_spans_match_parsed_spans() {
     }
 }
 
+/// Compiled param ValueCellDecls should propagate spans from parsed ParamDecls.
+#[test]
+fn compiled_param_spans_match_parsed_spans() {
+    use reify_syntax::MemberDecl;
+    use reify_types::SourceSpan;
+
+    let source = bracket_source();
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
+    let compiled = reify_compiler::compile(&parsed);
+
+    assert_eq!(compiled.templates.len(), 1);
+    let template = &compiled.templates[0];
+
+    // Get compiled param ValueCellDecls (5 params: width, height, thickness, fillet_radius, hole_diameter)
+    let compiled_params: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.kind == reify_compiler::ValueCellKind::Param)
+        .collect();
+    assert_eq!(compiled_params.len(), 5, "expected 5 param cells");
+
+    // Each param span must be non-zero (not the hardcoded (0,0) default)
+    for (i, param) in compiled_params.iter().enumerate() {
+        assert_ne!(
+            param.span,
+            SourceSpan::new(0, 0),
+            "param {} span should not be (0,0) — must propagate from ParamDecl",
+            i
+        );
+    }
+
+    // Extract parsed param spans for comparison
+    let parsed_param_spans: Vec<SourceSpan> = match &parsed.declarations[0] {
+        reify_syntax::Declaration::Structure(s) => s
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                MemberDecl::Param(p) => Some(p.span),
+                _ => None,
+            })
+            .collect(),
+        _ => panic!("expected Structure"),
+    };
+    assert_eq!(parsed_param_spans.len(), 5);
+
+    // Compiled param spans must match parsed ParamDecl spans
+    for (i, param) in compiled_params.iter().enumerate() {
+        assert_eq!(
+            param.span, parsed_param_spans[i],
+            "param {} span should match parsed ParamDecl.span",
+            i
+        );
+    }
+}
+
+/// Compiled let ValueCellDecls should propagate spans from parsed LetDecls.
+#[test]
+fn compiled_let_spans_match_parsed_spans() {
+    use reify_syntax::MemberDecl;
+    use reify_types::SourceSpan;
+
+    let source = bracket_source();
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
+    let compiled = reify_compiler::compile(&parsed);
+
+    assert_eq!(compiled.templates.len(), 1);
+    let template = &compiled.templates[0];
+
+    // Get compiled let ValueCellDecls (1 let: volume; 'body' is skipped as geometry-producing)
+    let compiled_lets: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.kind == reify_compiler::ValueCellKind::Let)
+        .collect();
+    assert_eq!(compiled_lets.len(), 1, "expected 1 let cell (volume)");
+
+    // The let span must be non-zero (not the hardcoded (0,0) default)
+    assert_ne!(
+        compiled_lets[0].span,
+        SourceSpan::new(0, 0),
+        "let 'volume' span should not be (0,0) — must propagate from LetDecl"
+    );
+
+    // Extract parsed let spans for non-geometry lets
+    let parsed_let_spans: Vec<SourceSpan> = match &parsed.declarations[0] {
+        reify_syntax::Declaration::Structure(s) => s
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                MemberDecl::Let(l) if l.name == "volume" => Some(l.span),
+                _ => None,
+            })
+            .collect(),
+        _ => panic!("expected Structure"),
+    };
+    assert_eq!(parsed_let_spans.len(), 1);
+
+    // Compiled let span must match parsed LetDecl span
+    assert_eq!(
+        compiled_lets[0].span, parsed_let_spans[0],
+        "let 'volume' span should match parsed LetDecl.span"
+    );
+}
+
 /// Handle ParsedModule with parse errors → process valid declarations.
 #[test]
 fn handle_parse_errors_gracefully() {
