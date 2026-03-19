@@ -1420,88 +1420,96 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
 }
 
 // --- PoisonError recovery tests ---
+// Gated behind feature = "test-utils" because #[cfg(test)] only applies to
+// unit tests within the crate, not integration tests in the tests/ directory.
 
-/// is_dirty() should recover gracefully when skip_state lock is poisoned.
-#[test]
-fn is_dirty_recovers_after_skip_state_poisoning() {
-    let setup = simple_setup();
-    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-    let b_node = NodeId::Value(ValueCellId::new("T", "b"));
+#[cfg(feature = "test-utils")]
+mod poison_recovery {
+    use super::*;
+    use reify_runtime::concurrent::{AsyncNodeEvaluator};
 
-    // Poison the skip_state lock
-    adapter.poison_skip_state();
+    /// is_dirty() should recover gracefully when skip_state lock is poisoned.
+    #[test]
+    fn is_dirty_recovers_after_skip_state_poisoning() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let b_node = NodeId::Value(ValueCellId::new("T", "b"));
 
-    // is_dirty() should return a bool without panicking
-    let _dirty = adapter.is_dirty(&b_node);
-}
+        // Poison the skip_state lock
+        adapter.poison_skip_state();
 
-/// values() should recover gracefully when values RwLock is poisoned.
-#[test]
-fn values_recovers_after_values_lock_poisoning() {
-    let setup = simple_setup();
-    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        // is_dirty() should return a bool without panicking
+        let _dirty = adapter.is_dirty(&b_node);
+    }
 
-    // Poison the values lock
-    adapter.poison_values();
+    /// values() should recover gracefully when values RwLock is poisoned.
+    #[test]
+    fn values_recovers_after_values_lock_poisoning() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
 
-    // values() should return a ValueMap without panicking
-    let vals = adapter.values();
-    assert!(!vals.is_empty(), "values should still be readable after poisoning");
-}
+        // Poison the values lock
+        adapter.poison_values();
 
-/// take_results() should recover gracefully when results lock is poisoned.
-#[test]
-fn take_results_recovers_after_results_lock_poisoning() {
-    let setup = simple_setup();
-    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        // values() should return a ValueMap without panicking
+        let vals = adapter.values();
+        assert!(!vals.is_empty(), "values should still be readable after poisoning");
+    }
 
-    // Poison the results lock
-    adapter.poison_results();
+    /// take_results() should recover gracefully when results lock is poisoned.
+    #[test]
+    fn take_results_recovers_after_results_lock_poisoning() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
 
-    // take_results() should return a Vec without panicking
-    let _results = adapter.take_results();
-}
+        // Poison the results lock
+        adapter.poison_results();
 
-/// skipped() should recover gracefully when skip_state lock is poisoned.
-#[test]
-fn skipped_recovers_after_skip_state_poisoning() {
-    let setup = simple_setup();
-    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        // take_results() should return a Vec without panicking
+        let _results = adapter.take_results();
+    }
 
-    // Poison the skip_state lock
-    adapter.poison_skip_state();
+    /// skipped() should recover gracefully when skip_state lock is poisoned.
+    #[test]
+    fn skipped_recovers_after_skip_state_poisoning() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
 
-    // skipped() should return a HashSet without panicking
-    let _skipped = adapter.skipped();
-}
+        // Poison the skip_state lock
+        adapter.poison_skip_state();
 
-/// evaluate() should recover gracefully when the values RwLock is poisoned,
-/// and take_results()/build_result_shared() should still work afterward.
-#[tokio::test]
-async fn evaluate_continues_after_lock_poisoning() {
-    let setup = simple_setup();
-    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-    let b_node = NodeId::Value(ValueCellId::new("T", "b"));
+        // skipped() should return a HashSet without panicking
+        let _skipped = adapter.skipped();
+    }
 
-    // Poison the values RwLock
-    adapter.poison_values();
+    /// evaluate() should recover gracefully when the values RwLock is poisoned,
+    /// and take_results()/build_result_shared() should still work afterward.
+    #[tokio::test]
+    async fn evaluate_continues_after_lock_poisoning() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let b_node = NodeId::Value(ValueCellId::new("T", "b"));
 
-    // evaluate() should complete without cascading panic
-    let outcome = adapter.evaluate(b_node.clone()).await;
+        // Poison the values RwLock
+        adapter.poison_values();
 
-    // Should get an outcome (Changed or Unchanged, doesn't matter which)
-    assert!(
-        outcome == EvalOutcome::Changed || outcome == EvalOutcome::Unchanged,
-        "evaluate should return a valid outcome, got {:?}",
-        outcome
-    );
+        // evaluate() should complete without cascading panic
+        let outcome = adapter.evaluate(b_node.clone()).await;
 
-    // take_results() should still work
-    let results = adapter.take_results();
-    assert!(!results.is_empty(), "should have at least one result after evaluate");
+        // Should get an outcome (Changed or Unchanged, doesn't matter which)
+        assert!(
+            outcome == EvalOutcome::Changed || outcome == EvalOutcome::Unchanged,
+            "evaluate should return a valid outcome, got {:?}",
+            outcome
+        );
 
-    // build_result_shared() should still work (regression guard for already-fixed paths)
-    let eval_set = vec![b_node];
-    let result = adapter.build_result_shared(&eval_set);
-    assert!(!result.values.is_empty(), "build_result_shared should return values");
+        // take_results() should still work
+        let results = adapter.take_results();
+        assert!(!results.is_empty(), "should have at least one result after evaluate");
+
+        // build_result_shared() should still work (regression guard for already-fixed paths)
+        let eval_set = vec![b_node];
+        let result = adapter.build_result_shared(&eval_set);
+        assert!(!result.values.is_empty(), "build_result_shared should return values");
+    }
 }
