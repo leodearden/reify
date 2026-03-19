@@ -173,8 +173,3 @@ impl ConstraintSolver for SolverRegistry {
         }
     }
 }
-
-// Safety: SolverRegistry is Send + Sync because all its fields
-// are Box<dyn ConstraintSolver> which requires Send + Sync.
-unsafe impl Send for SolverRegistry {}
-unsafe impl Sync for SolverRegistry {}
