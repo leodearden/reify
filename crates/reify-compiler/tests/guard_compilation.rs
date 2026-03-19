@@ -456,3 +456,37 @@ structure S {
         diagnostics_b.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+/// Step 29: Nested guards should NOT trigger false-positive cross-guard diagnostics.
+///
+/// Inner member y under __guard_1 (= a AND b) references x under __guard_0 (= a).
+/// Since the inner guard implies the outer guard (it's a conjunction containing the outer),
+/// the reference is safe. No 'differently-guarded' diagnostic should be emitted.
+#[test]
+fn reference_safety_nested_guard_no_false_positive() {
+    let source = r#"
+structure S {
+    param a : Bool = true
+    param b : Bool = true
+    where a {
+        param x : Scalar = 1mm
+        where b {
+            let y = x
+        }
+    }
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+    let cross_guard_warnings: Vec<_> = diagnostics.iter()
+        .filter(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("differently-guarded")
+        })
+        .collect();
+    assert!(
+        cross_guard_warnings.is_empty(),
+        "nested guard reference should NOT produce false-positive cross-guard diagnostic, got: {:?}",
+        cross_guard_warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
