@@ -87,3 +87,65 @@ fn eval_guard_true_includes_members() {
         "guarded member x should be 0.005 (5mm SI) when guard is true"
     );
 }
+
+/// Step 15: When guard is false, else_members should be evaluated and members should be Undef.
+///
+/// Build: Bool param 'active' (default=false), guarded_group with
+/// member param 'x' (default=5mm) and else_member param 'y' (default=10mm).
+/// After eval(): 'y' should be 0.01 (10mm SI), 'x' should be Undef.
+#[test]
+fn eval_guard_false_includes_else() {
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+    let x_decl = make_param_decl("S", "x", Type::length(), Value::length(0.005));
+    let y_decl = make_param_decl("S", "y", Type::length(), Value::length(0.01));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![x_decl],       // members (active when true)
+            vec![],             // constraints
+            vec![y_decl],       // else_members (active when false)
+            vec![],             // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Guard cell should be false
+    assert_eq!(
+        result.values.get(&guard_id),
+        Some(&Value::Bool(false)),
+        "guard cell should evaluate to false"
+    );
+
+    // 'y' (else member) should be evaluated to 10mm = 0.01m
+    assert_eq!(
+        result.values.get(&y_id),
+        Some(&Value::length(0.01)),
+        "else member y should be 0.01 (10mm SI) when guard is false"
+    );
+
+    // 'x' (guard-true member) should be Undef
+    assert_eq!(
+        result.values.get(&x_id),
+        Some(&Value::Undef),
+        "guarded member x should be Undef when guard is false"
+    );
+}
