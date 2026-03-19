@@ -18,7 +18,7 @@
     "crates/reify-compiler",
     "crates/reify-expr"
   ],
-  "analysis": "This task adds end-to-end enum type support: grammar rule, parser AST types + lowering, compiler registry + compilation, and expression evaluation.\n\n**Existing infrastructure (from task #53 / M5 types):**\n- `Value::Enum { type_name, variant }` already exists in reify-types/src/value.rs with PartialEq, Eq, Ord, Display, content_hash\n- `Type::Enum(String)` already exists in reify-types/src/ty.rs\n- `EnumDef { name, variants }` already exists in reify-types/src/traits.rs with contains_variant()\n- `CompiledExprKind::Literal(Value)` can carry Value::Enum values\n\n**What needs to be built:**\n\n1. **Grammar**: Add `enum_declaration` as a top-level declaration alongside `structure_definition` and `import_declaration`. The grammar uses `seq('enum', field('name', $.identifier), '{', ...)` with comma-separated identifier list for variants. No separate `enum_access` grammar rule needed — `member_access` already handles `Direction.In` as `Ident(Direction).In`. Disambiguation happens in the parser.\n\n2. **Parser**: Add `Declaration::Enum(EnumDecl)` with `EnumDecl { name, variants, span, content_hash }` (parser-level struct with span/hash, distinct from the simpler `reify_types::EnumDef`). Add `ExprKind::EnumAccess { type_name, variant }`. The lowering uses a two-pass approach: first pass collects enum names into a HashSet, second pass lowers everything. When lowering a `member_access` where the object is a plain identifier matching a known enum name, produce `EnumAccess` instead of `MemberAccess`.\n\n3. **Compiler**: Add `enum_defs: Vec<reify_types::EnumDef>` field to `CompiledModule`. When encountering `Declaration::Enum`, convert to `reify_types::EnumDef` and store in registry. When compiling `ExprKind::EnumAccess`, resolve against the registry — emit `CompiledExpr::literal(Value::Enum { ... }, Type::Enum(...))` on success, or a diagnostic on failure.\n\n4. **Evaluator**: Add `Value::Enum` match arms in `eval_eq()` (same type+variant → true, same type/diff variant → false, diff type → false). Add `Value::Enum` handling in `eval_cmp()` → Undef (no ordering on enums).\n\n**Key existing patterns reused:**\n- The `lower_member()` helper (added in task #59 guard work) provides the member dispatch pattern used inside structure lowering.\n- The compiler's `compile_expr()` handles expressions with scope and diagnostics; a new match arm for `EnumAccess` follows the same pattern.\n- Tests follow established patterns: parser tests in ts_parser.rs inline mod, compiler tests in tests/boundary2_producer.rs, eval tests in lib.rs inline mod.",
+  "analysis": "This task adds end-to-end enum type support: grammar rule, parser AST types + lowering, compiler registry + compilation, and expression evaluation.\n\n**Existing infrastructure (from task #53 / M5 types):**\n- `Value::Enum { type_name, variant }` already exists in reify-types/src/value.rs with PartialEq, Eq, Ord, Display, content_hash\n- `Type::Enum(String)` already exists in reify-types/src/ty.rs\n- `EnumDef { name, variants }` already exists in reify-types/src/traits.rs with contains_variant()\n- `CompiledExprKind::Literal(Value)` can carry Value::Enum values\n\n**What needs to be built:**\n\n1. **Grammar**: Add `enum_declaration` as a top-level declaration alongside `structure_definition` and `import_declaration`. The grammar uses `seq('enum', field('name', $.identifier), '{', ...)` with comma-separated identifier list for variants. No separate `enum_access` grammar rule needed — `member_access` already handles `Direction.In` as `Ident(Direction).In`. Disambiguation happens in the parser.\n\n2. **Parser**: Add `Declaration::Enum(EnumDecl)` with `EnumDecl { name, variants, span, content_hash }` (parser-level struct with span/hash, distinct from the simpler `reify_types::EnumDef`). Add `ExprKind::EnumAccess { type_name, variant }`. The lowering uses a two-pass approach: first pass collects enum names into a HashSet, second pass lowers everything. When lowering a `member_access` where the object is a plain identifier matching a known enum name, produce `EnumAccess` instead of `MemberAccess`.\n\n3. **Compiler**: Add `enum_defs: Vec<reify_types::EnumDef>` field to `CompiledModule`. When encountering `Declaration::Enum`, convert to `reify_types::EnumDef` and store in registry. When compiling `ExprKind::EnumAccess`, resolve against the registry — emit `CompiledExpr::literal(Value::Enum { ... }, Type::Enum(...))` on success, or a diagnostic on failure.\n\n4. **Evaluator**: Add `Value::Enum` match arms in `eval_eq()` (same type+variant → true, same type/diff variant → false, diff type → false). Add `Value::Enum` handling in `eval_cmp()` → Undef (no ordering on enums).\n\n**Review fix (steps 21-24):** The compiler's compile() function was single-pass, building enum_defs incrementally alongside structure compilation. This violates the project's order-independent declarations invariant — a structure declared before an enum would get an incomplete enum registry. The fix mirrors the parser's two-pass strategy: a pre-pass collects all enum defs before the main declaration loop begins.\n\n**Key existing patterns reused:**\n- The `lower_member()` helper (added in task #59 guard work) provides the member dispatch pattern used inside structure lowering.\n- The compiler's `compile_expr()` handles expressions with scope and diagnostics; a new match arm for `EnumAccess` follows the same pattern.\n- Tests follow established patterns: parser tests in ts_parser.rs inline mod, compiler tests in tests/boundary2_producer.rs, eval tests in lib.rs inline mod.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -175,6 +175,34 @@
       "description": "Verify step-19 E2E test passes. All pieces should be in place from prior steps. Fix any integration issues (e.g., enum_defs not threaded through correctly, constraint expression compilation, enum literal evaluation). Run `cargo test --workspace` to verify no regressions in existing tests.",
       "status": "done",
       "commit": "4c8ac19"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_enum_forward_reference_order_independent` — parse source where the structure is declared BEFORE the enum it references: `\"structure S { let d = Direction.In }\\nenum Direction { In, Out, Bidi }\"`. Compile, assert no error diagnostics (no spurious 'unknown enum type' errors), find the 'd' value cell, assert its default_expr.kind is `CompiledExprKind::Literal(Value::Enum { type_name: \"Direction\", variant: \"In\" })` and default_expr.result_type is `Type::Enum(\"Direction\".into())`. This test MUST FAIL with the current single-pass compile() implementation because enum_defs is empty when compile_structure is called for S, so Direction.In (an EnumAccess node from the parser's two-pass lowering) hits the 'unknown enum type' diagnostic branch.",
+      "status": "done",
+      "commit": "8b811c8"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Fix the order-independence violation in crates/reify-compiler/src/lib.rs compile() function. Replace the single-pass approach with a two-pass strategy that mirrors the parser's design (ts_parser.rs two-pass lowering): (1) Before the main `for decl in &parsed.declarations` loop, add a pre-pass that collects ALL enum defs: `let enum_defs: Vec<reify_types::EnumDef> = parsed.declarations.iter().filter_map(|d| { if let reify_syntax::Declaration::Enum(e) = d { Some(reify_types::EnumDef { name: e.name.clone(), variants: e.variants.clone() }) } else { None } }).collect();`. (2) In the main loop, change the `Declaration::Enum` arm to a no-op (skip, since already collected) — do NOT re-push to enum_defs. (3) Remove `let mut enum_defs = Vec::new();` since enum_defs is now populated by the pre-pass. This ensures compile_structure() always receives the complete enum registry regardless of source declaration order. Step-21 test now passes. All existing tests (steps 13-20) continue to pass since the full registry is a superset of the partial one.",
+      "status": "done",
+      "commit": "df54d3f"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_enum_forward_reference_multiple_enums` — parse source with multiple enums and structures interleaved in various orders: `\"structure A { let x = Color.Red }\\nenum Direction { In, Out }\\nstructure B { let y = Direction.In\\n  let z = Color.Red }\\nenum Color { Red, Green, Blue }\"`. Compile, assert no error diagnostics, verify all enum access expressions compiled correctly: A.x → Value::Enum(Color, Red), B.y → Value::Enum(Direction, In), B.z → Value::Enum(Color, Red). Also assert compiled.enum_defs.len() == 2. This validates the two-pass fix handles interleaved declarations with multiple forward and backward references.",
+      "status": "done",
+      "commit": "f0d6a1b"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Verify step-23 test passes with the two-pass implementation from step-22. No code changes expected — the pre-pass collects all enums regardless of interleaving. Run `cargo test --workspace` to confirm no regressions across the entire workspace.",
+      "status": "done",
+      "commit": "f0d6a1b"
     }
   ],
   "design_decisions": [
@@ -209,6 +237,10 @@
     {
       "decision": "Start TDD with eval changes, then parser, then compiler",
       "rationale": "Eval changes are fully independent of grammar/parser/compiler — they only need Value::Enum which already exists. Starting here gets the eval foundation in place. Parser changes need the grammar prerequisite. Compiler changes depend on both parser and eval types being ready."
+    },
+    {
+      "decision": "Two-pass compilation in compile() to mirror parser's two-pass lowering (review fix)",
+      "rationale": "The compiler's compile() function originally built enum_defs incrementally in a single pass, meaning compile_structure() received only enums declared before the current structure in source order. This violated the project's order-independent declarations invariant. The fix adds a pre-pass that collects all Declaration::Enum entries into enum_defs before the main loop begins, ensuring the full enum registry is available when any structure is compiled. This mirrors the parser's existing two-pass strategy in ts_parser.rs (lines 70-80) and restores the symmetry between parser and compiler."
     }
   ],
   "reuse": [
@@ -256,6 +288,11 @@
       "what": "Eval test helper: lit() function",
       "where": "crates/reify-expr/src/lib.rs mod tests",
       "how": "Reused to construct CompiledExpr::literal for enum values in eval tests."
+    },
+    {
+      "what": "Parser's two-pass lowering pattern",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 70-80",
+      "how": "The parser's strategy of pre-collecting enum names in a first pass before lowering expressions is mirrored in the compiler fix: pre-collect all Declaration::Enum into enum_defs before the main declaration processing loop. Same architectural pattern applied at a different layer."
     }
   ]
 }
