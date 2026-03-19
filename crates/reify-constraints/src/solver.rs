@@ -1476,6 +1476,57 @@ mod tests {
     }
 
     #[test]
+    fn cost_function_penalizes_undef_objective() {
+        use super::ConstraintCostFunction;
+        use argmin::core::CostFunction;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector,
+            OptimizationObjective, Type, Value, ValueCellId,
+        };
+
+        let x_id = ValueCellId::new("Part", "x");
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+
+        // Trivially satisfied constraint: x > 0
+        let zero_scalar = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let constraint = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), zero_scalar, Type::Bool);
+
+        // Objective: minimize(x / 0) — always Undef
+        let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let div_by_zero = CompiledExpr::binop(BinOp::Div, x_ref, zero_int, Type::Real);
+        let objective = Some(OptimizationObjective::Minimize(div_by_zero));
+
+        let auto_params = vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 0.010)),
+        }];
+        let constraints = vec![(ConstraintNodeId::new("Part", 0), constraint)];
+        let base_values = ValueMap::new();
+
+        let cost_fn = ConstraintCostFunction {
+            auto_params: &auto_params,
+            constraints: &constraints,
+            base_values: &base_values,
+            objective: &objective,
+        };
+
+        // x=0.005 is in bounds and satisfies x > 0, but objective is Undef
+        let cost = cost_fn.cost(&vec![0.005]).unwrap();
+        assert!(
+            cost > 1e10,
+            "cost should be very large for Undef objective, got {:.2e}",
+            cost
+        );
+    }
+
+    #[test]
     fn already_satisfied_returns_solved_immediately() {
         use crate::DimensionalSolver;
         use reify_types::{
