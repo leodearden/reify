@@ -7,12 +7,14 @@
     "crates/reify-types/src/traits.rs",
     "crates/reify-types/src/lib.rs",
     "crates/reify-types/tests/m5_types.rs",
-    "crates/reify-types/tests/exports.rs"
+    "crates/reify-types/tests/exports.rs",
+    "crates/reify-test-support/src/builders.rs"
   ],
   "modules": [
-    "crates/reify-types"
+    "crates/reify-types",
+    "crates/reify-test-support"
   ],
-  "analysis": "After thorough codebase exploration, the vast majority of this task was already implemented in a prior execution (30 steps, all 'done').\n\n**Already complete:**\n- Value enum has all M5 variants: Enum, List, Set, Map, Option (value.rs lines 10-29)\n- Type enum has all M5 variants: Enum, List, Set, Map, Option, Function (ty.rs lines 5-28)\n- Ord/PartialOrd/Eq/PartialEq custom impls for Value with all variants (value.rs lines 144-231)\n- content_hash() handles all Value variants with tags 6-10 (value.rs lines 71-141)\n- Type::Display handles all variants (ty.rs lines 132-157)\n- traits.rs has EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam, PortDirection\n- lib.rs re-exports all new types\n- Extensive tests in value.rs (Enum, List, Set, Map, Option, Ord), tests/m5_types.rs (trait types), tests/exports.rs\n- All 72 existing tests pass\n\n**Remaining gap:**\n- Value has NO `Display` impl. The task explicitly requires: (1) 'Create each new Value variant, verify Display output' in tests, and (2) 'Update all existing exhaustive match arms on Value and Type within reify-types (Display, ...)'. Type has Display but Value does not. There are no tests using `format!(\"{}\", value)` — only Debug (`{:?}`).\n- Adding Display for Value completes the task requirements and provides a user-facing string representation needed by downstream consumers (LSP hover, diagnostics, etc.).\n\nThe plan focuses on the remaining TDD work: Display impl for Value with tests.",
+  "analysis": "After thorough codebase exploration, the vast majority of this task was already implemented in a prior execution (30 steps, all 'done').\n\n**Already complete:**\n- Value enum has all M5 variants: Enum, List, Set, Map, Option (value.rs lines 10-29)\n- Type enum has all M5 variants: Enum, List, Set, Map, Option, Function (ty.rs lines 5-28)\n- Ord/PartialOrd/Eq/PartialEq custom impls for Value with all variants (value.rs lines 144-231)\n- content_hash() handles all Value variants with tags 6-10 (value.rs lines 71-141)\n- Type::Display handles all variants (ty.rs lines 132-157)\n- Value::Display impl added with all 11 variants\n- traits.rs has EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam, PortDirection\n- lib.rs re-exports all new types\n- Extensive tests in value.rs (Enum, List, Set, Map, Option, Ord, Display), tests/m5_types.rs (trait types + Display), tests/exports.rs\n- All tests pass\n\n**Post-review blocking fixes (steps 8-11):**\n- [reviewer_robustness] silent_wrong_type_metadata: The literal() helper in reify-test-support/builders.rs silently maps all M5 Value variants (Enum, List, Set, Map, Option) to Type::Bool as result_type. This corrupts type-dependent downstream reasoning without any compile-time or runtime error. Must panic explicitly for unsupported M5 types.\n- [reviewer_robustness] missing_eq_impl: TraitMember and TraitDef in traits.rs derive only PartialEq, not Eq, despite all constituent types implementing Eq. This inconsistency will cause cryptic compile errors when downstream code tries to use these types in HashMap/HashSet/Eq-bounded generics.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -68,9 +70,37 @@
     {
       "id": "step-7",
       "type": "impl",
-      "description": "Final verification: run full test suite (cargo test -p reify-types). Ensure all 72+ existing tests still pass plus all new Display tests. No implementation changes expected — just verification and any minor fixups.",
+      "description": "Final verification: run full test suite (cargo test -p reify-types). Ensure all 72+ existing tests still pass plus all new Display tests. No implementation changes expected \u2014 just verification and any minor fixups.",
       "status": "done",
       "commit": "94bc55e"
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "[reviewer_robustness fix: missing_eq_impl] Write failing test in tests/m5_types.rs that asserts TraitMember and TraitDef satisfy the Eq trait bound. Use a generic helper function `fn assert_eq_bound<T: Eq>(_: &T) {}` and call it with instances of TraitMember and TraitDef. This will fail to compile because TraitMember and TraitDef currently derive only PartialEq, not Eq.",
+      "status": "done",
+      "commit": "305523c"
+    },
+    {
+      "id": "step-9",
+      "type": "impl",
+      "description": "[reviewer_robustness fix: missing_eq_impl] Add Eq to the #[derive(...)] attribute on both TraitMember and TraitDef in crates/reify-types/src/traits.rs. TraitMember (line 53): change `#[derive(Debug, Clone, PartialEq)]` to `#[derive(Debug, Clone, PartialEq, Eq)]`. TraitDef (line 90): change `#[derive(Debug, Clone, PartialEq)]` to `#[derive(Debug, Clone, PartialEq, Eq)]`. All constituent types already implement Eq (Value has explicit impl, Type derives Eq, String/PortDirection/TraitRef/TraitBound/TypeParam all derive Eq).",
+      "status": "done",
+      "commit": "68e8215"
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "[reviewer_robustness fix: silent_wrong_type_metadata] Write #[should_panic(expected = \"literal() not yet implemented for M5 type\")] tests in crates/reify-test-support/src/builders.rs #[cfg(test)] module that call literal() with each M5 Value variant: Enum { type_name: \"X\".into(), variant: \"Y\".into() }, List(vec![]), Set(BTreeSet::new()), Map(BTreeMap::new()), Option(None). These tests will fail because the current implementation silently returns Type::Bool instead of panicking.",
+      "status": "done",
+      "commit": "bba210e"
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "[reviewer_robustness fix: silent_wrong_type_metadata] Fix the literal() helper in crates/reify-test-support/src/builders.rs to panic explicitly for M5 Value variants instead of silently returning Type::Bool. Replace the combined match arm `Value::Enum { .. } | Value::List(_) | Value::Set(_) | Value::Map(_) | Value::Option(_) => { Type::Bool }` with a panic: `Value::Enum { .. } | Value::List(_) | Value::Set(_) | Value::Map(_) | Value::Option(_) => panic!(\"literal() not yet implemented for M5 type: {:?}. Use CompiledExpr::literal(value, type) directly.\", v)`. This ensures any test that accidentally uses literal() with an M5 value will fail loudly rather than embedding a wrong result_type.",
+      "status": "done",
+      "commit": "58ae608"
     }
   ],
   "design_decisions": [
@@ -84,7 +114,7 @@
     },
     {
       "decision": "Display for Value::Set uses curly braces '{}' (mathematical set notation)",
-      "rationale": "Mathematical convention for sets. Empty set and empty map both display as '{}' which is acceptable — they are distinguished by type context. This matches Python/JS conventions."
+      "rationale": "Mathematical convention for sets. Empty set and empty map both display as '{}' which is acceptable \u2014 they are distinguished by type context. This matches Python/JS conventions."
     },
     {
       "decision": "Display for Value::Scalar shows 'value dimension' (e.g. '0.08 m')",
@@ -96,18 +126,26 @@
     },
     {
       "decision": "Group Display tests by variant category (primitives, enum, collections, option) rather than one test per variant",
-      "rationale": "The Display impl is a single match statement — all arms are implemented together. Grouping tests keeps the test file readable while still covering all variants. Individual tests per variant would add noise without meaningful TDD benefit since they all go in one impl block."
+      "rationale": "The Display impl is a single match statement \u2014 all arms are implemented together. Grouping tests keeps the test file readable while still covering all variants. Individual tests per variant would add noise without meaningful TDD benefit since they all go in one impl block."
     },
     {
       "decision": "Implement Display for all 11 variants in a single impl step (step-2) after a single test step (step-1)",
       "rationale": "Unlike adding new Value variants (which each need match arm updates across 4 impls), Display is a single impl block. Writing it incrementally would be artificial since adding partial match arms causes compiler warnings. The test steps (3-6) validate each variant group after the impl is in place."
+    },
+    {
+      "decision": "Panic in literal() for M5 types rather than inferring Type",
+      "rationale": "The M5 Value variants (Enum, List, Set, Map, Option) have corresponding Type variants that require inner type information (e.g., Type::List(Box<Type>)) that cannot be reliably inferred from the Value alone (e.g., an empty List has no elements to infer from). Panicking makes misuse fail loudly. Callers needing M5 literal expressions should use CompiledExpr::literal(value, type) directly with an explicit type."
+    },
+    {
+      "decision": "Add Eq to TraitMember and TraitDef derives for consistency",
+      "rationale": "All constituent types already implement Eq (Value has explicit `impl Eq for Value {}`, Type derives Eq, String/PortDirection/TraitRef/TraitBound/TypeParam all derive Eq). Every other struct in the trait type hierarchy derives Eq. Omitting it would cause cryptic compile errors when downstream code attempts HashMap/HashSet usage or Eq-bounded generics."
     }
   ],
   "reuse": [
     {
       "what": "DimensionVector::Display impl",
       "where": "crates/reify-types/src/dimension.rs",
-      "how": "Use existing Display for DimensionVector when formatting Value::Scalar — write!(f, '{} {}', si_value, dimension)"
+      "how": "Use existing Display for DimensionVector when formatting Value::Scalar \u2014 write!(f, '{} {}', si_value, dimension)"
     },
     {
       "what": "Type::Display impl pattern",
@@ -115,7 +153,7 @@
       "how": "Follow the same pattern of impl std::fmt::Display for Value with exhaustive match arms, similar structure to the existing Type::Display"
     },
     {
-      "what": "Existing Ord/PartialEq/content_hash impls — no changes needed",
+      "what": "Existing Ord/PartialEq/content_hash impls \u2014 no changes needed",
       "where": "crates/reify-types/src/value.rs",
       "how": "All already handle the M5 variants. Just verify they continue to pass."
     },
@@ -123,6 +161,12 @@
       "what": "Existing test patterns in value.rs",
       "where": "crates/reify-types/src/value.rs #[cfg(test)] module",
       "how": "Follow the same testing patterns (assert_eq on format!, testing equality/inequality of output) for new Display tests"
+    },
+    {
+      "what": "Existing #[should_panic] test pattern",
+      "where": "Standard Rust test attribute",
+      "how": "Use #[should_panic(expected = \"...\")] for testing that literal() panics on M5 Value types."
     }
-  ]
+  ],
+  "_schema_version": 1
 }
