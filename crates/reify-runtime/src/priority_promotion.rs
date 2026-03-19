@@ -448,4 +448,67 @@ mod tests {
             "uncommitted node in dirty cone should NOT continue"
         );
     }
+
+    #[test]
+    fn shared_promoter_recovers_after_lock_poisoning() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let shared = Arc::new(SharedPriorityPromoter::new());
+        let node_a = make_node("a");
+        let node_b = make_node("b");
+
+        // Register node_a at P3Speculative
+        shared.register(node_a.clone(), Priority::P3Speculative);
+
+        // Poison the inner Mutex by spawning a thread that acquires
+        // the lock and panics while holding it.
+        let shared_clone = Arc::clone(&shared);
+        thread::spawn(move || {
+            let _guard = shared_clone.inner.lock().unwrap();
+            panic!("intentional panic to poison inner mutex");
+        })
+        .join()
+        .ok();
+
+        // All operations should recover without panicking:
+
+        // effective_priority should still return the registered value
+        assert_eq!(
+            shared.effective_priority(&node_a),
+            Some(Priority::P3Speculative),
+            "effective_priority should recover after poisoning"
+        );
+
+        // register should succeed for a new node
+        shared.register(node_b.clone(), Priority::P1Fast);
+
+        // promote should succeed
+        shared.promote(&node_a, Priority::P1Slow);
+        assert_eq!(
+            shared.effective_priority(&node_a),
+            Some(Priority::P1Slow),
+            "promote should work after poisoning"
+        );
+
+        // remove should succeed
+        shared.remove(&node_b);
+        assert_eq!(
+            shared.effective_priority(&node_b),
+            None,
+            "remove should work after poisoning"
+        );
+
+        // promote_for_demand should succeed
+        let node_c = make_node("c");
+        shared.register(node_c.clone(), Priority::P3Speculative);
+        let mut deps: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        deps.insert(node_a.clone(), vec![node_c.clone()]);
+        shared.promote_for_demand(&node_a, Priority::P0Interactive, &deps);
+        assert_eq!(
+            shared.effective_priority(&node_c),
+            Some(Priority::P0Interactive),
+            "promote_for_demand should work after poisoning"
+        );
+    }
 }
