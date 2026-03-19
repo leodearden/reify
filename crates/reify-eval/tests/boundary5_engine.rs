@@ -292,3 +292,40 @@ fn sub_component_default_param_when_no_arg() {
         f
     );
 }
+
+/// Sub-component referencing a missing structure is skipped gracefully.
+#[test]
+fn sub_component_missing_structure_skipped_gracefully() {
+    use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId};
+
+    // Parent template with sub referencing nonexistent "NonExistent"
+    let parent_template = TopologyTemplateBuilder::new("Parent")
+        .param("Parent", "width", Type::length(), Some(CompiledExpr::literal(mm(80.0), Type::length())))
+        .sub_component("thing", "NonExistent", vec![])
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent_template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Should not panic; Parent's own param should be evaluated correctly
+    let width_id = ValueCellId::new("Parent", "width");
+    let val = result.values.get(&width_id)
+        .expect("Parent.width should be in values");
+    let f = val.as_f64().expect("should be numeric");
+    assert!(
+        (f - 0.08).abs() < 1e-10,
+        "Parent.width should be ~0.08 SI, got {}",
+        f
+    );
+
+    // No scoped entries for "Parent.thing" should exist
+    let has_scoped = result.values.iter().any(|(id, _)| {
+        format!("{}", id).contains("Parent.thing")
+    });
+    assert!(!has_scoped, "no Parent.thing entries should exist when structure is missing");
+}
