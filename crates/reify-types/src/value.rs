@@ -22,6 +22,8 @@ pub enum Value {
     Set(BTreeSet<Value>),
     /// Ordered map from values to values.
     Map(BTreeMap<Value, Value>),
+    /// Optional value: Some(value) or None.
+    Option(Option<Box<Value>>),
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -130,6 +132,10 @@ impl Value {
                 }
                 h
             }
+            Value::Option(inner) => match inner {
+                None => ContentHash::of(&[10, 0]),
+                Some(v) => ContentHash::of(&[10, 1]).combine(v.content_hash()),
+            },
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -151,6 +157,7 @@ impl PartialEq for Value {
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Set(a), Value::Set(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => a == b,
+            (Value::Option(a), Value::Option(b)) => a == b,
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -170,7 +177,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -183,6 +190,7 @@ impl Ord for Value {
                 Value::List(_) => 7,
                 Value::Set(_) => 8,
                 Value::Map(_) => 9,
+                Value::Option(_) => 10,
             }
         }
 
@@ -216,6 +224,7 @@ impl Ord for Value {
                 // Lexicographic on (key, value) pairs in sorted key order
                 a.iter().cmp(b.iter())
             }
+            (Value::Option(a), Value::Option(b)) => a.cmp(b),
             _ => unreachable!("same type tag but different variants"),
         }
     }
