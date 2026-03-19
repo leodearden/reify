@@ -14,6 +14,8 @@ pub enum Value {
     Scalar { si_value: f64, dimension: DimensionVector },
     /// Enum variant value: type_name::variant.
     Enum { type_name: String, variant: String },
+    /// Ordered list of values.
+    List(Vec<Value>),
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -98,6 +100,14 @@ impl Value {
                     .combine(ContentHash::of_str(type_name))
                     .combine(ContentHash::of_str(variant))
             }
+            Value::List(items) => {
+                let mut h = ContentHash::of(&[7]);
+                h = h.combine(ContentHash::of(&(items.len() as u64).to_le_bytes()));
+                for item in items {
+                    h = h.combine(item.content_hash());
+                }
+                h
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -116,6 +126,7 @@ impl PartialEq for Value {
             (Value::Enum { type_name: a, variant: av }, Value::Enum { type_name: b, variant: bv }) => {
                 a == b && av == bv
             }
+            (Value::List(a), Value::List(b)) => a == b,
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -135,7 +146,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -145,6 +156,7 @@ impl Ord for Value {
                 Value::Scalar { .. } => 4,
                 Value::String(_) => 5,
                 Value::Enum { .. } => 6,
+                Value::List(_) => 7,
             }
         }
 
@@ -172,6 +184,7 @@ impl Ord for Value {
             (Value::Enum { type_name: a, variant: av }, Value::Enum { type_name: b, variant: bv }) => {
                 a.cmp(b).then_with(|| av.cmp(bv))
             }
+            (Value::List(a), Value::List(b)) => a.cmp(b),
             _ => unreachable!("same type tag but different variants"),
         }
     }
