@@ -26,7 +26,7 @@
     "gui/src/stores",
     "gui/src/__tests__"
   ],
-  "analysis": "Task 85 creates the reactive state management layer and IPC bridge for the Reify GUI frontend. Task 81 (scaffold) is a dependency but the gui/ directory does not exist on any branch or worktree (checked main and task/82-85, all at same commit with no gui/), so this task must bootstrap the minimal SolidJS project scaffold as a prerequisite.\n\nThe IPC types to mirror are defined in the task description: MeshData, ValueData, ConstraintData, SourceLocation, FileData, GuiState, plus EvaluationStatus. The Rust-side types in reify-types (Value enum in value.rs, Mesh struct in geometry.rs with vertices: Vec<f32>/indices: Vec<u32>/normals: Option<Vec<f32>>, Constraint types in constraint.rs, SourceSpan/Diagnostic in diagnostics.rs) inform the TypeScript shape but the IPC types are serialized/simplified versions.\n\nThe bridge layer wraps Tauri invoke() and listen() APIs with typed functions. Since Tauri won't be available in test environments, the bridge is mocked via vi.mock().\n\nThree Solid stores (engine, selection, editor) use createStore from solid-js/store. Tests use Vitest with jsdom and SolidJS createRoot for reactive test isolation. The engine store subscribes to Tauri events via bridge, tested by mocking bridge event listeners.\n\nKey design: Factory functions (createXStore) for test isolation. Record<string, T> for store collections (Solid proxies don't work with Map/Set). string[] for dirtyFiles (same reason).",
+  "analysis": "Task 85 creates the reactive state management layer and IPC bridge for the Reify GUI frontend. Task 81 (scaffold) is a dependency but the gui/ directory does not exist on any branch or worktree (checked main and task/82-85, all at same commit with no gui/), so this task must bootstrap the minimal SolidJS project scaffold as a prerequisite.\n\nThe IPC types to mirror are defined in the task description: MeshData, ValueData, ConstraintData, SourceLocation, FileData, GuiState, plus EvaluationStatus. The Rust-side types in reify-types (Value enum in value.rs, Mesh struct in geometry.rs with vertices: Vec<f32>/indices: Vec<u32>/normals: Option<Vec<f32>>, Constraint types in constraint.rs, SourceSpan/Diagnostic in diagnostics.rs) inform the TypeScript shape but the IPC types are serialized/simplified versions.\n\nThe bridge layer wraps Tauri invoke() and listen() APIs with typed functions. Since Tauri won't be available in test environments, the bridge is mocked via vi.mock().\n\nThree Solid stores (engine, selection, editor) use createStore from solid-js/store. Tests use Vitest with jsdom and SolidJS createRoot for reactive test isolation. The engine store subscribes to Tauri events via bridge, tested by mocking bridge event listeners.\n\nKey design: Factory functions (createXStore) for test isolation. Record<string, T> for store collections (Solid proxies don't work with Map/Set). string[] for dirtyFiles (same reason).\n\n--- REVIEW FIX ANALYSIS ---\n\nTwo blocking issues found during review:\n\n1. MeshData uses number[] instead of Float32Array/Uint32Array. This contradicts the stated design decision and creates a 2x memory overhead plus O(n) conversion on every WebGL frame. Fix: Change MeshData to typed arrays, add RawMeshData wire type (number[]) for JSON IPC, convert once in bridge.onMeshUpdate via new Float32Array(raw.vertices).\n\n2. setCursorPosition uses column! (non-null assertion) when column is optional. Calling setCursorPosition(10) without column silently produces { line: 10, column: undefined }, violating the declared type. Fix: Default column to 0 via column ?? 0.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -111,13 +111,48 @@
       "id": "step-11",
       "type": "test",
       "description": "Run full test suite (vitest run) and type-check (tsc --noEmit). Verify all tests pass and TypeScript compiles cleanly.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "d21dcf5"
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "Create gui/src/stores/index.ts barrel re-exporting all three store factories. Final cleanup and verification.",
+      "status": "done",
+      "commit": "bd9ee24"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "REVIEW FIX: Add failing test to editorStore.test.ts for setCursorPosition called with line only (no column argument). Test: setCursorPosition(10) should produce { line: 10, column: 0 } — verifying the column defaults to 0 rather than being undefined. This test will fail because the current implementation uses column! which passes undefined through.",
+      "status": "done",
+      "commit": "f4a9e20"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "REVIEW FIX: Fix setCursorPosition in editorStore.ts to use `column ?? 0` instead of `column!`. This ensures that calling setCursorPosition(line) without a column argument safely defaults to column 0, matching the declared type { line: number; column: number }. The editorStore tests (including the new step-13 test) pass.",
+      "status": "done",
+      "commit": "dee0b71"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "REVIEW FIX: Add failing test to bridge.test.ts verifying that onMeshUpdate converts wire-format number[] arrays to typed arrays. Test: simulate Tauri delivering { entity_path, vertices: [0,1,2], indices: [0,1,2], normals: [0,0,1] } as the event payload, then assert the callback receives vertices as Float32Array, indices as Uint32Array, and normals as Float32Array. The test will fail because bridge.ts currently passes through raw JSON payloads without conversion.",
+      "status": "done",
+      "commit": "71d0c21"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "REVIEW FIX: Change MeshData in types.ts to use typed arrays (vertices: Float32Array, indices: Uint32Array, normals: Float32Array | null). Add RawMeshData interface with number[] fields representing the JSON wire format from Tauri IPC. Add convertRawMesh(raw: RawMeshData): MeshData function that calls new Float32Array(raw.vertices), new Uint32Array(raw.indices), and conditionally new Float32Array(raw.normals). Update bridge.ts: onMeshUpdate listens for RawMeshData, converts via convertRawMesh before invoking callback. Similarly update getInitialState to convert GuiState.meshes from raw to typed. Update types.typecheck.ts to use Float32Array/Uint32Array constructors in sample data. Update engineStore.test.ts sampleMesh to use typed arrays. Update bridge.test.ts existing expectations where MeshData appears. All tests pass and tsc --noEmit is clean.",
+      "status": "done",
+      "commit": "d515fb5"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "REVIEW FIX VERIFICATION: Run full test suite (vitest run) and type-check (tsc --noEmit). Verify all 4 test files pass and TypeScript compiles with no errors. Confirm MeshData uses typed arrays throughout and setCursorPosition safely defaults column.",
       "status": "pending",
       "commit": null
     }
@@ -154,6 +189,14 @@
     {
       "decision": "Kebab-case event names in bridge",
       "rationale": "Tauri convention uses kebab-case ('mesh-update'). Bridge translates to camelCase JS names (onMeshUpdate) while using correct strings internally."
+    },
+    {
+      "decision": "RawMeshData wire type + conversion in bridge layer",
+      "rationale": "Tauri IPC serializes via JSON, which cannot carry typed arrays natively — arrays arrive as number[]. Conversion to Float32Array/Uint32Array happens once in the bridge (onMeshUpdate, getInitialState) so the store and renderer always see typed arrays. This keeps conversion cost O(n) per update, not per frame."
+    },
+    {
+      "decision": "Default column to 0 in setCursorPosition via nullish coalescing",
+      "rationale": "column ?? 0 is the safest fix: it preserves the optional parameter API, guarantees the type contract { line: number; column: number } at runtime, and column 0 is a sensible default (start of line). Overloads would be heavier for the same result."
     }
   ],
   "reuse": [
@@ -176,6 +219,11 @@
       "what": "Codebase TDD conventions",
       "where": "All reify-* crates follow test-first pattern",
       "how": "Same discipline for TypeScript: test files first, each step atomic. Factory pattern for test isolation mirrors Rust per-test setup."
+    },
+    {
+      "what": "convertRawMesh utility for IPC deserialization",
+      "where": "gui/src/types.ts (new)",
+      "how": "Exported function converts RawMeshData (number[] from JSON wire) to MeshData (typed arrays). Used by bridge.ts in onMeshUpdate and getInitialState. Downstream consumers (engine store, renderer) never see number[] mesh data."
     }
   ]
 }
