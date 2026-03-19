@@ -1007,6 +1007,123 @@ mod tests {
     }
 
     #[test]
+    fn comparison_residual_gt_violated_small() {
+        use super::comparison_residual;
+        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value, ValueCellId};
+
+        // l=1.9999999, r=2.0: violated by 1e-7
+        let l_expr = CompiledExpr::literal(
+            Value::Scalar { si_value: 1.9999999, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let r_expr = CompiledExpr::literal(
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let values = ValueMap::new();
+        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values);
+        assert!(
+            (res - 1e-7).abs() < 1e-12,
+            "Gt violated by 1e-7 should have residual ~1e-7, got {:.2e}",
+            res
+        );
+    }
+
+    #[test]
+    fn comparison_residual_ge_satisfied() {
+        use super::comparison_residual;
+        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
+
+        let l_expr = CompiledExpr::literal(
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let r_expr = CompiledExpr::literal(
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let values = ValueMap::new();
+        let res = comparison_residual(BinOp::Ge, &l_expr, &r_expr, &values);
+        assert_eq!(res, 0.0, "Ge with l==r should be satisfied (residual=0)");
+    }
+
+    #[test]
+    fn comparison_residual_lt_violated() {
+        use super::comparison_residual;
+        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
+
+        // l=0.010, r=0.005: Lt violated by 0.005
+        let l_expr = CompiledExpr::literal(
+            Value::Scalar { si_value: 0.010, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let r_expr = CompiledExpr::literal(
+            Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let values = ValueMap::new();
+        let res = comparison_residual(BinOp::Lt, &l_expr, &r_expr, &values);
+        assert!(
+            (res - 0.005).abs() < 1e-15,
+            "Lt violated by 0.005 should have residual 0.005, got {}",
+            res
+        );
+    }
+
+    #[test]
+    fn comparison_residual_le_satisfied() {
+        use super::comparison_residual;
+        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
+
+        let l_expr = CompiledExpr::literal(
+            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let r_expr = CompiledExpr::literal(
+            Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let values = ValueMap::new();
+        let res = comparison_residual(BinOp::Le, &l_expr, &r_expr, &values);
+        assert_eq!(res, 0.0, "Le with l<r should be satisfied");
+    }
+
+    #[test]
+    fn comparison_residual_eq_difference() {
+        use super::comparison_residual;
+        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
+
+        let l_expr = CompiledExpr::literal(
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let r_expr = CompiledExpr::literal(
+            Value::Scalar { si_value: 1.000001, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let values = ValueMap::new();
+        let res = comparison_residual(BinOp::Eq, &l_expr, &r_expr, &values);
+        assert!(
+            (res - 1e-6).abs() < 1e-12,
+            "Eq with difference 1e-6 should have residual 1e-6, got {:.2e}",
+            res
+        );
+    }
+
+    #[test]
+    fn comparison_residual_non_numeric_fallback() {
+        use super::comparison_residual;
+        use reify_types::{BinOp, CompiledExpr, Type, Value};
+
+        // Non-numeric (Undef) inputs should give fixed penalty 1.0
+        let l_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
+        let r_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
+        let values = ValueMap::new();
+        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values);
+        assert_eq!(res, 1.0, "Non-numeric inputs should give residual 1.0");
+    }
+
+    #[test]
     fn already_satisfied_returns_solved_immediately() {
         use crate::DimensionalSolver;
         use reify_types::{
