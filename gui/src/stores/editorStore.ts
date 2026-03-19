@@ -51,7 +51,7 @@ export function createEditorStore() {
     if (lineOrNull === null) {
       setState('cursorPosition', null);
     } else {
-      setState('cursorPosition', { line: lineOrNull, column: column! });
+      setState('cursorPosition', { line: lineOrNull, column: column ?? 0 });
     }
   }
 
