@@ -1017,6 +1017,32 @@ mod tests {
         );
     }
 
+    // --- Cross-domain hash collision regression tests (step-12) ---
+
+    #[test]
+    fn value_option_none_hash_not_equal_satisfaction_satisfied() {
+        // Value::Option(None) and Satisfaction::Satisfied must not collide.
+        // Both use tag [10] currently, which produces identical hashes.
+        let value_hash = Value::Option(None).content_hash();
+        let satisfaction_hash = Satisfaction::Satisfied.content_hash();
+        assert_ne!(
+            value_hash, satisfaction_hash,
+            "Value::Option(None) hash collides with Satisfaction::Satisfied hash"
+        );
+    }
+
+    #[test]
+    fn value_option_some_hash_not_equal_satisfaction_violated() {
+        // Value::Option(Some(Bool(true))) and Satisfaction::Violated must not collide.
+        let value_hash =
+            Value::Option(Some(Box::new(Value::Bool(true)))).content_hash();
+        let satisfaction_hash = Satisfaction::Violated.content_hash();
+        assert_ne!(
+            value_hash, satisfaction_hash,
+            "Value::Option(Some(Bool(true))) hash collides with Satisfaction::Violated hash"
+        );
+    }
+
     #[test]
     fn value_display_nested() {
         // List containing Option and Enum values
