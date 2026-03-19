@@ -568,6 +568,64 @@ mod tests {
         let _ = pos.cmp(&neg);
     }
 
+    // --- Set tests (step-7) ---
+
+    #[test]
+    fn value_set_basic() {
+        use std::collections::BTreeSet;
+        let mut s = BTreeSet::new();
+        s.insert(Value::Int(3));
+        s.insert(Value::Int(1));
+        s.insert(Value::Int(2));
+        let v = Value::Set(s);
+        // Verify it contains all elements
+        if let Value::Set(ref inner) = v {
+            assert_eq!(inner.len(), 3);
+            assert!(inner.contains(&Value::Int(1)));
+            assert!(inner.contains(&Value::Int(2)));
+            assert!(inner.contains(&Value::Int(3)));
+        } else {
+            panic!("expected Set");
+        }
+    }
+
+    #[test]
+    fn value_set_equality() {
+        use std::collections::BTreeSet;
+        let mut s1 = BTreeSet::new();
+        s1.insert(Value::Int(1));
+        s1.insert(Value::Int(2));
+        let mut s2 = BTreeSet::new();
+        s2.insert(Value::Int(2));
+        s2.insert(Value::Int(1)); // same elements, different insertion order
+        assert_eq!(Value::Set(s1), Value::Set(s2));
+    }
+
+    #[test]
+    fn value_set_ordering() {
+        use std::collections::BTreeSet;
+        let mut s1 = BTreeSet::new();
+        s1.insert(Value::Int(1));
+        let mut s2 = BTreeSet::new();
+        s2.insert(Value::Int(2));
+        // Set sorts after List
+        assert!(Value::List(vec![]) < Value::Set(s1.clone()));
+        // Between sets: lexicographic on sorted elements
+        assert!(Value::Set(s1) < Value::Set(s2));
+    }
+
+    #[test]
+    fn value_set_content_hash() {
+        use std::collections::BTreeSet;
+        let mut s1 = BTreeSet::new();
+        s1.insert(Value::Int(1));
+        s1.insert(Value::Int(2));
+        let mut s2 = BTreeSet::new();
+        s2.insert(Value::Int(2));
+        s2.insert(Value::Int(1));
+        assert_eq!(Value::Set(s1).content_hash(), Value::Set(s2).content_hash());
+    }
+
     // --- List tests (step-5) ---
 
     #[test]
