@@ -780,6 +780,45 @@ fn param_default_change_changes_hash() {
     );
 }
 
+/// Adding/removing a constraint should change the content_hash.
+#[test]
+fn add_constraint_changes_hash() {
+    let path = reify_types::ModulePath::single("test_constraints");
+
+    let source_2 = r#"structure S {
+    param w: Scalar = 80mm
+    param h: Scalar = 100mm
+    constraint w > 0mm
+    constraint h > 0mm
+}"#;
+    let source_3 = r#"structure S {
+    param w: Scalar = 80mm
+    param h: Scalar = 100mm
+    constraint w > 0mm
+    constraint h > 0mm
+    constraint w > h
+}"#;
+
+    let parsed_2 = reify_syntax::parse(source_2, path.clone());
+    assert!(parsed_2.errors.is_empty(), "parse errors: {:?}", parsed_2.errors);
+    let compiled_2 = reify_compiler::compile(&parsed_2);
+
+    let parsed_3 = reify_syntax::parse(source_3, path.clone());
+    assert!(parsed_3.errors.is_empty(), "parse errors: {:?}", parsed_3.errors);
+    let compiled_3 = reify_compiler::compile(&parsed_3);
+
+    assert_ne!(
+        compiled_2.content_hash, compiled_3.content_hash,
+        "adding a constraint should change the module content_hash"
+    );
+
+    assert_ne!(
+        compiled_2.templates[0].content_hash,
+        compiled_3.templates[0].content_hash,
+        "adding a constraint should change the template content_hash"
+    );
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
