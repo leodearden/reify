@@ -1921,3 +1921,90 @@ fn forward_let_ref_cold_start_matches_incremental() {
     assert_eq!(fresh_b, Value::Int(20), "b = a + 7 = 13 + 7 = 20");
     assert_eq!(fresh_c, Value::Int(40), "c = b * 2 = 20 * 2 = 40");
 }
+
+/// Declaration order must be irrelevant for forward let-binding references.
+///
+/// Two modules with identical DAGs but different declaration orders must
+/// produce identical results in both cold-start and incremental evaluation.
+///
+/// Module A: param a (default 5, Int)
+///   let y = x + 1   (y declared first — forward ref to x)
+///   let x = a + 10  (x declared second)
+///
+/// Module B: param a (default 5, Int)
+///   let x = a + 10  (x declared first — no forward ref)
+///   let y = x + 1   (y declared second — backward ref to x)
+///
+/// Both must produce x=15, y=16 on cold-start, and x=30, y=31 after edit a→20.
+#[test]
+fn forward_let_ref_declaration_order_irrelevant() {
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // -- Module A: y declared before x (forward ref) --
+    let y_expr_a = binop(BinOp::Add, value_ref("S", "x"), literal(Value::Int(1)));
+    let x_expr_a = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(10)));
+
+    let template_a = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(5))))
+        .let_binding("S", "y", Type::Int, y_expr_a)  // y first (forward ref to x)
+        .let_binding("S", "x", Type::Int, x_expr_a)  // x second
+        .build();
+
+    let module_a = CompiledModuleBuilder::new(ModulePath::single("test_a"))
+        .template(template_a)
+        .build();
+
+    // -- Module B: x declared before y (natural order, no forward ref) --
+    let y_expr_b = binop(BinOp::Add, value_ref("S", "x"), literal(Value::Int(1)));
+    let x_expr_b = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(10)));
+
+    let template_b = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(5))))
+        .let_binding("S", "x", Type::Int, x_expr_b)  // x first (no forward ref)
+        .let_binding("S", "y", Type::Int, y_expr_b)  // y second
+        .build();
+
+    let module_b = CompiledModuleBuilder::new(ModulePath::single("test_b"))
+        .template(template_b)
+        .build();
+
+    // -- Cold-start both --
+    let mut engine_a = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result_a = engine_a.eval(&module_a);
+
+    let mut engine_b = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result_b = engine_b.eval(&module_b);
+
+    // Both must produce identical values
+    assert_eq!(
+        *result_a.values.get(&x_id).unwrap(),
+        *result_b.values.get(&x_id).unwrap(),
+        "cold-start x must be identical regardless of declaration order"
+    );
+    assert_eq!(
+        *result_a.values.get(&y_id).unwrap(),
+        *result_b.values.get(&y_id).unwrap(),
+        "cold-start y must be identical regardless of declaration order"
+    );
+    assert_eq!(*result_a.values.get(&x_id).unwrap(), Value::Int(15));
+    assert_eq!(*result_a.values.get(&y_id).unwrap(), Value::Int(16));
+
+    // -- Incremental edit: a → 20, both modules --
+    let edit_a = engine_a.edit_param(a_id.clone(), Value::Int(20));
+    let edit_b = engine_b.edit_param(a_id.clone(), Value::Int(20));
+
+    assert_eq!(
+        *edit_a.values.get(&x_id).unwrap(),
+        *edit_b.values.get(&x_id).unwrap(),
+        "incremental x must be identical regardless of declaration order"
+    );
+    assert_eq!(
+        *edit_a.values.get(&y_id).unwrap(),
+        *edit_b.values.get(&y_id).unwrap(),
+        "incremental y must be identical regardless of declaration order"
+    );
+    assert_eq!(*edit_a.values.get(&x_id).unwrap(), Value::Int(30));
+    assert_eq!(*edit_a.values.get(&y_id).unwrap(), Value::Int(31));
+}
