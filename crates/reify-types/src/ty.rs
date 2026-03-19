@@ -43,6 +43,80 @@ impl Type {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn type_enum_display() {
+        assert_eq!(format!("{}", Type::Enum("Color".into())), "Enum(Color)");
+    }
+
+    #[test]
+    fn type_list_display() {
+        assert_eq!(format!("{}", Type::List(Box::new(Type::Int))), "List<Int>");
+    }
+
+    #[test]
+    fn type_set_display() {
+        assert_eq!(
+            format!("{}", Type::Set(Box::new(Type::String))),
+            "Set<String>"
+        );
+    }
+
+    #[test]
+    fn type_map_display() {
+        assert_eq!(
+            format!(
+                "{}",
+                Type::Map(Box::new(Type::String), Box::new(Type::Real))
+            ),
+            "Map<String, Real>"
+        );
+    }
+
+    #[test]
+    fn type_option_display() {
+        assert_eq!(
+            format!("{}", Type::Option(Box::new(Type::Int))),
+            "Option<Int>"
+        );
+    }
+
+    #[test]
+    fn type_function_display() {
+        let func = Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::Real),
+        };
+        assert_eq!(format!("{}", func), "Function(Int) -> Real");
+    }
+
+    #[test]
+    fn type_function_multi_params_display() {
+        let func = Type::Function {
+            params: vec![Type::Int, Type::String],
+            return_type: Box::new(Type::Bool),
+        };
+        assert_eq!(format!("{}", func), "Function(Int, String) -> Bool");
+    }
+
+    #[test]
+    fn type_new_variants_not_numeric() {
+        assert!(!Type::Enum("X".into()).is_numeric());
+        assert!(!Type::List(Box::new(Type::Int)).is_numeric());
+        assert!(!Type::Set(Box::new(Type::Int)).is_numeric());
+        assert!(!Type::Map(Box::new(Type::Int), Box::new(Type::Int)).is_numeric());
+        assert!(!Type::Option(Box::new(Type::Int)).is_numeric());
+        let func = Type::Function {
+            params: vec![],
+            return_type: Box::new(Type::Int),
+        };
+        assert!(!func.is_numeric());
+    }
+}
+
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
