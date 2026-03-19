@@ -114,6 +114,55 @@ impl PartialEq for Value {
 
 impl Eq for Value {}
 
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Value {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+
+        // Type-tag discriminant for cross-type ordering:
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5
+        fn type_tag(v: &Value) -> u8 {
+            match v {
+                Value::Undef => 0,
+                Value::Bool(_) => 1,
+                Value::Int(_) => 2,
+                Value::Real(_) => 3,
+                Value::Scalar { .. } => 4,
+                Value::String(_) => 5,
+            }
+        }
+
+        let tag_a = type_tag(self);
+        let tag_b = type_tag(other);
+
+        if tag_a != tag_b {
+            return tag_a.cmp(&tag_b);
+        }
+
+        // Same type — compare within type
+        match (self, other) {
+            (Value::Undef, Value::Undef) => Ordering::Equal,
+            (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
+            (Value::Int(a), Value::Int(b)) => a.cmp(b),
+            (Value::Real(a), Value::Real(b)) => {
+                // Total order via to_bits(), consistent with PartialEq
+                a.to_bits().cmp(&b.to_bits())
+            }
+            (Value::Scalar { si_value: a, dimension: ad }, Value::Scalar { si_value: b, dimension: bd }) => {
+                // Compare by dimension first, then by value bits
+                ad.cmp(bd).then_with(|| a.to_bits().cmp(&b.to_bits()))
+            }
+            (Value::String(a), Value::String(b)) => a.cmp(b),
+            _ => unreachable!("same type tag but different variants"),
+        }
+    }
+}
+
 /// The determinacy state of a value cell in the evaluation graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeterminacyState {
