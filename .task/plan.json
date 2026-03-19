@@ -1,29 +1,37 @@
 {
-  "task_id": "59",
-  "title": "Guard (where) \u2014 grammar, parser",
+  "task_id": "54",
+  "title": "Enum declarations — grammar, parser, compiler, eval",
   "files": [
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "tree-sitter-reify/src/grammar.json",
+    "tree-sitter-reify/src/node-types.json",
     "crates/reify-syntax/src/lib.rs",
     "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/guard_tests.rs",
-    "crates/reify-syntax/tests/boundary1_producer.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/boundary2_producer.rs",
+    "crates/reify-expr/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-syntax"
+    "tree-sitter-reify",
+    "crates/reify-syntax",
+    "crates/reify-compiler",
+    "crates/reify-expr"
   ],
-  "analysis": "Thorough codebase exploration reveals the task is partially complete. The tree-sitter grammar already defines both where_clause (per-declaration postfix guard, line 56) and guarded_block (block-level guard with optional else, line 62) rules in grammar.js. The generated parser.c (18 references to guarded_block), grammar.json, and node-types.json are all up to date. Per-declaration where clauses are fully implemented: WhereClause struct exists in lib.rs, all 6 declaration types have where_clause: Option<WhereClause> fields, and the lowering in ts_parser.rs correctly extracts where clauses via lower_where_clause (lines 197-211). Two guard tests already exist and pass: param_with_where_clause and bracket_source_no_guards.\n\nWhat remains is the block-level guarded group feature: (1) AST: Add GuardedGroupDecl struct and MemberDecl::GuardedGroup variant to lib.rs. (2) Lowering: Add lower_guarded_block method and handle guarded_block nodes in lower_structure. (3) Fix exhaustive match arms in ts_parser.rs internal tests (4 locations) and boundary1_producer.rs (1 location). (4) Tests: Block guard, guard with else, nested guards, complex guard expressions, additional per-declaration tests.\n\nThe compiler (reify-compiler/src/lib.rs line 807) already has a forward-looking MemberDecl::GuardedGroup(_) => {} stub. The LSP uses wildcard matches. No grammar, parser.c, fixtures.rs, or compiler changes needed.\n\nKey challenge: The guarded_block grammar uses two positional repeat($._member) groups without field names. Lowering must track position relative to the anonymous else keyword to separate main vs else members. The member dispatch logic should be refactored into a reusable lower_member_node helper for recursive guarded block nesting.",
+  "analysis": "This task adds end-to-end enum type support: grammar rule, parser AST types + lowering, compiler registry + compilation, and expression evaluation.\n\n**Existing infrastructure (from task #53 / M5 types):**\n- `Value::Enum { type_name, variant }` already exists in reify-types/src/value.rs with PartialEq, Eq, Ord, Display, content_hash\n- `Type::Enum(String)` already exists in reify-types/src/ty.rs\n- `EnumDef { name, variants }` already exists in reify-types/src/traits.rs with contains_variant()\n- `CompiledExprKind::Literal(Value)` can carry Value::Enum values\n\n**What needs to be built:**\n\n1. **Grammar**: Add `enum_declaration` as a top-level declaration alongside `structure_definition` and `import_declaration`. The grammar uses `seq('enum', field('name', $.identifier), '{', ...)` with comma-separated identifier list for variants. No separate `enum_access` grammar rule needed — `member_access` already handles `Direction.In` as `Ident(Direction).In`. Disambiguation happens in the parser.\n\n2. **Parser**: Add `Declaration::Enum(EnumDecl)` with `EnumDecl { name, variants, span, content_hash }` (parser-level struct with span/hash, distinct from the simpler `reify_types::EnumDef`). Add `ExprKind::EnumAccess { type_name, variant }`. The lowering uses a two-pass approach: first pass collects enum names into a HashSet, second pass lowers everything. When lowering a `member_access` where the object is a plain identifier matching a known enum name, produce `EnumAccess` instead of `MemberAccess`.\n\n3. **Compiler**: Add `enum_defs: Vec<reify_types::EnumDef>` field to `CompiledModule`. When encountering `Declaration::Enum`, convert to `reify_types::EnumDef` and store in registry. When compiling `ExprKind::EnumAccess`, resolve against the registry — emit `CompiledExpr::literal(Value::Enum { ... }, Type::Enum(...))` on success, or a diagnostic on failure.\n\n4. **Evaluator**: Add `Value::Enum` match arms in `eval_eq()` (same type+variant → true, same type/diff variant → false, diff type → false). Add `Value::Enum` handling in `eval_cmp()` → Undef (no ordering on enums).\n\n**Key existing patterns reused:**\n- The `lower_member()` helper (added in task #59 guard work) provides the member dispatch pattern used inside structure lowering.\n- The compiler's `compile_expr()` handles expressions with scope and diagnostics; a new match arm for `EnumAccess` follows the same pattern.\n- Tests follow established patterns: parser tests in ts_parser.rs inline mod, compiler tests in tests/boundary2_producer.rs, eval tests in lib.rs inline mod.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add GuardedGroupDecl struct to lib.rs (after WhereClause at line ~46) with fields: condition: Expr, members: Vec<MemberDecl>, else_members: Vec<MemberDecl>, span: SourceSpan, content_hash: ContentHash. Add #[derive(Debug, Clone)]. Add MemberDecl::GuardedGroup(GuardedGroupDecl) variant to the MemberDecl enum (after Maximize at line ~38). Required before any new tests can compile.",
+      "description": "Add `enum_declaration` rule to tree-sitter-reify/grammar.js: `enum_declaration: $ => seq('enum', field('name', $.identifier), '{', optional(seq($.identifier, repeat(seq(',', $.identifier)), optional(','))), '}')`. Add it to `_declaration` choice alongside `structure_definition` and `import_declaration`. Run `tree-sitter generate` in the tree-sitter-reify directory to regenerate parser.c, grammar.json, and node-types.json.",
       "status": "done",
-      "commit": "66866d6",
+      "commit": "7e4c37d",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Fix exhaustive match arms broken by new GuardedGroup variant. Five locations in crates/reify-syntax: (1) ts_parser.rs ts_parse_produces_correct_structure test ~line 600: add MemberDecl::GuardedGroup(_) => guarded.into(). (2) ts_parser.rs spans_are_valid test ~line 762: add MemberDecl::GuardedGroup(g) => g.span. (3) ts_parser.rs content_hashes test ~line 829: add MemberDecl::GuardedGroup(g) => (g.span, g.content_hash). (4) ts_parser.rs parse_deterministic test ~lines 910+918: add MemberDecl::GuardedGroup(g) => (g.content_hash, g.span) to both arms. (5) boundary1_producer.rs ~line 353: add MemberDecl::GuardedGroup(g) => g.span.",
+      "description": "Add parser-level AST types to crates/reify-syntax/src/lib.rs: (a) Add `EnumDecl` struct with fields `name: String, variants: Vec<String>, span: SourceSpan, content_hash: ContentHash` and derive Debug, Clone (after ImportDecl). (b) Add `Declaration::Enum(EnumDecl)` variant to the Declaration enum. (c) Add `ExprKind::EnumAccess { type_name: String, variant: String }` variant to ExprKind enum (after MemberAccess). These are type-only changes with no logic.",
       "status": "done",
-      "commit": "66866d6",
+      "commit": "5c6029d",
       "tests": []
     }
   ],
@@ -31,145 +39,223 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test parse_basic_guarded_block in guard_tests.rs: parse 'structure S { where needs_cooling { param fan_size : Scalar = 50mm } }'. Assert: no parse errors, members.len()==1, members[0] matches MemberDecl::GuardedGroup(g) with g.condition being ExprKind::Ident(needs_cooling), g.members.len()==1 (ParamDecl fan_size), g.else_members.is_empty(). Fails because lower_structure doesn't handle guarded_block nodes yet.",
+      "description": "Write failing test in crates/reify-expr/src/lib.rs: `eval_eq_enum_same_type_same_variant` — build two `CompiledExpr::literal(Value::Enum { type_name: \"Direction\".into(), variant: \"In\".into() }, Type::Enum(\"Direction\".into()))` values, wrap in `CompiledExpr::binop(BinOp::Eq, ...)`, call `eval_expr()`, assert result is `Value::Bool(true)`. Currently falls through to the catch-all in eval_eq which calls as_f64() → None → returns Undef.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "8c08e5c"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement guarded block lowering in ts_parser.rs. (1) Extract member dispatch from lower_structure match block (lines 113-183) into lower_member_node(&mut self, child: Node) -> Option<MemberDecl> handling param/let/constraint/sub/minimize/maximize/guarded_block/ERROR with is_error checks. (2) Refactor lower_structure to call lower_member_node. (3) Add lower_guarded_block(&mut self, node: Node) -> Option<GuardedGroupDecl>: extract condition via child_by_field_name(condition) + lower_expr, iterate children with boolean in_else flag toggled on anonymous child with text else, collect members via lower_member_node into members or else_members, construct GuardedGroupDecl with span and content_hash.",
+      "description": "Add `Value::Enum` match arm in `eval_eq()` in crates/reify-expr/src/lib.rs. Insert before the existing catch-all: `(Value::Enum { type_name: a, variant: av }, Value::Enum { type_name: b, variant: bv }) => { if a == b { Value::Bool(av == bv) } else { Value::Bool(false) } }`. Also add cross-type arms: `(Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Bool(false)` for enum-vs-non-enum. Step-1 test now passes.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "93622dc"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test parse_guarded_block_with_else in guard_tests.rs: parse 'structure S { where cond { param a : Scalar = 1mm } else { param b : Scalar = 2mm } }'. Assert: condition is Ident(cond), members has 1 ParamDecl a, else_members has 1 ParamDecl b.",
+      "description": "Write three additional enum equality tests in crates/reify-expr/src/lib.rs: (a) `eval_eq_enum_same_type_different_variant`: Direction.In == Direction.Out → Bool(false). (b) `eval_eq_enum_different_types`: Direction.In == ThreadSystem.ISO → Bool(false). (c) `eval_ne_enum_variants`: Direction.In != Direction.Out → Bool(true) (verifies eval_ne delegates to eval_eq correctly). All should pass with step-2 implementation.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "f5c82ff"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "If else test fails, debug lower_guarded_block else delimiter detection. Verify tree-sitter CST structure by inspecting child node kinds/text. The else keyword should appear as anonymous node. Adjust detection logic if needed (check node kind vs text comparison).",
+      "description": "Verify step-3 tests pass with step-2's implementation. No code changes expected — the eval_eq match arms and eval_ne delegation already handle these cases. If any fail, adjust match arm ordering.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "f5c82ff"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test parse_nested_guarded_blocks in guard_tests.rs: parse 'structure S { where a { where b { param x : Scalar } } }'. Assert: outer GuardedGroupDecl has condition Ident(a), members[0] is GuardedGroup with condition Ident(b), inner members[0] is ParamDecl x.",
+      "description": "Write failing test in crates/reify-expr/src/lib.rs: `eval_cmp_enum_returns_undef` — build `CompiledExpr::binop(BinOp::Lt, enum_lit(Direction,In), enum_lit(Direction,Out), Type::Bool)`, call eval_expr, assert result is `Value::Undef`. Currently falls through to as_f64 → None → Undef, but test should be explicit.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "ffe73cd"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify nested guards pass. Should already work via recursive lower_member_node dispatch. If failing, check guarded_block case in lower_member_node correctly invokes lower_guarded_block.",
+      "description": "Add explicit `Value::Enum` handling in `eval_cmp()` in crates/reify-expr/src/lib.rs: insert `(Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Undef` before the existing catch-all to make the 'no ordering on enums' semantics explicit. Step-5 test passes.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "ffe73cd"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test parse_guard_complex_expression in guard_tests.rs: (1) Per-declaration: 'param fan : Scalar = 50mm where x > 5mm && active', assert condition is BinOp(&&, BinOp(>, Ident(x), QuantityLiteral(5,mm)), Ident(active)). (2) Block-level: 'where needs_cooling || forced { param fan : Scalar = 50mm }', assert condition is BinOp(||, Ident(needs_cooling), Ident(forced)).",
+      "description": "Write failing test in crates/reify-syntax/src/ts_parser.rs: `parse_enum_declaration` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { param x: Scalar = 5mm }\"`, assert: no parse errors, module.declarations.len() == 2, first declaration is Declaration::Enum(e) with e.name == \"Direction\" and e.variants == [\"In\", \"Out\", \"Bidi\"]. Fails because lower_source_file doesn't handle enum_declaration yet.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "d115366"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify complex guard expressions pass. Should work since condition uses $._expression supporting all operators. If failing, investigate expression boundary parsing.",
+      "description": "Add CST→AST lowering for enum_declaration in crates/reify-syntax/src/ts_parser.rs: (a) Add `known_enums: HashSet<String>` field to `Lowering` struct, initialize empty in `new()`. (b) Change `lower_source_file` to a two-pass approach: first pass iterates children and collects enum names from `enum_declaration` nodes (extract name from field name). (c) In the second pass, add `\"enum_declaration\"` match arm that calls `self.lower_enum(child)` and pushes `Declaration::Enum(...)`. (d) Implement `lower_enum()`: extract name field, iterate named children inside braces to collect identifiers as variants (skip 'enum', name, '{', '}', ','). Return `EnumDecl { name, variants, span, content_hash }`. Step-7 test passes.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "799a914"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write additional per-declaration where tests in guard_tests.rs: (1) let_with_where_clause: 'let y = x * 2 where active' -> LetDecl.where_clause Ident(active). (2) constraint_with_where_clause: 'constraint x > 5mm where enabled' -> ConstraintDecl.where_clause Ident(enabled). (3) sub_with_where_clause: 'sub hole = Hole(diameter: 6mm) where needs_hole' -> SubDecl.where_clause Ident(needs_hole). Should pass immediately.",
+      "description": "Write failing test in crates/reify-syntax/src/ts_parser.rs: `parse_enum_access_expression` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { let d = Direction.In }\"`, extract the structure's let member, assert its value expression is `ExprKind::EnumAccess { type_name: \"Direction\", variant: \"In\" }` (not MemberAccess). Fails because lower_member_access doesn't check known_enums yet.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "3221948"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify per-declaration where tests pass. These exercise existing lowering (lower_where_clause called by lower_let, lower_constraint, lower_sub). If any fail, investigate.",
+      "description": "Add enum-aware expression lowering in crates/reify-syntax/src/ts_parser.rs: In `lower_member_access()`, before constructing the MemberAccess, check if the object_node is an `identifier` (not a complex expression) AND its text is in `self.known_enums`. If so, return `Expr { kind: ExprKind::EnumAccess { type_name: object_text, variant: member_text }, span }` instead of `MemberAccess`. Step-9 test passes.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "bf8f11d"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test guard_free_declarations_backward_compat in guard_tests.rs: parse bracket_source(), verify no GuardedGroup variants in members, all where_clause fields are None, member count unchanged at 10, no errors.",
+      "description": "Write test in crates/reify-syntax/src/ts_parser.rs: `parse_enum_missing_name_is_error` — parse source `\"enum { }\"`, assert the module has at least one error (tree-sitter ERROR node from missing required name field).",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "54a9fb6"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Run cargo test -p reify-syntax then cargo test --workspace. Fix any remaining issues. Compiler with GuardedGroup stub and LSP with wildcards should pass cleanly.",
+      "description": "Verify step-11 test passes — the grammar rule requires `field('name', $.identifier)` between 'enum' and '{', so `enum { }` should produce a tree-sitter ERROR node that lower_source_file captures. If test fails, inspect the actual CST and adjust the error detection or grammar.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "54a9fb6"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_enum_populates_registry` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { param x: Scalar = 5mm }\"`, compile, assert compiled.enum_defs.len() == 1, compiled.enum_defs[0].name == \"Direction\", compiled.enum_defs[0].variants == [\"In\", \"Out\", \"Bidi\"]. Fails because CompiledModule has no enum_defs field yet.",
+      "status": "done",
+      "commit": "11d5593"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Add enum support to crates/reify-compiler/src/lib.rs: (a) Add `pub enum_defs: Vec<reify_types::EnumDef>` field to `CompiledModule`. (b) In `compile()`, initialize an `enum_defs` vec. Add match arm for `reify_syntax::Declaration::Enum(enum_decl)`: convert to `reify_types::EnumDef { name: enum_decl.name.clone(), variants: enum_decl.variants.clone() }` and push. (c) Include enum_defs in module content_hash computation (chain enum name+variant hashes). (d) Pass `&[reify_types::EnumDef]` through to compile_structure and compile_expr (or store in CompilationScope). Step-13 test passes.",
+      "status": "done",
+      "commit": "b27c4f7"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_enum_access_to_literal` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { let d = Direction.In }\"`, compile, find the 'd' value cell, assert its default_expr.kind is `CompiledExprKind::Literal(Value::Enum { type_name: \"Direction\", variant: \"In\" })` and default_expr.result_type is `Type::Enum(\"Direction\".into())`. No error diagnostics expected. Fails because compile_expr doesn't handle EnumAccess yet.",
+      "status": "done",
+      "commit": "cfe9a0d"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Add `ExprKind::EnumAccess` handling in `compile_expr()` in crates/reify-compiler/src/lib.rs: Match `reify_syntax::ExprKind::EnumAccess { type_name, variant }`. Look up type_name in the enum registry (passed via a new `enum_defs: &[reify_types::EnumDef]` parameter to compile_expr, or stored in CompilationScope). If found AND variant exists: produce `CompiledExpr::literal(Value::Enum { type_name: type_name.clone(), variant: variant.clone() }, Type::Enum(type_name.clone()))`. If type found but variant missing: emit diagnostic 'unknown variant X on enum Y', return Undef. If type not found: emit diagnostic 'unknown enum type X', return Undef. Step-15 test passes.",
+      "status": "done",
+      "commit": "da028bf"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_unknown_enum_produces_diagnostic` — parse source `\"structure S { let d = UnknownEnum.Variant }\"` (no enum declaration), compile, assert diagnostics is non-empty. Since parser doesn't know UnknownEnum is an enum, it produces MemberAccess; the compiler's existing MemberAccess arm emits 'member access not yet supported'. Assert any diagnostic mentioning the access exists.",
+      "status": "done",
+      "commit": "4c8ac19"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Verify step-17 test passes with existing code. The parser produces MemberAccess for unknown enum types (they're not in known_enums), and the compiler's existing MemberAccess arm already emits a diagnostic. If test assertion needs adjustment, update to match the actual diagnostic message.",
+      "status": "done",
+      "commit": "4c8ac19"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write E2E test in crates/reify-compiler/tests/boundary2_producer.rs: `e2e_enum_equality_eval` — parse source `\"enum Direction { In, Out, Bidi }\\nstructure S { constraint Direction.In == Direction.In }\"`, compile, assert no error diagnostics, find the compiled constraint, call `reify_expr::eval_expr(&constraint.expr, &ValueMap::new())`, assert result is `Value::Bool(true)`. Validates full pipeline: grammar → parser → compiler → eval.",
+      "status": "done",
+      "commit": "4c8ac19"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Verify step-19 E2E test passes. All pieces should be in place from prior steps. Fix any integration issues (e.g., enum_defs not threaded through correctly, constraint expression compilation, enum literal evaluation). Run `cargo test --workspace` to verify no regressions in existing tests.",
+      "status": "done",
+      "commit": "4c8ac19"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Grammar and generated parser are already complete - no grammar changes needed",
-      "rationale": "The tree-sitter grammar already defines both where_clause (line 56) and guarded_block (line 62) rules. parser.c was regenerated in prior commit 66866d6. The grammar handles ambiguity correctly: where expr followed by { parses as guarded_block; at end of declaration parses as where_clause."
+      "decision": "No separate `enum_access` grammar rule — reuse existing `member_access` and disambiguate in the parser",
+      "rationale": "Adding an `enum_access` grammar rule like `seq(type_identifier, '.', identifier)` creates ambiguity with `member_access` (which is `seq(_expression, '.', identifier)`) since an identifier matches both and the patterns overlap. Tree-sitter conflict resolution would be fragile and could break existing member access parsing. Instead, the existing `member_access` rule naturally parses `Direction.In` as `member_access(identifier(Direction), In)`. The parser's two-pass lowering detects when the object is a known enum name and produces `ExprKind::EnumAccess` during lowering."
     },
     {
-      "decision": "Refactor member dispatch into lower_member_node helper for reuse",
-      "rationale": "lower_structure has a monolithic match block for all member kinds. Guarded blocks need identical dispatch for nested members including recursive guarded blocks. Extracting lower_member_node eliminates duplication and enables clean recursion."
+      "decision": "Two-pass lowering in the parser to collect enum names before expression lowering",
+      "rationale": "Reify has order-independent declarations within modules (per project conventions). An enum may be declared after a structure that references it. A two-pass approach (first collect enum names into a HashSet, then lower all declarations with enum-aware expression lowering) ensures forward references work correctly."
     },
     {
-      "decision": "Use positional iteration with else delimiter detection for main vs else member separation",
-      "rationale": "The guarded_block grammar uses two unnamed repeat($._member) groups without field names. Tree-sitter places all member children as direct children. The else keyword appears as anonymous child between groups. Iterate children toggling a boolean on else to partition into main and else vectors."
+      "decision": "Parser-level `EnumDecl` struct separate from `reify_types::EnumDef`",
+      "rationale": "The parser-level `EnumDecl` includes `span: SourceSpan` and `content_hash: ContentHash` for source location tracking, following the same pattern as `StructureDef`, `ParamDecl`, etc. The `reify_types::EnumDef` is a simpler compiled representation without source info. The compiler converts between them, mirroring the existing ParsedModule→CompiledModule pattern."
     },
     {
-      "decision": "Include content_hash on GuardedGroupDecl",
-      "rationale": "All 6 existing declaration types carry content_hash for incremental evaluation. GuardedGroupDecl follows the same pattern for consistency."
+      "decision": "Enum equality: different enum types return `false`, not a type error/Undef",
+      "rationale": "The task spec says 'Different type_name → type error or false'. Choosing `false` is more lenient and avoids Undef propagation issues in constraint expressions. It matches the existing pattern where `Scalar(LENGTH) == Scalar(MASS)` returns `Bool(false)` rather than Undef in eval_eq."
     },
     {
-      "decision": "Scope limited to crates/reify-syntax only",
-      "rationale": "Grammar is complete. Compiler has forward-looking GuardedGroup stub (line 807). LSP uses wildcards. Only reify-syntax needs changes: AST, lowering, tests."
+      "decision": "Enum comparison (lt/le/gt/ge) returns Undef, not a type error",
+      "rationale": "Per the task spec: 'No ordering (eval_cmp on Enum → Undef or error)'. Returning Undef is consistent with existing handling of incomparable types (e.g., different-dimension scalars in eval_cmp). The explicit match arm documents the semantics clearly."
     },
     {
-      "decision": "Per-declaration where clauses already support all 6 member types",
-      "rationale": "Existing implementation added where_clause to all 6 types (not just the 4 in task spec). Already done and tested. Plan preserves this."
+      "decision": "Unknown enum type in expression falls through to MemberAccess handling in compiler",
+      "rationale": "If the parser doesn't have the enum name in its known_enums set (because no enum declaration exists), it produces MemberAccess rather than EnumAccess. The compiler's existing MemberAccess arm emits an error diagnostic ('member access not yet supported'). This naturally handles the unknown enum case without special-casing. A future M5 member access implementation would need to add enum lookup to that arm."
+    },
+    {
+      "decision": "Add enum_defs to CompiledModule, not TopologyTemplate",
+      "rationale": "Enums are module-level declarations (like imports), not structure-level members. They're declared alongside structures, not inside them. The compiled enum registry belongs at the module level, consistent with how `imports: Vec<CompiledImport>` is stored."
+    },
+    {
+      "decision": "Start TDD with eval changes, then parser, then compiler",
+      "rationale": "Eval changes are fully independent of grammar/parser/compiler — they only need Value::Enum which already exists. Starting here gets the eval foundation in place. Parser changes need the grammar prerequisite. Compiler changes depend on both parser and eval types being ready."
     }
   ],
   "reuse": [
     {
-      "what": "Existing lower_where_clause method",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 197-211",
-      "how": "Already implemented for all 6 lowering functions. No changes needed. Guarded block uses direct child_by_field_name(condition) since it has its own condition field."
+      "what": "reify_types::EnumDef",
+      "where": "crates/reify-types/src/traits.rs",
+      "how": "Already has `name: String` and `variants: Vec<String>` with `contains_variant()` method. Used in CompiledModule.enum_defs for the compiled registry. Compiler converts parser's EnumDecl to this type."
     },
     {
-      "what": "lower_expr recursive expression lowering",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 371-403",
-      "how": "Reuse for guarded_block condition. Supports all expression types needed for guard conditions."
+      "what": "Value::Enum { type_name, variant }",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "Already defined with PartialEq, Eq, Ord, Display, content_hash. Used directly as the runtime value for enum literals produced by the compiler."
     },
     {
-      "what": "Member dispatch pattern from lower_structure",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 113-183",
-      "how": "Extract into lower_member_node. Add guarded_block case. Reuse for both structure body and nested guarded block members."
+      "what": "Type::Enum(String)",
+      "where": "crates/reify-types/src/ty.rs",
+      "how": "Already defined with Display showing 'Enum(name)'. Used as the result_type for compiled enum access expressions."
     },
     {
-      "what": "span() and content_hash() helpers",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 53-60",
-      "how": "Reuse for GuardedGroupDecl construction, same pattern as all existing AST nodes."
+      "what": "CompiledExpr::literal() constructor",
+      "where": "crates/reify-types/src/expr.rs",
+      "how": "Used to create `CompiledExpr::literal(Value::Enum { type_name, variant }, Type::Enum(type_name))` from the compiler's EnumAccess handling."
     },
     {
-      "what": "parse_members test helper",
-      "where": "crates/reify-syntax/tests/guard_tests.rs lines 9-16",
-      "how": "Reuse for all new guard tests to parse source and extract members."
+      "what": "Existing member_access grammar rule and lower_member_access()",
+      "where": "tree-sitter-reify/grammar.js line 224, crates/reify-syntax/src/ts_parser.rs",
+      "how": "Reused to parse `EnumName.Variant` syntax. Parser enhances lower_member_access to detect enum names and produce EnumAccess expression kind."
     },
     {
-      "what": "Test assertion patterns",
-      "where": "guard_tests.rs and ts_parser.rs mod tests",
-      "how": "Follow: parse source -> extract members -> match MemberDecl variant -> assert fields."
+      "what": "Compiler diagnostic pattern: Diagnostic::error().with_label()",
+      "where": "crates/reify-compiler/src/lib.rs (multiple locations)",
+      "how": "Same pattern reused for unknown enum type/variant errors and fallback to Undef literal."
+    },
+    {
+      "what": "Lowering struct helpers: node_text(), span(), content_hash()",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 48-60",
+      "how": "Reused in lower_enum() for extracting enum name/variants text and constructing EnumDecl with span and content hash."
+    },
+    {
+      "what": "Test patterns from boundary2_producer.rs",
+      "where": "crates/reify-compiler/tests/boundary2_producer.rs",
+      "how": "Pattern of parsing source string → compile → assert on templates/diagnostics/value_cells reused for all new compiler tests."
+    },
+    {
+      "what": "Eval test helper: lit() function",
+      "where": "crates/reify-expr/src/lib.rs mod tests",
+      "how": "Reused to construct CompiledExpr::literal for enum values in eval tests."
     }
-  ],
-  "_schema_version": 1
+  ]
 }
