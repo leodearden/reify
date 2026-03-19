@@ -90,17 +90,17 @@ impl ConcurrentEvalAdapter {
 
     /// Get a snapshot of the current values (for testing/inspection).
     pub fn values(&self) -> ValueMap {
-        self.values.read().unwrap().clone()
+        self.values.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Take the collected results (for testing/inspection).
     pub fn take_results(&self) -> Vec<ConcurrentNodeResult> {
-        self.results.lock().unwrap().clone()
+        self.results.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Get the set of skipped nodes (for testing/inspection).
     pub fn skipped(&self) -> HashSet<NodeId> {
-        self.skip_state.lock().unwrap().skipped.clone()
+        self.skip_state.lock().unwrap_or_else(|e| e.into_inner()).skipped.clone()
     }
 
     /// Build a `ConcurrentEditResult` via shared references (cloning).
@@ -223,7 +223,7 @@ impl ConcurrentEvalAdapter {
 
 impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
     fn is_dirty(&self, node: &NodeId) -> bool {
-        !self.skip_state.lock().unwrap().skipped.contains(node)
+        !self.skip_state.lock().unwrap_or_else(|e| e.into_inner()).skipped.contains(node)
     }
 
     async fn evaluate(&self, node: NodeId) -> EvalOutcome {
