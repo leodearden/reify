@@ -12,6 +12,8 @@ pub enum Value {
     String(String),
     /// Dimensioned scalar: value in SI base units, with dimension.
     Scalar { si_value: f64, dimension: DimensionVector },
+    /// Enum variant value: type_name::variant.
+    Enum { type_name: String, variant: String },
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -91,6 +93,11 @@ impl Value {
                 buf[1..].copy_from_slice(&bits.to_le_bytes());
                 ContentHash::of(&buf).combine(dimension.content_hash())
             }
+            Value::Enum { type_name, variant } => {
+                ContentHash::of(&[6])
+                    .combine(ContentHash::of_str(type_name))
+                    .combine(ContentHash::of_str(variant))
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -105,6 +112,9 @@ impl PartialEq for Value {
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Scalar { si_value: a, dimension: ad }, Value::Scalar { si_value: b, dimension: bd }) => {
                 a.to_bits() == b.to_bits() && ad == bd
+            }
+            (Value::Enum { type_name: a, variant: av }, Value::Enum { type_name: b, variant: bv }) => {
+                a == b && av == bv
             }
             (Value::Undef, Value::Undef) => true,
             _ => false,
@@ -125,7 +135,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -134,6 +144,7 @@ impl Ord for Value {
                 Value::Real(_) => 3,
                 Value::Scalar { .. } => 4,
                 Value::String(_) => 5,
+                Value::Enum { .. } => 6,
             }
         }
 
@@ -158,6 +169,9 @@ impl Ord for Value {
                 ad.cmp(bd).then_with(|| a.to_bits().cmp(&b.to_bits()))
             }
             (Value::String(a), Value::String(b)) => a.cmp(b),
+            (Value::Enum { type_name: a, variant: av }, Value::Enum { type_name: b, variant: bv }) => {
+                a.cmp(b).then_with(|| av.cmp(bv))
+            }
             _ => unreachable!("same type tag but different variants"),
         }
     }
