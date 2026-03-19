@@ -108,8 +108,8 @@
       "id": "step-9",
       "type": "test",
       "description": "Write failing test: reference_safety_unguarded_to_guarded_error. Parse `structure S { param active : Bool = true\\n param x : Scalar = 5mm where active\\n let y = x }`. Unguarded let y references guarded x. Compile should produce a diagnostic error containing 'unguarded reference' or 'guarded'.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5fe8e14"
     },
     {
       "id": "step-10",

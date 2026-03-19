@@ -344,10 +344,11 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 
 // --- Compilation context ---
 
-/// Name scope: maps identifier names to (ValueCellId, Type) within a structure.
+/// Name scope: maps identifier names to (ValueCellId, Type, Option<guard_cell_id>)
+/// within a structure. The guard cell ID tracks which guard (if any) protects this name.
 struct CompilationScope {
     entity_name: String,
-    names: HashMap<String, (ValueCellId, Type)>,
+    names: HashMap<String, (ValueCellId, Type, Option<ValueCellId>)>,
 }
 
 impl CompilationScope {
@@ -360,11 +361,20 @@ impl CompilationScope {
 
     fn register(&mut self, name: &str, ty: Type) {
         let id = ValueCellId::new(&self.entity_name, name);
-        self.names.insert(name.to_string(), (id, ty));
+        self.names.insert(name.to_string(), (id, ty, None));
     }
 
-    fn resolve(&self, name: &str) -> Option<&(ValueCellId, Type)> {
-        self.names.get(name)
+    fn register_guarded(&mut self, name: &str, ty: Type, guard: ValueCellId) {
+        let id = ValueCellId::new(&self.entity_name, name);
+        self.names.insert(name.to_string(), (id, ty, Some(guard)));
+    }
+
+    fn resolve(&self, name: &str) -> Option<(&ValueCellId, &Type)> {
+        self.names.get(name).map(|(id, ty, _)| (id, ty))
+    }
+
+    fn resolve_with_guard(&self, name: &str) -> Option<(&ValueCellId, &Type, Option<&ValueCellId>)> {
+        self.names.get(name).map(|(id, ty, guard)| (id, ty, guard.as_ref()))
     }
 }
 
@@ -375,6 +385,19 @@ fn compile_expr(
     expr: &reify_syntax::Expr,
     scope: &CompilationScope,
     diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    compile_expr_guarded(expr, scope, diagnostics, None)
+}
+
+/// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
+///
+/// When `current_guard` is Some, references to names guarded by a different
+/// guard will produce a diagnostic error about unsafe unguarded references.
+fn compile_expr_guarded(
+    expr: &reify_syntax::Expr,
+    scope: &CompilationScope,
+    diagnostics: &mut Vec<Diagnostic>,
+    current_guard: Option<&ValueCellId>,
 ) -> CompiledExpr {
     match &expr.kind {
         reify_syntax::ExprKind::NumberLiteral(v) => {
@@ -422,8 +445,8 @@ fn compile_expr(
             }
         }
         reify_syntax::ExprKind::BinOp { op, left, right } => {
-            let compiled_left = compile_expr(left, scope, diagnostics);
-            let compiled_right = compile_expr(right, scope, diagnostics);
+            let compiled_left = compile_expr_guarded(left, scope, diagnostics, current_guard);
+            let compiled_right = compile_expr_guarded(right, scope, diagnostics, current_guard);
             match resolve_binop(op) {
                 Some(bin_op) => {
                     let result_type = infer_binop_type(
@@ -486,7 +509,7 @@ fn compile_expr(
             }
         }
         reify_syntax::ExprKind::UnOp { op, operand } => {
-            let compiled_operand = compile_expr(operand, scope, diagnostics);
+            let compiled_operand = compile_expr_guarded(operand, scope, diagnostics, current_guard);
             match resolve_unop(op) {
                 Some(un_op) => {
                     let result_type = match un_op {
@@ -507,7 +530,7 @@ fn compile_expr(
         reify_syntax::ExprKind::FunctionCall { name, args } => {
             let compiled_args: Vec<CompiledExpr> = args
                 .iter()
-                .map(|arg| compile_expr(arg, scope, diagnostics))
+                .map(|arg| compile_expr_guarded(arg, scope, diagnostics, current_guard))
                 .collect();
 
             let resolved = ResolvedFunction {
@@ -549,7 +572,7 @@ fn compile_expr(
         reify_syntax::ExprKind::MemberAccess { object, member } => {
             // For M1, compile the object expression but emit a diagnostic
             // since we don't yet support member access fully.
-            let _compiled_obj = compile_expr(object, scope, diagnostics);
+            let _compiled_obj = compile_expr_guarded(object, scope, diagnostics, current_guard);
             diagnostics.push(
                 Diagnostic::error(format!("member access not yet supported: .{}", member))
                     .with_label(DiagnosticLabel::new(expr.span, "unsupported in M1")),
@@ -567,9 +590,9 @@ fn compile_expr(
             then_branch,
             else_branch,
         } => {
-            let compiled_cond = compile_expr(condition, scope, diagnostics);
-            let compiled_then = compile_expr(then_branch, scope, diagnostics);
-            let compiled_else = compile_expr(else_branch, scope, diagnostics);
+            let compiled_cond = compile_expr_guarded(condition, scope, diagnostics, current_guard);
+            let compiled_then = compile_expr_guarded(then_branch, scope, diagnostics, current_guard);
+            let compiled_else = compile_expr_guarded(else_branch, scope, diagnostics, current_guard);
             let result_type = compiled_then.result_type.clone();
 
             let content_hash = ContentHash::of(&[5])
@@ -940,6 +963,59 @@ fn compile_structure(
         ContentHash::combine_all(all_hashes)
     };
 
+    // Reference safety: detect unguarded references to guarded members.
+    {
+        let mut guarded_cell_map: HashMap<ValueCellId, ValueCellId> = HashMap::new();
+        for group in &guarded_groups {
+            for m in &group.members {
+                guarded_cell_map.insert(m.id.clone(), group.guard_value_cell.clone());
+            }
+            for m in &group.else_members {
+                guarded_cell_map.insert(m.id.clone(), group.guard_value_cell.clone());
+            }
+        }
+        for vc in &value_cells {
+            if let Some(expr) = &vc.default_expr {
+                for ref_id in collect_value_refs(expr) {
+                    if guarded_cell_map.contains_key(&ref_id) {
+                        diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "unguarded reference to guarded cell '{}'",
+                                ref_id.member,
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                vc.span,
+                                "references a conditionally-active member",
+                            )),
+                        );
+                    }
+                }
+            }
+        }
+        for group in &guarded_groups {
+            for m in &group.members {
+                if let Some(expr) = &m.default_expr {
+                    for ref_id in collect_value_refs(expr) {
+                        if let Some(ref_guard) = guarded_cell_map.get(&ref_id) {
+                            if ref_guard != &group.guard_value_cell {
+                                diagnostics.push(
+                                    Diagnostic::warning(format!(
+                                        "reference to differently-guarded cell '{}'",
+                                        ref_id.member,
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        m.span,
+                                        "referenced member under a different guard",
+                                    )),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     TopologyTemplate {
         name: entity_name.clone(),
         value_cells,
@@ -950,6 +1026,37 @@ fn compile_structure(
         structure_controlling,
         objective,
         content_hash,
+    }
+}
+
+/// Collect all ValueCellId references from a compiled expression tree.
+fn collect_value_refs(expr: &CompiledExpr) -> Vec<ValueCellId> {
+    let mut refs = Vec::new();
+    collect_value_refs_inner(expr, &mut refs);
+    refs
+}
+
+fn collect_value_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => refs.push(id.clone()),
+        CompiledExprKind::BinOp { left, right, .. } => {
+            collect_value_refs_inner(left, refs);
+            collect_value_refs_inner(right, refs);
+        }
+        CompiledExprKind::UnOp { operand, .. } => {
+            collect_value_refs_inner(operand, refs);
+        }
+        CompiledExprKind::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_value_refs_inner(arg, refs);
+            }
+        }
+        CompiledExprKind::Conditional { condition, then_branch, else_branch } => {
+            collect_value_refs_inner(condition, refs);
+            collect_value_refs_inner(then_branch, refs);
+            collect_value_refs_inner(else_branch, refs);
+        }
+        CompiledExprKind::Literal(_) => {}
     }
 }
 
@@ -1074,7 +1181,7 @@ fn compile_block_guard(
 fn compile_guarded_members(
     entity_name: &str,
     ast_members: &[reify_syntax::MemberDecl],
-    _current_guard: &ValueCellId,
+    current_guard: &ValueCellId,
     scope: &CompilationScope,
     diagnostics: &mut Vec<Diagnostic>,
     members: &mut Vec<ValueCellDecl>,
@@ -1084,6 +1191,7 @@ fn compile_guarded_members(
     guard_index: &mut u32,
     constraint_index: &mut u32,
 ) {
+    let guard_ctx = Some(current_guard);
     for member in ast_members {
         match member {
             reify_syntax::MemberDecl::Param(param) => {
@@ -1110,7 +1218,7 @@ fn compile_guarded_members(
                     let default_expr = param
                         .default
                         .as_ref()
-                        .map(|expr| compile_expr(expr, scope, diagnostics));
+                        .map(|expr| compile_expr_guarded(expr, scope, diagnostics, guard_ctx));
                     ValueCellDecl {
                         id,
                         kind: ValueCellKind::Param,
@@ -1125,7 +1233,7 @@ fn compile_guarded_members(
                 if is_geometry_let(&let_decl.value) {
                     continue;
                 }
-                let compiled_expr = compile_expr(&let_decl.value, scope, diagnostics);
+                let compiled_expr = compile_expr_guarded(&let_decl.value, scope, diagnostics, guard_ctx);
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 
@@ -1138,7 +1246,7 @@ fn compile_guarded_members(
                 });
             }
             reify_syntax::MemberDecl::Constraint(constraint) => {
-                let compiled_expr = compile_expr(&constraint.expr, scope, diagnostics);
+                let compiled_expr = compile_expr_guarded(&constraint.expr, scope, diagnostics, guard_ctx);
                 if compiled_expr.result_type != Type::Bool {
                     diagnostics.push(
                         Diagnostic::warning(format!(
@@ -1165,7 +1273,7 @@ fn compile_guarded_members(
                 compile_block_guard(
                     entity_name,
                     nested,
-                    Some(_current_guard),
+                    Some(current_guard),
                     scope,
                     diagnostics,
                     guarded_groups,
@@ -1189,7 +1297,7 @@ fn compile_per_decl_guard(
     entity_name: &str,
     wc: &reify_syntax::WhereClause,
     member_decl: ValueCellDecl,
-    scope: &CompilationScope,
+    scope: &mut CompilationScope,
     diagnostics: &mut Vec<Diagnostic>,
     guarded_groups: &mut Vec<CompiledGuardedGroup>,
     structure_controlling: &mut HashSet<ValueCellId>,
@@ -1199,15 +1307,21 @@ fn compile_per_decl_guard(
     let guard_cell_id = ValueCellId::new(entity_name, &format!("__guard_{}", guard_index));
     *guard_index += 1;
 
+    // Update scope to mark this member as guarded (for reference safety checking)
+    let member_name = member_decl.id.member.clone();
+    let member_type = member_decl.cell_type.clone();
+
     structure_controlling.insert(guard_cell_id.clone());
     guarded_groups.push(CompiledGuardedGroup {
         guard_expr,
-        guard_value_cell: guard_cell_id,
+        guard_value_cell: guard_cell_id.clone(),
         members: vec![member_decl],
         constraints: vec![],
         else_members: vec![],
         else_constraints: vec![],
     });
+
+    scope.register_guarded(&member_name, member_type, guard_cell_id);
 }
 
 /// Compile a per-declaration `where` clause for a constraint into a single-constraint
@@ -1235,6 +1349,55 @@ fn compile_per_decl_constraint_guard(
         else_members: vec![],
         else_constraints: vec![],
     });
+}
+
+/// Walk a compiled expression and check for references to guarded cells.
+/// If `current_guard` is None, any reference to a guarded cell is an error.
+/// If `current_guard` is Some(guard_id), references to cells guarded by
+/// the same guard are safe; references to differently-guarded cells are errors.
+fn check_expr_references(
+    expr: &CompiledExpr,
+    current_guard: Option<&ValueCellId>,
+    guarded_to_guard: &HashMap<ValueCellId, ValueCellId>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(ref_id) => {
+            if let Some(ref_guard) = guarded_to_guard.get(ref_id) {
+                // The referenced cell is guarded. Check if we share the same guard.
+                let safe = match current_guard {
+                    Some(our_guard) => our_guard == ref_guard,
+                    None => false,
+                };
+                if !safe {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unguarded reference to guarded cell '{}'",
+                            ref_id.member,
+                        )),
+                    );
+                }
+            }
+        }
+        CompiledExprKind::BinOp { left, right, .. } => {
+            check_expr_references(left, current_guard, guarded_to_guard, diagnostics);
+            check_expr_references(right, current_guard, guarded_to_guard, diagnostics);
+        }
+        CompiledExprKind::UnOp { operand, .. } => {
+            check_expr_references(operand, current_guard, guarded_to_guard, diagnostics);
+        }
+        CompiledExprKind::FunctionCall { args, .. } => {
+            for arg in args {
+                check_expr_references(arg, current_guard, guarded_to_guard, diagnostics);
+            }
+        }
+        CompiledExprKind::Conditional { condition, then_branch, else_branch } => {
+            check_expr_references(condition, current_guard, guarded_to_guard, diagnostics);
+            check_expr_references(then_branch, current_guard, guarded_to_guard, diagnostics);
+            check_expr_references(else_branch, current_guard, guarded_to_guard, diagnostics);
+        }
+        CompiledExprKind::Literal(_) => {}
+    }
 }
 
 /// Check if a let declaration's value is a geometry-producing function call.
