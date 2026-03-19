@@ -81,6 +81,11 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
             assert_no_unresolved(then_branch);
             assert_no_unresolved(else_branch);
         }
+        CompiledExprKind::UserFunctionCall { args, .. } => {
+            for arg in args {
+                assert_no_unresolved(arg);
+            }
+        }
     }
 }
 

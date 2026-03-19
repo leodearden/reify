@@ -42,6 +42,12 @@ pub fn eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value {
                 _ => Value::Undef, // type error: condition is not bool
             }
         }
+
+        CompiledExprKind::UserFunctionCall { .. } => {
+            // User-defined function evaluation is a separate task.
+            // Return Undef for now.
+            Value::Undef
+        }
     }
 }
 
