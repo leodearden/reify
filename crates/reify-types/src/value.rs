@@ -583,6 +583,58 @@ mod tests {
         let _ = pos.cmp(&neg);
     }
 
+    // --- Map tests (step-9) ---
+
+    #[test]
+    fn value_map_basic() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("a".into()), Value::Int(1));
+        m.insert(Value::String("b".into()), Value::Int(2));
+        let v = Value::Map(m);
+        if let Value::Map(ref inner) = v {
+            assert_eq!(inner.len(), 2);
+            assert_eq!(inner.get(&Value::String("a".into())), Some(&Value::Int(1)));
+        } else {
+            panic!("expected Map");
+        }
+    }
+
+    #[test]
+    fn value_map_equality() {
+        use std::collections::BTreeMap;
+        let mut m1 = BTreeMap::new();
+        m1.insert(Value::String("a".into()), Value::Int(1));
+        let mut m2 = BTreeMap::new();
+        m2.insert(Value::String("a".into()), Value::Int(1));
+        let mut m3 = BTreeMap::new();
+        m3.insert(Value::String("a".into()), Value::Int(2));
+        assert_eq!(Value::Map(m1), Value::Map(m2));
+        assert_ne!(Value::Map(m2), Value::Map(m3));
+    }
+
+    #[test]
+    fn value_map_ordering() {
+        use std::collections::BTreeMap;
+        // Map sorts after Set
+        let s = Value::Set(std::collections::BTreeSet::new());
+        let m = Value::Map(BTreeMap::new());
+        assert!(s < m);
+    }
+
+    #[test]
+    fn value_map_content_hash() {
+        use std::collections::BTreeMap;
+        let mut m1 = BTreeMap::new();
+        m1.insert(Value::String("a".into()), Value::Int(1));
+        let mut m2 = BTreeMap::new();
+        m2.insert(Value::String("a".into()), Value::Int(1));
+        let mut m3 = BTreeMap::new();
+        m3.insert(Value::String("a".into()), Value::Int(2));
+        assert_eq!(Value::Map(m1).content_hash(), Value::Map(m2).content_hash());
+        assert_ne!(Value::Map(m2).content_hash(), Value::Map(m3).content_hash());
+    }
+
     // --- Set tests (step-7) ---
 
     #[test]
