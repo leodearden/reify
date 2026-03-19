@@ -1395,6 +1395,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn circular_pattern_6_instances() {
+        let mut kernel = OcctKernel::new();
+        // Create a small 5x5x5 box (volume = 125)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(5.0),
+                height: Value::Real(5.0),
+                depth: Value::Real(5.0),
+            })
+            .unwrap();
+        // Translate to (20,0,0) to offset from center
+        let translated_h = kernel
+            .execute(&GeometryOp::Translate {
+                target: box_h.id,
+                dx: 20.0,
+                dy: 0.0,
+                dz: 0.0,
+            })
+            .unwrap();
+        // Circular pattern: 6 instances, full circle (2*PI)
+        let pattern_h = kernel
+            .execute(&GeometryOp::CircularPattern {
+                target: translated_h.id,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                count: 6,
+                angle: Value::Real(2.0 * std::f64::consts::PI),
+            })
+            .unwrap();
+        // Volume should be approximately 6 * 125 = 750
+        let vol = kernel
+            .query(&GeometryQuery::Volume(pattern_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 750.0).abs() < 50.0,
+                    "expected circular pattern volume ~750, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
     // --- Mirror tests ---
 
     #[test]
