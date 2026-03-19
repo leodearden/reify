@@ -4,12 +4,23 @@
 //! else branches, undef guards, and schema re-elaboration.
 
 use reify_eval::Engine;
-use reify_test_support::builders::{literal, value_ref_typed};
+use reify_test_support::builders::value_ref_typed;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 use reify_types::*;
 
 use reify_compiler::{ValueCellDecl, ValueCellKind};
+
+/// Helper to create a ValueCellDecl for tests.
+fn make_param_decl(entity: &str, member: &str, cell_type: Type, default: Value) -> ValueCellDecl {
+    ValueCellDecl {
+        id: ValueCellId::new(entity, member),
+        kind: ValueCellKind::Param,
+        cell_type: cell_type.clone(),
+        default_expr: Some(CompiledExpr::literal(default, cell_type)),
+        span: SourceSpan::new(0, 0),
+    }
+}
 
 /// Step 13: When guard is true, guarded members should be evaluated.
 ///

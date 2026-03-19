@@ -4,7 +4,6 @@
 //! CompiledGuardedGroup entries in TopologyTemplate.
 
 use reify_compiler::*;
-use reify_test_support::*;
 use reify_types::*;
 
 /// Helper: parse source and compile, returning first template.

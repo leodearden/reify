@@ -373,9 +373,6 @@ impl CompilationScope {
         self.names.get(name).map(|(id, ty, _)| (id, ty))
     }
 
-    fn resolve_with_guard(&self, name: &str) -> Option<(&ValueCellId, &Type, Option<&ValueCellId>)> {
-        self.names.get(name).map(|(id, ty, guard)| (id, ty, guard.as_ref()))
-    }
 }
 
 /// Compile an `Expr` from the AST into a `CompiledExpr`.
@@ -904,7 +901,7 @@ fn compile_structure(
                     entity_name,
                     g,
                     None, // no outer guard
-                    &scope,
+                    &mut scope,
                     diagnostics,
                     &mut guarded_groups,
                     &mut structure_controlling,
@@ -1106,7 +1103,7 @@ fn compile_block_guard(
     entity_name: &str,
     g: &reify_syntax::GuardedGroupDecl,
     outer_guard: Option<&ValueCellId>,
-    scope: &CompilationScope,
+    scope: &mut CompilationScope,
     diagnostics: &mut Vec<Diagnostic>,
     guarded_groups: &mut Vec<CompiledGuardedGroup>,
     structure_controlling: &mut HashSet<ValueCellId>,
@@ -1165,6 +1162,14 @@ fn compile_block_guard(
         );
     }
 
+    // Update scope to mark all members and else_members as guarded
+    for m in &members {
+        scope.register_guarded(&m.id.member, m.cell_type.clone(), guard_cell_id.clone());
+    }
+    for m in &else_members {
+        scope.register_guarded(&m.id.member, m.cell_type.clone(), guard_cell_id.clone());
+    }
+
     guarded_groups.push(CompiledGuardedGroup {
         guard_expr,
         guard_value_cell: guard_cell_id,
@@ -1182,7 +1187,7 @@ fn compile_guarded_members(
     entity_name: &str,
     ast_members: &[reify_syntax::MemberDecl],
     current_guard: &ValueCellId,
-    scope: &CompilationScope,
+    scope: &mut CompilationScope,
     diagnostics: &mut Vec<Diagnostic>,
     members: &mut Vec<ValueCellDecl>,
     group_constraints: &mut Vec<CompiledConstraint>,
@@ -1349,55 +1354,6 @@ fn compile_per_decl_constraint_guard(
         else_members: vec![],
         else_constraints: vec![],
     });
-}
-
-/// Walk a compiled expression and check for references to guarded cells.
-/// If `current_guard` is None, any reference to a guarded cell is an error.
-/// If `current_guard` is Some(guard_id), references to cells guarded by
-/// the same guard are safe; references to differently-guarded cells are errors.
-fn check_expr_references(
-    expr: &CompiledExpr,
-    current_guard: Option<&ValueCellId>,
-    guarded_to_guard: &HashMap<ValueCellId, ValueCellId>,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    match &expr.kind {
-        CompiledExprKind::ValueRef(ref_id) => {
-            if let Some(ref_guard) = guarded_to_guard.get(ref_id) {
-                // The referenced cell is guarded. Check if we share the same guard.
-                let safe = match current_guard {
-                    Some(our_guard) => our_guard == ref_guard,
-                    None => false,
-                };
-                if !safe {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "unguarded reference to guarded cell '{}'",
-                            ref_id.member,
-                        )),
-                    );
-                }
-            }
-        }
-        CompiledExprKind::BinOp { left, right, .. } => {
-            check_expr_references(left, current_guard, guarded_to_guard, diagnostics);
-            check_expr_references(right, current_guard, guarded_to_guard, diagnostics);
-        }
-        CompiledExprKind::UnOp { operand, .. } => {
-            check_expr_references(operand, current_guard, guarded_to_guard, diagnostics);
-        }
-        CompiledExprKind::FunctionCall { args, .. } => {
-            for arg in args {
-                check_expr_references(arg, current_guard, guarded_to_guard, diagnostics);
-            }
-        }
-        CompiledExprKind::Conditional { condition, then_branch, else_branch } => {
-            check_expr_references(condition, current_guard, guarded_to_guard, diagnostics);
-            check_expr_references(then_branch, current_guard, guarded_to_guard, diagnostics);
-            check_expr_references(else_branch, current_guard, guarded_to_guard, diagnostics);
-        }
-        CompiledExprKind::Literal(_) => {}
-    }
 }
 
 /// Check if a let declaration's value is a geometry-producing function call.
