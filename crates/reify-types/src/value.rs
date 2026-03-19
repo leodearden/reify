@@ -1019,6 +1019,35 @@ mod tests {
         );
     }
 
+    // --- Value::Real Display large float regression tests (step-14) ---
+
+    #[test]
+    fn value_display_real_large_positive() {
+        // 1e20 is beyond i64::MAX (~9.2e18), so `*r as i64` saturates to i64::MAX.
+        // Expected: the full float representation, not the saturated i64 value.
+        assert_eq!(
+            format!("{}", Value::Real(1e20)),
+            "100000000000000000000"
+        );
+    }
+
+    #[test]
+    fn value_display_real_large_negative() {
+        assert_eq!(
+            format!("{}", Value::Real(-1e20)),
+            "-100000000000000000000"
+        );
+    }
+
+    #[test]
+    fn value_display_real_max_safe_integer() {
+        // 2^53 = 9007199254740992, the max integer exactly representable as f64
+        assert_eq!(
+            format!("{}", Value::Real(9.007199254740992e15)),
+            "9007199254740992"
+        );
+    }
+
     // --- Cross-domain hash collision regression tests (step-12) ---
 
     #[test]
