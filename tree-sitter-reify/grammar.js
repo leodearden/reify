@@ -25,6 +25,16 @@ module.exports = grammar({
     _declaration: $ => choice(
       $.structure_definition,
       $.import_declaration,
+      $.enum_declaration,
+    ),
+
+    // ── Enum ──────────────────────────────────────────────────
+    enum_declaration: $ => seq(
+      'enum',
+      field('name', $.identifier),
+      '{',
+      optional(seq($.identifier, repeat(seq(',', $.identifier)), optional(','))),
+      '}',
     ),
 
     // ── Imports ──────────────────────────────────────────────
