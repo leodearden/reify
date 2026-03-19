@@ -1000,7 +1000,8 @@ fn compile_geometry_call(
         .map(|arg| compile_expr(arg, scope, enum_defs, diagnostics))
         .collect();
 
-    let named_args = match name {
+    match name {
+        // --- Primitives ---
         "box" => {
             if compiled_args.len() != 3 {
                 diagnostics.push(Diagnostic::error(format!(
@@ -1010,11 +1011,14 @@ fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            vec![
-                ("width".to_string(), it.next().unwrap()),
-                ("height".to_string(), it.next().unwrap()),
-                ("depth".to_string(), it.next().unwrap()),
-            ]
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".to_string(), it.next().unwrap()),
+                    ("height".to_string(), it.next().unwrap()),
+                    ("depth".to_string(), it.next().unwrap()),
+                ],
+            }])
         }
         "cylinder" => {
             if compiled_args.len() != 2 {
@@ -1025,10 +1029,13 @@ fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            vec![
-                ("radius".to_string(), it.next().unwrap()),
-                ("height".to_string(), it.next().unwrap()),
-            ]
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Cylinder,
+                args: vec![
+                    ("radius".to_string(), it.next().unwrap()),
+                    ("height".to_string(), it.next().unwrap()),
+                ],
+            }])
         }
         "sphere" => {
             if compiled_args.len() != 1 {
@@ -1038,22 +1045,175 @@ fn compile_geometry_call(
                 )));
                 return None;
             }
-            vec![("radius".to_string(), compiled_args.into_iter().next().unwrap())]
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Sphere,
+                args: vec![("radius".to_string(), compiled_args.into_iter().next().unwrap())],
+            }])
         }
-        _ => return None,
-    };
-
-    let kind = match name {
-        "box" => PrimitiveKind::Box,
-        "cylinder" => PrimitiveKind::Cylinder,
-        "sphere" => PrimitiveKind::Sphere,
-        _ => return None,
-    };
-
-    Some(vec![CompiledGeometryOp::Primitive {
-        kind,
-        args: named_args,
-    }])
+        // --- Patterns ---
+        // linear_pattern(target, dx, dy, dz, count, spacing)
+        "linear_pattern" => {
+            if compiled_args.len() != 6 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "linear_pattern() expects 6 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Pattern {
+                kind: PatternKind::Linear,
+                target: GeomRef::Step(0), // target is first arg (evaluated at runtime)
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("dx".to_string(), it.next().unwrap()),
+                    ("dy".to_string(), it.next().unwrap()),
+                    ("dz".to_string(), it.next().unwrap()),
+                    ("count".to_string(), it.next().unwrap()),
+                    ("spacing".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)
+        "circular_pattern" => {
+            if compiled_args.len() != 9 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "circular_pattern() expects 9 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Pattern {
+                kind: PatternKind::Circular,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("ox".to_string(), it.next().unwrap()),
+                    ("oy".to_string(), it.next().unwrap()),
+                    ("oz".to_string(), it.next().unwrap()),
+                    ("ax".to_string(), it.next().unwrap()),
+                    ("ay".to_string(), it.next().unwrap()),
+                    ("az".to_string(), it.next().unwrap()),
+                    ("count".to_string(), it.next().unwrap()),
+                    ("angle".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // mirror(target, ox, oy, oz, nx, ny, nz)
+        "mirror" => {
+            if compiled_args.len() != 7 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "mirror() expects 7 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Pattern {
+                kind: PatternKind::Mirror,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("ox".to_string(), it.next().unwrap()),
+                    ("oy".to_string(), it.next().unwrap()),
+                    ("oz".to_string(), it.next().unwrap()),
+                    ("nx".to_string(), it.next().unwrap()),
+                    ("ny".to_string(), it.next().unwrap()),
+                    ("nz".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // --- Sweeps ---
+        // loft(profile1, profile2, ...)
+        "loft" => {
+            if compiled_args.len() < 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "loft() expects at least 2 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let profiles: Vec<GeomRef> = (0..compiled_args.len())
+                .map(|i| GeomRef::Step(i))
+                .collect();
+            let args: Vec<(String, CompiledExpr)> = compiled_args
+                .into_iter()
+                .enumerate()
+                .map(|(i, expr)| (format!("profile_{}", i), expr))
+                .collect();
+            Some(vec![CompiledGeometryOp::Sweep {
+                kind: SweepKind::Loft,
+                profiles,
+                args,
+            }])
+        }
+        // --- Modify extensions ---
+        // shell(target, thickness, ...)
+        "shell" => {
+            if compiled_args.len() < 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "shell() expects at least 2 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let mut args = vec![
+                ("target".to_string(), it.next().unwrap()),
+                ("thickness".to_string(), it.next().unwrap()),
+            ];
+            // Remaining args are face indices to remove
+            for (i, expr) in it.enumerate() {
+                args.push((format!("face_{}", i), expr));
+            }
+            Some(vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Shell,
+                target: GeomRef::Step(0),
+                args,
+            }])
+        }
+        // thicken(target, offset)
+        "thicken" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "thicken() expects 2 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Thicken,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("offset".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // draft(target, angle, plane)
+        "draft" => {
+            if compiled_args.len() != 3 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "draft() expects 3 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Draft,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("angle".to_string(), it.next().unwrap()),
+                    ("plane".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

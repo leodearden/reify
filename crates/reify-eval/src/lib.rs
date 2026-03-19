@@ -2128,9 +2128,41 @@ fn compile_geometry_op(
                     target: target_id,
                     distance: eval_arg("distance"),
                 }),
-                reify_compiler::ModifyKind::Shell => None, // not yet wired
-                reify_compiler::ModifyKind::Draft => None, // not yet wired
-                reify_compiler::ModifyKind::Thicken => None, // not yet wired
+                reify_compiler::ModifyKind::Shell => {
+                    let thickness = eval_arg("thickness");
+                    // Collect face indices from face_0, face_1, ...
+                    let faces_to_remove: Vec<usize> = args
+                        .iter()
+                        .filter(|(n, _)| n.starts_with("face_"))
+                        .filter_map(|(_, expr)| {
+                            reify_expr::eval_expr(expr, values).as_f64().map(|v| v as usize)
+                        })
+                        .collect();
+                    Some(reify_types::GeometryOp::Shell {
+                        target: target_id,
+                        thickness,
+                        faces_to_remove,
+                    })
+                }
+                reify_compiler::ModifyKind::Draft => {
+                    let angle = eval_arg("angle");
+                    // plane is passed as an expression that evaluates to a value;
+                    // at this level we don't have the geometry handle yet, so we
+                    // use last_handle as a placeholder for the plane reference.
+                    let plane_id = *last_handle;
+                    Some(reify_types::GeometryOp::Draft {
+                        target: target_id,
+                        angle,
+                        plane: plane_id?,
+                    })
+                }
+                reify_compiler::ModifyKind::Thicken => {
+                    let offset = eval_arg("offset");
+                    Some(reify_types::GeometryOp::Thicken {
+                        target: target_id,
+                        offset,
+                    })
+                }
             }
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
@@ -2165,8 +2197,80 @@ fn compile_geometry_op(
                 }
             }
         }
-        CompiledGeometryOp::Pattern { .. } => None, // not yet wired
-        CompiledGeometryOp::Sweep { .. } => None, // not yet wired
+        CompiledGeometryOp::Pattern { kind, args, .. } => {
+            let eval_arg = |name: &str| -> reify_types::Value {
+                args.iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, expr)| reify_expr::eval_expr(expr, values))
+                    .unwrap_or(reify_types::Value::Undef)
+            };
+            let eval_arg_f64 = |name: &str| -> f64 {
+                args.iter()
+                    .find(|(n, _)| n == name)
+                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, values).as_f64())
+                    .unwrap_or(0.0)
+            };
+            // Pattern operations use last_handle as the target geometry
+            let target_id = (*last_handle)?;
+            match kind {
+                reify_compiler::PatternKind::Linear => {
+                    Some(reify_types::GeometryOp::LinearPattern {
+                        target: target_id,
+                        direction: [
+                            eval_arg_f64("dx"),
+                            eval_arg_f64("dy"),
+                            eval_arg_f64("dz"),
+                        ],
+                        count: eval_arg_f64("count") as usize,
+                        spacing: eval_arg("spacing"),
+                    })
+                }
+                reify_compiler::PatternKind::Circular => {
+                    Some(reify_types::GeometryOp::CircularPattern {
+                        target: target_id,
+                        axis_origin: [
+                            eval_arg_f64("ox"),
+                            eval_arg_f64("oy"),
+                            eval_arg_f64("oz"),
+                        ],
+                        axis_dir: [
+                            eval_arg_f64("ax"),
+                            eval_arg_f64("ay"),
+                            eval_arg_f64("az"),
+                        ],
+                        count: eval_arg_f64("count") as usize,
+                        angle: eval_arg("angle"),
+                    })
+                }
+                reify_compiler::PatternKind::Mirror => {
+                    Some(reify_types::GeometryOp::Mirror {
+                        target: target_id,
+                        plane_origin: [
+                            eval_arg_f64("ox"),
+                            eval_arg_f64("oy"),
+                            eval_arg_f64("oz"),
+                        ],
+                        plane_normal: [
+                            eval_arg_f64("nx"),
+                            eval_arg_f64("ny"),
+                            eval_arg_f64("nz"),
+                        ],
+                    })
+                }
+            }
+        }
+        CompiledGeometryOp::Sweep { kind, args, .. } => {
+            match kind {
+                reify_compiler::SweepKind::Loft => {
+                    // Loft needs profile geometry handles. For now, use
+                    // last_handle as a placeholder — full multi-handle
+                    // resolution requires a geometry handle registry.
+                    let profile_id = (*last_handle)?;
+                    let profiles = vec![profile_id; args.len()];
+                    Some(reify_types::GeometryOp::Loft { profiles })
+                }
+            }
+        }
     }
 }
 
