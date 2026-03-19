@@ -3,21 +3,21 @@ use std::ops::{Add, Neg, Sub};
 
 use crate::ContentHash;
 
-/// Rational number as i8/i8 for dimension exponents.
-/// Sufficient for all physical dimension exponents (e.g., m^(1/2) for √area).
+/// Rational number as i16/i16 for dimension exponents.
+/// Uses i16 to prevent overflow when multiplying exponents (max i8 * i8 = 16,129 < i16::MAX).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rational {
-    pub num: i8,
-    pub den: i8,
+    pub num: i16,
+    pub den: i16,
 }
 
 impl Rational {
     pub const ZERO: Rational = Rational { num: 0, den: 1 };
     pub const ONE: Rational = Rational { num: 1, den: 1 };
 
-    pub fn new(num: i8, den: i8) -> Self {
+    pub fn new(num: i16, den: i16) -> Self {
         assert!(den != 0, "denominator must not be zero");
-        let g = gcd(num.unsigned_abs(), den.unsigned_abs()) as i8;
+        let g = gcd(num.unsigned_abs(), den.unsigned_abs()) as i16;
         let sign = if den < 0 { -1 } else { 1 };
         Rational {
             num: sign * num / g,
@@ -34,13 +34,14 @@ impl Rational {
     }
 
     pub fn as_i8(self) -> Option<i8> {
-        if self.den == 1 {
-            Some(self.num)
+        let val = if self.den == 1 {
+            self.num
         } else if self.num % self.den == 0 {
-            Some(self.num / self.den)
+            self.num / self.den
         } else {
-            None
-        }
+            return None;
+        };
+        i8::try_from(val).ok()
     }
 }
 
@@ -84,7 +85,7 @@ impl fmt::Display for Rational {
     }
 }
 
-fn gcd(mut a: u8, mut b: u8) -> u8 {
+fn gcd(mut a: u16, mut b: u16) -> u16 {
     while b != 0 {
         let t = b;
         b = a % b;
@@ -127,7 +128,7 @@ impl DimensionVector {
         DimensionVector(v)
     }
 
-    const fn basis_n(index: usize, n: i8) -> DimensionVector {
+    const fn basis_n(index: usize, n: i16) -> DimensionVector {
         let mut v = [Rational::ZERO; 9];
         v[index] = Rational { num: n, den: 1 };
         DimensionVector(v)
@@ -161,6 +162,7 @@ impl DimensionVector {
     /// Fractional exponents are representable via `Rational`.
     pub fn root(&self, n: i8) -> DimensionVector {
         assert!(n != 0, "root degree must not be zero");
+        let n = n as i16;
         let mut result = [Rational::ZERO; 9];
         for (i, slot) in result.iter_mut().enumerate() {
             *slot = Rational::new(self.0[i].num, self.0[i].den * n);
@@ -171,6 +173,7 @@ impl DimensionVector {
     /// Raise to an integer power (multiply all exponents).
     pub fn pow(&self, n: i8) -> DimensionVector {
         let mut result = [Rational::ZERO; 9];
+        let n = n as i16;
         let nr = Rational { num: n, den: 1 };
         for (i, slot) in result.iter_mut().enumerate() {
             *slot = Rational::new(self.0[i].num * nr.num, self.0[i].den * nr.den);
@@ -179,10 +182,14 @@ impl DimensionVector {
     }
 
     pub fn content_hash(&self) -> ContentHash {
-        let mut buf = [0u8; 18]; // 9 * 2 bytes
+        let mut buf = [0u8; 36]; // 9 * 4 bytes (2 bytes per i16 field)
         for (i, r) in self.0.iter().enumerate() {
-            buf[i * 2] = r.num as u8;
-            buf[i * 2 + 1] = r.den as u8;
+            let num_bytes = r.num.to_le_bytes();
+            let den_bytes = r.den.to_le_bytes();
+            buf[i * 4] = num_bytes[0];
+            buf[i * 4 + 1] = num_bytes[1];
+            buf[i * 4 + 2] = den_bytes[0];
+            buf[i * 4 + 3] = den_bytes[1];
         }
         ContentHash::of(&buf)
     }
@@ -317,5 +324,80 @@ mod tests {
     fn root_dimensionless_stays_dimensionless() {
         let result = DimensionVector::DIMENSIONLESS.root(2);
         assert_eq!(result, DimensionVector::DIMENSIONLESS);
+    }
+
+    #[test]
+    fn pow_overflow_does_not_silently_wrap() {
+        // LENGTH^64 raised to power 2 should give exponent 128.
+        // With i8, 64*2=128 overflows i8::MAX (127).
+        let len64 = DimensionVector::basis_n(0, 64);
+        let result = len64.pow(2);
+        assert_eq!(result.0[0], Rational { num: 128, den: 1 });
+    }
+
+    #[test]
+    fn root_overflow_does_not_silently_wrap() {
+        // Rational exponent {1, 64} with root(3) → {1, 192}.
+        // With i8, den 64*3=192 overflows i8::MAX.
+        let mut v = [Rational::ZERO; 9];
+        v[0] = Rational { num: 1, den: 64 };
+        let dv = DimensionVector(v);
+        let result = dv.root(3);
+        assert_eq!(result.0[0], Rational { num: 1, den: 192 });
+    }
+
+    #[test]
+    fn rational_add_beyond_i8_range() {
+        // 100 + 100 = 200, which overflows i8::MAX (127).
+        let a = Rational::new(100, 1);
+        let b = Rational::new(100, 1);
+        assert_eq!(a + b, Rational::new(200, 1));
+    }
+
+    #[test]
+    fn rational_neg_at_i8_boundary() {
+        // Negating -128 in i8 overflows (no positive 128 in i8).
+        // With i16, -(-128) = 128 works fine.
+        let r = Rational { num: -128, den: 1 };
+        assert_eq!(-r, Rational { num: 128, den: 1 });
+    }
+
+    #[test]
+    fn rational_sub_beyond_i8_range() {
+        // 50 - (-100) = 150, but cross-multiplication in Sub produces
+        // 50*1 - (-100)*1 = 150 which overflows i8::MAX.
+        let a = Rational::new(50, 1);
+        let b = Rational::new(-100, 1);
+        assert_eq!(a - b, Rational::new(150, 1));
+    }
+
+    #[test]
+    fn pow_large_exponent_round_trip() {
+        // LENGTH^100 then root(100) should recover LENGTH.
+        let powered = DimensionVector::LENGTH.pow(100);
+        assert_eq!(powered.0[0], Rational { num: 100, den: 1 });
+        let rooted = powered.root(100);
+        assert_eq!(rooted, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn content_hash_determinism_with_wide_values() {
+        // DimensionVector with exponents > 127 must hash deterministically.
+        let dv = DimensionVector::basis_n(0, 200);
+        let h1 = dv.content_hash();
+        let h2 = dv.content_hash();
+        assert_eq!(h1, h2);
+        // Hash should differ from a different wide exponent.
+        let dv2 = DimensionVector::basis_n(0, 201);
+        assert_ne!(h1, dv2.content_hash());
+    }
+
+    #[test]
+    fn rational_display_wide_values() {
+        // Display formatting must show correct values beyond old i8 range.
+        let r = Rational { num: 200, den: 1 };
+        assert_eq!(format!("{}", r), "200");
+        let r2 = Rational::new(300, 2);
+        assert_eq!(format!("{}", r2), "150");
     }
 }

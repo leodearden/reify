@@ -1,122 +1,91 @@
 {
-  "task_id": "46",
-  "title": "Fix PoisonError handling consistency in runtime",
-  "modules": ["crates/reify-runtime"],
-  "analysis": "ConcurrentEvalAdapter and SharedPriorityPromoter have inconsistent PoisonError handling. The 'result extraction' paths (build_result_shared, into_result at lines 112-152) correctly use .unwrap_or_else(|e| e.into_inner()) to recover from poisoned locks, but accessor methods (values, take_results, skipped, is_dirty) and the evaluate() hot path use plain .unwrap(), which will cascade-panic if any concurrent task panics while holding a lock. SharedPriorityPromoter has the same issue across all 6 of its lock acquisitions. The fix is mechanical: replace all .unwrap() on Mutex::lock()/RwLock::read()/RwLock::write() with .unwrap_or_else(|e| e.into_inner()). For testing, we need to deliberately poison locks and verify recovery. ConcurrentEvalAdapter's locks are behind Arc, so we can add cfg-gated helpers that clone the relevant Arc and spawn a panicking thread to poison specific locks. SharedPriorityPromoter tests live in the same module so they can access the private `inner` field directly. Specifically: concurrent_eval.rs has 9 .unwrap() calls on lines 93, 98, 103, 176, 190, 220, 226, 242, 260 that need fixing; priority_promotion.rs has 6 .unwrap() calls on lines 121, 126, 131, 136, 147-148 that need fixing.\n\n**Post-review update:** The poison_* helper methods (lines 177-222 of concurrent_eval.rs) were implemented as `pub` in an unconditional `impl` block with only `#[doc(hidden)]`. This leaves state-corrupting methods in the production API surface. They must be gated behind `#[cfg(any(test, feature = \"test-utils\"))]` with a `test-utils` feature added to Cargo.toml. The integration tests that call these methods need `#[cfg(feature = \"test-utils\")]` gating since `#[cfg(test)]` only applies to unit tests within the crate, not integration tests in `tests/`.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Add #[cfg(test)] poison helper methods to ConcurrentEvalAdapter (poison_skip_state, poison_results, poison_values, poison_snapshot_values) that clone the inner Arc, spawn a thread that acquires the lock and panics, thereby poisoning it. These are needed by integration tests in tests/concurrent_eval.rs to set up poisoned-lock scenarios.",
-      "status": "done",
-      "commit": "86d5014",
-      "tests": []
-    }
-  ],
+  "task_id": "49",
+  "title": "Fix integer overflow in DimensionVector Rational pow",
+  "modules": ["crates/reify-types", "crates/reify-expr"],
+  "analysis": "The Rational type in dimension.rs uses i8 for both num and den fields. In DimensionVector::pow() (line 176), the multiplication `self.0[i].num * nr.num` is i8 * i8 which silently wraps in release builds when the result exceeds i8::MAX (127). The same overflow risk exists in root() (line 166, den * n), Add (line 51-52, cross-multiplication), Sub (line 61-62), and Neg (line 71, -i8::MIN overflows). The fix is Option A from the task description: widen Rational's internal storage from i8 to i16. This is safe because the maximum product of two i8 values is 127*127=16,129 which fits comfortably in i16 (max 32,767). Dimension exponents in physics rarely exceed ~6, but the code must not silently corrupt on edge cases. The blast radius is contained: Rational fields (num/den) are only accessed within dimension.rs itself, with one external call site in reify-expr/src/lib.rs:315 that casts an i64 exponent to i8 for pow(). The content_hash() method serializes num/den as single bytes and must be updated to use 2 bytes each (i16). The as_i8() helper is defined but never called outside dimension.rs. No overflow-checks profile is set in Cargo.toml, confirming release builds use wrapping arithmetic by default.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for adapter accessor methods recovering after lock poisoning. In tests/concurrent_eval.rs add: (1) `is_dirty_recovers_after_skip_state_poisoning` — poison skip_state, assert is_dirty() returns a bool without panicking; (2) `values_recovers_after_values_lock_poisoning` — poison values lock, assert values() returns a ValueMap; (3) `take_results_recovers_after_results_lock_poisoning` — poison results lock, assert take_results() returns a Vec; (4) `skipped_recovers_after_skip_state_poisoning` — poison skip_state, assert skipped() returns a HashSet. Each test creates a simple_setup adapter, poisons the relevant lock, then calls the accessor. These should FAIL because lines 93, 98, 103, 176 use .unwrap().",
+      "description": "Write failing test `pow_overflow_does_not_silently_wrap` in dimension.rs: construct a DimensionVector with LENGTH exponent 64 (via basis_n(0, 64)), call .pow(2). Assert result exponent equals Rational { num: 128, den: 1 }. With current i8 arithmetic, 64*2=128 overflows i8::MAX (127) and wraps to -128 in release or panics in debug. This test must fail with current code.",
       "status": "done",
-      "commit": "e09dbf5"
+      "commit": "292671f"
     },
     {
       "id": "step-2",
-      "type": "impl",
-      "description": "Fix .unwrap() on accessor methods in concurrent_eval.rs: line 93 values.read().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 98 results.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 103 skip_state.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 176 skip_state.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()). All 4 step-1 tests should now pass.",
+      "type": "test",
+      "description": "Write failing test `root_overflow_does_not_silently_wrap` in dimension.rs: construct a DimensionVector with Rational exponent {1, 64} for LENGTH (via direct construction), call .root(3). Assert result has Rational { num: 1, den: 192 }. With current i8, den 64*3=192 overflows i8::MAX. Also write `rational_add_beyond_i8_range`: assert Rational::new(100, 1) + Rational::new(100, 1) == Rational::new(200, 1). With i8 Add, 100+100=200 overflows.",
       "status": "done",
-      "commit": "68a1138"
+      "commit": "6edcf8a"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test for evaluate() recovering with poisoned locks. In tests/concurrent_eval.rs add `evaluate_continues_after_lock_poisoning`: create adapter from simple_setup, poison the values RwLock, then call adapter.evaluate(b_node).await. Currently panics at line 190 (values.read().unwrap()). After fix, evaluate should complete (returning an EvalOutcome) without cascading panic. Also verify take_results() and build_result_shared() still work afterward (regression guard for already-fixed paths).",
+      "description": "Write failing test `rational_neg_at_i8_boundary` in dimension.rs: assert -Rational { num: -128, den: 1 } produces Rational { num: 128, den: 1 }. In i8, negating -128 overflows (no positive 128 in i8). Write `rational_sub_beyond_i8_range`: assert Rational::new(50, 1) - Rational::new(-100, 1) == Rational::new(150, 1). The cross-multiplication 50*1 - (-100)*1 = 150 overflows i8.",
       "status": "done",
-      "commit": "554a1b6"
+      "commit": "6c4c6f3"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix .unwrap() in evaluate() method in concurrent_eval.rs: line 190 values.read().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 220 values.write().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 226 snapshot_values.write().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 242 skip_state.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 260 results.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()). Step-3 test should now pass.",
+      "description": "Widen Rational from i8 to i16. All changes in dimension.rs: (1) Change struct fields num: i8 → i16, den: i8 → i16. (2) Change Rational::new signature from (i8, i8) to (i16, i16). (3) Change gcd function from (u8, u8) → u8 to (u16, u16) → u16, update unsigned_abs cast to u16. (4) Keep as_i8() with added range check (return None if value outside i8 range); no callers outside tests. (5) Update content_hash() from 18-byte buffer (9×2) to 36-byte buffer (9×4) using i16 to_le_bytes() for deterministic cross-platform serialization. (6) In pow(), cast the i8 parameter n to i16 when constructing the Rational: `Rational { num: n as i16, den: 1 }`. (7) In root(), cast the i8 parameter n to i16 in the den multiplication. (8) Update basis_n const fn parameter from i8 to i16. (9) Update AREA/VOLUME constants to use i16 literal. (10) In reify-expr/src/lib.rs:315, change `*n as i8` to `*n as i16` for the dimension.pow() call. All step-1/2/3 tests should now pass.",
       "status": "done",
-      "commit": "c55c04e"
+      "commit": "619ff4a"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test for SharedPriorityPromoter recovering after lock poisoning. In priority_promotion.rs mod tests add `shared_promoter_recovers_after_lock_poisoning`: create Arc<SharedPriorityPromoter>, register node_a at P3Speculative, spawn thread that acquires shared.inner.lock() and panics (private field accessible from unit tests in same module), then assert effective_priority() returns Some(P3Speculative), register() succeeds for new node, promote() succeeds, remove() succeeds, promote_for_demand() succeeds. Currently fails because all lock() calls use .unwrap().",
+      "description": "Write verification tests in dimension.rs: (1) `pow_large_exponent_round_trip` — LENGTH.pow(100).root(100) should equal LENGTH, verifying large exponents work end-to-end with i16. (2) `content_hash_determinism_with_wide_values` — verify content_hash is deterministic for a DimensionVector with exponents > 127. (3) `rational_display_wide_values` — verify Display formatting works for Rational values outside old i8 range (e.g., '200' not '-56').",
       "status": "done",
-      "commit": "67630a5"
+      "commit": "86cd5ec"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Fix .unwrap() in SharedPriorityPromoter in priority_promotion.rs: line 121 inner.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 126 same, line 131 same, line 136 same, lines 146-148 same. All 6 Mutex::lock() calls get the recovery pattern. Step-5 test should now pass. All existing tests continue to pass since unwrap_or_else is a superset of unwrap behavior for non-poisoned locks.",
-      "status": "done",
-      "commit": "5eb4f47"
-    },
-    {
-      "id": "step-7",
-      "type": "impl",
-      "description": "Gate poison helper methods behind feature flag to exclude them from the production API. Three changes: (1) Add `[features]` section with `test-utils = []` to crates/reify-runtime/Cargo.toml. (2) In concurrent_eval.rs, change the `impl ConcurrentEvalAdapter` block at lines 176-222 (containing poison_skip_state, poison_results, poison_values, poison_snapshot_values) from `#[doc(hidden)]` to `#[cfg(any(test, feature = \"test-utils\"))]`. Remove `#[doc(hidden)]` since cfg-gating makes it unnecessary. (3) In tests/concurrent_eval.rs, wrap the 5 poison recovery tests (is_dirty_recovers_after_skip_state_poisoning, values_recovers_after_values_lock_poisoning, take_results_recovers_after_results_lock_poisoning, skipped_recovers_after_skip_state_poisoning, evaluate_continues_after_lock_poisoning) in a `#[cfg(feature = \"test-utils\")]` module block so they only compile when `--features test-utils` is passed. This is necessary because `#[cfg(test)]` on the impl block only activates for unit tests within the crate, not for integration tests in the `tests/` directory.",
-      "status": "done",
-      "commit": "21ec973"
-    },
-    {
-      "id": "step-8",
-      "type": "test",
-      "description": "Verify the feature gate works correctly. (1) Run `cargo check -p reify-runtime` (without test-utils feature) — must compile successfully, confirming the poison methods are excluded from the production binary and no other code depends on them unconditionally. (2) Run `cargo test -p reify-runtime --features test-utils` — all poison recovery tests must pass, confirming the feature flag correctly enables the test helpers. (3) Run `cargo test -p reify-runtime` (without feature) — all non-poison tests must pass, confirming no regression from the gating.",
-      "status": "done",
-      "commit": "21ec973"
+      "description": "Run full test suite: `cargo test -p reify-types -p reify-expr -p reify-stdlib`. All existing tests (rational_arithmetic, rational_normalization, dimension_mul, dimension_div, dimension_pow, force_dimension, root_area_to_length, root_length_4_to_length_2, root_length_to_fractional_exponent, root_dimensionless_stays_dimensionless, content_hash_determinism, and all reify-stdlib tests using DimensionVector) must pass. Fix any compilation errors or test failures caused by the type widening. Note: content_hash values will change due to wider serialization — if any test asserts specific hash values, update the expected values.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use .unwrap_or_else(|e| e.into_inner()) consistently for all lock acquisitions",
-      "rationale": "This is the existing recovery pattern already used in build_result_shared() and into_result() (lines 112-152). It extracts the last valid data from a poisoned lock, allowing the system to continue with potentially stale but structurally valid state rather than cascading panics. This is the right choice for a CAD engine where a transient evaluation failure should not crash the entire system."
+      "decision": "Widen Rational from i8 to i16 (Option A from task description)",
+      "rationale": "i16 completely eliminates overflow for all i8-range inputs since max(i8)*max(i8) = 127*127 = 16,129 < i16::MAX = 32,767. This is simpler than checked arithmetic (Option B) which would require error propagation through all dimension operations and changing method signatures. i32 is unnecessarily wide — dimension exponents are small numbers. i16 doubles storage from 2 to 4 bytes per Rational (18 to 36 bytes per DimensionVector) which is negligible."
     },
     {
-      "decision": "Add #[cfg(test)] poison helper methods to ConcurrentEvalAdapter rather than exposing internal locks",
-      "rationale": "Integration tests (tests/concurrent_eval.rs) cannot access private fields. Rather than making locks pub(crate) or restructuring, cfg(test) helpers provide a clean testing interface. Each helper clones the relevant Arc<Mutex/RwLock>, spawns a thread that acquires the lock and panics, poisoning it. This pattern is zero-cost in release builds."
+      "decision": "Keep pow() and root() accepting i8 parameters, widen internally",
+      "rationale": "Physical dimension exponents never exceed ~6 and even exotic cases stay well within i8 range (±127). Keeping i8 parameters documents the intent that these are small integer exponents. The parameter is widened to i16 internally via `as i16` cast, so intermediate multiplication cannot overflow. This minimizes API surface changes while fixing the overflow."
     },
     {
-      "decision": "Test SharedPriorityPromoter poisoning via unit tests inside the module",
-      "rationale": "Unit tests in priority_promotion.rs mod tests can access the private `inner` field directly, avoiding the need for test helper methods. This is simpler and matches the existing test pattern in that module which already uses std::sync::Arc and std::thread for concurrency tests."
+      "decision": "Change content_hash serialization from 18 to 36 bytes using to_le_bytes()",
+      "rationale": "With i16 fields, each Rational needs 4 bytes (2 per field via to_le_bytes) instead of 2 bytes (1 per field via `as u8`). This changes hash values for all DimensionVectors. Since reify is v0.1 in active development with no persisted hash database, hash stability is not required. Using to_le_bytes() ensures deterministic cross-platform hashing and avoids the truncation bug of casting i16 to u8."
     },
     {
-      "decision": "Do not convert to Result-returning APIs",
-      "rationale": "The task scope is to make PoisonError handling consistent, not to change the API surface. Converting to Result<T, PoisonError> would require changing every call site and is a larger refactor. The unwrap_or_else pattern preserves the existing API while adding resilience."
-    },
-    {
-      "decision": "Gate poison helpers with #[cfg(any(test, feature = \"test-utils\"))] and a Cargo feature, not just #[cfg(test)]",
-      "rationale": "#[cfg(test)] only applies during unit test compilation of the crate itself — it does NOT apply to integration tests in the tests/ directory or to downstream crates. Since the poison recovery integration tests live in tests/concurrent_eval.rs, they need a feature flag (test-utils) to enable the helpers. The dual gate `any(test, feature = \"test-utils\")` ensures the helpers are available both in unit tests (via cfg(test)) and in integration tests (via the feature). The integration tests themselves are wrapped in #[cfg(feature = \"test-utils\")] so they only compile when the feature is active."
+      "decision": "Update reify-expr call site from `*n as i8` to `*n as i16`",
+      "rationale": "The pow() call in eval_pow (reify-expr/src/lib.rs:315) casts an i64 exponent to i8, which truncates for values > 127 (e.g., 200 becomes -56). Widening to i16 reduces this risk. True range validation (returning Undef for exponents > i16::MAX) is out of scope for this task but would be a good follow-up."
     }
   ],
   "reuse": [
     {
-      "what": ".unwrap_or_else(|e| e.into_inner()) recovery pattern",
-      "where": "concurrent_eval.rs lines 112-152 (build_result_shared, into_result)",
-      "how": "Apply the same pattern to all remaining .unwrap() calls on lock acquisitions. This is the established convention in the codebase for PoisonError recovery."
+      "what": "Existing test patterns in dimension.rs",
+      "where": "crates/reify-types/src/dimension.rs lines 225-321",
+      "how": "Follow the same test structure: construct DimensionVector, perform operation, assert result equality or field-level Rational comparison. Reuse constants like DimensionVector::LENGTH, AREA, VOLUME."
     },
     {
-      "what": "simple_setup() test helper",
-      "where": "tests/concurrent_eval.rs lines 21-95",
-      "how": "Use the existing simple_setup() to create ConcurrentEvalAdapter instances for poison recovery tests, same as all other tests in the file."
+      "what": "gcd function (Euclidean algorithm)",
+      "where": "crates/reify-types/src/dimension.rs lines 87-94",
+      "how": "Widen parameter and return types from u8 to u16. Algorithm is identical — just change the types. No logic changes needed."
     },
     {
-      "what": "make_node() test helper and existing SharedPriorityPromoter test patterns",
-      "where": "priority_promotion.rs mod tests lines 164-369",
-      "how": "Follow the existing Arc<SharedPriorityPromoter> + thread::spawn pattern (used in shared_promoter_promote_from_another_thread and shared_promoter_concurrent_promotes) for the poison recovery test."
+      "what": "DimensionVector::basis_n const helper",
+      "where": "crates/reify-types/src/dimension.rs lines 130-134",
+      "how": "Reuse to construct test fixtures with large exponents (e.g., basis_n(0, 64) for LENGTH^64). Widen parameter from i8 to i16."
     },
     {
-      "what": "PanickingEvaluator test pattern",
-      "where": "tests/concurrent_eval.rs lines 537-545",
-      "how": "Reference the existing pattern of creating evaluators that intentionally panic, used in rollback_on_task_panicked and repeated_error_then_success_cycle tests."
-    },
-    {
-      "what": "Cargo feature gating pattern for test-only code",
-      "where": "Standard Rust idiom (cfg(any(test, feature = \"test-utils\")))",
-      "how": "Gate the poison helper impl block so it compiles only during unit tests or when test-utils feature is explicitly enabled. Integration tests use #[cfg(feature = \"test-utils\")] since cfg(test) doesn't apply to them."
+      "what": "ContentHash::of() hashing function",
+      "where": "crates/reify-types/src/hash.rs",
+      "how": "Same hashing function, just with wider input buffer (36 bytes instead of 18). No changes to the hash module itself."
     }
   ]
 }
