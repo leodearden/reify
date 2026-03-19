@@ -231,10 +231,35 @@ impl OcctKernel {
                     "CircularPattern not yet implemented".into(),
                 ));
             }
-            GeometryOp::Mirror { .. } => {
-                return Err(GeometryError::OperationFailed(
-                    "Mirror not yet implemented".into(),
-                ));
+            GeometryOp::Mirror {
+                target,
+                plane_origin,
+                plane_normal,
+            } => {
+                let shape = self.get_shape(*target)?;
+                // Validate plane normal is non-zero
+                let mag_sq = plane_normal[0] * plane_normal[0]
+                    + plane_normal[1] * plane_normal[1]
+                    + plane_normal[2] * plane_normal[2];
+                if mag_sq == 0.0
+                    || !plane_normal[0].is_finite()
+                    || !plane_normal[1].is_finite()
+                    || !plane_normal[2].is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(
+                        "mirror plane normal must be a finite non-zero vector".into(),
+                    ));
+                }
+                ffi::ffi::mirror_shape(
+                    shape,
+                    plane_origin[0],
+                    plane_origin[1],
+                    plane_origin[2],
+                    plane_normal[0],
+                    plane_normal[1],
+                    plane_normal[2],
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Loft { .. } => {
                 return Err(GeometryError::OperationFailed(

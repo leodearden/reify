@@ -61,6 +61,17 @@ pub mod ffi {
             angle_rad: f64,
         ) -> Result<UniquePtr<OcctShape>>;
 
+        // --- Mirror / Pattern ---
+        fn mirror_shape(
+            shape: &OcctShape,
+            ox: f64,
+            oy: f64,
+            oz: f64,
+            nx: f64,
+            ny: f64,
+            nz: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+
         // --- Queries ---
         fn query_volume(shape: &OcctShape) -> Result<f64>;
         fn query_area(shape: &OcctShape) -> Result<f64>;

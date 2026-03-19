@@ -22,6 +22,7 @@
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 #include <gp_Ax1.hxx>
+#include <gp_Ax2.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 
@@ -238,6 +239,32 @@ std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, doubl
         throw std::runtime_error(std::string("OCCT rotate_shape: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT rotate_shape: unknown C++ exception");
+    }
+}
+
+// --- Mirror / Pattern ---
+
+std::unique_ptr<OcctShape> mirror_shape(const OcctShape& shape,
+    double ox, double oy, double oz,
+    double nx, double ny, double nz) {
+    try {
+        gp_Ax2 mirror_plane(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz));
+        gp_Trsf trsf;
+        trsf.SetMirror(mirror_plane);
+        BRepBuilderAPI_Transform transform(shape.shape, trsf, true);
+        transform.Build();
+        if (!transform.IsDone()) {
+            throw std::runtime_error("BRepBuilderAPI_Transform (mirror) failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = transform.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT mirror_shape: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT mirror_shape: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT mirror_shape: unknown C++ exception");
     }
 }
 
