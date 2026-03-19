@@ -927,4 +927,58 @@ mod tests {
             result.changed
         );
     }
+
+    /// changed_vcids grows correctly through 3 levels: a→b→c→d, all Changed.
+    /// Verifies {a} → {a,b} → {a,b,c} propagation so d is dirty.
+    #[tokio::test]
+    async fn scheduler_changed_vcids_propagate_through_levels() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use reify_types::ValueCellId;
+        use std::collections::{HashMap, HashSet};
+        use std::sync::Arc;
+
+        let e = "L";
+        let a = ValueCellId::new(e, "a");
+        let b_vcid = ValueCellId::new(e, "b");
+        let c_vcid = ValueCellId::new(e, "c");
+        let d_vcid = ValueCellId::new(e, "d");
+
+        let b = NodeId::Value(b_vcid.clone());
+        let c = NodeId::Value(c_vcid.clone());
+        let d = NodeId::Value(d_vcid.clone());
+
+        // b reads a (level 0), c reads b (level 1), d reads c (level 2)
+        let mut traces = HashMap::new();
+        traces.insert(b.clone(), DependencyTrace { reads: vec![a.clone()] });
+        traces.insert(c.clone(), DependencyTrace { reads: vec![b_vcid.clone()] });
+        traces.insert(d.clone(), DependencyTrace { reads: vec![c_vcid.clone()] });
+
+        // All return Changed
+        struct AllChangedAsync;
+        impl AsyncNodeEvaluator for AllChangedAsync {
+            async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+                EvalOutcome::Changed
+            }
+        }
+
+        let evaluator = Arc::new(AllChangedAsync);
+        let eval_set = vec![b.clone(), c.clone(), d.clone()];
+        let cancel = CancellationToken::new();
+
+        let mut changed_cells = HashSet::new();
+        changed_cells.insert(a);
+
+        let scheduler = ConcurrentScheduler;
+        let result = scheduler
+            .execute(eval_set, evaluator, &traces, &cancel, &changed_cells)
+            .await
+            .unwrap();
+
+        // All 3 should be in changed, none skipped
+        assert!(result.changed.contains(&b), "b should be changed");
+        assert!(result.changed.contains(&c), "c should be changed");
+        assert!(result.changed.contains(&d), "d should be changed");
+        assert!(result.skipped.is_empty(), "nothing should be skipped: {:?}", result.skipped);
+    }
 }
