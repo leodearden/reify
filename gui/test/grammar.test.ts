@@ -28,6 +28,31 @@ describe('Lezer grammar – basic', () => {
   });
 });
 
+/** Count nodes of a given type in a parse tree. */
+function countNodes(tree: ReturnType<typeof parser.parse>, name: string): number {
+  let count = 0;
+  const cursor = tree.cursor();
+  do {
+    if (cursor.name === name) count++;
+  } while (cursor.next());
+  return count;
+}
+
+/** Find the first node of a given type and return its text. */
+function findFirstNodeText(
+  tree: ReturnType<typeof parser.parse>,
+  name: string,
+  source: string,
+): string | null {
+  const cursor = tree.cursor();
+  do {
+    if (cursor.name === name) {
+      return source.slice(cursor.from, cursor.to);
+    }
+  } while (cursor.next());
+  return null;
+}
+
 describe('Lezer grammar – bracket.ri fixture', () => {
   const bracketRi = readFileSync(
     resolve(__dirname, 'fixtures/bracket.ri'),
@@ -38,5 +63,47 @@ describe('Lezer grammar – bracket.ri fixture', () => {
     const tree = parser.parse(bracketRi);
     expect(tree.topNode.name).toBe('SourceFile');
     expect(hasErrors(tree)).toBe(false);
+  });
+});
+
+describe('Lezer grammar – bracket.ri node structure', () => {
+  const bracketRi = readFileSync(
+    resolve(__dirname, 'fixtures/bracket.ri'),
+    'utf-8',
+  );
+  const tree = parser.parse(bracketRi);
+
+  it('has StructureDefinition with Identifier Bracket', () => {
+    expect(countNodes(tree, 'StructureDefinition')).toBe(1);
+    // StructureDefinition is inside a Declaration wrapper
+    const declNode = tree.topNode.getChild('Declaration');
+    expect(declNode).not.toBeNull();
+    const structNode = declNode!.getChild('StructureDefinition');
+    expect(structNode).not.toBeNull();
+    const nameNode = structNode!.getChild('Identifier');
+    expect(nameNode).not.toBeNull();
+    expect(bracketRi.slice(nameNode!.from, nameNode!.to)).toBe('Bracket');
+  });
+
+  it('has 5 ParamDeclarations', () => {
+    expect(countNodes(tree, 'ParamDeclaration')).toBe(5);
+  });
+
+  it('has 2 LetDeclarations', () => {
+    expect(countNodes(tree, 'LetDeclaration')).toBe(2);
+  });
+
+  it('has 3 ConstraintDeclarations', () => {
+    expect(countNodes(tree, 'ConstraintDeclaration')).toBe(3);
+  });
+
+  it('has QuantityLiteral for 80mm', () => {
+    const text = findFirstNodeText(tree, 'QuantityLiteral', bracketRi);
+    expect(text).toBe('80mm');
+  });
+
+  it('has BinaryExpression nodes for arithmetic', () => {
+    // width * height * thickness produces nested BinaryExpression
+    expect(countNodes(tree, 'BinaryExpression')).toBeGreaterThanOrEqual(1);
   });
 });
