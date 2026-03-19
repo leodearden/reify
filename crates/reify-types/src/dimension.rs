@@ -3,21 +3,21 @@ use std::ops::{Add, Neg, Sub};
 
 use crate::ContentHash;
 
-/// Rational number as i8/i8 for dimension exponents.
-/// Sufficient for all physical dimension exponents (e.g., m^(1/2) for √area).
+/// Rational number as i16/i16 for dimension exponents.
+/// Uses i16 to prevent overflow when multiplying exponents (max i8 * i8 = 16,129 < i16::MAX).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rational {
-    pub num: i8,
-    pub den: i8,
+    pub num: i16,
+    pub den: i16,
 }
 
 impl Rational {
     pub const ZERO: Rational = Rational { num: 0, den: 1 };
     pub const ONE: Rational = Rational { num: 1, den: 1 };
 
-    pub fn new(num: i8, den: i8) -> Self {
+    pub fn new(num: i16, den: i16) -> Self {
         assert!(den != 0, "denominator must not be zero");
-        let g = gcd(num.unsigned_abs(), den.unsigned_abs()) as i8;
+        let g = gcd(num.unsigned_abs(), den.unsigned_abs()) as i16;
         let sign = if den < 0 { -1 } else { 1 };
         Rational {
             num: sign * num / g,
@@ -34,13 +34,14 @@ impl Rational {
     }
 
     pub fn as_i8(self) -> Option<i8> {
-        if self.den == 1 {
-            Some(self.num)
+        let val = if self.den == 1 {
+            self.num
         } else if self.num % self.den == 0 {
-            Some(self.num / self.den)
+            self.num / self.den
         } else {
-            None
-        }
+            return None;
+        };
+        i8::try_from(val).ok()
     }
 }
 
@@ -84,7 +85,7 @@ impl fmt::Display for Rational {
     }
 }
 
-fn gcd(mut a: u8, mut b: u8) -> u8 {
+fn gcd(mut a: u16, mut b: u16) -> u16 {
     while b != 0 {
         let t = b;
         b = a % b;
@@ -127,7 +128,7 @@ impl DimensionVector {
         DimensionVector(v)
     }
 
-    const fn basis_n(index: usize, n: i8) -> DimensionVector {
+    const fn basis_n(index: usize, n: i16) -> DimensionVector {
         let mut v = [Rational::ZERO; 9];
         v[index] = Rational { num: n, den: 1 };
         DimensionVector(v)
@@ -161,6 +162,7 @@ impl DimensionVector {
     /// Fractional exponents are representable via `Rational`.
     pub fn root(&self, n: i8) -> DimensionVector {
         assert!(n != 0, "root degree must not be zero");
+        let n = n as i16;
         let mut result = [Rational::ZERO; 9];
         for (i, slot) in result.iter_mut().enumerate() {
             *slot = Rational::new(self.0[i].num, self.0[i].den * n);
@@ -171,6 +173,7 @@ impl DimensionVector {
     /// Raise to an integer power (multiply all exponents).
     pub fn pow(&self, n: i8) -> DimensionVector {
         let mut result = [Rational::ZERO; 9];
+        let n = n as i16;
         let nr = Rational { num: n, den: 1 };
         for (i, slot) in result.iter_mut().enumerate() {
             *slot = Rational::new(self.0[i].num * nr.num, self.0[i].den * nr.den);
@@ -179,10 +182,14 @@ impl DimensionVector {
     }
 
     pub fn content_hash(&self) -> ContentHash {
-        let mut buf = [0u8; 18]; // 9 * 2 bytes
+        let mut buf = [0u8; 36]; // 9 * 4 bytes (2 bytes per i16 field)
         for (i, r) in self.0.iter().enumerate() {
-            buf[i * 2] = r.num as u8;
-            buf[i * 2 + 1] = r.den as u8;
+            let num_bytes = r.num.to_le_bytes();
+            let den_bytes = r.den.to_le_bytes();
+            buf[i * 4] = num_bytes[0];
+            buf[i * 4 + 1] = num_bytes[1];
+            buf[i * 4 + 2] = den_bytes[0];
+            buf[i * 4 + 3] = den_bytes[1];
         }
         ContentHash::of(&buf)
     }
