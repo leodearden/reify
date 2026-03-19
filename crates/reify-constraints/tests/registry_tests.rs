@@ -2,9 +2,7 @@
 
 use reify_constraints::{DimensionalSolver, SolverRegistry};
 use reify_test_support::*;
-use reify_types::{
-    AutoParam, ConstraintSolver, ResolutionProblem, SolveResult, Type, ValueMap,
-};
+use reify_types::{AutoParam, ConstraintSolver, ResolutionProblem, SolveResult, Type, ValueMap};
 
 /// Basic dispatch: SolverRegistry with DimensionalSolver as fallback
 /// produces same results as DimensionalSolver alone for a simple problem.
@@ -136,6 +134,60 @@ fn registry_uses_fallback_for_all_domains() {
     );
 }
 
+/// Cross-domain iteration: 2 constraints sharing param b — they merge
+/// into a single component and solve correctly via fallback (dimensional).
+#[test]
+fn cross_domain_shared_param_solved_via_fallback() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    let a_id = vcid("Part", "a");
+    let b_id = vcid("Part", "b");
+
+    // C1: a > b (Dimensional — both are length-typed value refs)
+    let c1 = gt(value_ref("Part", "a"), value_ref("Part", "b"));
+
+    // C2: b > 5mm (also Dimensional, shares param b with C1)
+    let c2 = gt(value_ref("Part", "b"), literal(mm(5.0)));
+
+    // C3: a < 50mm (bounds on a)
+    let c3 = lt(value_ref("Part", "a"), literal(mm(50.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: a_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            },
+            AutoParam {
+                id: b_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            },
+        ],
+        constraints: vec![
+            (cnid("Part", 0), c1),
+            (cnid("Part", 1), c2),
+            (cnid("Part", 2), c3),
+        ],
+        current_values: ValueMap::new(),
+        objective: None,
+    };
+
+    let result = registry.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let a_val = values.get(&a_id).unwrap().as_f64().unwrap();
+            let b_val = values.get(&b_id).unwrap().as_f64().unwrap();
+            // a > b, b > 5mm, a < 50mm
+            assert!(a_val > b_val, "a ({}) should be > b ({})", a_val, b_val);
+            assert!(b_val > 0.005, "b should satisfy > 5mm, got {}", b_val);
+            assert!(a_val < 0.050, "a should satisfy < 50mm, got {}", a_val);
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
+
 /// Backward compatibility: existing solver_integration test scenarios
 /// produce identical behavior through SolverRegistry.
 #[test]
@@ -174,3 +226,4 @@ fn registry_backward_compat_compound_constraint() {
         other => panic!("expected Solved, got {:?}", other),
     }
 }
+
