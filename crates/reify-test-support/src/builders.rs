@@ -256,7 +256,29 @@ impl TopologyTemplateBuilder {
     }
 
     pub fn build(self) -> TopologyTemplate {
-        let content_hash = ContentHash::of_str(&self.name);
+        // Build a content-sensitive hash matching compile_structure() logic.
+        let content_hash = {
+            let name_hash = ContentHash::of_str(&self.name);
+
+            let vc_hashes = self.value_cells.iter().map(|vc| {
+                vc.default_expr
+                    .as_ref()
+                    .map(|e| e.content_hash)
+                    .unwrap_or(ContentHash(0))
+            });
+
+            let constraint_hashes = self.constraints.iter().map(|c| c.expr.content_hash);
+
+            let sub_hashes = self.sub_components.iter().map(|s| s.content_hash);
+
+            let all_hashes = std::iter::once(name_hash)
+                .chain(vc_hashes)
+                .chain(constraint_hashes)
+                .chain(sub_hashes);
+
+            ContentHash::combine_all(all_hashes)
+        };
+
         TopologyTemplate {
             name: self.name,
             value_cells: self.value_cells,
