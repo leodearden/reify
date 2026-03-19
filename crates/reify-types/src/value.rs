@@ -541,6 +541,54 @@ mod tests {
         let _ = pos.cmp(&neg);
     }
 
+    // --- Enum tests (step-3) ---
+
+    #[test]
+    fn value_enum_debug() {
+        let v = Value::Enum {
+            type_name: "Color".into(),
+            variant: "Red".into(),
+        };
+        let dbg = format!("{:?}", v);
+        assert!(dbg.contains("Color"));
+        assert!(dbg.contains("Red"));
+    }
+
+    #[test]
+    fn value_enum_equality() {
+        let a = Value::Enum { type_name: "Color".into(), variant: "Red".into() };
+        let b = Value::Enum { type_name: "Color".into(), variant: "Red".into() };
+        let c = Value::Enum { type_name: "Color".into(), variant: "Blue".into() };
+        let d = Value::Enum { type_name: "Shape".into(), variant: "Red".into() };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, d);
+    }
+
+    #[test]
+    fn value_enum_ordering() {
+        let enum_val = Value::Enum { type_name: "Color".into(), variant: "Red".into() };
+        let string_val = Value::String("zzz".into());
+        // Enum sorts after String
+        assert!(enum_val > string_val);
+
+        // Within Enum: sort by type_name then variant
+        let a = Value::Enum { type_name: "Color".into(), variant: "Blue".into() };
+        let b = Value::Enum { type_name: "Color".into(), variant: "Red".into() };
+        let c = Value::Enum { type_name: "Shape".into(), variant: "A".into() };
+        assert!(a < b); // same type_name, Blue < Red
+        assert!(b < c); // Color < Shape
+    }
+
+    #[test]
+    fn value_enum_content_hash() {
+        let a = Value::Enum { type_name: "Color".into(), variant: "Red".into() };
+        let b = Value::Enum { type_name: "Color".into(), variant: "Red".into() };
+        let c = Value::Enum { type_name: "Color".into(), variant: "Blue".into() };
+        assert_eq!(a.content_hash(), b.content_hash()); // deterministic
+        assert_ne!(a.content_hash(), c.content_hash()); // distinct
+    }
+
     #[test]
     fn satisfaction_content_hash_distinct_variants() {
         let satisfied = Satisfaction::Satisfied.content_hash();
