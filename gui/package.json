@@ -1,0 +1,23 @@
+{
+  "name": "@reify/gui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:grammar": "lezer-generator src/editor/reify.grammar -o src/editor/reifyParser.js",
+    "pretest": "npm run build:grammar",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@lezer/lr": "^1.4.0",
+    "@lezer/highlight": "^1.2.0",
+    "@codemirror/language": "^6.10.0",
+    "@codemirror/state": "^6.4.0"
+  },
+  "devDependencies": {
+    "@lezer/generator": "^1.7.0",
+    "@codemirror/view": "^6.26.0",
+    "vitest": "^3.1.0",
+    "typescript": "^5.4.0"
+  }
+}
