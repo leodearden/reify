@@ -609,7 +609,22 @@ pub fn compile(
         }
     }
 
-    let content_hash = ContentHash::of_str(&format!("{}", parsed.path));
+    // Build a content-sensitive hash by combining the path with all compiled content.
+    let content_hash = {
+        let path_hash = ContentHash::of_str(&format!("{}", parsed.path));
+
+        // Template content hashes
+        let template_hashes = templates.iter().map(|t| t.content_hash);
+
+        // Import path hashes
+        let import_hashes = imports.iter().map(|i| ContentHash::of_str(&i.path));
+
+        let all_hashes = std::iter::once(path_hash)
+            .chain(template_hashes)
+            .chain(import_hashes);
+
+        ContentHash::combine_all(all_hashes)
+    };
 
     CompiledModule {
         path: parsed.path.clone(),
@@ -800,7 +815,31 @@ fn compile_structure(
         }
     }
 
-    let content_hash = ContentHash::of_str(entity_name);
+    // Build a content-sensitive hash by combining the name with all compiled content.
+    let content_hash = {
+        let name_hash = ContentHash::of_str(entity_name);
+
+        // Value cell default expression hashes (sentinel ContentHash(0) for None)
+        let vc_hashes = value_cells.iter().map(|vc| {
+            vc.default_expr
+                .as_ref()
+                .map(|e| e.content_hash)
+                .unwrap_or(ContentHash(0))
+        });
+
+        // Constraint expression hashes
+        let constraint_hashes = constraints.iter().map(|c| c.expr.content_hash);
+
+        // Sub-component content hashes
+        let sub_hashes = sub_components.iter().map(|s| s.content_hash);
+
+        let all_hashes = std::iter::once(name_hash)
+            .chain(vc_hashes)
+            .chain(constraint_hashes)
+            .chain(sub_hashes);
+
+        ContentHash::combine_all(all_hashes)
+    };
 
     TopologyTemplate {
         name: entity_name.clone(),

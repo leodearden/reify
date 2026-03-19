@@ -701,6 +701,124 @@ structure Bracket {
     );
 }
 
+/// Two different source texts with the same module path should produce different
+/// CompiledModule content_hashes — content changes must be reflected in the hash.
+#[test]
+fn different_content_same_path_different_hash() {
+    let path = reify_types::ModulePath::single("bracket");
+
+    let source_a = reify_test_support::bracket_source_with_width("80mm");
+    let parsed_a = reify_syntax::parse(&source_a, path.clone());
+    assert!(parsed_a.errors.is_empty(), "parse errors: {:?}", parsed_a.errors);
+    let compiled_a = reify_compiler::compile(&parsed_a);
+
+    let source_b = reify_test_support::bracket_source_with_width("120mm");
+    let parsed_b = reify_syntax::parse(&source_b, path.clone());
+    assert!(parsed_b.errors.is_empty(), "parse errors: {:?}", parsed_b.errors);
+    let compiled_b = reify_compiler::compile(&parsed_b);
+
+    assert_ne!(
+        compiled_a.content_hash, compiled_b.content_hash,
+        "different source content should produce different module content_hashes"
+    );
+}
+
+/// Same source compiled twice should produce identical content_hashes (determinism).
+#[test]
+fn same_content_same_hash_deterministic() {
+    let path = reify_types::ModulePath::single("bracket");
+    let source = reify_test_support::bracket_source();
+
+    let parsed_1 = reify_syntax::parse(source, path.clone());
+    let compiled_1 = reify_compiler::compile(&parsed_1);
+
+    let parsed_2 = reify_syntax::parse(source, path.clone());
+    let compiled_2 = reify_compiler::compile(&parsed_2);
+
+    assert_eq!(
+        compiled_1.content_hash, compiled_2.content_hash,
+        "same source compiled twice should produce identical module content_hashes"
+    );
+
+    // Also check template-level hashes
+    assert_eq!(
+        compiled_1.templates[0].content_hash,
+        compiled_2.templates[0].content_hash,
+        "same source compiled twice should produce identical template content_hashes"
+    );
+}
+
+/// Changing a param default value should change the content_hash.
+#[test]
+fn param_default_change_changes_hash() {
+    let path = reify_types::ModulePath::single("test_thickness");
+
+    let source_a = r#"structure S {
+    param thickness: Scalar = 5mm
+}"#;
+    let source_b = r#"structure S {
+    param thickness: Scalar = 10mm
+}"#;
+
+    let parsed_a = reify_syntax::parse(source_a, path.clone());
+    assert!(parsed_a.errors.is_empty(), "parse errors: {:?}", parsed_a.errors);
+    let compiled_a = reify_compiler::compile(&parsed_a);
+
+    let parsed_b = reify_syntax::parse(source_b, path.clone());
+    assert!(parsed_b.errors.is_empty(), "parse errors: {:?}", parsed_b.errors);
+    let compiled_b = reify_compiler::compile(&parsed_b);
+
+    assert_ne!(
+        compiled_a.content_hash, compiled_b.content_hash,
+        "changing a param default value should change the module content_hash"
+    );
+
+    assert_ne!(
+        compiled_a.templates[0].content_hash,
+        compiled_b.templates[0].content_hash,
+        "changing a param default value should change the template content_hash"
+    );
+}
+
+/// Adding/removing a constraint should change the content_hash.
+#[test]
+fn add_constraint_changes_hash() {
+    let path = reify_types::ModulePath::single("test_constraints");
+
+    let source_2 = r#"structure S {
+    param w: Scalar = 80mm
+    param h: Scalar = 100mm
+    constraint w > 0mm
+    constraint h > 0mm
+}"#;
+    let source_3 = r#"structure S {
+    param w: Scalar = 80mm
+    param h: Scalar = 100mm
+    constraint w > 0mm
+    constraint h > 0mm
+    constraint w > h
+}"#;
+
+    let parsed_2 = reify_syntax::parse(source_2, path.clone());
+    assert!(parsed_2.errors.is_empty(), "parse errors: {:?}", parsed_2.errors);
+    let compiled_2 = reify_compiler::compile(&parsed_2);
+
+    let parsed_3 = reify_syntax::parse(source_3, path.clone());
+    assert!(parsed_3.errors.is_empty(), "parse errors: {:?}", parsed_3.errors);
+    let compiled_3 = reify_compiler::compile(&parsed_3);
+
+    assert_ne!(
+        compiled_2.content_hash, compiled_3.content_hash,
+        "adding a constraint should change the module content_hash"
+    );
+
+    assert_ne!(
+        compiled_2.templates[0].content_hash,
+        compiled_3.templates[0].content_hash,
+        "adding a constraint should change the template content_hash"
+    );
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {

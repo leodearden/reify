@@ -1,82 +1,130 @@
 {
-  "task_id": "39",
-  "title": "Fix sqrt to preserve and halve Scalar dimensions",
-  "modules": ["crates/reify-types", "crates/reify-stdlib"],
-  "analysis": "The sqrt function in reify-stdlib (line 18) uses `unary_f64(args, |x| Value::Real(x.sqrt()))` which extracts the f64 via `as_f64()` and wraps the result as `Value::Real`, discarding any Scalar dimension information. The fix requires two changes: (1) Add a `root(n: i8)` method to `DimensionVector` in reify-types that divides each rational exponent by n (e.g., root(2) halves exponents: AREA [2,0,...] → LENGTH [1,0,...]). (2) Replace the sqrt implementation in reify-stdlib to match on Scalar separately, computing `si_value.sqrt()` and `dimension.root(2)`, falling through to the existing Real behavior for non-Scalar numeric types. The `sanitize_value` function already handles NaN/inf for both Real and Scalar, so negative inputs will naturally produce Undef. DimensionVector already uses Rational exponents, so fractional exponents (e.g., LENGTH^(1/2)) are representable without any type changes. Existing tests for sqrt(Real) and sqrt(negative Real) already pass and should continue to pass unchanged.",
+  "task_id": "40",
+  "title": "Fix CompiledModule content hash to include actual content",
+  "modules": ["crates/reify-compiler", "crates/reify-test-support"],
+  "analysis": "The bug is in two locations: (1) compile() at lib.rs:612 computes CompiledModule content_hash from only the module path string, and (2) compile_structure() at lib.rs:803 computes TopologyTemplate content_hash from only the entity name. The same bug is replicated in the test-support builders (TopologyTemplateBuilder::build at builders.rs:259 and CompiledModuleBuilder::build at builders.rs:327). The fix uses ContentHash::combine/combine_all to fold in actual content: for TopologyTemplate, combine the name hash with hashes from all value cell default expressions, constraint expressions, and sub_component content_hashes; for CompiledModule, combine the path hash with all template content_hashes and import path hashes. The existing content_hash fields on CompiledExpr and SubComponentDecl already carry correct per-item hashes, so we just need to aggregate them. Tests use reify_syntax::parse() to compile real source text, then compare hashes across different inputs. No existing tests hardcode specific hash values from compile() — the boundary1_consumer tests construct ParsedModule manually with explicit hashes that are passed through, and boundary2_producer's content_hashes_present test just checks non-zero, so it will still pass.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for DimensionVector::root() in crates/reify-types/src/dimension.rs: (a) root(2) of AREA → LENGTH (halve [2,0,...] to [1,0,...]), (b) root(2) of LENGTH^4 → LENGTH^2 (arbitrary even exponents), (c) root(2) of LENGTH → fractional exponent LENGTH^(1/2) with Rational(1,2), (d) root(2) of DIMENSIONLESS → DIMENSIONLESS",
+      "description": "Write failing test: two different source texts with same module path produce different CompiledModule content_hashes. In boundary2_producer.rs, create test 'different_content_same_path_different_hash' that parses two sources (e.g. bracket with width=80mm vs width=120mm) with the same ModulePath, compiles both, and asserts their content_hashes differ. This will FAIL because current hash only uses path.",
       "status": "done",
-      "commit": "92718c5"
+      "commit": "e693693"
     },
     {
       "id": "step-2",
-      "type": "impl",
-      "description": "Implement DimensionVector::root(n: i8) method in crates/reify-types/src/dimension.rs. For each exponent Rational{num, den}, compute Rational::new(num, den * n). This divides each dimension exponent by n, producing fractional exponents when needed.",
+      "type": "test",
+      "description": "Write failing test: same source compiled twice produces identical content_hashes (determinism). In boundary2_producer.rs, create test 'same_content_same_hash_deterministic' that parses and compiles the same source twice and asserts content_hashes are equal. This should PASS even before the fix (path-only hash is deterministic), serving as a regression guard.",
       "status": "done",
-      "commit": "8a6f85e"
+      "commit": "58f7e9c"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for dimension-aware sqrt in crates/reify-stdlib/src/lib.rs: (a) sqrt(Scalar{4.0, AREA}) must return Scalar{2.0, LENGTH}, (b) sqrt(Scalar{9.0, LENGTH^4}) must return Scalar{3.0, LENGTH^2}, (c) sqrt(Scalar{4.0, LENGTH}) must return Scalar{2.0, LENGTH^(1/2)} with fractional Rational exponent, (d) sqrt(Real(4.0)) must still return Real(2.0) — backward compat (existing test confirms), (e) sqrt(negative Scalar) must return Undef",
+      "description": "Write failing test: changing a param default value changes content_hash. Create test 'param_default_change_changes_hash' — compile bracket source with thickness=5mm vs a version with thickness=10mm (same path), assert module content_hashes differ. Will FAIL with current path-only hash.",
       "status": "done",
-      "commit": "a9e988a"
+      "commit": "0a3d85e"
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Replace sqrt implementation in crates/reify-stdlib/src/lib.rs line 18. Change from `unary_f64(args, |x| Value::Real(x.sqrt()))` to use `unary(args, |v| ...)` which matches on Value::Scalar to preserve/halve dimensions via dimension.root(2), and falls through to as_f64() → Value::Real for Int/Real inputs. Apply sanitize_value to catch NaN from negative inputs.",
+      "type": "test",
+      "description": "Write failing test: adding/removing a constraint changes content_hash. Create test 'add_constraint_changes_hash' — compile one source with 2 constraints and another with 3 constraints (same path and same params), assert module content_hashes differ. Will FAIL with current path-only hash.",
       "status": "done",
-      "commit": "00a9c18"
+      "commit": "2ecb4b5"
+    },
+    {
+      "id": "step-5",
+      "type": "impl",
+      "description": "Fix compile_structure() in lib.rs: replace `ContentHash::of_str(entity_name)` with a proper content hash that combines the name hash with hashes from all compiled content. Use ContentHash::combine_all over: (1) name hash, (2) each value_cell's default_expr.content_hash (or a sentinel ContentHash(0) for None), (3) each constraint's expr.content_hash, (4) each sub_component's content_hash. This makes TopologyTemplate hashes content-sensitive.",
+      "status": "done",
+      "commit": "290159e"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Fix compile() in lib.rs: replace `ContentHash::of_str(&format!(\"{}\", parsed.path))` with a combined hash of: (1) the path hash, (2) all template content_hashes (via combine_all), (3) import path hashes. This makes CompiledModule hashes content-sensitive. All 4 new tests should now pass.",
+      "status": "done",
+      "commit": "0f45d56"
+    },
+    {
+      "id": "step-7",
+      "type": "impl",
+      "description": "Fix TopologyTemplateBuilder::build() in test-support/src/builders.rs: replace `ContentHash::of_str(&self.name)` with a combined hash matching the same pattern as compile_structure() — fold in value_cells default_expr hashes, constraint expr hashes, and sub_components content hashes.",
+      "status": "done",
+      "commit": "cb3958e"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Fix CompiledModuleBuilder::build() in test-support/src/builders.rs: replace `ContentHash::of_str(&format!(\"{}\", self.path))` with a combined hash matching compile() — fold in template content_hashes and import path hashes.",
+      "status": "done",
+      "commit": "06c6780"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Run full test suite for reify-compiler and reify-test-support crates to verify all existing tests still pass and all 4 new tests pass. Fix any regressions if found.",
+      "status": "done",
+      "commit": "28e86b5"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add DimensionVector::root(n) rather than Mul trait on Rational",
-      "rationale": "root(n) is the natural API for nth-root dimension operations (sqrt=root(2), cbrt=root(3)). It's more semantically clear than exposing general Rational multiplication. The implementation is trivial: divide each exponent by n via Rational::new(num, den*n). No need to add Mul for Rational since pow() already inlines the multiplication."
+      "decision": "Combine hashes using ContentHash::combine_all over an iterator of sub-hashes, not by serializing the entire struct to a string",
+      "rationale": "Using combine_all is the established pattern in the codebase (see compile_expr which builds content_hash via combine). It's efficient (no allocation for serialization) and composable. The alternative of hashing a Debug/Display string would be fragile and dependent on formatting."
     },
     {
-      "decision": "Use unary() instead of unary_f64() for sqrt",
-      "rationale": "unary_f64 extracts as_f64() too early, losing the Value variant information. Using unary() allows pattern matching on Value::Scalar to preserve dimension info, matching the existing pattern used by abs(). The non-Scalar fallback still uses as_f64() for backward compatibility."
+      "decision": "Include a sentinel hash (ContentHash(0)) for value cells with no default_expr (None) rather than skipping them",
+      "rationale": "If we skip None entries, adding an auto param (which has no default_expr) to an existing structure wouldn't change the hash if the other params remained the same. Using a sentinel ensures the hash reflects the full structure of the template including the count and position of value cells."
     },
     {
-      "decision": "Rely on sanitize_value for negative input handling",
-      "rationale": "(-x).sqrt() produces NaN in Rust, and sanitize_value already converts NaN/inf Scalars to Undef (line 103-105). No special-case needed for negative Scalar inputs — the existing defense-in-depth mechanism handles it uniformly for both Real and Scalar."
+      "decision": "Include import paths in the CompiledModule hash",
+      "rationale": "Adding/removing an import changes the module's semantics even if templates are unchanged. This is important for future module resolution — when imports actually resolve, their content will flow into template compilation. Including import paths now prevents cache staleness when import resolution is implemented."
     },
     {
-      "decision": "Allow fractional dimension exponents from sqrt of odd-dimension values",
-      "rationale": "sqrt(LENGTH) produces LENGTH^(1/2) which is physically valid (used in e.g., fracture toughness MPa·√m). Rational already supports this representation. Rather than erroring, we let the type system propagate the fractional exponent and let downstream dimension-checking catch any mismatches."
+      "decision": "Do NOT include diagnostics in the content hash",
+      "rationale": "Diagnostics are derived from the content — they're warnings/errors about the content, not part of it. Including them would make the hash unstable if diagnostic messages change (e.g., improved error text). The actual compiled content (templates, imports) is what matters for cache invalidation."
+    },
+    {
+      "decision": "Fix the test-support builders to match the compiler's hashing logic",
+      "rationale": "The builders are used to construct expected CompiledModules in tests. If the builder produces path-only hashes while the compiler produces content-sensitive hashes, comparisons in tests would fail or, worse, silently use wrong hashes. Consistency between compiler and test infrastructure is essential."
+    },
+    {
+      "decision": "Use parse-then-compile (not manually constructed ParsedModule) for the new hash tests",
+      "rationale": "Using reify_syntax::parse() with real source text (like the existing compile_auto_param test does) is more realistic and less brittle than manually constructing AST nodes. It also tests the full pipeline and ensures the parser's content_hash fields feed correctly into the compiler's hash."
     }
   ],
   "reuse": [
     {
-      "what": "unary() helper function",
-      "where": "crates/reify-stdlib/src/lib.rs:87-92",
-      "how": "Use unary() instead of unary_f64() for sqrt, same pattern as abs() which also matches on Value variants to preserve Scalar dimensions"
+      "what": "ContentHash::combine and ContentHash::combine_all",
+      "where": "crates/reify-types/src/hash.rs",
+      "how": "Use combine_all to fold template hashes, value cell hashes, constraint hashes, and import hashes into a single module/template content hash"
     },
     {
-      "what": "sanitize_value() function",
-      "where": "crates/reify-stdlib/src/lib.rs:100-108",
-      "how": "Already handles Scalar{NaN/inf} → Undef conversion, so negative Scalar inputs to sqrt are handled automatically without new code"
+      "what": "CompiledExpr::content_hash field",
+      "where": "crates/reify-types/src/expr.rs (CompiledExpr struct)",
+      "how": "Each compiled expression already carries a content_hash. Use value_cell.default_expr.content_hash and constraint.expr.content_hash as inputs to the template hash"
     },
     {
-      "what": "Rational::new() normalization",
-      "where": "crates/reify-types/src/dimension.rs:18-26",
-      "how": "root(2) of AREA uses Rational::new(2, 2) which auto-normalizes to Rational{1,1} = ONE, correctly producing LENGTH"
+      "what": "SubComponentDecl::content_hash field",
+      "where": "crates/reify-compiler/src/lib.rs:45",
+      "how": "Sub-components already have content_hash from the parser. Include these in the TopologyTemplate hash via combine_all"
     },
     {
-      "what": "DimensionVector constants (AREA, LENGTH, etc.)",
-      "where": "crates/reify-types/src/dimension.rs:112-122",
-      "how": "Use in tests to construct Scalar inputs and verify expected output dimensions"
+      "what": "bracket_source_with_width() fixture",
+      "where": "crates/reify-test-support/src/fixtures.rs:29",
+      "how": "Use this to generate two different source texts with the same module path for the 'different content, different hash' test"
     },
     {
-      "what": "abs() implementation pattern",
-      "where": "crates/reify-stdlib/src/lib.rs:9-17",
-      "how": "Follow same match-on-Scalar pattern for sqrt: match Value::Scalar to transform si_value while preserving/transforming dimension"
+      "what": "reify_syntax::parse() function",
+      "where": "crates/reify-syntax/src/lib.rs:156",
+      "how": "Parse real source text in tests (same pattern as compile_auto_param and e2e_stdlib_function_in_let_binding tests) rather than manually constructing ParsedModule"
+    },
+    {
+      "what": "Existing boundary2_producer.rs test patterns",
+      "where": "crates/reify-compiler/tests/boundary2_producer.rs",
+      "how": "Follow the established test style — use reify_test_support fixtures, reify_syntax::parse(), and assert on CompiledModule properties"
     }
   ]
 }
