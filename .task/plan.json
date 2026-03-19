@@ -21,7 +21,7 @@
     "crates/reify-types",
     "crates/reify-expr"
   ],
-  "analysis": "This task adds user-defined function declarations across three layers: grammar, parser, and compiler, with overload resolution for function calls.\n\n**Existing infrastructure:**\n- Grammar has `_declaration` choice with `structure_definition`, `import_declaration`, `enum_declaration`. Functions become a 4th top-level declaration.\n- Grammar has `let_declaration` as a structure member (no semicolons). Function bodies need a separate `fn_let_binding` rule with `;` separator to distinguish let bindings from the final result expression.\n- Grammar has `type_expr: $ => $.identifier` — simple identifier-based types, sufficient for fn param/return types.\n- Grammar has `function_call` expression rule with `argument_list` — already parses `name(args)`. Compiler currently emits `CompiledExprKind::FunctionCall` for stdlib calls; user fn calls need a new `CompiledExprKind::UserFunctionCall`.\n- Parser uses two-pass lowering: first pass collects enum names, second pass lowers everything. Functions will be collected in the first pass for forward reference support.\n- Compiler has `CompilationScope` for name resolution within structures. Function compilation needs its own scope with params + let bindings.\n- `CompiledExprKind` in reify-types/src/expr.rs needs a new `UserFunctionCall` variant; reify-expr match arms on that enum need updating.\n- Tests follow established pattern: parser tests in ts_parser.rs inline #[cfg(test)] mod, compiler tests in boundary2_producer.rs using parse-compile-assert pattern.\n\n**Key design:** Function bodies have `let_declaration`s terminated by `;` followed by a final result expression. Type parameters (`<T: Bound>`) are parsed structurally but not deeply type-checked in this task. Overload resolution matches compiled argument types against function parameter types. Exactly one candidate must match or an error is emitted.",
+  "analysis": "This task adds user-defined function declarations across three layers: grammar, parser, and compiler, with overload resolution for function calls.\n\n**Existing infrastructure:**\n- Grammar has `_declaration` choice with `structure_definition`, `import_declaration`, `enum_declaration`. Functions become a 4th top-level declaration.\n- Grammar has `let_declaration` as a structure member (no semicolons). Function bodies need a separate `fn_let_binding` rule with `;` separator to distinguish let bindings from the final result expression.\n- Grammar has `type_expr: $ => $.identifier` — simple identifier-based types, sufficient for fn param/return types.\n- Grammar has `function_call` expression rule with `argument_list` — already parses `name(args)`. Compiler currently emits `CompiledExprKind::FunctionCall` for stdlib calls; user fn calls need a new `CompiledExprKind::UserFunctionCall`.\n- Parser uses two-pass lowering: first pass collects enum names, second pass lowers everything. Functions will be collected in the first pass for forward reference support.\n- Compiler has `CompilationScope` for name resolution within structures. Function compilation needs its own scope with params + let bindings.\n- `CompiledExprKind` in reify-types/src/expr.rs needs a new `UserFunctionCall` variant; reify-expr match arms on that enum need updating.\n- Tests follow established pattern: parser tests in ts_parser.rs inline #[cfg(test)] mod, compiler tests in boundary2_producer.rs using parse-compile-assert pattern.\n\n**Key design:** Function bodies have `let_declaration`s terminated by `;` followed by a final result expression. Type parameters (`<T: Bound>`) are parsed structurally but not deeply type-checked in this task. Overload resolution matches compiled argument types against function parameter types. Exactly one candidate must match or an error is emitted.\n\n**Review fix (post step-24):** compile_function passes &[] for the functions parameter on both compile_expr calls (lines 1106, 1114), preventing fn bodies from calling other user-defined functions. Steps 25-28 fix this by threading the accumulated functions slice into compile_function and through to compile_expr, enabling fn-to-fn calls within function bodies.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -220,6 +220,34 @@
       "description": "Verify step-23 passes. Run full `cargo test --workspace` to confirm no regressions across all crates. Fix any issues found.",
       "status": "done",
       "commit": "3205e00"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Write failing test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_fn_body_calls_other_user_fn` — parse source `\"fn double(x: Real) -> Real { x + x }\\nfn quadruple(x: Real) -> Real { double(double(x)) }\"`, compile, assert: compiled.functions.len() == 2, compiled.functions[1].name == \"quadruple\", the result_expr of quadruple's body is `CompiledExprKind::UserFunctionCall { function_name: \"double\", .. }` (outer call), and its single arg is also `CompiledExprKind::UserFunctionCall { function_name: \"double\", .. }` (inner call), both with result_type == Type::Real, no error diagnostics. Fails because compile_function currently passes &[] for the functions parameter to compile_expr, so the double() calls inside quadruple's body silently fall through to stdlib FunctionCall instead of UserFunctionCall.",
+      "status": "done",
+      "commit": "249d487"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Fix compile_function in crates/reify-compiler/src/lib.rs to thread the functions list through to compile_expr:\n(a) Add `functions: &[CompiledFunction]` parameter to compile_function's signature.\n(b) Replace the `&[]` on line 1106 (let-binding compile_expr call) with `functions`.\n(c) Replace the `&[]` on line 1114 (result_expr compile_expr call) with `functions`.\n(d) Update the call site in compile() (line 724) to pass `&functions` — since functions are accumulated in the pre-pass loop, each function compiled can see all previously-compiled functions in the list. This creates a natural ordering constraint: a function can only call functions that appear before it in source order. This is a significant improvement over the current &[] which prevents all fn-to-fn calls.\nStep-25 test now passes (assuming double is declared before quadruple in source order).",
+      "status": "done",
+      "commit": "1375cf3"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Write test in crates/reify-compiler/tests/boundary2_producer.rs: `compile_fn_body_calls_user_fn_in_let_binding` — parse source `\"fn double(x: Real) -> Real { x + x }\\nfn calc(x: Real) -> Real { let y = double(x); y + 1 }\"`, compile, assert: compiled.functions[1].name == \"calc\", body.let_bindings[0].1.kind is `CompiledExprKind::UserFunctionCall { function_name: \"double\", .. }` with result_type == Type::Real, body.result_expr is BinOp(+) with result_type == Type::Real, no error diagnostics. Validates that the functions slice is correctly threaded through let-binding compilation inside function bodies.",
+      "status": "done",
+      "commit": "83db3f0"
+    },
+    {
+      "id": "step-28",
+      "type": "impl",
+      "description": "Verify step-27 test passes with step-26 implementation. Both compile_expr calls in compile_function (for let-binding values and for the result expression) now receive the functions slice, so UserFunctionCall resolution works in both positions within a function body. Run full `cargo test --workspace` to confirm no regressions.",
+      "status": "done",
+      "commit": "83db3f0"
     }
   ],
   "design_decisions": [
@@ -254,6 +282,10 @@
     {
       "decision": "Duplicate detection uses (name, param_types) as key, not (name, param_types, return_type)",
       "rationale": "Per task spec: 'Same name + same param types = error'. Return type alone doesn't distinguish overloads — you can't have two functions with the same name and param types but different return types. This matches standard overload resolution rules (C++, Java, etc.)."
+    },
+    {
+      "decision": "Fn-to-fn calls use source-order-dependent partial function list rather than a separate signature-collection pre-pass",
+      "rationale": "In the function pre-pass loop, each compile_function call receives &functions which contains only previously-compiled functions. This means a function can call functions declared before it but not after. Supporting mutual recursion or forward fn-to-fn references would require a separate signature-collection step before body compilation. The partial-list approach is a pragmatic improvement that enables the common case (helper functions declared before their callers) without the complexity of a three-pass compilation."
     }
   ],
   "reuse": [
