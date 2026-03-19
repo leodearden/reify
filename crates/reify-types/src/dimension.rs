@@ -318,4 +318,13 @@ mod tests {
         let result = DimensionVector::DIMENSIONLESS.root(2);
         assert_eq!(result, DimensionVector::DIMENSIONLESS);
     }
+
+    #[test]
+    fn pow_overflow_does_not_silently_wrap() {
+        // LENGTH^64 raised to power 2 should give exponent 128.
+        // With i8, 64*2=128 overflows i8::MAX (127).
+        let len64 = DimensionVector::basis_n(0, 64);
+        let result = len64.pow(2);
+        assert_eq!(result.0[0], Rational { num: 128, den: 1 });
+    }
 }
