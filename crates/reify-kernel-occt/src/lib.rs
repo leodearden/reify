@@ -691,6 +691,44 @@ mod tests {
     }
 
     #[test]
+    fn warm_state_skips_null_shapes() {
+        let mut kernel = OcctKernel::new();
+
+        // Create a valid box (id=1)
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // Inject a null shape at id=2
+        kernel.insert_null_shape(2);
+
+        // warm_state should NOT panic and should return Some (valid shape exists)
+        let state = kernel.warm_state();
+        assert!(state.is_some(), "should serialize the valid shape");
+
+        // Roundtrip: restore in a new kernel
+        let mut kernel_b = OcctKernel::new();
+        kernel_b.with_warm_state(state.unwrap());
+
+        // Valid box should be preserved (volume ~6000)
+        let vol = kernel_b
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match vol {
+            Value::Real(v) => assert!((v - 6000.0).abs() < 1.0, "expected ~6000, got {v}"),
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // Null shape (id=2) should NOT be present in restored kernel
+        let result = kernel_b.query(&GeometryQuery::Volume(GeometryHandleId(2)));
+        assert!(result.is_err(), "null shape should not survive warm-start");
+    }
+
+    #[test]
     fn brep_serialization_roundtrip() {
         // Create a box shape
         let shape = ffi::ffi::make_box(10.0, 20.0, 30.0).unwrap();
