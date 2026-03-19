@@ -1314,4 +1314,56 @@ mod tests {
             "expected volume ~6000, got {vol}"
         );
     }
+
+    // --- Mirror tests ---
+
+    #[test]
+    fn mirror_across_yz_plane() {
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10 box (volume = 1000)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Translate box to (5,0,0) so it's off-center
+        let translated_h = kernel
+            .execute(&GeometryOp::Translate {
+                target: box_h.id,
+                dx: 10.0,
+                dy: 0.0,
+                dz: 0.0,
+            })
+            .unwrap();
+        // Mirror across YZ plane (origin=[0,0,0], normal=[1,0,0])
+        let mirrored_h = kernel
+            .execute(&GeometryOp::Mirror {
+                target: translated_h.id,
+                plane_origin: [0.0, 0.0, 0.0],
+                plane_normal: [1.0, 0.0, 0.0],
+            })
+            .unwrap();
+        // Fuse original and mirrored
+        let fused_h = kernel
+            .execute(&GeometryOp::Union {
+                left: translated_h.id,
+                right: mirrored_h.id,
+            })
+            .unwrap();
+        // Volume should be approximately 2 * 1000 = 2000
+        let vol = kernel
+            .query(&GeometryQuery::Volume(fused_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 2000.0).abs() < 10.0,
+                    "expected fused mirror volume ~2000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
 }
