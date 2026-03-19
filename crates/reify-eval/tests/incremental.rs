@@ -2070,3 +2070,65 @@ fn forward_let_ref_diamond_incremental_edit() {
         "d = b + c = 21 + 22 = 43"
     );
 }
+
+/// Deep reversed chain updates correctly through incremental edit.
+///
+/// Template: param a (default 0, Int)
+///   let z = y + 1  (declared 1st — depends on y)
+///   let y = x + 1  (declared 2nd — depends on x)
+///   let x = a + 1  (declared 3rd — depends on a)
+///
+/// Cold-start: x=1, y=2, z=3.
+/// Edit a→10: x=11, y=12, z=13.
+#[test]
+fn forward_let_ref_deep_chain_incremental_edit() {
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+    let z_id = ValueCellId::new("S", "z");
+
+    // z = y + 1
+    let z_expr = binop(BinOp::Add, value_ref("S", "y"), literal(Value::Int(1)));
+    // y = x + 1
+    let y_expr = binop(BinOp::Add, value_ref("S", "x"), literal(Value::Int(1)));
+    // x = a + 1
+    let x_expr = binop(BinOp::Add, value_ref("S", "a"), literal(Value::Int(1)));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::Int, Some(literal(Value::Int(0))))
+        .let_binding("S", "z", Type::Int, z_expr)  // z declared first
+        .let_binding("S", "y", Type::Int, y_expr)  // y declared second
+        .let_binding("S", "x", Type::Int, x_expr)  // x declared third
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let result = engine.eval(&module);
+
+    // Cold-start: x=1, y=2, z=3
+    assert_eq!(*result.values.get(&x_id).unwrap(), Value::Int(1));
+    assert_eq!(*result.values.get(&y_id).unwrap(), Value::Int(2));
+    assert_eq!(*result.values.get(&z_id).unwrap(), Value::Int(3));
+
+    // Incremental edit: a → 10
+    let edit_result = engine.edit_param(a_id.clone(), Value::Int(10));
+
+    assert_eq!(
+        *edit_result.values.get(&x_id).unwrap(),
+        Value::Int(11),
+        "x = a + 1 = 10 + 1 = 11"
+    );
+    assert_eq!(
+        *edit_result.values.get(&y_id).unwrap(),
+        Value::Int(12),
+        "y = x + 1 = 11 + 1 = 12"
+    );
+    assert_eq!(
+        *edit_result.values.get(&z_id).unwrap(),
+        Value::Int(13),
+        "z = y + 1 = 12 + 1 = 13"
+    );
+}
