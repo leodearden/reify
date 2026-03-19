@@ -323,8 +323,31 @@ fn eval_eq(lv: &Value, rv: &Value) -> Value {
         (Value::Bool(a), Value::Bool(b)) => Value::Bool(a == b),
         (Value::Int(a), Value::Int(b)) => Value::Bool(a == b),
         (Value::String(a), Value::String(b)) => Value::Bool(a == b),
+        // Scalar-vs-Scalar: compare dimensions first
+        (
+            Value::Scalar {
+                si_value: a,
+                dimension: da,
+            },
+            Value::Scalar {
+                si_value: b,
+                dimension: db,
+            },
+        ) => {
+            if da != db {
+                Value::Bool(false)
+            } else {
+                Value::Bool(a == b)
+            }
+        }
+        // Dimensioned Scalar vs non-Scalar: not equal
+        (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
+            if !dimension.is_dimensionless() =>
+        {
+            Value::Bool(false)
+        }
         _ => {
-            // For numeric comparisons, compare as f64
+            // For numeric comparisons (Int/Real/dimensionless Scalar), compare as f64
             match (lv.as_f64(), rv.as_f64()) {
                 (Some(a), Some(b)) => Value::Bool(a == b),
                 _ => Value::Undef,
@@ -341,9 +364,35 @@ fn eval_ne(lv: &Value, rv: &Value) -> Value {
 }
 
 fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
-    match (lv.as_f64(), rv.as_f64()) {
-        (Some(a), Some(b)) => Value::Bool(cmp(a, b)),
-        _ => Value::Undef,
+    match (lv, rv) {
+        // Scalar-vs-Scalar: compare dimensions first
+        (
+            Value::Scalar {
+                si_value: a,
+                dimension: da,
+            },
+            Value::Scalar {
+                si_value: b,
+                dimension: db,
+            },
+        ) => {
+            if da != db {
+                Value::Undef
+            } else {
+                Value::Bool(cmp(*a, *b))
+            }
+        }
+        // Dimensioned Scalar vs non-Scalar: incomparable
+        (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
+            if !dimension.is_dimensionless() =>
+        {
+            Value::Undef
+        }
+        // Fallback: Int/Real/dimensionless Scalar via as_f64
+        _ => match (lv.as_f64(), rv.as_f64()) {
+            (Some(a), Some(b)) => Value::Bool(cmp(a, b)),
+            _ => Value::Undef,
+        },
     }
 }
 
