@@ -122,3 +122,84 @@ structure S {
         "guard_value_cell should be in structure_controlling"
     );
 }
+
+/// Nested guards: `where a { where b { param x : Scalar = 1mm } }`
+/// should produce 2 guarded groups. The inner guard_expr should be
+/// AND(ValueRef(outer_guard), ValueRef(b)).
+#[test]
+fn compile_nested_guards() {
+    let source = r#"
+structure S {
+    param a : Bool = true
+    param b : Bool = true
+    where a {
+        where b {
+            param x : Scalar = 1mm
+        }
+    }
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // a, b in top-level; x should not be
+    assert!(template.value_cells.iter().any(|vc| vc.id.member == "a"));
+    assert!(template.value_cells.iter().any(|vc| vc.id.member == "b"));
+    assert!(!template.value_cells.iter().any(|vc| vc.id.member == "x"));
+
+    // Should have 2 guarded groups (one per nesting level)
+    assert_eq!(template.guarded_groups.len(), 2, "expected 2 guarded groups (outer + inner)");
+
+    // Find the inner group (the one with x as a member)
+    let inner = template.guarded_groups.iter()
+        .find(|g| g.members.iter().any(|m| m.id.member == "x"))
+        .expect("expected inner group with member x");
+
+    // Inner guard_expr should be BinOp::And
+    assert!(
+        matches!(&inner.guard_expr.kind, CompiledExprKind::BinOp { op: BinOp::And, .. }),
+        "inner guard_expr should be AND conjunction, got {:?}", inner.guard_expr.kind
+    );
+}
+
+/// Else block: `where cond { param a } else { param b }`
+/// should have members=[a] and else_members=[b] in the same guarded group.
+#[test]
+fn compile_else_block() {
+    let source = r#"
+structure S {
+    param cond : Bool = true
+    where cond {
+        param a : Scalar = 1mm
+    } else {
+        param b : Scalar = 2mm
+    }
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Only 'cond' in top-level value_cells
+    assert_eq!(template.value_cells.len(), 1, "expected only 'cond' in top-level");
+    assert_eq!(template.value_cells[0].id.member, "cond");
+
+    // 1 guarded group
+    assert_eq!(template.guarded_groups.len(), 1);
+    let group = &template.guarded_groups[0];
+
+    // members=[a], else_members=[b]
+    assert_eq!(group.members.len(), 1);
+    assert_eq!(group.members[0].id.member, "a");
+
+    assert_eq!(group.else_members.len(), 1);
+    assert_eq!(group.else_members[0].id.member, "b");
+
+    // Same guard_value_cell
+    assert!(template.structure_controlling.contains(&group.guard_value_cell));
+}
