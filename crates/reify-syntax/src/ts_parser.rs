@@ -71,11 +71,11 @@ impl<'a> Lowering<'a> {
         // vs EnumAccess in expressions. This enables order-independent declarations.
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "enum_declaration" {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    self.known_enums
-                        .insert(self.node_text(name_node).to_string());
-                }
+            if child.kind() == "enum_declaration"
+                && let Some(name_node) = child.child_by_field_name("name")
+            {
+                self.known_enums
+                    .insert(self.node_text(name_node).to_string());
             }
         }
 
