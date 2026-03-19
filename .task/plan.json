@@ -1,14 +1,17 @@
 {
-  "task_id": "46",
-  "title": "Fix PoisonError handling consistency in runtime",
-  "modules": ["crates/reify-runtime"],
-  "analysis": "ConcurrentEvalAdapter and SharedPriorityPromoter have inconsistent PoisonError handling. The 'result extraction' paths (build_result_shared, into_result at lines 112-152) correctly use .unwrap_or_else(|e| e.into_inner()) to recover from poisoned locks, but accessor methods (values, take_results, skipped, is_dirty) and the evaluate() hot path use plain .unwrap(), which will cascade-panic if any concurrent task panics while holding a lock. SharedPriorityPromoter has the same issue across all 6 of its lock acquisitions. The fix is mechanical: replace all .unwrap() on Mutex::lock()/RwLock::read()/RwLock::write() with .unwrap_or_else(|e| e.into_inner()). For testing, we need to deliberately poison locks and verify recovery. ConcurrentEvalAdapter's locks are behind Arc, so we can add cfg-gated helpers that clone the relevant Arc and spawn a panicking thread to poison specific locks. SharedPriorityPromoter tests live in the same module so they can access the private `inner` field directly. Specifically: concurrent_eval.rs has 9 .unwrap() calls on lines 93, 98, 103, 176, 190, 220, 226, 242, 260 that need fixing; priority_promotion.rs has 6 .unwrap() calls on lines 121, 126, 131, 136, 147-148 that need fixing.\n\n**Post-review update:** The poison_* helper methods (lines 177-222 of concurrent_eval.rs) were implemented as `pub` in an unconditional `impl` block with only `#[doc(hidden)]`. This leaves state-corrupting methods in the production API surface. They must be gated behind `#[cfg(any(test, feature = \"test-utils\"))]` with a `test-utils` feature added to Cargo.toml. The integration tests that call these methods need `#[cfg(feature = \"test-utils\")]` gating since `#[cfg(test)]` only applies to unit tests within the crate, not integration tests in `tests/`.",
+  "task_id": "37",
+  "title": "Ensure that the currently missing architecture-critical language features have been implemented",
+  "modules": [
+    "crates/reify-eval",
+    "crates/reify-test-support"
+  ],
+  "analysis": "Assessed the three architecture-critical features identified in the review:\n\n(1) Import handling — COMPLETE. Imports are parsed into AST (ImportDecl in reify-syntax), compiled into CompiledModule.imports with a warning diagnostic ('import noted; module resolution not yet implemented'), and tested via import_compiles_into_module_imports, import_produces_warning_diagnostic, and comprehensive_all_three_features tests in crates/reify-compiler/tests/boundary2_producer.rs. Module resolution is deferred to M5 by design. No implementation work needed — only Engine-level verification.\n\n(2) Stdlib function evaluation — COMPLETE. The compiler produces CompiledExprKind::FunctionCall nodes (reify-compiler lib.rs:487-528), reify_expr::eval_expr dispatches to reify_stdlib::eval_builtin (reify-expr lib.rs:23-30), and all 26+ math functions are implemented with 41+ passing unit tests. The E2E bracket fixture uses function calls (box()), and the parse-compile pipeline handles function resolution. Functions produce correct numeric values, NOT Undef. No implementation work needed — only Engine-level verification.\n\n(3) Sub-structure compilation — THIS IS THE PRIMARY GAP. The compiler correctly produces SubComponentDecl entries in TopologyTemplate.sub_components (verified by existing tests). However:\n  - EvaluationGraph::from_templates() (graph.rs:68-115) completely ignores template.sub_components\n  - Engine::eval() (lib.rs:562-938) never iterates over sub_components\n  - No scoped ValueCellIds are created for child parameters\n  - Child param values and let-binding values never appear in the eval result ValueMap\n\nThe implementation plan focuses on closing the sub-structure evaluation gap with TDD, plus adding Engine-level verification tests for import handling and stdlib evaluation to confirm end-to-end correctness through the Engine facade.\n\nKey code locations:\n  - Engine::eval(): crates/reify-eval/src/lib.rs lines 562-938\n  - EvaluationGraph::from_templates(): crates/reify-eval/src/graph.rs lines 68-115\n  - TopologyTemplate + SubComponentDecl: crates/reify-compiler/src/lib.rs lines 28-47\n  - TopologyTemplateBuilder.sub_component(): crates/reify-test-support/src/builders.rs lines 247-263\n  - CompiledModuleBuilder.import(): crates/reify-test-support/src/builders.rs lines 338-344\n  - extract_dependency_trace(): crates/reify-eval/src/deps.rs lines 13-17\n  - topological_sort(): crates/reify-eval/src/dirty.rs (imported at lib.rs:21)\n  - Existing Engine tests: crates/reify-eval/tests/boundary5_engine.rs\n\nAll 365 workspace tests currently pass. The tree-sitter grammar already supports 'sub' declarations. The syntax parser (ts_parser.rs) already lowers sub_declaration nodes into SubDecl AST. The compiler (lib.rs:782-797) already compiles SubDecl into SubComponentDecl with arg expression compilation. The only missing piece is evaluation-layer elaboration of sub-components.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add #[cfg(test)] poison helper methods to ConcurrentEvalAdapter (poison_skip_state, poison_results, poison_values, poison_snapshot_values) that clone the inner Arc, spawn a thread that acquires the lock and panics, thereby poisoning it. These are needed by integration tests in tests/concurrent_eval.rs to set up poisoned-lock scenarios.",
+      "description": "Add a parent_child_module() fixture function to reify-test-support/src/fixtures.rs that returns a CompiledModule with two templates: (1) 'Child' template with param height: Scalar(LENGTH) = 10mm (0.01 SI) and let half_h: Scalar(LENGTH) = ValueRef('Child','height') / 2; (2) 'Parent' template with param width: Scalar(LENGTH) = 80mm (0.08 SI) and sub rib = Child(height: ValueRef('Parent','width') * 0.5). Uses existing TopologyTemplateBuilder (param, let_binding, sub_component methods) and CompiledModuleBuilder. The Child template must be listed first in the module so it can be found by structure_name lookup during sub-component elaboration.",
       "status": "done",
-      "commit": "86d5014",
+      "commit": "e2924dd",
       "tests": []
     }
   ],
@@ -16,107 +19,199 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for adapter accessor methods recovering after lock poisoning. In tests/concurrent_eval.rs add: (1) `is_dirty_recovers_after_skip_state_poisoning` — poison skip_state, assert is_dirty() returns a bool without panicking; (2) `values_recovers_after_values_lock_poisoning` — poison values lock, assert values() returns a ValueMap; (3) `take_results_recovers_after_results_lock_poisoning` — poison results lock, assert take_results() returns a Vec; (4) `skipped_recovers_after_skip_state_poisoning` — poison skip_state, assert skipped() returns a HashSet. Each test creates a simple_setup adapter, poisons the relevant lock, then calls the accessor. These should FAIL because lines 93, 98, 103, 176 use .unwrap().",
+      "description": "Write failing test 'sub_component_params_appear_in_eval_result' in crates/reify-eval/tests/boundary5_engine.rs. Uses parent_child_module() fixture. After Engine::eval() with MockConstraintChecker and no kernel, asserts that result.values contains ValueCellId::new('Parent.rib','height') with value approximately 0.04 (80mm * 0.5 = 40mm = 0.04 SI). This is the arg-evaluated value, not the child's default. Currently fails because Engine::eval() ignores sub_components entirely.",
       "status": "done",
-      "commit": "e09dbf5"
+      "commit": "df1af02"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix .unwrap() on accessor methods in concurrent_eval.rs: line 93 values.read().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 98 results.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 103 skip_state.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 176 skip_state.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()). All 4 step-1 tests should now pass.",
+      "description": "Implement sub-component param elaboration in Engine::eval() (crates/reify-eval/src/lib.rs). After the two-pass parent evaluation (after the let-binding topological sort pass, around line 741) but before the resolution phase (line 744), add a new sub-component elaboration loop. For each template, iterate template.sub_components. For each SubComponentDecl: (a) find the referenced child template in module.templates by structure_name, (b) build a child-local ValueMap seeded with the child template's original IDs, (c) for each child param, check if an arg with matching member name exists — if yes, evaluate the arg expression against the parent's values map using reify_expr::eval_expr; if no, evaluate the child param's default_expr against the child-local map, (d) insert child param values into child-local map with child's original ID e.g. ValueCellId::new('Child','height'), (e) insert into the main values map and snapshot.values with scoped ID ValueCellId::new('{template.name}.{sub.name}', param_member) and DeterminacyState::Determined. Record journal events and cache entries for each eval. Skip sub-components whose structure_name is not found (no panic).",
       "status": "done",
-      "commit": "68a1138"
+      "commit": "68fe28b"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test for evaluate() recovering with poisoned locks. In tests/concurrent_eval.rs add `evaluate_continues_after_lock_poisoning`: create adapter from simple_setup, poison the values RwLock, then call adapter.evaluate(b_node).await. Currently panics at line 190 (values.read().unwrap()). After fix, evaluate should complete (returning an EvalOutcome) without cascading panic. Also verify take_results() and build_result_shared() still work afterward (regression guard for already-fixed paths).",
+      "description": "Write failing test 'sub_component_child_lets_evaluated' in boundary5_engine.rs. Uses parent_child_module(). After Engine::eval(), asserts ValueCellId::new('Parent.rib','half_h') exists in result.values and has value approximately 0.02 (half of 0.04 = 40mm/2 = 20mm = 0.02 SI). Currently fails because child let-bindings are not evaluated during sub-component elaboration.",
       "status": "done",
-      "commit": "554a1b6"
+      "commit": "c801e85"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix .unwrap() in evaluate() method in concurrent_eval.rs: line 190 values.read().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 220 values.write().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 226 snapshot_values.write().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 242 skip_state.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 260 results.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()). Step-3 test should now pass.",
+      "description": "Extend sub-component elaboration in Engine::eval() to evaluate child let-bindings. After populating child param values in the child-local ValueMap, evaluate child let-bindings using the same topological sort pattern as the parent (extract_dependency_trace from deps.rs + topological_sort from dirty.rs). The child lets reference child-original IDs (e.g. ValueRef('Child','height')) which resolve in the child-local ValueMap. Insert results into both the child-local map and the main values map + snapshot.values with scoped IDs (e.g. ValueCellId::new('Parent.rib','half_h')) and DeterminacyState::Determined.",
       "status": "done",
-      "commit": "c55c04e"
+      "commit": "a065df6"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test for SharedPriorityPromoter recovering after lock poisoning. In priority_promotion.rs mod tests add `shared_promoter_recovers_after_lock_poisoning`: create Arc<SharedPriorityPromoter>, register node_a at P3Speculative, spawn thread that acquires shared.inner.lock() and panics (private field accessible from unit tests in same module), then assert effective_priority() returns Some(P3Speculative), register() succeeds for new node, promote() succeeds, remove() succeeds, promote_for_demand() succeeds. Currently fails because all lock() calls use .unwrap().",
+      "description": "Write test 'sub_component_default_param_when_no_arg' in boundary5_engine.rs. Builds a module using CompiledModuleBuilder with: Child template (param height: Scalar = 10mm), Parent template (param width: Scalar = 80mm, sub rib = Child() with empty args vec). After Engine::eval(), asserts ValueCellId::new('Parent.rib','height') has the Child's default value approximately 0.01 (10mm SI). This tests the fallback-to-default-expr path when no matching arg is provided.",
       "status": "done",
-      "commit": "67630a5"
+      "commit": "9409512"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Fix .unwrap() in SharedPriorityPromoter in priority_promotion.rs: line 121 inner.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 126 same, line 131 same, line 136 same, lines 146-148 same. All 6 Mutex::lock() calls get the recovery pattern. Step-5 test should now pass. All existing tests continue to pass since unwrap_or_else is a superset of unwrap behavior for non-poisoned locks.",
+      "description": "If step-5 fails, fix the default evaluation path in sub-component elaboration — ensure child params without matching args use their default_expr evaluated against the child-local ValueMap. If it passes (expected if step-2 correctly handles the no-arg case), this is a no-op.",
       "status": "done",
-      "commit": "5eb4f47"
+      "commit": "9409512"
     },
     {
       "id": "step-7",
-      "type": "impl",
-      "description": "Gate poison helper methods behind feature flag to exclude them from the production API. Three changes: (1) Add `[features]` section with `test-utils = []` to crates/reify-runtime/Cargo.toml. (2) In concurrent_eval.rs, change the `impl ConcurrentEvalAdapter` block at lines 176-222 (containing poison_skip_state, poison_results, poison_values, poison_snapshot_values) from `#[doc(hidden)]` to `#[cfg(any(test, feature = \"test-utils\"))]`. Remove `#[doc(hidden)]` since cfg-gating makes it unnecessary. (3) In tests/concurrent_eval.rs, wrap the 5 poison recovery tests (is_dirty_recovers_after_skip_state_poisoning, values_recovers_after_values_lock_poisoning, take_results_recovers_after_results_lock_poisoning, skipped_recovers_after_skip_state_poisoning, evaluate_continues_after_lock_poisoning) in a `#[cfg(feature = \"test-utils\")]` module block so they only compile when `--features test-utils` is passed. This is necessary because `#[cfg(test)]` on the impl block only activates for unit tests within the crate, not for integration tests in the `tests/` directory.",
+      "type": "test",
+      "description": "Write test 'sub_component_missing_structure_skipped_gracefully' in boundary5_engine.rs. Build module using CompiledModuleBuilder with Parent template having sub_component('thing', 'NonExistent', vec![]) and no 'NonExistent' template in the module. After Engine::eval(), assert that eval completes without panicking, Parent's own param values are correctly evaluated, and result.values does not contain any 'Parent.thing' scoped entries.",
       "status": "done",
-      "commit": "21ec973"
+      "commit": "5b39f42"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Verify the feature gate works correctly. (1) Run `cargo check -p reify-runtime` (without test-utils feature) — must compile successfully, confirming the poison methods are excluded from the production binary and no other code depends on them unconditionally. (2) Run `cargo test -p reify-runtime --features test-utils` — all poison recovery tests must pass, confirming the feature flag correctly enables the test helpers. (3) Run `cargo test -p reify-runtime` (without feature) — all non-poison tests must pass, confirming no regression from the gating.",
+      "type": "impl",
+      "description": "Add graceful handling in Engine::eval() sub-component processing: when structure_name is not found in module.templates, push a diagnostic warning ('sub-component \"{name}\" references unknown structure \"{structure_name}\"') to the diagnostics vec and continue to the next sub-component. Should already be handled in step-2 (skip if not found), but this step verifies and adds the diagnostic message if missing.",
       "status": "done",
-      "commit": "21ec973"
+      "commit": "5b39f42"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write test 'sub_component_nodes_in_evaluation_graph' as an inline #[cfg(test)] test in crates/reify-eval/src/graph.rs. Build EvaluationGraph::from_templates() with two templates: Child (param height, let half_h) and Parent (param width, sub rib = Child(height: width * 0.5)). Assert that graph.value_cells contains scoped entries ValueCellId::new('Parent.rib','height') and ValueCellId::new('Parent.rib','half_h'). Currently fails because from_templates() ignores sub_components.",
+      "status": "done",
+      "commit": "abd8a57"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Extend EvaluationGraph::from_templates() (crates/reify-eval/src/graph.rs lines 68-115) to process sub_components. After processing each template's value_cells/constraints/realizations, iterate template.sub_components. For each SubComponentDecl, look up the referenced template by name in the templates slice. If found, create scoped ValueCellNode entries: for each child value_cell, create a new node with id=ValueCellId::new('{parent_name}.{sub_name}', child_member), same kind/type/content_hash, and cloned default_expr. If structure_name not found, skip silently. Note: the expressions in these graph nodes still reference child-original IDs — the Engine::eval() sub-component elaboration handles the mapping at eval time via the child-local ValueMap.",
+      "status": "done",
+      "commit": "9951f92"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write Engine-level verification test 'engine_eval_stdlib_function_in_let' in boundary5_engine.rs. Uses parse-compile-eval pipeline (same pattern as e2e_parse_compile_eval_auto_param). Source: 'structure S { param w: Scalar = 80mm\\n param h: Scalar = 100mm\\n let diag = sqrt(w*w + h*h) }'. After Engine::eval() with MockConstraintChecker, assert values contain ValueCellId::new('S','diag') with value approximately 0.12806m (sqrt(0.08^2 + 0.1^2) = sqrt(0.0164) approx 0.12806). Expected to PASS immediately — stdlib functions are fully implemented. Confirms full Engine pipeline for stdlib dispatch.",
+      "status": "done",
+      "commit": "bcb3121"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "If step-11 fails, debug and fix. Expected to be a no-op — stdlib evaluation is already fully working through the Engine::eval() pipeline (eval_expr dispatches to reify_stdlib::eval_builtin for FunctionCall nodes).",
+      "status": "done",
+      "commit": "bcb3121"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write Engine-level verification test 'engine_eval_with_import' in boundary5_engine.rs. Build module via CompiledModuleBuilder::new(ModulePath::single('test')).import('std/math').template(simple_template).build(). After Engine::eval() with MockConstraintChecker, assert: (a) module.imports.len() == 1 and module.imports[0].path == 'std/math', (b) template param values are correctly evaluated (imports don't affect evaluation). Expected to PASS immediately — imports are transparent to evaluation.",
+      "status": "done",
+      "commit": "a6a66df"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "If step-13 fails, debug and fix. Expected to be a no-op — imports are stored in CompiledModule.imports and the Engine ignores them during evaluation (they have no effect on the value map).",
+      "status": "done",
+      "commit": "a6a66df"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write comprehensive E2E test 'e2e_all_three_features_through_engine' in boundary5_engine.rs. Parse and compile source combining all three features: 'import \"std/math\"\\nstructure Child { param size: Scalar = 10mm\\n let half = size / 2 }\\nstructure Parent { param w: Scalar = 80mm\\n let diag = sqrt(w * w)\\n sub part = Child(size: w / 2)\\n constraint diag > 0mm }'. After Engine::eval() then Engine::check_constraints_with_values(), verify: (a) module has 1 import, (b) values contain ('Parent','w') approx 0.08 and ('Parent','diag') approx 0.08 (sqrt of 0.08^2), (c) values contain ('Parent.part','size') approx 0.04 (80mm/2), (d) values contain ('Parent.part','half') approx 0.02 (size/2), (e) at least one constraint result exists, (f) no error-level diagnostics (only import warning allowed).",
+      "status": "done",
+      "commit": "d7b0fe2"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Fix any integration issues discovered in step-15. Ensure the parse-compile-eval pipeline handles all three features together correctly. Verify all existing tests still pass with cargo test --workspace. Common issues: tree-sitter grammar parsing 'sub' correctly (verified: grammar.js has sub_declaration rule), compiler sub_component compilation working (verified: lib.rs:782-797), or scoped ID format mismatch. If all passes, this is a no-op.",
+      "status": "done",
+      "commit": "d7b0fe2"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use .unwrap_or_else(|e| e.into_inner()) consistently for all lock acquisitions",
-      "rationale": "This is the existing recovery pattern already used in build_result_shared() and into_result() (lines 112-152). It extracts the last valid data from a poisoned lock, allowing the system to continue with potentially stale but structurally valid state rather than cascading panics. This is the right choice for a CAD engine where a transient evaluation failure should not crash the entire system."
+      "decision": "Use 'ParentName.sub_name' as the entity in scoped ValueCellIds for sub-component members",
+      "rationale": "Enables dot-notation access (e.g., Parent.rib.height) via string-based scoping without changing the ValueCellId struct. The entity field becomes a dotted path like 'Parent.rib' with the member being the child param name. This is consistent with the language spec's member access syntax and works with the existing ValueCellId::new(entity, member) API. ValueCellId already accepts arbitrary strings for entity (identity.rs:60-67)."
     },
     {
-      "decision": "Add #[cfg(test)] poison helper methods to ConcurrentEvalAdapter rather than exposing internal locks",
-      "rationale": "Integration tests (tests/concurrent_eval.rs) cannot access private fields. Rather than making locks pub(crate) or restructuring, cfg(test) helpers provide a clean testing interface. Each helper clones the relevant Arc<Mutex/RwLock>, spawns a thread that acquires the lock and panics, poisoning it. This pattern is zero-cost in release builds."
+      "decision": "Sub-component elaboration happens in Engine::eval() rather than in the compiler",
+      "rationale": "The compiler operates per-structure (compile_structure) and doesn't have access to the full module context needed to resolve structure_name references across templates. The Engine processes all templates and can look up referenced structures by name. This keeps the compiler's role as a per-structure compilation pass, with cross-structure resolution happening at the evaluation layer."
     },
     {
-      "decision": "Test SharedPriorityPromoter poisoning via unit tests inside the module",
-      "rationale": "Unit tests in priority_promotion.rs mod tests can access the private `inner` field directly, avoiding the need for test helper methods. This is simpler and matches the existing test pattern in that module which already uses std::sync::Arc and std::thread for concurrency tests."
+      "decision": "Use a child-local ValueMap for child expression evaluation, then merge results into the global map with scoped IDs",
+      "rationale": "Child template expressions reference ValueCellIds with the child's original entity name (e.g. ('Child','height')). When elaborating under a parent, we need a temporary ValueMap where these original IDs resolve to the arg-provided or default values. After evaluation, results are inserted into the global ValueMap with scoped IDs ('Parent.rib','height'). This avoids mutating compiled expressions while correctly evaluating child bindings."
     },
     {
-      "decision": "Do not convert to Result-returning APIs",
-      "rationale": "The task scope is to make PoisonError handling consistent, not to change the API surface. Converting to Result<T, PoisonError> would require changing every call site and is a larger refactor. The unwrap_or_else pattern preserves the existing API while adding resilience."
+      "decision": "EvaluationGraph also gets sub-component nodes (not just Engine::eval())",
+      "rationale": "The graph is used for incremental evaluation (dirty cone computation, demand tracking, reverse dependency index). Without sub-component nodes in the graph, incremental edit_param() wouldn't know about parent-child dependencies. Even though full incremental sub-component support may not be exercised yet, having the nodes ensures correct graph topology from the start."
     },
     {
-      "decision": "Gate poison helpers with #[cfg(any(test, feature = \"test-utils\"))] and a Cargo feature, not just #[cfg(test)]",
-      "rationale": "#[cfg(test)] only applies during unit test compilation of the crate itself — it does NOT apply to integration tests in the tests/ directory or to downstream crates. Since the poison recovery integration tests live in tests/concurrent_eval.rs, they need a feature flag (test-utils) to enable the helpers. The dual gate `any(test, feature = \"test-utils\")` ensures the helpers are available both in unit tests (via cfg(test)) and in integration tests (via the feature). The integration tests themselves are wrapped in #[cfg(feature = \"test-utils\")] so they only compile when the feature is active."
+      "decision": "Import handling and stdlib function evaluation are verification-only steps (no new implementation expected)",
+      "rationale": "Both features are fully implemented and tested at the compiler and expression-evaluation layers. Adding Engine-level verification tests confirms the end-to-end path works through the Engine facade and provides regression coverage for the full pipeline."
+    },
+    {
+      "decision": "Sub-component resolution is intra-module only (no cross-module lookup)",
+      "rationale": "Cross-module sub-structure references require the module loader (M5). For current scope, sub-components can only reference templates within the same CompiledModule. If structure_name is not found in module.templates, a diagnostic is emitted and the sub-component is skipped. This aligns with the milestone progression."
+    },
+    {
+      "decision": "Single-level sub-component elaboration (no recursive nesting in this task)",
+      "rationale": "Recursive sub-component nesting (sub within a sub) adds complexity (cycle detection, deeply scoped IDs like 'A.b.c'). For the architecture-critical baseline, one level proves the pattern works. Recursive nesting can be added in M5 'Language Breadth'."
+    },
+    {
+      "decision": "Place sub-component elaboration after the two-pass parent evaluation but before the resolution phase in Engine::eval()",
+      "rationale": "Sub-component arg expressions reference parent param values, which are populated in pass 1 (params, lines 600-677). Sub-component let-bindings need fully evaluated child param values. The resolution phase (constraint solver for auto params, starting at line 744) should see the complete value map including sub-component values. This ordering ensures all dependencies are satisfied."
+    },
+    {
+      "decision": "Graph nodes for sub-components keep child-original expressions; remapping happens at eval time only",
+      "rationale": "Rewriting ValueRef IDs in expressions would create a divergence between the graph's expressions and the compiled template's expressions, complicating debugging and snapshot comparison. Instead, EvaluationGraph stores sub-component nodes with scoped IDs but the default_expr still references child-original IDs. The Engine uses the child-local ValueMap pattern to evaluate correctly. The graph nodes exist primarily for topology (dependency tracking, demand) rather than direct expression evaluation."
     }
   ],
   "reuse": [
     {
-      "what": ".unwrap_or_else(|e| e.into_inner()) recovery pattern",
-      "where": "concurrent_eval.rs lines 112-152 (build_result_shared, into_result)",
-      "how": "Apply the same pattern to all remaining .unwrap() calls on lock acquisitions. This is the established convention in the codebase for PoisonError recovery."
+      "what": "TopologyTemplateBuilder.sub_component() method",
+      "where": "crates/reify-test-support/src/builders.rs:247-263",
+      "how": "Already exists and creates SubComponentDecl entries with name, structure_name, args, and content_hash. Use for building test fixtures with parent/child templates."
     },
     {
-      "what": "simple_setup() test helper",
-      "where": "tests/concurrent_eval.rs lines 21-95",
-      "how": "Use the existing simple_setup() to create ConcurrentEvalAdapter instances for poison recovery tests, same as all other tests in the file."
+      "what": "extract_dependency_trace() + topological_sort()",
+      "where": "crates/reify-eval/src/deps.rs:13-17 and crates/reify-eval/src/dirty.rs (topological_sort)",
+      "how": "Reuse for ordering child let-binding evaluation. Same pattern as the parent two-pass evaluation in Engine::eval() lines 683-696: collect let cells into HashMap<NodeId, &CompiledExpr>, compute traces, sort topologically, then evaluate in order."
     },
     {
-      "what": "make_node() test helper and existing SharedPriorityPromoter test patterns",
-      "where": "priority_promotion.rs mod tests lines 164-369",
-      "how": "Follow the existing Arc<SharedPriorityPromoter> + thread::spawn pattern (used in shared_promoter_promote_from_another_thread and shared_promoter_concurrent_promotes) for the poison recovery test."
+      "what": "reify_expr::eval_expr(expr, &values)",
+      "where": "crates/reify-expr/src/lib.rs",
+      "how": "Evaluate child param arg expressions (against parent ValueMap) and child let-binding expressions (against child-local ValueMap). Already handles FunctionCall to stdlib dispatch, Undef propagation, and all binary/unary operations."
     },
     {
-      "what": "PanickingEvaluator test pattern",
-      "where": "tests/concurrent_eval.rs lines 537-545",
-      "how": "Reference the existing pattern of creating evaluators that intentionally panic, used in rollback_on_task_panicked and repeated_error_then_success_cycle tests."
+      "what": "EvaluationGraph::from_templates() node creation pattern",
+      "where": "crates/reify-eval/src/graph.rs:72-85",
+      "how": "Extend to also create scoped ValueCellNode entries for sub-component children. The existing per-cell node creation (hash computation, ValueCellNode construction, insert into graph.value_cells) is the template for the new scoped nodes."
     },
     {
-      "what": "Cargo feature gating pattern for test-only code",
-      "where": "Standard Rust idiom (cfg(any(test, feature = \"test-utils\")))",
-      "how": "Gate the poison helper impl block so it compiles only during unit tests or when test-utils feature is explicitly enabled. Integration tests use #[cfg(feature = \"test-utils\")] since cfg(test) doesn't apply to them."
+      "what": "CompiledModuleBuilder + TopologyTemplateBuilder",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Build test fixtures with multiple templates (parent + child) and sub-component declarations. CompiledModuleBuilder.template() accepts multiple templates. CompiledModuleBuilder.import() adds import entries. These provide all the building blocks for test modules."
+    },
+    {
+      "what": "ValueCellId::new(entity, member) with dotted entity",
+      "where": "crates/reify-types/src/identity.rs",
+      "how": "ValueCellId already accepts arbitrary strings for entity. Use 'Parent.sub_name' as entity for scoped IDs without any type changes needed."
+    },
+    {
+      "what": "Engine two-pass evaluation + journal/cache pattern",
+      "where": "crates/reify-eval/src/lib.rs:598-741",
+      "how": "Replicate the pass-1 (param default eval with journal events + cache recording) and pass-2 (topologically sorted let eval with journal events + cache recording) patterns for child template evaluation within the sub-component elaboration loop. Same Instant-based timing, same EvalEvent recording, same CachedResult::Value construction."
+    },
+    {
+      "what": "Existing boundary5_engine.rs test patterns",
+      "where": "crates/reify-eval/tests/boundary5_engine.rs",
+      "how": "Follow same test structure: build module via builders or fixtures, create Engine with MockConstraintChecker (from mocks.rs), call eval(), assert values with .get() and .as_f64(). Also demonstrates parse-compile-eval E2E pattern (e2e_parse_compile_eval_auto_param at line 135)."
+    },
+    {
+      "what": "mm() helper for scalar values",
+      "where": "crates/reify-test-support/src/values.rs:9",
+      "how": "Creates Value::Scalar with LENGTH dimension from millimeter values (converts to SI internally). Used throughout test fixtures and assertions."
     }
   ]
 }
