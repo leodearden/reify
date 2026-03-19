@@ -972,4 +972,13 @@ mod tests {
     fn value_display_undef() {
         assert_eq!(format!("{}", Value::Undef), "undef");
     }
+
+    #[test]
+    fn value_display_enum() {
+        let v = Value::Enum {
+            type_name: "Color".into(),
+            variant: "Red".into(),
+        };
+        assert_eq!(format!("{}", v), "Color::Red");
+    }
 }
