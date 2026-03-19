@@ -204,3 +204,40 @@ fn trait_member_associated_type() {
     let m2 = m.clone();
     assert_eq!(m, m2);
 }
+
+// --- TraitDef tests (step-27) ---
+
+#[test]
+fn trait_def_full_construction() {
+    let def = reify_types::TraitDef {
+        name: "Bracket".into(),
+        type_params: vec![reify_types::TypeParam {
+            name: "T".into(),
+            bounds: vec![],
+            default: None,
+        }],
+        refinements: vec!["Structural".into()],
+        members: vec![
+            reify_types::TraitMember::Param {
+                name: "width".into(),
+                ty: reify_types::Type::length(),
+                default: None,
+            },
+            reify_types::TraitMember::Port {
+                name: "top".into(),
+                ty: reify_types::Type::Real,
+                direction: reify_types::PortDirection::Out,
+            },
+            reify_types::TraitMember::Constraint {
+                expr: "width > 0".into(),
+            },
+        ],
+    };
+    assert_eq!(def.name, "Bracket");
+    assert_eq!(def.type_params.len(), 1);
+    assert_eq!(def.refinements, vec!["Structural"]);
+    assert_eq!(def.members.len(), 3);
+    let def2 = def.clone();
+    assert_eq!(def, def2);
+    let _ = format!("{:?}", def);
+}
