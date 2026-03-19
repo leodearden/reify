@@ -679,8 +679,10 @@ pub fn compile(
                     .with_label(DiagnosticLabel::new(import.span, "import")),
                 );
             }
-            reify_syntax::Declaration::Function(_) => {
-                // Function compilation will be added in a later step.
+            reify_syntax::Declaration::Function(fn_def) => {
+                if let Some(compiled_fn) = compile_function(fn_def, &enum_defs, &mut diagnostics) {
+                    functions.push(compiled_fn);
+                }
             }
         }
     }
@@ -956,6 +958,92 @@ fn compile_structure(
         objective,
         content_hash,
     }
+}
+
+/// Compile a function definition into a CompiledFunction.
+fn compile_function(
+    fn_def: &reify_syntax::FnDef,
+    enum_defs: &[reify_types::EnumDef],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledFunction> {
+    // Resolve parameter types
+    let mut params = Vec::new();
+    for p in &fn_def.params {
+        let ty = match resolve_type_name(&p.type_expr.name) {
+            Some(t) => t,
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(format!("unresolved type: {}", p.type_expr.name))
+                        .with_label(DiagnosticLabel::new(p.type_expr.span, "unknown type name")),
+                );
+                Type::Real // fallback
+            }
+        };
+        params.push((p.name.clone(), ty));
+    }
+
+    // Resolve return type
+    let return_type = match &fn_def.return_type {
+        Some(te) => match resolve_type_name(&te.name) {
+            Some(t) => t,
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(format!("unresolved return type: {}", te.name))
+                        .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                );
+                Type::Real
+            }
+        },
+        None => Type::Real, // default return type
+    };
+
+    // Create a scope with function params registered
+    let mut scope = CompilationScope::new(&fn_def.name);
+    for (name, ty) in &params {
+        scope.register(name, ty.clone());
+    }
+
+    // Compile body let bindings
+    let mut compiled_lets = Vec::new();
+    for let_decl in &fn_def.body.let_bindings {
+        let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, diagnostics);
+        let let_type = compiled_expr.result_type.clone();
+        // Register the let binding in scope for subsequent bindings
+        scope.register(&let_decl.name, let_type);
+        compiled_lets.push((let_decl.name.clone(), compiled_expr));
+    }
+
+    // Compile result expression
+    let result_expr = compile_expr(&fn_def.body.result_expr, &scope, enum_defs, diagnostics);
+
+    // Compute content hash
+    let content_hash = {
+        let name_hash = ContentHash::of_str(&fn_def.name);
+        let param_hashes = params.iter().map(|(n, t)| {
+            ContentHash::of_str(n).combine(ContentHash::of_str(&format!("{}", t)))
+        });
+        let body_hash = result_expr.content_hash;
+        let let_hashes = compiled_lets.iter().map(|(_, e)| e.content_hash);
+
+        let all_hashes = std::iter::once(name_hash)
+            .chain(param_hashes)
+            .chain(std::iter::once(body_hash))
+            .chain(let_hashes);
+
+        ContentHash::combine_all(all_hashes)
+    };
+
+    Some(CompiledFunction {
+        name: fn_def.name.clone(),
+        is_pub: fn_def.is_pub,
+        params,
+        return_type,
+        body: CompiledFnBody {
+            let_bindings: compiled_lets,
+            result_expr,
+        },
+        content_hash,
+    })
 }
 
 /// Check if a let declaration's value is a geometry-producing function call.

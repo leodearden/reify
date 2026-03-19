@@ -264,9 +264,8 @@ impl<'a> Lowering<'a> {
 
     fn lower_fn_body(&self, node: tree_sitter::Node) -> Option<FnBody> {
         let mut let_bindings = Vec::new();
-        let mut result_expr = None;
 
-        // Collect fn_let_binding children and find the result expression
+        // Collect fn_let_binding children
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "fn_let_binding" {
@@ -278,11 +277,11 @@ impl<'a> Lowering<'a> {
 
         // The result expression is the 'result' field
         let result_node = node.child_by_field_name("result")?;
-        result_expr = self.lower_expr(result_node);
+        let result_expr = self.lower_expr(result_node)?;
 
         Some(FnBody {
             let_bindings,
-            result_expr: result_expr?,
+            result_expr,
         })
     }
 
