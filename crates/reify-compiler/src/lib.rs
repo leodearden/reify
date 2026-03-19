@@ -64,6 +64,10 @@ pub struct CompiledGuardedGroup {
     pub else_members: Vec<ValueCellDecl>,
     /// Constraints active when guard is false (else branch).
     pub else_constraints: Vec<CompiledConstraint>,
+    /// Parent guard ValueCellId for nested guards (None for top-level guards).
+    /// Used to suppress false-positive cross-guard diagnostics when
+    /// inner guard members reference outer guard members.
+    pub parent_guard: Option<ValueCellId>,
 }
 
 /// A value cell declaration (param or let).
@@ -988,6 +992,31 @@ fn compile_structure(
                 guarded_cell_map.insert(m.id.clone(), group.guard_value_cell.clone());
             }
         }
+
+        // Build parent_guard chain for nested guard ancestor checking.
+        // Maps guard_value_cell -> parent_guard (None for top-level guards).
+        let guard_parent_map: HashMap<ValueCellId, Option<ValueCellId>> = guarded_groups
+            .iter()
+            .map(|g| (g.guard_value_cell.clone(), g.parent_guard.clone()))
+            .collect();
+
+        // Check if ref_guard is an ancestor of current_guard in the parent chain.
+        // Returns true if ref_guard == current_guard OR if ref_guard appears
+        // in the ancestor chain of current_guard (via parent_guard links).
+        let is_ancestor_guard = |ref_guard: &ValueCellId, current_guard: &ValueCellId| -> bool {
+            if ref_guard == current_guard {
+                return true;
+            }
+            let mut cursor = guard_parent_map.get(current_guard).and_then(|p| p.as_ref());
+            while let Some(ancestor) = cursor {
+                if ancestor == ref_guard {
+                    return true;
+                }
+                cursor = guard_parent_map.get(ancestor).and_then(|p| p.as_ref());
+            }
+            false
+        };
+
         for vc in &value_cells {
             if let Some(expr) = &vc.default_expr {
                 for ref_id in collect_value_refs(expr) {
@@ -1027,7 +1056,7 @@ fn compile_structure(
                 if let Some(expr) = &m.default_expr {
                     for ref_id in collect_value_refs(expr) {
                         if let Some(ref_guard) = guarded_cell_map.get(&ref_id)
-                            && ref_guard != &group.guard_value_cell
+                            && !is_ancestor_guard(ref_guard, &group.guard_value_cell)
                         {
                             diagnostics.push(
                                 Diagnostic::warning(format!(
@@ -1047,7 +1076,7 @@ fn compile_structure(
                 if let Some(expr) = &m.default_expr {
                     for ref_id in collect_value_refs(expr) {
                         if let Some(ref_guard) = guarded_cell_map.get(&ref_id)
-                            && ref_guard != &group.guard_value_cell
+                            && !is_ancestor_guard(ref_guard, &group.guard_value_cell)
                         {
                             diagnostics.push(
                                 Diagnostic::warning(format!(
@@ -1060,6 +1089,42 @@ fn compile_structure(
                                 )),
                             );
                         }
+                    }
+                }
+            }
+            for c in &group.constraints {
+                for ref_id in collect_value_refs(&c.expr) {
+                    if let Some(ref_guard) = guarded_cell_map.get(&ref_id)
+                        && !is_ancestor_guard(ref_guard, &group.guard_value_cell)
+                    {
+                        diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "reference to differently-guarded cell '{}'",
+                                ref_id.member,
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                c.span,
+                                "constraint references member under a different guard",
+                            )),
+                        );
+                    }
+                }
+            }
+            for c in &group.else_constraints {
+                for ref_id in collect_value_refs(&c.expr) {
+                    if let Some(ref_guard) = guarded_cell_map.get(&ref_id)
+                        && !is_ancestor_guard(ref_guard, &group.guard_value_cell)
+                    {
+                        diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "reference to differently-guarded cell '{}'",
+                                ref_id.member,
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                c.span,
+                                "constraint references member under a different guard",
+                            )),
+                        );
                     }
                 }
             }
@@ -1230,6 +1295,7 @@ fn compile_block_guard(
         constraints: group_constraints,
         else_members,
         else_constraints,
+        parent_guard: outer_guard.cloned(),
     });
 }
 
@@ -1378,6 +1444,7 @@ fn compile_per_decl_guard(
         constraints: vec![],
         else_members: vec![],
         else_constraints: vec![],
+        parent_guard: None,
     });
 
     scope.register_guarded(&member_name, member_type, guard_cell_id);
@@ -1408,6 +1475,7 @@ fn compile_per_decl_constraint_guard(
         constraints: vec![constraint],
         else_members: vec![],
         else_constraints: vec![],
+        parent_guard: None,
     });
 }
 

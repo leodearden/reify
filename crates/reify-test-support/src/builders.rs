@@ -285,6 +285,7 @@ impl TopologyTemplateBuilder {
             constraints,
             else_members,
             else_constraints,
+            parent_guard: None,
         });
         self
     }

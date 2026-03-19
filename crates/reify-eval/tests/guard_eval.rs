@@ -317,7 +317,7 @@ fn guard_change_triggers_re_elaboration() {
 #[test]
 fn eval_guarded_constraint_enforced_only_when_active() {
     let guard_id = ValueCellId::new("S", "__guard_0");
-    let x_id = ValueCellId::new("S", "x");
+    let _x_id = ValueCellId::new("S", "x");
     let constraint_id = ConstraintNodeId::new("S", 0);
 
     let guard_expr = value_ref_typed("S", "active", Type::Bool);
