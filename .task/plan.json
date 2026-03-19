@@ -119,7 +119,7 @@
       "type": "impl",
       "description": "Export all new public types from reify-constraints/src/lib.rs: ConstraintClassifier, SolverRegistry, SubProblem, decompose_into_components. Update lib.rs module declarations. Ensure cargo test passes for entire workspace.",
       "status": "done",
-      "commit": "4fac5d2"
+      "commit": "e8f517a"
     }
   ],
   "design_decisions": [
