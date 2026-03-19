@@ -98,6 +98,11 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Enum(decl));
                     }
                 }
+                "function_definition" => {
+                    if let Some(decl) = self.lower_function(child) {
+                        self.declarations.push(Declaration::Function(decl));
+                    }
+                }
                 "ERROR" => {
                     self.errors.push(ParseError {
                         message: format!("syntax error: {}", self.node_text(child)),
@@ -146,6 +151,199 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
+    }
+
+    // ── Function lowering ─────────────────────────────────────
+
+    fn lower_function(&self, node: tree_sitter::Node) -> Option<FnDef> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        // Check for 'pub' keyword
+        let mut is_pub = false;
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if !child.is_named() && self.node_text(child) == "pub" {
+                is_pub = true;
+                break;
+            }
+        }
+
+        // Extract optional type parameters
+        let type_params = {
+            let mut cursor = node.walk();
+            let mut params = Vec::new();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "type_parameters" {
+                    params = self.lower_type_parameters(child);
+                    break;
+                }
+            }
+            params
+        };
+
+        // Extract function params from fn_param_list
+        let params = {
+            let mut cursor = node.walk();
+            let mut params = Vec::new();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "fn_param_list" {
+                    let mut param_cursor = child.walk();
+                    for param_child in child.children(&mut param_cursor) {
+                        if param_child.kind() == "fn_param" {
+                            if let Some(p) = self.lower_fn_param(param_child) {
+                                params.push(p);
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+            params
+        };
+
+        // Extract optional return type
+        let return_type = node.child_by_field_name("return_type").map(|t| {
+            let ident = if t.kind() == "type_expr" {
+                t.child(0).unwrap_or(t)
+            } else {
+                t
+            };
+            TypeExpr {
+                name: self.node_text(ident).to_string(),
+                span: self.span(ident),
+            }
+        });
+
+        // Extract fn_body
+        let body = {
+            let mut cursor = node.walk();
+            let mut body = None;
+            for child in node.children(&mut cursor) {
+                if child.kind() == "fn_body" {
+                    body = self.lower_fn_body(child);
+                    break;
+                }
+            }
+            body?
+        };
+
+        Some(FnDef {
+            name,
+            is_pub,
+            type_params,
+            params,
+            return_type,
+            body,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_fn_param(&self, node: tree_sitter::Node) -> Option<FnParam> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let type_node = node.child_by_field_name("type")?;
+        let ident = if type_node.kind() == "type_expr" {
+            type_node.child(0).unwrap_or(type_node)
+        } else {
+            type_node
+        };
+        let type_expr = TypeExpr {
+            name: self.node_text(ident).to_string(),
+            span: self.span(ident),
+        };
+
+        Some(FnParam {
+            name,
+            type_expr,
+            span: self.span(node),
+        })
+    }
+
+    fn lower_fn_body(&self, node: tree_sitter::Node) -> Option<FnBody> {
+        let mut let_bindings = Vec::new();
+        let mut result_expr = None;
+
+        // Collect fn_let_binding children and find the result expression
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "fn_let_binding" {
+                if let Some(let_decl) = self.lower_fn_let_binding(child) {
+                    let_bindings.push(let_decl);
+                }
+            }
+        }
+
+        // The result expression is the 'result' field
+        let result_node = node.child_by_field_name("result")?;
+        result_expr = self.lower_expr(result_node);
+
+        Some(FnBody {
+            let_bindings,
+            result_expr: result_expr?,
+        })
+    }
+
+    fn lower_fn_let_binding(&self, node: tree_sitter::Node) -> Option<LetDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let type_expr = node.child_by_field_name("type").map(|t| {
+            let ident = if t.kind() == "type_expr" {
+                t.child(0).unwrap_or(t)
+            } else {
+                t
+            };
+            TypeExpr {
+                name: self.node_text(ident).to_string(),
+                span: self.span(ident),
+            }
+        });
+
+        let value_node = node.child_by_field_name("value")?;
+        let value = self.lower_expr(value_node)?;
+
+        Some(LetDecl {
+            name,
+            type_expr,
+            value,
+            where_clause: None, // fn let bindings have no where clause
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_type_parameters(&self, node: tree_sitter::Node) -> Vec<TypeParamDecl> {
+        let mut type_params = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "type_param_bound" {
+                let name_node = match child.child_by_field_name("name") {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let name = self.node_text(name_node).to_string();
+
+                // Collect bounds from trait_bound_list
+                let mut bounds = Vec::new();
+                let mut bound_cursor = child.walk();
+                for bound_child in child.children(&mut bound_cursor) {
+                    if bound_child.kind() == "trait_bound_list" {
+                        let mut trait_cursor = bound_child.walk();
+                        for trait_child in bound_child.children(&mut trait_cursor) {
+                            if trait_child.kind() == "identifier" {
+                                bounds.push(self.node_text(trait_child).to_string());
+                            }
+                        }
+                    }
+                }
+
+                type_params.push(TypeParamDecl { name, bounds });
+            }
+        }
+        type_params
     }
 
     /// Lower a single member node (used by both lower_structure and lower_guarded_block).
