@@ -76,10 +76,12 @@ impl OcctKernel {
 
     /// Look up a shape by handle ID.
     fn get_shape(&self, id: GeometryHandleId) -> Result<&ffi::ffi::OcctShape, GeometryError> {
-        self.shapes
+        let ptr = self
+            .shapes
             .get(&id.0)
-            .map(|ptr| ptr.as_ref().unwrap())
-            .ok_or(GeometryError::InvalidReference(id))
+            .ok_or(GeometryError::InvalidReference(id))?;
+        ptr.as_ref()
+            .ok_or_else(|| GeometryError::OperationFailed("shape handle is null".into()))
     }
 }
 
