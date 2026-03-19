@@ -284,10 +284,20 @@ impl EvaluationGraph {
         };
 
         let guard_hash = {
-            let hashes: Vec<ContentHash> = self.guarded_groups.iter().map(|g| {
-                ContentHash::of_str(&format!("{}", g.guard_cell))
+            let mut per_group: Vec<ContentHash> = self.guarded_groups.iter().map(|g| {
+                let guard_id_hash = ContentHash::of_str(&format!("{}", g.guard_cell));
+                let mut member_strs: Vec<String> = g.members.iter().map(|m| format!("{}", m)).collect();
+                member_strs.sort();
+                let member_hashes: Vec<ContentHash> = member_strs.iter().map(|s| ContentHash::of_str(s)).collect();
+                let members_hash = ContentHash::combine_all(member_hashes);
+                let mut else_strs: Vec<String> = g.else_members.iter().map(|m| format!("{}", m)).collect();
+                else_strs.sort();
+                let else_hashes: Vec<ContentHash> = else_strs.iter().map(|s| ContentHash::of_str(s)).collect();
+                let else_hash = ContentHash::combine_all(else_hashes);
+                ContentHash::combine_all([guard_id_hash, members_hash, else_hash])
             }).collect();
-            ContentHash::combine_all(hashes)
+            per_group.sort_by_key(|h| h.0);
+            ContentHash::combine_all(per_group)
         };
 
         ContentHash::combine_all([vc_hash, cn_hash, real_hash, res_hash, guard_hash])
