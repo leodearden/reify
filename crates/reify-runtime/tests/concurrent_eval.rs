@@ -1474,3 +1474,34 @@ fn skipped_recovers_after_skip_state_poisoning() {
     // skipped() should return a HashSet without panicking
     let _skipped = adapter.skipped();
 }
+
+/// evaluate() should recover gracefully when the values RwLock is poisoned,
+/// and take_results()/build_result_shared() should still work afterward.
+#[tokio::test]
+async fn evaluate_continues_after_lock_poisoning() {
+    let setup = simple_setup();
+    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+    let b_node = NodeId::Value(ValueCellId::new("T", "b"));
+
+    // Poison the values RwLock
+    adapter.poison_values();
+
+    // evaluate() should complete without cascading panic
+    let outcome = adapter.evaluate(b_node.clone()).await;
+
+    // Should get an outcome (Changed or Unchanged, doesn't matter which)
+    assert!(
+        outcome == EvalOutcome::Changed || outcome == EvalOutcome::Unchanged,
+        "evaluate should return a valid outcome, got {:?}",
+        outcome
+    );
+
+    // take_results() should still work
+    let results = adapter.take_results();
+    assert!(!results.is_empty(), "should have at least one result after evaluate");
+
+    // build_result_shared() should still work (regression guard for already-fixed paths)
+    let eval_set = vec![b_node];
+    let result = adapter.build_result_shared(&eval_set);
+    assert!(!result.values.is_empty(), "build_result_shared should return values");
+}
