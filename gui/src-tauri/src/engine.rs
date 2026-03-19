@@ -277,7 +277,7 @@ impl EngineSession {
             }
         }
 
-        // Build constraints
+        // Build constraints — cross-reference compiled constraints for expressions
         let mut constraints = Vec::new();
         for entry in &check.constraint_results {
             let status = match entry.satisfaction {
@@ -286,12 +286,28 @@ impl EngineSession {
                 Satisfaction::Indeterminate => "Indeterminate",
             };
 
+            // Look up the compiled constraint for expression text and parameter refs
+            let (expression, parameter_ids) = compiled
+                .templates
+                .iter()
+                .find_map(|t| {
+                    t.constraints
+                        .iter()
+                        .find(|c| c.id == entry.id)
+                        .map(|c| {
+                            let expr_str = format_expr(&c.expr);
+                            let param_ids = collect_value_refs(&c.expr);
+                            (expr_str, param_ids)
+                        })
+                })
+                .unwrap_or_default();
+
             constraints.push(ConstraintData {
                 node_id: entry.id.to_string(),
-                expression: String::new(), // TODO: reconstruct from compiled expr
+                expression,
                 status: status.to_string(),
                 label: entry.label.clone(),
-                parameter_ids: vec![],
+                parameter_ids,
             });
         }
 
@@ -380,6 +396,106 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
     }
 
     Err(format!("Cannot parse value '{}'", s))
+}
+
+/// Format a compiled expression as a human-readable string.
+fn format_expr(expr: &reify_types::CompiledExpr) -> String {
+    use reify_types::CompiledExprKind;
+
+    match &expr.kind {
+        CompiledExprKind::Literal(v) => {
+            let (val, unit) = crate::types::format_value(v);
+            if unit.is_empty() {
+                val
+            } else {
+                format!("{}{}", val, unit)
+            }
+        }
+        CompiledExprKind::ValueRef(id) => id.member.clone(),
+        CompiledExprKind::BinOp { op, left, right } => {
+            let op_str = match op {
+                reify_types::BinOp::Add => "+",
+                reify_types::BinOp::Sub => "-",
+                reify_types::BinOp::Mul => "*",
+                reify_types::BinOp::Div => "/",
+                reify_types::BinOp::Mod => "%",
+                reify_types::BinOp::Pow => "**",
+                reify_types::BinOp::Eq => "==",
+                reify_types::BinOp::Ne => "!=",
+                reify_types::BinOp::Lt => "<",
+                reify_types::BinOp::Le => "<=",
+                reify_types::BinOp::Gt => ">",
+                reify_types::BinOp::Ge => ">=",
+                reify_types::BinOp::And => "&&",
+                reify_types::BinOp::Or => "||",
+            };
+            format!("{} {} {}", format_expr(left), op_str, format_expr(right))
+        }
+        CompiledExprKind::UnOp { op, operand } => {
+            let op_str = match op {
+                reify_types::UnOp::Neg => "-",
+                reify_types::UnOp::Not => "!",
+            };
+            format!("{}{}", op_str, format_expr(operand))
+        }
+        CompiledExprKind::FunctionCall { function, args } => {
+            let arg_strs: Vec<String> = args.iter().map(format_expr).collect();
+            format!("{}({})", function.name, arg_strs.join(", "))
+        }
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            format!(
+                "if {} then {} else {}",
+                format_expr(condition),
+                format_expr(then_branch),
+                format_expr(else_branch)
+            )
+        }
+    }
+}
+
+/// Collect all ValueCellId references from a compiled expression.
+fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
+    use reify_types::CompiledExprKind;
+
+    let mut refs = Vec::new();
+    collect_value_refs_inner(expr, &mut refs);
+    refs.sort();
+    refs.dedup();
+    refs
+}
+
+fn collect_value_refs_inner(expr: &reify_types::CompiledExpr, refs: &mut Vec<String>) {
+    use reify_types::CompiledExprKind;
+
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => refs.push(id.to_string()),
+        CompiledExprKind::BinOp { left, right, .. } => {
+            collect_value_refs_inner(left, refs);
+            collect_value_refs_inner(right, refs);
+        }
+        CompiledExprKind::UnOp { operand, .. } => {
+            collect_value_refs_inner(operand, refs);
+        }
+        CompiledExprKind::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_value_refs_inner(arg, refs);
+            }
+        }
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_value_refs_inner(condition, refs);
+            collect_value_refs_inner(then_branch, refs);
+            collect_value_refs_inner(else_branch, refs);
+        }
+        CompiledExprKind::Literal(_) => {}
+    }
 }
 
 /// Convert a byte offset in source text to (line, column), both 1-based.
