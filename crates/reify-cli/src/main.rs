@@ -180,7 +180,14 @@ fn cmd_build(args: &[String]) -> ExitCode {
 }
 
 fn cmd_lsp() -> ExitCode {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    rt.block_on(reify_lsp::run_server());
-    ExitCode::SUCCESS
+    match tokio::runtime::Runtime::new() {
+        Ok(rt) => {
+            rt.block_on(reify_lsp::run_server());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Failed to create async runtime: {}", e);
+            ExitCode::FAILURE
+        }
+    }
 }
