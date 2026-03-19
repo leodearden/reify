@@ -1,14 +1,14 @@
 {
-  "task_id": "46",
-  "title": "Fix PoisonError handling consistency in runtime",
-  "modules": ["crates/reify-runtime"],
-  "analysis": "ConcurrentEvalAdapter and SharedPriorityPromoter have inconsistent PoisonError handling. The 'result extraction' paths (build_result_shared, into_result at lines 112-152) correctly use .unwrap_or_else(|e| e.into_inner()) to recover from poisoned locks, but accessor methods (values, take_results, skipped, is_dirty) and the evaluate() hot path use plain .unwrap(), which will cascade-panic if any concurrent task panics while holding a lock. SharedPriorityPromoter has the same issue across all 6 of its lock acquisitions. The fix is mechanical: replace all .unwrap() on Mutex::lock()/RwLock::read()/RwLock::write() with .unwrap_or_else(|e| e.into_inner()). For testing, we need to deliberately poison locks and verify recovery. ConcurrentEvalAdapter's locks are behind Arc, so we can add cfg-gated helpers that clone the relevant Arc and spawn a panicking thread to poison specific locks. SharedPriorityPromoter tests live in the same module so they can access the private `inner` field directly. Specifically: concurrent_eval.rs has 9 .unwrap() calls on lines 93, 98, 103, 176, 190, 220, 226, 242, 260 that need fixing; priority_promotion.rs has 6 .unwrap() calls on lines 121, 126, 131, 136, 147-148 that need fixing.\n\n**Post-review update:** The poison_* helper methods (lines 177-222 of concurrent_eval.rs) were implemented as `pub` in an unconditional `impl` block with only `#[doc(hidden)]`. This leaves state-corrupting methods in the production API surface. They must be gated behind `#[cfg(any(test, feature = \"test-utils\"))]` with a `test-utils` feature added to Cargo.toml. The integration tests that call these methods need `#[cfg(feature = \"test-utils\")]` gating since `#[cfg(test)]` only applies to unit tests within the crate, not integration tests in `tests/`.",
+  "task_id": "52",
+  "title": "Consolidate Engine state into single Option<EvaluationState>",
+  "modules": ["crates/reify-eval", "crates/reify-runtime"],
+  "analysis": "Engine (reify-eval/src/lib.rs:28-51) has three separate Option fields—current_snapshot, reverse_index, trace_map—that are always set/unset atomically in eval() (lines 931-933) but accessed with individual .expect() calls in edit_param (955-959), prepare_concurrent_edit (231-236), resolve_concurrent_edit (412-415), apply_concurrent_edit (375-376), and check_constraints_with_values (1274-1275). This creates risk of partial-state panics and obscures the invariant that these fields are always Some simultaneously after eval().\n\nThe fix consolidates these into `eval_state: Option<EvaluationState>` and introduces an `EngineError` enum so methods that require prior eval() return `Result` instead of panicking. This changes return types of edit_param, prepare_concurrent_edit, resolve_concurrent_edit, apply_concurrent_edit, check_constraints_with_values, and edit_check—affecting ~40+ test call sites across reify-eval/tests/ and reify-runtime/tests/concurrent_eval.rs, plus reify-runtime/src/concurrent_eval.rs.\n\nAdditionally, lines 680-741 (let-binding evaluation in eval()) and 856-915 (let-binding re-evaluation after resolution in eval()) contain nearly identical code: collect let cells with expressions, build traces, topological sort, evaluate in order with journal/cache recording. This should be extracted into a shared helper.\n\nMethods that gracefully handle None (check_snapshot at line 1637, build_snapshot at line 1742, snapshot() at line 205) use `as_ref()?` or `as_ref()` and can be trivially updated to access eval_state.snapshot instead.\n\nThe two usages of `if let Some(rev_idx) = &self.reverse_index` at lines 1017 and 1074 inside edit_param are within a scope that already extracted reverse_index at the top, so after refactoring they'll use the already-extracted reference directly.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add #[cfg(test)] poison helper methods to ConcurrentEvalAdapter (poison_skip_state, poison_results, poison_values, poison_snapshot_values) that clone the inner Arc, spawn a thread that acquires the lock and panics, thereby poisoning it. These are needed by integration tests in tests/concurrent_eval.rs to set up poisoned-lock scenarios.",
+      "description": "Define EngineError enum with NotInitialized variant and EvaluationState struct containing snapshot: Snapshot, reverse_index: ReverseDependencyIndex, trace_map: HashMap<NodeId, DependencyTrace>. Add EngineError to lib.rs public API. Use #[derive(Debug)] on both. Implement std::fmt::Display and std::error::Error for EngineError.",
       "status": "done",
-      "commit": "86d5014",
+      "commit": "4757a03",
       "tests": []
     }
   ],
@@ -16,107 +16,132 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for adapter accessor methods recovering after lock poisoning. In tests/concurrent_eval.rs add: (1) `is_dirty_recovers_after_skip_state_poisoning` — poison skip_state, assert is_dirty() returns a bool without panicking; (2) `values_recovers_after_values_lock_poisoning` — poison values lock, assert values() returns a ValueMap; (3) `take_results_recovers_after_results_lock_poisoning` — poison results lock, assert take_results() returns a Vec; (4) `skipped_recovers_after_skip_state_poisoning` — poison skip_state, assert skipped() returns a HashSet. Each test creates a simple_setup adapter, poisons the relevant lock, then calls the accessor. These should FAIL because lines 93, 98, 103, 176 use .unwrap().",
+      "description": "Write test in crates/reify-eval/tests/boundary5_engine.rs: `engine_is_not_initialized_before_eval` — Engine::new() then assert !engine.is_initialized(). Write second test `engine_is_initialized_after_eval` — eval(&module) then assert engine.is_initialized().",
       "status": "done",
-      "commit": "e09dbf5"
+      "commit": "1c91550"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix .unwrap() on accessor methods in concurrent_eval.rs: line 93 values.read().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 98 results.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 103 skip_state.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 176 skip_state.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()). All 4 step-1 tests should now pass.",
+      "description": "Replace the three Option fields (current_snapshot, reverse_index, trace_map) with `eval_state: Option<EvaluationState>` in Engine struct. Add `pub fn is_initialized(&self) -> bool { self.eval_state.is_some() }`. Update Engine::new() to set eval_state: None. Update eval() to store `self.eval_state = Some(EvaluationState { snapshot, reverse_index, trace_map })` at line 931-933. Update snapshot() accessor to `self.eval_state.as_ref().map(|s| &s.snapshot)`. Update check_snapshot (line 1637) and build_snapshot (line 1742) to use `self.eval_state.as_ref()?.snapshot`.",
       "status": "done",
-      "commit": "68a1138"
+      "commit": "99ce592"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test for evaluate() recovering with poisoned locks. In tests/concurrent_eval.rs add `evaluate_continues_after_lock_poisoning`: create adapter from simple_setup, poison the values RwLock, then call adapter.evaluate(b_node).await. Currently panics at line 190 (values.read().unwrap()). After fix, evaluate should complete (returning an EvalOutcome) without cascading panic. Also verify take_results() and build_result_shared() still work afterward (regression guard for already-fixed paths).",
+      "description": "Write test `edit_param_before_eval_returns_error` in boundary5_engine.rs: Engine::new() then call edit_param() and assert it returns Err(EngineError::NotInitialized). This tests that the error is clear, not a panic.",
       "status": "done",
-      "commit": "554a1b6"
+      "commit": "6b37a72"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix .unwrap() in evaluate() method in concurrent_eval.rs: line 190 values.read().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 220 values.write().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 226 snapshot_values.write().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 242 skip_state.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 260 results.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()). Step-3 test should now pass.",
+      "description": "Change edit_param return type from EvalResult to Result<EvalResult, EngineError>. Replace the three .expect() calls at lines 955-959 with a single `let state = self.eval_state.as_ref().ok_or(EngineError::NotInitialized)?;` and extract snapshot, reverse_index, trace_map from state. Update the two `if let Some(rev_idx) = &self.reverse_index` patterns at lines 1017 and 1074 to use the already-extracted reverse_index reference directly. Update the final state store at line 1247 to mutate `self.eval_state.as_mut().unwrap().snapshot = new_snapshot`. Wrap successful return in Ok().",
       "status": "done",
-      "commit": "c55c04e"
+      "commit": "f6d66e9"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test for SharedPriorityPromoter recovering after lock poisoning. In priority_promotion.rs mod tests add `shared_promoter_recovers_after_lock_poisoning`: create Arc<SharedPriorityPromoter>, register node_a at P3Speculative, spawn thread that acquires shared.inner.lock() and panics (private field accessible from unit tests in same module), then assert effective_priority() returns Some(P3Speculative), register() succeeds for new node, promote() succeeds, remove() succeeds, promote_for_demand() succeeds. Currently fails because all lock() calls use .unwrap().",
+      "description": "Write test `eval_state_available_atomically_after_eval` in boundary5_engine.rs: After eval(), verify that engine.is_initialized() is true, engine.snapshot() is Some, and the snapshot contains the expected graph, reverse_index, and trace_map data (accessible via a new eval_state() accessor). This proves all three components are available as a single atomic unit.",
       "status": "done",
-      "commit": "67630a5"
+      "commit": "f89aa2b"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Fix .unwrap() in SharedPriorityPromoter in priority_promotion.rs: line 121 inner.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 126 same, line 131 same, line 136 same, lines 146-148 same. All 6 Mutex::lock() calls get the recovery pattern. Step-5 test should now pass. All existing tests continue to pass since unwrap_or_else is a superset of unwrap behavior for non-poisoned locks.",
+      "description": "Add `pub fn eval_state(&self) -> Option<&EvaluationState>` accessor to Engine. Update edit_check to propagate the Result from edit_param (change return type to Result<CheckResult, EngineError>). Verify all existing tests in boundary5_engine.rs and incremental.rs still compile and pass after updating their edit_param/edit_check call sites to unwrap the Result (.unwrap() for tests that expect success).",
       "status": "done",
-      "commit": "5eb4f47"
+      "commit": "01a2c7d"
     },
     {
       "id": "step-7",
       "type": "impl",
-      "description": "Gate poison helper methods behind feature flag to exclude them from the production API. Three changes: (1) Add `[features]` section with `test-utils = []` to crates/reify-runtime/Cargo.toml. (2) In concurrent_eval.rs, change the `impl ConcurrentEvalAdapter` block at lines 176-222 (containing poison_skip_state, poison_results, poison_values, poison_snapshot_values) from `#[doc(hidden)]` to `#[cfg(any(test, feature = \"test-utils\"))]`. Remove `#[doc(hidden)]` since cfg-gating makes it unnecessary. (3) In tests/concurrent_eval.rs, wrap the 5 poison recovery tests (is_dirty_recovers_after_skip_state_poisoning, values_recovers_after_values_lock_poisoning, take_results_recovers_after_results_lock_poisoning, skipped_recovers_after_skip_state_poisoning, evaluate_continues_after_lock_poisoning) in a `#[cfg(feature = \"test-utils\")]` module block so they only compile when `--features test-utils` is passed. This is necessary because `#[cfg(test)]` on the impl block only activates for unit tests within the crate, not for integration tests in the `tests/` directory.",
+      "description": "Update prepare_concurrent_edit to return Result<ConcurrentEditSetup, EngineError>: replace three .expect() calls at lines 231-236 with single eval_state access. Update resolve_concurrent_edit: replace .expect() calls at lines 412-415 with eval_state access, change return type to include Result or use unwrap since it's always called after prepare. Update apply_concurrent_edit: replace .expect() at line 376 with eval_state access. Update check_constraints_with_values to return Result<(Vec<ConstraintCheckEntry>, Vec<Diagnostic>), EngineError>: replace .expect() at line 1275 with eval_state access.",
       "status": "done",
-      "commit": "21ec973"
+      "commit": "583bda2"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Verify the feature gate works correctly. (1) Run `cargo check -p reify-runtime` (without test-utils feature) — must compile successfully, confirming the poison methods are excluded from the production binary and no other code depends on them unconditionally. (2) Run `cargo test -p reify-runtime --features test-utils` — all poison recovery tests must pass, confirming the feature flag correctly enables the test helpers. (3) Run `cargo test -p reify-runtime` (without feature) — all non-poison tests must pass, confirming no regression from the gating.",
+      "type": "impl",
+      "description": "Update all test callers in crates/reify-eval/tests/ to handle Result return types: add .unwrap() to edit_param calls in incremental.rs (~30 sites), concurrent.rs (~5 sites), journal.rs (~1 site), resolution.rs (~1 site), interactive_edit_loop.rs (~4 sites). Add .unwrap() to prepare_concurrent_edit calls in concurrent.rs (~3 sites). Add .unwrap() to check_constraints_with_values calls where applicable. Ensure all tests compile and pass.",
       "status": "done",
-      "commit": "21ec973"
+      "commit": "f6d66e9"
+    },
+    {
+      "id": "step-9",
+      "type": "impl",
+      "description": "Update crates/reify-runtime/src/concurrent_eval.rs: edit_param_concurrent (line 271) — handle Result from prepare_concurrent_edit by mapping EngineError into SchedulerError (add EngineError variant or convert). Update resolve_concurrent_edit call (line 297) and apply_concurrent_edit call (line 335). Update check_constraints_with_values call (line 339) in edit_check_concurrent. Update crates/reify-runtime/tests/concurrent_eval.rs call sites (~8 sites) to handle new Result types.",
+      "status": "done",
+      "commit": "583bda2"
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Write test `let_binding_evaluation_produces_same_results_with_helper` in boundary5_engine.rs: Create a module with multiple let bindings that have forward references (e.g., let a = b + 1; let b = param * 2). Eval and verify all let binding values are correct, including after resolution phase. This serves as a regression test for the helper extraction in step-11.",
+      "status": "done",
+      "commit": "3725500"
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "Extract duplicate let-binding evaluation code (lines 680-741 and 856-915 in eval()) into a private helper method `evaluate_let_bindings(&mut self, template: &CompiledTopologyTemplate, values: &mut ValueMap, snapshot: &mut Snapshot, version_id: u64)`. The helper collects let cells with default_expr, builds NodeId keys and DependencyTrace maps, topological sorts, evaluates each in order via reify_expr::eval_expr, updates values/snapshot.values, records cache entry via self.cache.record_evaluation, and records Started/Completed journal events. Replace both call sites (lines 680-741 and 856-915) with calls to the helper. Verify all existing tests pass.",
+      "status": "done",
+      "commit": "pending"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use .unwrap_or_else(|e| e.into_inner()) consistently for all lock acquisitions",
-      "rationale": "This is the existing recovery pattern already used in build_result_shared() and into_result() (lines 112-152). It extracts the last valid data from a poisoned lock, allowing the system to continue with potentially stale but structurally valid state rather than cascading panics. This is the right choice for a CAD engine where a transient evaluation failure should not crash the entire system."
+      "decision": "Use Result<T, EngineError> return types instead of keeping panicking .expect() calls",
+      "rationale": "Task explicitly requires 'clear error (not panic)' for edit_param before eval. The ok_or pattern is specified in the task description. While this has large blast radius (~40+ call sites), it eliminates partial-state panic risk and provides proper error propagation."
     },
     {
-      "decision": "Add #[cfg(test)] poison helper methods to ConcurrentEvalAdapter rather than exposing internal locks",
-      "rationale": "Integration tests (tests/concurrent_eval.rs) cannot access private fields. Rather than making locks pub(crate) or restructuring, cfg(test) helpers provide a clean testing interface. Each helper clones the relevant Arc<Mutex/RwLock>, spawns a thread that acquires the lock and panics, poisoning it. This pattern is zero-cost in release builds."
+      "decision": "Keep check_snapshot and build_snapshot returning Option (not Result)",
+      "rationale": "These methods already handle the uninitialized case gracefully by returning None via the ? operator. Changing them to Result would be unnecessary churn since their callers already expect Option."
     },
     {
-      "decision": "Test SharedPriorityPromoter poisoning via unit tests inside the module",
-      "rationale": "Unit tests in priority_promotion.rs mod tests can access the private `inner` field directly, avoiding the need for test helper methods. This is simpler and matches the existing test pattern in that module which already uses std::sync::Arc and std::thread for concurrency tests."
+      "decision": "Use eval_state.as_mut().unwrap() for mutations within edit_param after the initial Result check",
+      "rationale": "Once we've validated eval_state is Some at the top of edit_param (via ok_or), subsequent mutable access within the same method can safely unwrap. The borrow checker prevents holding both a shared and mutable reference, so we validate once then use unwrap for mutation points."
     },
     {
-      "decision": "Do not convert to Result-returning APIs",
-      "rationale": "The task scope is to make PoisonError handling consistent, not to change the API surface. Converting to Result<T, PoisonError> would require changing every call site and is a larger refactor. The unwrap_or_else pattern preserves the existing API while adding resilience."
+      "decision": "Helper method for let-binding evaluation takes &mut self to access journal and cache",
+      "rationale": "Both duplicate code blocks record journal events and cache entries via self.journal and self.cache. The helper needs mutable access to Engine, and also needs the template, values, snapshot, and version_id as parameters."
     },
     {
-      "decision": "Gate poison helpers with #[cfg(any(test, feature = \"test-utils\"))] and a Cargo feature, not just #[cfg(test)]",
-      "rationale": "#[cfg(test)] only applies during unit test compilation of the crate itself — it does NOT apply to integration tests in the tests/ directory or to downstream crates. Since the poison recovery integration tests live in tests/concurrent_eval.rs, they need a feature flag (test-utils) to enable the helpers. The dual gate `any(test, feature = \"test-utils\")` ensures the helpers are available both in unit tests (via cfg(test)) and in integration tests (via the feature). The integration tests themselves are wrapped in #[cfg(feature = \"test-utils\")] so they only compile when the feature is active."
+      "decision": "Update test callers with .unwrap() rather than expect() with messages",
+      "rationale": "Tests that call edit_param on an already-evaluated engine should never fail the initialization check. Using .unwrap() is idiomatic for test code and keeps the diff minimal. The panic message from unwrap on EngineError::NotInitialized is sufficiently descriptive."
+    },
+    {
+      "decision": "Consolidate resolve_concurrent_edit to use unwrap rather than Result for eval_state access",
+      "rationale": "resolve_concurrent_edit is always called after prepare_concurrent_edit succeeds, which already validated eval_state is Some. Adding Result return type here would be unnecessary ceremony since the precondition is structurally guaranteed by the call sequence in both sequential and concurrent paths."
     }
   ],
   "reuse": [
     {
-      "what": ".unwrap_or_else(|e| e.into_inner()) recovery pattern",
-      "where": "concurrent_eval.rs lines 112-152 (build_result_shared, into_result)",
-      "how": "Apply the same pattern to all remaining .unwrap() calls on lock acquisitions. This is the established convention in the codebase for PoisonError recovery."
+      "what": "MockConstraintChecker, bracket_compiled_module, TopologyTemplateBuilder from reify-test-support",
+      "where": "crates/reify-eval/tests/boundary5_engine.rs",
+      "how": "Use existing test fixtures and builders for new tests, following the pattern already established in boundary5_engine.rs and incremental.rs"
     },
     {
-      "what": "simple_setup() test helper",
-      "where": "tests/concurrent_eval.rs lines 21-95",
-      "how": "Use the existing simple_setup() to create ConcurrentEvalAdapter instances for poison recovery tests, same as all other tests in the file."
+      "what": "Snapshot::from_compiled_module, ReverseDependencyIndex::build_from_graph, deps::build_trace_map",
+      "where": "crates/reify-eval/src/lib.rs eval() method",
+      "how": "These already produce the three components that will become EvaluationState fields — bundle their results into the new struct"
     },
     {
-      "what": "make_node() test helper and existing SharedPriorityPromoter test patterns",
-      "where": "priority_promotion.rs mod tests lines 164-369",
-      "how": "Follow the existing Arc<SharedPriorityPromoter> + thread::spawn pattern (used in shared_promoter_promote_from_another_thread and shared_promoter_concurrent_promotes) for the poison recovery test."
+      "what": "topological_sort from crate::dirty",
+      "where": "The new evaluate_let_bindings helper",
+      "how": "Already used in both duplicate code blocks — the helper will call it once"
     },
     {
-      "what": "PanickingEvaluator test pattern",
-      "where": "tests/concurrent_eval.rs lines 537-545",
-      "how": "Reference the existing pattern of creating evaluators that intentionally panic, used in rollback_on_task_panicked and repeated_error_then_success_cycle tests."
+      "what": "extract_dependency_trace from crate::deps",
+      "where": "The new evaluate_let_bindings helper",
+      "how": "Already used in both duplicate blocks for building traces and recording cache entries"
     },
     {
-      "what": "Cargo feature gating pattern for test-only code",
-      "where": "Standard Rust idiom (cfg(any(test, feature = \"test-utils\")))",
-      "how": "Gate the poison helper impl block so it compiles only during unit tests or when test-utils feature is explicitly enabled. Integration tests use #[cfg(feature = \"test-utils\")] since cfg(test) doesn't apply to them."
+      "what": "Existing test patterns in incremental.rs for edit_param verification",
+      "where": "New tests in boundary5_engine.rs",
+      "how": "Follow the same engine setup pattern: bracket_compiled_module() + MockConstraintChecker::new() + Engine::new() + eval() before testing"
     }
   ]
 }
