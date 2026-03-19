@@ -1027,6 +1027,26 @@ fn compile_structure(
                     }
                 }
             }
+            for m in &group.else_members {
+                if let Some(expr) = &m.default_expr {
+                    for ref_id in collect_value_refs(expr) {
+                        if let Some(ref_guard) = guarded_cell_map.get(&ref_id)
+                            && ref_guard != &group.guard_value_cell
+                        {
+                            diagnostics.push(
+                                Diagnostic::warning(format!(
+                                    "reference to differently-guarded cell '{}'",
+                                    ref_id.member,
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    m.span,
+                                    "referenced member under a different guard",
+                                )),
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
