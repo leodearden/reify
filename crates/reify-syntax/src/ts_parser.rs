@@ -650,6 +650,22 @@ impl<'a> Lowering<'a> {
         let object_node = node.child_by_field_name("object")?;
         let member_node = node.child_by_field_name("member")?;
 
+        // Check if the object is an identifier that matches a known enum name.
+        // If so, produce EnumAccess instead of MemberAccess.
+        if object_node.kind() == "identifier" {
+            let object_text = self.node_text(object_node);
+            if self.known_enums.contains(object_text) {
+                let variant = self.node_text(member_node).to_string();
+                return Some(Expr {
+                    kind: ExprKind::EnumAccess {
+                        type_name: object_text.to_string(),
+                        variant,
+                    },
+                    span: self.span(node),
+                });
+            }
+        }
+
         let object = self.lower_expr(object_node)?;
         let member = self.node_text(member_node).to_string();
 
