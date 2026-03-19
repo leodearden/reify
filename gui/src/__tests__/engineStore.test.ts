@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createRoot } from 'solid-js';
+import { createRoot, createComputed } from 'solid-js';
 import type {
   GuiState,
   MeshData,
@@ -172,6 +172,63 @@ describe('engineStore', () => {
       expect(unlistenValue).toHaveBeenCalled();
       expect(unlistenConstraint).toHaveBeenCalled();
       expect(unlistenStatus).toHaveBeenCalled();
+
+      dispose();
+    });
+  });
+
+  it('applyValueUpdates triggers exactly 1 reactive update for multiple items', () => {
+    createRoot((dispose) => {
+      const { state, applyValueUpdates } = createEngineStore();
+      // Counter starts at -1 to account for the initial effect run
+      let updateCount = -1;
+
+      createComputed(() => {
+        // Read the reactive state to establish tracking
+        JSON.stringify(state.values);
+        updateCount++;
+      });
+
+      // Initial effect run sets counter to 0
+      expect(updateCount).toBe(0);
+
+      const values: ValueData[] = [
+        { cell_id: 'a', name: 'a', value: '1', unit: 'mm', determinacy: 'determined', entity_path: 'X.a' },
+        { cell_id: 'b', name: 'b', value: '2', unit: 'mm', determinacy: 'determined', entity_path: 'X.b' },
+        { cell_id: 'c', name: 'c', value: '3', unit: 'mm', determinacy: 'determined', entity_path: 'X.c' },
+      ];
+
+      applyValueUpdates(values);
+
+      // Should be 1 batched notification, not 3 separate ones
+      expect(updateCount).toBe(1);
+
+      dispose();
+    });
+  });
+
+  it('applyConstraintUpdates triggers exactly 1 reactive update for multiple items', () => {
+    createRoot((dispose) => {
+      const { state, applyConstraintUpdates } = createEngineStore();
+      let updateCount = -1;
+
+      createComputed(() => {
+        JSON.stringify(state.constraints);
+        updateCount++;
+      });
+
+      expect(updateCount).toBe(0);
+
+      const constraints: ConstraintData[] = [
+        { node_id: 'n1', expression: 'a > 0', status: 'satisfied', details: null, parameter_ids: ['a'] },
+        { node_id: 'n2', expression: 'b > 0', status: 'satisfied', details: null, parameter_ids: ['b'] },
+        { node_id: 'n3', expression: 'c > 0', status: 'violated', details: 'fail', parameter_ids: ['c'] },
+      ];
+
+      applyConstraintUpdates(constraints);
+
+      // Should be 1 batched notification, not 3 separate ones
+      expect(updateCount).toBe(1);
 
       dispose();
     });
