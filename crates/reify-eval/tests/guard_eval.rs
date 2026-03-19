@@ -4,12 +4,12 @@
 //! else branches, undef guards, and schema re-elaboration.
 
 use reify_eval::Engine;
-use reify_test_support::builders::value_ref_typed;
+use reify_test_support::builders::{gt, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 use reify_types::*;
 
-use reify_compiler::{ValueCellDecl, ValueCellKind};
+use reify_compiler::{CompiledConstraint, ValueCellDecl, ValueCellKind};
 
 /// Helper to create a ValueCellDecl for tests.
 fn make_param_decl(entity: &str, member: &str, cell_type: Type, default: Value) -> ValueCellDecl {
@@ -304,5 +304,119 @@ fn guard_change_triggers_re_elaboration() {
     assert!(
         snapshot.graph.structure_controlling.contains(&guard_id),
         "guard_value_cell should be in structure_controlling"
+    );
+}
+
+/// Step 27: Guarded constraints should only be checked when their guard is active.
+///
+/// Build: Bool param 'active' (default=true), guarded_group with member param 'x'
+/// (default=5mm) and one guarded constraint (x > 10mm, which will be Violated).
+/// (1) With active=true: check() should include the constraint result (Violated).
+/// (2) With active=false: check() should NOT include the guarded constraint result
+///     (it's inactive, should be skipped).
+#[test]
+fn eval_guarded_constraint_enforced_only_when_active() {
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let x_id = ValueCellId::new("S", "x");
+    let constraint_id = ConstraintNodeId::new("S", 0);
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Member: param x : Scalar = 5mm
+    let x_decl = make_param_decl("S", "x", Type::length(), Value::length(0.005));
+
+    // Guarded constraint: x > 10mm (will be violated since x=5mm)
+    let constraint_expr = gt(
+        value_ref_typed("S", "x", Type::length()),
+        CompiledExpr::literal(Value::length(0.01), Type::length()),
+    );
+    let guarded_constraint = CompiledConstraint {
+        id: constraint_id.clone(),
+        label: Some("x_gt_10mm".to_string()),
+        expr: constraint_expr,
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Case 1: active=true — constraint should be checked and show Violated
+    let template_true = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr.clone(),
+            guard_id.clone(),
+            vec![x_decl.clone()],          // members
+            vec![guarded_constraint.clone()], // constraints
+            vec![],                         // else_members
+            vec![],                         // else_constraints
+        )
+        .build();
+
+    let module_true = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_true)
+        .build();
+
+    let checker_true = MockConstraintChecker::new()
+        .with_result(constraint_id.clone(), Satisfaction::Violated);
+    let mut engine_true = Engine::new(Box::new(checker_true), None);
+    let check_result_true = engine_true.check(&module_true);
+
+    // When guard=true, the constraint should be in results
+    let has_constraint = check_result_true.constraint_results.iter()
+        .any(|cr| cr.id == constraint_id);
+    assert!(
+        has_constraint,
+        "when guard is true, guarded constraint should be checked and appear in results"
+    );
+
+    // Case 2: active=false — constraint should NOT be checked
+    let guard_expr2 = value_ref_typed("S", "active", Type::Bool);
+    let x_decl2 = make_param_decl("S", "x", Type::length(), Value::length(0.005));
+    let guarded_constraint2 = CompiledConstraint {
+        id: constraint_id.clone(),
+        label: Some("x_gt_10mm".to_string()),
+        expr: gt(
+            value_ref_typed("S", "x", Type::length()),
+            CompiledExpr::literal(Value::length(0.01), Type::length()),
+        ),
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template_false = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr2,
+            guard_id.clone(),
+            vec![x_decl2],                    // members
+            vec![guarded_constraint2],        // constraints
+            vec![],                           // else_members
+            vec![],                           // else_constraints
+        )
+        .build();
+
+    let module_false = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_false)
+        .build();
+
+    let checker_false = MockConstraintChecker::new()
+        .with_result(constraint_id.clone(), Satisfaction::Violated);
+    let mut engine_false = Engine::new(Box::new(checker_false), None);
+    let check_result_false = engine_false.check(&module_false);
+
+    // When guard=false, the guarded constraint should NOT be in results
+    let has_constraint_false = check_result_false.constraint_results.iter()
+        .any(|cr| cr.id == constraint_id);
+    assert!(
+        !has_constraint_false,
+        "when guard is false, guarded constraint should NOT be checked or appear in results, but got: {:?}",
+        check_result_false.constraint_results.iter().map(|cr| (&cr.id, &cr.satisfaction)).collect::<Vec<_>>()
     );
 }
