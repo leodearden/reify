@@ -6,7 +6,7 @@
 use reify_constraints::DimensionalSolver;
 use reify_test_support::*;
 use reify_types::{
-    AutoParam, ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem,
+    AutoParam, BinOp, ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem,
     SolveResult, Type, Value, ValueMap,
 };
 
@@ -387,4 +387,43 @@ fn compound_and_constraint() {
         }
         other => panic!("expected Solved, got {:?}", other),
     }
+}
+
+/// Minimize(x / 0) — division by zero produces Value::Undef.
+/// The solver should NOT report Solved; it should detect the non-numeric objective.
+#[test]
+fn minimize_undef_objective_returns_no_progress() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // Constraints: x > 1mm AND x < 50mm (trivially satisfiable)
+    let gt_expr = gt(x_ref.clone(), literal(mm(1.0)));
+    let lt_expr = lt(x_ref.clone(), literal(mm(50.0)));
+
+    // Objective: minimize(x / 0) — division by zero → Undef
+    let zero = literal(Value::Int(0));
+    let div_by_zero = binop(BinOp::Div, x_ref, zero);
+    let objective = OptimizationObjective::Minimize(div_by_zero);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+        }],
+        constraints: vec![
+            (cnid("Part", 0), gt_expr),
+            (cnid("Part", 1), lt_expr),
+        ],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+    };
+
+    let result = solver.solve(&problem);
+    assert!(
+        !matches!(result, SolveResult::Solved { .. }),
+        "minimize(x/0) should NOT report Solved; Undef objective must be detected"
+    );
 }
