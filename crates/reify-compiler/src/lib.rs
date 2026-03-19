@@ -712,6 +712,10 @@ fn compile_structure(
                 // We'll update this after the expression is compiled.
                 scope.register(&let_decl.name, Type::Real);
             }
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                register_guarded_names(&g.members, &mut scope, diagnostics);
+                register_guarded_names(&g.else_members, &mut scope, diagnostics);
+            }
             _ => {}
         }
     }
@@ -872,9 +876,18 @@ fn compile_structure(
                 let compiled_expr = compile_expr(&max_decl.expr, &scope, diagnostics);
                 objective = Some(OptimizationObjective::Maximize(compiled_expr));
             }
-            reify_syntax::MemberDecl::GuardedGroup(_) => {
-                // Guard evaluation semantics are not yet implemented in the compiler.
-                // Guarded groups will be handled in a future task.
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                compile_block_guard(
+                    entity_name,
+                    g,
+                    None, // no outer guard
+                    &scope,
+                    diagnostics,
+                    &mut guarded_groups,
+                    &mut structure_controlling,
+                    &mut guard_index,
+                    &mut constraint_index,
+                );
             }
         }
     }
@@ -937,6 +950,234 @@ fn compile_structure(
         structure_controlling,
         objective,
         content_hash,
+    }
+}
+
+/// Register names from guarded group members in the compilation scope (pass 1).
+/// Recursively handles nested guarded groups.
+fn register_guarded_names(
+    members: &[reify_syntax::MemberDecl],
+    scope: &mut CompilationScope,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for member in members {
+        match member {
+            reify_syntax::MemberDecl::Param(param) => {
+                let ty = if let Some(type_expr) = &param.type_expr {
+                    resolve_type_name(&type_expr.name).unwrap_or_else(|| {
+                        diagnostics.push(
+                            Diagnostic::error(format!("unresolved type: {}", type_expr.name))
+                                .with_label(DiagnosticLabel::new(type_expr.span, "unknown type name")),
+                        );
+                        Type::Real
+                    })
+                } else {
+                    Type::Real
+                };
+                scope.register(&param.name, ty);
+            }
+            reify_syntax::MemberDecl::Let(let_decl) => {
+                if !is_geometry_let(&let_decl.value) {
+                    scope.register(&let_decl.name, Type::Real);
+                }
+            }
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                register_guarded_names(&g.members, scope, diagnostics);
+                register_guarded_names(&g.else_members, scope, diagnostics);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Compile a block-level `where` guard into a CompiledGuardedGroup.
+///
+/// Creates a synthetic guard ValueCell and compiles all members within the block.
+/// If `outer_guard` is Some, the guard expression becomes AND(outer_guard, inner_condition).
+#[allow(clippy::too_many_arguments)]
+fn compile_block_guard(
+    entity_name: &str,
+    g: &reify_syntax::GuardedGroupDecl,
+    outer_guard: Option<&ValueCellId>,
+    scope: &CompilationScope,
+    diagnostics: &mut Vec<Diagnostic>,
+    guarded_groups: &mut Vec<CompiledGuardedGroup>,
+    structure_controlling: &mut HashSet<ValueCellId>,
+    guard_index: &mut u32,
+    constraint_index: &mut u32,
+) {
+    let inner_condition = compile_expr(&g.condition, scope, diagnostics);
+
+    // If there's an outer guard, conjoin: guard = outer && inner
+    let guard_expr = if let Some(outer_id) = outer_guard {
+        let outer_ref = CompiledExpr::value_ref(outer_id.clone(), Type::Bool);
+        CompiledExpr::binop(BinOp::And, outer_ref, inner_condition, Type::Bool)
+    } else {
+        inner_condition
+    };
+
+    let guard_cell_id = ValueCellId::new(entity_name, &format!("__guard_{}", guard_index));
+    *guard_index += 1;
+    structure_controlling.insert(guard_cell_id.clone());
+
+    let mut members = Vec::new();
+    let mut group_constraints = Vec::new();
+
+    // Compile main members
+    compile_guarded_members(
+        entity_name,
+        &g.members,
+        &guard_cell_id,
+        scope,
+        diagnostics,
+        &mut members,
+        &mut group_constraints,
+        guarded_groups,
+        structure_controlling,
+        guard_index,
+        constraint_index,
+    );
+
+    let mut else_members = Vec::new();
+    let mut else_constraints = Vec::new();
+
+    // Compile else members
+    if !g.else_members.is_empty() {
+        compile_guarded_members(
+            entity_name,
+            &g.else_members,
+            &guard_cell_id,
+            scope,
+            diagnostics,
+            &mut else_members,
+            &mut else_constraints,
+            guarded_groups,
+            structure_controlling,
+            guard_index,
+            constraint_index,
+        );
+    }
+
+    guarded_groups.push(CompiledGuardedGroup {
+        guard_expr,
+        guard_value_cell: guard_cell_id,
+        members,
+        constraints: group_constraints,
+        else_members,
+        else_constraints,
+    });
+}
+
+/// Compile members within a guarded block into ValueCellDecls and CompiledConstraints.
+/// Handles nested GuardedGroupDecls recursively.
+#[allow(clippy::too_many_arguments)]
+fn compile_guarded_members(
+    entity_name: &str,
+    ast_members: &[reify_syntax::MemberDecl],
+    _current_guard: &ValueCellId,
+    scope: &CompilationScope,
+    diagnostics: &mut Vec<Diagnostic>,
+    members: &mut Vec<ValueCellDecl>,
+    group_constraints: &mut Vec<CompiledConstraint>,
+    guarded_groups: &mut Vec<CompiledGuardedGroup>,
+    structure_controlling: &mut HashSet<ValueCellId>,
+    guard_index: &mut u32,
+    constraint_index: &mut u32,
+) {
+    for member in ast_members {
+        match member {
+            reify_syntax::MemberDecl::Param(param) => {
+                let id = ValueCellId::new(entity_name, &param.name);
+                let cell_type = scope
+                    .resolve(&param.name)
+                    .map(|(_, ty)| ty.clone())
+                    .unwrap_or(Type::Real);
+
+                let is_auto = matches!(
+                    param.default.as_ref(),
+                    Some(reify_syntax::Expr { kind: reify_syntax::ExprKind::Auto, .. })
+                );
+
+                let decl = if is_auto {
+                    ValueCellDecl {
+                        id,
+                        kind: ValueCellKind::Auto,
+                        cell_type,
+                        default_expr: None,
+                        span: param.span,
+                    }
+                } else {
+                    let default_expr = param
+                        .default
+                        .as_ref()
+                        .map(|expr| compile_expr(expr, scope, diagnostics));
+                    ValueCellDecl {
+                        id,
+                        kind: ValueCellKind::Param,
+                        cell_type,
+                        default_expr,
+                        span: param.span,
+                    }
+                };
+                members.push(decl);
+            }
+            reify_syntax::MemberDecl::Let(let_decl) => {
+                if is_geometry_let(&let_decl.value) {
+                    continue;
+                }
+                let compiled_expr = compile_expr(&let_decl.value, scope, diagnostics);
+                let cell_type = compiled_expr.result_type.clone();
+                let id = ValueCellId::new(entity_name, &let_decl.name);
+
+                members.push(ValueCellDecl {
+                    id,
+                    kind: ValueCellKind::Let,
+                    cell_type,
+                    default_expr: Some(compiled_expr),
+                    span: let_decl.span,
+                });
+            }
+            reify_syntax::MemberDecl::Constraint(constraint) => {
+                let compiled_expr = compile_expr(&constraint.expr, scope, diagnostics);
+                if compiled_expr.result_type != Type::Bool {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "constraint expression has type {}, expected Bool",
+                            compiled_expr.result_type,
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            constraint.expr.span,
+                            "expected Bool",
+                        )),
+                    );
+                }
+                let id = ConstraintNodeId::new(entity_name, *constraint_index);
+                group_constraints.push(CompiledConstraint {
+                    id,
+                    label: constraint.label.clone(),
+                    expr: compiled_expr,
+                    span: constraint.span,
+                });
+                *constraint_index += 1;
+            }
+            reify_syntax::MemberDecl::GuardedGroup(nested) => {
+                // Nested guard: compile with current guard as outer
+                compile_block_guard(
+                    entity_name,
+                    nested,
+                    Some(_current_guard),
+                    scope,
+                    diagnostics,
+                    guarded_groups,
+                    structure_controlling,
+                    guard_index,
+                    constraint_index,
+                );
+            }
+            _ => {
+                // Sub, Minimize, Maximize within guarded blocks: not yet handled
+            }
+        }
     }
 }
 
