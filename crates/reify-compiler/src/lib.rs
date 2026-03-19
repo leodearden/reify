@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, DimensionVector,
@@ -32,6 +32,9 @@ pub struct TopologyTemplate {
     pub constraints: Vec<CompiledConstraint>,
     pub realizations: Vec<RealizationDecl>,
     pub sub_components: Vec<SubComponentDecl>,
+    pub guarded_groups: Vec<CompiledGuardedGroup>,
+    /// ValueCellIds whose boolean value controls topology (guard cells).
+    pub structure_controlling: HashSet<ValueCellId>,
     pub objective: Option<OptimizationObjective>,
     pub content_hash: ContentHash,
 }
@@ -44,6 +47,23 @@ pub struct SubComponentDecl {
     pub args: Vec<(String, CompiledExpr)>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+/// A compiled guarded group — a set of members/constraints active only when a guard condition is true.
+#[derive(Debug, Clone)]
+pub struct CompiledGuardedGroup {
+    /// The compiled guard condition expression.
+    pub guard_expr: CompiledExpr,
+    /// Synthetic ValueCellId for the guard (Bool, Let kind).
+    pub guard_value_cell: ValueCellId,
+    /// Members active when guard is true.
+    pub members: Vec<ValueCellDecl>,
+    /// Constraints active when guard is true.
+    pub constraints: Vec<CompiledConstraint>,
+    /// Members active when guard is false (else branch).
+    pub else_members: Vec<ValueCellDecl>,
+    /// Constraints active when guard is false (else branch).
+    pub else_constraints: Vec<CompiledConstraint>,
 }
 
 /// A value cell declaration (param or let).
@@ -646,6 +666,8 @@ fn compile_structure(
     let mut value_cells = Vec::new();
     let mut constraints = Vec::new();
     let mut sub_components = Vec::new();
+    let mut guarded_groups: Vec<CompiledGuardedGroup> = Vec::new();
+    let mut structure_controlling: HashSet<ValueCellId> = HashSet::new();
     let mut objective: Option<OptimizationObjective> = None;
     let mut constraint_index: u32 = 0;
 
@@ -847,10 +869,14 @@ fn compile_structure(
         // Sub-component content hashes
         let sub_hashes = sub_components.iter().map(|s| s.content_hash);
 
+        // Guarded group hashes
+        let guard_hashes = guarded_groups.iter().map(|g| g.guard_expr.content_hash);
+
         let all_hashes = std::iter::once(name_hash)
             .chain(vc_hashes)
             .chain(constraint_hashes)
-            .chain(sub_hashes);
+            .chain(sub_hashes)
+            .chain(guard_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -861,6 +887,8 @@ fn compile_structure(
         constraints,
         realizations,
         sub_components,
+        guarded_groups,
+        structure_controlling,
         objective,
         content_hash,
     }

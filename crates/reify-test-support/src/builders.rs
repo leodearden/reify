@@ -131,9 +131,11 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 
 // --- Topology builders ---
 
+use std::collections::HashSet;
+
 use reify_compiler::{
-    CompiledConstraint, CompiledGeometryOp, CompiledImport, CompiledModule, RealizationDecl,
-    SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
+    CompiledConstraint, CompiledGeometryOp, CompiledGuardedGroup, CompiledImport, CompiledModule,
+    RealizationDecl, SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
 };
 use reify_types::{ConstraintNodeId, RealizationNodeId};
 
@@ -144,6 +146,8 @@ pub struct TopologyTemplateBuilder {
     constraints: Vec<CompiledConstraint>,
     realizations: Vec<RealizationDecl>,
     sub_components: Vec<SubComponentDecl>,
+    guarded_groups: Vec<CompiledGuardedGroup>,
+    structure_controlling: HashSet<ValueCellId>,
     objective: Option<reify_types::OptimizationObjective>,
 }
 
@@ -155,6 +159,8 @@ impl TopologyTemplateBuilder {
             constraints: Vec::new(),
             realizations: Vec::new(),
             sub_components: Vec::new(),
+            guarded_groups: Vec::new(),
+            structure_controlling: HashSet::new(),
             objective: None,
         }
     }
@@ -278,10 +284,13 @@ impl TopologyTemplateBuilder {
 
             let sub_hashes = self.sub_components.iter().map(|s| s.content_hash);
 
+            let guard_hashes = self.guarded_groups.iter().map(|g| g.guard_expr.content_hash);
+
             let all_hashes = std::iter::once(name_hash)
                 .chain(vc_hashes)
                 .chain(constraint_hashes)
-                .chain(sub_hashes);
+                .chain(sub_hashes)
+                .chain(guard_hashes);
 
             ContentHash::combine_all(all_hashes)
         };
@@ -292,6 +301,8 @@ impl TopologyTemplateBuilder {
             constraints: self.constraints,
             realizations: self.realizations,
             sub_components: self.sub_components,
+            guarded_groups: self.guarded_groups,
+            structure_controlling: self.structure_controlling,
             objective: self.objective,
             content_hash,
         }
