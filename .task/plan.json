@@ -17,7 +17,7 @@
   "modules": [
     "gui/src-tauri"
   ],
-  "analysis": "This task implements the Rust backend for the Tauri GUI: an engine session wrapper, serializable IPC types, and Tauri command handlers bridging the reify evaluation engine to the frontend.\n\n**Existing codebase patterns:**\n- CLI crate (reify-cli/src/main.rs) shows the canonical pipeline: reify_syntax::parse() -> reify_compiler::compile() -> Engine::new(checker, kernel) -> engine.check/build. The GUI follows the same pipeline wrapped in a stateful session.\n- reify_eval::Engine provides: eval() for cold-start, edit_param()/edit_check() for incremental re-evaluation, check() for constraints, build() for geometry+export.\n- reify-test-support provides bracket_source(), bracket_source_with_width(), bracket_compiled_module(), MockGeometryKernel (single triangle mesh, MOCK_EXPORT_DATA), SimpleConstraintChecker.\n- Value types: Value::Scalar { si_value, dimension } with DimensionVector. ValueCellId { entity, member } with Display as entity.member. No Display on Value.\n- Geometry: GeometryKernel::tessellate(handle, tolerance) returns Mesh { vertices, indices, normals } mapping directly to MeshData.\n- Source spans: SourceSpan { start, end } byte offsets. ValueCellDecl/CompiledConstraint carry spans.\n- CompiledModule has templates with value_cells, constraints, realizations. ValueCellKind: Param/Let/Auto.\n- DimensionVector::Display renders m, kg, s, rad, dimensionless. CheckResult has values, constraint_results, diagnostics.\n\n**Architecture:**\nEngineSession owns Engine, Option<CompiledModule>, source_map, file_path, last CheckResult. Provides load_file, load_from_source, update_source, set_parameter, export, get_source_location. build_gui_state() converts engine state to serializable GuiState.\nCommands module: AppState { engine: Arc<Mutex<EngineSession>> } with thin #[tauri::command] wrappers.\nmain.rs wires Tauri with SimpleConstraintChecker + DispatchPlanner + OcctKernelHandle.\n\n**Testing:** Tests in separate files under tests/. MockGeometryKernel avoids OCCT. bracket_source() fixture. Commands tested via EngineSession methods. lib+bin crate enables cargo test -p reify-gui.",
+  "analysis": "This task implements the Rust backend for the Tauri GUI: an engine session wrapper, serializable IPC types, and Tauri command handlers bridging the reify evaluation engine to the frontend.\n\n**Existing codebase patterns:**\n- CLI crate (reify-cli/src/main.rs) shows the canonical pipeline: reify_syntax::parse() -> reify_compiler::compile() -> Engine::new(checker, kernel) -> engine.check/build. The GUI follows the same pipeline wrapped in a stateful session.\n- reify_eval::Engine provides: eval() for cold-start, edit_param()/edit_check() for incremental re-evaluation, check() for constraints, build() for geometry+export.\n- reify-test-support provides bracket_source(), bracket_source_with_width(), bracket_compiled_module(), MockGeometryKernel (single triangle mesh, MOCK_EXPORT_DATA), SimpleConstraintChecker.\n- Value types: Value::Scalar { si_value, dimension } with DimensionVector. ValueCellId { entity, member } with Display as entity.member. No Display on Value.\n- Geometry: GeometryKernel::tessellate(handle, tolerance) returns Mesh { vertices, indices, normals } mapping directly to MeshData.\n- Source spans: SourceSpan { start, end } byte offsets. ValueCellDecl/CompiledConstraint carry spans.\n- CompiledModule has templates with value_cells, constraints, realizations. ValueCellKind: Param/Let/Auto.\n- DimensionVector::Display renders m, kg, s, rad, dimensionless. CheckResult has values, constraint_results, diagnostics.\n\n**Architecture:**\nEngineSession owns Engine, Option<CompiledModule>, source_map, file_path, last CheckResult. Provides load_file, load_from_source, update_source, set_parameter, export, get_source_location. build_gui_state() converts engine state to serializable GuiState.\nCommands module: AppState { engine: Arc<Mutex<EngineSession>> } with thin #[tauri::command] wrappers.\nmain.rs wires Tauri with SimpleConstraintChecker + DispatchPlanner + OcctKernelHandle.\n\n**Testing:** Tests in separate files under tests/. MockGeometryKernel avoids OCCT. bracket_source() fixture. Commands tested via EngineSession methods. lib+bin crate enables cargo test -p reify-gui.\n\n**Review Fixes (steps 15-18):**\nThree blocking issues identified in code review:\n1. export() unnecessarily clones CompiledModule — remove clone, use disjoint field borrows (self.compiled vs self.engine are separate fields).\n2. source_map key inconsistency — load_from_source uses \"{name}.ri\" key but update_source uses raw path string, causing duplicate entries after load_file + update_source. Fix by normalizing keys to \"{module_name}.ri\" in both methods, clearing stale entries.\n3. get_source_location uses non-deterministic HashMap .iter().next() — fix by looking up source explicitly by module-name-derived key.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -132,6 +132,34 @@
       "description": "Wire main.rs: Create SimpleConstraintChecker + DispatchPlanner + OcctKernelHandle. Build EngineSession. Check args/env for initial file. Build AppState. Configure tauri::Builder with .manage(state), .invoke_handler(generate_handler![...all commands...]). Ensure cargo check -p reify-gui passes.",
       "status": "done",
       "commit": "e2161ca"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing tests in engine_tests.rs for source_map key consistency (review bug #2) and get_source_location determinism (review bug #3):\n(1) source_map_consistent_after_load_file_then_update: call load_file(examples/bracket.ri) then update_source(full_path_str, bracket_source_with_width('120mm')), assert build_gui_state().files.len() == 1 (currently fails: produces 2 entries because load_from_source inserts key 'bracket.ri' while update_source inserts the raw full path string).\n(2) get_source_location_correct_after_load_file_then_update: same sequence as above, then call get_source_location('Bracket.width'), verify loc.file equals the single file entry's path (currently may return stale file due to .iter().next() picking arbitrary HashMap entry).\n(3) get_source_location_uses_explicit_key_lookup: after load_from_source, get_source_location returns file == 'bracket.ri' matching the normalized module-name-based key (validates deterministic lookup).",
+      "status": "done",
+      "commit": "2a48baa"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Fix source_map key inconsistency and get_source_location non-deterministic lookup (review bugs #2 and #3):\n(1) Add module_name: Option<String> field to EngineSession, initialized to None.\n(2) In load_from_source: set self.module_name = Some(module_name.to_string()), clear source_map before inserting with normalized key format!(\"{}.ri\", module_name).\n(3) In update_source: derive module_name from path via Path::file_stem(), clear source_map before inserting with same normalized key format!(\"{}.ri\", module_name). Also update self.module_name.\n(4) In get_source_location: replace self.source_map.iter().next()? with explicit key lookup — derive key from self.module_name (format!(\"{}.ri\", name)) and call self.source_map.get(&key), falling back to iter().next() only if module_name is None. Return the key as the file name.",
+      "status": "done",
+      "commit": "b0191e4"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write regression test in engine_tests.rs for export without clone (review bug #1): export_no_unnecessary_clone — load bracket, call export(), verify it succeeds (validates the clone-removal refactor in step-18 doesn't break behavior). This test passes with both old and new code; it serves as a regression guard for the refactor.",
+      "status": "done",
+      "commit": "d5bcfa8"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Remove unnecessary .clone() in export() (review bug #1 — unnecessary_allocation). Change lines 179-185 from:\n  let compiled = self.compiled.as_ref().ok_or_else(|| ...)?.clone();\n  let result = self.engine.build(&compiled, format);\nto:\n  let compiled = self.compiled.as_ref().ok_or_else(|| ...)?;\n  let result = self.engine.build(compiled, format);\nThis works because self.compiled (immutable borrow) and self.engine (mutable borrow for build) are disjoint fields — Rust's borrow checker allows simultaneous disjoint field borrows. Eliminates full CompiledModule clone (templates, value cells, constraints, diagnostics) on every export call.",
+      "status": "done",
+      "commit": "41752d6"
     }
   ],
   "design_decisions": [
@@ -170,6 +198,18 @@
     {
       "decision": "update_source creates fresh Engine (cold start)",
       "rationale": "Source changes can alter topology. Incremental eval only works within same topology. Fresh Engine ensures correctness."
+    },
+    {
+      "decision": "Normalize source_map keys to '{module_name}.ri' format consistently",
+      "rationale": "Review fix: load_from_source used '{name}.ri' but update_source used raw path, causing duplicate entries. Normalizing to module-name-based keys ensures single consistent entry regardless of whether source was loaded via load_file() or update_source(). Both methods clear source_map before inserting to prevent stale entries."
+    },
+    {
+      "decision": "Add module_name field to EngineSession for deterministic source lookup",
+      "rationale": "Review fix: get_source_location used HashMap .iter().next() which is non-deterministic. Storing the active module name allows explicit key derivation and source_map.get() lookup, future-proofing for multi-file projects."
+    },
+    {
+      "decision": "Remove clone in export() using disjoint field borrows",
+      "rationale": "Review fix: export() cloned entire CompiledModule before passing a reference to Engine::build(). Since self.compiled and self.engine are separate struct fields, Rust 2021 edition allows simultaneous immutable borrow of self.compiled and mutable borrow of self.engine. Clone was unnecessary overhead."
     }
   ],
   "reuse": [
