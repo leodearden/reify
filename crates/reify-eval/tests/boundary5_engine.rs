@@ -246,3 +246,41 @@ fn edit_param_before_eval_returns_error() {
         err,
     );
 }
+
+/// After eval(), eval_state is available as a single atomic unit containing
+/// snapshot, reverse_index, and trace_map.
+#[test]
+fn eval_state_available_atomically_after_eval() {
+    use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId};
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "w", Type::length(), Some(CompiledExpr::literal(mm(10.0), Type::length())))
+        .param("S", "h", Type::length(), Some(CompiledExpr::literal(mm(20.0), Type::length())))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    engine.eval(&module);
+
+    // eval_state should be available
+    assert!(engine.is_initialized());
+    let state = engine.eval_state().expect("eval_state should be Some after eval()");
+
+    // snapshot should contain the values
+    let w_id = ValueCellId::new("S", "w");
+    let h_id = ValueCellId::new("S", "h");
+    assert!(state.snapshot.values.get(&w_id).is_some(), "snapshot should contain w");
+    assert!(state.snapshot.values.get(&h_id).is_some(), "snapshot should contain h");
+
+    // reverse_index should be populated (has entries for value cells)
+    // trace_map should be populated
+    assert!(!state.trace_map.is_empty(), "trace_map should be populated after eval");
+
+    // snapshot() accessor should also work and return the same snapshot
+    let snap = engine.snapshot().expect("snapshot should be Some");
+    assert_eq!(snap.id, state.snapshot.id);
+}
