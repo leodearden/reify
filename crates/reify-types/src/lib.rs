@@ -9,6 +9,7 @@ pub mod constraint;
 pub mod geometry;
 pub mod diagnostics;
 pub mod provenance;
+pub mod traits;
 pub mod warm;
 
 pub use identity::*;
