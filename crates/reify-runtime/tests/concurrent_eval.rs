@@ -388,7 +388,7 @@ async fn concurrent_cancellation_between_levels() {
 
     // Use the lower-level API to control cancellation timing
     let a_id = ValueCellId::new(e, "a");
-    let setup = engine.prepare_concurrent_edit(a_id, Value::Real(10.0));
+    let setup = engine.prepare_concurrent_edit(a_id, Value::Real(10.0)).unwrap();
     let eval_set = setup.eval_set.clone();
     let traces = setup.traces.clone();
 
@@ -456,7 +456,7 @@ async fn bracket_concurrent_matches_sequential() {
     let width_id = ValueCellId::new(e, "width");
 
     // Sequential edit
-    let seq_result = engine_seq.edit_param(width_id.clone(), Value::length(0.1));
+    let seq_result = engine_seq.edit_param(width_id.clone(), Value::length(0.1)).unwrap();
 
     // Concurrent edit
     let cancel = CancellationToken::new();
@@ -517,7 +517,7 @@ async fn rollback_on_task_panicked_restores_engine_state() {
     let b_node = NodeId::Value(ValueCellId::new(e, "b"));
 
     // Prepare concurrent edit — marks b as Pending
-    let setup = engine.prepare_concurrent_edit(a_id.clone(), Value::Real(50.0));
+    let setup = engine.prepare_concurrent_edit(a_id.clone(), Value::Real(50.0)).unwrap();
 
     // Verify b is Pending
     let entry = engine.cache_store().get(&b_node).unwrap();
@@ -560,7 +560,7 @@ async fn rollback_on_task_panicked_restores_engine_state() {
     );
 
     // (2) Sequential edit_param should succeed with correct values
-    let seq_result = engine.edit_param(a_id.clone(), Value::Real(50.0));
+    let seq_result = engine.edit_param(a_id.clone(), Value::Real(50.0)).unwrap();
     assert_eq!(
         seq_result.values.get(&ValueCellId::new(e, "b")),
         Some(&Value::Real(100.0)),
@@ -607,7 +607,7 @@ async fn repeated_error_then_success_cycle() {
     let c_node = NodeId::Value(ValueCellId::new(e, "c"));
 
     // === First cycle: prepare → panicking scheduler → rollback ===
-    let setup1 = engine.prepare_concurrent_edit(a_id.clone(), Value::Real(20.0));
+    let setup1 = engine.prepare_concurrent_edit(a_id.clone(), Value::Real(20.0)).unwrap();
 
     struct PanickingEvaluator;
     impl AsyncNodeEvaluator for PanickingEvaluator {

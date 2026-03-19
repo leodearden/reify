@@ -1,91 +1,147 @@
 {
-  "task_id": "49",
-  "title": "Fix integer overflow in DimensionVector Rational pow",
-  "modules": ["crates/reify-types", "crates/reify-expr"],
-  "analysis": "The Rational type in dimension.rs uses i8 for both num and den fields. In DimensionVector::pow() (line 176), the multiplication `self.0[i].num * nr.num` is i8 * i8 which silently wraps in release builds when the result exceeds i8::MAX (127). The same overflow risk exists in root() (line 166, den * n), Add (line 51-52, cross-multiplication), Sub (line 61-62), and Neg (line 71, -i8::MIN overflows). The fix is Option A from the task description: widen Rational's internal storage from i8 to i16. This is safe because the maximum product of two i8 values is 127*127=16,129 which fits comfortably in i16 (max 32,767). Dimension exponents in physics rarely exceed ~6, but the code must not silently corrupt on edge cases. The blast radius is contained: Rational fields (num/den) are only accessed within dimension.rs itself, with one external call site in reify-expr/src/lib.rs:315 that casts an i64 exponent to i8 for pow(). The content_hash() method serializes num/den as single bytes and must be updated to use 2 bytes each (i16). The as_i8() helper is defined but never called outside dimension.rs. No overflow-checks profile is set in Cargo.toml, confirming release builds use wrapping arithmetic by default.",
-  "prerequisites": [],
+  "task_id": "52",
+  "title": "Consolidate Engine state into single Option<EvaluationState>",
+  "modules": ["crates/reify-eval", "crates/reify-runtime"],
+  "analysis": "Engine (reify-eval/src/lib.rs:28-51) has three separate Option fields—current_snapshot, reverse_index, trace_map—that are always set/unset atomically in eval() (lines 931-933) but accessed with individual .expect() calls in edit_param (955-959), prepare_concurrent_edit (231-236), resolve_concurrent_edit (412-415), apply_concurrent_edit (375-376), and check_constraints_with_values (1274-1275). This creates risk of partial-state panics and obscures the invariant that these fields are always Some simultaneously after eval().\n\nThe fix consolidates these into `eval_state: Option<EvaluationState>` and introduces an `EngineError` enum so methods that require prior eval() return `Result` instead of panicking. This changes return types of edit_param, prepare_concurrent_edit, resolve_concurrent_edit, apply_concurrent_edit, check_constraints_with_values, and edit_check—affecting ~40+ test call sites across reify-eval/tests/ and reify-runtime/tests/concurrent_eval.rs, plus reify-runtime/src/concurrent_eval.rs.\n\nAdditionally, lines 680-741 (let-binding evaluation in eval()) and 856-915 (let-binding re-evaluation after resolution in eval()) contain nearly identical code: collect let cells with expressions, build traces, topological sort, evaluate in order with journal/cache recording. This should be extracted into a shared helper.\n\nMethods that gracefully handle None (check_snapshot at line 1637, build_snapshot at line 1742, snapshot() at line 205) use `as_ref()?` or `as_ref()` and can be trivially updated to access eval_state.snapshot instead.\n\nThe two usages of `if let Some(rev_idx) = &self.reverse_index` at lines 1017 and 1074 inside edit_param are within a scope that already extracted reverse_index at the top, so after refactoring they'll use the already-extracted reference directly.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Define EngineError enum with NotInitialized variant and EvaluationState struct containing snapshot: Snapshot, reverse_index: ReverseDependencyIndex, trace_map: HashMap<NodeId, DependencyTrace>. Add EngineError to lib.rs public API. Use #[derive(Debug)] on both. Implement std::fmt::Display and std::error::Error for EngineError.",
+      "status": "done",
+      "commit": "4757a03",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `pow_overflow_does_not_silently_wrap` in dimension.rs: construct a DimensionVector with LENGTH exponent 64 (via basis_n(0, 64)), call .pow(2). Assert result exponent equals Rational { num: 128, den: 1 }. With current i8 arithmetic, 64*2=128 overflows i8::MAX (127) and wraps to -128 in release or panics in debug. This test must fail with current code.",
+      "description": "Write test in crates/reify-eval/tests/boundary5_engine.rs: `engine_is_not_initialized_before_eval` — Engine::new() then assert !engine.is_initialized(). Write second test `engine_is_initialized_after_eval` — eval(&module) then assert engine.is_initialized().",
       "status": "done",
-      "commit": "292671f"
+      "commit": "1c91550"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Write failing test `root_overflow_does_not_silently_wrap` in dimension.rs: construct a DimensionVector with Rational exponent {1, 64} for LENGTH (via direct construction), call .root(3). Assert result has Rational { num: 1, den: 192 }. With current i8, den 64*3=192 overflows i8::MAX. Also write `rational_add_beyond_i8_range`: assert Rational::new(100, 1) + Rational::new(100, 1) == Rational::new(200, 1). With i8 Add, 100+100=200 overflows.",
+      "type": "impl",
+      "description": "Replace the three Option fields (current_snapshot, reverse_index, trace_map) with `eval_state: Option<EvaluationState>` in Engine struct. Add `pub fn is_initialized(&self) -> bool { self.eval_state.is_some() }`. Update Engine::new() to set eval_state: None. Update eval() to store `self.eval_state = Some(EvaluationState { snapshot, reverse_index, trace_map })` at line 931-933. Update snapshot() accessor to `self.eval_state.as_ref().map(|s| &s.snapshot)`. Update check_snapshot (line 1637) and build_snapshot (line 1742) to use `self.eval_state.as_ref()?.snapshot`.",
       "status": "done",
-      "commit": "6edcf8a"
+      "commit": "99ce592"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test `rational_neg_at_i8_boundary` in dimension.rs: assert -Rational { num: -128, den: 1 } produces Rational { num: 128, den: 1 }. In i8, negating -128 overflows (no positive 128 in i8). Write `rational_sub_beyond_i8_range`: assert Rational::new(50, 1) - Rational::new(-100, 1) == Rational::new(150, 1). The cross-multiplication 50*1 - (-100)*1 = 150 overflows i8.",
+      "description": "Write test `edit_param_before_eval_returns_error` in boundary5_engine.rs: Engine::new() then call edit_param() and assert it returns Err(EngineError::NotInitialized). This tests that the error is clear, not a panic.",
       "status": "done",
-      "commit": "6c4c6f3"
+      "commit": "6b37a72"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Widen Rational from i8 to i16. All changes in dimension.rs: (1) Change struct fields num: i8 → i16, den: i8 → i16. (2) Change Rational::new signature from (i8, i8) to (i16, i16). (3) Change gcd function from (u8, u8) → u8 to (u16, u16) → u16, update unsigned_abs cast to u16. (4) Keep as_i8() with added range check (return None if value outside i8 range); no callers outside tests. (5) Update content_hash() from 18-byte buffer (9×2) to 36-byte buffer (9×4) using i16 to_le_bytes() for deterministic cross-platform serialization. (6) In pow(), cast the i8 parameter n to i16 when constructing the Rational: `Rational { num: n as i16, den: 1 }`. (7) In root(), cast the i8 parameter n to i16 in the den multiplication. (8) Update basis_n const fn parameter from i8 to i16. (9) Update AREA/VOLUME constants to use i16 literal. (10) In reify-expr/src/lib.rs:315, change `*n as i8` to `*n as i16` for the dimension.pow() call. All step-1/2/3 tests should now pass.",
+      "description": "Change edit_param return type from EvalResult to Result<EvalResult, EngineError>. Replace the three .expect() calls at lines 955-959 with a single `let state = self.eval_state.as_ref().ok_or(EngineError::NotInitialized)?;` and extract snapshot, reverse_index, trace_map from state. Update the two `if let Some(rev_idx) = &self.reverse_index` patterns at lines 1017 and 1074 to use the already-extracted reverse_index reference directly. Update the final state store at line 1247 to mutate `self.eval_state.as_mut().unwrap().snapshot = new_snapshot`. Wrap successful return in Ok().",
       "status": "done",
-      "commit": "619ff4a"
+      "commit": "f6d66e9"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write verification tests in dimension.rs: (1) `pow_large_exponent_round_trip` — LENGTH.pow(100).root(100) should equal LENGTH, verifying large exponents work end-to-end with i16. (2) `content_hash_determinism_with_wide_values` — verify content_hash is deterministic for a DimensionVector with exponents > 127. (3) `rational_display_wide_values` — verify Display formatting works for Rational values outside old i8 range (e.g., '200' not '-56').",
+      "description": "Write test `eval_state_available_atomically_after_eval` in boundary5_engine.rs: After eval(), verify that engine.is_initialized() is true, engine.snapshot() is Some, and the snapshot contains the expected graph, reverse_index, and trace_map data (accessible via a new eval_state() accessor). This proves all three components are available as a single atomic unit.",
       "status": "done",
-      "commit": "86cd5ec"
+      "commit": "f89aa2b"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Run full test suite: `cargo test -p reify-types -p reify-expr -p reify-stdlib`. All existing tests (rational_arithmetic, rational_normalization, dimension_mul, dimension_div, dimension_pow, force_dimension, root_area_to_length, root_length_4_to_length_2, root_length_to_fractional_exponent, root_dimensionless_stays_dimensionless, content_hash_determinism, and all reify-stdlib tests using DimensionVector) must pass. Fix any compilation errors or test failures caused by the type widening. Note: content_hash values will change due to wider serialization — if any test asserts specific hash values, update the expected values.",
-      "status": "pending",
-      "commit": null
+      "description": "Add `pub fn eval_state(&self) -> Option<&EvaluationState>` accessor to Engine. Update edit_check to propagate the Result from edit_param (change return type to Result<CheckResult, EngineError>). Verify all existing tests in boundary5_engine.rs and incremental.rs still compile and pass after updating their edit_param/edit_check call sites to unwrap the Result (.unwrap() for tests that expect success).",
+      "status": "done",
+      "commit": "01a2c7d"
+    },
+    {
+      "id": "step-7",
+      "type": "impl",
+      "description": "Update prepare_concurrent_edit to return Result<ConcurrentEditSetup, EngineError>: replace three .expect() calls at lines 231-236 with single eval_state access. Update resolve_concurrent_edit: replace .expect() calls at lines 412-415 with eval_state access, change return type to include Result or use unwrap since it's always called after prepare. Update apply_concurrent_edit: replace .expect() at line 376 with eval_state access. Update check_constraints_with_values to return Result<(Vec<ConstraintCheckEntry>, Vec<Diagnostic>), EngineError>: replace .expect() at line 1275 with eval_state access.",
+      "status": "done",
+      "commit": "583bda2"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Update all test callers in crates/reify-eval/tests/ to handle Result return types: add .unwrap() to edit_param calls in incremental.rs (~30 sites), concurrent.rs (~5 sites), journal.rs (~1 site), resolution.rs (~1 site), interactive_edit_loop.rs (~4 sites). Add .unwrap() to prepare_concurrent_edit calls in concurrent.rs (~3 sites). Add .unwrap() to check_constraints_with_values calls where applicable. Ensure all tests compile and pass.",
+      "status": "done",
+      "commit": "f6d66e9"
+    },
+    {
+      "id": "step-9",
+      "type": "impl",
+      "description": "Update crates/reify-runtime/src/concurrent_eval.rs: edit_param_concurrent (line 271) — handle Result from prepare_concurrent_edit by mapping EngineError into SchedulerError (add EngineError variant or convert). Update resolve_concurrent_edit call (line 297) and apply_concurrent_edit call (line 335). Update check_constraints_with_values call (line 339) in edit_check_concurrent. Update crates/reify-runtime/tests/concurrent_eval.rs call sites (~8 sites) to handle new Result types.",
+      "status": "done",
+      "commit": "583bda2"
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Write test `let_binding_evaluation_produces_same_results_with_helper` in boundary5_engine.rs: Create a module with multiple let bindings that have forward references (e.g., let a = b + 1; let b = param * 2). Eval and verify all let binding values are correct, including after resolution phase. This serves as a regression test for the helper extraction in step-11.",
+      "status": "done",
+      "commit": "3725500"
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "Extract duplicate let-binding evaluation code (lines 680-741 and 856-915 in eval()) into a private helper method `evaluate_let_bindings(&mut self, template: &CompiledTopologyTemplate, values: &mut ValueMap, snapshot: &mut Snapshot, version_id: u64)`. The helper collects let cells with default_expr, builds NodeId keys and DependencyTrace maps, topological sorts, evaluates each in order via reify_expr::eval_expr, updates values/snapshot.values, records cache entry via self.cache.record_evaluation, and records Started/Completed journal events. Replace both call sites (lines 680-741 and 856-915) with calls to the helper. Verify all existing tests pass.",
+      "status": "done",
+      "commit": "pending"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Widen Rational from i8 to i16 (Option A from task description)",
-      "rationale": "i16 completely eliminates overflow for all i8-range inputs since max(i8)*max(i8) = 127*127 = 16,129 < i16::MAX = 32,767. This is simpler than checked arithmetic (Option B) which would require error propagation through all dimension operations and changing method signatures. i32 is unnecessarily wide — dimension exponents are small numbers. i16 doubles storage from 2 to 4 bytes per Rational (18 to 36 bytes per DimensionVector) which is negligible."
+      "decision": "Use Result<T, EngineError> return types instead of keeping panicking .expect() calls",
+      "rationale": "Task explicitly requires 'clear error (not panic)' for edit_param before eval. The ok_or pattern is specified in the task description. While this has large blast radius (~40+ call sites), it eliminates partial-state panic risk and provides proper error propagation."
     },
     {
-      "decision": "Keep pow() and root() accepting i8 parameters, widen internally",
-      "rationale": "Physical dimension exponents never exceed ~6 and even exotic cases stay well within i8 range (±127). Keeping i8 parameters documents the intent that these are small integer exponents. The parameter is widened to i16 internally via `as i16` cast, so intermediate multiplication cannot overflow. This minimizes API surface changes while fixing the overflow."
+      "decision": "Keep check_snapshot and build_snapshot returning Option (not Result)",
+      "rationale": "These methods already handle the uninitialized case gracefully by returning None via the ? operator. Changing them to Result would be unnecessary churn since their callers already expect Option."
     },
     {
-      "decision": "Change content_hash serialization from 18 to 36 bytes using to_le_bytes()",
-      "rationale": "With i16 fields, each Rational needs 4 bytes (2 per field via to_le_bytes) instead of 2 bytes (1 per field via `as u8`). This changes hash values for all DimensionVectors. Since reify is v0.1 in active development with no persisted hash database, hash stability is not required. Using to_le_bytes() ensures deterministic cross-platform hashing and avoids the truncation bug of casting i16 to u8."
+      "decision": "Use eval_state.as_mut().unwrap() for mutations within edit_param after the initial Result check",
+      "rationale": "Once we've validated eval_state is Some at the top of edit_param (via ok_or), subsequent mutable access within the same method can safely unwrap. The borrow checker prevents holding both a shared and mutable reference, so we validate once then use unwrap for mutation points."
     },
     {
-      "decision": "Update reify-expr call site from `*n as i8` to `*n as i16`",
-      "rationale": "The pow() call in eval_pow (reify-expr/src/lib.rs:315) casts an i64 exponent to i8, which truncates for values > 127 (e.g., 200 becomes -56). Widening to i16 reduces this risk. True range validation (returning Undef for exponents > i16::MAX) is out of scope for this task but would be a good follow-up."
+      "decision": "Helper method for let-binding evaluation takes &mut self to access journal and cache",
+      "rationale": "Both duplicate code blocks record journal events and cache entries via self.journal and self.cache. The helper needs mutable access to Engine, and also needs the template, values, snapshot, and version_id as parameters."
+    },
+    {
+      "decision": "Update test callers with .unwrap() rather than expect() with messages",
+      "rationale": "Tests that call edit_param on an already-evaluated engine should never fail the initialization check. Using .unwrap() is idiomatic for test code and keeps the diff minimal. The panic message from unwrap on EngineError::NotInitialized is sufficiently descriptive."
+    },
+    {
+      "decision": "Consolidate resolve_concurrent_edit to use unwrap rather than Result for eval_state access",
+      "rationale": "resolve_concurrent_edit is always called after prepare_concurrent_edit succeeds, which already validated eval_state is Some. Adding Result return type here would be unnecessary ceremony since the precondition is structurally guaranteed by the call sequence in both sequential and concurrent paths."
     }
   ],
   "reuse": [
     {
-      "what": "Existing test patterns in dimension.rs",
-      "where": "crates/reify-types/src/dimension.rs lines 225-321",
-      "how": "Follow the same test structure: construct DimensionVector, perform operation, assert result equality or field-level Rational comparison. Reuse constants like DimensionVector::LENGTH, AREA, VOLUME."
+      "what": "MockConstraintChecker, bracket_compiled_module, TopologyTemplateBuilder from reify-test-support",
+      "where": "crates/reify-eval/tests/boundary5_engine.rs",
+      "how": "Use existing test fixtures and builders for new tests, following the pattern already established in boundary5_engine.rs and incremental.rs"
     },
     {
-      "what": "gcd function (Euclidean algorithm)",
-      "where": "crates/reify-types/src/dimension.rs lines 87-94",
-      "how": "Widen parameter and return types from u8 to u16. Algorithm is identical — just change the types. No logic changes needed."
+      "what": "Snapshot::from_compiled_module, ReverseDependencyIndex::build_from_graph, deps::build_trace_map",
+      "where": "crates/reify-eval/src/lib.rs eval() method",
+      "how": "These already produce the three components that will become EvaluationState fields — bundle their results into the new struct"
     },
     {
-      "what": "DimensionVector::basis_n const helper",
-      "where": "crates/reify-types/src/dimension.rs lines 130-134",
-      "how": "Reuse to construct test fixtures with large exponents (e.g., basis_n(0, 64) for LENGTH^64). Widen parameter from i8 to i16."
+      "what": "topological_sort from crate::dirty",
+      "where": "The new evaluate_let_bindings helper",
+      "how": "Already used in both duplicate code blocks — the helper will call it once"
     },
     {
-      "what": "ContentHash::of() hashing function",
-      "where": "crates/reify-types/src/hash.rs",
-      "how": "Same hashing function, just with wider input buffer (36 bytes instead of 18). No changes to the hash module itself."
+      "what": "extract_dependency_trace from crate::deps",
+      "where": "The new evaluate_let_bindings helper",
+      "how": "Already used in both duplicate blocks for building traces and recording cache entries"
+    },
+    {
+      "what": "Existing test patterns in incremental.rs for edit_param verification",
+      "where": "New tests in boundary5_engine.rs",
+      "how": "Follow the same engine setup pattern: bracket_compiled_module() + MockConstraintChecker::new() + Engine::new() + eval() before testing"
     }
   ]
 }

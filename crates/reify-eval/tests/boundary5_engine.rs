@@ -211,3 +211,147 @@ fn engine_reports_violations() {
         .collect();
     assert!(!violated.is_empty(), "should report violations");
 }
+
+/// Engine is not initialized before eval() is called.
+#[test]
+fn engine_is_not_initialized_before_eval() {
+    let checker = MockConstraintChecker::new();
+    let engine = reify_eval::Engine::new(Box::new(checker), None);
+    assert!(!engine.is_initialized());
+}
+
+/// Engine is initialized after eval() is called.
+#[test]
+fn engine_is_initialized_after_eval() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    engine.eval(&module);
+    assert!(engine.is_initialized());
+}
+
+/// edit_param before eval() returns Err(EngineError::NotInitialized).
+#[test]
+fn edit_param_before_eval_returns_error() {
+    use reify_types::ValueCellId;
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.edit_param(ValueCellId::new("S", "x"), mm(10.0));
+    assert!(result.is_err(), "edit_param before eval should return Err");
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, reify_eval::EngineError::NotInitialized),
+        "error should be NotInitialized, got {:?}",
+        err,
+    );
+}
+
+/// After eval(), eval_state is available as a single atomic unit containing
+/// snapshot, reverse_index, and trace_map.
+#[test]
+fn eval_state_available_atomically_after_eval() {
+    use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId};
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "w", Type::length(), Some(CompiledExpr::literal(mm(10.0), Type::length())))
+        .param("S", "h", Type::length(), Some(CompiledExpr::literal(mm(20.0), Type::length())))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    engine.eval(&module);
+
+    // eval_state should be available
+    assert!(engine.is_initialized());
+    let state = engine.eval_state().expect("eval_state should be Some after eval()");
+
+    // snapshot should contain the values
+    let w_id = ValueCellId::new("S", "w");
+    let h_id = ValueCellId::new("S", "h");
+    assert!(state.snapshot.values.get(&w_id).is_some(), "snapshot should contain w");
+    assert!(state.snapshot.values.get(&h_id).is_some(), "snapshot should contain h");
+
+    // reverse_index should be populated (has entries for value cells)
+    // trace_map should be populated
+    assert!(!state.trace_map.is_empty(), "trace_map should be populated after eval");
+
+    // snapshot() accessor should also work and return the same snapshot
+    let snap = engine.snapshot().expect("snapshot should be Some");
+    assert_eq!(snap.id, state.snapshot.id);
+}
+
+/// Let bindings with forward references are evaluated correctly,
+/// including after auto-resolution phase. Serves as regression test
+/// for the let-binding evaluation helper extraction.
+#[test]
+fn let_binding_evaluation_produces_same_results_with_helper() {
+    use reify_types::{BinOp, CompiledExpr, ModulePath, Type, ValueCellId};
+
+    // Build module: param p = 3, let a = b + 1, let b = p * 2
+    // Forward ref: a references b which is declared after a.
+    // Expected: b = 3*2 = 6, a = 6+1 = 7
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S", "p", Type::Real,
+            Some(CompiledExpr::literal(reify_types::Value::Real(3.0), Type::Real)),
+        )
+        .let_binding(
+            "S", "a", Type::Real,
+            binop(
+                BinOp::Add,
+                value_ref("S", "b"),
+                CompiledExpr::literal(reify_types::Value::Real(1.0), Type::Real),
+            ),
+        )
+        .let_binding(
+            "S", "b", Type::Real,
+            binop(
+                BinOp::Mul,
+                value_ref("S", "p"),
+                CompiledExpr::literal(reify_types::Value::Real(2.0), Type::Real),
+            ),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Verify let binding values
+    let a_id = ValueCellId::new("S", "a");
+    let b_id = ValueCellId::new("S", "b");
+    let p_id = ValueCellId::new("S", "p");
+
+    let p_val = result.values.get(&p_id).expect("p should be in values");
+    assert_eq!(p_val.as_f64().unwrap(), 3.0, "p should be 3.0");
+
+    let b_val = result.values.get(&b_id).expect("b should be in values");
+    assert_eq!(b_val.as_f64().unwrap(), 6.0, "b should be p*2 = 6.0");
+
+    let a_val = result.values.get(&a_id).expect("a should be in values");
+    assert_eq!(a_val.as_f64().unwrap(), 7.0, "a should be b+1 = 7.0");
+
+    // Verify values also correct after edit_param
+    let result2 = engine.edit_param(p_id.clone(), reify_types::Value::Real(5.0)).unwrap();
+
+    let p_val2 = result2.values.get(&p_id).expect("p should be in values");
+    assert_eq!(p_val2.as_f64().unwrap(), 5.0, "p should be 5.0 after edit");
+
+    // Note: edit_param only re-evaluates dirty nodes in the eval set.
+    // Let bindings b and a should be re-evaluated since they depend on p.
+    // b = 5*2 = 10, a = 10+1 = 11
+    let b_val2 = result2.values.get(&b_id).expect("b should be in values");
+    assert_eq!(b_val2.as_f64().unwrap(), 10.0, "b should be p*2 = 10.0 after edit");
+
+    let a_val2 = result2.values.get(&a_id).expect("a should be in values");
+    assert_eq!(a_val2.as_f64().unwrap(), 11.0, "a should be b+1 = 11.0 after edit");
+}

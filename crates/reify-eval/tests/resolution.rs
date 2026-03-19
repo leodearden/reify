@@ -542,7 +542,7 @@ fn incremental_fast_path_works_after_resolution() {
     let resolution_snap_version = engine.snapshot().unwrap().version;
 
     // Incremental edit: change z to mm(2.0)
-    let result2 = engine.edit_param(z_id.clone(), mm(2.0));
+    let result2 = engine.edit_param(z_id.clone(), mm(2.0)).unwrap();
 
     // w should be updated: mm(2.0) * 3 = 0.006 SI
     let w_val2 = result2.values.get(&w_id).expect("w in values after edit");

@@ -87,7 +87,7 @@ fn edit_param_returns_updated_values() {
 
     // Edit width from 80mm (0.08m) to 100mm (0.1m)
     let width_id = ValueCellId::new(e, "width");
-    let result = engine.edit_param(width_id, Value::length(0.1));
+    let result = engine.edit_param(width_id, Value::length(0.1)).unwrap();
 
     // Width should be updated
     assert_eq!(
@@ -146,7 +146,7 @@ fn edit_param_snapshot_provenance() {
 
     // After edit_param(): provenance should be Edit, ID = 1
     let width_id = ValueCellId::new(e, "width");
-    engine.edit_param(width_id.clone(), Value::length(0.1));
+    engine.edit_param(width_id.clone(), Value::length(0.1)).unwrap();
     let snap = engine.snapshot().expect("snapshot should exist after edit_param");
     assert_eq!(snap.id, SnapshotId(1));
 
@@ -178,7 +178,7 @@ fn edit_param_partial_reeval_only_dirty_demanded() {
 
     // Edit width from 80mm to 100mm
     let width_id = ValueCellId::new(e, "width");
-    engine.edit_param(width_id, Value::length(0.1));
+    engine.edit_param(width_id, Value::length(0.1)).unwrap();
 
     let eval_set = engine.last_eval_set();
 
@@ -273,7 +273,7 @@ fn content_hash_early_cutoff_prevents_downstream_eval() {
 
     // Edit a from 5.0 to 7.0
     let a_id = ValueCellId::new(e, "a");
-    let result = engine.edit_param(a_id, Value::Real(7.0));
+    let result = engine.edit_param(a_id, Value::Real(7.0)).unwrap();
 
     let eval_set = engine.last_eval_set();
 
@@ -338,7 +338,7 @@ fn freshness_all_final_after_edit_param() {
 
     // Edit width from 80mm to 100mm
     let width_id = ValueCellId::new(e, "width");
-    engine.edit_param(width_id, Value::length(0.1));
+    engine.edit_param(width_id, Value::length(0.1)).unwrap();
 
     let cache = engine.cache_store();
 
@@ -412,7 +412,7 @@ fn early_cutoff_skipped_nodes_have_final_freshness() {
 
     // Edit a from 5.0 to 7.0: x re-evals to 0.0 (unchanged), early cutoff skips y
     let a_id = ValueCellId::new(e, "a");
-    engine.edit_param(a_id, Value::Real(7.0));
+    engine.edit_param(a_id, Value::Real(7.0)).unwrap();
 
     let cache = engine.cache_store();
 
@@ -455,7 +455,7 @@ fn mark_pending_is_called_for_eval_set_nodes() {
 
     // Edit width from 80mm to 100mm
     let width_id = ValueCellId::new(e, "width");
-    engine.edit_param(width_id, Value::length(0.1));
+    engine.edit_param(width_id, Value::length(0.1)).unwrap();
 
     // pending_transition_count should equal the number of cached nodes
     // in the eval set. Only Value nodes are cached during eval(); Constraint
@@ -518,7 +518,7 @@ fn consecutive_edit_param_only_reevaluates_affected_nodes() {
 
     // ── (2) First edit: width 0.08 → 0.1 ────────────────────────────
     let width_id = ValueCellId::new(e, "width");
-    let result1 = engine.edit_param(width_id.clone(), Value::length(0.1));
+    let result1 = engine.edit_param(width_id.clone(), Value::length(0.1)).unwrap();
 
     // Volume recomputed: 0.1 * 0.10 * 0.005 = 5e-5
     let vol1 = result1
@@ -568,7 +568,7 @@ fn consecutive_edit_param_only_reevaluates_affected_nodes() {
 
     // ── (3) Second edit: height 0.10 → 0.12 ─────────────────────────
     let height_id = ValueCellId::new(e, "height");
-    let result2 = engine.edit_param(height_id.clone(), Value::length(0.12));
+    let result2 = engine.edit_param(height_id.clone(), Value::length(0.12)).unwrap();
 
     // Volume recomputed: 0.1 * 0.12 * 0.005 = 6e-5
     let vol2 = result2
@@ -741,7 +741,7 @@ fn mixed_fan_in_edit_param_unchanged_upstream_does_not_skip_shared_downstream() 
 
     // Edit a from 5 to 10
     let a_id = ValueCellId::new(e, "a");
-    let result = engine.edit_param(a_id, Value::Int(10));
+    let result = engine.edit_param(a_id, Value::Int(10)).unwrap();
 
     let eval_set = engine.last_eval_set();
 
@@ -849,7 +849,7 @@ fn triple_fan_in_mixed_changed_unchanged_edit_param() {
 
     // Edit a from 5 to 10
     let a_id = ValueCellId::new(e, "a");
-    let result = engine.edit_param(a_id, Value::Int(10));
+    let result = engine.edit_param(a_id, Value::Int(10)).unwrap();
 
     let eval_set = engine.last_eval_set();
 
@@ -915,7 +915,7 @@ fn freshness_all_final_after_mixed_fan_in_edit_param() {
 
     // Edit a from 5 to 10
     let a_id = ValueCellId::new(e, "a");
-    engine.edit_param(a_id, Value::Int(10));
+    engine.edit_param(a_id, Value::Int(10)).unwrap();
 
     let cache = engine.cache_store();
 
@@ -984,7 +984,7 @@ fn linear_chain_early_cutoff_still_skips_after_fix() {
 
     // Edit a from 5.0 to 7.0
     let a_id = ValueCellId::new(e, "a");
-    let result = engine.edit_param(a_id, Value::Real(7.0));
+    let result = engine.edit_param(a_id, Value::Real(7.0)).unwrap();
 
     let eval_set = engine.last_eval_set();
 
@@ -1057,7 +1057,7 @@ fn edit_param_re_resolves_auto_params_when_constraints_dirty() {
     // Edit a from mm(3.0) to mm(8.0)
     // Constraint `x > a` depends on `a`, so it's in the dirty cone.
     // Solver should re-run.
-    let result2 = engine.edit_param(a_id.clone(), mm(8.0));
+    let result2 = engine.edit_param(a_id.clone(), mm(8.0)).unwrap();
 
     // (1) resolved_params is non-empty (solver was re-run)
     assert!(
@@ -1152,7 +1152,7 @@ fn edit_param_let_binding_re_evaluates_after_re_resolution() {
     // Edit a from mm(3.0) to mm(8.0) — constraint `x > a` in dirty cone.
     // Solver re-resolves x to mm(20.0) (different value!).
     // Let binding y depends on x and MUST be re-evaluated: y = 0.02*2 = 0.04.
-    let result2 = engine.edit_param(a_id.clone(), mm(8.0));
+    let result2 = engine.edit_param(a_id.clone(), mm(8.0)).unwrap();
 
     // x must have the new resolved value
     let x_val2 = result2.values.get(&x_id).expect("x should be in values after edit");
@@ -1209,7 +1209,7 @@ fn edit_check_returns_incremental_constraint_satisfaction() {
     assert_eq!(result.constraint_results[0].satisfaction, Satisfaction::Satisfied);
 
     // edit_check: width=mm(2.0) < mm(5.0) → Violated
-    let result2 = engine.edit_check(width_id.clone(), mm(2.0));
+    let result2 = engine.edit_check(width_id.clone(), mm(2.0)).unwrap();
     assert_eq!(result2.constraint_results.len(), 1);
     assert_eq!(
         result2.constraint_results[0].satisfaction,
@@ -1261,7 +1261,7 @@ fn edit_check_constraint_transitions_satisfied_to_violated_and_back() {
     assert_eq!(result.constraint_results[0].satisfaction, Satisfaction::Satisfied);
 
     // edit_check: width=mm(2.0) < mm(5.0) → Violated
-    let result2 = engine.edit_check(width_id.clone(), mm(2.0));
+    let result2 = engine.edit_check(width_id.clone(), mm(2.0)).unwrap();
     assert_eq!(
         result2.constraint_results[0].satisfaction,
         Satisfaction::Violated,
@@ -1269,7 +1269,7 @@ fn edit_check_constraint_transitions_satisfied_to_violated_and_back() {
     );
 
     // edit_check: width=mm(8.0) > mm(5.0) → Satisfied again
-    let result3 = engine.edit_check(width_id.clone(), mm(8.0));
+    let result3 = engine.edit_check(width_id.clone(), mm(8.0)).unwrap();
     assert_eq!(
         result3.constraint_results[0].satisfaction,
         Satisfaction::Satisfied,
@@ -1320,7 +1320,7 @@ fn edit_param_solver_diagnostics_propagated() {
     assert!(result.diagnostics.is_empty(), "cold eval should have no diagnostics");
 
     // Edit a → constraint in dirty cone → solver returns Infeasible
-    let result2 = engine.edit_param(a_id.clone(), mm(5.0));
+    let result2 = engine.edit_param(a_id.clone(), mm(5.0)).unwrap();
 
     // Diagnostics should be propagated
     assert!(
@@ -1385,7 +1385,7 @@ fn edit_param_snapshot_updated_after_re_resolution() {
     engine.eval(&module);
 
     // Edit a → re-resolution with x=mm(20.0), y=0.04
-    engine.edit_param(a_id.clone(), mm(8.0));
+    engine.edit_param(a_id.clone(), mm(8.0)).unwrap();
 
     // (1) snapshot exists
     let snap = engine.snapshot().expect("snapshot should exist after edit_param");
@@ -1471,7 +1471,7 @@ fn edit_param_no_re_resolution_when_auto_constraints_not_dirty() {
     assert!(!result.resolved_params.is_empty(), "cold eval should resolve x");
 
     // Edit b from mm(2.0) to mm(3.0) — constraint `x > a` NOT in dirty cone
-    let result2 = engine.edit_param(b_id.clone(), mm(3.0));
+    let result2 = engine.edit_param(b_id.clone(), mm(3.0)).unwrap();
 
     // (1) resolved_params should be empty (solver NOT re-run)
     assert!(
@@ -1560,7 +1560,7 @@ fn edit_check_preserves_constraint_labels() {
     assert_eq!(c1.satisfaction, Satisfaction::Satisfied);
 
     // edit_check: width=mm(2.0) — C0 Violated, C1 Satisfied
-    let result2 = engine.edit_check(width_id.clone(), mm(2.0));
+    let result2 = engine.edit_check(width_id.clone(), mm(2.0)).unwrap();
     assert_eq!(result2.constraint_results.len(), 2);
 
     let c0_edit = result2.constraint_results.iter()
@@ -1839,7 +1839,7 @@ fn forward_let_ref_incremental_edit_param() {
     assert_eq!(*result.values.get(&y_id).unwrap(), Value::Int(16));
 
     // Incremental edit: a = 20 → x = 30, y = 31
-    let edit_result = engine.edit_param(a_id.clone(), Value::Int(20));
+    let edit_result = engine.edit_param(a_id.clone(), Value::Int(20)).unwrap();
     assert_eq!(
         *edit_result.values.get(&x_id).unwrap(),
         Value::Int(30),
@@ -1892,7 +1892,7 @@ fn forward_let_ref_cold_start_matches_incremental() {
     assert_eq!(*result1.values.get(&c_id).unwrap(), Value::Int(20));
 
     // Edit a → 13: b=20, c=40
-    let edit_result = engine1.edit_param(a_id.clone(), Value::Int(13));
+    let edit_result = engine1.edit_param(a_id.clone(), Value::Int(13)).unwrap();
     let incr_b = edit_result.values.get(&b_id).unwrap().clone();
     let incr_c = edit_result.values.get(&c_id).unwrap().clone();
 
@@ -1992,8 +1992,8 @@ fn forward_let_ref_declaration_order_irrelevant() {
     assert_eq!(*result_a.values.get(&y_id).unwrap(), Value::Int(16));
 
     // -- Incremental edit: a → 20, both modules --
-    let edit_a = engine_a.edit_param(a_id.clone(), Value::Int(20));
-    let edit_b = engine_b.edit_param(a_id.clone(), Value::Int(20));
+    let edit_a = engine_a.edit_param(a_id.clone(), Value::Int(20)).unwrap();
+    let edit_b = engine_b.edit_param(a_id.clone(), Value::Int(20)).unwrap();
 
     assert_eq!(
         *edit_a.values.get(&x_id).unwrap(),
@@ -2052,7 +2052,7 @@ fn forward_let_ref_diamond_incremental_edit() {
     assert_eq!(*result.values.get(&d_id).unwrap(), Value::Int(23));
 
     // Incremental edit: a → 20
-    let edit_result = engine.edit_param(a_id.clone(), Value::Int(20));
+    let edit_result = engine.edit_param(a_id.clone(), Value::Int(20)).unwrap();
 
     assert_eq!(
         *edit_result.values.get(&b_id).unwrap(),
@@ -2114,7 +2114,7 @@ fn forward_let_ref_deep_chain_incremental_edit() {
     assert_eq!(*result.values.get(&z_id).unwrap(), Value::Int(3));
 
     // Incremental edit: a → 10
-    let edit_result = engine.edit_param(a_id.clone(), Value::Int(10));
+    let edit_result = engine.edit_param(a_id.clone(), Value::Int(10)).unwrap();
 
     assert_eq!(
         *edit_result.values.get(&x_id).unwrap(),
@@ -2176,7 +2176,7 @@ fn forward_let_ref_mixed_forward_backward() {
     assert_eq!(*result.values.get(&d_id).unwrap(), Value::Int(5), "d = c + b = 3 + 2 = 5");
 
     // Incremental edit: a → 10
-    let edit_result = engine.edit_param(a_id.clone(), Value::Int(10));
+    let edit_result = engine.edit_param(a_id.clone(), Value::Int(10)).unwrap();
 
     assert_eq!(
         *edit_result.values.get(&b_id).unwrap(),
@@ -2234,7 +2234,7 @@ fn forward_let_ref_early_cutoff_with_forward_decl() {
     assert_eq!(*result.values.get(&y_id).unwrap(), Value::Real(1.0), "y = x + 1.0 = 1.0");
 
     // Incremental edit: a → 7.0
-    let edit_result = engine.edit_param(a_id.clone(), Value::Real(7.0));
+    let edit_result = engine.edit_param(a_id.clone(), Value::Real(7.0)).unwrap();
 
     // x still 0.0 (a-a = 0.0 regardless of a)
     assert_eq!(

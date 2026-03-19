@@ -268,7 +268,7 @@ pub async fn edit_param_concurrent(
     new_value: Value,
     cancel: &CancellationToken,
 ) -> Result<(ConcurrentEditSetup, ConcurrentEditResult), SchedulerError> {
-    let setup = engine.prepare_concurrent_edit(cell, new_value);
+    let setup = engine.prepare_concurrent_edit(cell, new_value)?;
     let eval_set = setup.eval_set.clone();
     let traces = setup.traces.clone();
 
@@ -336,7 +336,7 @@ pub async fn edit_check_concurrent(
 
     // Check constraints against the updated values
     let (constraint_results, constraint_diagnostics) =
-        engine.check_constraints_with_values(&values);
+        engine.check_constraints_with_values(&values)?;
     diagnostics.extend(constraint_diagnostics);
 
     Ok(CheckResult {

@@ -74,7 +74,7 @@ fn edit_param_records_journal_events() {
     // Edit width from 80mm to 100mm
     let e = "Bracket";
     let width_id = ValueCellId::new(e, "width");
-    engine.edit_param(width_id.clone(), reify_types::Value::length(0.1));
+    engine.edit_param(width_id.clone(), reify_types::Value::length(0.1)).unwrap();
 
     let journal = engine.journal();
     assert!(

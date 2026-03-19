@@ -102,7 +102,7 @@ fn edit_param_then_check_snapshot_reflects_updated_values() {
     let _eval_result = engine.eval(&module);
 
     // Edit width: 80mm → 100mm (0.1m)
-    let _edit_result = engine.edit_param(vcid("Bracket", "width"), Value::length(0.1));
+    let _edit_result = engine.edit_param(vcid("Bracket", "width"), Value::length(0.1)).unwrap();
 
     // check_snapshot should reflect updated values
     let check = engine
@@ -151,7 +151,7 @@ fn edit_param_constraint_violation_detected() {
     let _eval_result = engine.eval(&module);
 
     // Edit thickness: 5mm → 1mm (0.001m) — violates `thickness > 2mm`
-    let _edit_result = engine.edit_param(vcid("Bracket", "thickness"), Value::length(0.001));
+    let _edit_result = engine.edit_param(vcid("Bracket", "thickness"), Value::length(0.001)).unwrap();
 
     // check_snapshot should detect the violation
     let check = engine
@@ -198,7 +198,7 @@ fn edit_param_then_build_snapshot_updates_geometry() {
     assert!(initial_ops_count > 0, "initial build should produce geometry ops");
 
     // Edit width: 80mm → 100mm (0.1m)
-    let _edit_result = engine.edit_param(vcid("Bracket", "width"), Value::length(0.1));
+    let _edit_result = engine.edit_param(vcid("Bracket", "width"), Value::length(0.1)).unwrap();
 
     // build_snapshot after edit should produce new geometry
     let build = engine.build_snapshot(&module, ExportFormat::Step)
@@ -244,7 +244,7 @@ fn journal_records_full_edit_cycle_events() {
     let events_after_eval = engine.journal().all_events().len();
 
     // Edit width: 80mm → 100mm
-    let _edit_result = engine.edit_param(vcid("Bracket", "width"), Value::length(0.1));
+    let _edit_result = engine.edit_param(vcid("Bracket", "width"), Value::length(0.1)).unwrap();
     let events_after_edit = engine.journal().all_events().len();
 
     // edit_param should have added new events

@@ -24,6 +24,40 @@ use crate::deps::{extract_dependency_trace, DependencyTrace, ReverseDependencyIn
 use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
 
+/// Error returned when an operation requires prior eval() but none has been performed.
+#[derive(Debug)]
+pub enum EngineError {
+    /// The engine has not been initialized — call eval() first.
+    NotInitialized,
+}
+
+impl std::fmt::Display for EngineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EngineError::NotInitialized => {
+                write!(f, "engine not initialized: call eval() before this operation")
+            }
+        }
+    }
+}
+
+impl std::error::Error for EngineError {}
+
+/// Consolidated evaluation state produced by eval().
+///
+/// Groups the snapshot, reverse dependency index, and trace map that are
+/// always set/unset atomically. This replaces three separate Option fields
+/// in Engine, enforcing the invariant that all three are present together.
+#[derive(Debug)]
+pub struct EvaluationState {
+    /// Current snapshot from last eval() or edit_param().
+    pub snapshot: Snapshot,
+    /// Reverse dependency index for dirty cone computation.
+    pub reverse_index: ReverseDependencyIndex,
+    /// Forward dependency trace map for topological sort.
+    pub trace_map: HashMap<NodeId, DependencyTrace>,
+}
+
 /// The engine facade — main entry point for evaluation.
 pub struct Engine {
     constraint_checker: Box<dyn ConstraintChecker>,
@@ -32,12 +66,9 @@ pub struct Engine {
     cache: CacheStore,
     /// Overridden param values (set by set_param_and_invalidate).
     param_overrides: std::collections::HashMap<ValueCellId, reify_types::Value>,
-    /// Current snapshot from last eval() or edit_param().
-    current_snapshot: Option<Snapshot>,
-    /// Reverse dependency index for dirty cone computation.
-    reverse_index: Option<ReverseDependencyIndex>,
-    /// Forward dependency trace map for topological sort.
-    trace_map: Option<HashMap<NodeId, DependencyTrace>>,
+    /// Consolidated evaluation state from last eval() or edit_param().
+    /// None before the first eval() call; always Some after.
+    eval_state: Option<EvaluationState>,
     /// Demand registry tracking which nodes are demanded.
     demand: DemandRegistry,
     /// Counter for snapshot IDs.
@@ -178,9 +209,7 @@ impl Engine {
             solver: None,
             cache: CacheStore::new(),
             param_overrides: std::collections::HashMap::new(),
-            current_snapshot: None,
-            reverse_index: None,
-            trace_map: None,
+            eval_state: None,
             demand: DemandRegistry::new(),
             next_snapshot_id: 0,
             next_version_id: 0,
@@ -200,9 +229,19 @@ impl Engine {
         &self.cache
     }
 
+    /// Whether the engine has been initialized by a call to eval().
+    pub fn is_initialized(&self) -> bool {
+        self.eval_state.is_some()
+    }
+
+    /// Access the consolidated evaluation state (for testing/inspection).
+    pub fn eval_state(&self) -> Option<&EvaluationState> {
+        self.eval_state.as_ref()
+    }
+
     /// Access the current snapshot (for testing/inspection).
     pub fn snapshot(&self) -> Option<&Snapshot> {
-        self.current_snapshot.as_ref()
+        self.eval_state.as_ref().map(|s| &s.snapshot)
     }
 
     /// Access the eval set from the last eval() or edit_param() call.
@@ -227,17 +266,13 @@ impl Engine {
         &mut self,
         cell: ValueCellId,
         new_value: Value,
-    ) -> ConcurrentEditSetup {
-        let snapshot = self.current_snapshot.as_ref()
-            .expect("prepare_concurrent_edit requires a prior call to eval()");
-        let reverse_index = self.reverse_index.as_ref()
-            .expect("prepare_concurrent_edit requires reverse_index from eval()");
-        let trace_map = self.trace_map.as_ref()
-            .expect("prepare_concurrent_edit requires trace_map from eval()");
+    ) -> Result<ConcurrentEditSetup, EngineError> {
+        let state = self.eval_state.as_ref()
+            .ok_or(EngineError::NotInitialized)?;
 
         // Clone snapshot (O(1) via PersistentMap)
-        let parent_id = snapshot.id;
-        let mut new_snapshot_values = snapshot.values.clone();
+        let parent_id = state.snapshot.id;
+        let mut new_snapshot_values = state.snapshot.values.clone();
 
         // Update the changed cell's value in snapshot
         new_snapshot_values.insert(
@@ -248,8 +283,8 @@ impl Engine {
         // Compute dirty cone and eval set
         let mut changed_set = HashSet::new();
         changed_set.insert(cell.clone());
-        let dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, reverse_index);
-        let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, trace_map);
+        let dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, &state.reverse_index);
+        let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
         // Build the full ValueMap from snapshot values
         let mut values = ValueMap::new();
@@ -279,19 +314,19 @@ impl Engine {
             self.cache.mark_pending(node_id);
         }
 
-        ConcurrentEditSetup {
+        Ok(ConcurrentEditSetup {
             eval_set,
-            graph: snapshot.graph.clone(),
+            graph: state.snapshot.graph.clone(),
             values,
             snapshot_values: new_snapshot_values,
-            traces: trace_map.clone(),
-            reverse_index: reverse_index.clone(),
+            traces: state.trace_map.clone(),
+            reverse_index: state.reverse_index.clone(),
             previous_hashes,
             version: VersionId(version_id),
             snapshot_id: SnapshotId(snapshot_id),
             parent_snapshot_id: parent_id,
             changed_cells: changed_set,
-        }
+        })
     }
 
     /// Roll back the Engine state after a failed concurrent evaluation.
@@ -372,9 +407,9 @@ impl Engine {
         }
 
         // Update current snapshot
-        let snapshot = self.current_snapshot.as_ref()
-            .expect("apply_concurrent_edit requires snapshot from eval()");
-        let mut new_snapshot = snapshot.clone();
+        let state = self.eval_state.as_mut()
+            .expect("apply_concurrent_edit requires eval_state from eval()");
+        let mut new_snapshot = state.snapshot.clone();
         new_snapshot.id = setup.snapshot_id;
         new_snapshot.version = setup.version;
         new_snapshot.values = result.snapshot_values;
@@ -382,7 +417,7 @@ impl Engine {
             changed: setup.changed_cells.clone(),
             parent: setup.parent_snapshot_id,
         };
-        self.current_snapshot = Some(new_snapshot);
+        state.snapshot = new_snapshot;
 
         // Update last eval set
         self.last_eval_set = result.actual_eval_set;
@@ -409,10 +444,10 @@ impl Engine {
         let mut diagnostics = Vec::new();
 
         if let Some(ref solver) = self.solver {
-            let reverse_index = self.reverse_index.as_ref()
-                .expect("resolve_concurrent_edit requires reverse_index from eval()");
-            let trace_map = self.trace_map.as_ref()
-                .expect("resolve_concurrent_edit requires trace_map from eval()");
+            let state = self.eval_state.as_ref()
+                .expect("resolve_concurrent_edit requires eval_state from eval()");
+            let reverse_index = &state.reverse_index;
+            let trace_map = &state.trace_map;
 
             // Collect auto param IDs from graph
             let mut auto_ids: HashSet<ValueCellId> = HashSet::new();
@@ -680,70 +715,12 @@ impl Engine {
             // Second pass: evaluate Let bindings in topological order
             // (handles forward references where a let declared earlier
             //  depends on a let declared later)
-            let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
-                .value_cells
-                .iter()
-                .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
-                .map(|c| (NodeId::Value(c.id.clone()), c.default_expr.as_ref().unwrap()))
-                .collect();
-
-            let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
-            let let_traces: HashMap<NodeId, DependencyTrace> = let_cells
-                .iter()
-                .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
-                .collect();
-
-            let sorted_lets = topological_sort(&let_node_ids, &let_traces);
-
-            for node_id in sorted_lets {
-                let expr = let_cells[&node_id];
-                let cell_id = match &node_id {
-                    NodeId::Value(vcid) => vcid,
-                    _ => unreachable!(),
-                };
-
-                let start = Instant::now();
-                self.journal.record(EvalEvent {
-                    timestamp: start,
-                    node_id: node_id.clone(),
-                    kind: EventKind::Started,
-                    version: VersionId(version_id),
-                    payload: None,
-                });
-
-                let val = reify_expr::eval_expr(expr, &values);
-                values.insert(cell_id.clone(), val.clone());
-
-                // Update snapshot values
-                snapshot.values.insert(
-                    cell_id.clone(),
-                    (val.clone(), DeterminacyState::Determined),
-                );
-
-                // Record in cache with dependency trace
-                let trace = extract_dependency_trace(expr);
-                let cached_result =
-                    CachedResult::Value(val, DeterminacyState::Determined);
-                let outcome = self.cache.record_evaluation(
-                    node_id.clone(),
-                    cached_result,
-                    VersionId(version_id),
-                    trace,
-                );
-
-                self.journal.record(EvalEvent {
-                    timestamp: Instant::now(),
-                    node_id,
-                    kind: EventKind::Completed { outcome },
-                    version: VersionId(version_id),
-                    payload: Some(EventPayload::Duration(start.elapsed())),
-                });
-            }
+            self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id);
         }
 
         // Resolution phase: resolve auto params using the constraint solver.
         let mut resolved_params = HashMap::new();
-        if let Some(ref solver) = self.solver {
+        if self.solver.is_some() {
             for template in &module.templates {
                 // Collect auto param IDs for this template
                 let auto_ids: std::collections::HashSet<ValueCellId> = template
@@ -789,8 +766,12 @@ impl Engine {
                 };
 
                 let parent_snap_id = snapshot.id;
+                // Use a temporary borrow of the solver so the reference
+                // doesn't outlive the solve() call — this allows &mut self
+                // for evaluate_let_bindings below.
+                let solve_result = self.solver.as_ref().unwrap().solve(&problem);
 
-                match solver.solve(&problem) {
+                match solve_result {
                     SolveResult::Solved { values: solver_values } => {
                         // Allocate new snapshot/version IDs BEFORE recording cache
                         // entries so all resolution-phase entries share the same
@@ -854,65 +835,7 @@ impl Engine {
                         };
 
                         // Re-run let binding evaluation in topological order
-                        // (handles forward references where a let declared earlier
-                        //  depends on a let declared later)
-                        let res_let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
-                            .value_cells
-                            .iter()
-                            .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
-                            .map(|c| (NodeId::Value(c.id.clone()), c.default_expr.as_ref().unwrap()))
-                            .collect();
-
-                        let res_let_node_ids: HashSet<NodeId> = res_let_cells.keys().cloned().collect();
-                        let res_let_traces: HashMap<NodeId, DependencyTrace> = res_let_cells
-                            .iter()
-                            .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
-                            .collect();
-
-                        let res_sorted_lets = topological_sort(&res_let_node_ids, &res_let_traces);
-
-                        for node_id in res_sorted_lets {
-                            let expr = res_let_cells[&node_id];
-                            let cell_id = match &node_id {
-                                NodeId::Value(vcid) => vcid,
-                                _ => unreachable!(),
-                            };
-
-                            let start = Instant::now();
-                            self.journal.record(EvalEvent {
-                                timestamp: start,
-                                node_id: node_id.clone(),
-                                kind: EventKind::Started,
-                                version: VersionId(res_version_id),
-                                payload: None,
-                            });
-
-                            let val = reify_expr::eval_expr(expr, &values);
-                            values.insert(cell_id.clone(), val.clone());
-
-                            snapshot.values.insert(
-                                cell_id.clone(),
-                                (val.clone(), DeterminacyState::Determined),
-                            );
-
-                            let trace = extract_dependency_trace(expr);
-                            let cached_result =
-                                CachedResult::Value(val, DeterminacyState::Determined);
-                            let outcome = self.cache.record_evaluation(
-                                node_id.clone(),
-                                cached_result,
-                                VersionId(res_version_id),
-                                trace,
-                            );
-
-                            self.journal.record(EvalEvent {
-                                timestamp: Instant::now(),
-                                node_id,
-                                kind: EventKind::Completed { outcome },
-                                version: VersionId(res_version_id),
-                                payload: Some(EventPayload::Duration(start.elapsed())),
-                            });
-                        }
+                        self.evaluate_let_bindings(template, &mut values, &mut snapshot, res_version_id);
                     }
                     SolveResult::Infeasible { diagnostics: solver_diags } => {
                         diagnostics.extend(solver_diags);
@@ -928,9 +851,11 @@ impl Engine {
         }
 
         // Store internal state for incremental evaluation
-        self.current_snapshot = Some(snapshot);
-        self.reverse_index = Some(reverse_index);
-        self.trace_map = Some(trace_map);
+        self.eval_state = Some(EvaluationState {
+            snapshot,
+            reverse_index,
+            trace_map,
+        });
         self.demand = demand;
         self.last_eval_set = Vec::new(); // Cold start: no incremental eval set
 
@@ -950,17 +875,28 @@ impl Engine {
         &mut self,
         cell: ValueCellId,
         new_value: reify_types::Value,
-    ) -> EvalResult {
-        let snapshot = self.current_snapshot.as_ref()
-            .expect("edit_param requires a prior call to eval()");
-        let reverse_index = self.reverse_index.as_ref()
-            .expect("edit_param requires reverse_index from eval()");
-        let trace_map = self.trace_map.as_ref()
-            .expect("edit_param requires trace_map from eval()");
+    ) -> Result<EvalResult, EngineError> {
+        let state = self.eval_state.as_ref()
+            .ok_or(EngineError::NotInitialized)?;
 
-        // Clone snapshot (O(1) via PersistentMap)
-        let parent_id = snapshot.id;
-        let mut new_snapshot = snapshot.clone();
+        // Clone snapshot and extract references (O(1) via PersistentMap)
+        let parent_id = state.snapshot.id;
+        let mut new_snapshot = state.snapshot.clone();
+
+        // Compute dirty cone and eval set while state borrow is active
+        let mut changed_set = std::collections::HashSet::new();
+        changed_set.insert(cell.clone());
+        let dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, &state.reverse_index);
+        let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
+
+        // Seed has_changed_parent from dependents of the changed param
+        let mut has_changed_parent: std::collections::HashSet<NodeId> =
+            std::collections::HashSet::new();
+        for dependent in state.reverse_index.dependents_of(&cell) {
+            has_changed_parent.insert(dependent.clone());
+        }
+        // Release the immutable borrow of eval_state so we can mutate later
+        let _ = state;
 
         // Update snapshot ID, version, and provenance
         let snapshot_id = self.next_snapshot_id;
@@ -970,8 +906,6 @@ impl Engine {
         new_snapshot.id = SnapshotId(snapshot_id);
         new_snapshot.version = VersionId(version_id);
 
-        let mut changed_set = std::collections::HashSet::new();
-        changed_set.insert(cell.clone());
         new_snapshot.provenance = SnapshotProvenance::Edit {
             changed: changed_set.clone(),
             parent: parent_id,
@@ -982,10 +916,6 @@ impl Engine {
             cell.clone(),
             (new_value.clone(), DeterminacyState::Determined),
         );
-
-        // Compute dirty cone and eval set
-        let dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, reverse_index);
-        let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, trace_map);
 
         // Build the full ValueMap from snapshot values
         let mut values = ValueMap::new();
@@ -1006,19 +936,6 @@ impl Engine {
         // Track nodes to skip due to early cutoff of upstream nodes.
         let mut skipped: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
         let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
-
-        // Track nodes that have at least one Changed parent. Seeded with
-        // dependents of the original changed param (the param itself IS a
-        // change, even though it's not in the eval set). This prevents
-        // incorrectly skipping nodes that read both an Unchanged intermediary
-        // AND the changed param directly (mixed fan-in).
-        let mut has_changed_parent: std::collections::HashSet<NodeId> =
-            std::collections::HashSet::new();
-        if let Some(rev_idx) = &self.reverse_index {
-            for dependent in rev_idx.dependents_of(&cell) {
-                has_changed_parent.insert(dependent.clone());
-            }
-        }
 
         for node_id in &eval_set {
             if skipped.contains(node_id) {
@@ -1071,8 +988,9 @@ impl Engine {
                 //   parent added them prematurely).
                 // - Unchanged: only add dependents to skipped if they do NOT
                 //   have a Changed parent (i.e., not in has_changed_parent).
-                if let Some(rev_idx) = &self.reverse_index {
-                    let dependents = rev_idx.dependents_of(vcid);
+                {
+                    let dependents = self.eval_state.as_ref().unwrap()
+                        .reverse_index.dependents_of(vcid);
                     if outcome == EvalOutcome::Changed {
                         for dependent in dependents {
                             has_changed_parent.insert(dependent.clone());
@@ -1190,14 +1108,15 @@ impl Engine {
                             // from the resolved auto param IDs and re-evaluate
                             // affected value nodes.
                             if !resolved_ids.is_empty() {
+                                let es = self.eval_state.as_ref().unwrap();
                                 let wave2_dirty = crate::dirty::compute_dirty_cone(
                                     &resolved_ids,
-                                    reverse_index,
+                                    &es.reverse_index,
                                 );
                                 let wave2_eval = crate::dirty::compute_eval_set(
                                     &wave2_dirty,
                                     &self.demand,
-                                    trace_map,
+                                    &es.trace_map,
                                 );
 
                                 for node_id in &wave2_eval {
@@ -1244,13 +1163,13 @@ impl Engine {
 
         // Store state (actual_eval_set excludes early-cutoff-skipped nodes)
         self.last_eval_set = actual_eval_set;
-        self.current_snapshot = Some(new_snapshot);
+        self.eval_state.as_mut().unwrap().snapshot = new_snapshot;
 
-        EvalResult {
+        Ok(EvalResult {
             values,
             diagnostics,
             resolved_params,
-        }
+        })
     }
 
     /// Incrementally re-evaluate and check constraints after changing a parameter.
@@ -1267,14 +1186,14 @@ impl Engine {
     pub fn check_constraints_with_values(
         &self,
         values: &ValueMap,
-    ) -> (Vec<ConstraintCheckEntry>, Vec<Diagnostic>) {
+    ) -> Result<(Vec<ConstraintCheckEntry>, Vec<Diagnostic>), EngineError> {
         let mut constraint_results = Vec::new();
         let mut diagnostics = Vec::new();
 
-        let snapshot = self.current_snapshot.as_ref()
-            .expect("check_constraints_with_values requires a snapshot");
+        let state = self.eval_state.as_ref()
+            .ok_or(EngineError::NotInitialized)?;
 
-        let constraint_nodes: Vec<_> = snapshot
+        let constraint_nodes: Vec<_> = state.snapshot
             .graph
             .constraints
             .iter()
@@ -1303,7 +1222,7 @@ impl Engine {
             }
         }
 
-        (constraint_results, diagnostics)
+        Ok((constraint_results, diagnostics))
     }
 
     /// Evaluates ALL constraints (not just dirty ones) to produce a complete
@@ -1314,20 +1233,20 @@ impl Engine {
         &mut self,
         cell: ValueCellId,
         new_value: reify_types::Value,
-    ) -> CheckResult {
-        let eval_result = self.edit_param(cell, new_value);
+    ) -> Result<CheckResult, EngineError> {
+        let eval_result = self.edit_param(cell, new_value)?;
         let (constraint_results, constraint_diagnostics) =
-            self.check_constraints_with_values(&eval_result.values);
+            self.check_constraints_with_values(&eval_result.values)?;
 
         let mut diagnostics = eval_result.diagnostics;
         diagnostics.extend(constraint_diagnostics);
 
-        CheckResult {
+        Ok(CheckResult {
             values: eval_result.values,
             constraint_results,
             diagnostics,
             resolved_params: eval_result.resolved_params,
-        }
+        })
     }
 
     /// Evaluate a compiled module with caching and early cutoff.
@@ -1634,11 +1553,11 @@ impl Engine {
         &self,
         module: &CompiledModule,
     ) -> Option<CheckResult> {
-        let snapshot = self.current_snapshot.as_ref()?;
+        let state = self.eval_state.as_ref()?;
 
         // Build ValueMap from snapshot values
         let mut values = ValueMap::new();
-        for (id, (val, _det)) in snapshot.values.iter() {
+        for (id, (val, _det)) in state.snapshot.values.iter() {
             values.insert(id.clone(), val.clone());
         }
 
@@ -1739,11 +1658,11 @@ impl Engine {
         module: &CompiledModule,
         format: ExportFormat,
     ) -> Option<BuildResult> {
-        let snapshot = self.current_snapshot.as_ref()?;
+        let state = self.eval_state.as_ref()?;
 
         // Build ValueMap from snapshot values
         let mut values = ValueMap::new();
-        for (id, (val, _det)) in snapshot.values.iter() {
+        for (id, (val, _det)) in state.snapshot.values.iter() {
             values.insert(id.clone(), val.clone());
         }
 
@@ -1912,6 +1831,78 @@ impl Engine {
             geometry_output,
             diagnostics,
             resolved_params: check_result.resolved_params,
+        }
+    }
+
+    /// Evaluate let bindings from a template in topological order.
+    ///
+    /// Collects let cells with expressions, builds dependency traces,
+    /// topologically sorts, and evaluates each in order — recording
+    /// journal events and cache entries. Used by both the initial eval()
+    /// pass and the post-resolution re-evaluation pass.
+    fn evaluate_let_bindings(
+        &mut self,
+        template: &reify_compiler::TopologyTemplate,
+        values: &mut ValueMap,
+        snapshot: &mut Snapshot,
+        version_id: u64,
+    ) {
+        let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
+            .value_cells
+            .iter()
+            .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
+            .map(|c| (NodeId::Value(c.id.clone()), c.default_expr.as_ref().unwrap()))
+            .collect();
+
+        let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
+        let let_traces: HashMap<NodeId, DependencyTrace> = let_cells
+            .iter()
+            .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
+            .collect();
+
+        let sorted_lets = topological_sort(&let_node_ids, &let_traces);
+
+        for node_id in sorted_lets {
+            let expr = let_cells[&node_id];
+            let cell_id = match &node_id {
+                NodeId::Value(vcid) => vcid,
+                _ => unreachable!(),
+            };
+
+            let start = Instant::now();
+            self.journal.record(EvalEvent {
+                timestamp: start,
+                node_id: node_id.clone(),
+                kind: EventKind::Started,
+                version: VersionId(version_id),
+                payload: None,
+            });
+
+            let val = reify_expr::eval_expr(expr, values);
+            values.insert(cell_id.clone(), val.clone());
+
+            snapshot.values.insert(
+                cell_id.clone(),
+                (val.clone(), DeterminacyState::Determined),
+            );
+
+            let trace = extract_dependency_trace(expr);
+            let cached_result =
+                CachedResult::Value(val, DeterminacyState::Determined);
+            let outcome = self.cache.record_evaluation(
+                node_id.clone(),
+                cached_result,
+                VersionId(version_id),
+                trace,
+            );
+
+            self.journal.record(EvalEvent {
+                timestamp: Instant::now(),
+                node_id,
+                kind: EventKind::Completed { outcome },
+                version: VersionId(version_id),
+                payload: Some(EventPayload::Duration(start.elapsed())),
+            });
         }
     }
 }
