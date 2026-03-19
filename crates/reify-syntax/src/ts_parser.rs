@@ -104,83 +104,114 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Lower a single member node (used by both lower_structure and lower_guarded_block).
+    fn lower_member(&mut self, child: tree_sitter::Node) -> Option<MemberDecl> {
+        match child.kind() {
+            "param_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid param: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_param(child).map(MemberDecl::Param)
+                }
+            }
+            "let_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid let: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_let(child).map(MemberDecl::Let)
+                }
+            }
+            "constraint_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid constraint: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_constraint(child).map(MemberDecl::Constraint)
+                }
+            }
+            "sub_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid sub: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_sub(child).map(MemberDecl::Sub)
+                }
+            }
+            "minimize_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid minimize: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_minimize(child).map(MemberDecl::Minimize)
+                }
+            }
+            "maximize_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid maximize: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_maximize(child).map(MemberDecl::Maximize)
+                }
+            }
+            "guarded_block" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid guarded block: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_guarded_block(child)
+                }
+            }
+            "ERROR" => {
+                self.errors.push(ParseError {
+                    message: format!("syntax error: {}", self.node_text(child)),
+                    span: self.span(child),
+                });
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Collect members from children of a node (structure body or guarded block body).
+    fn lower_members(&mut self, node: tree_sitter::Node) -> Vec<MemberDecl> {
+        let mut members = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(member) = self.lower_member(child) {
+                members.push(member);
+            }
+        }
+        members
+    }
+
     fn lower_structure(&mut self, node: tree_sitter::Node) -> Option<StructureDef> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
-        let mut members = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            match child.kind() {
-                "param_declaration" => {
-                    if child.is_error() || child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!("invalid param: {}", self.node_text(child)),
-                            span: self.span(child),
-                        });
-                    } else if let Some(p) = self.lower_param(child) {
-                        members.push(MemberDecl::Param(p));
-                    }
-                }
-                "let_declaration" => {
-                    if child.is_error() || child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!("invalid let: {}", self.node_text(child)),
-                            span: self.span(child),
-                        });
-                    } else if let Some(l) = self.lower_let(child) {
-                        members.push(MemberDecl::Let(l));
-                    }
-                }
-                "constraint_declaration" => {
-                    if child.is_error() || child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!("invalid constraint: {}", self.node_text(child)),
-                            span: self.span(child),
-                        });
-                    } else if let Some(c) = self.lower_constraint(child) {
-                        members.push(MemberDecl::Constraint(c));
-                    }
-                }
-                "sub_declaration" => {
-                    if child.is_error() || child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!("invalid sub: {}", self.node_text(child)),
-                            span: self.span(child),
-                        });
-                    } else if let Some(s) = self.lower_sub(child) {
-                        members.push(MemberDecl::Sub(s));
-                    }
-                }
-                "minimize_declaration" => {
-                    if child.is_error() || child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!("invalid minimize: {}", self.node_text(child)),
-                            span: self.span(child),
-                        });
-                    } else if let Some(m) = self.lower_minimize(child) {
-                        members.push(MemberDecl::Minimize(m));
-                    }
-                }
-                "maximize_declaration" => {
-                    if child.is_error() || child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!("invalid maximize: {}", self.node_text(child)),
-                            span: self.span(child),
-                        });
-                    } else if let Some(m) = self.lower_maximize(child) {
-                        members.push(MemberDecl::Maximize(m));
-                    }
-                }
-                "ERROR" => {
-                    self.errors.push(ParseError {
-                        message: format!("syntax error: {}", self.node_text(child)),
-                        span: self.span(child),
-                    });
-                }
-                _ => {}
-            }
-        }
+        let members = self.lower_members(node);
 
         let content_hash = self.content_hash(node);
 
@@ -190,6 +221,63 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash,
         })
+    }
+
+    // ── Guarded block lowering ─────────────────────────────────
+
+    fn lower_guarded_block(&mut self, node: tree_sitter::Node) -> Option<MemberDecl> {
+        let condition_node = node.child_by_field_name("condition")?;
+        let condition = self.lower_expr(condition_node)?;
+
+        // Collect members from the main block and else block.
+        // The grammar structure is: 'where' condition '{' members... '}' ['else' '{' members... '}']
+        // We need to distinguish main block members from else block members.
+        let mut main_members = Vec::new();
+        let mut else_members = Vec::new();
+        let mut in_else = false;
+        let mut cursor = node.walk();
+
+        for child in node.children(&mut cursor) {
+            // Track when we enter the else block
+            if !child.is_named() && self.node_text(child) == "else" {
+                in_else = true;
+                continue;
+            }
+
+            if let Some(member) = self.lower_member(child) {
+                if in_else {
+                    else_members.push(member);
+                } else {
+                    main_members.push(member);
+                }
+            }
+        }
+
+        Some(MemberDecl::GuardedGroup(GuardedGroupDecl {
+            condition,
+            members: main_members,
+            else_members,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        }))
+    }
+
+    // ── Where clause lowering ─────────────────────────────────
+
+    fn lower_where_clause(&self, node: tree_sitter::Node) -> Option<WhereClause> {
+        // Find the where_clause child node within a member declaration
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "where_clause" {
+                let condition_node = child.child_by_field_name("condition")?;
+                let condition = self.lower_expr(condition_node)?;
+                return Some(WhereClause {
+                    condition,
+                    span: self.span(child),
+                });
+            }
+        }
+        None
     }
 
     // ── Member lowering ─────────────────────────────────────
@@ -220,10 +308,13 @@ impl<'a> Lowering<'a> {
                 }
             });
 
+        let where_clause = self.lower_where_clause(node);
+
         Some(ParamDecl {
             name,
             type_expr,
             default,
+            where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -248,10 +339,13 @@ impl<'a> Lowering<'a> {
         let value_node = node.child_by_field_name("value")?;
         let value = self.lower_expr(value_node)?;
 
+        let where_clause = self.lower_where_clause(node);
+
         Some(LetDecl {
             name,
             type_expr,
             value,
+            where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -261,9 +355,12 @@ impl<'a> Lowering<'a> {
         let expr_node = node.child_by_field_name("expr")?;
         let expr = self.lower_expr(expr_node)?;
 
+        let where_clause = self.lower_where_clause(node);
+
         Some(ConstraintDecl {
             label: None,
             expr,
+            where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -273,8 +370,11 @@ impl<'a> Lowering<'a> {
         let expr_node = node.child_by_field_name("expr")?;
         let expr = self.lower_expr(expr_node)?;
 
+        let where_clause = self.lower_where_clause(node);
+
         Some(MinimizeDecl {
             expr,
+            where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -284,8 +384,11 @@ impl<'a> Lowering<'a> {
         let expr_node = node.child_by_field_name("expr")?;
         let expr = self.lower_expr(expr_node)?;
 
+        let where_clause = self.lower_where_clause(node);
+
         Some(MaximizeDecl {
             expr,
+            where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -313,10 +416,13 @@ impl<'a> Lowering<'a> {
             }
         }
 
+        let where_clause = self.lower_where_clause(node);
+
         Some(SubDecl {
             name,
             structure_name,
             args,
+            where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -568,6 +674,7 @@ mod tests {
             MemberDecl::Sub(s) => format!("sub:{}", s.name),
             MemberDecl::Minimize(_) => "minimize".into(),
             MemberDecl::Maximize(_) => "maximize".into(),
+            MemberDecl::GuardedGroup(_) => "guarded_group".into(),
         }).collect();
         assert_eq!(names, vec![
             "param:width", "param:height", "param:thickness",
@@ -730,6 +837,7 @@ mod tests {
                 MemberDecl::Sub(s) => s.span,
                 MemberDecl::Minimize(m) => m.span,
                 MemberDecl::Maximize(m) => m.span,
+                MemberDecl::GuardedGroup(g) => g.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
             assert!((span.end as usize) <= source.len(), "member {} span overflows", i);
@@ -756,6 +864,9 @@ mod tests {
                 }
                 MemberDecl::Maximize(_) => {
                     assert!(text.starts_with("maximize"), "maximize member {} text: {:?}", i, text);
+                }
+                MemberDecl::GuardedGroup(_) => {
+                    assert!(text.starts_with("where"), "guarded_group member {} text: {:?}", i, text);
                 }
             }
         }
@@ -797,6 +908,7 @@ mod tests {
                 MemberDecl::Sub(s) => (s.span, s.content_hash),
                 MemberDecl::Minimize(m) => (m.span, m.content_hash),
                 MemberDecl::Maximize(m) => (m.span, m.content_hash),
+                MemberDecl::GuardedGroup(g) => (g.span, g.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
             assert_eq!(hash, ContentHash::of_str(text), "member {} hash from source text", i);
@@ -878,6 +990,7 @@ mod tests {
                 MemberDecl::Sub(s) => (s.content_hash, s.span),
                 MemberDecl::Minimize(m) => (m.content_hash, m.span),
                 MemberDecl::Maximize(m) => (m.content_hash, m.span),
+                MemberDecl::GuardedGroup(g) => (g.content_hash, g.span),
             };
             let (hash_b, span_b) = match m_b {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
@@ -886,6 +999,7 @@ mod tests {
                 MemberDecl::Sub(s) => (s.content_hash, s.span),
                 MemberDecl::Minimize(m) => (m.content_hash, m.span),
                 MemberDecl::Maximize(m) => (m.content_hash, m.span),
+                MemberDecl::GuardedGroup(g) => (g.content_hash, g.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
             assert_eq!(span_a, span_b, "member {} span determinism", i);
