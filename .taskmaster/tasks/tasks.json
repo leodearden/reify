@@ -678,13 +678,13 @@
         "description": "Ensure that the currently missing architecture-critical language features identified in the review have been implemented: import handling, sub-structure compilation, and stdlib function evaluation.",
         "details": "Close the gap between the implemented subset and the architecture by ensuring imports participate in compilation, sub-structures compile into the runtime model, and ordinary stdlib/function calls no longer collapse to Undef in expression evaluation.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "34"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-19T12:34:31.428Z"
+        "updatedAt": "2026-03-19T14:03:45.180Z"
       },
       {
         "id": "38",
@@ -764,11 +764,11 @@
         "description": "The compiler at reify-compiler/src/lib.rs lines 701, 714, 736, 797 creates ValueCellDecls with `SourceSpan::new(0, 0)` instead of propagating spans from the parsed AST. This makes diagnostics point to position (0,0) instead of the actual source location.",
         "details": "## Root cause\nLines 701, 714 (params), 736 (lets), 797 (constraints) all use `span: SourceSpan::new(0, 0)` instead of the span from the parsed declaration.\n\n## Failing tests to write\n1. Compile a structure with params → each ValueCellDecl span must match the parsed param's span (not 0,0)\n2. Compile a structure with let bindings → each ValueCellDecl span must match the parsed let's span\n3. Compile a structure with constraints → each ConstraintDecl span must match the parsed constraint's span\n4. Verify that diagnostics emitted for a specific constraint include the correct span\n\n## Fix\nReplace `SourceSpan::new(0, 0)` with the span from the corresponding parsed declaration:\n- Line 701, 714: use `param.span`\n- Line 736: use `let_decl.span`\n- Line 797: use `constraint.span`\n\n## Module tags\ncrates/reify-compiler",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-19T11:54:05.130Z"
+        "updatedAt": "2026-03-19T14:03:45.183Z"
       },
       {
         "id": "45",
@@ -836,11 +836,11 @@
         "description": "In reify-kernel-occt/src/lib.rs:95-172, geometry operation parameters (radii, dimensions, angles) are not validated before passing to OCCT. Negative radii, zero-width boxes, etc. produce cryptic C++ errors instead of clear Rust GeometryError messages.",
         "details": "## Failing tests to write\n1. Box with negative width → must return GeometryError::OperationFailed, not panic/C++ exception\n2. Cylinder with zero radius → clear error\n3. Sphere with negative radius → clear error\n4. Fillet with radius larger than edge → clear error (or OCCT error wrapped cleanly)\n5. Translate/Rotate with NaN values → clear error\n\n## Fix\nAdd validation at the top of each operation's match arm in execute():\n```rust\nGeometryOp::Box { width, height, depth } => {\n    let w = extract_f64(width)?;\n    let h = extract_f64(height)?;\n    let d = extract_f64(depth)?;\n    if w <= 0.0 || h <= 0.0 || d <= 0.0 {\n        return Err(GeometryError::OperationFailed(\n            format!(\"box dimensions must be positive: w={}, h={}, d={}\", w, h, d)\n        ));\n    }\n    // ... proceed with OCCT call\n}\n```\n\nAlso add catch-all exception handler in C++ wrapper (occt_wrapper.cpp) for non-Standard_Failure exceptions.\n\n## Module tags\ncrates/reify-kernel-occt",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-19T11:54:05.753Z"
+        "updatedAt": "2026-03-19T14:03:45.184Z"
       },
       {
         "id": "51",
@@ -848,11 +848,11 @@
         "description": "The CLI at reify-cli/src/main.rs:31-60 prints parse errors but `parse_and_compile()` returns `Ok(compiled)` regardless. `reify check` exits with code 0 even when the source has parse errors, which is incorrect for CI/scripting usage.",
         "details": "## Failing tests to write\n1. `reify check` on a file with parse errors must exit with non-zero exit code\n2. `reify check` on a file with compiler ERROR-level diagnostics must exit with non-zero exit code\n3. `reify check` on a valid file must still exit 0\n4. `reify build` on a file with parse errors must exit with non-zero exit code\n\n## Fix\nIn `parse_and_compile()`: if `!parsed.errors.is_empty()`, return `Err` instead of `Ok`.\nIn `cmd_check()` and `cmd_build()`: check compiler diagnostics for ERROR severity and include in exit code decision.\nAlso in `cmd_lsp()`: replace `expect(\"failed to create tokio runtime\")` with proper error handling that returns ExitCode::FAILURE.\n\n## Module tags\ncrates/reify-cli",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-19T11:54:05.964Z"
+        "updatedAt": "2026-03-19T14:03:45.187Z"
       },
       {
         "id": "52",
@@ -869,9 +869,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-19T12:39:25.806Z",
+      "lastModified": "2026-03-19T14:03:45.187Z",
       "taskCount": 52,
-      "completedCount": 48,
+      "completedCount": 52,
       "tags": [
         "master"
       ]
