@@ -2,7 +2,10 @@
 
 use reify_constraints::{DimensionalSolver, SolverRegistry};
 use reify_test_support::*;
-use reify_types::{AutoParam, ConstraintSolver, ResolutionProblem, SolveResult, Type, ValueMap};
+use reify_types::{
+    AutoParam, BinOp, ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem,
+    SolveResult, Type, Value, ValueMap,
+};
 
 /// Basic dispatch: SolverRegistry with DimensionalSolver as fallback
 /// produces same results as DimensionalSolver alone for a simple problem.
@@ -227,3 +230,146 @@ fn registry_backward_compat_compound_constraint() {
     }
 }
 
+// === Backward-compatibility integration tests ===
+// These mirror scenarios from solver_integration.rs to verify
+// SolverRegistry produces identical behavior to DimensionalSolver.
+
+/// Infeasible problem: bounds [0, 10mm], constraint x > 15mm.
+/// SolverRegistry must report Infeasible just like DimensionalSolver.
+#[test]
+fn registry_compat_infeasible_bounds() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    let x_id = vcid("Part", "x");
+    let constraint = gt(
+        value_ref("Part", "x"),
+        literal(Value::Scalar {
+            si_value: 0.015,
+            dimension: DimensionVector::LENGTH,
+        }),
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 0.010)),
+        }],
+        constraints: vec![(cnid("Part", 0), constraint)],
+        current_values: ValueMap::new(),
+        objective: None,
+    };
+
+    let result = registry.solve(&problem);
+    match result {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(!diagnostics.is_empty(), "should have diagnostics");
+        }
+        other => panic!(
+            "expected Infeasible through registry, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Small violation: x > 2.0 but bounds max at 1.9999999.
+/// Registry must NOT report Solved (same as DimensionalSolver).
+#[test]
+fn registry_compat_false_negative_small_violation() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    let x_id = vcid("Part", "x");
+    let constraint = gt(
+        value_ref("Part", "x"),
+        literal(Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        }),
+    );
+
+    let mut current = ValueMap::new();
+    current.insert(
+        x_id.clone(),
+        Value::Scalar {
+            si_value: 1.9999999,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.9999999)),
+        }],
+        constraints: vec![(cnid("Part", 0), constraint)],
+        current_values: current,
+        objective: None,
+    };
+
+    let result = registry.solve(&problem);
+    assert!(
+        !matches!(result, SolveResult::Solved { .. }),
+        "should NOT report Solved when constraint is violated by 1e-7 (through registry)"
+    );
+}
+
+/// Maximize objective through registry: thickness constrained, maximize.
+#[test]
+fn registry_compat_maximize_objective() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    let thickness_id = vcid("Bracket", "thickness");
+    let thickness_ref = value_ref("Bracket", "thickness");
+
+    let gt_expr = gt(thickness_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(thickness_ref.clone(), literal(mm(20.0)));
+    let objective = OptimizationObjective::Maximize(thickness_ref);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: thickness_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+        }],
+        constraints: vec![
+            (cnid("Bracket", 0), gt_expr),
+            (cnid("Bracket", 1), lt_expr),
+        ],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+    };
+
+    let result = registry.solve(&problem);
+    // Either Solved (near 20mm) or Infeasible (boundary edge case) —
+    // same as DimensionalSolver behavior
+    match result {
+        SolveResult::Solved { values } => {
+            let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
+            assert!(si > 0.017, "maximized value should be near 20mm, got {}", si);
+        }
+        SolveResult::Infeasible { .. } => {
+            // Acceptable for optimization-against-boundary
+        }
+        other => panic!("expected Solved or Infeasible, got {:?}", other),
+    }
+}
+
+/// Empty problem: no auto params → trivially solved.
+#[test]
+fn registry_compat_empty_problem() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![],
+        constraints: vec![],
+        current_values: ValueMap::new(),
+        objective: None,
+    };
+
+    let result = registry.solve(&problem);
+    assert!(
+        matches!(result, SolveResult::Solved { .. }),
+        "empty problem should trivially solve"
+    );
+}
