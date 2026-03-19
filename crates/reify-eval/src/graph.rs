@@ -982,4 +982,70 @@ mod tests {
         let hh_node = graph.value_cells.get(&scoped_half_h).unwrap();
         assert_eq!(hh_node.kind, ValueCellKind::Let);
     }
+
+    /// Two graphs with identical value_cell nodes but different GuardedGroupInfo
+    /// member bindings must produce different topology fingerprints.
+    /// Exposes the bug where guard_hash only hashes the guard_cell ID string,
+    /// ignoring member bindings.
+    #[test]
+    fn topology_fingerprint_distinguishes_guard_groupings() {
+        let guard_cell = ValueCellId::new("S", "__guard_0");
+        let x = ValueCellId::new("S", "x");
+        let y = ValueCellId::new("S", "y");
+
+        // Shared nodes: guard, x, y all present in both graphs
+        let guard_node = ValueCellNode {
+            id: guard_cell.clone(),
+            kind: ValueCellKind::Let,
+            cell_type: Type::Bool,
+            default_expr: Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+            content_hash: ContentHash::of_str("guard_0"),
+        };
+        let x_node = ValueCellNode {
+            id: x.clone(),
+            kind: ValueCellKind::Param,
+            cell_type: Type::length(),
+            default_expr: Some(CompiledExpr::literal(Value::length(0.005), Type::length())),
+            content_hash: ContentHash::of_str("x"),
+        };
+        let y_node = ValueCellNode {
+            id: y.clone(),
+            kind: ValueCellKind::Param,
+            cell_type: Type::length(),
+            default_expr: Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+            content_hash: ContentHash::of_str("y"),
+        };
+
+        // Graph A: guard_cell guards [x], else_members=[]
+        let mut graph_a = EvaluationGraph::default();
+        graph_a.value_cells.insert(guard_cell.clone(), guard_node.clone());
+        graph_a.value_cells.insert(x.clone(), x_node.clone());
+        graph_a.value_cells.insert(y.clone(), y_node.clone());
+        graph_a.guarded_groups.push(GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![x.clone()],
+            constraints: vec![],
+            else_members: vec![],
+            else_constraints: vec![],
+        });
+
+        // Graph B: guard_cell guards [y], else_members=[]
+        let mut graph_b = EvaluationGraph::default();
+        graph_b.value_cells.insert(guard_cell.clone(), guard_node);
+        graph_b.value_cells.insert(x.clone(), x_node);
+        graph_b.value_cells.insert(y.clone(), y_node);
+        graph_b.guarded_groups.push(GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![y.clone()],
+            constraints: vec![],
+            else_members: vec![],
+            else_constraints: vec![],
+        });
+
+        assert_ne!(
+            graph_a.topology_fingerprint(),
+            graph_b.topology_fingerprint(),
+            "fingerprints must differ when guard groups bind different members"
+        );
+    }
 }

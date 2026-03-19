@@ -16,7 +16,7 @@
     "crates/reify-eval",
     "crates/reify-test-support"
   ],
-  "analysis": "This task implements guard compilation and schema re-elaboration for the Reify compiler and evaluation engine.\n\n**Current state:** The parser (task 59, dependency) already produces `GuardedGroupDecl` with `condition`, `members`, `else_members`, and per-declaration `WhereClause` on `ParamDecl`, `LetDecl`, `ConstraintDecl`, `SubDecl`, `MinimizeDecl`, `MaximizeDecl`. The compiler currently has a no-op stub at line 807-810 that ignores `GuardedGroup` members. Per-declaration `where_clause` fields on decls are parsed but not used by the compiler.\n\n**Compiler side (reify-compiler/src/lib.rs):**\n1. Define `CompiledGuardedGroup` struct with guard_expr, guard_value_cell, members, constraints, else_members, else_constraints.\n2. Add `guarded_groups: Vec<CompiledGuardedGroup>` and `structure_controlling: HashSet<ValueCellId>` to `TopologyTemplate`.\n3. In `compile_structure`, handle `MemberDecl::GuardedGroup` by compiling guard condition into a synthetic bool ValueCell, then compiling members/constraints/else under that guard.\n4. Handle per-declaration `where_clause` by creating single-member guarded groups.\n5. Handle nested guards via conjunctive composition (inner = outer && inner_cond).\n6. Handle else blocks by populating else_members/else_constraints.\n7. Implement reference safety: detect unguarded references to guarded ValueCells.\n\n**Eval side (reify-eval/src/graph.rs, lib.rs, snapshot.rs):**\n1. Extend `EvaluationGraph::from_templates()` to process guarded_groups: create guard ValueCell nodes, store GuardedGroupInfo metadata.\n2. In `Engine::eval()`, evaluate guard ValueCells first, then conditionally evaluate guarded/else members.\n3. Implement schema re-elaboration: when a structure-controlling guard changes in `edit_param()`, re-evaluate affected members.\n4. Handle Undef guards (members in indeterminate state).\n5. Update topology fingerprint to include guard states.\n\n**Key patterns observed in codebase:**\n- Compiler uses two-pass compilation: first pass registers names in scope (line 655-694), second pass compiles expressions (line 697-811).\n- `compile_structure()` iterates over `structure.members` matching on `MemberDecl` variants.\n- `EvaluationGraph::from_templates()` (graph.rs:68-141) iterates over templates and creates typed nodes.\n- Tests use parse-from-source or builder-constructed modules.\n- TopologyTemplateBuilder provides fluent API for test module construction.\n- CompilationScope maps names -> (ValueCellId, Type); needs extension for guard tracking.\n- Existing `std::collections::HashMap` import at compiler line 1; `HashSet` needs to be added.\n- Existing `ValueCellKind` has Param/Let/Auto variants.",
+  "analysis": "This task implements guard compilation and schema re-elaboration for the Reify compiler and evaluation engine.\n\n**Current state:** The parser (task 59, dependency) already produces `GuardedGroupDecl` with `condition`, `members`, `else_members`, and per-declaration `WhereClause` on `ParamDecl`, `LetDecl`, `ConstraintDecl`, `SubDecl`, `MinimizeDecl`, `MaximizeDecl`. The compiler currently has a no-op stub at line 807-810 that ignores `GuardedGroup` members. Per-declaration `where_clause` fields on decls are parsed but not used by the compiler.\n\n**Compiler side (reify-compiler/src/lib.rs):**\n1. Define `CompiledGuardedGroup` struct with guard_expr, guard_value_cell, members, constraints, else_members, else_constraints.\n2. Add `guarded_groups: Vec<CompiledGuardedGroup>` and `structure_controlling: HashSet<ValueCellId>` to `TopologyTemplate`.\n3. In `compile_structure`, handle `MemberDecl::GuardedGroup` by compiling guard condition into a synthetic bool ValueCell, then compiling members/constraints/else under that guard.\n4. Handle per-declaration `where_clause` by creating single-member guarded groups.\n5. Handle nested guards via conjunctive composition (inner = outer && inner_cond).\n6. Handle else blocks by populating else_members/else_constraints.\n7. Implement reference safety: detect unguarded references to guarded ValueCells.\n\n**Eval side (reify-eval/src/graph.rs, lib.rs, snapshot.rs):**\n1. Extend `EvaluationGraph::from_templates()` to process guarded_groups: create guard ValueCell nodes, store GuardedGroupInfo metadata.\n2. In `Engine::eval()`, evaluate guard ValueCells first, then conditionally evaluate guarded/else members.\n3. Implement schema re-elaboration: when a structure-controlling guard changes in `edit_param()`, re-evaluate affected members.\n4. Handle Undef guards (members in indeterminate state).\n5. Update topology fingerprint to include guard states.\n\n**Review fixes (post-implementation):**\nBlocking issues found in review:\n1. Content hash only folds in guard_expr.content_hash, omitting member/constraint/else hashes — stale cache risk. (Fixed in steps 21-22)\n2. Cross-guard reference safety check misses else_members — unsafe programs pass compilation. (Fixed in steps 23-24)\n3. [reviewer_robustness] incomplete_error_boundary: Unguarded reference safety check misses top-level constraints — a top-level `constraint x > 5mm` where x is guarded passes compilation without any diagnostic. At eval time the evaluator will attempt to evaluate this constraint against a cell that may be absent (Undef/inactive state), producing either a silent wrong result or a runtime error. (Steps 25-26, pending)\n\n**Key patterns observed in codebase:**\n- Compiler uses two-pass compilation: first pass registers names in scope (line 655-694), second pass compiles expressions (line 697-811).\n- `compile_structure()` iterates over `structure.members` matching on `MemberDecl` variants.\n- `EvaluationGraph::from_templates()` (graph.rs:68-141) iterates over templates and creates typed nodes.\n- Tests use parse-from-source or builder-constructed modules.\n- TopologyTemplateBuilder provides fluent API for test module construction.\n- CompilationScope maps names -> (ValueCellId, Type); needs extension for guard tracking.\n- Existing `std::collections::HashMap` import at compiler line 1; `HashSet` needs to be added.\n- Existing `ValueCellKind` has Param/Let/Auto variants.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -187,6 +187,48 @@
       "description": "Implement schema re-elaboration in Engine::edit_param(). After evaluating dirty nodes, check if any structure_controlling cells changed boolean value. If so: (1) re-evaluate guard ValueCells, (2) determine new active/inactive members from guarded_groups, (3) evaluate newly-activated members, (4) set newly-deactivated members to Undef, (5) recompute topology_fingerprint on the snapshot including current guard states. Ensure the dirty cone and eval set include dependents of affected guarded members.",
       "status": "done",
       "commit": "a607ffb"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing test in guard_compilation.rs: content_hash_includes_guarded_member_exprs. Compile two structures that are identical except for a guarded member's default expression (e.g. `param x : Scalar = 5mm where active` vs `param x : Scalar = 10mm where active`). Assert their TopologyTemplate.content_hash values differ. This verifies the content hash folds in member default_expr hashes, not just guard_expr hashes. Also test that changing a guarded constraint expression produces a different hash (e.g. `constraint x > 2mm` vs `constraint x > 3mm` inside a where block).",
+      "status": "done",
+      "commit": "f5ab008"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Fix content hash computation in compile_structure() (lib.rs ~line 953) and TopologyTemplateBuilder.build() (builders.rs ~line 308). Replace `guarded_groups.iter().map(|g| g.guard_expr.content_hash)` with a flat_map that chains: (1) guard_expr.content_hash, (2) each member's default_expr content_hash (ContentHash(0) for None), (3) each constraint's expr.content_hash, (4) each else_member's default_expr content_hash, (5) each else_constraint's expr.content_hash. This ensures any change to guarded member defaults or constraint expressions changes the template content_hash, preventing stale incremental eval cache hits.",
+      "status": "done",
+      "commit": "012094a"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write failing test in guard_compilation.rs: reference_safety_else_member_cross_guard. Parse `structure S { param a : Bool = true\\n param b : Bool = true\\n where a { param x : Scalar = 5mm }\\n where b { } else { let y = x } }`. The else_member y (active when b=false) references x (guarded under a). Compile should produce a diagnostic warning about cross-guard reference containing 'differently-guarded' or 'guarded'. Currently this passes silently because the cross-guard check only iterates group.members, not group.else_members.",
+      "status": "done",
+      "commit": "a1f952d"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Fix cross-guard reference safety check in compile_structure() (lib.rs ~line 993-1013). After the existing loop over `group.members`, add a symmetric loop over `group.else_members` that performs the same `collect_value_refs` -> `guarded_cell_map.get` -> diagnostic-push logic. For each else_member's default_expr, collect value refs and check if any referenced cell belongs to a different guard (via guarded_cell_map), emitting the same 'reference to differently-guarded cell' diagnostic.",
+      "status": "done",
+      "commit": "878fd02"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Write failing test in guard_compilation.rs: reference_safety_toplevel_constraint_to_guarded. Parse `structure S { param active : Bool = true\\n param x : Scalar = 5mm where active\\n constraint x > 2mm }`. The top-level (unguarded) constraint references guarded param x. Compile should produce a diagnostic warning containing 'unguarded reference' to guarded cell 'x'. This test exposes the bug identified by [reviewer_robustness] where the post-compilation reference safety pass (lines 975-992) iterates value_cells but omits top-level constraints, allowing a constraint referencing a guarded cell to pass compilation silently.",
+      "status": "done",
+      "commit": "ab8cedb"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Fix the post-compilation unguarded reference safety check in compile_structure() (lib.rs, after the existing `for vc in &value_cells` loop around line 992). Add a parallel loop over top-level `constraints`: for each `cc` in `&constraints`, call `collect_value_refs(&cc.expr)` and check each ref_id against `guarded_cell_map`. If the ref is found in guarded_cell_map, emit `Diagnostic::warning(format!(\"unguarded reference to guarded cell '{}'\", ref_id.member)).with_label(DiagnosticLabel::new(cc.span, \"references a conditionally-active member\"))`. This mirrors the exact same pattern used for value_cells, ensuring top-level constraints that reference guarded cells produce the same diagnostic.",
+      "status": "done",
+      "commit": "49ab0c5"
     }
   ],
   "design_decisions": [
@@ -221,6 +263,14 @@
     {
       "decision": "Topology fingerprint encodes guard states by including guard cell values",
       "rationale": "When a guard changes from true to false, the effective topology changes (different members are active). The fingerprint must reflect this so that downstream consumers (LSP, geometry kernel) detect the schema change. Including guard cell values in the fingerprint (alongside structural hashes) achieves this."
+    },
+    {
+      "decision": "Content hash must include ALL compiled content within guarded groups, not just guard_expr",
+      "rationale": "Review identified that only folding guard_expr.content_hash into the template content_hash means changes to guarded member defaults or constraint expressions produce identical hashes, causing stale incremental eval cache hits. The fix chains member default_expr hashes, constraint expr hashes, else_member default_expr hashes, and else_constraint expr hashes alongside the guard_expr hash."
+    },
+    {
+      "decision": "Reference safety checks must cover else_members and top-level constraints symmetrically",
+      "rationale": "Review identified two gaps: (1) cross-guard reference check only iterated group.members, missing else_members — an else-branch member referencing a cell under a different guard compiled silently; (2) unguarded reference check only walked value_cells, missing top-level constraints — a constraint like `constraint x > 2mm` where x is guarded was accepted silently. Both gaps allow structurally unsafe programs through compilation."
     }
   ],
   "reuse": [
@@ -278,6 +328,11 @@
       "what": "Engine::eval() two-pass evaluation pattern",
       "where": "crates/reify-eval/src/lib.rs line 597-1009",
       "how": "Guard cells are evaluated in pass 2 (Let bindings). Add a guard-awareness phase between pass 2 and sub-component elaboration to conditionally evaluate guarded members."
+    },
+    {
+      "what": "collect_value_refs() helper and existing value_cells reference safety loop pattern",
+      "where": "crates/reify-compiler/src/lib.rs lines 975-992 and 1031-1055",
+      "how": "The constraints loop (step-26) reuses the exact same pattern as the value_cells loop: iterate items, call collect_value_refs(&item.expr), check against guarded_cell_map, emit diagnostic. Only the iteration target and span source differ (cc.expr/cc.span vs vc.default_expr/vc.span)."
     }
   ]
 }
