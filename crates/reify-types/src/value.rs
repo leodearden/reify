@@ -230,6 +230,61 @@ impl Ord for Value {
     }
 }
 
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Bool(b) => write!(f, "{}", b),
+            Value::Int(i) => write!(f, "{}", i),
+            Value::Real(r) => {
+                // Format cleanly: no trailing ".0" for whole numbers
+                if *r == r.trunc() && r.is_finite() {
+                    write!(f, "{}", *r as i64)
+                } else {
+                    write!(f, "{}", r)
+                }
+            }
+            Value::String(s) => write!(f, "\"{}\"", s),
+            Value::Scalar { si_value, dimension } => {
+                write!(f, "{} {}", si_value, dimension)
+            }
+            Value::Enum { type_name, variant } => write!(f, "{}::{}", type_name, variant),
+            Value::List(items) => {
+                write!(f, "[")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, "]")
+            }
+            Value::Set(items) => {
+                write!(f, "{{")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, "}}")
+            }
+            Value::Map(entries) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in entries.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", k, v)?;
+                }
+                write!(f, "}}")
+            }
+            Value::Option(None) => write!(f, "None"),
+            Value::Option(Some(v)) => write!(f, "Some({})", v),
+            Value::Undef => write!(f, "undef"),
+        }
+    }
+}
+
 /// The determinacy state of a value cell in the evaluation graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeterminacyState {
