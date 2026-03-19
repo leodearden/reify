@@ -284,6 +284,61 @@ fn parse_block_comment_multiline() {
     assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
 }
 
+/// `#` is no longer a valid comment marker — should produce parse errors.
+#[test]
+fn parse_hash_comment_is_error() {
+    let source = r#"structure S {
+    # old style comment
+    param x: Scalar = 1mm
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(!module.errors.is_empty(), "# should no longer be a valid comment");
+}
+
+/// `///` (triple-slash doc comment) should parse fine since it starts with `//`.
+#[test]
+fn parse_doc_comment_triple_slash() {
+    let source = r#"/// doc comment for the structure
+structure S {
+    /// doc comment for a param
+    param x: Scalar = 1mm
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
+}
+
+/// Comments (// and /* */) should not affect AST structure.
+#[test]
+fn parse_comments_preserve_ast() {
+    // Parse bracket_source() normally (no comments)
+    let baseline = reify_syntax::parse(bracket_source(), reify_types::ModulePath::single("test"));
+
+    // Inject comments into bracket source
+    let commented_source = bracket_source()
+        .replace(
+            "param width: Scalar = 80mm",
+            "// width parameter\nparam width: Scalar = 80mm",
+        )
+        .replace(
+            "let volume",
+            "/* volume computation */ let volume",
+        );
+    let commented = reify_syntax::parse(&commented_source, reify_types::ModulePath::single("test"));
+
+    assert!(commented.errors.is_empty(), "expected no parse errors: {:?}", commented.errors);
+    assert_eq!(baseline.declarations.len(), commented.declarations.len());
+
+    let base_s = match &baseline.declarations[0] {
+        Declaration::Structure(s) => s,
+        _ => panic!("expected Structure"),
+    };
+    let comm_s = match &commented.declarations[0] {
+        Declaration::Structure(s) => s,
+        _ => panic!("expected Structure"),
+    };
+    assert_eq!(base_s.members.len(), comm_s.members.len());
+}
+
 /// Parse bracket → all members carry non-empty spans.
 #[test]
 fn all_spans_valid() {
