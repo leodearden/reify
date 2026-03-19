@@ -3,29 +3,178 @@
 //! Combines classification + decomposition to dispatch sub-problems
 //! to domain-specific solvers.
 
-use reify_types::{ConstraintSolver, ResolutionProblem, SolveResult};
+use crate::decompose::decompose_into_components;
+use reify_types::{
+    AutoParam, ConstraintDomain, ConstraintSolver, OptimizationObjective, ResolutionProblem,
+    SolveResult, Value, ValueCellId, ValueMap,
+};
+use std::collections::HashMap;
 
 /// A registry that dispatches constraint sub-problems to domain-specific solvers.
+///
+/// Implements the `ConstraintSolver` trait, making it a drop-in replacement
+/// for `DimensionalSolver` in the Engine. The registry:
+/// 1. Classifies each constraint's domain
+/// 2. Decomposes the problem into independent connected components
+/// 3. Dispatches each component to the appropriate domain solver
+/// 4. Merges results from all components
 pub struct SolverRegistry {
-    /// The fallback solver (used for all domains until specialized solvers are registered).
-    fallback: Box<dyn ConstraintSolver>,
+    /// Solver for dimensional constraints (length, angle, etc.).
+    dimensional: Box<dyn ConstraintSolver>,
+    /// Solver for geometric constraints (optional, falls back to dimensional).
+    geometric: Option<Box<dyn ConstraintSolver>>,
+    /// Solver for logical constraints (optional, falls back to dimensional).
+    logical: Option<Box<dyn ConstraintSolver>>,
+    /// Explicit fallback solver for cross-domain constraints (if provided).
+    fallback: Option<Box<dyn ConstraintSolver>>,
 }
 
 impl SolverRegistry {
-    /// Create a new solver registry with a fallback solver.
-    pub fn new(fallback: Box<dyn ConstraintSolver>) -> Self {
-        Self { fallback }
+    /// Create a new solver registry with a single solver used as both
+    /// the dimensional solver and the fallback for all domains.
+    pub fn new(solver: Box<dyn ConstraintSolver>) -> Self {
+        Self {
+            dimensional: solver,
+            geometric: None,
+            logical: None,
+            fallback: None,
+        }
+    }
+
+    /// Create a new solver registry with explicit solvers for each domain.
+    pub fn with_solvers(
+        dimensional: Box<dyn ConstraintSolver>,
+        geometric: Option<Box<dyn ConstraintSolver>>,
+        logical: Option<Box<dyn ConstraintSolver>>,
+        fallback: Option<Box<dyn ConstraintSolver>>,
+    ) -> Self {
+        Self {
+            dimensional,
+            geometric,
+            logical,
+            fallback,
+        }
+    }
+
+    /// Select the solver for a given domain.
+    fn solver_for(&self, domain: ConstraintDomain) -> &dyn ConstraintSolver {
+        match domain {
+            ConstraintDomain::Dimensional => &*self.dimensional,
+            ConstraintDomain::Geometric => {
+                self.geometric.as_deref().unwrap_or(&*self.dimensional)
+            }
+            ConstraintDomain::Logical => {
+                self.logical.as_deref().unwrap_or(&*self.dimensional)
+            }
+            ConstraintDomain::CrossDomain => {
+                self.fallback.as_deref().unwrap_or(&*self.dimensional)
+            }
+        }
     }
 }
 
 impl ConstraintSolver for SolverRegistry {
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
-        // Delegate to fallback until full implementation
-        self.fallback.solve(problem)
+        // Early exit: no auto params → already solved
+        if problem.auto_params.is_empty() {
+            return SolveResult::Solved {
+                values: HashMap::new(),
+            };
+        }
+
+        // Decompose into connected components
+        let components = decompose_into_components(&problem.auto_params, &problem.constraints);
+
+        // If no components (all constraints reference non-auto params),
+        // the auto params are unconstrained. Return current values or defaults.
+        if components.is_empty() {
+            return SolveResult::Solved {
+                values: HashMap::new(),
+            };
+        }
+
+        // Build a lookup for auto params by ID
+        let param_lookup: HashMap<&ValueCellId, &AutoParam> = problem
+            .auto_params
+            .iter()
+            .map(|ap| (&ap.id, ap))
+            .collect();
+
+        // Determine which component gets the objective (if any)
+        let objective_component = problem.objective.as_ref().and_then(|obj| {
+            let obj_expr = match obj {
+                OptimizationObjective::Minimize(e) | OptimizationObjective::Maximize(e) => e,
+            };
+            // Find which component contains params referenced by the objective
+            let mut obj_refs = std::collections::HashSet::new();
+            crate::decompose::collect_value_refs_pub(obj_expr, &mut obj_refs);
+            let auto_param_set: std::collections::HashSet<&ValueCellId> =
+                problem.auto_params.iter().map(|ap| &ap.id).collect();
+
+            for (ci, comp) in components.iter().enumerate() {
+                if obj_refs.iter().any(|r| comp.auto_params.contains(r) && auto_param_set.contains(r)) {
+                    return Some(ci);
+                }
+            }
+            // If objective references no auto params in any component,
+            // give it to the first component
+            Some(0)
+        });
+
+        let mut merged_values: HashMap<ValueCellId, Value> = HashMap::new();
+
+        for (ci, component) in components.iter().enumerate() {
+            // Build sub-ResolutionProblem for this component
+            let sub_auto_params: Vec<AutoParam> = component
+                .auto_params
+                .iter()
+                .filter_map(|id| param_lookup.get(id).map(|ap| (*ap).clone()))
+                .collect();
+
+            // Filter current_values to only this component's params
+            let mut sub_values = ValueMap::new();
+            for (k, v) in problem.current_values.iter() {
+                sub_values.insert(k.clone(), v.clone());
+            }
+
+            // Attach objective only to the designated component
+            let sub_objective = if objective_component == Some(ci) {
+                problem.objective.clone()
+            } else {
+                None
+            };
+
+            let sub_problem = ResolutionProblem {
+                auto_params: sub_auto_params,
+                constraints: component.constraints.clone(),
+                current_values: sub_values,
+                objective: sub_objective,
+            };
+
+            // Select solver based on component domain
+            let solver = self.solver_for(component.domain);
+            let result = solver.solve(&sub_problem);
+
+            match result {
+                SolveResult::Solved { values } => {
+                    merged_values.extend(values);
+                }
+                SolveResult::Infeasible { diagnostics } => {
+                    return SolveResult::Infeasible { diagnostics };
+                }
+                SolveResult::NoProgress { reason } => {
+                    return SolveResult::NoProgress { reason };
+                }
+            }
+        }
+
+        SolveResult::Solved {
+            values: merged_values,
+        }
     }
 }
 
-// Safety: SolverRegistry is Send + Sync because it only contains
-// Box<dyn ConstraintSolver> which requires Send + Sync.
+// Safety: SolverRegistry is Send + Sync because all its fields
+// are Box<dyn ConstraintSolver> which requires Send + Sync.
 unsafe impl Send for SolverRegistry {}
 unsafe impl Sync for SolverRegistry {}

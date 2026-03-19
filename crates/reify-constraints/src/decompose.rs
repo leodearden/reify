@@ -63,6 +63,11 @@ impl UnionFind {
 
 // --- Expression tree walk to collect ValueCellIds ---
 
+/// Collect all ValueCellIds referenced in an expression tree (public for registry).
+pub(crate) fn collect_value_refs_pub(expr: &CompiledExpr, out: &mut HashSet<ValueCellId>) {
+    collect_value_refs(expr, out);
+}
+
 /// Collect all ValueCellIds referenced in an expression tree.
 fn collect_value_refs(expr: &CompiledExpr, out: &mut HashSet<ValueCellId>) {
     match &expr.kind {
@@ -111,7 +116,6 @@ pub fn decompose_into_components(
     }
 
     // Build a mapping from ValueCellId → index for auto params only
-    let auto_param_set: HashSet<ValueCellId> = auto_params.iter().map(|ap| ap.id.clone()).collect();
     let param_ids: Vec<ValueCellId> = auto_params.iter().map(|ap| ap.id.clone()).collect();
     let param_index: HashMap<&ValueCellId, usize> = param_ids
         .iter()
