@@ -26,7 +26,7 @@
     "gui/src/stores",
     "gui/src/__tests__"
   ],
-  "analysis": "Task 85 creates the reactive state management layer and IPC bridge for the Reify GUI frontend. Task 81 (scaffold) is a dependency but the gui/ directory does not exist on any branch or worktree (checked main and task/82-85, all at same commit with no gui/), so this task must bootstrap the minimal SolidJS project scaffold as a prerequisite.\n\nThe IPC types to mirror are defined in the task description: MeshData, ValueData, ConstraintData, SourceLocation, FileData, GuiState, plus EvaluationStatus. The Rust-side types in reify-types (Value enum in value.rs, Mesh struct in geometry.rs with vertices: Vec<f32>/indices: Vec<u32>/normals: Option<Vec<f32>>, Constraint types in constraint.rs, SourceSpan/Diagnostic in diagnostics.rs) inform the TypeScript shape but the IPC types are serialized/simplified versions.\n\nThe bridge layer wraps Tauri invoke() and listen() APIs with typed functions. Since Tauri won't be available in test environments, the bridge is mocked via vi.mock().\n\nThree Solid stores (engine, selection, editor) use createStore from solid-js/store. Tests use Vitest with jsdom and SolidJS createRoot for reactive test isolation. The engine store subscribes to Tauri events via bridge, tested by mocking bridge event listeners.\n\nKey design: Factory functions (createXStore) for test isolation. Record<string, T> for store collections (Solid proxies don't work with Map/Set). string[] for dirtyFiles (same reason).\n\n--- REVIEW FIX ANALYSIS ---\n\nTwo blocking issues found during review:\n\n1. MeshData uses number[] instead of Float32Array/Uint32Array. This contradicts the stated design decision and creates a 2x memory overhead plus O(n) conversion on every WebGL frame. Fix: Change MeshData to typed arrays, add RawMeshData wire type (number[]) for JSON IPC, convert once in bridge.onMeshUpdate via new Float32Array(raw.vertices).\n\n2. setCursorPosition uses column! (non-null assertion) when column is optional. Calling setCursorPosition(10) without column silently produces { line: 10, column: undefined }, violating the declared type. Fix: Default column to 0 via column ?? 0.",
+  "analysis": "Task 85 creates the reactive state management layer and IPC bridge for the Reify GUI frontend. Task 81 (scaffold) is a dependency but the gui/ directory does not exist on any branch or worktree (checked main and task/82-85, all at same commit with no gui/), so this task must bootstrap the minimal SolidJS project scaffold as a prerequisite.\n\nThe IPC types to mirror are defined in the task description: MeshData, ValueData, ConstraintData, SourceLocation, FileData, GuiState, plus EvaluationStatus. The Rust-side types in reify-types (Value enum in value.rs, Mesh struct in geometry.rs with vertices: Vec<f32>/indices: Vec<u32>/normals: Option<Vec<f32>>, Constraint types in constraint.rs, SourceSpan/Diagnostic in diagnostics.rs) inform the TypeScript shape but the IPC types are serialized/simplified versions.\n\nThe bridge layer wraps Tauri invoke() and listen() APIs with typed functions. Since Tauri won't be available in test environments, the bridge is mocked via vi.mock().\n\nThree Solid stores (engine, selection, editor) use createStore from solid-js/store. Tests use Vitest with jsdom and SolidJS createRoot for reactive test isolation. The engine store subscribes to Tauri events via bridge, tested by mocking bridge event listeners.\n\nKey design: Factory functions (createXStore) for test isolation. Record<string, T> for store collections (Solid proxies don't work with Map/Set). string[] for dirtyFiles (same reason).\n\n--- POST-REVIEW ADDITIONS ---\n\nThree blocking issues from code review:\n\n1. [type_safety_violation] editorStore.ts:54 — setCursorPosition uses column! non-null assertion when column is optional. Fixed in steps 13-14 with column ?? 0.\n\n2. [missing_batch_for_reactive_updates] engineStore.ts:54-64 — applyValueUpdates and applyConstraintUpdates call setState per-item in a loop without batch(). Each setState triggers a separate synchronous reactive flush. With bulk updates (100+ parameters from eval engine), this causes N re-render cycles instead of 1. Fix: wrap loops in batch() from solid-js. Steps 18-19.\n\n3. [resource_leak] engineStore.ts:70-83 — subscribeToEvents() uses Promise.all(). If any listen() rejects, Promise.all rejects entirely and successfully-resolved UnlistenFn values are silently discarded — those event subscriptions leak for the lifetime of the webview. Fix: use Promise.allSettled, collect fulfilled UnlistenFn values, warn on rejections, return cleanup for successful listeners only. Steps 20-21.\n\nAdditional improvement: MeshData uses number[] instead of Float32Array/Uint32Array. Fixed in steps 15-16 with RawMeshData wire type and bridge conversion.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -153,6 +153,41 @@
       "id": "step-17",
       "type": "test",
       "description": "REVIEW FIX VERIFICATION: Run full test suite (vitest run) and type-check (tsc --noEmit). Verify all 4 test files pass and TypeScript compiles with no errors. Confirm MeshData uses typed arrays throughout and setCursorPosition safely defaults column.",
+      "status": "done",
+      "commit": "1805b46"
+    },
+    {
+      "id": "step-18",
+      "type": "test",
+      "description": "REVIEW FIX [missing_batch_for_reactive_updates]: Add failing tests to engineStore.test.ts verifying that applyValueUpdates and applyConstraintUpdates each trigger exactly 1 reactive update cycle when called with multiple items, not N. Test approach: inside createRoot, create the engine store, then use createEffect from solid-js to track reactive notifications — the effect reads JSON.stringify(state.values) and increments an update counter (initialized to -1 to account for the initial effect run). Call applyValueUpdates with 3 ValueData items. Assert the counter equals 1 (one batched notification), not 3 (three separate flushes). Add a second test with the same pattern for applyConstraintUpdates: effect reads JSON.stringify(state.constraints), call with 3 ConstraintData items, assert counter equals 1. These tests FAIL against current code because each setState('values', key, val) in the unbatched loop triggers a separate synchronous reactive flush in SolidJS.",
+      "status": "done",
+      "commit": "7f7d574"
+    },
+    {
+      "id": "step-19",
+      "type": "impl",
+      "description": "REVIEW FIX [missing_batch_for_reactive_updates]: In engineStore.ts, import { batch } from 'solid-js'. Wrap the loop in applyValueUpdates: batch(() => { for (const v of updates) setState('values', v.cell_id, v); }). Wrap the loop in applyConstraintUpdates: batch(() => { for (const c of updates) setState('constraints', c.node_id, c); }). This coalesces all per-item setState calls into a single reactive notification, so downstream effects/computations re-run once per bulk update rather than once per item. All engine store tests pass including the new batch verification tests from step-18.",
+      "status": "done",
+      "commit": "8b388e8"
+    },
+    {
+      "id": "step-20",
+      "type": "test",
+      "description": "REVIEW FIX [resource_leak]: Add failing test to engineStore.test.ts verifying subscribeToEvents handles partial listener failures without leaking resources. Test: mock onConstraintUpdate to reject with Error('event not available'), while onMeshUpdate, onValueUpdate, and onEvaluationStatus resolve with unlisten fns (vi.fn()). Call subscribeToEvents(). Assert: (1) it resolves (does not reject/throw) and returns a cleanup function, (2) calling cleanup() invokes all three successfully-registered unlisten fns, (3) console.warn was called (spy on console.warn) with a message about the failed subscription. This test FAILS against current code because Promise.all rejects entirely when any listener fails, discarding the resolved UnlistenFn values and never returning a cleanup function.",
+      "status": "done",
+      "commit": "da6edec"
+    },
+    {
+      "id": "step-21",
+      "type": "impl",
+      "description": "REVIEW FIX [resource_leak]: In engineStore.ts subscribeToEvents(), replace Promise.all with Promise.allSettled. After settlement, partition results: extract fulfilled .value entries as UnlistenFn[], extract rejected .reason entries as Error[]. For each rejected result, call console.warn('Failed to subscribe to event:', reason). Return a cleanup function that iterates only over the successfully-resolved UnlistenFn array and calls each one. This ensures: (a) partial failures don't discard successful subscriptions, (b) successful subscriptions are always cleanable, (c) failures are surfaced for debugging. All engine store tests pass including the new resource leak test from step-20.",
+      "status": "done",
+      "commit": "c92bb64"
+    },
+    {
+      "id": "step-22",
+      "type": "test",
+      "description": "REVIEW FIX FINAL VERIFICATION: Run full test suite (vitest run) and type-check (tsc --noEmit). Verify all tests pass and TypeScript compiles cleanly. Confirm all three review blocking issues are resolved: (1) applyValueUpdates/applyConstraintUpdates use batch() for single reactive flush, (2) subscribeToEvents uses Promise.allSettled with graceful partial failure handling, (3) setCursorPosition defaults column to 0 via nullish coalescing.",
       "status": "pending",
       "commit": null
     }
@@ -197,6 +232,18 @@
     {
       "decision": "Default column to 0 in setCursorPosition via nullish coalescing",
       "rationale": "column ?? 0 is the safest fix: it preserves the optional parameter API, guarantees the type contract { line: number; column: number } at runtime, and column 0 is a sensible default (start of line). Overloads would be heavier for the same result."
+    },
+    {
+      "decision": "Use batch() from solid-js for bulk setState loops in engine store",
+      "rationale": "Review fix [missing_batch_for_reactive_updates]: Without batch(), each setState in a loop triggers a synchronous reactive flush. On the hot evaluation path (100+ parameter updates from the engine), this causes N independent re-render cycles. batch() coalesces all updates into a single reactive notification, matching the expected semantics for bulk operations."
+    },
+    {
+      "decision": "Use Promise.allSettled for event subscription with graceful partial failure",
+      "rationale": "Review fix [resource_leak]: Promise.all discards all fulfilled results when any promise rejects, leaking active event subscriptions that can never be cleaned up. Promise.allSettled lets us collect successful UnlistenFn values and clean them up regardless of whether other subscriptions failed. Failures are logged via console.warn for debugging."
+    },
+    {
+      "decision": "Verify batch behavior via createEffect reactive notification counting",
+      "rationale": "SolidJS effects run synchronously. Without batch, N setState calls trigger N effect re-runs. With batch, they trigger 1. A counter in createEffect that reads the tracked state (via JSON.stringify) provides a reliable observable for verifying batching correctness in tests."
     }
   ],
   "reuse": [
@@ -209,6 +256,11 @@
       "what": "Solid createStore pattern",
       "where": "solid-js/store module",
       "how": "All stores use createStore([initial]) returning [state, setState]. Actions use setState with path-based updates."
+    },
+    {
+      "what": "Solid batch() for coalesced updates",
+      "where": "solid-js module",
+      "how": "Wraps multiple setState calls so they trigger a single reactive notification. Used in applyValueUpdates and applyConstraintUpdates for bulk update performance."
     },
     {
       "what": "Tauri v2 IPC patterns",
