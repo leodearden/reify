@@ -1205,6 +1205,31 @@ mod tests {
     }
 
     #[test]
+    fn parse_enum_access_expression() {
+        let source = "enum Direction { In, Out, Bidi }\nstructure S { let d = Direction.In }";
+        let module = parse(source, reify_types::ModulePath::single("test_enum_access"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+        let structure = module.declarations.iter().find_map(|d| match d {
+            Declaration::Structure(s) => Some(s),
+            _ => None,
+        }).expect("expected a structure");
+
+        let let_decl = match &structure.members[0] {
+            MemberDecl::Let(l) => l,
+            other => panic!("expected Let, got {:?}", other),
+        };
+        assert_eq!(let_decl.name, "d");
+        match &let_decl.value.kind {
+            ExprKind::EnumAccess { type_name, variant } => {
+                assert_eq!(type_name, "Direction");
+                assert_eq!(variant, "In");
+            }
+            other => panic!("expected EnumAccess, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn tree_sitter_parses_bracket_source_without_errors() {
         let source = reify_test_support::bracket_source();
         let mut parser = tree_sitter::Parser::new();
