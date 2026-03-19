@@ -15,7 +15,7 @@ pub fn literal(v: Value) -> CompiledExpr {
             dimension: *dimension,
         },
         Value::Enum { .. } | Value::List(_) | Value::Set(_) | Value::Map(_) | Value::Option(_) => {
-            Type::Bool // placeholder for M5 collection/enum types
+            panic!("literal() not yet implemented for M5 type: {:?}. Use CompiledExpr::literal(value, type) directly.", v)
         }
         Value::Undef => Type::Bool, // arbitrary for undef
     };
