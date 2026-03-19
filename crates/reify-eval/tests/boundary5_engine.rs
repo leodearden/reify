@@ -211,3 +211,25 @@ fn engine_reports_violations() {
         .collect();
     assert!(!violated.is_empty(), "should report violations");
 }
+
+/// Sub-component param values appear in the eval result with scoped IDs.
+#[test]
+fn sub_component_params_appear_in_eval_result() {
+    use reify_types::ValueCellId;
+
+    let module = parent_child_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Parent.rib.height should be width * 0.5 = 80mm * 0.5 = 40mm = 0.04 SI
+    let scoped_id = ValueCellId::new("Parent.rib", "height");
+    let val = result.values.get(&scoped_id)
+        .expect("Parent.rib.height should be in eval result values");
+    let f = val.as_f64().expect("should be numeric");
+    assert!(
+        (f - 0.04).abs() < 1e-10,
+        "Parent.rib.height should be ~0.04 SI (40mm), got {}",
+        f
+    );
+}
