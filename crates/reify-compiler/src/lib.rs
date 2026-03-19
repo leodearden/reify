@@ -659,6 +659,9 @@ pub fn compile(
                     .with_label(DiagnosticLabel::new(import.span, "import")),
                 );
             }
+            reify_syntax::Declaration::Function(_) => {
+                // Function compilation will be added in a later step.
+            }
         }
     }
 

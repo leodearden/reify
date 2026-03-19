@@ -17,6 +17,7 @@ pub enum Declaration {
     Structure(StructureDef),
     Import(ImportDecl),
     Enum(EnumDecl),
+    Function(FnDef),
 }
 
 /// A structure definition (the primary entity type in Reify).
@@ -132,6 +133,41 @@ pub struct EnumDecl {
     pub variants: Vec<String>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+/// `fn area(w: Scalar, h: Scalar) -> Scalar { w * h }`
+#[derive(Debug, Clone)]
+pub struct FnDef {
+    pub name: String,
+    pub is_pub: bool,
+    pub type_params: Vec<TypeParamDecl>,
+    pub params: Vec<FnParam>,
+    pub return_type: Option<TypeExpr>,
+    pub body: FnBody,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// A type parameter declaration: `T` or `T: Numeric`
+#[derive(Debug, Clone)]
+pub struct TypeParamDecl {
+    pub name: String,
+    pub bounds: Vec<String>,
+}
+
+/// A function parameter: `w: Scalar`
+#[derive(Debug, Clone)]
+pub struct FnParam {
+    pub name: String,
+    pub type_expr: TypeExpr,
+    pub span: SourceSpan,
+}
+
+/// A function body: let bindings followed by a result expression.
+#[derive(Debug, Clone)]
+pub struct FnBody {
+    pub let_bindings: Vec<LetDecl>,
+    pub result_expr: Expr,
 }
 
 /// An expression in the AST (pre-compilation).
