@@ -15,7 +15,16 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             },
             _ => Value::Undef,
         }),
-        "sqrt" => unary_f64(args, |x| Value::Real(x.sqrt())),
+        "sqrt" => unary(args, |v| match v {
+            Value::Scalar { si_value, dimension } => sanitize_value(Value::Scalar {
+                si_value: si_value.sqrt(),
+                dimension: dimension.root(2),
+            }),
+            _ => match v.as_f64() {
+                Some(x) => sanitize_value(Value::Real(x.sqrt())),
+                None => Value::Undef,
+            },
+        }),
         "floor" => unary_f64(args, |x| Value::Int(x.floor() as i64)),
         "ceil" => unary_f64(args, |x| Value::Int(x.ceil() as i64)),
         "round" => unary_f64(args, |x| Value::Int(x.round() as i64)),
