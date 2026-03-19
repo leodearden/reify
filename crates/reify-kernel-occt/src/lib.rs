@@ -1559,6 +1559,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn shell_box_hollow() {
+        let mut kernel = OcctKernel::new();
+        // Create a 20x20x20 box (volume = 8000)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(20.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(20.0),
+            })
+            .unwrap();
+        // Shell with thickness=1.0, remove face 0 to create hollow box
+        let shell_h = kernel
+            .execute(&GeometryOp::Shell {
+                target: box_h.id,
+                thickness: Value::Real(1.0),
+                faces_to_remove: vec![0],
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(shell_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                // Should be less than 8000 (solid) but greater than 0
+                assert!(
+                    v > 0.0 && v < 8000.0,
+                    "shell volume should be between 0 and 8000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
     // --- Mirror tests ---
 
     #[test]
