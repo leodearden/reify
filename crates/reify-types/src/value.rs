@@ -237,9 +237,11 @@ impl std::fmt::Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::Int(i) => write!(f, "{}", i),
             Value::Real(r) => {
-                // Format cleanly: no trailing ".0" for whole numbers
+                // Format cleanly: no trailing ".0" for whole numbers.
+                // Use {:.0} instead of `as i64` to avoid silent saturation
+                // for f64 values beyond i64 range (e.g., 1e20).
                 if *r == r.trunc() && r.is_finite() {
-                    write!(f, "{}", *r as i64)
+                    write!(f, "{:.0}", r)
                 } else {
                     write!(f, "{}", r)
                 }
