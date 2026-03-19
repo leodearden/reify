@@ -3,8 +3,11 @@
 //! Builds a bipartite graph of constraints ↔ auto params and uses
 //! union-find to identify independent sub-problems.
 
-use reify_types::{AutoParam, CompiledExpr, ConstraintDomain, ConstraintNodeId, ValueCellId};
-use std::collections::HashSet;
+use crate::classifier::ConstraintClassifier;
+use reify_types::{
+    AutoParam, CompiledExpr, CompiledExprKind, ConstraintDomain, ConstraintNodeId, ValueCellId,
+};
+use std::collections::{HashMap, HashSet};
 
 /// An independent sub-problem extracted from a larger constraint problem.
 #[derive(Debug)]
@@ -17,10 +20,255 @@ pub struct SubProblem {
     pub domain: ConstraintDomain,
 }
 
+// --- Union-Find ---
+
+struct UnionFind {
+    parent: Vec<usize>,
+    rank: Vec<usize>,
+}
+
+impl UnionFind {
+    fn new(n: usize) -> Self {
+        Self {
+            parent: (0..n).collect(),
+            rank: vec![0; n],
+        }
+    }
+
+    fn find(&mut self, mut x: usize) -> usize {
+        while self.parent[x] != x {
+            self.parent[x] = self.parent[self.parent[x]]; // path splitting
+            x = self.parent[x];
+        }
+        x
+    }
+
+    fn union(&mut self, a: usize, b: usize) {
+        let ra = self.find(a);
+        let rb = self.find(b);
+        if ra == rb {
+            return;
+        }
+        // Union by rank
+        if self.rank[ra] < self.rank[rb] {
+            self.parent[ra] = rb;
+        } else if self.rank[ra] > self.rank[rb] {
+            self.parent[rb] = ra;
+        } else {
+            self.parent[rb] = ra;
+            self.rank[ra] += 1;
+        }
+    }
+}
+
+// --- Expression tree walk to collect ValueCellIds ---
+
+/// Collect all ValueCellIds referenced in an expression tree.
+fn collect_value_refs(expr: &CompiledExpr, out: &mut HashSet<ValueCellId>) {
+    match &expr.kind {
+        CompiledExprKind::Literal(_) => {}
+        CompiledExprKind::ValueRef(id) => {
+            out.insert(id.clone());
+        }
+        CompiledExprKind::BinOp { left, right, .. } => {
+            collect_value_refs(left, out);
+            collect_value_refs(right, out);
+        }
+        CompiledExprKind::UnOp { operand, .. } => {
+            collect_value_refs(operand, out);
+        }
+        CompiledExprKind::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_value_refs(arg, out);
+            }
+        }
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_value_refs(condition, out);
+            collect_value_refs(then_branch, out);
+            collect_value_refs(else_branch, out);
+        }
+    }
+}
+
 /// Decompose a constraint problem into independent connected components.
+///
+/// Each component groups constraints that share auto parameters (directly
+/// or transitively). Constraints that reference no auto parameters are
+/// excluded from the decomposition.
+///
+/// The domain for each component is determined by classifying each
+/// constraint's expression: unanimous domain → that domain, mixed → CrossDomain.
 pub fn decompose_into_components(
-    _auto_params: &[AutoParam],
-    _constraints: &[(ConstraintNodeId, CompiledExpr)],
+    auto_params: &[AutoParam],
+    constraints: &[(ConstraintNodeId, CompiledExpr)],
 ) -> Vec<SubProblem> {
-    todo!("decompose_into_components not yet implemented")
+    if constraints.is_empty() {
+        return vec![];
+    }
+
+    // Build a mapping from ValueCellId → index for auto params only
+    let auto_param_set: HashSet<ValueCellId> = auto_params.iter().map(|ap| ap.id.clone()).collect();
+    let param_ids: Vec<ValueCellId> = auto_params.iter().map(|ap| ap.id.clone()).collect();
+    let param_index: HashMap<&ValueCellId, usize> = param_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id, i))
+        .collect();
+
+    let n_params = auto_params.len();
+    let mut uf = UnionFind::new(n_params);
+
+    // For each constraint, find which auto params it references
+    // and union them together. Also track the constraint→params mapping.
+    struct ConstraintInfo {
+        constraint_idx: usize,
+        referenced_params: Vec<usize>, // indices into auto_params
+        domain: ConstraintDomain,
+    }
+
+    let mut constraint_infos: Vec<ConstraintInfo> = Vec::new();
+
+    for (ci, (_cid, expr)) in constraints.iter().enumerate() {
+        let mut refs = HashSet::new();
+        collect_value_refs(expr, &mut refs);
+
+        // Filter to only auto params
+        let referenced: Vec<usize> = refs
+            .iter()
+            .filter_map(|id| param_index.get(id).copied())
+            .collect();
+
+        if referenced.is_empty() {
+            // Constraint doesn't reference any auto param → skip
+            continue;
+        }
+
+        // Union all referenced params
+        for i in 1..referenced.len() {
+            uf.union(referenced[0], referenced[i]);
+        }
+
+        let domain = ConstraintClassifier::classify(expr);
+
+        constraint_infos.push(ConstraintInfo {
+            constraint_idx: ci,
+            referenced_params: referenced,
+            domain,
+        });
+    }
+
+    if constraint_infos.is_empty() {
+        return vec![];
+    }
+
+    // Group constraints by their component root
+    let mut component_map: HashMap<usize, Vec<usize>> = HashMap::new(); // root → [info_idx]
+    for (info_idx, info) in constraint_infos.iter().enumerate() {
+        let root = uf.find(info.referenced_params[0]);
+        component_map.entry(root).or_default().push(info_idx);
+    }
+
+    // Build SubProblem for each component
+    let mut result: Vec<SubProblem> = Vec::new();
+    for (_root, info_indices) in component_map {
+        let mut params = HashSet::new();
+        let mut sub_constraints = Vec::new();
+        let mut domains: Vec<ConstraintDomain> = Vec::new();
+
+        for &info_idx in &info_indices {
+            let info = &constraint_infos[info_idx];
+            let (cid, expr) = &constraints[info.constraint_idx];
+            sub_constraints.push((cid.clone(), expr.clone()));
+            domains.push(info.domain);
+
+            for &pi in &info.referenced_params {
+                // Find the root and collect all params in this component
+                params.insert(param_ids[pi].clone());
+            }
+        }
+
+        // Also add any params that are in this component but not directly
+        // referenced by any constraint in our list (transitive through union-find)
+        for (pi, pid) in param_ids.iter().enumerate() {
+            let root = uf.find(pi);
+            // Check if this param's root matches any constraint's param root
+            if info_indices.iter().any(|&ii| {
+                constraint_infos[ii]
+                    .referenced_params
+                    .iter()
+                    .any(|&rp| uf.find(rp) == root)
+            }) {
+                params.insert(pid.clone());
+            }
+        }
+
+        // Determine component domain: unanimous → that domain, mixed → CrossDomain
+        let first_domain = domains[0];
+        let domain = if domains.iter().all(|d| *d == first_domain) {
+            first_domain
+        } else {
+            ConstraintDomain::CrossDomain
+        };
+
+        result.push(SubProblem {
+            auto_params: params,
+            constraints: sub_constraints,
+            domain,
+        });
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_types::{BinOp, Type, Value};
+
+    #[test]
+    fn collect_refs_from_value_ref() {
+        let expr = CompiledExpr::value_ref(
+            ValueCellId::new("Part", "x"),
+            Type::length(),
+        );
+        let mut refs = HashSet::new();
+        collect_value_refs(&expr, &mut refs);
+        assert_eq!(refs.len(), 1);
+        assert!(refs.contains(&ValueCellId::new("Part", "x")));
+    }
+
+    #[test]
+    fn collect_refs_from_binop() {
+        let left = CompiledExpr::value_ref(ValueCellId::new("P", "a"), Type::length());
+        let right = CompiledExpr::value_ref(ValueCellId::new("P", "b"), Type::length());
+        let expr = CompiledExpr::binop(BinOp::Gt, left, right, Type::Bool);
+        let mut refs = HashSet::new();
+        collect_value_refs(&expr, &mut refs);
+        assert_eq!(refs.len(), 2);
+    }
+
+    #[test]
+    fn collect_refs_from_literal_is_empty() {
+        let expr = CompiledExpr::literal(Value::Int(42), Type::Int);
+        let mut refs = HashSet::new();
+        collect_value_refs(&expr, &mut refs);
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn union_find_basic() {
+        let mut uf = UnionFind::new(5);
+        uf.union(0, 1);
+        uf.union(2, 3);
+        assert_eq!(uf.find(0), uf.find(1));
+        assert_eq!(uf.find(2), uf.find(3));
+        assert_ne!(uf.find(0), uf.find(2));
+
+        uf.union(1, 3);
+        assert_eq!(uf.find(0), uf.find(3));
+    }
 }
