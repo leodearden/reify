@@ -268,6 +268,27 @@ impl TopologyTemplateBuilder {
         self
     }
 
+    pub fn guarded_group(
+        mut self,
+        guard_expr: CompiledExpr,
+        guard_value_cell: ValueCellId,
+        members: Vec<ValueCellDecl>,
+        constraints: Vec<CompiledConstraint>,
+        else_members: Vec<ValueCellDecl>,
+        else_constraints: Vec<CompiledConstraint>,
+    ) -> Self {
+        self.structure_controlling.insert(guard_value_cell.clone());
+        self.guarded_groups.push(CompiledGuardedGroup {
+            guard_expr,
+            guard_value_cell,
+            members,
+            constraints,
+            else_members,
+            else_constraints,
+        });
+        self
+    }
+
     pub fn build(self) -> TopologyTemplate {
         // Build a content-sensitive hash matching compile_structure() logic.
         let content_hash = {
