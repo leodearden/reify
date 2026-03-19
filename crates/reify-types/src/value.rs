@@ -878,4 +878,43 @@ mod tests {
         assert_ne!(satisfied, indeterminate);
         assert_ne!(violated, indeterminate);
     }
+
+    // --- Display tests ---
+
+    #[test]
+    fn value_display_bool() {
+        assert_eq!(format!("{}", Value::Bool(true)), "true");
+        assert_eq!(format!("{}", Value::Bool(false)), "false");
+    }
+
+    #[test]
+    fn value_display_int() {
+        assert_eq!(format!("{}", Value::Int(42)), "42");
+        assert_eq!(format!("{}", Value::Int(-7)), "-7");
+        assert_eq!(format!("{}", Value::Int(0)), "0");
+    }
+
+    #[test]
+    fn value_display_real() {
+        assert_eq!(format!("{}", Value::Real(3.14)), "3.14");
+        assert_eq!(format!("{}", Value::Real(0.0)), "0");
+        assert_eq!(format!("{}", Value::Real(-2.5)), "-2.5");
+    }
+
+    #[test]
+    fn value_display_string() {
+        assert_eq!(format!("{}", Value::String("hello".into())), "\"hello\"");
+        assert_eq!(format!("{}", Value::String("".into())), "\"\"");
+    }
+
+    #[test]
+    fn value_display_scalar() {
+        let v = Value::length(0.08);
+        assert_eq!(format!("{}", v), "0.08 m");
+    }
+
+    #[test]
+    fn value_display_undef() {
+        assert_eq!(format!("{}", Value::Undef), "undef");
+    }
 }

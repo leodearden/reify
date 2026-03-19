@@ -4,23 +4,21 @@
   "files": [
     "crates/reify-types/src/value.rs",
     "crates/reify-types/src/ty.rs",
-    "crates/reify-types/src/lib.rs",
     "crates/reify-types/src/traits.rs",
-    "crates/reify-types/tests/exports.rs",
+    "crates/reify-types/src/lib.rs",
     "crates/reify-types/tests/m5_types.rs",
-    "crates/reify-lsp/src/analysis.rs"
+    "crates/reify-types/tests/exports.rs"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-lsp"
+    "crates/reify-types"
   ],
-  "analysis": "Task 53 extends the foundational type vocabulary in reify-types for M5. The current Value enum has 6 variants (Bool, Int, Real, String, Scalar, Undef) and the Type enum has 5 variants (Bool, Int, Real, String, Scalar). We need to add collection types (List, Set, Map), Option, Enum to both; add Function type to Type; and introduce new definition structs (EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam, PortDirection).\n\nKey challenges:\n1. Value needs Ord for BTreeSet/BTreeMap usage. Currently has custom PartialEq but no PartialOrd/Ord. Must implement total ordering with f64 handling (use to_bits() for total order as already done in PartialEq).\n2. Exhaustive match arms exist in value.rs (content_hash, PartialEq::eq) and ty.rs (Display::fmt) — all must be extended.\n3. One external exhaustive match in reify-lsp/src/analysis.rs::format_value must also be updated.\n4. New trait-related types (TraitDef, TraitMember, etc.) go in a new traits.rs module.\n5. Content hash tags 0-5 are used for existing Value variants; new variants need tags 6-10.\n6. Type's Display needs extension for new variants.\n7. Hash derive on Type needs to be preserved (used for HashMap keys); new recursive Type variants (List, Set, Map, Option, Function) need Box wrapping for Hash to work.\n\nApproach: TDD with small incremental steps. Start with Ord on Value (prerequisite for Set/Map), then add each Value variant group with tests, then Type variants, then trait definition types.",
+  "analysis": "After thorough codebase exploration, the vast majority of this task was already implemented in a prior execution (30 steps, all 'done').\n\n**Already complete:**\n- Value enum has all M5 variants: Enum, List, Set, Map, Option (value.rs lines 10-29)\n- Type enum has all M5 variants: Enum, List, Set, Map, Option, Function (ty.rs lines 5-28)\n- Ord/PartialOrd/Eq/PartialEq custom impls for Value with all variants (value.rs lines 144-231)\n- content_hash() handles all Value variants with tags 6-10 (value.rs lines 71-141)\n- Type::Display handles all variants (ty.rs lines 132-157)\n- traits.rs has EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam, PortDirection\n- lib.rs re-exports all new types\n- Extensive tests in value.rs (Enum, List, Set, Map, Option, Ord), tests/m5_types.rs (trait types), tests/exports.rs\n- All 72 existing tests pass\n\n**Remaining gap:**\n- Value has NO `Display` impl. The task explicitly requires: (1) 'Create each new Value variant, verify Display output' in tests, and (2) 'Update all existing exhaustive match arms on Value and Type within reify-types (Display, ...)'. Type has Display but Value does not. There are no tests using `format!(\"{}\", value)` — only Debug (`{:?}`).\n- Adding Display for Value completes the task requirements and provides a user-facing string representation needed by downstream consumers (LSP hover, diagnostics, etc.).\n\nThe plan focuses on the remaining TDD work: Display impl for Value with tests.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create the new traits.rs module file and register it in lib.rs. This is a new file for EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam, PortDirection.",
+      "description": "Verify all 72 existing tests pass (cargo test -p reify-types). Confirms the prior implementation is solid before adding Display.",
       "status": "done",
-      "commit": "edc5a2c",
+      "commit": null,
       "tests": []
     }
   ],
@@ -28,283 +26,103 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for Value::Ord implementation: assert Undef < Bool(false) < Bool(true) < Int(0) < Real(0.0) < Scalar < String < Enum < List < Set < Map < Option. Test that values of the same type sort correctly within their type (e.g., Int(1) < Int(2), String(\"a\") < String(\"b\")). Test NaN and -0.0 ordering consistency. Place tests in value.rs #[cfg(test)] module.",
-      "status": "done",
-      "commit": "921eb02"
+      "description": "Write failing tests for Value::Display for primitive variants in value.rs #[cfg(test)]: Bool(true) -> 'true', Bool(false) -> 'false', Int(42) -> '42', Real(3.14) -> '3.14', String(\"hello\") -> '\"hello\"', Undef -> 'undef'. For Scalar, format as '{si_value} {dimension}' using DimensionVector's existing Display (e.g., Value::length(0.08) -> '0.08 m'). These tests will fail to compile since Value has no Display impl.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement PartialOrd and Ord for Value. Assign type-tag discriminant ordering: Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10. For f64 comparisons, use to_bits() to get total order (consistent with existing PartialEq). For now, only handle existing 6 variants; new variants will be added as they're created. This makes existing tests pass.",
-      "status": "done",
-      "commit": "6913a27"
+      "description": "Implement `impl std::fmt::Display for Value` covering all 11 variants: Bool -> true/false, Int -> number, Real -> decimal, String -> double-quoted, Scalar -> '{si_value} {dimension}', Enum -> '{type_name}::{variant}', List -> '[elem1, elem2, ...]', Set -> '{elem1, elem2, ...}' (note: use set notation), Map -> '{key1: val1, key2: val2, ...}', Option(None) -> 'None', Option(Some(v)) -> 'Some({v})', Undef -> 'undef'. This makes step-1 tests pass.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for Value::Enum variant: construct Value::Enum { type_name: \"Color\".into(), variant: \"Red\".into() }, verify Debug output, test equality of same vs different enum values, test ordering (Enum sorts after String, alphabetical within), test content_hash determinism and distinctness.",
-      "status": "done",
-      "commit": "eed56bc"
+      "description": "Write tests for Value::Display for Enum variant: Value::Enum { type_name: 'Color', variant: 'Red' } displays as 'Color::Red'.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Add Value::Enum { type_name: String, variant: String } variant. Update all exhaustive matches in value.rs: content_hash (tag 6, hash type_name then variant), PartialEq::eq (both fields equal), PartialOrd/Ord (by type_name then variant). No Display on Value currently, so nothing to update there.",
-      "status": "done",
-      "commit": "a0dfdb0"
+      "type": "test",
+      "description": "Write tests for Value::Display for collection variants: List([1,2,3]) -> '[1, 2, 3]', empty List -> '[]', Set({1,2}) -> '{1, 2}', empty Set -> '{}', Map({\"a\":1}) -> '{\"a\": 1}', empty Map -> '{}'.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for Value::List variant: construct Value::List(vec![Value::Int(1), Value::Int(2)]), test equality, test empty list, test nested lists, test ordering (lexicographic on elements), test content_hash determinism.",
-      "status": "done",
-      "commit": "3131594"
+      "description": "Write tests for Value::Display for Option variant: Option(None) -> 'None', Option(Some(Int(42))) -> 'Some(42)'. Also test nested Display: List containing Option and Enum values.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Add Value::List(Vec<Value>) variant. Update all exhaustive matches in value.rs: content_hash (tag 7, combine hashes of all elements with length prefix), PartialEq::eq (delegate to Vec PartialEq), PartialOrd/Ord (lexicographic).",
-      "status": "done",
-      "commit": "9622663"
+      "type": "test",
+      "description": "Write integration test in tests/m5_types.rs that exercises Display through the public API: create each Value variant and assert format!(\"{}\", value) produces expected output. This provides coverage from an external-crate perspective.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
-      "type": "test",
-      "description": "Write failing tests for Value::Set variant: construct from BTreeSet<Value>, test insert/contains operations, test that ordering is maintained, test equality of sets with same elements, test content_hash. Requires Ord on Value to compile.",
-      "status": "done",
-      "commit": "80d8c12"
-    },
-    {
-      "id": "step-8",
       "type": "impl",
-      "description": "Add Value::Set(BTreeSet<Value>) variant. Add `use std::collections::BTreeSet` to value.rs. Update all exhaustive matches: content_hash (tag 8, sorted iteration over elements), PartialEq::eq (delegate), PartialOrd/Ord (lexicographic on sorted elements).",
-      "status": "done",
-      "commit": "bee448b"
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Write failing tests for Value::Map variant: construct from BTreeMap<Value, Value>, test insert/get, test equality, test content_hash determinism, test ordering.",
-      "status": "done",
-      "commit": "e4a023b"
-    },
-    {
-      "id": "step-10",
-      "type": "impl",
-      "description": "Add Value::Map(BTreeMap<Value, Value>) variant. Add `use std::collections::BTreeMap` to value.rs. Update all exhaustive matches: content_hash (tag 9, iterate key-value pairs), PartialEq::eq (delegate), PartialOrd/Ord (lexicographic on entries).",
-      "status": "done",
-      "commit": "30f49a9"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write failing tests for Value::Option variant: construct Some and None variants, test equality, test content_hash (Some(x) != None, Some(x) != Some(y)), test ordering (None < Some(anything)).",
-      "status": "done",
-      "commit": "7c42341"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Add Value::Option(Option<Box<Value>>) variant. Update all exhaustive matches: content_hash (tag 10, None vs Some + inner hash), PartialEq::eq (delegate), PartialOrd/Ord (None < Some, then by inner value).",
-      "status": "done",
-      "commit": "284117e"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing tests for Display on new Value variants: Enum shows \"Color::Red\", List shows \"[1, 2, 3]\", Set shows \"{1, 2, 3}\", Map shows \"{\\\"a\\\": 1}\", Option(None) shows \"none\", Option(Some(x)) shows \"some(x)\". Note: Value has no Display currently, but the task says 'update Display' — actually we need to add it or verify Debug. Check: LSP format_value is the display path. Test format_value for each new variant.",
-      "status": "done",
-      "commit": "52f1f9a"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Update format_value in reify-lsp/src/analysis.rs to handle new Value variants: Enum, List, Set, Map, Option. This fixes the exhaustive match compilation error.",
-      "status": "done",
-      "commit": "942b41c"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing tests for new Type variants: construct Type::Enum(\"Color\".into()), Type::List(Box::new(Type::Int)), Type::Set(Box::new(Type::String)), Type::Map(Box::new(Type::String), Box::new(Type::Real)), Type::Option(Box::new(Type::Int)), Type::Function { params: vec![Type::Int], return_type: Box::new(Type::Real) }. Test Display output: \"Enum(Color)\", \"List<Int>\", \"Set<String>\", \"Map<String, Real>\", \"Option<Int>\", \"Function(Int) -> Real\".",
-      "status": "done",
-      "commit": "364acee"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Add new Type variants: Enum(String), List(Box<Type>), Set(Box<Type>), Map(Box<Type>, Box<Type>), Option(Box<Type>), Function { params: Vec<Type>, return_type: Box<Type> }. Update Display::fmt exhaustive match with appropriate formatting for each. Update is_numeric to return false for all new variants (they're non-numeric).",
-      "status": "done",
-      "commit": "f19212c"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing tests for EnumDef: construct with name and variants, verify field access, test variant lookup helper. Write in tests/m5_types.rs.",
-      "status": "done",
-      "commit": "8b9167f"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Add EnumDef { name: String, variants: Vec<String> } struct in traits.rs with Debug, Clone, PartialEq, Eq derives. Add a contains_variant(&str) -> bool helper method.",
-      "status": "done",
-      "commit": "462a399"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write failing tests for PortDirection enum: construct In, Out, Bidi variants, verify Debug, Clone, PartialEq. Write in tests/m5_types.rs.",
-      "status": "done",
-      "commit": "e2b71be"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Add PortDirection enum { In, Out, Bidi } in traits.rs with Debug, Clone, Copy, PartialEq, Eq, Hash derives.",
-      "status": "done",
-      "commit": "f3787b3"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing tests for TraitRef and TraitBound: construct TraitRef with name and type_args, construct TraitBound wrapping a TraitRef. Verify field access and equality.",
-      "status": "done",
-      "commit": "138e1d4"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Add TraitRef { name: String, type_args: Vec<Type> } and TraitBound { trait_ref: TraitRef } structs in traits.rs with Debug, Clone, PartialEq, Eq derives.",
-      "status": "done",
-      "commit": "76e6c22"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write failing tests for TypeParam: construct with name, bounds, and optional default type. Verify field access.",
-      "status": "done",
-      "commit": "c148e0a"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Add TypeParam { name: String, bounds: Vec<TraitBound>, default: Option<Type> } struct in traits.rs with Debug, Clone, PartialEq, Eq derives.",
-      "status": "done",
-      "commit": "3173025"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Write failing tests for TraitMember enum: construct each variant (Param, Port, Sub, Let, Constraint, AssociatedType), verify Debug and pattern matching.",
-      "status": "done",
-      "commit": "ab08793"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "Add TraitMember enum with variants: Param { name: String, ty: Type, default: Option<Value> }, Port { name: String, ty: Type, direction: PortDirection }, Sub { name: String, trait_ref: TraitRef }, Let { name: String, ty: Type, expr: String }, Constraint { expr: String }, AssociatedType { name: String, default: Option<Type> }. Derive Debug, Clone, PartialEq.",
-      "status": "done",
-      "commit": "6380c8f"
-    },
-    {
-      "id": "step-27",
-      "type": "test",
-      "description": "Write failing tests for TraitDef: construct a full trait definition with type_params, refinements, and members of various kinds. Verify field access and equality.",
-      "status": "done",
-      "commit": "1afd93e"
-    },
-    {
-      "id": "step-28",
-      "type": "impl",
-      "description": "Add TraitDef { name: String, type_params: Vec<TypeParam>, refinements: Vec<String>, members: Vec<TraitMember> } struct in traits.rs with Debug, Clone, PartialEq derives.",
-      "status": "done",
-      "commit": "b3c4829"
-    },
-    {
-      "id": "step-29",
-      "type": "test",
-      "description": "Write failing integration test in tests/exports.rs verifying all new M5 types are exported from the crate root: Value::Enum, Value::List, Value::Set, Value::Map, Value::Option, Type::Enum, Type::List, Type::Set, Type::Map, Type::Option, Type::Function, EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam, PortDirection.",
-      "status": "done",
-      "commit": "76a2779"
-    },
-    {
-      "id": "step-30",
-      "type": "impl",
-      "description": "Update lib.rs to add `pub mod traits;` and re-export all new types: EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam, PortDirection from traits module. Ensure the integration export test passes.",
-      "status": "done",
-      "commit": "76a2779"
+      "description": "Final verification: run full test suite (cargo test -p reify-types). Ensure all 72+ existing tests still pass plus all new Display tests. No implementation changes expected — just verification and any minor fixups.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use to_bits() for f64 total ordering in Value::Ord",
-      "rationale": "Consistent with existing PartialEq impl which already uses to_bits() for exact float comparison. This gives a total order where NaN has a defined position and -0.0 != +0.0 in ordering (matching the equality semantics)."
+      "decision": "Display for Value::String uses double-quote wrapping ('\"hello\"')",
+      "rationale": "Consistent with Rust/JSON conventions for string display. Makes it unambiguous when a Value is a string vs other types in composite displays like List and Map."
     },
     {
-      "decision": "Type-tag discriminant ordering for Value::Ord: Undef < Bool < Int < Real < Scalar < String < Enum < List < Set < Map < Option",
-      "rationale": "Task specifies this ordering explicitly. Undef sorts first (sentinel), then primitives in increasing complexity, then collections."
+      "decision": "Display for Value::Enum uses 'TypeName::Variant' format",
+      "rationale": "Matches Rust enum syntax and the Reify language spec's enum reference syntax. Readable and unambiguous."
     },
     {
-      "decision": "Place trait-related types (EnumDef, TraitDef, etc.) in a new traits.rs module rather than adding to ty.rs or value.rs",
-      "rationale": "These are definition-level types (not runtime values or type constructors), so they deserve their own module. Keeps ty.rs focused on the Type enum and value.rs focused on the Value enum. The traits.rs module will hold EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam, PortDirection."
+      "decision": "Display for Value::Set uses curly braces '{}' (mathematical set notation)",
+      "rationale": "Mathematical convention for sets. Empty set and empty map both display as '{}' which is acceptable — they are distinguished by type context. This matches Python/JS conventions."
     },
     {
-      "decision": "Content hash tags 6-10 for new Value variants",
-      "rationale": "Existing variants use tags 0-5. Continue sequential: Enum=6, List=7, Set=8, Map=9, Option=10. Tags are domain-separated to avoid collisions."
+      "decision": "Display for Value::Scalar shows 'value dimension' (e.g. '0.08 m')",
+      "rationale": "DimensionVector already has a Display impl. Combining numeric value with dimension unit is the natural representation for dimensioned scalars."
     },
     {
-      "decision": "Use String (not compiled expr) for Let::expr and Constraint::expr in TraitMember",
-      "rationale": "At the definition level, expressions are not yet compiled. TraitDef holds the syntactic structure; compilation happens later in the eval pipeline. Using String keeps reify-types dependency-free from evaluation concerns."
+      "decision": "Display for Value::Option uses 'Some(...)' / 'None' syntax",
+      "rationale": "Consistent with Rust's Option display convention, familiar to developers."
     },
     {
-      "decision": "Add PortDirection to TraitMember::Port instead of making it a separate Port struct",
-      "rationale": "The task specifies PortDirection as a separate enum and Port as a TraitMember variant. Keeping direction as a field on the Port variant is the most natural representation and matches the language spec's port syntax."
+      "decision": "Group Display tests by variant category (primitives, enum, collections, option) rather than one test per variant",
+      "rationale": "The Display impl is a single match statement — all arms are implemented together. Grouping tests keeps the test file readable while still covering all variants. Individual tests per variant would add noise without meaningful TDD benefit since they all go in one impl block."
     },
     {
-      "decision": "Update reify-lsp format_value for new Value variants",
-      "rationale": "This is the only exhaustive match on Value outside reify-types. Must be updated to avoid compilation errors. This is a minor scope expansion but necessary for correctness."
-    },
-    {
-      "decision": "BTreeSet and BTreeMap from std::collections for Set and Map values",
-      "rationale": "BTreeSet/BTreeMap require Ord on their element type, which we're implementing. They provide deterministic iteration order (important for content hashing) and are the natural Rust choice for ordered collections."
+      "decision": "Implement Display for all 11 variants in a single impl step (step-2) after a single test step (step-1)",
+      "rationale": "Unlike adding new Value variants (which each need match arm updates across 4 impls), Display is a single impl block. Writing it incrementally would be artificial since adding partial match arms causes compiler warnings. The test steps (3-6) validate each variant group after the impl is in place."
     }
   ],
   "reuse": [
     {
-      "what": "ContentHash::of() and ContentHash::combine() for hashing",
-      "where": "crates/reify-types/src/hash.rs",
-      "how": "Use existing content hash infrastructure for new Value variants. Follow the tag-byte + combine pattern already used in value.rs::content_hash()."
-    },
-    {
-      "what": "ContentHash::of_str() for string hashing",
-      "where": "crates/reify-types/src/hash.rs",
-      "how": "Reuse for hashing String fields in Enum type_name/variant, TraitDef name, etc."
-    },
-    {
-      "what": "Existing PartialEq pattern using to_bits() for float comparison",
-      "where": "crates/reify-types/src/value.rs lines 99-113",
-      "how": "Extend the same pattern to PartialOrd/Ord implementation for consistent float ordering."
-    },
-    {
-      "what": "DimensionVector type",
+      "what": "DimensionVector::Display impl",
       "where": "crates/reify-types/src/dimension.rs",
-      "how": "Already imported in value.rs and ty.rs; existing Scalar variants continue to use it unchanged."
+      "how": "Use existing Display for DimensionVector when formatting Value::Scalar — write!(f, '{} {}', si_value, dimension)"
     },
     {
-      "what": "Type enum (for TraitMember and TypeParam fields)",
-      "where": "crates/reify-types/src/ty.rs",
-      "how": "TraitMember::Param, Port, Let, AssociatedType, and TypeParam all reference Type for their type annotations."
+      "what": "Type::Display impl pattern",
+      "where": "crates/reify-types/src/ty.rs lines 132-157",
+      "how": "Follow the same pattern of impl std::fmt::Display for Value with exhaustive match arms, similar structure to the existing Type::Display"
     },
     {
-      "what": "Test pattern from exports.rs",
-      "where": "crates/reify-types/tests/exports.rs",
-      "how": "Follow the same pattern of constructing each type to verify crate-root re-exports for M5 types."
+      "what": "Existing Ord/PartialEq/content_hash impls — no changes needed",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "All already handle the M5 variants. Just verify they continue to pass."
     },
     {
-      "what": "format_value pattern in LSP",
-      "where": "crates/reify-lsp/src/analysis.rs lines 148-167",
-      "how": "Extend the existing exhaustive match with arms for new Value variants, following the same formatting conventions."
+      "what": "Existing test patterns in value.rs",
+      "where": "crates/reify-types/src/value.rs #[cfg(test)] module",
+      "how": "Follow the same testing patterns (assert_eq on format!, testing equality/inequality of output) for new Display tests"
     }
   ]
 }
