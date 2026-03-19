@@ -323,8 +323,31 @@ fn eval_eq(lv: &Value, rv: &Value) -> Value {
         (Value::Bool(a), Value::Bool(b)) => Value::Bool(a == b),
         (Value::Int(a), Value::Int(b)) => Value::Bool(a == b),
         (Value::String(a), Value::String(b)) => Value::Bool(a == b),
+        // Scalar-vs-Scalar: compare dimensions first
+        (
+            Value::Scalar {
+                si_value: a,
+                dimension: da,
+            },
+            Value::Scalar {
+                si_value: b,
+                dimension: db,
+            },
+        ) => {
+            if da != db {
+                Value::Bool(false)
+            } else {
+                Value::Bool(a == b)
+            }
+        }
+        // Dimensioned Scalar vs non-Scalar: not equal
+        (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
+            if !dimension.is_dimensionless() =>
+        {
+            Value::Bool(false)
+        }
         _ => {
-            // For numeric comparisons, compare as f64
+            // For numeric comparisons (Int/Real/dimensionless Scalar), compare as f64
             match (lv.as_f64(), rv.as_f64()) {
                 (Some(a), Some(b)) => Value::Bool(a == b),
                 _ => Value::Undef,
@@ -341,9 +364,35 @@ fn eval_ne(lv: &Value, rv: &Value) -> Value {
 }
 
 fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
-    match (lv.as_f64(), rv.as_f64()) {
-        (Some(a), Some(b)) => Value::Bool(cmp(a, b)),
-        _ => Value::Undef,
+    match (lv, rv) {
+        // Scalar-vs-Scalar: compare dimensions first
+        (
+            Value::Scalar {
+                si_value: a,
+                dimension: da,
+            },
+            Value::Scalar {
+                si_value: b,
+                dimension: db,
+            },
+        ) => {
+            if da != db {
+                Value::Undef
+            } else {
+                Value::Bool(cmp(*a, *b))
+            }
+        }
+        // Dimensioned Scalar vs non-Scalar: incomparable
+        (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
+            if !dimension.is_dimensionless() =>
+        {
+            Value::Undef
+        }
+        // Fallback: Int/Real/dimensionless Scalar via as_f64
+        _ => match (lv.as_f64(), rv.as_f64()) {
+            (Some(a), Some(b)) => Value::Bool(cmp(a, b)),
+            _ => Value::Undef,
+        },
     }
 }
 
@@ -814,6 +863,142 @@ mod tests {
         };
         let values = ValueMap::new();
         assert!(eval_expr(&expr, &values).is_undef());
+    }
+
+    #[test]
+    fn eq_scalar_different_dimensions_is_false() {
+        // 0.005 LENGTH == 0.005 MASS should be false (different dimensions)
+        let left = lit(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let right = lit(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::MASS,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::MASS,
+            },
+        );
+        let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Bool(false) => {}
+            other => panic!("expected Bool(false), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eq_scalar_same_dimension_same_value_is_true() {
+        // Two LENGTH scalars with identical si_value should be equal
+        let left = lit(mm_val(80.0), Type::length());
+        let right = lit(mm_val(80.0), Type::length());
+        let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Bool(true) => {}
+            other => panic!("expected Bool(true), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eq_scalar_same_dimension_different_value_is_false() {
+        // Two LENGTH scalars with different si_values should not be equal
+        let left = lit(mm_val(80.0), Type::length());
+        let right = lit(mm_val(100.0), Type::length());
+        let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Bool(false) => {}
+            other => panic!("expected Bool(false), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cmp_scalar_different_dimensions_is_undef() {
+        // 0.005 LENGTH < 0.005 MASS should be Undef (incomparable dimensions)
+        let left = lit(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let right = lit(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::MASS,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::MASS,
+            },
+        );
+        let expr = CompiledExpr::binop(BinOp::Lt, left, right, Type::Bool);
+        let values = ValueMap::new();
+        assert!(eval_expr(&expr, &values).is_undef());
+    }
+
+    #[test]
+    fn cmp_scalar_same_dimension_works() {
+        // 3mm < 5mm should be true
+        let left = lit(mm_val(3.0), Type::length());
+        let right = lit(mm_val(5.0), Type::length());
+        let expr = CompiledExpr::binop(BinOp::Lt, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Bool(true) => {}
+            other => panic!("expected Bool(true), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eq_dimensioned_scalar_vs_int_is_false() {
+        // Scalar{5.0, LENGTH} == Int(5) should be false
+        let left = lit(
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let right = lit(Value::Int(5), Type::Int);
+        let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Bool(false) => {}
+            other => panic!("expected Bool(false), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ne_scalar_different_dimensions_is_true() {
+        // 0.005 LENGTH != 0.005 MASS should be true
+        let left = lit(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let right = lit(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::MASS,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::MASS,
+            },
+        );
+        let expr = CompiledExpr::binop(BinOp::Ne, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Bool(true) => {}
+            other => panic!("expected Bool(true), got {:?}", other),
+        }
     }
 
     #[test]
