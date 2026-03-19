@@ -1600,6 +1600,54 @@ mod tests {
         }
     }
 
+    // --- Query tests ---
+
+    #[test]
+    fn distance_between_shapes() {
+        let mut kernel = OcctKernel::new();
+        // Create box_a at origin (10x10x10, centered)
+        let box_a = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Create box_b and translate to (50,0,0)
+        let box_b_raw = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let box_b = kernel
+            .execute(&GeometryOp::Translate {
+                target: box_b_raw.id,
+                dx: 50.0,
+                dy: 0.0,
+                dz: 0.0,
+            })
+            .unwrap();
+        // Distance between them: box_a goes from -5 to 5 on X,
+        // box_b goes from 45 to 55 on X, so gap = 40
+        let dist = kernel
+            .query(&GeometryQuery::Distance {
+                from: box_a.id,
+                to: box_b.id,
+            })
+            .unwrap();
+        match dist {
+            Value::Real(d) => {
+                assert!(
+                    (d - 40.0).abs() < 1.0,
+                    "expected distance ~40, got {d}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
     // --- Mirror tests ---
 
     #[test]
