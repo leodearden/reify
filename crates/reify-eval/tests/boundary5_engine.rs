@@ -360,3 +360,36 @@ fn engine_eval_stdlib_function_in_let() {
         expected, f
     );
 }
+
+/// Engine-level verification: imports are transparent to evaluation.
+#[test]
+fn engine_eval_with_import() {
+    use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId};
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "x", Type::length(), Some(CompiledExpr::literal(mm(50.0), Type::length())))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .import("std/math")
+        .template(template)
+        .build();
+
+    // Verify imports are stored
+    assert_eq!(module.imports.len(), 1);
+    assert_eq!(module.imports[0].path, "std/math");
+
+    // Evaluate — imports should not affect evaluation
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    let x_id = ValueCellId::new("S", "x");
+    let val = result.values.get(&x_id).expect("S.x should be in values");
+    let f = val.as_f64().expect("should be numeric");
+    assert!(
+        (f - 0.05).abs() < 1e-10,
+        "S.x should be ~0.05 SI (50mm), got {}",
+        f
+    );
+}
