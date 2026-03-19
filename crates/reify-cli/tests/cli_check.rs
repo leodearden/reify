@@ -60,6 +60,29 @@ fn check_violating_bracket_exits_failure() {
 }
 
 #[test]
+#[test]
+fn check_parse_error_exits_failure() {
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["check", &fixture_path("bracket_parse_error.ri")])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "reify check should exit non-zero for file with parse errors.\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Parse error"),
+        "stderr should contain 'Parse error', got: {stderr}"
+    );
+}
+
+#[test]
 fn check_nonexistent_file_exits_failure() {
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args(["check", "nonexistent_file_that_does_not_exist.ri"])
