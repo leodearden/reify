@@ -1656,6 +1656,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn moment_of_inertia_box() {
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10 box
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Query MoI around Z axis
+        let moi = kernel
+            .query(&GeometryQuery::MomentOfInertia {
+                handle: box_h.id,
+                axis: [0.0, 0.0, 1.0],
+            })
+            .unwrap();
+        match moi {
+            Value::Real(v) => {
+                // For a box of uniform density (mass=volume=1000),
+                // MoI around Z through centroid = M/12 * (w^2 + d^2) = 1000/12 * (100 + 100)
+                // = 1000/12 * 200 ≈ 16666.7
+                assert!(v > 0.0, "MoI should be positive, got {v}");
+                assert!(
+                    (v - 16666.7).abs() < 100.0,
+                    "expected MoI ~16666.7, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
     // --- Mirror tests ---
 
     #[test]
