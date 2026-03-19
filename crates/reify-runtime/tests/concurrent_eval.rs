@@ -1418,3 +1418,59 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
         "constraint should be Violated when width=mm(2.0) < mm(5.0)"
     );
 }
+
+// --- PoisonError recovery tests ---
+
+/// is_dirty() should recover gracefully when skip_state lock is poisoned.
+#[test]
+fn is_dirty_recovers_after_skip_state_poisoning() {
+    let setup = simple_setup();
+    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+    let b_node = NodeId::Value(ValueCellId::new("T", "b"));
+
+    // Poison the skip_state lock
+    adapter.poison_skip_state();
+
+    // is_dirty() should return a bool without panicking
+    let _dirty = adapter.is_dirty(&b_node);
+}
+
+/// values() should recover gracefully when values RwLock is poisoned.
+#[test]
+fn values_recovers_after_values_lock_poisoning() {
+    let setup = simple_setup();
+    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+    // Poison the values lock
+    adapter.poison_values();
+
+    // values() should return a ValueMap without panicking
+    let vals = adapter.values();
+    assert!(!vals.is_empty(), "values should still be readable after poisoning");
+}
+
+/// take_results() should recover gracefully when results lock is poisoned.
+#[test]
+fn take_results_recovers_after_results_lock_poisoning() {
+    let setup = simple_setup();
+    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+    // Poison the results lock
+    adapter.poison_results();
+
+    // take_results() should return a Vec without panicking
+    let _results = adapter.take_results();
+}
+
+/// skipped() should recover gracefully when skip_state lock is poisoned.
+#[test]
+fn skipped_recovers_after_skip_state_poisoning() {
+    let setup = simple_setup();
+    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+    // Poison the skip_state lock
+    adapter.poison_skip_state();
+
+    // skipped() should return a HashSet without panicking
+    let _skipped = adapter.skipped();
+}

@@ -172,7 +172,8 @@ impl ConcurrentEvalAdapter {
 }
 
 // Test-only helpers that poison specific locks for recovery testing.
-#[cfg(test)]
+// Not gated by #[cfg(test)] so integration tests can use them.
+#[doc(hidden)]
 impl ConcurrentEvalAdapter {
     /// Poison the `skip_state` Mutex by spawning a thread that acquires
     /// the lock and panics while holding it.
