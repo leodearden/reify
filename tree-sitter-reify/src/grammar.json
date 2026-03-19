@@ -85,6 +85,14 @@
         {
           "type": "SYMBOL",
           "name": "sub_declaration"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "minimize_declaration"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "maximize_declaration"
         }
       ]
     },
@@ -228,6 +236,40 @@
         {
           "type": "STRING",
           "value": "constraint"
+        },
+        {
+          "type": "FIELD",
+          "name": "expr",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_expression"
+          }
+        }
+      ]
+    },
+    "minimize_declaration": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "minimize"
+        },
+        {
+          "type": "FIELD",
+          "name": "expr",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_expression"
+          }
+        }
+      ]
+    },
+    "maximize_declaration": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "maximize"
         },
         {
           "type": "FIELD",
@@ -1162,5 +1204,6 @@
   "precedences": [],
   "externals": [],
   "inline": [],
-  "supertypes": []
+  "supertypes": [],
+  "reserved": {}
 }
