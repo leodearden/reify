@@ -346,4 +346,21 @@ mod tests {
         let b = Rational::new(100, 1);
         assert_eq!(a + b, Rational::new(200, 1));
     }
+
+    #[test]
+    fn rational_neg_at_i8_boundary() {
+        // Negating -128 in i8 overflows (no positive 128 in i8).
+        // With i16, -(-128) = 128 works fine.
+        let r = Rational { num: -128, den: 1 };
+        assert_eq!(-r, Rational { num: 128, den: 1 });
+    }
+
+    #[test]
+    fn rational_sub_beyond_i8_range() {
+        // 50 - (-100) = 150, but cross-multiplication in Sub produces
+        // 50*1 - (-100)*1 = 150 which overflows i8::MAX.
+        let a = Rational::new(50, 1);
+        let b = Rational::new(-100, 1);
+        assert_eq!(a - b, Rational::new(150, 1));
+    }
 }
