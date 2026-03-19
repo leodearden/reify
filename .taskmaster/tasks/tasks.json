@@ -664,13 +664,13 @@
         "description": "Ensure that forward let-binding references have been implemented correctly in cold-start evaluation and are not dependent on declaration order.",
         "details": "Add coverage for structures where a let binding references another let declared later in the same scope, and ensure cold-start and incremental evaluation both compute the correct values.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "34"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-18T23:30:52.923Z"
+        "updatedAt": "2026-03-19T09:37:15.571Z"
       },
       {
         "id": "37",
@@ -678,20 +678,196 @@
         "description": "Ensure that the currently missing architecture-critical language features identified in the review have been implemented: import handling, sub-structure compilation, and stdlib function evaluation.",
         "details": "Close the gap between the implemented subset and the architecture by ensuring imports participate in compilation, sub-structures compile into the runtime model, and ordinary stdlib/function calls no longer collapse to Undef in expression evaluation.",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [
           "34"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-19T00:13:29.657Z"
+        "updatedAt": "2026-03-19T09:37:22.892Z"
+      },
+      {
+        "id": "38",
+        "title": "Fix eval_eq/eval_cmp to check Scalar dimensions",
+        "description": "Scalar dimension is ignored in equality and comparison operators. `eval_eq()` at reify-expr/src/lib.rs:321-334 and `eval_cmp()` at :343-347 fall through to a wildcard `as_f64()` path for Scalar values, comparing only numeric values while ignoring the dimension field. This means `5mm == 5kg` evaluates to `true`.",
+        "details": "## Root cause\nIn `eval_eq()`, the match statement handles Bool, Int, String explicitly but Scalar falls through to `_ =>` which calls `as_f64()` on both sides, stripping dimension. Same pattern in `eval_cmp()`.\n\n## Failing tests to write\n1. Unit test in reify-expr: `eval_eq(Scalar{5.0, LENGTH}, Scalar{5.0, MASS})` must return `Bool(false)` (currently returns `Bool(true)`)\n2. Unit test: `eval_cmp(Scalar{5.0, LENGTH}, Scalar{5.0, MASS})` must return `Undef` or error (dimension mismatch in comparison)\n3. Unit test: `eval_eq(Scalar{5.0, LENGTH}, Scalar{5.0, LENGTH})` must return `Bool(true)` (same dimension, same value)\n4. Unit test: `eval_cmp(Scalar{3.0, LENGTH}, Scalar{5.0, LENGTH})` must work correctly (same dimension)\n5. Unit test: `eval_eq(Scalar{5.0, LENGTH}, Int(5))` — cross-type comparison edge case\n\n## Fix\nAdd explicit Scalar match arms in both `eval_eq()` and `eval_cmp()` that compare dimensions first, returning `Bool(false)` / `Undef` on mismatch before comparing numeric values.\n\n## Module tags\ncrates/reify-expr",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-03-19T07:09:41.653Z"
+      },
+      {
+        "id": "39",
+        "title": "Fix sqrt to preserve and halve Scalar dimensions",
+        "description": "sqrt() in reify-stdlib loses dimension information. At reify-stdlib/src/lib.rs:18, it uses `unary_f64()` which strips the Scalar wrapper, always returning `Real`. `sqrt(4mm²)` should return `Scalar{2.0, LENGTH}` (halved exponents) but returns `Real(2.0)`.",
+        "details": "## Root cause\nLine 18: `\"sqrt\" => unary_f64(args, |x| Value::Real(x.sqrt()))` — `unary_f64` extracts the f64 and wraps result as Real, discarding dimension.\n\n## Failing tests to write\n1. `sqrt(Scalar{4.0, AREA})` must return `Scalar{2.0, LENGTH}` (halve exponents: [2,0,...] → [1,0,...])\n2. `sqrt(Scalar{9.0, LENGTH^4})` must return `Scalar{3.0, LENGTH^2}` (arbitrary even exponents)\n3. `sqrt(Scalar{4.0, LENGTH})` — odd exponent produces fractional Rational, should still work if Rational supports it\n4. `sqrt(Real(4.0))` must still return `Real(2.0)` (backward compat)\n5. `sqrt(negative Scalar)` must return `Undef`\n\n## Fix\nReplace the sqrt implementation with a dimension-aware version: if input is Scalar, create a new DimensionVector with each exponent halved (using Rational division by 2), return Scalar with the new dimension. If input is Real/Int, behave as before.\n\nDimensionVector already supports Rational exponents, so half-integer exponents are representable.\n\n## Module tags\ncrates/reify-stdlib",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-03-19T07:12:18.728Z"
+      },
+      {
+        "id": "40",
+        "title": "Fix CompiledModule content hash to include actual content",
+        "description": "CompiledModule content hash at reify-compiler/src/lib.rs:612 is computed only from the module path string, not from the actual compiled content. Two modules with the same path but different declarations get identical hashes, breaking incremental compilation and cache invalidation.",
+        "details": "## Root cause\nLine 612: `let content_hash = ContentHash::of_str(&format!(\"{}\", parsed.path));` — only uses path.\n\n## Failing tests to write\n1. Compile two different source texts with the same module path → their CompiledModule content_hashes must differ\n2. Compile the same source text twice → content_hashes must be identical (determinism)\n3. Change a param default value → content_hash must change\n4. Add/remove a constraint → content_hash must change\n\n## Fix\nCombine the module path hash with hashes from all TopologyTemplates, diagnostics count, and import list. ContentHash already has a `combine()` method. Iterate templates and combine their content_hashes.\n\n## Module tags\ncrates/reify-compiler",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-03-19T09:38:14.226Z"
+      },
+      {
+        "id": "41",
+        "title": "Fix OCCT kernel unwrap panics on null shape handles",
+        "description": "In reify-kernel-occt/src/lib.rs, `get_shape()` at line 81 and warm-state serialization at line 275 use `.unwrap()` on `UniquePtr::as_ref()`. A null C++ pointer panics the kernel thread, hanging the handle channel permanently.",
+        "details": "## Root cause\nLine 81: `ptr.as_ref().unwrap()` — if UniquePtr is null (corrupted handle, C++ error), panics.\nLine 275: `shape.as_ref().unwrap()` in warm_state serialization loop — same issue.\n\n## Failing tests to write\n1. Test that get_shape with an invalid/missing handle ID returns Err(InvalidReference), not panic\n2. Test that warm_state extraction handles gracefully if a shape becomes invalid (doesn't panic the kernel thread)\n3. Verify the kernel thread remains responsive after a failed get_shape call\n\n## Fix\nLine 81: Replace `.unwrap()` with `.ok_or_else(|| GeometryError::OperationFailed(\"shape handle is null\".into()))`\nLine 275: Replace `.unwrap()` with a match/if-let that skips null shapes with a warning (or returns error).\n\nAlso add parameter validation in execute() (lines 95-172): check that radii > 0, dimensions > 0, etc. before passing to OCCT FFI. Return GeometryError::OperationFailed for invalid parameters instead of letting OCCT produce cryptic C++ errors.\n\n## Module tags\ncrates/reify-kernel-occt",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-03-19T09:38:14.258Z"
+      },
+      {
+        "id": "42",
+        "title": "Fix comment syntax from # to // and add block comments",
+        "description": "The Tree-sitter grammar at tree-sitter-reify/grammar.js line 10 uses `#` as the line comment marker. The Reify language spec says `//` for line comments and `/* */` for block comments. Neither is correctly implemented.",
+        "details": "## Root cause\ngrammar.js line 10: `line_comment: $ => token(seq('#', /.*/))` — uses # instead of //.\nBlock comments not implemented at all.\n\n## Failing tests to write\n1. Parse source with `// this is a comment` — must not produce errors (currently fails)\n2. Parse source with `/* block comment */` — must not produce errors (currently fails)\n3. Parse source with `# this is a comment` — should now produce a parse error (or could keep for backward compat)\n4. Parse source with multi-line block comment — must work\n5. Parse source with nested expressions after comment — must correctly ignore comment content\n\n## Fix\nIn grammar.js:\n- Change line_comment rule: `line_comment: $ => token(seq('//', /.*/))`\n- Add block_comment rule: `block_comment: $ => token(seq('/*', /[\\s\\S]*?/, '*/'))`\n- Add block_comment to extras array\n- Regenerate the parser (run tree-sitter generate)\n\n## Module tags\ntree-sitter-reify, crates/reify-syntax",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-03-19T09:38:14.503Z"
+      },
+      {
+        "id": "43",
+        "title": "Add minimize/maximize declarations to grammar and compiler",
+        "description": "The grammar has no rules for `minimize` and `maximize` declarations. These are needed for M3 optimization objectives but silently misparse as identifier expressions. The constraint solver has objective support but it can't be reached from source code through the normal parse→compile pipeline.",
+        "details": "## Root cause\ntree-sitter-reify/grammar.js has no minimize_declaration or maximize_declaration rules. The keywords aren't recognized as declaration-level constructs in structures.\n\n## Failing tests to write\n1. Parse source with `minimize expr` inside a structure — must produce MinimizeDecl AST node\n2. Parse source with `maximize expr` inside a structure — must produce MaximizeDecl AST node\n3. Compile a structure with minimize — must produce OptimizationObjective::Minimize in CompiledModule\n4. Compile a structure with maximize — must produce OptimizationObjective::Maximize in CompiledModule\n5. Round-trip test: parse minimize source → compile → verify objective is present in topology template\n\n## Fix\n1. In grammar.js, add minimize_declaration and maximize_declaration rules as member choices\n2. Regenerate parser\n3. In reify-syntax, add MinimizeDecl/MaximizeDecl to MemberDecl enum, implement CST→AST lowering\n4. In reify-compiler, handle MinimizeDecl/MaximizeDecl during compilation, emit OptimizationObjective\n\n## Module tags\ntree-sitter-reify, crates/reify-syntax, crates/reify-compiler",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-03-19T09:38:14.544Z"
+      },
+      {
+        "id": "44",
+        "title": "Fix hardcoded (0,0) spans in compiler ValueCellDecl output",
+        "description": "The compiler at reify-compiler/src/lib.rs lines 701, 714, 736, 797 creates ValueCellDecls with `SourceSpan::new(0, 0)` instead of propagating spans from the parsed AST. This makes diagnostics point to position (0,0) instead of the actual source location.",
+        "details": "## Root cause\nLines 701, 714 (params), 736 (lets), 797 (constraints) all use `span: SourceSpan::new(0, 0)` instead of the span from the parsed declaration.\n\n## Failing tests to write\n1. Compile a structure with params → each ValueCellDecl span must match the parsed param's span (not 0,0)\n2. Compile a structure with let bindings → each ValueCellDecl span must match the parsed let's span\n3. Compile a structure with constraints → each ConstraintDecl span must match the parsed constraint's span\n4. Verify that diagnostics emitted for a specific constraint include the correct span\n\n## Fix\nReplace `SourceSpan::new(0, 0)` with the span from the corresponding parsed declaration:\n- Line 701, 714: use `param.span`\n- Line 736: use `let_decl.span`\n- Line 797: use `constraint.span`\n\n## Module tags\ncrates/reify-compiler",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-03-19T09:37:22.273Z"
+      },
+      {
+        "id": "45",
+        "title": "Fix mixed fan-in race condition in concurrent scheduler",
+        "description": "In reify-runtime/src/concurrent_eval.rs:174-273, the `is_dirty()` check at line 176 runs outside the Mutex critical section for skip_state. With 3+ concurrent parents at the same level, an Unchanged parent can add a shared downstream to `skipped` after a Changed parent already marked it, producing inconsistent evaluation decisions.",
+        "details": "## Root cause\nThe `is_dirty()` method at line 176 reads `skip_state` outside the lock that protects writes to it at lines 239-256. Between the read and subsequent evaluation, another task can modify the skip set.\n\n## Failing tests to write\n1. Stress test with a diamond graph where 3+ parents at the same level have mixed Changed/Unchanged results — verify downstream is always evaluated when at least one parent changed\n2. Test with barrier/latch to force concurrent parent evaluation and expose the race window\n3. Verify that `has_changed_parent` tracking is consistent with actual evaluation decisions\n4. Add a deterministic test that simulates the interleaving: Unchanged parent adds to skipped, then Changed parent removes — verify final state is correct\n\n## Fix\nEither:\na) Expand the Mutex critical section to include the `is_dirty()` check (make it atomic with the skip decision), OR\nb) Pre-compute the skip list before spawning tasks at each level (preferred — simpler, no lock contention during evaluation), OR\nc) Use a two-phase approach: all parents report Changed/Unchanged, then compute skip set atomically before evaluating dependents\n\nOption (b) is cleanest: after all tasks at level N complete, compute which level N+1 nodes should be skipped based on the collected results, before spawning level N+1 tasks.\n\n## Module tags\ncrates/reify-runtime",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-03-19T09:38:14.595Z"
+      },
+      {
+        "id": "46",
+        "title": "Fix PoisonError handling consistency in runtime",
+        "description": "In reify-runtime/src/concurrent_eval.rs, lock acquisitions at lines 98, 103, 176, 242, 260 use `.unwrap()` which cascading-panics if any concurrent task panics while holding a lock. Some other places correctly use `.unwrap_or_else(|e| e.into_inner())` for recovery. The handling must be consistent.",
+        "details": "## Root cause\nInconsistent error recovery: lines 112-115 use `unwrap_or_else(|e| e.into_inner())` (safe), but lines 98, 103, 176, 242, 260 use plain `.unwrap()` (cascading panic). Same issue in priority_promotion.rs SharedPriorityPromoter.\n\n## Failing tests to write\n1. Test that a panic in one concurrent evaluation task does NOT cause cascading panics in `is_dirty()` calls from other tasks\n2. Test that after a task panics and poisons skip_state lock, the adapter can still collect results via `take_results()` / `into_result()`\n3. Test that SharedPriorityPromoter remains usable after a lock-poisoning event\n\n## Fix\nReplace all `.unwrap()` on Mutex/RwLock results with `.unwrap_or_else(|e| e.into_inner())` consistently across:\n- concurrent_eval.rs lines 98, 103, 176, 242, 260\n- priority_promotion.rs Mutex::lock() calls\nThis allows the system to continue operating with the last valid state even after a panic, rather than cascading.\n\n## Module tags\ncrates/reify-runtime",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-03-19T09:38:14.645Z"
+      },
+      {
+        "id": "47",
+        "title": "Fix constraint solver feasibility false negatives",
+        "description": "The constraint solver at reify-constraints/src/solver.rs:88-124 uses squared penalties for constraint violations. Combined with the FEASIBILITY_THRESHOLD of 1e-12 at line 371, this can produce false negatives — declaring a solution \"feasible\" when constraints are actually violated by small but meaningful amounts.",
+        "details": "## Root cause\ncomparison_violation() squares the residual: `(r - l + 1e-12).powi(2)`. The epsilon 1e-12 is scale-independent. For constraints with small residuals (e.g., 1e-7), squared penalty is 1e-14, below the 1e-12 threshold.\n\nAlso: clamping in the cost function (lines 213-240) hides bound violations — no penalty for out-of-bounds proposals.\n\n## Failing tests to write\n1. Single constraint violated by small amount (e.g., `x > 2.0` with x=1.9999) — solver must report Infeasible or NoProgress, not Solved\n2. Multiple constraints where individual squared violations sum below threshold but each is meaningfully violated\n3. Test with constraint at very different scales (length in mm vs area in m²) — scale-independent feasibility must work\n4. Test that bound clamping doesn't hide violations: if solver proposes x=15 but bounds are [0,10], result should reflect the constraint is unsatisfiable at x=10\n\n## Fix\nSwitch from squared penalty to L1 norm (absolute value) for feasibility checking. Keep squared penalty in cost function for smooth optimization, but use per-constraint absolute residual check for the final feasibility decision at line 371. Each constraint must individually satisfy |residual| < threshold, not sum-of-squares < threshold.\n\nAlso add a bound-violation penalty term to the cost function so the optimizer is penalized for proposing out-of-bounds values instead of silently clamping.\n\n## Module tags\ncrates/reify-constraints",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-03-19T09:37:22.301Z"
+      },
+      {
+        "id": "48",
+        "title": "Fix objective eval hiding failures with unwrap_or(0.0)",
+        "description": "In reify-constraints/src/solver.rs:198-206, `eval_objective()` uses `.unwrap_or(0.0)` when the objective expression evaluates to Undef/NaN/non-numeric. This silently treats broken objectives as \"minimize 0\" instead of reporting the error.",
+        "details": "## Root cause\nLines 198-206: `reify_expr::eval_expr(expr, values).as_f64().unwrap_or(0.0)` — if expression returns Undef (e.g., division by zero in objective), cost function gets 0.0 which may satisfy optimization.\n\n## Failing tests to write\n1. Optimization with objective that evaluates to Undef (e.g., `minimize x/0`) — must return NoProgress or Infeasible, not Solved with arbitrary values\n2. Optimization where objective NaNs for some parameter values — must not declare \"optimized at 0.0\"\n3. Maximize with Undef objective — must not produce a spurious solution\n\n## Fix\nReplace `unwrap_or(0.0)` with a check: if `as_f64()` returns None, add a large penalty (e.g., f64::MAX / 2) to the cost function, signaling to the optimizer that this region is undesirable. Alternatively, track whether any objective evaluation failed during the solve and return NoProgress with a diagnostic message if so.\n\n## Module tags\ncrates/reify-constraints",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-03-19T09:37:22.303Z"
+      },
+      {
+        "id": "49",
+        "title": "Fix integer overflow in DimensionVector Rational pow",
+        "description": "In reify-types/src/dimension.rs:163, Rational multiplication in DimensionVector::pow() uses i8 arithmetic which silently wraps in release builds. Raising a dimensioned value to a power with large exponents can corrupt the dimension vector.",
+        "details": "## Root cause\nLine 163: `Rational::new(self.0[i].num * nr.num, self.0[i].den * nr.den)` — i8 * i8 can overflow for exponents like 64 * 2 = 128 > i8::MAX.\n\n## Failing tests to write\n1. `DimensionVector::pow()` with exponent that causes i8 overflow (e.g., LENGTH^64 raised to power 2) — must either return an error or use wider integers, not silently wrap\n2. Verify that normal pow operations (LENGTH^2, AREA^3) still work correctly\n3. Test Rational arithmetic at i8 boundary values\n\n## Fix\nOption A: Change Rational to use i16 or i32 internally — more headroom, no silent wrapping.\nOption B: Use checked_mul and return an error/panic on overflow.\nOption C: Keep i8 but add overflow checks with saturating arithmetic.\n\nOption A is simplest and safest. Dimension exponents realistically stay small (max ~6 in normal physics), but the code should not silently corrupt on edge cases.\n\n## Module tags\ncrates/reify-types",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "50",
+        "title": "Add geometry parameter validation before OCCT FFI",
+        "description": "In reify-kernel-occt/src/lib.rs:95-172, geometry operation parameters (radii, dimensions, angles) are not validated before passing to OCCT. Negative radii, zero-width boxes, etc. produce cryptic C++ errors instead of clear Rust GeometryError messages.",
+        "details": "## Failing tests to write\n1. Box with negative width → must return GeometryError::OperationFailed, not panic/C++ exception\n2. Cylinder with zero radius → clear error\n3. Sphere with negative radius → clear error\n4. Fillet with radius larger than edge → clear error (or OCCT error wrapped cleanly)\n5. Translate/Rotate with NaN values → clear error\n\n## Fix\nAdd validation at the top of each operation's match arm in execute():\n```rust\nGeometryOp::Box { width, height, depth } => {\n    let w = extract_f64(width)?;\n    let h = extract_f64(height)?;\n    let d = extract_f64(depth)?;\n    if w <= 0.0 || h <= 0.0 || d <= 0.0 {\n        return Err(GeometryError::OperationFailed(\n            format!(\"box dimensions must be positive: w={}, h={}, d={}\", w, h, d)\n        ));\n    }\n    // ... proceed with OCCT call\n}\n```\n\nAlso add catch-all exception handler in C++ wrapper (occt_wrapper.cpp) for non-Standard_Failure exceptions.\n\n## Module tags\ncrates/reify-kernel-occt",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "51",
+        "title": "Fix CLI exit code on parse errors",
+        "description": "The CLI at reify-cli/src/main.rs:31-60 prints parse errors but `parse_and_compile()` returns `Ok(compiled)` regardless. `reify check` exits with code 0 even when the source has parse errors, which is incorrect for CI/scripting usage.",
+        "details": "## Failing tests to write\n1. `reify check` on a file with parse errors must exit with non-zero exit code\n2. `reify check` on a file with compiler ERROR-level diagnostics must exit with non-zero exit code\n3. `reify check` on a valid file must still exit 0\n4. `reify build` on a file with parse errors must exit with non-zero exit code\n\n## Fix\nIn `parse_and_compile()`: if `!parsed.errors.is_empty()`, return `Err` instead of `Ok`.\nIn `cmd_check()` and `cmd_build()`: check compiler diagnostics for ERROR severity and include in exit code decision.\nAlso in `cmd_lsp()`: replace `expect(\"failed to create tokio runtime\")` with proper error handling that returns ExitCode::FAILURE.\n\n## Module tags\ncrates/reify-cli",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "52",
+        "title": "Consolidate Engine state into single Option&lt;EvaluationState&gt;",
+        "description": "In reify-eval/src/lib.rs:28-51, Engine has `current_snapshot`, `reverse_index`, `trace_map` as separate Option fields that must all be Some simultaneously. Many methods call `.expect()` separately on each, risking partial-state panics. These should be a single Option&lt;EvaluationState&gt;.",
+        "details": "## Root cause\nThree separate Option fields at lines 28-51:\n```rust\npub current_snapshot: Option<Snapshot>,\npub reverse_index: Option<ReverseDependencyIndex>,\npub trace_map: Option<HashMap<NodeId, DependencyTrace>>,\n```\nMethods like `edit_param()` (line 955-959), `prepare_concurrent_edit()` (lines 232-236), and `check_constraints_with_values()` (line 1275) each call `.expect()` on these individually.\n\nAlso: extract duplicate let-binding evaluation code at lines 680-741 and 856-915 into a shared helper function.\n\n## Failing tests to write\n1. Test that calling edit_param before eval produces a clear error (not panic)\n2. Test that Engine exposes `is_initialized()` method\n3. Verify that after eval(), all three state components are available atomically\n\n## Fix\n1. Create `struct EvaluationState { snapshot: Snapshot, reverse_index: ReverseDependencyIndex, trace_map: HashMap<NodeId, DependencyTrace> }`\n2. Replace the three Option fields with `eval_state: Option<EvaluationState>`\n3. Add `pub fn is_initialized(&self) -> bool` method\n4. Methods that need eval state use `self.eval_state.as_ref().ok_or(EngineError::NotInitialized)?` instead of separate `.expect()` calls\n5. Extract duplicate let-binding evaluation (lines 680-741 and 856-915) into a helper method\n\n## Module tags\ncrates/reify-eval",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-19T00:13:29.657Z",
-      "taskCount": 37,
-      "completedCount": 35,
+      "lastModified": "2026-03-19T09:38:14.645Z",
+      "taskCount": 52,
+      "completedCount": 37,
       "tags": [
         "master"
       ]

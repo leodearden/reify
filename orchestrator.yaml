@@ -2,7 +2,7 @@
 # Rust project — overrides dark-factory defaults
 
 # Concurrency
-max_concurrent_tasks: 3
+max_concurrent_tasks: 6
 max_per_module: 1
 lock_depth: 2
 module_overrides:
@@ -43,15 +43,16 @@ lint_command: ". ~/.cargo/env && cargo clippy --workspace -- -D warnings"
 type_check_command: ". ~/.cargo/env && cargo check --workspace"
 
 # Fused memory HTTP server
+# config_path is relative to project_root; server_command runs with cwd=project_root
 fused_memory:
   url: "http://localhost:8000"
   project_id: "reify"
-  config_path: "fused-memory/config/config.yaml"
+  config_path: ".orchestrator/config/fused-memory.yaml"
   server_command:
     - "uv"
     - "run"
     - "--project"
-    - "fused-memory"
+    - "/home/leo/src/dark-factory/fused-memory"
     - "python"
     - "-m"
     - "fused_memory.server.main"

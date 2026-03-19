@@ -1,0 +1,87 @@
+# Fused Memory config for Reify orchestrator runs
+# Hardcodes project_root and taskmaster paths to avoid env var confusion
+
+server:
+  transport: "http"
+  host: "0.0.0.0"
+  port: 8000
+
+llm:
+  provider: "openai"
+  model: "gpt-4o-mini"
+  max_tokens: 4096
+
+  providers:
+    openai:
+      api_key: ${OPENAI_API_KEY}
+      api_url: ${OPENAI_API_URL:https://api.openai.com/v1}
+
+    anthropic:
+      api_key: ${ANTHROPIC_API_KEY}
+      api_url: ${ANTHROPIC_API_URL:https://api.anthropic.com}
+
+embedder:
+  provider: "openai"
+  model: "text-embedding-3-small"
+  dimensions: 1536
+
+  providers:
+    openai:
+      api_key: ${OPENAI_API_KEY}
+      api_url: ${OPENAI_API_URL:https://api.openai.com/v1}
+
+graphiti:
+  provider: "falkordb"
+  falkordb:
+    uri: ${FALKORDB_URI:redis://localhost:6379}
+    password: ${FALKORDB_PASSWORD:}
+    database: ${FALKORDB_DATABASE:default_db}
+
+mem0:
+  qdrant_url: ${QDRANT_URL:http://localhost:6333}
+  collection_prefix: "fused"
+
+routing:
+  confidence_threshold: 0.7
+  use_heuristics: true
+  llm_fallback: true
+
+queue:
+  semaphore_limit: ${SEMAPHORE_LIMIT:3}
+  workers_per_group: ${QUEUE_WORKERS_PER_GROUP:1}
+  graphiti_max_coroutines: ${GRAPHITI_MAX_COROUTINES:5}
+  max_attempts: ${QUEUE_MAX_ATTEMPTS:5}
+  retry_base_seconds: ${QUEUE_RETRY_BASE:5}
+  retry_max_delay_seconds: ${QUEUE_RETRY_MAX_DELAY:300}
+  write_timeout_seconds: ${QUEUE_WRITE_TIMEOUT:120}
+  backend_read_timeout_seconds: ${BACKEND_READ_TIMEOUT:30}
+  backend_write_timeout_seconds: ${BACKEND_WRITE_TIMEOUT:120}
+  search_timeout_seconds: ${SEARCH_TIMEOUT:15}
+  data_dir: "/home/leo/src/reify/.orchestrator/queue"
+
+taskmaster:
+  transport: "stdio"
+  command: "node"
+  args: ["/home/leo/src/dark-factory/taskmaster-ai/dist/mcp-server.js"]
+  project_root: "/home/leo/src/reify"
+  tool_mode: "standard"
+
+reconciliation:
+  enabled: true
+  data_dir: "/home/leo/src/reify/.orchestrator/reconciliation"
+  buffer_size_threshold: 500
+  max_staleness_seconds: 14400
+  conditional_trigger_ratio: 0.33
+  burst_window_seconds: 30
+  burst_cooldown_seconds: 150
+  stale_lock_seconds: 7200
+  agent_llm_provider: "claude_cli"
+  agent_llm_model: "sonnet"
+  agent_max_steps: 50
+  tool_timeout_seconds: ${RECON_TOOL_TIMEOUT:30}
+  stage_timeout_seconds: ${RECON_STAGE_TIMEOUT:600}
+  cycle_timeout_seconds: ${RECON_CYCLE_TIMEOUT:1800}
+  judge_enabled: true
+  judge_llm_provider: "claude_cli"
+  judge_llm_model: "sonnet"
+  explore_codebase_root: "/home/leo/src/reify"
