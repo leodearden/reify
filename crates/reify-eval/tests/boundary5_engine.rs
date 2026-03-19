@@ -255,3 +255,40 @@ fn sub_component_child_lets_evaluated() {
         f
     );
 }
+
+/// Sub-component with no args falls back to child's default param value.
+#[test]
+fn sub_component_default_param_when_no_arg() {
+    use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId};
+
+    // Child: param height = 10mm
+    let child_template = TopologyTemplateBuilder::new("Child")
+        .param("Child", "height", Type::length(), Some(CompiledExpr::literal(mm(10.0), Type::length())))
+        .build();
+
+    // Parent: param width = 80mm, sub rib = Child() — no args
+    let parent_template = TopologyTemplateBuilder::new("Parent")
+        .param("Parent", "width", Type::length(), Some(CompiledExpr::literal(mm(80.0), Type::length())))
+        .sub_component("rib", "Child", vec![])
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(child_template)
+        .template(parent_template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Parent.rib.height should use Child's default: 10mm = 0.01 SI
+    let scoped_id = ValueCellId::new("Parent.rib", "height");
+    let val = result.values.get(&scoped_id)
+        .expect("Parent.rib.height should be in eval result values");
+    let f = val.as_f64().expect("should be numeric");
+    assert!(
+        (f - 0.01).abs() < 1e-10,
+        "Parent.rib.height should be ~0.01 SI (10mm default), got {}",
+        f
+    );
+}
