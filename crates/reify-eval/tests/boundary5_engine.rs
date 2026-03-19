@@ -211,3 +211,21 @@ fn engine_reports_violations() {
         .collect();
     assert!(!violated.is_empty(), "should report violations");
 }
+
+/// Engine is not initialized before eval() is called.
+#[test]
+fn engine_is_not_initialized_before_eval() {
+    let checker = MockConstraintChecker::new();
+    let engine = reify_eval::Engine::new(Box::new(checker), None);
+    assert!(!engine.is_initialized());
+}
+
+/// Engine is initialized after eval() is called.
+#[test]
+fn engine_is_initialized_after_eval() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    engine.eval(&module);
+    assert!(engine.is_initialized());
+}
