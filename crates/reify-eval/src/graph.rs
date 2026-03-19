@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use reify_compiler::{CompiledGeometryOp, TopologyTemplate, ValueCellKind};
 use reify_types::{
     CompiledExpr, ConstraintNodeId, ContentHash, PersistentMap, RealizationNodeId,
-    ResolutionNodeId, Type, ValueCellId,
+    ResolutionNodeId, Type, Value, ValueCellId, ValueMap,
 };
 
 /// A value cell node in the evaluation graph.
@@ -253,6 +253,55 @@ impl EvaluationGraph {
         }
 
         graph
+    }
+
+    /// Determine which constraint IDs are active given the current values.
+    ///
+    /// For each guarded group, inspects the guard cell's value:
+    /// - true: group.constraints are active
+    /// - false: group.else_constraints are active
+    /// - Undef/other: neither branch is active
+    ///
+    /// Constraints not referenced in any guarded group are always active.
+    pub fn active_constraint_ids(&self, values: &ValueMap) -> HashSet<ConstraintNodeId> {
+        // Collect all constraint IDs that are under some guard
+        let mut guarded_ids: HashSet<ConstraintNodeId> = HashSet::new();
+        let mut active_ids: HashSet<ConstraintNodeId> = HashSet::new();
+
+        for group in &self.guarded_groups {
+            for cid in &group.constraints {
+                guarded_ids.insert(cid.clone());
+            }
+            for cid in &group.else_constraints {
+                guarded_ids.insert(cid.clone());
+            }
+
+            let guard_val = values.get(&group.guard_cell);
+            match guard_val {
+                Some(Value::Bool(true)) => {
+                    for cid in &group.constraints {
+                        active_ids.insert(cid.clone());
+                    }
+                }
+                Some(Value::Bool(false)) => {
+                    for cid in &group.else_constraints {
+                        active_ids.insert(cid.clone());
+                    }
+                }
+                _ => {
+                    // Undef or non-Bool: neither branch active
+                }
+            }
+        }
+
+        // All unguarded constraints are always active
+        for (cid, _) in self.constraints.iter() {
+            if !guarded_ids.contains(cid) {
+                active_ids.insert(cid.clone());
+            }
+        }
+
+        active_ids
     }
 
     /// Compute a deterministic fingerprint of the graph topology.

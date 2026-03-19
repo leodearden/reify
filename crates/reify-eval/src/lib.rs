@@ -9,7 +9,7 @@ pub mod snapshot;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use reify_compiler::{CompiledModule, ValueCellKind};
+use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate, ValueCellKind};
 use reify_types::{
     AutoParam, ConstraintChecker, ConstraintInput, ConstraintSolver, ContentHash,
     DeterminacyState, Diagnostic, ExportFormat, GeometryHandleId, GeometryKernel,
@@ -1605,11 +1605,13 @@ impl Engine {
         let state = self.eval_state.as_ref()
             .ok_or(EngineError::NotInitialized)?;
 
+        let active_ids = state.snapshot.graph.active_constraint_ids(values);
         let constraint_nodes: Vec<_> = state.snapshot
             .graph
             .constraints
             .iter()
             .map(|(_, cnode)| cnode)
+            .filter(|cnode| active_ids.contains(&cnode.id))
             .collect();
 
         if !constraint_nodes.is_empty() {
@@ -1977,12 +1979,13 @@ impl Engine {
         let mut diagnostics = Vec::new();
 
         for template in &module.templates {
-            if template.constraints.is_empty() {
+            let active_constraints = Self::collect_active_constraints(template, &values);
+
+            if active_constraints.is_empty() {
                 continue;
             }
 
-            let constraint_pairs: Vec<_> = template
-                .constraints
+            let constraint_pairs: Vec<_> = active_constraints
                 .iter()
                 .map(|c| (c.id.clone(), &c.expr))
                 .collect();
@@ -1994,7 +1997,7 @@ impl Engine {
 
             let results = self.constraint_checker.check(&input);
 
-            for (result, compiled) in results.into_iter().zip(template.constraints.iter()) {
+            for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                 diagnostics.extend(result.diagnostics.messages);
                 constraint_results.push(ConstraintCheckEntry {
                     id: result.id,
@@ -2012,7 +2015,50 @@ impl Engine {
         })
     }
 
-    /// Evaluate and check constraints.
+    /// Collect active constraints from a template given current values.
+    ///
+    /// Returns top-level constraints unconditionally, plus guarded constraints
+    /// whose guard is currently active (true→group.constraints,
+    /// false→group.else_constraints, Undef→neither branch).
+    fn collect_active_constraints<'a>(
+        template: &'a TopologyTemplate,
+        values: &ValueMap,
+    ) -> Vec<&'a CompiledConstraint> {
+        let mut active: Vec<&'a CompiledConstraint> = Vec::new();
+
+        // Top-level (unguarded) constraints are always active
+        for c in &template.constraints {
+            active.push(c);
+        }
+
+        // Guard-gated constraints
+        for group in &template.guarded_groups {
+            let guard_val = values.get(&group.guard_value_cell);
+            match guard_val {
+                Some(Value::Bool(true)) => {
+                    for c in &group.constraints {
+                        active.push(c);
+                    }
+                }
+                Some(Value::Bool(false)) => {
+                    for c in &group.else_constraints {
+                        active.push(c);
+                    }
+                }
+                _ => {
+                    // Undef or non-Bool: neither branch active
+                }
+            }
+        }
+
+        active
+    }
+
+    /// Evaluate and check constraints (guard-aware).
+    ///
+    /// Checks top-level (unguarded) constraints unconditionally, plus
+    /// guarded constraints whose guard is active (true→group.constraints,
+    /// false→group.else_constraints, Undef→neither).
     pub fn check(
         &mut self,
         module: &CompiledModule,
@@ -2022,13 +2068,14 @@ impl Engine {
         let mut diagnostics = eval_result.diagnostics;
 
         for template in &module.templates {
-            if template.constraints.is_empty() {
+            // Collect active constraints: top-level + guard-aware guarded
+            let active_constraints = Self::collect_active_constraints(template, &eval_result.values);
+
+            if active_constraints.is_empty() {
                 continue;
             }
 
-            // Build ConstraintInput batch for this template
-            let constraint_pairs: Vec<_> = template
-                .constraints
+            let constraint_pairs: Vec<_> = active_constraints
                 .iter()
                 .map(|c| (c.id.clone(), &c.expr))
                 .collect();
@@ -2040,7 +2087,7 @@ impl Engine {
 
             let results = self.constraint_checker.check(&input);
 
-            for (result, compiled) in results.into_iter().zip(template.constraints.iter()) {
+            for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                 diagnostics.extend(result.diagnostics.messages);
                 constraint_results.push(ConstraintCheckEntry {
                     id: result.id,
@@ -2078,14 +2125,15 @@ impl Engine {
             values.insert(id.clone(), val.clone());
         }
 
-        // Check constraints
+        // Check constraints (guard-aware)
         let mut constraint_results = Vec::new();
         let mut diagnostics = Vec::new();
 
         for template in &module.templates {
-            if !template.constraints.is_empty() {
-                let constraint_pairs: Vec<_> = template
-                    .constraints
+            let active_constraints = Self::collect_active_constraints(template, &values);
+
+            if !active_constraints.is_empty() {
+                let constraint_pairs: Vec<_> = active_constraints
                     .iter()
                     .map(|c| (c.id.clone(), &c.expr))
                     .collect();
@@ -2097,7 +2145,7 @@ impl Engine {
 
                 let results = self.constraint_checker.check(&input);
 
-                for (result, compiled) in results.into_iter().zip(template.constraints.iter()) {
+                for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                     diagnostics.extend(result.diagnostics.messages);
                     constraint_results.push(ConstraintCheckEntry {
                         id: result.id,
