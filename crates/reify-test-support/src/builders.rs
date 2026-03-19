@@ -346,7 +346,21 @@ impl CompiledModuleBuilder {
     }
 
     pub fn build(self) -> CompiledModule {
-        let content_hash = ContentHash::of_str(&format!("{}", self.path));
+        // Build a content-sensitive hash matching compile() logic.
+        let content_hash = {
+            let path_hash = ContentHash::of_str(&format!("{}", self.path));
+
+            let template_hashes = self.templates.iter().map(|t| t.content_hash);
+
+            let import_hashes = self.imports.iter().map(|i| ContentHash::of_str(&i.path));
+
+            let all_hashes = std::iter::once(path_hash)
+                .chain(template_hashes)
+                .chain(import_hashes);
+
+            ContentHash::combine_all(all_hashes)
+        };
+
         CompiledModule {
             path: self.path,
             imports: self.imports,
