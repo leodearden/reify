@@ -721,7 +721,7 @@ pub fn compile(
     // before a function can still call that function.
     for decl in &parsed.declarations {
         if let reify_syntax::Declaration::Function(fn_def) = decl
-            && let Some(compiled_fn) = compile_function(fn_def, &enum_defs, &mut diagnostics)
+            && let Some(compiled_fn) = compile_function(fn_def, &enum_defs, &functions, &mut diagnostics)
         {
             functions.push(compiled_fn);
         }
@@ -1061,6 +1061,7 @@ fn compile_structure(
 fn compile_function(
     fn_def: &reify_syntax::FnDef,
     enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
     // Resolve parameter types
@@ -1103,7 +1104,7 @@ fn compile_function(
     // Compile body let bindings
     let mut compiled_lets = Vec::new();
     for let_decl in &fn_def.body.let_bindings {
-        let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, &[], diagnostics);
+        let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
         let let_type = compiled_expr.result_type.clone();
         // Register the let binding in scope for subsequent bindings
         scope.register(&let_decl.name, let_type);
@@ -1111,7 +1112,7 @@ fn compile_function(
     }
 
     // Compile result expression
-    let result_expr = compile_expr(&fn_def.body.result_expr, &scope, enum_defs, &[], diagnostics);
+    let result_expr = compile_expr(&fn_def.body.result_expr, &scope, enum_defs, functions, diagnostics);
 
     // Compute content hash
     let content_hash = {
