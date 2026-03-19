@@ -2,7 +2,7 @@
   "task_id": "41",
   "title": "Fix OCCT kernel unwrap panics on null shape handles",
   "modules": ["crates/reify-kernel-occt"],
-  "analysis": "Two `.unwrap()` calls on `UniquePtr::as_ref()` in reify-kernel-occt/src/lib.rs can panic on null C++ pointers, killing the kernel thread and permanently hanging the handle channel.\n\n**Line 81 (get_shape):** `self.shapes.get(&id.0).map(|ptr| ptr.as_ref().unwrap()).ok_or(GeometryError::InvalidReference(id))` — if a UniquePtr in the HashMap wraps a null C++ pointer, `as_ref()` returns None and `.unwrap()` panics. Fix: split into two steps — first `ok_or` for missing key, then `as_ref().ok_or_else` for null pointer.\n\n**Line 275 (warm_state):** `ffi::ffi::serialize_brep(shape.as_ref().unwrap())` — same issue in the serialization loop. Fix: guard with `if let Some(shape_ref) = shape.as_ref()`, skipping null shapes (consistent with the existing skip-on-serialization-failure pattern).\n\n**Parameter validation in execute() (lines 95-172):** Primitive constructors (Box, Cylinder, Sphere) and Fillet pass user-supplied dimensions directly to OCCT FFI without validating they're positive. Zero or negative values can produce cryptic C++ errors or potentially null shapes. Fix: validate dimensions > 0 before FFI calls, returning GeometryError::OperationFailed for invalid parameters.\n\nAll fixes are confined to crates/reify-kernel-occt/src/lib.rs. Error types from reify-types are used as-is (no modifications needed). Tests use a #[cfg(test)] helper method on OcctKernel to inject null UniquePtr shapes, leveraging cxx's UniquePtr::null() for opaque types.",
+  "analysis": "Two `.unwrap()` calls on `UniquePtr::as_ref()` in reify-kernel-occt/src/lib.rs can panic on null C++ pointers, killing the kernel thread and permanently hanging the handle channel.\n\n**Line 81 (get_shape):** `self.shapes.get(&id.0).map(|ptr| ptr.as_ref().unwrap()).ok_or(GeometryError::InvalidReference(id))` — if a UniquePtr in the HashMap wraps a null C++ pointer, `as_ref()` returns None and `.unwrap()` panics. Fix: split into two steps — first `ok_or` for missing key, then `as_ref().ok_or_else` for null pointer.\n\n**Line 275 (warm_state):** `ffi::ffi::serialize_brep(shape.as_ref().unwrap())` — same issue in the serialization loop. Fix: guard with `if let Some(shape_ref) = shape.as_ref()`, skipping null shapes (consistent with the existing skip-on-serialization-failure pattern).\n\n**Parameter validation in execute() (lines 95-172):** Primitive constructors (Box, Cylinder, Sphere) and Fillet pass user-supplied dimensions directly to OCCT FFI without validating they're positive. Zero or negative values can produce cryptic C++ errors or potentially null shapes. Fix: validate dimensions > 0 before FFI calls, returning GeometryError::OperationFailed for invalid parameters.\n\n**NaN/Infinity gap (review feedback):** The `x <= 0.0` guards implemented in step-6 don't catch NaN or positive infinity. In IEEE 754, `NaN <= 0.0` evaluates to `false`, so `Value::Real(f64::NAN)` passes the guard. Similarly, `f64::INFINITY <= 0.0` is `false`. `as_f64()` (value.rs:44) returns raw f64 without sanitisation, so these values are reachable. Passing NaN/Infinity to OCCT FFI can trigger undefined C++ behaviour or produce null shapes. Fix: replace `x <= 0.0` with `!(x.is_finite() && x > 0.0)` which rejects NaN, ±infinity, zero, and negative values.\n\nAll fixes are confined to crates/reify-kernel-occt/src/lib.rs. Error types from reify-types are used as-is (no modifications needed). Tests use a #[cfg(test)] helper method on OcctKernel to inject null UniquePtr shapes, leveraging cxx's UniquePtr::null() for opaque types.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -68,6 +68,20 @@
       "description": "No new implementation needed — step-7 test should pass after steps 2, 4, and 6. This step exists as a verification checkpoint. If the test fails, debug and fix the root cause (likely a missed error path that allows a panic to propagate through the kernel thread's match dispatch).",
       "status": "done",
       "commit": "ab4690d"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing tests for NaN and infinity parameter rejection in lib.rs::tests:\n- `execute_box_nan_dimension_returns_error`: Box with width=f64::NAN, height=10.0, depth=10.0 returns Err(OperationFailed). Verifies NaN is not silently forwarded to OCCT FFI.\n- `execute_box_infinity_dimension_returns_error`: Box with width=f64::INFINITY, height=10.0, depth=10.0 returns Err(OperationFailed). Verifies positive infinity is rejected.\n- `execute_box_neg_infinity_dimension_returns_error`: Box with width=f64::NEG_INFINITY, height=10.0, depth=10.0 returns Err(OperationFailed). Verifies negative infinity is rejected.\n- `execute_cylinder_nan_radius_returns_error`: Cylinder with radius=f64::NAN, height=10.0 returns Err(OperationFailed).\n- `execute_cylinder_infinity_height_returns_error`: Cylinder with radius=5.0, height=f64::INFINITY returns Err(OperationFailed).\n- `execute_sphere_nan_radius_returns_error`: Sphere with radius=f64::NAN returns Err(OperationFailed).\n- `execute_sphere_infinity_radius_returns_error`: Sphere with radius=f64::INFINITY returns Err(OperationFailed).\n- `execute_fillet_nan_radius_returns_error`: Fillet with radius=f64::NAN on a valid box returns Err(OperationFailed).\n- `execute_fillet_infinity_radius_returns_error`: Fillet with radius=f64::INFINITY on a valid box returns Err(OperationFailed).\nAll tests assert the error is OperationFailed. These tests will FAIL with the current `x <= 0.0` guards because NaN and +infinity slip through.",
+      "status": "done",
+      "commit": "916e85d"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Fix parameter validation guards in execute() to reject NaN and infinity. Replace all `x <= 0.0` guard patterns with `!(x.is_finite() && x > 0.0)`. This idiom returns true for NaN (is_finite() is false), ±infinity (is_finite() is false), zero (0.0 > 0.0 is false), and negative values (x > 0.0 is false). Specifically:\n- Box (line 107): change `if w <= 0.0 || h <= 0.0 || d <= 0.0` to `if !(w.is_finite() && w > 0.0) || !(h.is_finite() && h > 0.0) || !(d.is_finite() && d > 0.0)`\n- Cylinder radius (line 118): change `if r <= 0.0` to `if !(r.is_finite() && r > 0.0)`\n- Cylinder height (line 123): change `if h <= 0.0` to `if !(h.is_finite() && h > 0.0)`\n- Sphere (line 133): change `if r <= 0.0` to `if !(r.is_finite() && r > 0.0)`\n- Fillet (line 162): change `if r <= 0.0` to `if !(r.is_finite() && r > 0.0)`\nError messages updated to say 'must be a finite positive value' to reflect the broader validation.",
+      "status": "done",
+      "commit": "c10d7d7"
     }
   ],
   "design_decisions": [
@@ -94,6 +108,10 @@
     {
       "decision": "get_shape fix uses two-step error handling instead of a single chained expression",
       "rationale": "Splitting `shapes.get(&id.0).ok_or(InvalidReference)?` then `ptr.as_ref().ok_or_else(OperationFailed)` makes the two failure modes explicit and separately testable. The original chained expression `.map(|ptr| ptr.as_ref().unwrap()).ok_or(InvalidReference)` conflates both cases and panics on the null path."
+    },
+    {
+      "decision": "Use `!(x.is_finite() && x > 0.0)` instead of reviewer-suggested `!(x > 0.0)` for parameter guards",
+      "rationale": "The reviewer identified that both NaN and positive infinity must be rejected. The `!(x > 0.0)` idiom catches NaN (since NaN > 0.0 is false) but does NOT catch positive infinity (since INFINITY > 0.0 is true). Using `!(x.is_finite() && x > 0.0)` catches all non-finite values (NaN, +inf, -inf) plus zero and negatives. This is more correct than the reviewer's specific suggestion while fully addressing the identified vulnerability. The `is_finite()` call is explicit and self-documenting about the intent."
     }
   ],
   "reuse": [
@@ -121,6 +139,11 @@
       "what": "cxx::UniquePtr::null() for opaque types",
       "where": "cxx crate (dependency, version 1.x)",
       "how": "Used in the test helper to construct null UniquePtr<OcctShape> without any C++ code, leveraging cxx's auto-generated UniquePtrTarget impl for bridge opaque types"
+    },
+    {
+      "what": "Existing parameter validation test patterns from step-5",
+      "where": "crates/reify-kernel-occt/src/lib.rs tests module (lines 759-863)",
+      "how": "The NaN/infinity tests in step-9 follow the same pattern as the zero/negative tests: create kernel, execute op with invalid value, assert Err(OperationFailed). Only the input values change (f64::NAN, f64::INFINITY instead of 0.0, -5.0)"
     }
   ]
 }
