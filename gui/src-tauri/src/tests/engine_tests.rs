@@ -1,5 +1,7 @@
+use std::path::Path;
+
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{bracket_source, MockGeometryKernel};
+use reify_test_support::{bracket_source, bracket_source_with_width, MockGeometryKernel};
 
 use crate::engine::EngineSession;
 
@@ -132,4 +134,64 @@ fn set_parameter_constraints_still_correct() {
     for c in &state.constraints {
         assert_eq!(c.status, "Satisfied", "constraint {} should be satisfied", c.node_id);
     }
+}
+
+#[test]
+fn load_file_returns_gui_state() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Use the examples/bracket.ri file from project root
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/bracket.ri");
+
+    let state = session
+        .load_file(&path)
+        .expect("load_file should succeed");
+
+    assert!(state.values.len() >= 5, "should have bracket values");
+    assert_eq!(state.constraints.len(), 3, "should have 3 constraints");
+}
+
+#[test]
+fn update_source_changes_width() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let new_source = bracket_source_with_width("120mm");
+    let state = session
+        .update_source("bracket.ri", &new_source)
+        .expect("update_source should succeed");
+
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.name == "width")
+        .expect("should have width value");
+
+    assert_eq!(width.value, "120", "width should be 120mm after update");
+}
+
+#[test]
+fn update_source_with_invalid_source_returns_err() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let result = session.update_source("bad.ri", "this is not valid {{{}}}");
+    assert!(result.is_err(), "invalid source should return Err");
 }
