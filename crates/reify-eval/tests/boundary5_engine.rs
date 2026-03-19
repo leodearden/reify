@@ -419,4 +419,189 @@ fn sub_component_default_param_when_no_arg() {
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(child_template)
         .template(parent_template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Parent.rib.height should use Child's default: 10mm = 0.01 SI
+    let scoped_id = ValueCellId::new("Parent.rib", "height");
+    let val = result.values.get(&scoped_id)
+        .expect("Parent.rib.height should be in eval result values");
+    let f = val.as_f64().expect("should be numeric");
+    assert!(
+        (f - 0.01).abs() < 1e-10,
+        "Parent.rib.height should be ~0.01 SI (10mm default), got {}",
+        f
+    );
+}
+
+/// Sub-component referencing a missing structure is skipped gracefully.
+#[test]
+fn sub_component_missing_structure_skipped_gracefully() {
+    use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId};
+
+    // Parent template with sub referencing nonexistent "NonExistent"
+    let parent_template = TopologyTemplateBuilder::new("Parent")
+        .param("Parent", "width", Type::length(), Some(CompiledExpr::literal(mm(80.0), Type::length())))
+        .sub_component("thing", "NonExistent", vec![])
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent_template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Should not panic; Parent's own param should be evaluated correctly
+    let width_id = ValueCellId::new("Parent", "width");
+    let val = result.values.get(&width_id)
+        .expect("Parent.width should be in values");
+    let f = val.as_f64().expect("should be numeric");
+    assert!(
+        (f - 0.08).abs() < 1e-10,
+        "Parent.width should be ~0.08 SI, got {}",
+        f
+    );
+
+    // No scoped entries for "Parent.thing" should exist
+    let has_scoped = result.values.iter().any(|(id, _)| {
+        format!("{}", id).contains("Parent.thing")
+    });
+    assert!(!has_scoped, "no Parent.thing entries should exist when structure is missing");
+}
+
+/// Engine-level verification: stdlib functions evaluate correctly in let-bindings.
+#[test]
+fn engine_eval_stdlib_function_in_let() {
+    use reify_types::{ModulePath, ValueCellId};
+
+    let source = r#"structure S {
+    param w: Scalar = 80mm
+    param h: Scalar = 100mm
+    let diag = sqrt(w * w + h * h)
+}"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("stdlib_test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // diag = sqrt(0.08^2 + 0.1^2) = sqrt(0.0064 + 0.01) = sqrt(0.0164) ≈ 0.128062
+    let diag_id = ValueCellId::new("S", "diag");
+    let val = result.values.get(&diag_id)
+        .expect("S.diag should be in eval result");
+    let f = val.as_f64().expect("should be numeric");
+    let expected = (0.08_f64.powi(2) + 0.1_f64.powi(2)).sqrt();
+    assert!(
+        (f - expected).abs() < 1e-10,
+        "S.diag should be ~{} (sqrt of w²+h²), got {}",
+        expected, f
+    );
+}
+
+/// Engine-level verification: imports are transparent to evaluation.
+#[test]
+fn engine_eval_with_import() {
+    use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId};
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "x", Type::length(), Some(CompiledExpr::literal(mm(50.0), Type::length())))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .import("std/math")
+        .template(template)
+        .build();
+
+    // Verify imports are stored
+    assert_eq!(module.imports.len(), 1);
+    assert_eq!(module.imports[0].path, "std/math");
+
+    // Evaluate — imports should not affect evaluation
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    let x_id = ValueCellId::new("S", "x");
+    let val = result.values.get(&x_id).expect("S.x should be in values");
+    let f = val.as_f64().expect("should be numeric");
+    assert!(
+        (f - 0.05).abs() < 1e-10,
+        "S.x should be ~0.05 SI (50mm), got {}",
+        f
+    );
+}
+
+/// Comprehensive E2E: all three features (import, stdlib, sub-component) through Engine.
+#[test]
+fn e2e_all_three_features_through_engine() {
+    use reify_types::{ModulePath, ValueCellId};
+
+    let source = r#"import "std/math"
+
+structure Child {
+    param size: Scalar = 10mm
+    let half = size / 2
+}
+
+structure Parent {
+    param w: Scalar = 80mm
+    let diag = sqrt(w * w)
+    sub part = Child(size: w / 2)
+    constraint diag > 0mm
+}"#;
+
+    let parsed = reify_syntax::parse(source, ModulePath::single("e2e_all_three"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) Module has 1 import
+    assert_eq!(compiled.imports.len(), 1);
+    assert_eq!(compiled.imports[0].path, "std/math");
+
+    // Evaluate
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // (b) Parent values
+    let w_id = ValueCellId::new("Parent", "w");
+    let w_val = result.values.get(&w_id).expect("Parent.w should exist");
+    let w_f = w_val.as_f64().expect("numeric");
+    assert!((w_f - 0.08).abs() < 1e-10, "Parent.w should be ~0.08, got {}", w_f);
+
+    let diag_id = ValueCellId::new("Parent", "diag");
+    let diag_val = result.values.get(&diag_id).expect("Parent.diag should exist");
+    let diag_f = diag_val.as_f64().expect("numeric");
+    // sqrt(0.08^2) = 0.08
+    assert!((diag_f - 0.08).abs() < 1e-10, "Parent.diag should be ~0.08, got {}", diag_f);
+
+    // (c) Sub-component param: Parent.part.size = w / 2 = 0.04
+    let size_id = ValueCellId::new("Parent.part", "size");
+    let size_val = result.values.get(&size_id).expect("Parent.part.size should exist");
+    let size_f = size_val.as_f64().expect("numeric");
+    assert!((size_f - 0.04).abs() < 1e-10, "Parent.part.size should be ~0.04, got {}", size_f);
+
+    // (d) Sub-component let: Parent.part.half = size / 2 = 0.02
+    let half_id = ValueCellId::new("Parent.part", "half");
+    let half_val = result.values.get(&half_id).expect("Parent.part.half should exist");
+    let half_f = half_val.as_f64().expect("numeric");
+    assert!((half_f - 0.02).abs() < 1e-10, "Parent.part.half should be ~0.02, got {}", half_f);
+
+    // (e) Constraint check
+    let (constraint_results, _check_diags) = engine.check_constraints_with_values(&result.values).unwrap();
+    assert!(!constraint_results.is_empty(), "should have at least one constraint result");
+
+    // (f) No error-level diagnostics (only import warning is allowed)
+    let errors: Vec<_> = result.diagnostics.iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "no error diagnostics expected, got {:?}", errors);
 }
