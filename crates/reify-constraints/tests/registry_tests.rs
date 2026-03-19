@@ -373,3 +373,16 @@ fn registry_compat_empty_problem() {
         "empty problem should trivially solve"
     );
 }
+
+/// Static assertion: SolverRegistry must be Send + Sync.
+///
+/// Since `ConstraintSolver: Send + Sync` (supertrait bound), all
+/// `Box<dyn ConstraintSolver>` fields are automatically Send + Sync,
+/// and the compiler auto-derives Send + Sync for the struct.
+/// This test verifies that property holds without relying on manual
+/// `unsafe impl` blocks.
+#[test]
+fn solver_registry_is_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<SolverRegistry>();
+}
