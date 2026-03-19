@@ -401,6 +401,8 @@ fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
                 Value::Bool(cmp(*a, *b))
             }
         }
+        // Enum comparison: no ordering on enums
+        (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Undef,
         // Dimensioned Scalar vs non-Scalar: incomparable
         (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
             if !dimension.is_dimensionless() =>
@@ -1078,6 +1080,18 @@ mod tests {
             Value::Bool(true) => {}
             other => panic!("expected Bool(true), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn eval_cmp_enum_returns_undef() {
+        let left = enum_lit("Direction", "In");
+        let right = enum_lit("Direction", "Out");
+        let expr = CompiledExpr::binop(BinOp::Lt, left, right, Type::Bool);
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &values).is_undef(),
+            "comparison on enums should return Undef"
+        );
     }
 
     #[test]
