@@ -2,7 +2,7 @@
   "task_id": "46",
   "title": "Fix PoisonError handling consistency in runtime",
   "modules": ["crates/reify-runtime"],
-  "analysis": "ConcurrentEvalAdapter and SharedPriorityPromoter have inconsistent PoisonError handling. The 'result extraction' paths (build_result_shared, into_result at lines 112-152) correctly use .unwrap_or_else(|e| e.into_inner()) to recover from poisoned locks, but accessor methods (values, take_results, skipped, is_dirty) and the evaluate() hot path use plain .unwrap(), which will cascade-panic if any concurrent task panics while holding a lock. SharedPriorityPromoter has the same issue across all 6 of its lock acquisitions. The fix is mechanical: replace all .unwrap() on Mutex::lock()/RwLock::read()/RwLock::write() with .unwrap_or_else(|e| e.into_inner()). For testing, we need to deliberately poison locks and verify recovery. ConcurrentEvalAdapter's locks are behind Arc, so we can add #[cfg(test)] helpers that clone the relevant Arc and spawn a panicking thread to poison specific locks. SharedPriorityPromoter tests live in the same module so they can access the private `inner` field directly. Specifically: concurrent_eval.rs has 9 .unwrap() calls on lines 93, 98, 103, 176, 190, 220, 226, 242, 260 that need fixing; priority_promotion.rs has 6 .unwrap() calls on lines 121, 126, 131, 136, 147-148 that need fixing.",
+  "analysis": "ConcurrentEvalAdapter and SharedPriorityPromoter have inconsistent PoisonError handling. The 'result extraction' paths (build_result_shared, into_result at lines 112-152) correctly use .unwrap_or_else(|e| e.into_inner()) to recover from poisoned locks, but accessor methods (values, take_results, skipped, is_dirty) and the evaluate() hot path use plain .unwrap(), which will cascade-panic if any concurrent task panics while holding a lock. SharedPriorityPromoter has the same issue across all 6 of its lock acquisitions. The fix is mechanical: replace all .unwrap() on Mutex::lock()/RwLock::read()/RwLock::write() with .unwrap_or_else(|e| e.into_inner()). For testing, we need to deliberately poison locks and verify recovery. ConcurrentEvalAdapter's locks are behind Arc, so we can add cfg-gated helpers that clone the relevant Arc and spawn a panicking thread to poison specific locks. SharedPriorityPromoter tests live in the same module so they can access the private `inner` field directly. Specifically: concurrent_eval.rs has 9 .unwrap() calls on lines 93, 98, 103, 176, 190, 220, 226, 242, 260 that need fixing; priority_promotion.rs has 6 .unwrap() calls on lines 121, 126, 131, 136, 147-148 that need fixing.\n\n**Post-review update:** The poison_* helper methods (lines 177-222 of concurrent_eval.rs) were implemented as `pub` in an unconditional `impl` block with only `#[doc(hidden)]`. This leaves state-corrupting methods in the production API surface. They must be gated behind `#[cfg(any(test, feature = \"test-utils\"))]` with a `test-utils` feature added to Cargo.toml. The integration tests that call these methods need `#[cfg(feature = \"test-utils\")]` gating since `#[cfg(test)]` only applies to unit tests within the crate, not integration tests in `tests/`.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -54,6 +54,20 @@
       "description": "Fix .unwrap() in SharedPriorityPromoter in priority_promotion.rs: line 121 inner.lock().unwrap() → .unwrap_or_else(|e| e.into_inner()), line 126 same, line 131 same, line 136 same, lines 146-148 same. All 6 Mutex::lock() calls get the recovery pattern. Step-5 test should now pass. All existing tests continue to pass since unwrap_or_else is a superset of unwrap behavior for non-poisoned locks.",
       "status": "done",
       "commit": "5eb4f47"
+    },
+    {
+      "id": "step-7",
+      "type": "impl",
+      "description": "Gate poison helper methods behind feature flag to exclude them from the production API. Three changes: (1) Add `[features]` section with `test-utils = []` to crates/reify-runtime/Cargo.toml. (2) In concurrent_eval.rs, change the `impl ConcurrentEvalAdapter` block at lines 176-222 (containing poison_skip_state, poison_results, poison_values, poison_snapshot_values) from `#[doc(hidden)]` to `#[cfg(any(test, feature = \"test-utils\"))]`. Remove `#[doc(hidden)]` since cfg-gating makes it unnecessary. (3) In tests/concurrent_eval.rs, wrap the 5 poison recovery tests (is_dirty_recovers_after_skip_state_poisoning, values_recovers_after_values_lock_poisoning, take_results_recovers_after_results_lock_poisoning, skipped_recovers_after_skip_state_poisoning, evaluate_continues_after_lock_poisoning) in a `#[cfg(feature = \"test-utils\")]` module block so they only compile when `--features test-utils` is passed. This is necessary because `#[cfg(test)]` on the impl block only activates for unit tests within the crate, not for integration tests in the `tests/` directory.",
+      "status": "done",
+      "commit": "21ec973"
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Verify the feature gate works correctly. (1) Run `cargo check -p reify-runtime` (without test-utils feature) — must compile successfully, confirming the poison methods are excluded from the production binary and no other code depends on them unconditionally. (2) Run `cargo test -p reify-runtime --features test-utils` — all poison recovery tests must pass, confirming the feature flag correctly enables the test helpers. (3) Run `cargo test -p reify-runtime` (without feature) — all non-poison tests must pass, confirming no regression from the gating.",
+      "status": "done",
+      "commit": "21ec973"
     }
   ],
   "design_decisions": [
@@ -72,6 +86,10 @@
     {
       "decision": "Do not convert to Result-returning APIs",
       "rationale": "The task scope is to make PoisonError handling consistent, not to change the API surface. Converting to Result<T, PoisonError> would require changing every call site and is a larger refactor. The unwrap_or_else pattern preserves the existing API while adding resilience."
+    },
+    {
+      "decision": "Gate poison helpers with #[cfg(any(test, feature = \"test-utils\"))] and a Cargo feature, not just #[cfg(test)]",
+      "rationale": "#[cfg(test)] only applies during unit test compilation of the crate itself — it does NOT apply to integration tests in the tests/ directory or to downstream crates. Since the poison recovery integration tests live in tests/concurrent_eval.rs, they need a feature flag (test-utils) to enable the helpers. The dual gate `any(test, feature = \"test-utils\")` ensures the helpers are available both in unit tests (via cfg(test)) and in integration tests (via the feature). The integration tests themselves are wrapped in #[cfg(feature = \"test-utils\")] so they only compile when the feature is active."
     }
   ],
   "reuse": [
@@ -94,6 +112,11 @@
       "what": "PanickingEvaluator test pattern",
       "where": "tests/concurrent_eval.rs lines 537-545",
       "how": "Reference the existing pattern of creating evaluators that intentionally panic, used in rollback_on_task_panicked and repeated_error_then_success_cycle tests."
+    },
+    {
+      "what": "Cargo feature gating pattern for test-only code",
+      "where": "Standard Rust idiom (cfg(any(test, feature = \"test-utils\")))",
+      "how": "Gate the poison helper impl block so it compiles only during unit tests or when test-utils feature is explicitly enabled. Integration tests use #[cfg(feature = \"test-utils\")] since cfg(test) doesn't apply to them."
     }
   ]
 }
