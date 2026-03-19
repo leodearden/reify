@@ -1,29 +1,38 @@
 {
-  "task_id": "59",
-  "title": "Guard (where) \u2014 grammar, parser",
+  "task_id": "85",
+  "title": "Solid stores + Tauri bridge layer",
   "files": [
-    "crates/reify-syntax/src/lib.rs",
-    "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/guard_tests.rs",
-    "crates/reify-syntax/tests/boundary1_producer.rs"
+    "gui/package.json",
+    "gui/tsconfig.json",
+    "gui/vite.config.ts",
+    "gui/vitest.config.ts",
+    "gui/index.html",
+    "gui/src/index.tsx",
+    "gui/src/App.tsx",
+    "gui/src/types.ts",
+    "gui/src/bridge.ts",
+    "gui/src/stores/engineStore.ts",
+    "gui/src/stores/selectionStore.ts",
+    "gui/src/stores/editorStore.ts",
+    "gui/src/stores/index.ts",
+    "gui/src/__tests__/types.typecheck.ts",
+    "gui/src/__tests__/engineStore.test.ts",
+    "gui/src/__tests__/selectionStore.test.ts",
+    "gui/src/__tests__/editorStore.test.ts",
+    "gui/src/__tests__/bridge.test.ts"
   ],
   "modules": [
-    "crates/reify-syntax"
+    "gui/src",
+    "gui/src/stores",
+    "gui/src/__tests__"
   ],
-  "analysis": "Thorough codebase exploration reveals the task is partially complete. The tree-sitter grammar already defines both where_clause (per-declaration postfix guard, line 56) and guarded_block (block-level guard with optional else, line 62) rules in grammar.js. The generated parser.c (18 references to guarded_block), grammar.json, and node-types.json are all up to date. Per-declaration where clauses are fully implemented: WhereClause struct exists in lib.rs, all 6 declaration types have where_clause: Option<WhereClause> fields, and the lowering in ts_parser.rs correctly extracts where clauses via lower_where_clause (lines 197-211). Two guard tests already exist and pass: param_with_where_clause and bracket_source_no_guards.\n\nWhat remains is the block-level guarded group feature: (1) AST: Add GuardedGroupDecl struct and MemberDecl::GuardedGroup variant to lib.rs. (2) Lowering: Add lower_guarded_block method and handle guarded_block nodes in lower_structure. (3) Fix exhaustive match arms in ts_parser.rs internal tests (4 locations) and boundary1_producer.rs (1 location). (4) Tests: Block guard, guard with else, nested guards, complex guard expressions, additional per-declaration tests.\n\nThe compiler (reify-compiler/src/lib.rs line 807) already has a forward-looking MemberDecl::GuardedGroup(_) => {} stub. The LSP uses wildcard matches. No grammar, parser.c, fixtures.rs, or compiler changes needed.\n\nKey challenge: The guarded_block grammar uses two positional repeat($._member) groups without field names. Lowering must track position relative to the anonymous else keyword to separate main vs else members. The member dispatch logic should be refactored into a reusable lower_member_node helper for recursive guarded block nesting.",
+  "analysis": "Task 85 creates the reactive state management layer and IPC bridge for the Reify GUI frontend. Task 81 (scaffold) is a dependency but the gui/ directory does not exist on any branch or worktree (checked main and task/82-85, all at same commit with no gui/), so this task must bootstrap the minimal SolidJS project scaffold as a prerequisite.\n\nThe IPC types to mirror are defined in the task description: MeshData, ValueData, ConstraintData, SourceLocation, FileData, GuiState, plus EvaluationStatus. The Rust-side types in reify-types (Value enum in value.rs, Mesh struct in geometry.rs with vertices: Vec<f32>/indices: Vec<u32>/normals: Option<Vec<f32>>, Constraint types in constraint.rs, SourceSpan/Diagnostic in diagnostics.rs) inform the TypeScript shape but the IPC types are serialized/simplified versions.\n\nThe bridge layer wraps Tauri invoke() and listen() APIs with typed functions. Since Tauri won't be available in test environments, the bridge is mocked via vi.mock().\n\nThree Solid stores (engine, selection, editor) use createStore from solid-js/store. Tests use Vitest with jsdom and SolidJS createRoot for reactive test isolation. The engine store subscribes to Tauri events via bridge, tested by mocking bridge event listeners.\n\nKey design: Factory functions (createXStore) for test isolation. Record<string, T> for store collections (Solid proxies don't work with Map/Set). string[] for dirtyFiles (same reason).",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add GuardedGroupDecl struct to lib.rs (after WhereClause at line ~46) with fields: condition: Expr, members: Vec<MemberDecl>, else_members: Vec<MemberDecl>, span: SourceSpan, content_hash: ContentHash. Add #[derive(Debug, Clone)]. Add MemberDecl::GuardedGroup(GuardedGroupDecl) variant to the MemberDecl enum (after Maximize at line ~38). Required before any new tests can compile.",
+      "description": "Create minimal gui/ project scaffold: package.json with solid-js, @tauri-apps/api (^2), vitest, @solidjs/testing-library, jsdom, vite, vite-plugin-solid, typescript. tsconfig.json with strict mode, JSX preserve for solid-js. vite.config.ts with solid plugin. vitest.config.ts with jsdom environment. index.html entry point. Minimal src/index.tsx and src/App.tsx. Run pnpm install. Add gui/node_modules to .gitignore.",
       "status": "done",
-      "commit": "66866d6",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Fix exhaustive match arms broken by new GuardedGroup variant. Five locations in crates/reify-syntax: (1) ts_parser.rs ts_parse_produces_correct_structure test ~line 600: add MemberDecl::GuardedGroup(_) => guarded.into(). (2) ts_parser.rs spans_are_valid test ~line 762: add MemberDecl::GuardedGroup(g) => g.span. (3) ts_parser.rs content_hashes test ~line 829: add MemberDecl::GuardedGroup(g) => (g.span, g.content_hash). (4) ts_parser.rs parse_deterministic test ~lines 910+918: add MemberDecl::GuardedGroup(g) => (g.content_hash, g.span) to both arms. (5) boundary1_producer.rs ~line 353: add MemberDecl::GuardedGroup(g) => g.span.",
-      "status": "done",
-      "commit": "66866d6",
+      "commit": "3d862b1",
       "tests": []
     }
   ],
@@ -31,145 +40,142 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test parse_basic_guarded_block in guard_tests.rs: parse 'structure S { where needs_cooling { param fan_size : Scalar = 50mm } }'. Assert: no parse errors, members.len()==1, members[0] matches MemberDecl::GuardedGroup(g) with g.condition being ExprKind::Ident(needs_cooling), g.members.len()==1 (ParamDecl fan_size), g.else_members.is_empty(). Fails because lower_structure doesn't handle guarded_block nodes yet.",
+      "description": "Create gui/src/__tests__/types.typecheck.ts: compile-time type check importing all types from types.ts. Creates typed variables asserting: MeshData with entityPath/vertices/indices/normals, ValueData with cellId/entityPath/memberName/value/determinacy, ConstraintData with constraintId/entityPath/satisfaction/messages, SourceLocation with filePath/line/column, FileData with path/content/language, GuiState with meshes/values/constraints/files/evalStatus, EvaluationStatus with phase union and optional progress, type aliases MeshUpdate/ValueUpdate/ConstraintUpdate. Won't compile since types.ts doesn't exist.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "964092a"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement guarded block lowering in ts_parser.rs. (1) Extract member dispatch from lower_structure match block (lines 113-183) into lower_member_node(&mut self, child: Node) -> Option<MemberDecl> handling param/let/constraint/sub/minimize/maximize/guarded_block/ERROR with is_error checks. (2) Refactor lower_structure to call lower_member_node. (3) Add lower_guarded_block(&mut self, node: Node) -> Option<GuardedGroupDecl>: extract condition via child_by_field_name(condition) + lower_expr, iterate children with boolean in_else flag toggled on anonymous child with text else, collect members via lower_member_node into members or else_members, construct GuardedGroupDecl with span and content_hash.",
+      "description": "Create gui/src/types.ts with all IPC types: MeshData (entityPath: string, vertices: Float32Array, indices: Uint32Array, normals: Float32Array | null), ValueData (cellId/entityPath/memberName/value/determinacy: string), ConstraintData (constraintId/entityPath: string, satisfaction: 'satisfied'|'violated'|'indeterminate', messages: string[]), SourceLocation (filePath: string, line/column: number), FileData (path/content/language: string), GuiState (meshes/values/constraints/files arrays + evalStatus), EvaluationStatus (phase: 'idle'|'evaluating'|'resolving', progress?: number), type aliases MeshUpdate/ValueUpdate/ConstraintUpdate. Run tsc --noEmit.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "b9baa98"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test parse_guarded_block_with_else in guard_tests.rs: parse 'structure S { where cond { param a : Scalar = 1mm } else { param b : Scalar = 2mm } }'. Assert: condition is Ident(cond), members has 1 ParamDecl a, else_members has 1 ParamDecl b.",
+      "description": "Create gui/src/__tests__/bridge.test.ts: mock @tauri-apps/api/core invoke() and @tauri-apps/api/event listen() via vi.mock(). Tests: (1) getInitialState calls invoke('get_initial_state'). (2) setParameter calls invoke('set_parameter', {cellId, value}). (3) updateSource calls invoke('update_source', {filePath, content}). (4) onMeshUpdate calls listen('mesh-update', cb) returns unlisten. (5) onEvaluationStatus calls listen('evaluation-status', cb). Fails because bridge.ts doesn't exist.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "abe4009"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "If else test fails, debug lower_guarded_block else delimiter detection. Verify tree-sitter CST structure by inspecting child node kinds/text. The else keyword should appear as anonymous node. Adjust detection logic if needed (check node kind vs text comparison).",
+      "description": "Create gui/src/bridge.ts: 9 command functions (getInitialState, setParameter, updateSource, saveFile, openFile, exportGeometry, getSourceLocation, focusEntity, lspRequest) wrapping invoke(). 6 event listeners (onMeshUpdate, onValueUpdate, onConstraintUpdate, onEvaluationStatus, onDiagnostics, onFileChanged) wrapping listen() extracting event.payload. Returns Promise<UnlistenFn>. All bridge tests pass.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "652bd99"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test parse_nested_guarded_blocks in guard_tests.rs: parse 'structure S { where a { where b { param x : Scalar } } }'. Assert: outer GuardedGroupDecl has condition Ident(a), members[0] is GuardedGroup with condition Ident(b), inner members[0] is ParamDecl x.",
+      "description": "Create gui/src/__tests__/selectionStore.test.ts in createRoot: (1) initial null selectedEntity/hoveredEntity. (2) selectEntity('Bracket') sets selectedEntity. (3) selectEntity(null) clears. (4) hoverEntity sets/clears. (5) select/hover independent. Fails because selectionStore.ts doesn't exist.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "91f818c"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify nested guards pass. Should already work via recursive lower_member_node dispatch. If failing, check guarded_block case in lower_member_node correctly invokes lower_guarded_block.",
+      "description": "Create gui/src/stores/selectionStore.ts: createSelectionStore() factory returning { state, selectEntity, hoverEntity }. State: { selectedEntity: string | null, hoveredEntity: string | null }. Uses Solid createStore. All selection tests pass.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "989bd4e"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test parse_guard_complex_expression in guard_tests.rs: (1) Per-declaration: 'param fan : Scalar = 50mm where x > 5mm && active', assert condition is BinOp(&&, BinOp(>, Ident(x), QuantityLiteral(5,mm)), Ident(active)). (2) Block-level: 'where needs_cooling || forced { param fan : Scalar = 50mm }', assert condition is BinOp(||, Ident(needs_cooling), Ident(forced)).",
+      "description": "Create gui/src/__tests__/editorStore.test.ts in createRoot: (1) initial empty state. (2) openFile adds FileData, sets activeFile. (3) duplicate open doesn't add twice. (4) closeFile removes, handles activeFile switch. (5) closeFile removes from dirtyFiles. (6) markDirty/markClean toggles. (7) setActiveFile. (8) setCursorPosition. Fails because editorStore.ts doesn't exist.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "e2ec2d0"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify complex guard expressions pass. Should work since condition uses $._expression supporting all operators. If failing, investigate expression boundary parsing.",
+      "description": "Create gui/src/stores/editorStore.ts: createEditorStore() factory returning { state, openFile, closeFile, setActiveFile, markDirty, markClean, setCursorPosition }. State: { openFiles: FileData[], activeFile: string | null, dirtyFiles: string[], cursorPosition: {line: number, column: number} | null }. All editor tests pass.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "c6c5407"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write additional per-declaration where tests in guard_tests.rs: (1) let_with_where_clause: 'let y = x * 2 where active' -> LetDecl.where_clause Ident(active). (2) constraint_with_where_clause: 'constraint x > 5mm where enabled' -> ConstraintDecl.where_clause Ident(enabled). (3) sub_with_where_clause: 'sub hole = Hole(diameter: 6mm) where needs_hole' -> SubDecl.where_clause Ident(needs_hole). Should pass immediately.",
+      "description": "Create gui/src/__tests__/engineStore.test.ts in createRoot: (1) initial empty state, evalStatus {phase:'idle'}. (2) initFromState populates from GuiState. (3) applyMeshUpdate upserts by entityPath. (4) applyValueUpdates batch-upserts by cellId. (5) applyConstraintUpdates batch-upserts. (6) setEvalStatus updates. (7) subscribeToEvents wires bridge listeners, returns cleanup. Fails because engineStore.ts doesn't exist.",
       "status": "done",
-      "commit": "528bc6e"
+      "commit": "c7d0dfe"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify per-declaration where tests pass. These exercise existing lowering (lower_where_clause called by lower_let, lower_constraint, lower_sub). If any fail, investigate.",
+      "description": "Create gui/src/stores/engineStore.ts: createEngineStore() factory returning { state, initFromState, applyMeshUpdate, applyValueUpdates, applyConstraintUpdates, setEvalStatus, subscribeToEvents }. State: { meshes: Record<string, MeshData>, values: Record<string, ValueData>, constraints: Record<string, ConstraintData>, evalStatus: EvaluationStatus }. subscribeToEvents wires bridge listeners, returns cleanup fn. All engine tests pass.",
       "status": "done",
-      "commit": "44d2310"
+      "commit": "486d91b"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test guard_free_declarations_backward_compat in guard_tests.rs: parse bracket_source(), verify no GuardedGroup variants in members, all where_clause fields are None, member count unchanged at 10, no errors.",
-      "status": "done",
-      "commit": "528bc6e"
+      "description": "Run full test suite (vitest run) and type-check (tsc --noEmit). Verify all tests pass and TypeScript compiles cleanly.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Run cargo test -p reify-syntax then cargo test --workspace. Fix any remaining issues. Compiler with GuardedGroup stub and LSP with wildcards should pass cleanly.",
-      "status": "done",
-      "commit": "44d2310"
+      "description": "Create gui/src/stores/index.ts barrel re-exporting all three store factories. Final cleanup and verification.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Grammar and generated parser are already complete - no grammar changes needed",
-      "rationale": "The tree-sitter grammar already defines both where_clause (line 56) and guarded_block (line 62) rules. parser.c was regenerated in prior commit 66866d6. The grammar handles ambiguity correctly: where expr followed by { parses as guarded_block; at end of declaration parses as where_clause."
+      "decision": "Create minimal scaffold as prerequisite since Task 81 gui/ doesn't exist",
+      "rationale": "Task 81 (scaffold) not completed: no gui/ directory on any branch. Prerequisites create the minimal scaffold needed. Full scaffold with Tauri cargo config, CSS, etc. can be layered on later."
     },
     {
-      "decision": "Refactor member dispatch into lower_member_node helper for reuse",
-      "rationale": "lower_structure has a monolithic match block for all member kinds. Guarded blocks need identical dispatch for nested members including recursive guarded blocks. Extracting lower_member_node eliminates duplication and enables clean recursion."
+      "decision": "Vitest with jsdom for store tests",
+      "rationale": "Standard for Vite/SolidJS projects. jsdom provides DOM APIs for SolidJS reactivity. Store tests use createRoot for reactive context isolation per test."
     },
     {
-      "decision": "Use positional iteration with else delimiter detection for main vs else member separation",
-      "rationale": "The guarded_block grammar uses two unnamed repeat($._member) groups without field names. Tree-sitter places all member children as direct children. The else keyword appears as anonymous child between groups. Iterate children toggling a boolean on else to partition into main and else vectors."
+      "decision": "Mock @tauri-apps/api via vi.mock()",
+      "rationale": "Tauri APIs only available inside Tauri webview. vi.mock() provides clean isolation for bridge tests."
     },
     {
-      "decision": "Include content_hash on GuardedGroupDecl",
-      "rationale": "All 6 existing declaration types carry content_hash for incremental evaluation. GuardedGroupDecl follows the same pattern for consistency."
+      "decision": "Record<string, T> for store collections, not Map",
+      "rationale": "Solid's createStore Proxy works with plain objects/arrays, not Map/Set. Record enables fine-grained per-key reactivity."
     },
     {
-      "decision": "Scope limited to crates/reify-syntax only",
-      "rationale": "Grammar is complete. Compiler has forward-looking GuardedGroup stub (line 807). LSP uses wildcards. Only reify-syntax needs changes: AST, lowering, tests."
+      "decision": "string[] for dirtyFiles, not Set<string>",
+      "rationale": "Solid createStore Proxy cannot track Set mutations. Array with includes/filter is compatible and sufficient for expected file counts."
     },
     {
-      "decision": "Per-declaration where clauses already support all 6 member types",
-      "rationale": "Existing implementation added where_clause to all 6 types (not just the 4 in task spec). Already done and tested. Plan preserves this."
+      "decision": "Factory function pattern (createXStore) for all stores",
+      "rationale": "Singleton stores share state across tests causing flakiness. Factories enable fresh instances per test. In the app, stores created once and shared via context."
+    },
+    {
+      "decision": "Float32Array/Uint32Array for mesh data",
+      "rationale": "Binary array data from Rust. Typed arrays match WebGL expectations and enable efficient Tauri IPC transfer."
+    },
+    {
+      "decision": "Kebab-case event names in bridge",
+      "rationale": "Tauri convention uses kebab-case ('mesh-update'). Bridge translates to camelCase JS names (onMeshUpdate) while using correct strings internally."
     }
   ],
   "reuse": [
     {
-      "what": "Existing lower_where_clause method",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 197-211",
-      "how": "Already implemented for all 6 lowering functions. No changes needed. Guarded block uses direct child_by_field_name(condition) since it has its own condition field."
+      "what": "Rust type shapes from reify-types",
+      "where": "crates/reify-types/src/geometry.rs (Mesh), value.rs (Value, DeterminacyState, Satisfaction), constraint.rs (ConstraintResult), diagnostics.rs (Diagnostic, SourceSpan)",
+      "how": "TS IPC types mirror serialized forms: MeshData mirrors Mesh, ValueData mirrors ValueCellId+Value, Satisfaction maps to string union."
     },
     {
-      "what": "lower_expr recursive expression lowering",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 371-403",
-      "how": "Reuse for guarded_block condition. Supports all expression types needed for guard conditions."
+      "what": "Solid createStore pattern",
+      "where": "solid-js/store module",
+      "how": "All stores use createStore([initial]) returning [state, setState]. Actions use setState with path-based updates."
     },
     {
-      "what": "Member dispatch pattern from lower_structure",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 113-183",
-      "how": "Extract into lower_member_node. Add guarded_block case. Reuse for both structure body and nested guarded block members."
+      "what": "Tauri v2 IPC patterns",
+      "where": "@tauri-apps/api/core invoke(), @tauri-apps/api/event listen()",
+      "how": "Bridge wraps invoke<T>(cmd, args) for commands, listen<T>(event, handler) for events. UnlistenFn for cleanup."
     },
     {
-      "what": "span() and content_hash() helpers",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 53-60",
-      "how": "Reuse for GuardedGroupDecl construction, same pattern as all existing AST nodes."
-    },
-    {
-      "what": "parse_members test helper",
-      "where": "crates/reify-syntax/tests/guard_tests.rs lines 9-16",
-      "how": "Reuse for all new guard tests to parse source and extract members."
-    },
-    {
-      "what": "Test assertion patterns",
-      "where": "guard_tests.rs and ts_parser.rs mod tests",
-      "how": "Follow: parse source -> extract members -> match MemberDecl variant -> assert fields."
+      "what": "Codebase TDD conventions",
+      "where": "All reify-* crates follow test-first pattern",
+      "how": "Same discipline for TypeScript: test files first, each step atomic. Factory pattern for test isolation mirrors Rust per-test setup."
     }
-  ],
-  "_schema_version": 1
+  ]
 }
