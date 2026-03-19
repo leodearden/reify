@@ -29,7 +29,7 @@ fn prepare_concurrent_edit_returns_correct_setup() {
     let width_id = ValueCellId::new(e, "width");
 
     // Prepare concurrent edit: change width from 80mm to 100mm
-    let setup = engine.prepare_concurrent_edit(width_id.clone(), Value::length(0.1));
+    let setup = engine.prepare_concurrent_edit(width_id.clone(), Value::length(0.1)).unwrap();
 
     // (1) eval_set should match sequential dirty∩demand set for width change
     // width change → dirty = {volume, C1, R0}; all are demanded → eval_set = {volume, C1, R0}
@@ -104,7 +104,7 @@ fn apply_concurrent_edit_updates_engine_state() {
     let volume_node = NodeId::Value(volume_id.clone());
 
     // Prepare concurrent edit
-    let setup = engine.prepare_concurrent_edit(width_id.clone(), Value::length(0.1));
+    let setup = engine.prepare_concurrent_edit(width_id.clone(), Value::length(0.1)).unwrap();
 
     // Simulate what ConcurrentEvalAdapter would produce:
     // Volume = width * height * thickness = 0.1 * 0.1 * 0.005 = 5e-5
@@ -210,7 +210,7 @@ fn rollback_concurrent_edit_restores_pending_to_final() {
     let pre_volume_hash = engine.cache_store().get(&volume_node).unwrap().result_hash;
 
     // Prepare concurrent edit — marks eval_set nodes as Pending
-    let setup = engine.prepare_concurrent_edit(width_id.clone(), Value::length(0.1));
+    let setup = engine.prepare_concurrent_edit(width_id.clone(), Value::length(0.1)).unwrap();
 
     // Verify nodes are in Pending state after prepare
     let volume_entry = engine.cache_store().get(&volume_node).unwrap();

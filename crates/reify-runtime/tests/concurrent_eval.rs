@@ -388,7 +388,7 @@ async fn concurrent_cancellation_between_levels() {
 
     // Use the lower-level API to control cancellation timing
     let a_id = ValueCellId::new(e, "a");
-    let setup = engine.prepare_concurrent_edit(a_id, Value::Real(10.0));
+    let setup = engine.prepare_concurrent_edit(a_id, Value::Real(10.0)).unwrap();
     let eval_set = setup.eval_set.clone();
     let traces = setup.traces.clone();
 
@@ -517,7 +517,7 @@ async fn rollback_on_task_panicked_restores_engine_state() {
     let b_node = NodeId::Value(ValueCellId::new(e, "b"));
 
     // Prepare concurrent edit — marks b as Pending
-    let setup = engine.prepare_concurrent_edit(a_id.clone(), Value::Real(50.0));
+    let setup = engine.prepare_concurrent_edit(a_id.clone(), Value::Real(50.0)).unwrap();
 
     // Verify b is Pending
     let entry = engine.cache_store().get(&b_node).unwrap();
@@ -607,7 +607,7 @@ async fn repeated_error_then_success_cycle() {
     let c_node = NodeId::Value(ValueCellId::new(e, "c"));
 
     // === First cycle: prepare → panicking scheduler → rollback ===
-    let setup1 = engine.prepare_concurrent_edit(a_id.clone(), Value::Real(20.0));
+    let setup1 = engine.prepare_concurrent_edit(a_id.clone(), Value::Real(20.0)).unwrap();
 
     struct PanickingEvaluator;
     impl AsyncNodeEvaluator for PanickingEvaluator {

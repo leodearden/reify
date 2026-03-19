@@ -22,6 +22,8 @@ pub enum SchedulerError {
     TaskPanicked(Box<dyn std::any::Any + Send>),
     /// A spawned evaluation task was cancelled by the tokio runtime.
     TaskCancelled,
+    /// The engine was not initialized (eval() not called before this operation).
+    EngineNotInitialized(reify_eval::EngineError),
 }
 
 impl std::fmt::Display for SchedulerError {
@@ -39,11 +41,20 @@ impl std::fmt::Display for SchedulerError {
             SchedulerError::TaskCancelled => {
                 write!(f, "evaluation task was cancelled")
             }
+            SchedulerError::EngineNotInitialized(e) => {
+                write!(f, "engine not initialized: {e}")
+            }
         }
     }
 }
 
 impl std::error::Error for SchedulerError {}
+
+impl From<reify_eval::EngineError> for SchedulerError {
+    fn from(e: reify_eval::EngineError) -> Self {
+        SchedulerError::EngineNotInitialized(e)
+    }
+}
 
 /// A cancellation token for cooperative cancellation of async tasks.
 ///

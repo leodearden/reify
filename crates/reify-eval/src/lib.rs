@@ -266,9 +266,9 @@ impl Engine {
         &mut self,
         cell: ValueCellId,
         new_value: Value,
-    ) -> ConcurrentEditSetup {
+    ) -> Result<ConcurrentEditSetup, EngineError> {
         let state = self.eval_state.as_ref()
-            .expect("prepare_concurrent_edit requires a prior call to eval()");
+            .ok_or(EngineError::NotInitialized)?;
 
         // Clone snapshot (O(1) via PersistentMap)
         let parent_id = state.snapshot.id;
@@ -314,7 +314,7 @@ impl Engine {
             self.cache.mark_pending(node_id);
         }
 
-        ConcurrentEditSetup {
+        Ok(ConcurrentEditSetup {
             eval_set,
             graph: state.snapshot.graph.clone(),
             values,
@@ -326,7 +326,7 @@ impl Engine {
             snapshot_id: SnapshotId(snapshot_id),
             parent_snapshot_id: parent_id,
             changed_cells: changed_set,
-        }
+        })
     }
 
     /// Roll back the Engine state after a failed concurrent evaluation.
@@ -1298,12 +1298,12 @@ impl Engine {
     pub fn check_constraints_with_values(
         &self,
         values: &ValueMap,
-    ) -> (Vec<ConstraintCheckEntry>, Vec<Diagnostic>) {
+    ) -> Result<(Vec<ConstraintCheckEntry>, Vec<Diagnostic>), EngineError> {
         let mut constraint_results = Vec::new();
         let mut diagnostics = Vec::new();
 
         let state = self.eval_state.as_ref()
-            .expect("check_constraints_with_values requires a prior call to eval()");
+            .ok_or(EngineError::NotInitialized)?;
 
         let constraint_nodes: Vec<_> = state.snapshot
             .graph
@@ -1334,7 +1334,7 @@ impl Engine {
             }
         }
 
-        (constraint_results, diagnostics)
+        Ok((constraint_results, diagnostics))
     }
 
     /// Evaluates ALL constraints (not just dirty ones) to produce a complete
@@ -1348,7 +1348,7 @@ impl Engine {
     ) -> Result<CheckResult, EngineError> {
         let eval_result = self.edit_param(cell, new_value)?;
         let (constraint_results, constraint_diagnostics) =
-            self.check_constraints_with_values(&eval_result.values);
+            self.check_constraints_with_values(&eval_result.values)?;
 
         let mut diagnostics = eval_result.diagnostics;
         diagnostics.extend(constraint_diagnostics);
