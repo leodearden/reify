@@ -329,3 +329,34 @@ fn sub_component_missing_structure_skipped_gracefully() {
     });
     assert!(!has_scoped, "no Parent.thing entries should exist when structure is missing");
 }
+
+/// Engine-level verification: stdlib functions evaluate correctly in let-bindings.
+#[test]
+fn engine_eval_stdlib_function_in_let() {
+    use reify_types::{ModulePath, ValueCellId};
+
+    let source = r#"structure S {
+    param w: Scalar = 80mm
+    param h: Scalar = 100mm
+    let diag = sqrt(w * w + h * h)
+}"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("stdlib_test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // diag = sqrt(0.08^2 + 0.1^2) = sqrt(0.0064 + 0.01) = sqrt(0.0164) ≈ 0.128062
+    let diag_id = ValueCellId::new("S", "diag");
+    let val = result.values.get(&diag_id)
+        .expect("S.diag should be in eval result");
+    let f = val.as_f64().expect("should be numeric");
+    let expected = (0.08_f64.powi(2) + 0.1_f64.powi(2)).sqrt();
+    assert!(
+        (f - expected).abs() < 1e-10,
+        "S.diag should be ~{} (sqrt of w²+h²), got {}",
+        expected, f
+    );
+}
