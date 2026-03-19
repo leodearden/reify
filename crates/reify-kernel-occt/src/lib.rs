@@ -732,6 +732,112 @@ mod tests {
     }
 
     #[test]
+    fn execute_box_zero_dimension_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(0.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-width box"),
+        }
+    }
+
+    #[test]
+    fn execute_box_negative_dimension_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(-5.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for negative-width box"),
+        }
+    }
+
+    #[test]
+    fn execute_cylinder_zero_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Cylinder {
+            radius: Value::Real(0.0),
+            height: Value::Real(10.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-radius cylinder"),
+        }
+    }
+
+    #[test]
+    fn execute_cylinder_negative_height_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Cylinder {
+            radius: Value::Real(5.0),
+            height: Value::Real(-1.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for negative-height cylinder"),
+        }
+    }
+
+    #[test]
+    fn execute_sphere_zero_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Sphere {
+            radius: Value::Real(0.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-radius sphere"),
+        }
+    }
+
+    #[test]
+    fn execute_sphere_negative_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Sphere {
+            radius: Value::Real(-1.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for negative-radius sphere"),
+        }
+    }
+
+    #[test]
+    fn execute_fillet_zero_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        // Create a valid box first
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Fillet {
+            target: box_h.id,
+            radius: Value::Real(0.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-radius fillet"),
+        }
+    }
+
+    #[test]
     fn brep_serialization_roundtrip() {
         // Create a box shape
         let shape = ffi::ffi::make_box(10.0, 20.0, 30.0).unwrap();
