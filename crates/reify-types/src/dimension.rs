@@ -370,4 +370,34 @@ mod tests {
         let b = Rational::new(-100, 1);
         assert_eq!(a - b, Rational::new(150, 1));
     }
+
+    #[test]
+    fn pow_large_exponent_round_trip() {
+        // LENGTH^100 then root(100) should recover LENGTH.
+        let powered = DimensionVector::LENGTH.pow(100);
+        assert_eq!(powered.0[0], Rational { num: 100, den: 1 });
+        let rooted = powered.root(100);
+        assert_eq!(rooted, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn content_hash_determinism_with_wide_values() {
+        // DimensionVector with exponents > 127 must hash deterministically.
+        let dv = DimensionVector::basis_n(0, 200);
+        let h1 = dv.content_hash();
+        let h2 = dv.content_hash();
+        assert_eq!(h1, h2);
+        // Hash should differ from a different wide exponent.
+        let dv2 = DimensionVector::basis_n(0, 201);
+        assert_ne!(h1, dv2.content_hash());
+    }
+
+    #[test]
+    fn rational_display_wide_values() {
+        // Display formatting must show correct values beyond old i8 range.
+        let r = Rational { num: 200, den: 1 };
+        assert_eq!(format!("{}", r), "200");
+        let r2 = Rational::new(300, 2);
+        assert_eq!(format!("{}", r2), "150");
+    }
 }
