@@ -1547,6 +1547,53 @@ fn compile_function_forward_reference() {
     }
 }
 
+/// Fn body calling another user-defined function should produce UserFunctionCall.
+#[test]
+fn compile_fn_body_calls_other_user_fn() {
+    let source = "fn double(x: Real) -> Real { x + x }\nfn quadruple(x: Real) -> Real { double(double(x)) }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let compiled = reify_compiler::compile(&parsed);
+
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "no diagnostics expected: {:?}",
+        compiled.diagnostics
+    );
+    assert_eq!(compiled.functions.len(), 2);
+    assert_eq!(compiled.functions[0].name, "double");
+    assert_eq!(compiled.functions[1].name, "quadruple");
+
+    // quadruple's result_expr should be UserFunctionCall { function_name: "double", .. }
+    let q_body = &compiled.functions[1].body;
+    assert!(q_body.let_bindings.is_empty());
+
+    // Outer call: double(double(x))
+    match &q_body.result_expr.kind {
+        reify_types::CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => {
+            assert_eq!(function_name, "double", "outer call should be double");
+            assert_eq!(args.len(), 1);
+            assert_eq!(q_body.result_expr.result_type, reify_types::Type::Real);
+
+            // Inner call: double(x)
+            match &args[0].kind {
+                reify_types::CompiledExprKind::UserFunctionCall {
+                    function_name: inner_name,
+                    args: inner_args,
+                } => {
+                    assert_eq!(inner_name, "double", "inner call should be double");
+                    assert_eq!(inner_args.len(), 1);
+                    assert_eq!(args[0].result_type, reify_types::Type::Real);
+                }
+                other => panic!("expected inner UserFunctionCall, got {:?}", other),
+            }
+        }
+        other => panic!("expected outer UserFunctionCall, got {:?}", other),
+    }
+}
+
 /// E2E regression: bracket source (no fn declarations) compiles unchanged.
 #[test]
 fn e2e_function_with_structure_unchanged() {
