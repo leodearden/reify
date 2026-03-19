@@ -109,6 +109,32 @@ impl EvaluationGraph {
                 };
                 graph.realizations.insert(realization.id.clone(), node);
             }
+
+            // Sub-component elaboration: create scoped ValueCellNode entries
+            for sub in &template.sub_components {
+                let child_template = match templates.iter().find(|t| t.name == sub.structure_name) {
+                    Some(t) => t,
+                    None => continue, // skip unknown structures silently
+                };
+
+                let scoped_entity = format!("{}.{}", template.name, sub.name);
+
+                for child_cell in &child_template.value_cells {
+                    let scoped_id = ValueCellId::new(&scoped_entity, &child_cell.id.member);
+                    let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
+                    let expr_hash = child_cell.default_expr.as_ref()
+                        .map(|e| e.content_hash)
+                        .unwrap_or(ContentHash(0));
+                    let node = ValueCellNode {
+                        id: scoped_id.clone(),
+                        kind: child_cell.kind,
+                        cell_type: child_cell.cell_type.clone(),
+                        default_expr: child_cell.default_expr.clone(),
+                        content_hash: id_hash.combine(expr_hash),
+                    };
+                    graph.value_cells.insert(scoped_id, node);
+                }
+            }
         }
 
         graph
