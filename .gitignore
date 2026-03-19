@@ -9,6 +9,7 @@ Cargo.lock
 .eval-worktrees/
 data/escalations/
 node_modules/
-package.json
-package-lock.json
+/package.json
+/package-lock.json
+gui/dist/
 test_bracket.reify

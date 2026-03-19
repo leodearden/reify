@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for Reify",
+  "windows": ["main"],
+  "permissions": ["core:default", "event:default", "window:default"]
+}
