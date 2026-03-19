@@ -241,3 +241,65 @@ fn trait_def_full_construction() {
     assert_eq!(def, def2);
     let _ = format!("{:?}", def);
 }
+
+// --- Export tests (step-29) ---
+
+#[test]
+fn all_m5_types_exported_from_crate_root() {
+    // Value variants
+    let _ = reify_types::Value::Enum {
+        type_name: "X".into(),
+        variant: "Y".into(),
+    };
+    let _ = reify_types::Value::List(vec![]);
+    let _ = reify_types::Value::Set(std::collections::BTreeSet::new());
+    let _ = reify_types::Value::Map(std::collections::BTreeMap::new());
+    let _ = reify_types::Value::Option(None);
+
+    // Type variants
+    let _ = reify_types::Type::Enum("X".into());
+    let _ = reify_types::Type::List(Box::new(reify_types::Type::Int));
+    let _ = reify_types::Type::Set(Box::new(reify_types::Type::Int));
+    let _ = reify_types::Type::Map(
+        Box::new(reify_types::Type::String),
+        Box::new(reify_types::Type::Int),
+    );
+    let _ = reify_types::Type::Option(Box::new(reify_types::Type::Int));
+    let _ = reify_types::Type::Function {
+        params: vec![],
+        return_type: Box::new(reify_types::Type::Bool),
+    };
+
+    // Trait definition types
+    let _ = reify_types::EnumDef {
+        name: "X".into(),
+        variants: vec![],
+    };
+    let _ = reify_types::TraitDef {
+        name: "X".into(),
+        type_params: vec![],
+        refinements: vec![],
+        members: vec![],
+    };
+    let _ = reify_types::TraitMember::Constraint {
+        expr: "x".into(),
+    };
+    let _ = reify_types::TraitRef {
+        name: "X".into(),
+        type_args: vec![],
+    };
+    let _ = reify_types::TraitBound {
+        trait_ref: reify_types::TraitRef {
+            name: "X".into(),
+            type_args: vec![],
+        },
+    };
+    let _ = reify_types::TypeParam {
+        name: "T".into(),
+        bounds: vec![],
+        default: None,
+    };
+    let _ = reify_types::PortDirection::In;
+    let _ = reify_types::PortDirection::Out;
+    let _ = reify_types::PortDirection::Bidi;
+}
