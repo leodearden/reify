@@ -50,7 +50,7 @@ pub struct TraitBound {
 }
 
 /// A member declaration within a trait definition.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TraitMember {
     /// A parameter with a type and optional default value.
     Param {
@@ -87,7 +87,7 @@ pub enum TraitMember {
 }
 
 /// A complete trait definition.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraitDef {
     /// The name of the trait.
     pub name: String,
