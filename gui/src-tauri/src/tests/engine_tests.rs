@@ -381,6 +381,65 @@ fn export_no_unnecessary_clone() {
     let _ = std::fs::remove_dir(&dir);
 }
 
+/// Review bug #4: [state_corruption_not_tested] + [state_inconsistency_on_error]
+/// update_source() clears source_map and inserts new content BEFORE parse/compile.
+/// On parse failure, old valid source is destroyed — get_source_location uses old byte offsets
+/// against invalid source, and build_gui_state().files has invalid content.
+/// After fix: on error, state should be completely unchanged.
+#[test]
+fn get_source_location_correct_after_failed_update() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // (1) Load valid source
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    // (2) Record source location for Bracket.width before failed update
+    let loc_before = session
+        .get_source_location("Bracket.width")
+        .expect("should find source location before failed update");
+
+    // (3) Attempt invalid update — should fail
+    let result = session.update_source("bracket.ri", "this is not valid {{{}}}");
+    assert!(result.is_err(), "invalid source should return Err");
+
+    // (4) get_source_location should return the SAME line/col as before the failed update
+    let loc_after = session
+        .get_source_location("Bracket.width")
+        .expect("should still find source location after failed update");
+    assert_eq!(
+        loc_before.line, loc_after.line,
+        "line should be unchanged after failed update"
+    );
+    assert_eq!(
+        loc_before.column, loc_after.column,
+        "column should be unchanged after failed update"
+    );
+    assert_eq!(
+        loc_before.file, loc_after.file,
+        "file should be unchanged after failed update"
+    );
+
+    // (5) build_gui_state should still return Ok with original valid state
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should work after failed update");
+    assert!(
+        state.values.len() >= 5,
+        "should still have original values after failed update, got {}",
+        state.values.len()
+    );
+    assert_eq!(state.files.len(), 1);
+    assert!(
+        state.files[0].content.contains("structure Bracket"),
+        "files should still contain original valid source, got: {}",
+        &state.files[0].content[..50.min(state.files[0].content.len())]
+    );
+}
+
 /// Review bug #3: get_source_location should use explicit key lookup, not .iter().next().
 /// After load_from_source, the file should be the normalized "bracket.ri" key.
 #[test]
