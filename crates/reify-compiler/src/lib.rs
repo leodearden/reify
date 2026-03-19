@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, DimensionVector,
-    Diagnostic, DiagnosticLabel, RealizationNodeId, ResolvedFunction, SourceSpan, Type, UnOp,
-    Value, ValueCellId,
+    Diagnostic, DiagnosticLabel, OptimizationObjective, RealizationNodeId, ResolvedFunction,
+    SourceSpan, Type, UnOp, Value, ValueCellId,
 };
 
 /// A compiled import declaration.
@@ -32,6 +32,7 @@ pub struct TopologyTemplate {
     pub constraints: Vec<CompiledConstraint>,
     pub realizations: Vec<RealizationDecl>,
     pub sub_components: Vec<SubComponentDecl>,
+    pub objective: Option<OptimizationObjective>,
     pub content_hash: ContentHash,
 }
 
@@ -630,6 +631,7 @@ fn compile_structure(
     let mut value_cells = Vec::new();
     let mut constraints = Vec::new();
     let mut sub_components = Vec::new();
+    let mut objective: Option<OptimizationObjective> = None;
     let mut constraint_index: u32 = 0;
 
     // First pass: register all param and let names into the scope so they can
@@ -779,8 +781,13 @@ fn compile_structure(
                     content_hash: sub.content_hash,
                 });
             }
-            reify_syntax::MemberDecl::Minimize(_) | reify_syntax::MemberDecl::Maximize(_) => {
-                // Handled in step-5: objective compilation
+            reify_syntax::MemberDecl::Minimize(min_decl) => {
+                let compiled_expr = compile_expr(&min_decl.expr, &scope, diagnostics);
+                objective = Some(OptimizationObjective::Minimize(compiled_expr));
+            }
+            reify_syntax::MemberDecl::Maximize(max_decl) => {
+                let compiled_expr = compile_expr(&max_decl.expr, &scope, diagnostics);
+                objective = Some(OptimizationObjective::Maximize(compiled_expr));
             }
         }
     }
@@ -811,6 +818,7 @@ fn compile_structure(
         constraints,
         realizations,
         sub_components,
+        objective,
         content_hash,
     }
 }
