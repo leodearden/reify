@@ -1,0 +1,233 @@
+// Lezer grammar for the Reify CAD language
+// Ported from tree-sitter-reify/grammar.js
+
+@top SourceFile { Declaration* }
+
+@skip { whitespace | LineComment | BlockComment }
+
+@detectDelim
+
+Declaration {
+  StructureDefinition |
+  ImportDeclaration
+}
+
+// ── Imports ──────────────────────────────────────────────
+ImportDeclaration {
+  kw<"import"> String
+}
+
+// ── Structure ───────────────────────────────────────────
+StructureDefinition {
+  kw<"structure"> Identifier Block
+}
+
+Block {
+  "{" Member* "}"
+}
+
+Member {
+  ParamDeclaration |
+  LetDeclaration |
+  ConstraintDeclaration |
+  SubDeclaration |
+  MinimizeDeclaration |
+  MaximizeDeclaration |
+  GuardedBlock
+}
+
+// ── Guarded block ─────────────────────────────────────
+GuardedBlock {
+  kw<"where"> expression Block (kw<"else"> Block)?
+}
+
+// ── Param ───────────────────────────────────────────────
+ParamDeclaration {
+  kw<"param"> Identifier TypeAnnotation? DefaultValue? ~where WhereClause?
+}
+
+TypeAnnotation {
+  ":" TypeExpr
+}
+
+TypeExpr {
+  Identifier
+}
+
+DefaultValue {
+  "=" (AutoKeyword | expression)
+}
+
+AutoKeyword {
+  kw<"auto">
+}
+
+// ── Let ─────────────────────────────────────────────────
+LetDeclaration {
+  kw<"let"> Identifier TypeAnnotation? "=" expression ~where WhereClause?
+}
+
+// ── Constraint ──────────────────────────────────────────
+ConstraintDeclaration {
+  kw<"constraint"> expression ~where WhereClause?
+}
+
+// ── Minimize ───────────────────────────────────────────
+MinimizeDeclaration {
+  kw<"minimize"> expression ~where WhereClause?
+}
+
+// ── Maximize ──────────────────────────────────────────
+MaximizeDeclaration {
+  kw<"maximize"> expression ~where WhereClause?
+}
+
+// ── Sub ─────────────────────────────────────────────────
+SubDeclaration {
+  kw<"sub"> Identifier "=" Identifier ArgList ~where WhereClause?
+}
+
+ArgList {
+  "(" NamedArgumentList? ")"
+}
+
+NamedArgumentList {
+  NamedArgument ("," NamedArgument)* ","?
+}
+
+NamedArgument {
+  Identifier ":" expression
+}
+
+// ── Where clause ────────────────────────────────────────
+WhereClause {
+  kw<"where"> expression
+}
+
+// ── Expressions ─────────────────────────────────────────
+// Precedence (low → high):
+//   1: || (or)
+//   2: && (and)
+//   3: ==, != (equality)
+//   4: <, >, <=, >= (comparison)
+//   5: +, - (additive)
+//   6: *, / (multiplicative)
+//   7: unary -, ! (unary)
+//   8: postfix (member access, function call)
+
+expression[@isGroup=Expression] {
+  BinaryExpression |
+  UnaryExpression |
+  ConditionalExpression |
+  primaryExpression
+}
+
+BinaryExpression {
+  expression !or ArithOp<"||"> expression |
+  expression !and ArithOp<"&&"> expression |
+  expression !equality CompareOp<"=="> expression |
+  expression !equality CompareOp<"!="> expression |
+  expression !comparison CompareOp<"<"> expression |
+  expression !comparison CompareOp<">"> expression |
+  expression !comparison CompareOp<"<="> expression |
+  expression !comparison CompareOp<">="> expression |
+  expression !additive ArithOp<"+"> expression |
+  expression !additive ArithOp<"-"> expression |
+  expression !multiplicative ArithOp<"*"> expression |
+  expression !multiplicative ArithOp<"/"> expression
+}
+
+UnaryExpression {
+  !unary ArithOp<"-"> expression |
+  !unary ArithOp<"!"> expression
+}
+
+ConditionalExpression {
+  !conditional kw<"if"> expression kw<"then"> expression kw<"else"> expression
+}
+
+primaryExpression {
+  QuantityLiteral |
+  Number |
+  String |
+  Boolean |
+  FunctionCall |
+  MemberAccess |
+  Identifier |
+  ParenthesizedExpression
+}
+
+FunctionCall {
+  Identifier !postfix ArgListExpr
+}
+
+ArgListExpr {
+  "(" ArgumentList? ")"
+}
+
+ArgumentList {
+  expression ("," expression)* ","?
+}
+
+MemberAccess {
+  expression !postfix "." Identifier
+}
+
+ParenthesizedExpression {
+  "(" expression ")"
+}
+
+Boolean {
+  @specialize[@name=Boolean]<Identifier, "true" | "false">
+}
+
+// ── Keywords ─────────────────────────────────────────────
+kw<term> { @specialize[@name={term}]<Identifier, term> }
+
+// ── Operator wrappers (outside @tokens for node naming) ──
+ArithOp<expr> { expr }
+CompareOp<expr> { expr }
+
+// ── M5 Reserved Keywords (forward-compat highlighting) ──
+@external propSource reifyHighlighting from "./highlight"
+
+@precedence {
+  postfix @left,
+  unary @right,
+  multiplicative @left,
+  additive @left,
+  comparison @left,
+  equality @left,
+  and @left,
+  or @left,
+  conditional @right
+}
+
+@tokens {
+  whitespace { @whitespace+ }
+
+  LineComment { "//" ![\n]* }
+
+  BlockComment { "/*" blockCommentRest }
+  blockCommentRest { ![*] blockCommentRest | "*" blockCommentAfterStar }
+  blockCommentAfterStar { "/" | ![/*] blockCommentRest | "*" blockCommentAfterStar }
+
+  @precedence { QuantityLiteral, Number, Identifier }
+
+  // QuantityLiteral: digits immediately followed by alpha unit (e.g. 80mm, 3.5deg)
+  QuantityLiteral { @digit+ ("." @digit+)? $[a-zA-Z_] $[a-zA-Z0-9_]* }
+
+  Number { @digit+ ("." @digit+)? }
+
+  String { '"' (![\\\"] | "\\" _)* '"' }
+
+  Identifier { $[a-zA-Z_] $[a-zA-Z0-9_]* }
+
+  @precedence { "<=", "<" }
+  @precedence { ">=", ">" }
+  @precedence { "!=", "!" }
+  @precedence { BlockComment, LineComment, "/" }
+
+  "(" ")" "{" "}" "." "," ":" "="
+  "||" "&&" "==" "+" "-" "*"
+}
