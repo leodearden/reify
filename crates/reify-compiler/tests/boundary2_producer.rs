@@ -1546,3 +1546,28 @@ fn compile_function_forward_reference() {
         other => panic!("expected UserFunctionCall, got {:?}", other),
     }
 }
+
+/// E2E regression: bracket source (no fn declarations) compiles unchanged.
+#[test]
+fn e2e_function_with_structure_unchanged() {
+    let parsed = bracket_parsed_module();
+    let compiled = reify_compiler::compile(&parsed);
+
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "bracket should compile cleanly: {:?}",
+        compiled.diagnostics
+    );
+
+    // Bracket has no function declarations
+    assert!(
+        compiled.functions.is_empty(),
+        "bracket has no fn declarations, functions should be empty"
+    );
+
+    // Existing structure should be unaffected
+    let template = &compiled.templates[0];
+    assert_eq!(template.value_cells.len(), 6, "expected 6 value cells");
+    assert_eq!(template.constraints.len(), 3, "expected 3 constraints");
+    assert_eq!(template.realizations.len(), 1, "expected 1 realization");
+}
