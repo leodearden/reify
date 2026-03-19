@@ -11,7 +11,7 @@ use reify_types::{
 };
 
 use crate::types::{
-    format_determinacy, format_value, ConstraintData, FileData, GuiState, MeshData, ValueData,
+    format_determinacy, format_value, ConstraintData, FileData, GuiState, ValueData,
 };
 
 /// Session wrapping an Engine with its compiled module and source text.
@@ -459,8 +459,6 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
 
 /// Collect all ValueCellId references from a compiled expression.
 fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
-    use reify_types::CompiledExprKind;
-
     let mut refs = Vec::new();
     collect_value_refs_inner(expr, &mut refs);
     refs.sort();

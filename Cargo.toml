@@ -47,6 +47,8 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tower-lsp = { version = "0.20", features = ["proposed"] }
 serde_json = "1"
 
+tauri = { version = "2", features = ["devtools"] }
+
 tree-sitter = "0.24"
 tree-sitter-language = "0.1"
 tree-sitter-reify = { path = "tree-sitter-reify" }
