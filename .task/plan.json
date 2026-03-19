@@ -51,8 +51,8 @@
       "id": "step-1",
       "type": "test",
       "description": "Write failing test: compile_param_with_where_clause. Parse source with per-declaration where clause. Assert guarded_groups has 1 entry, guard references 'active', member is x, guard_value_cell in structure_controlling, x NOT in top-level value_cells.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "0828981"
     },
     {
       "id": "step-2",
