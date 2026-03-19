@@ -1,5 +1,7 @@
 // EvaluationGraph: typed graph nodes backed by PersistentMap.
 
+use std::collections::HashSet;
+
 use reify_compiler::{CompiledGeometryOp, TopologyTemplate, ValueCellKind};
 use reify_types::{
     CompiledExpr, ConstraintNodeId, ContentHash, PersistentMap, RealizationNodeId,
@@ -48,6 +50,22 @@ pub struct ResolutionNodeData {
     pub content_hash: ContentHash,
 }
 
+/// Metadata for a guarded group in the evaluation graph.
+/// Tracks which cells and constraints are conditionally active.
+#[derive(Debug, Clone)]
+pub struct GuardedGroupInfo {
+    /// The guard ValueCellId (Bool, Let kind) that controls this group.
+    pub guard_cell: ValueCellId,
+    /// Members active when guard is true.
+    pub members: Vec<ValueCellId>,
+    /// Constraints active when guard is true.
+    pub constraints: Vec<ConstraintNodeId>,
+    /// Members active when guard is false (else branch).
+    pub else_members: Vec<ValueCellId>,
+    /// Constraints active when guard is false (else branch).
+    pub else_constraints: Vec<ConstraintNodeId>,
+}
+
 /// The evaluation graph: holds all typed nodes in PersistentMaps
 /// for O(1) clone with structural sharing.
 #[derive(Debug, Clone, Default)]
@@ -56,6 +74,10 @@ pub struct EvaluationGraph {
     pub constraints: PersistentMap<ConstraintNodeId, ConstraintNodeData>,
     pub realizations: PersistentMap<RealizationNodeId, RealizationNodeData>,
     pub resolutions: PersistentMap<ResolutionNodeId, ResolutionNodeData>,
+    /// Guarded groups with conditional membership.
+    pub guarded_groups: Vec<GuardedGroupInfo>,
+    /// ValueCellIds whose boolean value controls topology (guard cells).
+    pub structure_controlling: HashSet<ValueCellId>,
 }
 
 impl EvaluationGraph {
@@ -168,7 +190,14 @@ impl EvaluationGraph {
             ContentHash::combine_all(hashes)
         };
 
-        ContentHash::combine_all([vc_hash, cn_hash, real_hash, res_hash])
+        let guard_hash = {
+            let hashes: Vec<ContentHash> = self.guarded_groups.iter().map(|g| {
+                ContentHash::of_str(&format!("{}", g.guard_cell))
+            }).collect();
+            ContentHash::combine_all(hashes)
+        };
+
+        ContentHash::combine_all([vc_hash, cn_hash, real_hash, res_hash, guard_hash])
     }
 }
 
