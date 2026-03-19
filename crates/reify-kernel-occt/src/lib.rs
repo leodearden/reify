@@ -244,10 +244,32 @@ impl OcctKernel {
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            GeometryOp::CircularPattern { .. } => {
-                return Err(GeometryError::OperationFailed(
-                    "CircularPattern not yet implemented".into(),
-                ));
+            GeometryOp::CircularPattern {
+                target,
+                axis_origin,
+                axis_dir,
+                count,
+                angle,
+            } => {
+                let shape = self.get_shape(*target)?;
+                let total_angle = extract_f64(angle)?;
+                if *count == 0 {
+                    return Err(GeometryError::OperationFailed(
+                        "circular pattern count must be >= 1".into(),
+                    ));
+                }
+                ffi::ffi::circular_pattern(
+                    shape,
+                    axis_origin[0],
+                    axis_origin[1],
+                    axis_origin[2],
+                    axis_dir[0],
+                    axis_dir[1],
+                    axis_dir[2],
+                    *count as u32,
+                    total_angle,
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Mirror {
                 target,
