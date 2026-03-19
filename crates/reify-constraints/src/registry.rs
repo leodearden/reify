@@ -101,7 +101,7 @@ impl ConstraintSolver for SolverRegistry {
             .collect();
 
         // Determine which component gets the objective (if any)
-        let objective_component = problem.objective.as_ref().and_then(|obj| {
+        let objective_component = problem.objective.as_ref().map(|obj| {
             let obj_expr = match obj {
                 OptimizationObjective::Minimize(e) | OptimizationObjective::Maximize(e) => e,
             };
@@ -113,12 +113,12 @@ impl ConstraintSolver for SolverRegistry {
 
             for (ci, comp) in components.iter().enumerate() {
                 if obj_refs.iter().any(|r| comp.auto_params.contains(r) && auto_param_set.contains(r)) {
-                    return Some(ci);
+                    return ci;
                 }
             }
             // If objective references no auto params in any component,
             // give it to the first component
-            Some(0)
+            0
         });
 
         let mut merged_values: HashMap<ValueCellId, Value> = HashMap::new();
