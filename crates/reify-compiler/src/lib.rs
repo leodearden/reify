@@ -1055,3 +1055,217 @@ fn compile_geometry_call(
         args: named_args,
     }])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Step 21: Verify new geometry function names are recognized ---
+
+    #[test]
+    fn compile_geometry_linear_pattern_recognized() {
+        assert!(is_geometry_function("linear_pattern"));
+    }
+
+    #[test]
+    fn compile_geometry_circular_pattern_recognized() {
+        assert!(is_geometry_function("circular_pattern"));
+    }
+
+    #[test]
+    fn compile_geometry_mirror_recognized() {
+        assert!(is_geometry_function("mirror"));
+    }
+
+    #[test]
+    fn compile_geometry_loft_recognized() {
+        assert!(is_geometry_function("loft"));
+    }
+
+    #[test]
+    fn compile_geometry_shell_recognized() {
+        assert!(is_geometry_function("shell"));
+    }
+
+    #[test]
+    fn compile_geometry_thicken_recognized() {
+        assert!(is_geometry_function("thicken"));
+    }
+
+    #[test]
+    fn compile_geometry_draft_recognized() {
+        assert!(is_geometry_function("draft"));
+    }
+
+    // --- Verify new geometry function calls compile into realizations ---
+
+    #[test]
+    fn compile_linear_pattern_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let pattern = linear_pattern(w, 1, 0, 0, 4, 20)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_linpat"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        // linear_pattern is a geometry function, so should produce a realization
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for linear_pattern call, got {}",
+            template.realizations.len()
+        );
+        // Verify it's a Pattern op with Linear kind
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Pattern { kind: PatternKind::Linear, .. }),
+            "expected Pattern(Linear), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_mirror_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let mirrored = mirror(w, 0, 0, 0, 1, 0, 0)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_mirror"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for mirror call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Pattern { kind: PatternKind::Mirror, .. }),
+            "expected Pattern(Mirror), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_loft_produces_realization() {
+        let source = r#"structure S {
+    param r: Scalar = 10mm
+    let swept = loft(r, r)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_loft"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for loft call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Sweep { kind: SweepKind::Loft, .. }),
+            "expected Sweep(Loft), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_shell_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let hollowed = shell(w, 1)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_shell"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for shell call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Modify { kind: ModifyKind::Shell, .. }),
+            "expected Modify(Shell), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_thicken_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let thickened = thicken(w, 2)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_thicken"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for thicken call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Modify { kind: ModifyKind::Thicken, .. }),
+            "expected Modify(Thicken), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_draft_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let drafted = draft(w, 0.1, w)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_draft"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for draft call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Modify { kind: ModifyKind::Draft, .. }),
+            "expected Modify(Draft), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_circular_pattern_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let pattern = circular_pattern(w, 0, 0, 0, 0, 0, 1, 6, 360)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_circpat"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for circular_pattern call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Pattern { kind: PatternKind::Circular, .. }),
+            "expected Pattern(Circular), got {:?}",
+            op
+        );
+    }
+}
