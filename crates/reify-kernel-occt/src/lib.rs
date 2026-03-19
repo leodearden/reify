@@ -1016,6 +1016,74 @@ mod tests {
         }
     }
 
+    // --- Rotate NaN/infinity/zero-axis rejection tests (step-3) ---
+
+    #[test]
+    fn execute_rotate_nan_angle_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Rotate {
+            target: box_h.id,
+            axis: [0.0, 0.0, 1.0],
+            angle_rad: f64::NAN,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN angle in rotate"),
+        }
+    }
+
+    #[test]
+    fn execute_rotate_infinity_axis_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Rotate {
+            target: box_h.id,
+            axis: [f64::INFINITY, 0.0, 0.0],
+            angle_rad: 1.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity axis in rotate"),
+        }
+    }
+
+    #[test]
+    fn execute_rotate_zero_axis_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Rotate {
+            target: box_h.id,
+            axis: [0.0, 0.0, 0.0],
+            angle_rad: 1.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-length axis in rotate"),
+        }
+    }
+
     // --- Translate NaN/infinity rejection tests (step-1) ---
 
     #[test]
