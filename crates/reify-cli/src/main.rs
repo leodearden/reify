@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use reify_constraints::SimpleConstraintChecker;
 use reify_geometry::DispatchPlanner;
 use reify_kernel_occt::OcctKernelHandle;
-use reify_types::{ExportFormat, ModulePath, Satisfaction};
+use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -70,6 +70,10 @@ fn cmd_check(args: &[String]) -> ExitCode {
         Ok(c) => c,
         Err(code) => return code,
     };
+
+    if compiled.diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return ExitCode::FAILURE;
+    }
 
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
