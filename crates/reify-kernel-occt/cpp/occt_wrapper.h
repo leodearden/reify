@@ -56,10 +56,16 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
     double ax, double ay, double az,
     uint32_t count, double total_angle);
 
-// --- Wire helpers ---
+// --- Wire helpers / Loft ---
 
 /// Create a circular wire profile at a given Z height (for loft profiles).
 std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
+
+/// Loft through two wire profiles to create a solid.
+std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2);
+
+/// Loft through three wire profiles to create a solid.
+std::unique_ptr<OcctShape> loft_three_profiles(const OcctShape& wire1, const OcctShape& wire2, const OcctShape& wire3);
 
 // --- Queries ---
 

@@ -17,6 +17,9 @@
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 
+// OCCT loft / offset
+#include <BRepOffsetAPI_ThruSections.hxx>
+
 // OCCT edge/wire construction
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
@@ -378,6 +381,50 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height) {
         throw std::runtime_error(std::string("OCCT make_circle_wire: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT make_circle_wire: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2) {
+    try {
+        // isSolid=true, ruled=false (smooth)
+        BRepOffsetAPI_ThruSections loft(Standard_True, Standard_False);
+        loft.AddWire(TopoDS::Wire(wire1.shape));
+        loft.AddWire(TopoDS::Wire(wire2.shape));
+        loft.Build();
+        if (!loft.IsDone()) {
+            throw std::runtime_error("BRepOffsetAPI_ThruSections (loft 2) failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = loft.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT loft_two_profiles: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT loft_two_profiles: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT loft_two_profiles: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> loft_three_profiles(const OcctShape& wire1, const OcctShape& wire2, const OcctShape& wire3) {
+    try {
+        BRepOffsetAPI_ThruSections loft(Standard_True, Standard_False);
+        loft.AddWire(TopoDS::Wire(wire1.shape));
+        loft.AddWire(TopoDS::Wire(wire2.shape));
+        loft.AddWire(TopoDS::Wire(wire3.shape));
+        loft.Build();
+        if (!loft.IsDone()) {
+            throw std::runtime_error("BRepOffsetAPI_ThruSections (loft 3) failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = loft.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT loft_three_profiles: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT loft_three_profiles: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT loft_three_profiles: unknown C++ exception");
     }
 }
 

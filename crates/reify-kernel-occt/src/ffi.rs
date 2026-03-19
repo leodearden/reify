@@ -93,8 +93,17 @@ pub mod ffi {
             total_angle: f64,
         ) -> Result<UniquePtr<OcctShape>>;
 
-        // --- Wire helpers ---
+        // --- Wire helpers / Loft ---
         fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
+        fn loft_two_profiles(
+            wire1: &OcctShape,
+            wire2: &OcctShape,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn loft_three_profiles(
+            wire1: &OcctShape,
+            wire2: &OcctShape,
+            wire3: &OcctShape,
+        ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Queries ---
         fn query_volume(shape: &OcctShape) -> Result<f64>;
