@@ -49,3 +49,45 @@ fn port_direction_debug_clone_eq_copy_hash() {
     map.insert(d, "in");
     assert_eq!(map.get(&reify_types::PortDirection::In), Some(&"in"));
 }
+
+// --- TraitRef and TraitBound tests (step-21) ---
+
+#[test]
+fn trait_ref_construction() {
+    let tr = reify_types::TraitRef {
+        name: "Connectable".into(),
+        type_args: vec![reify_types::Type::Int, reify_types::Type::String],
+    };
+    assert_eq!(tr.name, "Connectable");
+    assert_eq!(tr.type_args.len(), 2);
+}
+
+#[test]
+fn trait_ref_equality() {
+    let a = reify_types::TraitRef {
+        name: "Foo".into(),
+        type_args: vec![],
+    };
+    let b = a.clone();
+    assert_eq!(a, b);
+    let c = reify_types::TraitRef {
+        name: "Bar".into(),
+        type_args: vec![],
+    };
+    assert_ne!(a, c);
+}
+
+#[test]
+fn trait_bound_wraps_trait_ref() {
+    let tr = reify_types::TraitRef {
+        name: "Measurable".into(),
+        type_args: vec![reify_types::Type::Real],
+    };
+    let bound = reify_types::TraitBound {
+        trait_ref: tr.clone(),
+    };
+    assert_eq!(bound.trait_ref, tr);
+    let bound2 = bound.clone();
+    assert_eq!(bound, bound2);
+    let _ = format!("{:?}", bound);
+}
