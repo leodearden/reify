@@ -303,3 +303,56 @@ fn all_m5_types_exported_from_crate_root() {
     let _ = reify_types::PortDirection::Out;
     let _ = reify_types::PortDirection::Bidi;
 }
+
+// --- Display integration tests (step-6) ---
+
+#[test]
+fn value_display_via_public_api() {
+    use reify_types::Value;
+
+    // Primitives
+    assert_eq!(format!("{}", Value::Bool(true)), "true");
+    assert_eq!(format!("{}", Value::Int(42)), "42");
+    assert_eq!(format!("{}", Value::Real(3.14)), "3.14");
+    assert_eq!(format!("{}", Value::String("hello".into())), "\"hello\"");
+    assert_eq!(format!("{}", Value::Undef), "undef");
+
+    // Scalar
+    assert_eq!(format!("{}", Value::length(0.08)), "0.08 m");
+
+    // Enum
+    assert_eq!(
+        format!(
+            "{}",
+            Value::Enum {
+                type_name: "Color".into(),
+                variant: "Red".into()
+            }
+        ),
+        "Color::Red"
+    );
+
+    // List
+    assert_eq!(
+        format!("{}", Value::List(vec![Value::Int(1), Value::Int(2)])),
+        "[1, 2]"
+    );
+
+    // Set
+    let mut s = std::collections::BTreeSet::new();
+    s.insert(Value::Int(3));
+    s.insert(Value::Int(1));
+    assert_eq!(format!("{}", Value::Set(s)), "{1, 3}");
+
+    // Map
+    let mut m = std::collections::BTreeMap::new();
+    m.insert(Value::String("x".into()), Value::Real(1.5));
+    assert_eq!(format!("{}", Value::Map(m)), "{\"x\": 1.5}");
+
+    // Option
+    assert_eq!(format!("{}", Value::Option(None)), "None");
+    assert_eq!(
+        format!("{}", Value::Option(Some(Box::new(Value::Bool(true))))),
+        "Some(true)"
+    );
+}
