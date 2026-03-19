@@ -202,6 +202,22 @@ impl OcctKernel {
                 angle_rad,
             } => {
                 let shape = self.get_shape(*target)?;
+                if !axis[0].is_finite()
+                    || !axis[1].is_finite()
+                    || !axis[2].is_finite()
+                    || !angle_rad.is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "rotate parameters must be finite values: axis=[{}, {}, {}], angle_rad={}",
+                        axis[0], axis[1], axis[2], angle_rad
+                    )));
+                }
+                let mag_sq = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
+                if mag_sq == 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "rotation axis must not be zero-length".into(),
+                    ));
+                }
                 ffi::ffi::rotate_shape(shape, axis[0], axis[1], axis[2], *angle_rad)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
