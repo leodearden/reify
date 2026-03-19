@@ -748,6 +748,38 @@ fn same_content_same_hash_deterministic() {
     );
 }
 
+/// Changing a param default value should change the content_hash.
+#[test]
+fn param_default_change_changes_hash() {
+    let path = reify_types::ModulePath::single("test_thickness");
+
+    let source_a = r#"structure S {
+    param thickness: Scalar = 5mm
+}"#;
+    let source_b = r#"structure S {
+    param thickness: Scalar = 10mm
+}"#;
+
+    let parsed_a = reify_syntax::parse(source_a, path.clone());
+    assert!(parsed_a.errors.is_empty(), "parse errors: {:?}", parsed_a.errors);
+    let compiled_a = reify_compiler::compile(&parsed_a);
+
+    let parsed_b = reify_syntax::parse(source_b, path.clone());
+    assert!(parsed_b.errors.is_empty(), "parse errors: {:?}", parsed_b.errors);
+    let compiled_b = reify_compiler::compile(&parsed_b);
+
+    assert_ne!(
+        compiled_a.content_hash, compiled_b.content_hash,
+        "changing a param default value should change the module content_hash"
+    );
+
+    assert_ne!(
+        compiled_a.templates[0].content_hash,
+        compiled_b.templates[0].content_hash,
+        "changing a param default value should change the template content_hash"
+    );
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
