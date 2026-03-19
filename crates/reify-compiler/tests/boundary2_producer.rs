@@ -1516,3 +1516,33 @@ fn compile_overload_resolution_picks_correct() {
     // 3.14 is Real, so it matches the Real overload
     assert_eq!(a_expr.result_type, reify_types::Type::Real);
 }
+
+/// Forward reference: structure calls a function declared AFTER it.
+#[test]
+fn compile_function_forward_reference() {
+    let source = "structure S { let v = double(3) }\nfn double(x: Real) -> Real { x + x }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_fwd"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    let v_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "v")
+        .expect("should have 'v' value cell");
+    let v_expr = v_cell.default_expr.as_ref().expect("let should have expr");
+
+    match &v_expr.kind {
+        reify_types::CompiledExprKind::UserFunctionCall { function_name, .. } => {
+            assert_eq!(function_name, "double");
+        }
+        other => panic!("expected UserFunctionCall, got {:?}", other),
+    }
+}
