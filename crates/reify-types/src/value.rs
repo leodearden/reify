@@ -1076,6 +1076,70 @@ mod tests {
         );
     }
 
+    // --- Comprehensive tag uniqueness regression test (step-16) ---
+
+    #[test]
+    fn value_and_satisfaction_content_hash_tags_no_cross_domain_collisions() {
+        // Build representative Value for each variant
+        use std::collections::{BTreeMap, BTreeSet};
+        let values: Vec<(&str, Value)> = vec![
+            ("Bool(false)", Value::Bool(false)),
+            ("Bool(true)", Value::Bool(true)),
+            ("Int(0)", Value::Int(0)),
+            ("Int(1)", Value::Int(1)),
+            ("Real(0.0)", Value::Real(0.0)),
+            ("Real(1.0)", Value::Real(1.0)),
+            ("String(empty)", Value::String(String::new())),
+            ("String(a)", Value::String("a".into())),
+            (
+                "Scalar(0,LENGTH)",
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+            ),
+            ("Undef", Value::Undef),
+            (
+                "Enum",
+                Value::Enum {
+                    type_name: "T".into(),
+                    variant: "V".into(),
+                },
+            ),
+            ("List(empty)", Value::List(vec![])),
+            ("List([0])", Value::List(vec![Value::Int(0)])),
+            ("Set(empty)", Value::Set(BTreeSet::new())),
+            ("Map(empty)", Value::Map(BTreeMap::new())),
+            ("Option(None)", Value::Option(None)),
+            (
+                "Option(Some(Bool(false)))",
+                Value::Option(Some(Box::new(Value::Bool(false)))),
+            ),
+            (
+                "Option(Some(Bool(true)))",
+                Value::Option(Some(Box::new(Value::Bool(true)))),
+            ),
+        ];
+
+        let satisfactions: Vec<(&str, ContentHash)> = vec![
+            ("Satisfied", Satisfaction::Satisfied.content_hash()),
+            ("Violated", Satisfaction::Violated.content_hash()),
+            ("Indeterminate", Satisfaction::Indeterminate.content_hash()),
+        ];
+
+        // Every Value hash must differ from every Satisfaction hash
+        for (vname, val) in &values {
+            let vh = val.content_hash();
+            for (sname, sh) in &satisfactions {
+                assert_ne!(
+                    vh, *sh,
+                    "Value::{} content_hash collides with Satisfaction::{}",
+                    vname, sname
+                );
+            }
+        }
+    }
+
     #[test]
     fn value_display_nested() {
         // List containing Option and Enum values
