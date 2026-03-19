@@ -1006,6 +1006,22 @@ fn compile_structure(
                 }
             }
         }
+        for c in &constraints {
+            for ref_id in collect_value_refs(&c.expr) {
+                if guarded_cell_map.contains_key(&ref_id) {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "unguarded reference to guarded cell '{}'",
+                            ref_id.member,
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            c.span,
+                            "constraint references a conditionally-active member",
+                        )),
+                    );
+                }
+            }
+        }
         for group in &guarded_groups {
             for m in &group.members {
                 if let Some(expr) = &m.default_expr {
