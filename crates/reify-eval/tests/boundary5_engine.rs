@@ -393,3 +393,71 @@ fn engine_eval_with_import() {
         f
     );
 }
+
+/// Comprehensive E2E: all three features (import, stdlib, sub-component) through Engine.
+#[test]
+fn e2e_all_three_features_through_engine() {
+    use reify_types::{ModulePath, ValueCellId};
+
+    let source = r#"import "std/math"
+
+structure Child {
+    param size: Scalar = 10mm
+    let half = size / 2
+}
+
+structure Parent {
+    param w: Scalar = 80mm
+    let diag = sqrt(w * w)
+    sub part = Child(size: w / 2)
+    constraint diag > 0mm
+}"#;
+
+    let parsed = reify_syntax::parse(source, ModulePath::single("e2e_all_three"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) Module has 1 import
+    assert_eq!(compiled.imports.len(), 1);
+    assert_eq!(compiled.imports[0].path, "std/math");
+
+    // Evaluate
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // (b) Parent values
+    let w_id = ValueCellId::new("Parent", "w");
+    let w_val = result.values.get(&w_id).expect("Parent.w should exist");
+    let w_f = w_val.as_f64().expect("numeric");
+    assert!((w_f - 0.08).abs() < 1e-10, "Parent.w should be ~0.08, got {}", w_f);
+
+    let diag_id = ValueCellId::new("Parent", "diag");
+    let diag_val = result.values.get(&diag_id).expect("Parent.diag should exist");
+    let diag_f = diag_val.as_f64().expect("numeric");
+    // sqrt(0.08^2) = 0.08
+    assert!((diag_f - 0.08).abs() < 1e-10, "Parent.diag should be ~0.08, got {}", diag_f);
+
+    // (c) Sub-component param: Parent.part.size = w / 2 = 0.04
+    let size_id = ValueCellId::new("Parent.part", "size");
+    let size_val = result.values.get(&size_id).expect("Parent.part.size should exist");
+    let size_f = size_val.as_f64().expect("numeric");
+    assert!((size_f - 0.04).abs() < 1e-10, "Parent.part.size should be ~0.04, got {}", size_f);
+
+    // (d) Sub-component let: Parent.part.half = size / 2 = 0.02
+    let half_id = ValueCellId::new("Parent.part", "half");
+    let half_val = result.values.get(&half_id).expect("Parent.part.half should exist");
+    let half_f = half_val.as_f64().expect("numeric");
+    assert!((half_f - 0.02).abs() < 1e-10, "Parent.part.half should be ~0.02, got {}", half_f);
+
+    // (e) Constraint check
+    let (constraint_results, _check_diags) = engine.check_constraints_with_values(&result.values);
+    assert!(!constraint_results.is_empty(), "should have at least one constraint result");
+
+    // (f) No error-level diagnostics (only import warning is allowed)
+    let errors: Vec<_> = result.diagnostics.iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "no error diagnostics expected, got {:?}", errors);
+}
