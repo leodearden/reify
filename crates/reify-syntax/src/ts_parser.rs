@@ -2,6 +2,8 @@
 //!
 //! Parses source text into tree-sitter CST, then lowers to the `ParsedModule` AST.
 
+use std::collections::HashSet;
+
 use crate::*;
 use reify_types::{ContentHash, ModulePath, SourceSpan};
 
@@ -33,6 +35,8 @@ struct Lowering<'a> {
     source: &'a str,
     declarations: Vec<Declaration>,
     errors: Vec<ParseError>,
+    /// Enum names collected in the first pass for disambiguation.
+    known_enums: HashSet<String>,
 }
 
 impl<'a> Lowering<'a> {
@@ -41,6 +45,7 @@ impl<'a> Lowering<'a> {
             source,
             declarations: Vec::new(),
             errors: Vec::new(),
+            known_enums: HashSet::new(),
         }
     }
 
@@ -62,6 +67,19 @@ impl<'a> Lowering<'a> {
     // ── Top-level lowering ──────────────────────────────────
 
     fn lower_source_file(&mut self, node: tree_sitter::Node) {
+        // First pass: collect enum names for disambiguation of member_access
+        // vs EnumAccess in expressions. This enables order-independent declarations.
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "enum_declaration" {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    self.known_enums
+                        .insert(self.node_text(name_node).to_string());
+                }
+            }
+        }
+
+        // Second pass: lower all declarations.
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             match child.kind() {
@@ -73,6 +91,11 @@ impl<'a> Lowering<'a> {
                 "import_declaration" => {
                     if let Some(decl) = self.lower_import(child) {
                         self.declarations.push(Declaration::Import(decl));
+                    }
+                }
+                "enum_declaration" => {
+                    if let Some(decl) = self.lower_enum(child) {
+                        self.declarations.push(Declaration::Enum(decl));
                     }
                 }
                 "ERROR" => {
@@ -101,6 +124,27 @@ impl<'a> Lowering<'a> {
         Some(ImportDecl {
             path: path?,
             span: self.span(node),
+        })
+    }
+
+    fn lower_enum(&self, node: tree_sitter::Node) -> Option<EnumDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        // Collect variant identifiers — skip 'enum', name, '{', '}', ','
+        let mut variants = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" && child.id() != name_node.id() {
+                variants.push(self.node_text(child).to_string());
+            }
+        }
+
+        Some(EnumDecl {
+            name,
+            variants,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
         })
     }
 
