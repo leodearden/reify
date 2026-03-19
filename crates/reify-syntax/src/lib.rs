@@ -34,6 +34,8 @@ pub enum MemberDecl {
     Let(LetDecl),
     Constraint(ConstraintDecl),
     Sub(SubDecl),
+    Minimize(MinimizeDecl),
+    Maximize(MaximizeDecl),
 }
 
 /// `param width: Scalar = 80mm`
@@ -71,6 +73,22 @@ pub struct SubDecl {
     pub name: String,
     pub structure_name: String,
     pub args: Vec<(String, Expr)>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// `minimize volume`
+#[derive(Debug, Clone)]
+pub struct MinimizeDecl {
+    pub expr: Expr,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// `maximize thickness`
+#[derive(Debug, Clone)]
+pub struct MaximizeDecl {
+    pub expr: Expr,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }

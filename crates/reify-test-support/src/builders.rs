@@ -144,6 +144,7 @@ pub struct TopologyTemplateBuilder {
     constraints: Vec<CompiledConstraint>,
     realizations: Vec<RealizationDecl>,
     sub_components: Vec<SubComponentDecl>,
+    objective: Option<reify_types::OptimizationObjective>,
 }
 
 impl TopologyTemplateBuilder {
@@ -154,6 +155,7 @@ impl TopologyTemplateBuilder {
             constraints: Vec::new(),
             realizations: Vec::new(),
             sub_components: Vec::new(),
+            objective: None,
         }
     }
 
@@ -237,6 +239,11 @@ impl TopologyTemplateBuilder {
         self
     }
 
+    pub fn objective(mut self, obj: reify_types::OptimizationObjective) -> Self {
+        self.objective = Some(obj);
+        self
+    }
+
     pub fn sub_component(
         mut self,
         name: impl Into<String>,
@@ -285,6 +292,7 @@ impl TopologyTemplateBuilder {
             constraints: self.constraints,
             realizations: self.realizations,
             sub_components: self.sub_components,
+            objective: self.objective,
             content_hash,
         }
     }

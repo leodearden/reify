@@ -355,6 +355,8 @@ fn all_spans_valid() {
             MemberDecl::Let(l) => l.span,
             MemberDecl::Constraint(c) => c.span,
             MemberDecl::Sub(s) => s.span,
+            MemberDecl::Minimize(m) => m.span,
+            MemberDecl::Maximize(m) => m.span,
         };
         assert!(span.start < span.end, "span should be non-empty");
     }

@@ -152,6 +152,26 @@ impl<'a> Lowering<'a> {
                         members.push(MemberDecl::Sub(s));
                     }
                 }
+                "minimize_declaration" => {
+                    if child.is_error() || child.has_error() {
+                        self.errors.push(ParseError {
+                            message: format!("invalid minimize: {}", self.node_text(child)),
+                            span: self.span(child),
+                        });
+                    } else if let Some(m) = self.lower_minimize(child) {
+                        members.push(MemberDecl::Minimize(m));
+                    }
+                }
+                "maximize_declaration" => {
+                    if child.is_error() || child.has_error() {
+                        self.errors.push(ParseError {
+                            message: format!("invalid maximize: {}", self.node_text(child)),
+                            span: self.span(child),
+                        });
+                    } else if let Some(m) = self.lower_maximize(child) {
+                        members.push(MemberDecl::Maximize(m));
+                    }
+                }
                 "ERROR" => {
                     self.errors.push(ParseError {
                         message: format!("syntax error: {}", self.node_text(child)),
@@ -243,6 +263,28 @@ impl<'a> Lowering<'a> {
 
         Some(ConstraintDecl {
             label: None,
+            expr,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_minimize(&self, node: tree_sitter::Node) -> Option<MinimizeDecl> {
+        let expr_node = node.child_by_field_name("expr")?;
+        let expr = self.lower_expr(expr_node)?;
+
+        Some(MinimizeDecl {
+            expr,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_maximize(&self, node: tree_sitter::Node) -> Option<MaximizeDecl> {
+        let expr_node = node.child_by_field_name("expr")?;
+        let expr = self.lower_expr(expr_node)?;
+
+        Some(MaximizeDecl {
             expr,
             span: self.span(node),
             content_hash: self.content_hash(node),
@@ -524,6 +566,8 @@ mod tests {
             MemberDecl::Let(l) => format!("let:{}", l.name),
             MemberDecl::Constraint(_) => "constraint".into(),
             MemberDecl::Sub(s) => format!("sub:{}", s.name),
+            MemberDecl::Minimize(_) => "minimize".into(),
+            MemberDecl::Maximize(_) => "maximize".into(),
         }).collect();
         assert_eq!(names, vec![
             "param:width", "param:height", "param:thickness",
@@ -684,6 +728,8 @@ mod tests {
                 MemberDecl::Let(l) => l.span,
                 MemberDecl::Constraint(c) => c.span,
                 MemberDecl::Sub(s) => s.span,
+                MemberDecl::Minimize(m) => m.span,
+                MemberDecl::Maximize(m) => m.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
             assert!((span.end as usize) <= source.len(), "member {} span overflows", i);
@@ -704,6 +750,12 @@ mod tests {
                 MemberDecl::Sub(s) => {
                     assert!(text.starts_with("sub"), "sub member {} text: {:?}", i, text);
                     assert!(text.contains(&s.name), "sub {} name in text", i);
+                }
+                MemberDecl::Minimize(_) => {
+                    assert!(text.starts_with("minimize"), "minimize member {} text: {:?}", i, text);
+                }
+                MemberDecl::Maximize(_) => {
+                    assert!(text.starts_with("maximize"), "maximize member {} text: {:?}", i, text);
                 }
             }
         }
@@ -743,6 +795,8 @@ mod tests {
                 MemberDecl::Let(l) => (l.span, l.content_hash),
                 MemberDecl::Constraint(c) => (c.span, c.content_hash),
                 MemberDecl::Sub(s) => (s.span, s.content_hash),
+                MemberDecl::Minimize(m) => (m.span, m.content_hash),
+                MemberDecl::Maximize(m) => (m.span, m.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
             assert_eq!(hash, ContentHash::of_str(text), "member {} hash from source text", i);
@@ -822,15 +876,157 @@ mod tests {
                 MemberDecl::Let(l) => (l.content_hash, l.span),
                 MemberDecl::Constraint(c) => (c.content_hash, c.span),
                 MemberDecl::Sub(s) => (s.content_hash, s.span),
+                MemberDecl::Minimize(m) => (m.content_hash, m.span),
+                MemberDecl::Maximize(m) => (m.content_hash, m.span),
             };
             let (hash_b, span_b) = match m_b {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
                 MemberDecl::Let(l) => (l.content_hash, l.span),
                 MemberDecl::Constraint(c) => (c.content_hash, c.span),
                 MemberDecl::Sub(s) => (s.content_hash, s.span),
+                MemberDecl::Minimize(m) => (m.content_hash, m.span),
+                MemberDecl::Maximize(m) => (m.content_hash, m.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
             assert_eq!(span_a, span_b, "member {} span determinism", i);
+        }
+    }
+
+    #[test]
+    fn parse_minimize_declaration() {
+        let source = r#"structure S {
+    param volume: Scalar = 100mm
+    minimize volume
+}"#;
+        let module = parse(source, reify_types::ModulePath::single("test_min"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+
+        // Should have 2 members: param + minimize
+        assert_eq!(structure.members.len(), 2);
+
+        match &structure.members[1] {
+            MemberDecl::Minimize(m) => {
+                assert!(matches!(&m.expr.kind, ExprKind::Ident(name) if name == "volume"));
+            }
+            other => panic!("expected Minimize, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_maximize_declaration() {
+        let source = r#"structure S {
+    param thickness: Scalar = 5mm
+    maximize thickness
+}"#;
+        let module = parse(source, reify_types::ModulePath::single("test_max"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+
+        assert_eq!(structure.members.len(), 2);
+
+        match &structure.members[1] {
+            MemberDecl::Maximize(m) => {
+                assert!(matches!(&m.expr.kind, ExprKind::Ident(name) if name == "thickness"));
+            }
+            other => panic!("expected Maximize, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_minimize_complex_expression() {
+        let source = r#"structure S {
+    param width: Scalar = 80mm
+    param height: Scalar = 100mm
+    minimize width * height
+}"#;
+        let module = parse(source, reify_types::ModulePath::single("test_min_complex"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+
+        match &structure.members[2] {
+            MemberDecl::Minimize(m) => {
+                match &m.expr.kind {
+                    ExprKind::BinOp { op, .. } => assert_eq!(op, "*"),
+                    other => panic!("expected BinOp(*), got {:?}", other),
+                }
+            }
+            other => panic!("expected Minimize, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_minimize_with_other_members() {
+        let source = r#"structure S {
+    param w: Scalar = 80mm
+    param h: Scalar = 100mm
+    let vol = w * h
+    constraint w > 0mm
+    minimize w
+}"#;
+        let module = parse(source, reify_types::ModulePath::single("test_min_mixed"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+
+        // 2 params + 1 let + 1 constraint + 1 minimize = 5 members
+        assert_eq!(structure.members.len(), 5);
+
+        // Verify minimize is present alongside other members
+        assert!(
+            structure.members.iter().any(|m| matches!(m, MemberDecl::Minimize(_))),
+            "should contain a Minimize member"
+        );
+        assert!(
+            structure.members.iter().any(|m| matches!(m, MemberDecl::Constraint(_))),
+            "should contain a Constraint member"
+        );
+    }
+
+    #[test]
+    fn minimize_span_and_hash() {
+        let source = r#"structure S {
+    param x: Scalar = 5mm
+    minimize x
+}"#;
+        let module = parse(source, reify_types::ModulePath::single("test_min_span"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+
+        match &structure.members[1] {
+            MemberDecl::Minimize(m) => {
+                // Span should cover the full "minimize x" text
+                let text = &source[m.span.start as usize..m.span.end as usize];
+                assert!(text.starts_with("minimize"), "span text: {:?}", text);
+                assert!(text.contains("x"), "span text should contain 'x': {:?}", text);
+
+                // Content hash should match the source text of the node
+                assert_eq!(
+                    m.content_hash,
+                    reify_types::ContentHash::of_str(text),
+                    "content_hash should match source text"
+                );
+            }
+            other => panic!("expected Minimize, got {:?}", other),
         }
     }
 

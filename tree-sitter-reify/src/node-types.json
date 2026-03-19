@@ -549,6 +549,62 @@
     }
   },
   {
+    "type": "maximize_declaration",
+    "named": true,
+    "fields": {
+      "expr": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "bool_literal",
+            "named": true
+          },
+          {
+            "type": "conditional_expression",
+            "named": true
+          },
+          {
+            "type": "function_call",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "member_access",
+            "named": true
+          },
+          {
+            "type": "number_literal",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "string_literal",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "member_access",
     "named": true,
     "fields": {
@@ -563,6 +619,62 @@
         ]
       },
       "object": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "bool_literal",
+            "named": true
+          },
+          {
+            "type": "conditional_expression",
+            "named": true
+          },
+          {
+            "type": "function_call",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "member_access",
+            "named": true
+          },
+          {
+            "type": "number_literal",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "string_literal",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "minimize_declaration",
+    "named": true,
+    "fields": {
+      "expr": {
         "multiple": false,
         "required": true,
         "types": [
@@ -904,6 +1016,14 @@
           "named": true
         },
         {
+          "type": "maximize_declaration",
+          "named": true
+        },
+        {
+          "type": "minimize_declaration",
+          "named": true
+        },
+        {
           "type": "param_declaration",
           "named": true
         },
@@ -1148,6 +1268,14 @@
     "type": "line_comment",
     "named": true,
     "extra": true
+  },
+  {
+    "type": "maximize",
+    "named": false
+  },
+  {
+    "type": "minimize",
+    "named": false
   },
   {
     "type": "number_literal",

@@ -38,6 +38,8 @@ module.exports = grammar({
       $.let_declaration,
       $.constraint_declaration,
       $.sub_declaration,
+      $.minimize_declaration,
+      $.maximize_declaration,
     ),
 
     // ── Param ───────────────────────────────────────────────
@@ -65,6 +67,18 @@ module.exports = grammar({
     // Label syntax would need disambiguation (e.g., `constraint "label" expr`).
     constraint_declaration: $ => seq(
       'constraint',
+      field('expr', $._expression),
+    ),
+
+    // ── Minimize ───────────────────────────────────────────
+    minimize_declaration: $ => seq(
+      'minimize',
+      field('expr', $._expression),
+    ),
+
+    // ── Maximize ──────────────────────────────────────────
+    maximize_declaration: $ => seq(
+      'maximize',
       field('expr', $._expression),
     ),
 
