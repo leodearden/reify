@@ -741,6 +741,88 @@ impl Engine {
             }
         }
 
+        // Sub-component elaboration: evaluate child template params/lets
+        // for each sub_component in each template.
+        for template in &module.templates {
+            for sub in &template.sub_components {
+                // Find the referenced child template by name
+                let child_template = match module.templates.iter().find(|t| t.name == sub.structure_name) {
+                    Some(t) => t,
+                    None => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "sub-component \"{}\" references unknown structure \"{}\"",
+                            sub.name, sub.structure_name
+                        )));
+                        continue;
+                    }
+                };
+
+                // Build scoped entity prefix: "ParentName.sub_name"
+                let scoped_entity = format!("{}.{}", template.name, sub.name);
+
+                // Build a child-local ValueMap seeded with child-original IDs
+                let mut child_values = ValueMap::new();
+
+                // First pass: evaluate child params (arg-provided or default)
+                for cell in &child_template.value_cells {
+                    if cell.kind != ValueCellKind::Param {
+                        continue;
+                    }
+
+                    let member = &cell.id.member;
+
+                    // Check if a matching arg was provided
+                    let val = if let Some((_name, arg_expr)) = sub.args.iter().find(|(name, _)| name == member) {
+                        // Evaluate arg expression against the PARENT's values map
+                        reify_expr::eval_expr(arg_expr, &values)
+                    } else if let Some(ref default_expr) = cell.default_expr {
+                        // Evaluate child param's default against the child-local map
+                        reify_expr::eval_expr(default_expr, &child_values)
+                    } else {
+                        Value::Undef
+                    };
+
+                    // Insert into child-local map with child-original ID
+                    child_values.insert(cell.id.clone(), val.clone());
+
+                    // Insert into main values map and snapshot with scoped ID
+                    let scoped_id = ValueCellId::new(&scoped_entity, member);
+                    let node_id = NodeId::Value(scoped_id.clone());
+                    let start = Instant::now();
+                    self.journal.record(EvalEvent {
+                        timestamp: start,
+                        node_id: node_id.clone(),
+                        kind: EventKind::Started,
+                        version: VersionId(version_id),
+                        payload: None,
+                    });
+
+                    values.insert(scoped_id.clone(), val.clone());
+                    snapshot.values.insert(
+                        scoped_id.clone(),
+                        (val.clone(), DeterminacyState::Determined),
+                    );
+
+                    let trace = DependencyTrace::default();
+                    let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
+                    let outcome = self.cache.record_evaluation(
+                        node_id.clone(),
+                        cached_result,
+                        VersionId(version_id),
+                        trace,
+                    );
+
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id,
+                        kind: EventKind::Completed { outcome },
+                        version: VersionId(version_id),
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
+                }
+            }
+        }
+
         // Resolution phase: resolve auto params using the constraint solver.
         let mut resolved_params = HashMap::new();
         if let Some(ref solver) = self.solver {
