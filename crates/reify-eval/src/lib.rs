@@ -820,6 +820,70 @@ impl Engine {
                         payload: Some(EventPayload::Duration(start.elapsed())),
                     });
                 }
+
+                // Second pass: evaluate child let-bindings in topological order
+                let child_let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = child_template
+                    .value_cells
+                    .iter()
+                    .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
+                    .map(|c| (NodeId::Value(c.id.clone()), c.default_expr.as_ref().unwrap()))
+                    .collect();
+
+                let child_let_node_ids: HashSet<NodeId> = child_let_cells.keys().cloned().collect();
+                let child_let_traces: HashMap<NodeId, DependencyTrace> = child_let_cells
+                    .iter()
+                    .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
+                    .collect();
+
+                let sorted_child_lets = topological_sort(&child_let_node_ids, &child_let_traces);
+
+                for child_node_id in sorted_child_lets {
+                    let expr = child_let_cells[&child_node_id];
+                    let child_cell_id = match &child_node_id {
+                        NodeId::Value(vcid) => vcid,
+                        _ => unreachable!(),
+                    };
+                    let member = &child_cell_id.member;
+
+                    // Evaluate against child-local map (references child-original IDs)
+                    let val = reify_expr::eval_expr(expr, &child_values);
+                    child_values.insert(child_cell_id.clone(), val.clone());
+
+                    // Insert into main values and snapshot with scoped ID
+                    let scoped_id = ValueCellId::new(&scoped_entity, member);
+                    let node_id = NodeId::Value(scoped_id.clone());
+                    let start = Instant::now();
+                    self.journal.record(EvalEvent {
+                        timestamp: start,
+                        node_id: node_id.clone(),
+                        kind: EventKind::Started,
+                        version: VersionId(version_id),
+                        payload: None,
+                    });
+
+                    values.insert(scoped_id.clone(), val.clone());
+                    snapshot.values.insert(
+                        scoped_id.clone(),
+                        (val.clone(), DeterminacyState::Determined),
+                    );
+
+                    let trace = extract_dependency_trace(expr);
+                    let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
+                    let outcome = self.cache.record_evaluation(
+                        node_id.clone(),
+                        cached_result,
+                        VersionId(version_id),
+                        trace,
+                    );
+
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id,
+                        kind: EventKind::Completed { outcome },
+                        version: VersionId(version_id),
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
+                }
             }
         }
 
