@@ -993,19 +993,19 @@ fn compile_structure(
             for m in &group.members {
                 if let Some(expr) = &m.default_expr {
                     for ref_id in collect_value_refs(expr) {
-                        if let Some(ref_guard) = guarded_cell_map.get(&ref_id) {
-                            if ref_guard != &group.guard_value_cell {
-                                diagnostics.push(
-                                    Diagnostic::warning(format!(
-                                        "reference to differently-guarded cell '{}'",
-                                        ref_id.member,
-                                    ))
-                                    .with_label(DiagnosticLabel::new(
-                                        m.span,
-                                        "referenced member under a different guard",
-                                    )),
-                                );
-                            }
+                        if let Some(ref_guard) = guarded_cell_map.get(&ref_id)
+                            && ref_guard != &group.guard_value_cell
+                        {
+                            diagnostics.push(
+                                Diagnostic::warning(format!(
+                                    "reference to differently-guarded cell '{}'",
+                                    ref_id.member,
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    m.span,
+                                    "referenced member under a different guard",
+                                )),
+                            );
                         }
                     }
                 }
@@ -1120,7 +1120,7 @@ fn compile_block_guard(
         inner_condition
     };
 
-    let guard_cell_id = ValueCellId::new(entity_name, &format!("__guard_{}", guard_index));
+    let guard_cell_id = ValueCellId::new(entity_name, format!("__guard_{}", guard_index));
     *guard_index += 1;
     structure_controlling.insert(guard_cell_id.clone());
 
@@ -1298,6 +1298,7 @@ fn compile_guarded_members(
 ///
 /// Creates a synthetic guard ValueCell (Bool, Let kind) with the guard condition as
 /// its default expression, and wraps the member in a CompiledGuardedGroup.
+#[allow(clippy::too_many_arguments)]
 fn compile_per_decl_guard(
     entity_name: &str,
     wc: &reify_syntax::WhereClause,
@@ -1309,7 +1310,7 @@ fn compile_per_decl_guard(
     guard_index: &mut u32,
 ) {
     let guard_expr = compile_expr(&wc.condition, scope, diagnostics);
-    let guard_cell_id = ValueCellId::new(entity_name, &format!("__guard_{}", guard_index));
+    let guard_cell_id = ValueCellId::new(entity_name, format!("__guard_{}", guard_index));
     *guard_index += 1;
 
     // Update scope to mark this member as guarded (for reference safety checking)
@@ -1331,6 +1332,7 @@ fn compile_per_decl_guard(
 
 /// Compile a per-declaration `where` clause for a constraint into a single-constraint
 /// CompiledGuardedGroup.
+#[allow(clippy::too_many_arguments)]
 fn compile_per_decl_constraint_guard(
     entity_name: &str,
     wc: &reify_syntax::WhereClause,
@@ -1342,7 +1344,7 @@ fn compile_per_decl_constraint_guard(
     guard_index: &mut u32,
 ) {
     let guard_expr = compile_expr(&wc.condition, scope, diagnostics);
-    let guard_cell_id = ValueCellId::new(entity_name, &format!("__guard_{}", guard_index));
+    let guard_cell_id = ValueCellId::new(entity_name, format!("__guard_{}", guard_index));
     *guard_index += 1;
 
     structure_controlling.insert(guard_cell_id.clone());
