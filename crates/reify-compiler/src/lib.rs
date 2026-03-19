@@ -720,10 +720,10 @@ pub fn compile(
     // This ensures order-independent declarations — a structure declared
     // before a function can still call that function.
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Function(fn_def) = decl {
-            if let Some(compiled_fn) = compile_function(fn_def, &enum_defs, &mut diagnostics) {
-                functions.push(compiled_fn);
-            }
+        if let reify_syntax::Declaration::Function(fn_def) = decl
+            && let Some(compiled_fn) = compile_function(fn_def, &enum_defs, &mut diagnostics)
+        {
+            functions.push(compiled_fn);
         }
     }
 

@@ -190,10 +190,10 @@ impl<'a> Lowering<'a> {
                 if child.kind() == "fn_param_list" {
                     let mut param_cursor = child.walk();
                     for param_child in child.children(&mut param_cursor) {
-                        if param_child.kind() == "fn_param" {
-                            if let Some(p) = self.lower_fn_param(param_child) {
-                                params.push(p);
-                            }
+                        if param_child.kind() == "fn_param"
+                            && let Some(p) = self.lower_fn_param(param_child)
+                        {
+                            params.push(p);
                         }
                     }
                     break;
@@ -268,10 +268,10 @@ impl<'a> Lowering<'a> {
         // Collect fn_let_binding children
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "fn_let_binding" {
-                if let Some(let_decl) = self.lower_fn_let_binding(child) {
-                    let_bindings.push(let_decl);
-                }
+            if child.kind() == "fn_let_binding"
+                && let Some(let_decl) = self.lower_fn_let_binding(child)
+            {
+                let_bindings.push(let_decl);
             }
         }
 
