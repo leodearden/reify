@@ -112,4 +112,13 @@ describe('editorStore', () => {
       dispose();
     });
   });
+
+  it('setCursorPosition defaults column to 0 when not provided', () => {
+    createRoot((dispose) => {
+      const { state, setCursorPosition } = createEditorStore();
+      setCursorPosition(10);
+      expect(state.cursorPosition).toEqual({ line: 10, column: 0 });
+      dispose();
+    });
+  });
 });
