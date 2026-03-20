@@ -495,6 +495,7 @@ impl<'a> Lowering<'a> {
             "function_call" => self.lower_function_call(node),
             "list_literal" => self.lower_list_literal(node),
             "set_literal" => self.lower_set_literal(node),
+            "map_literal" => self.lower_map_literal(node),
             "member_access" => self.lower_member_access(node),
             "parenthesized_expression" => {
                 // Unwrap parenthesized expression — find the inner expression
@@ -678,6 +679,30 @@ impl<'a> Lowering<'a> {
             kind: ExprKind::SetLiteral(elements),
             span: self.span(node),
         })
+    }
+
+    fn lower_map_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let mut entries = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "map_entry" {
+                if let Some(entry) = self.lower_map_entry(child) {
+                    entries.push(entry);
+                }
+            }
+        }
+        Some(Expr {
+            kind: ExprKind::MapLiteral(entries),
+            span: self.span(node),
+        })
+    }
+
+    fn lower_map_entry(&self, node: tree_sitter::Node) -> Option<(Expr, Expr)> {
+        let key_node = node.child_by_field_name("key")?;
+        let value_node = node.child_by_field_name("value")?;
+        let key = self.lower_expr(key_node)?;
+        let value = self.lower_expr(value_node)?;
+        Some((key, value))
     }
 
     fn lower_member_access(&self, node: tree_sitter::Node) -> Option<Expr> {
