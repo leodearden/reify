@@ -194,3 +194,45 @@ fn compile_indexed_collection_member_access() {
         ),
     }
 }
+
+// ─── step-17: bolts.count compiles to ValueRef(__count_bolts) ───
+
+#[test]
+fn compile_bolts_count_expression() {
+    let source = r#"
+        structure Bolt { param diameter : Scalar = 10mm }
+        structure S {
+            sub bolts : List<Bolt>
+            constraint bolts.count == 4
+            let n = bolts.count
+        }
+    "#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("should have template S");
+
+    // Find the 'n' let binding
+    let n_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "n")
+        .expect("should have let binding 'n'");
+
+    // The expression should compile to a ValueRef to the __count_bolts cell
+    let expr = n_cell.default_expr.as_ref().expect("n should have an expression");
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(id.entity, "S", "entity should be S");
+            assert_eq!(id.member, "__count_bolts", "member should be __count_bolts");
+        }
+        other => panic!(
+            "expected ValueRef(S.__count_bolts), got {:?}",
+            other
+        ),
+    }
+    // Result type should be Int
+    assert_eq!(expr.result_type, reify_types::Type::Int, "bolts.count type should be Int");
+}
