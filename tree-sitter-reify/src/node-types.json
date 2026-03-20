@@ -2861,6 +2861,32 @@
     }
   },
   {
+    "type": "parameterized_type",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type_args": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "type_arg_list",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "parenthesized_expression",
     "named": true,
     "fields": {},
@@ -3476,6 +3502,24 @@
             "named": true
           }
         ]
+      },
+      "type_args": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "<",
+            "named": false
+          },
+          {
+            "type": ">",
+            "named": false
+          },
+          {
+            "type": "type_arg_list",
+            "named": true
+          }
+        ]
       }
     },
     "children": {
@@ -3490,6 +3534,40 @@
     }
   },
   {
+    "type": "trait_bound_entry",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type_args": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "<",
+            "named": false
+          },
+          {
+            "type": ">",
+            "named": false
+          },
+          {
+            "type": "type_arg_list",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "trait_bound_list",
     "named": true,
     "fields": {},
@@ -3498,7 +3576,7 @@
       "required": true,
       "types": [
         {
-          "type": "identifier",
+          "type": "trait_bound_entry",
           "named": true
         }
       ]
@@ -3570,6 +3648,21 @@
     }
   },
   {
+    "type": "type_arg_list",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "type_expr",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "type_expr",
     "named": true,
     "fields": {},
@@ -3579,6 +3672,10 @@
       "types": [
         {
           "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "parameterized_type",
           "named": true
         }
       ]
@@ -3594,6 +3691,16 @@
         "types": [
           {
             "type": "trait_bound_list",
+            "named": true
+          }
+        ]
+      },
+      "default": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "type_expr",
             "named": true
           }
         ]

@@ -243,7 +243,11 @@ impl<'a> Lowering<'a> {
         let mut bounds = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if child.kind() == "identifier" {
+            if child.kind() == "trait_bound_entry" {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    bounds.push(self.node_text(name_node).to_string());
+                }
+            } else if child.kind() == "identifier" {
                 bounds.push(self.node_text(child).to_string());
             }
         }
@@ -274,9 +278,13 @@ impl<'a> Lowering<'a> {
                     .child_by_field_name("bounds")
                     .map(|b| self.lower_trait_bound_list(b))
                     .unwrap_or_default();
+                let default = child
+                    .child_by_field_name("default")
+                    .map(|d| self.lower_type_expr_node(d));
                 params.push(TypeParamDecl {
                     name,
                     bounds,
+                    default,
                     span: self.span(child),
                 });
             }
@@ -284,7 +292,7 @@ impl<'a> Lowering<'a> {
         params
     }
 
-    /// Find a trait_bound_list child within a node and extract its bounds.
+    /// Find a trait_bound_list child within a node and extract its bounds as strings.
     fn find_trait_bound_list(&self, node: tree_sitter::Node) -> Vec<String> {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -293,6 +301,94 @@ impl<'a> Lowering<'a> {
             }
         }
         vec![]
+    }
+
+    /// Find a trait_bound_list child and extract full TraitBoundRef entries.
+    fn find_trait_bound_refs(&self, node: tree_sitter::Node) -> Vec<TraitBoundRef> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "trait_bound_list" {
+                return self.lower_trait_bound_refs(child);
+            }
+        }
+        vec![]
+    }
+
+    /// Extract TraitBoundRef entries from a trait_bound_list node.
+    fn lower_trait_bound_refs(&self, node: tree_sitter::Node) -> Vec<TraitBoundRef> {
+        let mut bounds = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "trait_bound_entry"
+                && let Some(name_node) = child.child_by_field_name("name")
+            {
+                let type_args = self.lower_type_args_from_node(child);
+                bounds.push(TraitBoundRef {
+                    name: self.node_text(name_node).to_string(),
+                    type_args,
+                    span: self.span(child),
+                });
+            }
+        }
+        bounds
+    }
+
+    /// Lower a type_expr node to a TypeExpr. Handles both bare identifiers and parameterized types.
+    fn lower_type_expr_node(&self, node: tree_sitter::Node) -> TypeExpr {
+        if node.kind() == "type_expr" {
+            // type_expr is choice(parameterized_type, identifier)
+            let child = node.child(0).unwrap_or(node);
+            if child.kind() == "parameterized_type" {
+                return self.lower_parameterized_type(child);
+            }
+            // bare identifier
+            TypeExpr {
+                name: self.node_text(child).to_string(),
+                type_args: vec![],
+                span: self.span(child),
+            }
+        } else if node.kind() == "parameterized_type" {
+            self.lower_parameterized_type(node)
+        } else {
+            // treat as bare identifier
+            TypeExpr {
+                name: self.node_text(node).to_string(),
+                type_args: vec![],
+                span: self.span(node),
+            }
+        }
+    }
+
+    /// Lower a parameterized_type node (e.g., Box<T>) to a TypeExpr.
+    fn lower_parameterized_type(&self, node: tree_sitter::Node) -> TypeExpr {
+        let name = node
+            .child_by_field_name("name")
+            .map(|n| self.node_text(n).to_string())
+            .unwrap_or_default();
+        let type_args = self.lower_type_args_from_node(node);
+        TypeExpr {
+            name,
+            type_args,
+            span: self.span(node),
+        }
+    }
+
+    /// Extract type arguments from a node that has a type_args field or type_arg_list child.
+    fn lower_type_args_from_node(&self, node: tree_sitter::Node) -> Vec<TypeExpr> {
+        let mut args = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "type_arg_list" {
+                let mut inner_cursor = child.walk();
+                for inner in child.named_children(&mut inner_cursor) {
+                    if inner.kind() == "type_expr" || inner.kind() == "parameterized_type" || inner.kind() == "identifier" {
+                        args.push(self.lower_type_expr_node(inner));
+                    }
+                }
+                return args;
+            }
+        }
+        args
     }
 
     // ── Function lowering ─────────────────────────────────────
@@ -328,15 +424,7 @@ impl<'a> Lowering<'a> {
 
         // Extract optional return type
         let return_type = node.child_by_field_name("return_type").map(|t| {
-            let ident = if t.kind() == "type_expr" {
-                t.child(0).unwrap_or(t)
-            } else {
-                t
-            };
-            TypeExpr {
-                name: self.node_text(ident).to_string(),
-                span: self.span(ident),
-            }
+            self.lower_type_expr_node(t)
         });
 
         // Extract fn_body
@@ -394,15 +482,7 @@ impl<'a> Lowering<'a> {
         let name = self.node_text(name_node).to_string();
 
         let type_node = node.child_by_field_name("type")?;
-        let ident = if type_node.kind() == "type_expr" {
-            type_node.child(0).unwrap_or(type_node)
-        } else {
-            type_node
-        };
-        let type_expr = TypeExpr {
-            name: self.node_text(ident).to_string(),
-            span: self.span(ident),
-        };
+        let type_expr = self.lower_type_expr_node(type_node);
 
         Some(FnParam {
             name,
@@ -439,15 +519,7 @@ impl<'a> Lowering<'a> {
         let name = self.node_text(name_node).to_string();
 
         let type_expr = node.child_by_field_name("type").map(|t| {
-            let ident = if t.kind() == "type_expr" {
-                t.child(0).unwrap_or(t)
-            } else {
-                t
-            };
-            TypeExpr {
-                name: self.node_text(ident).to_string(),
-                span: self.span(ident),
-            }
+            self.lower_type_expr_node(t)
         });
 
         let value_node = node.child_by_field_name("value")?;
@@ -486,16 +558,7 @@ impl<'a> Lowering<'a> {
         let name = self.node_text(name_node).to_string();
 
         let default_type = node.child_by_field_name("default").map(|t| {
-            // default is a type_expr which wraps an identifier
-            let ident = if t.kind() == "type_expr" {
-                t.child(0).unwrap_or(t)
-            } else {
-                t
-            };
-            TypeExpr {
-                name: self.node_text(ident).to_string(),
-                span: self.span(ident),
-            }
+            self.lower_type_expr_node(t)
         });
 
         Some(AssociatedTypeDecl {
@@ -655,8 +718,8 @@ impl<'a> Lowering<'a> {
         // Extract optional type parameters
         let type_params = self.lower_type_parameters(node);
 
-        // Extract optional trait bounds
-        let trait_bounds = self.find_trait_bound_list(node);
+        // Extract optional trait bounds (as TraitBoundRef with type args)
+        let trait_bounds = self.find_trait_bound_refs(node);
 
         let members = self.lower_members(node);
 
@@ -679,7 +742,7 @@ impl<'a> Lowering<'a> {
 
         let is_pub = self.has_pub_keyword(node);
         let type_params = self.lower_type_parameters(node);
-        let trait_bounds = self.find_trait_bound_list(node);
+        let trait_bounds = self.find_trait_bound_refs(node);
         let members = self.lower_members(node);
         let content_hash = self.content_hash(node);
 
@@ -758,16 +821,7 @@ impl<'a> Lowering<'a> {
         let name = self.node_text(name_node).to_string();
 
         let type_expr = node.child_by_field_name("type").map(|t| {
-            // type_expr wraps an identifier
-            let ident = if t.kind() == "type_expr" {
-                t.child(0).unwrap_or(t)
-            } else {
-                t
-            };
-            TypeExpr {
-                name: self.node_text(ident).to_string(),
-                span: self.span(ident),
-            }
+            self.lower_type_expr_node(t)
         });
 
         let default = node.child_by_field_name("default")
@@ -799,15 +853,7 @@ impl<'a> Lowering<'a> {
         let is_pub = self.has_pub_keyword(node);
 
         let type_expr = node.child_by_field_name("type").map(|t| {
-            let ident = if t.kind() == "type_expr" {
-                t.child(0).unwrap_or(t)
-            } else {
-                t
-            };
-            TypeExpr {
-                name: self.node_text(ident).to_string(),
-                span: self.span(ident),
-            }
+            self.lower_type_expr_node(t)
         });
 
         let value_node = node.child_by_field_name("value")?;
@@ -876,6 +922,9 @@ impl<'a> Lowering<'a> {
         let struct_node = node.child_by_field_name("structure_name")?;
         let structure_name = self.node_text(struct_node).to_string();
 
+        // Extract optional type arguments: Box<Bolt>
+        let type_args = self.lower_type_args_from_node(node);
+
         let mut args = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -896,6 +945,7 @@ impl<'a> Lowering<'a> {
         Some(SubDecl {
             name,
             structure_name,
+            type_args,
             args,
             where_clause,
             span: self.span(node),
@@ -1267,6 +1317,7 @@ impl<'a> Lowering<'a> {
             };
             TypeExpr {
                 name: self.node_text(ident).to_string(),
+                type_args: vec![],
                 span: self.span(ident),
             }
         });

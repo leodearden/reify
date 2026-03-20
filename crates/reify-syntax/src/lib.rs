@@ -28,10 +28,18 @@ pub struct StructureDef {
     pub name: String,
     pub is_pub: bool,
     pub type_params: Vec<TypeParamDecl>,
-    pub trait_bounds: Vec<String>,
+    pub trait_bounds: Vec<TraitBoundRef>,
     pub members: Vec<MemberDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+/// A trait bound reference with optional type arguments (e.g., `Rigid` or `Container<Bolt>`).
+#[derive(Debug, Clone)]
+pub struct TraitBoundRef {
+    pub name: String,
+    pub type_args: Vec<TypeExpr>,
+    pub span: SourceSpan,
 }
 
 /// An occurrence definition (a process/transformation entity type in Reify).
@@ -41,7 +49,7 @@ pub struct OccurrenceDef {
     pub name: String,
     pub is_pub: bool,
     pub type_params: Vec<TypeParamDecl>,
-    pub trait_bounds: Vec<String>,
+    pub trait_bounds: Vec<TraitBoundRef>,
     pub members: Vec<MemberDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
@@ -113,11 +121,12 @@ pub struct ConstraintDecl {
     pub content_hash: ContentHash,
 }
 
-/// `sub mount_hole = Hole(diameter: 6mm)`
+/// `sub mount_hole = Hole(diameter: 6mm)` or `sub part = Box<Bolt>()`
 #[derive(Debug, Clone)]
 pub struct SubDecl {
     pub name: String,
     pub structure_name: String,
+    pub type_args: Vec<TypeExpr>,
     pub args: Vec<(String, Expr)>,
     pub where_clause: Option<WhereClause>,
     pub span: SourceSpan,
@@ -261,11 +270,12 @@ pub struct TraitDecl {
     pub content_hash: ContentHash,
 }
 
-/// A type parameter declaration: `T` or `T: Numeric`
+/// A type parameter declaration: `T`, `T: Numeric`, or `T: Numeric = Int`
 #[derive(Debug, Clone)]
 pub struct TypeParamDecl {
     pub name: String,
     pub bounds: Vec<String>,
+    pub default: Option<TypeExpr>,
     pub span: SourceSpan,
 }
 
@@ -389,10 +399,11 @@ pub struct LambdaParam {
     pub span: SourceSpan,
 }
 
-/// A type expression in the AST (e.g., `Scalar`, `Bool`).
+/// A type expression in the AST (e.g., `Scalar`, `Bool`, `Box<T>`).
 #[derive(Debug, Clone)]
 pub struct TypeExpr {
     pub name: String,
+    pub type_args: Vec<TypeExpr>,
     pub span: SourceSpan,
 }
 

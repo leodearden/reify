@@ -24,6 +24,8 @@ pub use reify_types::{CompiledFnBody, CompiledFunction};
 pub struct CompiledTrait {
     pub name: String,
     pub is_pub: bool,
+    /// Type parameters declared on this trait (e.g., `<T: Rigid>`).
+    pub type_params: Vec<reify_types::TypeParam>,
     /// Names of traits this trait refines (parent traits).
     pub refinements: Vec<String>,
     /// Members that conforming structures must provide (no default).
@@ -101,6 +103,10 @@ pub struct TopologyTemplate {
     pub name: String,
     pub entity_kind: EntityKind,
     pub visibility: Visibility,
+    /// Type parameters declared on this structure (e.g., `<T: Rigid>`).
+    pub type_params: Vec<reify_types::TypeParam>,
+    /// Names of traits this structure declares conformance to (e.g., `["Rigid"]`).
+    pub trait_bounds: Vec<String>,
     pub value_cells: Vec<ValueCellDecl>,
     pub constraints: Vec<CompiledConstraint>,
     pub realizations: Vec<RealizationDecl>,
@@ -145,6 +151,9 @@ pub struct SubComponentDecl {
     pub structure_name: String,
     pub visibility: Visibility,
     pub args: Vec<(String, CompiledExpr)>,
+    /// Resolved type arguments for parameterized structures
+    /// (e.g., `Box<Bolt>()` → `[StructureRef("Bolt")]`; `Box<U>()` → `[TypeParam("U")]`).
+    pub type_args: Vec<Type>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -422,6 +431,48 @@ fn resolve_type_name(name: &str) -> Option<Type> {
         }),
         _ => None,
     }
+}
+
+/// Resolve a type name, also checking type parameter names.
+/// Returns `Type::TypeParam(name)` if the name matches a known type parameter.
+fn resolve_type_with_params(name: &str, type_param_names: &HashSet<String>) -> Option<Type> {
+    if let Some(ty) = resolve_type_name(name) {
+        return Some(ty);
+    }
+    if type_param_names.contains(name) {
+        return Some(Type::TypeParam(name.to_string()));
+    }
+    None
+}
+
+/// Convert parsed TypeParamDecl to compiled TypeParam structs.
+fn convert_type_params(decls: &[reify_syntax::TypeParamDecl]) -> Vec<reify_types::TypeParam> {
+    decls
+        .iter()
+        .map(|d| {
+            let bounds = d
+                .bounds
+                .iter()
+                .map(|b| reify_types::TraitBound {
+                    trait_ref: reify_types::TraitRef {
+                        name: b.clone(),
+                        type_args: vec![],
+                    },
+                })
+                .collect();
+            // Resolve defaults: try builtin types first, then preserve
+            // structure names as StructureRef (concrete names, not type variables).
+            let default = d.default.as_ref().map(|te| {
+                resolve_type_name(&te.name)
+                    .unwrap_or_else(|| Type::StructureRef(te.name.clone()))
+            });
+            reify_types::TypeParam {
+                name: d.name.clone(),
+                bounds,
+                default,
+            }
+        })
+        .collect()
 }
 
 /// Check if an argument type is compatible with a parameter type.
@@ -1205,9 +1256,13 @@ fn compile_trait(
 
     let content_hash = trait_decl.content_hash;
 
+    // Convert parsed type parameters to compiled TypeParam structs
+    let type_params = convert_type_params(&trait_decl.type_params);
+
     CompiledTrait {
         name: trait_decl.name.clone(),
         is_pub: trait_decl.is_pub,
+        type_params,
         refinements: trait_decl.refinements.clone(),
         required_members,
         defaults,
@@ -1280,11 +1335,13 @@ pub fn compile(
         .map(|t| (t.name.clone(), t))
         .collect();
 
+    let mut pending_bound_checks: Vec<PendingBoundCheck> = Vec::new();
+
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
                 let entity_ref = EntityDefRef::from(structure);
-                let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &mut diagnostics);
+                let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &mut pending_bound_checks, &mut diagnostics);
                 templates.push(template);
             }
             reify_syntax::Declaration::Enum(_) => {
@@ -1313,9 +1370,44 @@ pub fn compile(
             }
             reify_syntax::Declaration::Occurrence(occurrence) => {
                 let entity_ref = EntityDefRef::from(occurrence);
-                let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &mut diagnostics);
+                let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &mut pending_bound_checks, &mut diagnostics);
                 templates.push(template);
             }
+        }
+    }
+
+    // Post-compilation pass: run deferred bound checks now that all structures
+    // are compiled and available in the template registry.
+    {
+        let template_registry: HashMap<String, &TopologyTemplate> = templates
+            .iter()
+            .map(|t: &TopologyTemplate| (t.name.clone(), t))
+            .collect();
+
+        for mut check in pending_bound_checks {
+            // For sub-component checks, type_params were left empty during
+            // compilation — fill them in now from the full template registry.
+            if check.type_params.is_empty() {
+                if let Some(target) = template_registry.get(check.target_name.as_str()) {
+                    if target.type_params.is_empty() {
+                        continue; // target has no type params, nothing to check
+                    }
+                    check.type_params = target.type_params.clone();
+                } else {
+                    // Target structure not found — skip (may be an external/unknown structure)
+                    continue;
+                }
+            }
+
+            check_type_param_bounds(
+                &check.type_params,
+                &check.type_args,
+                &check.target_name,
+                &template_registry,
+                &trait_registry,
+                &mut diagnostics,
+                check.span,
+            );
         }
     }
 
@@ -1398,9 +1490,8 @@ pub fn compile(
 struct EntityDefRef<'a> {
     name: &'a str,
     is_pub: bool,
-    #[allow(dead_code)]
     type_params: &'a [reify_syntax::TypeParamDecl],
-    trait_bounds: &'a [String],
+    trait_bounds: &'a [reify_syntax::TraitBoundRef],
     members: &'a [reify_syntax::MemberDecl],
     span: SourceSpan,
     #[allow(dead_code)]
@@ -1442,6 +1533,7 @@ fn compile_entity(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
+    pending_bound_checks: &mut Vec<PendingBoundCheck>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> TopologyTemplate {
     let entity_name = structure.name;
@@ -1460,6 +1552,14 @@ fn compile_entity(
     let mut guard_index: u32 = 0;
     let mut connector_index: u32 = 0;
 
+    // Collect type parameter names for this structure so we can resolve
+    // member types like `param contents : T` to Type::TypeParam("T").
+    let type_param_names: HashSet<String> = structure
+        .type_params
+        .iter()
+        .map(|tp| tp.name.clone())
+        .collect();
+
     // First pass: register all param and let names into the scope so they can
     // reference each other (forward references within the structure).
     // We need types for the scope, so we resolve types in this pass as well.
@@ -1467,7 +1567,7 @@ fn compile_entity(
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    match resolve_type_name(&type_expr.name) {
+                    match resolve_type_with_params(&type_expr.name, &type_param_names) {
                         Some(t) => t,
                         None => {
                             diagnostics.push(
@@ -1565,6 +1665,35 @@ fn compile_entity(
             functions,
             diagnostics,
         );
+
+        // Defer type argument checking on parameterized trait bounds (e.g., Container<Bolt>)
+        // to the post-compilation pass so forward references are resolved correctly.
+        for trait_bound in structure.trait_bounds {
+            if !trait_bound.type_args.is_empty()
+                && let Some(compiled_trait) = trait_registry.get(&trait_bound.name)
+                && !compiled_trait.type_params.is_empty()
+            {
+                let resolved_args: Vec<Type> = trait_bound
+                    .type_args
+                    .iter()
+                    .map(|ta| {
+                        resolve_type_name(&ta.name).unwrap_or_else(|| {
+                            if type_param_names.contains(&ta.name) {
+                                Type::TypeParam(ta.name.clone())
+                            } else {
+                                Type::StructureRef(ta.name.clone())
+                            }
+                        })
+                    })
+                    .collect();
+                pending_bound_checks.push(PendingBoundCheck {
+                    type_params: compiled_trait.type_params.clone(),
+                    type_args: resolved_args,
+                    target_name: trait_bound.name.clone(),
+                    span: trait_bound.span,
+                });
+            }
+        }
     }
 
     // Second pass: compile all members.
@@ -1723,11 +1852,40 @@ fn compile_entity(
                     })
                     .collect();
 
+                // Resolve type arguments to Type values.
+                let resolved_type_args: Vec<Type> = sub
+                    .type_args
+                    .iter()
+                    .map(|ta| {
+                        resolve_type_name(&ta.name).unwrap_or_else(|| {
+                            if type_param_names.contains(&ta.name) {
+                                Type::TypeParam(ta.name.clone())
+                            } else {
+                                Type::StructureRef(ta.name.clone())
+                            }
+                        })
+                    })
+                    .collect();
+
+                // Defer bound checking to the post-compilation pass so
+                // forward-referenced structures are available in the registry.
+                // Always push a pending check — even with empty type_args,
+                // the target structure may have type params requiring defaults.
+                {
+                    pending_bound_checks.push(PendingBoundCheck {
+                        type_params: Vec::new(), // filled in during post-pass
+                        type_args: resolved_type_args.clone(),
+                        target_name: sub.structure_name.clone(),
+                        span: sub.span,
+                    });
+                }
+
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
                     structure_name: sub.structure_name.clone(),
                     visibility: Visibility::Public,
                     args: compiled_args,
+                    type_args: resolved_type_args,
                     span: sub.span,
                     content_hash: sub.content_hash,
                 });
@@ -2209,6 +2367,15 @@ fn compile_entity(
         }
     }
 
+    // Convert parsed type parameters to compiled TypeParam structs
+    let type_params = convert_type_params(&structure.type_params);
+
+    let trait_bounds: Vec<String> = structure
+        .trait_bounds
+        .iter()
+        .map(|tb| tb.name.clone())
+        .collect();
+
     // Port direction validation for occurrences: warn if missing in/out ports.
     if entity_kind == EntityKind::Occurrence {
         let has_in = ports.iter().any(|p| p.direction == reify_types::PortDirection::In);
@@ -2237,6 +2404,8 @@ fn compile_entity(
         name: entity_name.to_string(),
         entity_kind,
         visibility,
+        type_params,
+        trait_bounds,
         value_cells,
         constraints,
         realizations,
@@ -2248,6 +2417,149 @@ fn compile_entity(
         objective,
         content_hash,
     }
+}
+
+/// A deferred bound check to be executed after all structures are compiled.
+/// This ensures forward references are resolved correctly.
+struct PendingBoundCheck {
+    /// Type parameters with bounds to check against.
+    type_params: Vec<reify_types::TypeParam>,
+    /// The resolved type arguments (Type::StructureRef for concrete names, Type::TypeParam for forwarded params).
+    type_args: Vec<Type>,
+    /// The name of the target structure or trait being instantiated.
+    target_name: String,
+    /// Source span for diagnostic messages.
+    span: SourceSpan,
+}
+
+/// Check that type arguments satisfy the bounds on type parameters.
+///
+/// For each type param with bounds, verify that the corresponding type arg
+/// declares conformance to all required traits. Forwarded type params
+/// (Type::TypeParam) are skipped — their bounds are enforced at the concrete
+/// instantiation site.
+/// When type_args are fewer than type_params, fill in defaults from TypeParam.default.
+/// If a type_param has no default and no arg is provided, emit an error.
+/// If type_args exceed type_params, emit an arity error.
+fn check_type_param_bounds(
+    type_params: &[reify_types::TypeParam],
+    type_args: &[Type],
+    target_structure_name: &str,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
+) {
+    // Check arity: too many type args
+    if type_args.len() > type_params.len() {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "too many type arguments for '{}': expected {}, got {}",
+                target_structure_name, type_params.len(), type_args.len()
+            ))
+            .with_label(DiagnosticLabel::new(
+                span,
+                format!("'{}' declares {} type parameter(s)", target_structure_name, type_params.len()),
+            )),
+        );
+    }
+
+    for (i, tp) in type_params.iter().enumerate() {
+        let effective_arg: &Type = if let Some(arg) = type_args.get(i) {
+            arg
+        } else if let Some(ref default_type) = tp.default {
+            default_type
+        } else {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "missing type argument for type parameter '{}' of '{}' (no default provided)",
+                    tp.name, target_structure_name
+                ))
+                .with_label(DiagnosticLabel::new(
+                    span,
+                    format!("'{}' requires a type argument for '{}'", target_structure_name, tp.name),
+                )),
+            );
+            continue;
+        };
+
+        // Skip bound checking for forwarded type params — bounds are
+        // enforced at the concrete instantiation site.
+        if matches!(effective_arg, Type::TypeParam(_)) {
+            continue;
+        }
+
+        let arg_name = match effective_arg.as_name() {
+            Some(name) => name,
+            None => continue, // builtin types don't need bound checking
+        };
+
+        let arg_template = template_registry.get(arg_name);
+
+        for bound in &tp.bounds {
+            let bound_name = &bound.trait_ref.name;
+            let satisfies = if let Some(tmpl) = arg_template {
+                satisfies_trait_bound(&tmpl.trait_bounds, bound_name, trait_registry)
+            } else {
+                false
+            };
+
+            if !satisfies {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type argument '{}' does not satisfy bound '{}' on type parameter '{}' of '{}'",
+                        arg_name, bound_name, tp.name, target_structure_name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("'{}' does not implement '{}'", arg_name, bound_name),
+                    )),
+                );
+            }
+        }
+    }
+}
+
+/// Check whether a structure's declared trait bounds satisfy a required trait,
+/// walking refinement chains transitively.
+///
+/// Returns true if any of the `structure_trait_bounds` equals `required_trait`
+/// or refines it (directly or transitively) through the `trait_registry`.
+fn satisfies_trait_bound(
+    structure_trait_bounds: &[String],
+    required_trait: &str,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+) -> bool {
+    for bound in structure_trait_bounds {
+        let mut visited = HashSet::new();
+        if trait_satisfies(bound, required_trait, trait_registry, &mut visited) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Recursively check if `trait_name` equals or refines `required_trait`.
+fn trait_satisfies(
+    trait_name: &str,
+    required_trait: &str,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    visited: &mut HashSet<String>,
+) -> bool {
+    if trait_name == required_trait {
+        return true;
+    }
+    if !visited.insert(trait_name.to_string()) {
+        return false; // cycle detected
+    }
+    if let Some(compiled_trait) = trait_registry.get(trait_name) {
+        for refinement in &compiled_trait.refinements {
+            if trait_satisfies(refinement, required_trait, trait_registry, visited) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Extract a port name from a port reference expression.
@@ -2459,6 +2771,7 @@ fn compile_connection(
             structure_name: conn_type.to_string(),
             visibility: Visibility::Private,
             args: compiled_args,
+            type_args: vec![],
             span,
             content_hash: conn_hash,
         });
@@ -2944,9 +3257,9 @@ fn check_trait_conformance(
     let mut seen_requirement_names: HashMap<String, Type> = HashMap::new();
     let mut seen_default_names: HashMap<String, Type> = HashMap::new();
 
-    for trait_name in structure.trait_bounds {
+    for trait_bound in structure.trait_bounds {
         collect_all_requirements(
-            trait_name,
+            &trait_bound.name,
             trait_registry,
             &mut all_requirements,
             &mut all_defaults,

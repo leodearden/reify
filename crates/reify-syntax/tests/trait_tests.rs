@@ -184,7 +184,8 @@ fn parse_structure_with_trait_bounds() {
     };
 
     assert_eq!(structure.name, "Bolt");
-    assert_eq!(structure.trait_bounds, vec!["Fastener", "Rigid"]);
+    let bound_names: Vec<&str> = structure.trait_bounds.iter().map(|b| b.name.as_str()).collect();
+    assert_eq!(bound_names, vec!["Fastener", "Rigid"]);
     assert!(!structure.is_pub);
     assert!(structure.type_params.is_empty());
     assert_eq!(structure.members.len(), 1);
@@ -259,4 +260,126 @@ fn backward_compat_no_def_keyword() {
 
     assert_eq!(structure.name, "S");
     assert_eq!(structure.members.len(), 1);
+}
+
+// ── pre-2: type_expr with type args ────────────────────────────────
+
+#[test]
+fn parse_type_expr_with_type_args() {
+    // param whose type annotation is a parameterized type: Box<T>
+    let (decls, errors) = parse_decls(
+        "structure def S { param contents : Box<Bolt> }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let param = match &structure.members[0] {
+        MemberDecl::Param(p) => p,
+        other => panic!("expected Param, got {:?}", other),
+    };
+
+    let te = param.type_expr.as_ref().expect("type_expr should be present");
+    assert_eq!(te.name, "Box");
+    assert_eq!(te.type_args.len(), 1);
+    assert_eq!(te.type_args[0].name, "Bolt");
+    assert!(te.type_args[0].type_args.is_empty());
+}
+
+#[test]
+fn parse_type_expr_nested_type_args() {
+    // Nested parameterized types: Container<Box<T>>
+    let (decls, errors) = parse_decls(
+        "structure def S { param x : Container<Box<T>> }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let param = match &structure.members[0] {
+        MemberDecl::Param(p) => p,
+        other => panic!("expected Param, got {:?}", other),
+    };
+
+    let te = param.type_expr.as_ref().unwrap();
+    assert_eq!(te.name, "Container");
+    assert_eq!(te.type_args.len(), 1);
+    assert_eq!(te.type_args[0].name, "Box");
+    assert_eq!(te.type_args[0].type_args.len(), 1);
+    assert_eq!(te.type_args[0].type_args[0].name, "T");
+}
+
+// ── pre-2: type_parameter with default ─────────────────────────────
+
+#[test]
+fn parse_type_param_with_default() {
+    let (decls, errors) = parse_decls(
+        "structure def Box<T: Rigid = Steel> { param w : Length = 10mm }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    assert_eq!(structure.type_params.len(), 1);
+    let tp = &structure.type_params[0];
+    assert_eq!(tp.name, "T");
+    assert_eq!(tp.bounds, vec!["Rigid"]);
+    let default = tp.default.as_ref().expect("default type should be present");
+    assert_eq!(default.name, "Steel");
+    assert!(default.type_args.is_empty());
+}
+
+// ── pre-2: sub_declaration with type args ──────────────────────────
+
+#[test]
+fn parse_sub_with_type_args() {
+    let (decls, errors) = parse_decls(
+        "structure def Asm { sub part = Box<Bolt>() }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let sub = match &structure.members[0] {
+        MemberDecl::Sub(s) => s,
+        other => panic!("expected Sub, got {:?}", other),
+    };
+
+    assert_eq!(sub.name, "part");
+    assert_eq!(sub.structure_name, "Box");
+    assert_eq!(sub.type_args.len(), 1);
+    assert_eq!(sub.type_args[0].name, "Bolt");
+}
+
+// ── pre-2: trait_bound_list with type args ─────────────────────────
+
+#[test]
+fn parse_trait_bound_with_type_args() {
+    // Structure conforming to a parameterized trait bound
+    let (decls, errors) = parse_decls(
+        "structure def Crate : Container<Bolt> { param count : Int = 5 }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    assert_eq!(structure.trait_bounds.len(), 1);
+    assert_eq!(structure.trait_bounds[0].name, "Container");
+    assert_eq!(structure.trait_bounds[0].type_args.len(), 1);
+    assert_eq!(structure.trait_bounds[0].type_args[0].name, "Bolt");
 }

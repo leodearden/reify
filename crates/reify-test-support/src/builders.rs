@@ -280,6 +280,7 @@ impl TopologyTemplateBuilder {
             structure_name,
             visibility: reify_compiler::Visibility::Public,
             args,
+            type_args: Vec::new(),
             span: SourceSpan::new(0, 0),
         });
         self
@@ -354,6 +355,8 @@ impl TopologyTemplateBuilder {
             name: self.name,
             entity_kind: self.entity_kind,
             visibility: self.visibility,
+            type_params: vec![],
+            trait_bounds: vec![],
             value_cells: self.value_cells,
             constraints: self.constraints,
             realizations: self.realizations,

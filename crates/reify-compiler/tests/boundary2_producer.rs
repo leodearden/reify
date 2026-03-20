@@ -181,6 +181,7 @@ fn type_error_dimension_mismatch() {
                     name: "thickness".into(),
                     type_expr: Some(TypeExpr {
                         name: "Scalar".into(),
+                        type_args: vec![],
                         span: SourceSpan::new(0, 6),
                     }),
                     default: Some(Expr {
@@ -262,6 +263,7 @@ fn constraint_non_bool_produces_warning() {
                     name: "width".into(),
                     type_expr: Some(TypeExpr {
                         name: "Scalar".into(),
+                        type_args: vec![],
                         span: SourceSpan::new(0, 6),
                     }),
                     default: Some(Expr {
@@ -279,6 +281,7 @@ fn constraint_non_bool_produces_warning() {
                     name: "height".into(),
                     type_expr: Some(TypeExpr {
                         name: "Scalar".into(),
+                        type_args: vec![],
                         span: SourceSpan::new(20, 26),
                     }),
                     default: Some(Expr {
@@ -440,6 +443,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                     name: "width".into(),
                     type_expr: Some(TypeExpr {
                         name: "Scalar".into(),
+                        type_args: vec![],
                         span: SourceSpan::new(0, 6),
                     }),
                     default: Some(Expr {
@@ -457,6 +461,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                     name: "height".into(),
                     type_expr: Some(TypeExpr {
                         name: "Scalar".into(),
+                        type_args: vec![],
                         span: SourceSpan::new(20, 26),
                     }),
                     default: Some(Expr {
@@ -1357,6 +1362,7 @@ fn scalar_plus_int_type_error() {
                     name: "width".into(),
                     type_expr: Some(TypeExpr {
                         name: "Scalar".into(),
+                        type_args: vec![],
                         span: SourceSpan::new(0, 6),
                     }),
                     default: Some(Expr {

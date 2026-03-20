@@ -32,6 +32,7 @@ fn reject_unresolved_type_names() {
                 name: "x".into(),
                 type_expr: Some(TypeExpr {
                     name: "NonexistentType".into(),
+                    type_args: vec![],
                     span: SourceSpan::new(0, 15),
                 }),
                 default: None,
@@ -219,6 +220,7 @@ fn handle_parse_errors_gracefully() {
                 name: "width".into(),
                 type_expr: Some(TypeExpr {
                     name: "Scalar".into(),
+                    type_args: vec![],
                     span: SourceSpan::new(0, 6),
                 }),
                 default: Some(Expr {

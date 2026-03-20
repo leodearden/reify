@@ -25,6 +25,12 @@ pub enum Type {
     Option(Box<Type>),
     /// Function type.
     Function { params: Vec<Type>, return_type: Box<Type> },
+    /// Unresolved type parameter reference (e.g., `T` in a generic definition).
+    TypeParam(String),
+    /// Concrete structure name reference at an instantiation site
+    /// (e.g., `Bolt` in `Box<Bolt>()`). Distinct from TypeParam which
+    /// represents unresolved type variables needing substitution.
+    StructureRef(String),
 }
 
 impl Type {
@@ -52,6 +58,15 @@ impl Type {
     /// Is this type a numeric type (Int, Real, or Scalar)?
     pub fn is_numeric(&self) -> bool {
         matches!(self, Type::Int | Type::Real | Type::Scalar { .. })
+    }
+
+    /// Returns the inner name for name-carrying variants without allocating.
+    /// Used for registry lookups instead of Display formatting.
+    pub fn as_name(&self) -> Option<&str> {
+        match self {
+            Type::TypeParam(name) | Type::StructureRef(name) | Type::Enum(name) => Some(name),
+            _ => None,
+        }
     }
 }
 
@@ -115,6 +130,17 @@ mod tests {
     }
 
     #[test]
+    fn type_param_display() {
+        assert_eq!(format!("{}", Type::TypeParam("T".into())), "T");
+        assert_eq!(format!("{}", Type::TypeParam("Element".into())), "Element");
+    }
+
+    #[test]
+    fn type_param_not_numeric() {
+        assert!(!Type::TypeParam("T".into()).is_numeric());
+    }
+
+    #[test]
     fn type_new_variants_not_numeric() {
         assert!(!Type::Enum("X".into()).is_numeric());
         assert!(!Type::List(Box::new(Type::Int)).is_numeric());
@@ -152,6 +178,8 @@ impl std::fmt::Display for Type {
                 let params_str: Vec<String> = params.iter().map(|p| format!("{}", p)).collect();
                 write!(f, "Function({}) -> {}", params_str.join(", "), return_type)
             }
+            Type::TypeParam(name) => write!(f, "{}", name),
+            Type::StructureRef(name) => write!(f, "{}", name),
         }
     }
 }

@@ -146,8 +146,13 @@ module.exports = grammar({
 
     // ── Trait bound list (used by trait refinements and structure bounds) ──
     trait_bound_list: $ => seq(
-      $.identifier,
-      repeat(seq('+', $.identifier)),
+      $.trait_bound_entry,
+      repeat(seq('+', $.trait_bound_entry)),
+    ),
+
+    trait_bound_entry: $ => seq(
+      field('name', $.identifier),
+      optional(field('type_args', seq('<', $.type_arg_list, '>'))),
     ),
 
     // ── Type parameters ─────────────────────────────────────
@@ -162,6 +167,7 @@ module.exports = grammar({
     type_parameter: $ => seq(
       field('name', $.identifier),
       optional(seq(':', field('bounds', $.trait_bound_list))),
+      optional(seq('=', field('default', $.type_expr))),
     ),
 
     // ── Structure ───────────────────────────────────────────
@@ -271,6 +277,7 @@ module.exports = grammar({
       field('name', $.identifier),
       '=',
       field('structure_name', $.identifier),
+      optional(field('type_args', seq('<', $.type_arg_list, '>'))),
       '(',
       optional($.named_argument_list),
       ')',
@@ -369,7 +376,24 @@ module.exports = grammar({
     ),
 
     // ── Types ───────────────────────────────────────────────
-    type_expr: $ => $.identifier,
+    type_expr: $ => choice(
+      $.parameterized_type,
+      $.identifier,
+    ),
+
+    // A type with type arguments: `Box<T>`, `Map<String, Int>`
+    parameterized_type: $ => seq(
+      field('name', $.identifier),
+      '<',
+      field('type_args', $.type_arg_list),
+      '>',
+    ),
+
+    type_arg_list: $ => seq(
+      $.type_expr,
+      repeat(seq(',', $.type_expr)),
+      optional(','),
+    ),
 
     // ── Expressions ─────────────────────────────────────────
     // Precedence (low → high):

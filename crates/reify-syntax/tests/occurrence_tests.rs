@@ -96,7 +96,8 @@ fn parse_occurrence_with_traits() {
     };
 
     assert_eq!(occ.name, "Milling");
-    assert_eq!(occ.trait_bounds, vec!["Machining", "CNC"]);
+    let bound_names: Vec<&str> = occ.trait_bounds.iter().map(|tb| tb.name.as_str()).collect();
+    assert_eq!(bound_names, vec!["Machining", "CNC"]);
     assert_eq!(occ.members.len(), 1);
 }
 
