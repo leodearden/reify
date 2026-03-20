@@ -116,3 +116,47 @@ describe('Editor doc change handling', () => {
     expect(updateSpy).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('Editor save (Ctrl+S)', () => {
+  it('save calls bridge.saveFile with active file path', () => {
+    const store = setupStore();
+    store.markDirty(file1.path);
+    const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Simulate Ctrl+S by dispatching the key through CM6
+    // Use the CM6 keymap dispatch by pressing Ctrl-s
+    const event = new KeyboardEvent('keydown', {
+      key: 's',
+      code: 'KeyS',
+      ctrlKey: true,
+      bubbles: true,
+    });
+    view.contentDOM.dispatchEvent(event);
+
+    expect(saveSpy).toHaveBeenCalledWith(file1.path);
+  });
+
+  it('save clears dirty flag', () => {
+    const store = setupStore();
+    store.markDirty(file1.path);
+    vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    expect(store.state.dirtyFiles).toContain(file1.path);
+
+    const event = new KeyboardEvent('keydown', {
+      key: 's',
+      code: 'KeyS',
+      ctrlKey: true,
+      bubbles: true,
+    });
+    view.contentDOM.dispatchEvent(event);
+
+    expect(store.state.dirtyFiles).not.toContain(file1.path);
+  });
+});
