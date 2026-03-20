@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { LanguageSupport } from '@codemirror/language';
+import { LanguageSupport, getIndentation } from '@codemirror/language';
+import { EditorState } from '@codemirror/state';
 import { highlightTree } from '@lezer/highlight';
 import { classHighlighter } from '@lezer/highlight';
 import { NodeProp } from '@lezer/common';
@@ -128,12 +129,17 @@ describe('code folding', () => {
 
 describe('auto-indent', () => {
   it('Block node uses delimited indent', () => {
-    // Simply verify the indentation service is configured by checking
-    // the language has been properly set up (implementation detail test)
-    const support = reifyLanguage();
-    expect(support.language.name).toBe('reify');
-    // The indentNodeProp is configured for Block nodes in reifyLanguage.ts
-    // We verify it by checking the parser configuration exists
-    expect(support.language.parser).toBeDefined();
+    const doc = 'structure S {\n  param x = 1mm\n}';
+    const state = EditorState.create({
+      doc,
+      extensions: [reifyLanguage()],
+    });
+    // Query indentation at the start of line 2 (after the opening '{')
+    // Line 2 starts at offset: 'structure S {\n'.length = 14
+    const line2Start = doc.indexOf('\n') + 1;
+    const indent = getIndentation(state, line2Start);
+    // delimitedIndent on Block should produce a non-zero indent level
+    expect(indent).not.toBeNull();
+    expect(indent!).toBeGreaterThan(0);
   });
 });
