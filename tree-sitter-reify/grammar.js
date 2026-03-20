@@ -26,6 +26,7 @@ module.exports = grammar({
       $.structure_definition,
       $.import_declaration,
       $.enum_declaration,
+      $.trait_declaration,
     ),
 
     // ── Enum ──────────────────────────────────────────────────
@@ -43,10 +44,61 @@ module.exports = grammar({
       $.string_literal,
     ),
 
+    // ── Trait ────────────────────────────────────────────────
+    trait_declaration: $ => seq(
+      optional('pub'),
+      'trait',
+      field('name', $.identifier),
+      optional($.type_parameters),
+      optional(seq(':', $.trait_bound_list)),
+      '{',
+      repeat($.trait_member),
+      '}',
+    ),
+
+    trait_member: $ => choice(
+      $.param_declaration,
+      $.let_declaration,
+      $.constraint_declaration,
+      $.sub_declaration,
+      $.associated_type,
+    ),
+
+    // ── Associated type ─────────────────────────────────────
+    associated_type: $ => seq(
+      'type',
+      field('name', $.identifier),
+      optional(seq('=', field('default', $.type_expr))),
+    ),
+
+    // ── Trait bound list (used by trait refinements and structure bounds) ──
+    trait_bound_list: $ => seq(
+      $.identifier,
+      repeat(seq('+', $.identifier)),
+    ),
+
+    // ── Type parameters ─────────────────────────────────────
+    type_parameters: $ => seq(
+      '<',
+      $.type_parameter,
+      repeat(seq(',', $.type_parameter)),
+      optional(','),
+      '>',
+    ),
+
+    type_parameter: $ => seq(
+      field('name', $.identifier),
+      optional(seq(':', field('bounds', $.trait_bound_list))),
+    ),
+
     // ── Structure ───────────────────────────────────────────
     structure_definition: $ => seq(
+      optional('pub'),
       'structure',
+      optional('def'),
       field('name', $.identifier),
+      optional($.type_parameters),
+      optional(seq(':', $.trait_bound_list)),
       '{',
       repeat($._member),
       '}',
