@@ -172,6 +172,7 @@ impl TopologyTemplateBuilder {
         self.value_cells.push(ValueCellDecl {
             id: ValueCellId::new(entity, member),
             kind: ValueCellKind::Param,
+            visibility: reify_compiler::Visibility::Public,
             cell_type,
             default_expr: default,
             span: SourceSpan::new(0, 0),
@@ -188,6 +189,7 @@ impl TopologyTemplateBuilder {
         self.value_cells.push(ValueCellDecl {
             id: ValueCellId::new(entity, member),
             kind: ValueCellKind::Auto,
+            visibility: reify_compiler::Visibility::Public,
             cell_type,
             default_expr: None,
             span: SourceSpan::new(0, 0),
@@ -205,6 +207,7 @@ impl TopologyTemplateBuilder {
         self.value_cells.push(ValueCellDecl {
             id: ValueCellId::new(entity, member),
             kind: ValueCellKind::Let,
+            visibility: reify_compiler::Visibility::Private,
             cell_type,
             default_expr: Some(expr),
             span: SourceSpan::new(0, 0),

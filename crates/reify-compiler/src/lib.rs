@@ -52,6 +52,7 @@ pub struct SubComponentDecl {
 pub struct ValueCellDecl {
     pub id: ValueCellId,
     pub kind: ValueCellKind,
+    pub visibility: Visibility,
     pub cell_type: Type,
     pub default_expr: Option<CompiledExpr>,
     pub span: SourceSpan,
@@ -65,6 +66,13 @@ pub enum ValueCellKind {
     Let,
     /// Solver-determined parameter: starts as Undef, value provided by constraint solver.
     Auto,
+}
+
+/// Visibility of a declaration: `Public` if accessible from outside, `Private` if internal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Visibility {
+    Public,
+    Private,
 }
 
 /// A compiled constraint.
@@ -880,6 +888,7 @@ fn compile_structure(
                     value_cells.push(ValueCellDecl {
                         id,
                         kind: ValueCellKind::Auto,
+                        visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,
                         span: param.span,
@@ -893,6 +902,7 @@ fn compile_structure(
                     value_cells.push(ValueCellDecl {
                         id,
                         kind: ValueCellKind::Param,
+                        visibility: Visibility::Public,
                         cell_type,
                         default_expr,
                         span: param.span,
@@ -915,6 +925,7 @@ fn compile_structure(
                 value_cells.push(ValueCellDecl {
                     id,
                     kind: ValueCellKind::Let,
+                    visibility: Visibility::Private,
                     cell_type,
                     default_expr: Some(compiled_expr),
                     span: let_decl.span,
