@@ -53,9 +53,17 @@ fn emit_status(app: &tauri::AppHandle, phase: &str) {
 
 #[tauri::command]
 fn get_initial_state(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<reify_gui::types::GuiState, String> {
-    reify_gui::commands::get_initial_state_impl(&state.engine)
+    let result = reify_gui::commands::get_initial_state_impl(&state.engine);
+    if let Ok(ref gui_state) = result {
+        // Store as last_state so subsequent commands produce correct diffs
+        let delta = compute_delta(&state.last_state, gui_state);
+        emit_delta(&app, &delta);
+        emit_status(&app, "idle");
+    }
+    result
 }
 
 #[tauri::command]
