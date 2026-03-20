@@ -56,6 +56,11 @@ export function Editor(props: EditorProps) {
               }, 300);
             }
           }
+          if (update.selectionSet) {
+            const pos = update.state.selection.main.head;
+            const line = update.state.doc.lineAt(pos);
+            props.store.setCursorPosition(line.number, pos - line.from);
+          }
         }),
       ],
     });
