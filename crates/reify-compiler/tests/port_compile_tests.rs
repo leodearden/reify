@@ -199,3 +199,43 @@ structure def S {
     // ValueCellIds should be distinct
     assert_ne!(mount.members[0].id, shaft.members[0].id);
 }
+
+// ── Step 19: port direction preserved ──────────────────────────────
+
+#[test]
+fn compile_port_direction_preserved() {
+    let source = r#"
+trait MechPort {
+    param d : Length
+}
+
+structure def S {
+    port a : in MechPort {
+        param d : Length = 1mm
+    }
+    port b : out MechPort {
+        param d : Length = 2mm
+    }
+    port c : bidi MechPort {
+        param d : Length = 3mm
+    }
+    port d : MechPort {
+        param d : Length = 4mm
+    }
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    assert_eq!(template.ports.len(), 4, "expected 4 ports");
+    assert_eq!(template.ports[0].direction, PortDirection::In);
+    assert_eq!(template.ports[1].direction, PortDirection::Out);
+    assert_eq!(template.ports[2].direction, PortDirection::Bidi);
+    assert_eq!(template.ports[3].direction, PortDirection::Bidi); // default
+}
