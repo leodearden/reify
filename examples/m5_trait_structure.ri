@@ -1,0 +1,11 @@
+trait Measurable {
+    param length : Length
+    constraint length > 0mm
+}
+
+structure def Rod : Measurable {
+    param length : Length = 100mm
+    param diameter : Length = 10mm
+    let radius = diameter / 2
+    constraint diameter < length
+}

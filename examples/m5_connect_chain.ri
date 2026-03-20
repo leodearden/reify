@@ -1,0 +1,16 @@
+trait FluidPort {
+    param diameter : Length
+}
+
+occurrence def Pipe {
+    port inlet : in FluidPort { param diameter : Length = 25mm }
+    port outlet : out FluidPort { param diameter : Length = 25mm }
+    param length : Length = 100mm
+}
+
+structure def Pipeline {
+    sub p1 = Pipe()
+    sub p2 = Pipe()
+    sub p3 = Pipe()
+    chain p1.outlet -> p2.inlet -> p2.outlet -> p3.inlet
+}

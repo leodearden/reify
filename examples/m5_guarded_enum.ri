@@ -1,0 +1,20 @@
+enum Shape { Round, Square, Hex }
+
+structure def Fitting {
+    let shape = Shape.Round
+    param size : Length = 10mm
+
+    where shape == Shape.Round {
+        param diameter : Length = size
+    } else {
+        param side_length : Length = size
+    }
+
+    let label = match shape {
+        Round => 1,
+        Square => 2,
+        Hex => 3
+    }
+
+    constraint size > 0mm
+}

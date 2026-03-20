@@ -1,0 +1,12 @@
+structure def Flange {
+    param radius : Scalar = 50mm
+    param height : Scalar = 10mm
+    param hole_count : Int = 6
+    param bolt_circle_radius : Scalar = 35mm
+    param hole_radius : Scalar = 3mm
+
+    constraint radius > bolt_circle_radius
+    constraint hole_count > 0
+
+    let body = cylinder(radius, height)
+}
