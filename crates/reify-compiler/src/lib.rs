@@ -337,6 +337,12 @@ fn resolve_type_name(name: &str) -> Option<Type> {
         "Int" => Some(Type::Int),
         "Real" => Some(Type::Real),
         "String" => Some(Type::String),
+        "Length" => Some(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        "Mass" => Some(Type::Scalar {
+            dimension: DimensionVector::MASS,
+        }),
         _ => None,
     }
 }
