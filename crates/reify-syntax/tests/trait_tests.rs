@@ -109,3 +109,46 @@ fn parse_trait_various_members() {
         other => panic!("expected Sub, got {:?}", other),
     }
 }
+
+// ── Step 9: associated types ──────────────────────────────────────
+
+#[test]
+fn parse_trait_associated_type() {
+    let (decls, errors) = parse_decls("trait WithType { type Material = Steel }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let trait_decl = match &decls[0] {
+        Declaration::Trait(t) => t,
+        other => panic!("expected Trait, got {:?}", other),
+    };
+
+    assert_eq!(trait_decl.members.len(), 1);
+    match &trait_decl.members[0] {
+        MemberDecl::AssociatedType(a) => {
+            assert_eq!(a.name, "Material");
+            assert!(a.default_type.is_some());
+            assert_eq!(a.default_type.as_ref().unwrap().name, "Steel");
+        }
+        other => panic!("expected AssociatedType, got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_trait_associated_type_no_default() {
+    let (decls, errors) = parse_decls("trait Bare { type Output }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let trait_decl = match &decls[0] {
+        Declaration::Trait(t) => t,
+        other => panic!("expected Trait, got {:?}", other),
+    };
+
+    assert_eq!(trait_decl.members.len(), 1);
+    match &trait_decl.members[0] {
+        MemberDecl::AssociatedType(a) => {
+            assert_eq!(a.name, "Output");
+            assert!(a.default_type.is_none());
+        }
+        other => panic!("expected AssociatedType, got {:?}", other),
+    }
+}
