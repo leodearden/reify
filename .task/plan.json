@@ -1,34 +1,36 @@
 {
-  "task_id": "62",
-  "title": "Collection compilation + operations",
+  "task_id": "92",
+  "title": "Backend event emission + file watcher + snapshot diffing",
   "files": [
-    "crates/reify-types/src/expr.rs",
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-stdlib/src/lib.rs",
-    "crates/reify-expr/tests/collection_eval_tests.rs",
-    "crates/reify-compiler/tests/collection_compile_tests.rs"
+    "Cargo.toml",
+    "gui/src-tauri/Cargo.toml",
+    "gui/src-tauri/src/types.rs",
+    "gui/src-tauri/src/diff.rs",
+    "gui/src-tauri/src/watcher.rs",
+    "gui/src-tauri/src/lib.rs",
+    "gui/src-tauri/src/commands.rs",
+    "gui/src-tauri/src/main.rs",
+    "gui/src-tauri/src/tests/mod.rs",
+    "gui/src-tauri/src/tests/diff_tests.rs",
+    "gui/src-tauri/src/tests/watcher_tests.rs"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-compiler",
-    "crates/reify-expr",
-    "crates/reify-stdlib"
+    "gui/src-tauri/src"
   ],
-  "analysis": "This task implements collection compilation and operations across the Reify pipeline. The codebase already has: (1) Value::List/Set/Map variants in reify-types, (2) Type::List/Set/Map types, (3) syntax parsing for list/set/map literals and index access in reify-syntax, (4) stub error handlers in the compiler for collection syntax nodes, (5) apply_lambda in reify-expr for calling lambda closures.\n\nThe work involves: (A) Adding 5 new CompiledExprKind variants to reify-types (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall), (B) Implementing their evaluation in reify-expr including all collection methods (count, sum, map, filter, fold, all, any, contains, concat, generate for List; count, contains, union, intersection, difference for Set; count, keys, values, contains_key for Map), (C) Implementing compilation in reify-compiler replacing the current stubs, (D) Adding dimension-aware sum to reify-stdlib.\n\nKey constraint: The current grammar supports MemberAccess (obj.member) but not method_call with args (obj.method(args)). Property-style methods (.count, .sum, .keys, .values) compile from MemberAccess. Methods with args (.map, .filter, .fold, .contains, .union, etc.) will be tested at the CompiledExpr level directly. Full end-to-end parsing of method calls with arguments requires a grammar change (tree-sitter-reify) which is out of scope for this task's modules.\n\nUndef propagation follows the spec: undef collection -> undef result, known-structure-unknown-elements -> count works but sum propagates, Kleene 3-valued logic for .all/.any.\n\nReview feedback identified three blocking issues: (1) Missing Kleene tests for .any — the implementation is correct but untested for [undef, false].any -> Undef and [true, undef].any -> Bool(true). (2) Missing .filter Undef propagation test — the implementation already returns Undef when predicate returns Undef (line 484) but no test covers it. (3) apply_lambda() uses EvalContext::simple() which drops the function registry, so UserFunctionCall nodes inside lambda bodies silently return Undef. The fix requires threading EvalContext through apply_lambda and eval_method_call.",
+  "analysis": "The frontend (bridge.ts + engineStore.ts) already has event listeners for mesh-update, value-update, constraint-update, evaluation-status, diagnostics, and file-changed. The backend currently returns full GuiState snapshots from commands but never emits targeted events. This task adds three capabilities:\n\n1. **Snapshot diffing** (diff.rs): Pure function comparing consecutive GuiState snapshots by key (entity_path for meshes, cell_id for values, node_id for constraints) to produce minimal deltas. Requires adding PartialEq to GUI types.\n\n2. **Event emission**: After set_parameter/update_source/open_file_engine operations in main.rs, diff old vs new state and emit targeted events via Tauri's AppHandle.emit(). Emit evaluation-status events around engine operations.\n\n3. **File watcher** (watcher.rs): Uses notify crate to monitor .ri files. On external change, emits file-changed event. Debounces rapid FS events.\n\nKey architectural constraint: The lib crate (reify_gui) keeps tauri as optional. Diff logic and file watcher are pure Rust (no tauri dependency), fully testable without a Tauri runtime. Event emission (using AppHandle) lives in main.rs behind the gui feature flag. AppState gains a `last_state: Mutex<Option<GuiState>>` field for tracking previous state for diffing.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add CompiledExprKind variants (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall) to reify-types/src/expr.rs. Update walk(), collect_value_refs_inner(), and add constructor helpers. ListLiteral(Vec<CompiledExpr>), SetLiteral(Vec<CompiledExpr>), MapLiteral(Vec<(CompiledExpr, CompiledExpr)>), IndexAccess { object: Box<CompiledExpr>, index: Box<CompiledExpr> }, MethodCall { object: Box<CompiledExpr>, method: String, args: Vec<CompiledExpr> }.",
+      "description": "Add notify crate to workspace Cargo.toml (notify = \"6\") and gui/src-tauri/Cargo.toml dependencies",
       "status": "done",
-      "commit": "5345877",
+      "commit": "027f1c7",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Update collect_body_refs_inner() in reify-compiler/src/lib.rs to handle the 5 new CompiledExprKind variants (recurse into sub-expressions for dependency tracking).",
+      "description": "Add PartialEq derive to MeshData, ValueData, ConstraintData, FileData, GuiState in types.rs so they can be compared for diffing",
       "status": "done",
-      "commit": "5345877",
+      "commit": "dd242e1",
       "tests": []
     }
   ],
@@ -36,368 +38,227 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests in crates/reify-expr/tests/collection_eval_tests.rs for list literal evaluation: eval ListLiteral([Int(1), Int(2), Int(3)]) -> Value::List([Int(1), Int(2), Int(3)]), empty list, and list with nested expressions.",
+      "description": "Write test in types_tests.rs: EvaluationStatus serializes to expected JSON format with phase string and optional progress field (matching frontend EvaluationStatus interface)",
       "status": "done",
-      "commit": "f0c939f"
+      "commit": "e610519"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::ListLiteral in reify-expr/src/lib.rs -- evaluate each element expression and collect into Value::List. Add SetLiteral and MapLiteral eval simultaneously since they follow the same pattern.",
+      "description": "Add EvaluationStatus struct to types.rs with #[derive(Debug, Clone, Serialize, Deserialize)] and fields: phase: String, progress: Option<f64> (with skip_serializing_if for progress)",
       "status": "done",
-      "commit": "4b100a0"
+      "commit": "44cdfee"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for set literal evaluation (SetLiteral -> Value::Set with dedup) and map literal evaluation (MapLiteral -> Value::Map).",
+      "description": "Write test in diff_tests.rs: diff_gui_state with two identical GuiState snapshots returns a StateDelta with empty changed_meshes, changed_values, and changed_constraints vecs",
       "status": "done",
-      "commit": "fdff49c"
+      "commit": "4fe7f9b"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify set/map literal eval passes (already implemented in step-2). If not, fix.",
+      "description": "Create diff.rs with StateDelta struct (changed_meshes: Vec<MeshData>, changed_values: Vec<ValueData>, changed_constraints: Vec<ConstraintData>, removed_mesh_paths: Vec<String>, removed_value_ids: Vec<String>, removed_constraint_ids: Vec<String>) and skeleton diff_gui_state that returns empty delta. Register module in lib.rs and tests/mod.rs",
       "status": "done",
-      "commit": "fdff49c"
+      "commit": "5abdd9b"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for IndexAccess evaluation: list[1] -> element, list[out-of-bounds] -> Undef, map[key] -> value, map[missing-key] -> Undef, list[undef] -> Undef, undef[0] -> Undef.",
+      "description": "Write test: diff_gui_state detects a changed value -- old state has width='80' and new state has width='120', delta should contain exactly that one changed ValueData",
       "status": "done",
-      "commit": "efdcbc0"
+      "commit": "e67c51b"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::IndexAccess in reify-expr/src/lib.rs -- evaluate object and index, dispatch based on Value::List (Int index) and Value::Map (key lookup). Out of bounds / missing -> Undef.",
+      "description": "Implement value diffing in diff_gui_state: index values by cell_id, compare with PartialEq, include changed values in delta, include new values as changed, track removed value IDs",
       "status": "done",
-      "commit": "bdb0466"
+      "commit": "cdde29b"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for MethodCall .count on lists, sets, and maps: [1,2,3].count -> Int(3), set{1,2,3}.count -> Int(3), map{'a'=>1}.count -> Int(1), [].count -> Int(0).",
+      "description": "Write test: diff_gui_state detects a changed constraint -- old has status='Satisfied', new has status='Violated', delta contains that constraint",
       "status": "done",
-      "commit": "4d10692"
+      "commit": "23291d7"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::MethodCall in reify-expr/src/lib.rs -- start with .count method dispatching on Value::List/Set/Map to return their length as Value::Int.",
+      "description": "Implement constraint diffing: index by node_id, compare with PartialEq, include changed/added in delta, track removed IDs",
       "status": "done",
-      "commit": "5bc7369"
+      "commit": "cdde29b"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for MethodCall .sum: [1,2,3].sum -> Int(6), [1.0,2.0].sum -> Real(3.0), [1mm,2mm].sum -> Scalar(0.003, LENGTH), [].sum -> Int(0), [1,undef,3].sum -> Undef.",
+      "description": "Write test: diff_gui_state detects changed mesh -- old has vertices [0,0,0], new has vertices [1,1,1], delta contains that mesh. Unchanged mesh NOT in delta.",
       "status": "done",
-      "commit": "ca6f9b9"
+      "commit": "7b0ebc1"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement .sum method in eval_method_call -- iterate list elements, accumulate using add logic (reuse eval_add pattern from reify-expr), handle dimension-aware scalar addition. Add dimension-aware collection sum helper to reify-stdlib if needed.",
+      "description": "Implement mesh diffing: index by entity_path, compare with PartialEq, include changed/added, track removed paths",
       "status": "done",
-      "commit": "8f16e83"
+      "commit": "cdde29b"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing tests for MethodCall .contains: [1,2,3].contains(2) -> Bool(true), [1,2,3].contains(5) -> Bool(false), set{1,2,3}.contains(2) -> Bool(true), set{1,2,3}.contains(5) -> Bool(false).",
+      "description": "Write test: diff_gui_state handles added and removed entities -- new state has a value not in old (appears in changed), old has a value not in new (appears in removed_value_ids)",
       "status": "done",
-      "commit": "adad14c"
+      "commit": "5ade27d"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement .contains method for List and Set -- check if the argument value is present in the collection.",
+      "description": "Verify add/remove logic is correct (should already work from step 6/8/10 implementation). Adjust if needed to pass test.",
       "status": "done",
-      "commit": "e45b383"
+      "commit": "5ade27d"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing tests for MethodCall .map: [1,2,3].map(|x| x*2) -> List([2,4,6]). Construct the MethodCall with a lambda arg CompiledExpr.",
+      "description": "Write test: StateDelta::full() creates a delta with all meshes/values/constraints from a GuiState (for initial state where there is no previous snapshot)",
       "status": "done",
-      "commit": "76616ca"
+      "commit": "bbb0e21"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement .map method -- evaluate the lambda arg to get Value::Lambda, then apply_lambda to each element, collect results into new Value::List.",
+      "description": "Implement StateDelta::full(state: &GuiState) that clones all items into changed_* vecs with empty removed_* vecs",
       "status": "done",
-      "commit": "277ad8a"
+      "commit": "6624c1a"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing tests for MethodCall .filter: [1,2,3,4].filter(|x| x > 2) -> List([3,4]), empty result case.",
+      "description": "Write test: compute_delta with None last_state returns full delta, then stores state. Second call with changed state returns minimal diff delta.",
       "status": "done",
-      "commit": "ce250d7"
+      "commit": "92950bb"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement .filter method -- apply_lambda to each element, keep elements where result is Bool(true), discard where Bool(false), propagate Undef.",
+      "description": "Add last_state: Mutex<Option<GuiState>> to AppState in commands.rs. Implement compute_delta(&last_state, &new_state) -> StateDelta that diffs with last, stores new state, returns delta.",
       "status": "done",
-      "commit": "984c541"
+      "commit": "f06e080"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write failing tests for MethodCall .fold: [1,2,3].fold(0, |acc,x| acc+x) -> Int(6), fold with initial value.",
+      "description": "Write test in watcher_tests.rs: Create a temp dir with a .ri file, start FileWatcher, modify file, verify callback is invoked with correct path within timeout",
       "status": "done",
-      "commit": "b772290"
+      "commit": "58b5f6b"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Implement .fold method -- evaluate init, then for each element apply 2-arg lambda with (accumulator, element), thread result through.",
+      "description": "Create watcher.rs with FileWatcher struct using notify crate. Constructor takes a callback Fn(PathBuf). watch(path) method starts watching. Debounce rapid events (100ms). Filter to .ri files only.",
       "status": "done",
-      "commit": "a45a565"
+      "commit": "8a0e123"
     },
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write failing tests for MethodCall .all and .any: [1,2,3].all(|x| x>0) -> Bool(true), [1,2,3].any(|x| x>2) -> Bool(true), [1,2,3].all(|x| x>2) -> Bool(false), [1,2,3].any(|x| x>5) -> Bool(false). Kleene: [1,undef,3].all(|x| x>0) -> Undef, [false,undef].all(|x| x) -> Bool(false).",
+      "description": "Write test: FileWatcher ignores non-.ri file changes -- modify a .txt file in watched dir, verify callback is NOT invoked",
       "status": "done",
-      "commit": "aa25e42"
+      "commit": "5ef0f60"
     },
     {
       "id": "step-20",
       "type": "impl",
-      "description": "Implement .all and .any methods with Kleene 3-valued logic: .all returns false if any false, undef if any undef and none false, true otherwise. .any returns true if any true, undef if any undef and none true, false otherwise.",
+      "description": "Add .ri extension filter in watcher event handler (should already be implemented in step-18, verify it passes)",
       "status": "done",
-      "commit": "11193fc"
+      "commit": "5ef0f60"
     },
     {
       "id": "step-21",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .concat and .generate on lists: [1,2].concat([3,4]) -> List([1,2,3,4]), [].generate(3, |i| i*2) -> List([0,2,4]).",
+      "type": "impl",
+      "description": "Wire event emission in main.rs: modify set_parameter, update_source, open_file_engine command wrappers to (1) emit evaluation-status{evaluating}, (2) call impl, (3) compute_delta, (4) emit targeted events for each changed item, (5) emit evaluation-status{idle}. Add emit_delta helper function.",
       "status": "done",
-      "commit": "cdb4e22"
+      "commit": "cf365ce"
     },
     {
       "id": "step-22",
       "type": "impl",
-      "description": "Implement .concat (merge two lists) and .generate (create list from count + lambda, applying lambda to indices 0..count) methods.",
+      "description": "Wire file watcher in main.rs: after creating AppState, if a file is loaded, start FileWatcher on its parent dir. On file change, read file, call update_source_impl, compute_delta, emit events via cloned AppHandle. Store watcher handle to keep it alive.",
       "status": "done",
-      "commit": "c028a19"
+      "commit": "0311e3b"
     },
     {
       "id": "step-23",
-      "type": "test",
-      "description": "Write failing tests for set operations: set{1,2,3}.union(set{3,4}) -> Set({1,2,3,4}), set{1,2,3}.intersection(set{2,3,4}) -> Set({2,3}), set{1,2,3}.difference(set{2,3,4}) -> Set({1}).",
-      "status": "done",
-      "commit": "24e6082"
-    },
-    {
-      "id": "step-24",
       "type": "impl",
-      "description": "Implement set .union, .intersection, .difference methods using BTreeSet operations.",
+      "description": "Wire get_initial_state in main.rs to set last_state (so subsequent commands produce correct diffs) and emit initial evaluation-status{idle}",
       "status": "done",
-      "commit": "a735a38"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Write failing tests for map methods: map{'a'=>1}.keys -> List(['a']), map{'a'=>1}.values -> List([1]), map{'a'=>1}.contains_key('a') -> Bool(true), map{'a'=>1}.contains_key('b') -> Bool(false).",
-      "status": "done",
-      "commit": "ddf1d72"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "Implement map .keys, .values (return as Value::List), .contains_key methods.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-27",
-      "type": "test",
-      "description": "Write failing tests for undef propagation edge cases: undef.count -> Undef, [1,undef,3].count -> Int(3), [1,undef,3].sum -> Undef, undef[0] -> Undef, [1,2,3][undef] -> Undef, undef.map(lambda) -> Undef.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-28",
-      "type": "impl",
-      "description": "Verify undef propagation passes -- most cases should already work from the MethodCall dispatch checking for Undef object. Fix any gaps.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-29",
-      "type": "test",
-      "description": "Write failing compiler tests in crates/reify-compiler/tests/collection_compile_tests.rs: compile 'let x = [1, 2, 3]' -> CompiledExprKind::ListLiteral, compile 'let x = set{1, 2}' -> SetLiteral, compile 'let x = map{\"a\" => 1}' -> MapLiteral, compile 'let x = items[0]' -> IndexAccess.",
-      "status": "done",
-      "commit": "4048d2f"
-    },
-    {
-      "id": "step-30",
-      "type": "impl",
-      "description": "Implement compilation of ListLiteral, SetLiteral, MapLiteral, IndexAccess in reify-compiler -- replace the current stub error handlers with actual compilation that recursively compiles element expressions and produces the new CompiledExprKind variants.",
-      "status": "done",
-      "commit": "89320f7"
-    },
-    {
-      "id": "step-31",
-      "type": "test",
-      "description": "Write failing compiler test: compile 'let n = items.count' where items is a known let binding -> CompiledExprKind::MethodCall { method: 'count', args: [] }. Test property-style method compilation from MemberAccess syntax.",
-      "status": "done",
-      "commit": "802d2be"
-    },
-    {
-      "id": "step-32",
-      "type": "impl",
-      "description": "Implement compilation of MemberAccess -> MethodCall in reify-compiler. When the member is a known collection method name (count, sum, keys, values) and it's NOT a port access, compile it as MethodCall with empty args. Keep port access logic intact.",
-      "status": "done",
-      "commit": "5e96a5b"
-    },
-    {
-      "id": "step-33",
-      "type": "test",
-      "description": "Write integration test: parse + compile + eval 'structure S { let x = [1, 2, 3] }' -> verify x evaluates to Value::List([Int(1), Int(2), Int(3)]). Test parse + compile + eval for set and map literals too.",
-      "status": "done",
-      "commit": "59ab3b6"
-    },
-    {
-      "id": "step-34",
-      "type": "impl",
-      "description": "Verify integration tests pass end-to-end. Fix any issues in the parse -> compile -> eval pipeline for collection literals.",
-      "status": "done",
-      "commit": "59ab3b6"
-    },
-    {
-      "id": "step-35",
-      "type": "test",
-      "description": "Write integration test: parse + compile + eval 'structure S { let items = [1, 2, 3]  let n = items.count }' -> verify n evaluates to Int(3). Also test list index access integration.",
-      "status": "done",
-      "commit": "4469cc0"
-    },
-    {
-      "id": "step-36",
-      "type": "impl",
-      "description": "Verify property method and index access integration tests pass. Fix any issues.",
-      "status": "done",
-      "commit": "4469cc0"
-    },
-    {
-      "id": "step-37",
-      "type": "test",
-      "description": "Add Kleene 3-valued logic tests for .any in collection_eval_tests.rs: (1) eval_method_any_kleene_undef: [undef, false].any(|x| x) -> Undef (no true present, but undef present means result is indeterminate). (2) eval_method_any_kleene_true_wins: [true, undef].any(|x| x) -> Bool(true) (true dominates undef in Kleene OR). These mirror the existing eval_method_all_kleene_undef and eval_method_all_kleene_false_wins tests.",
-      "status": "done",
-      "commit": "ffbc589"
-    },
-    {
-      "id": "step-38",
-      "type": "impl",
-      "description": "Verify .any Kleene tests pass. The implementation already has the correct Kleene logic (lines 398-417: true short-circuits, false skips, undef flags has_undef, final check returns Undef if has_undef else Bool(false)). Fix if any test unexpectedly fails.",
-      "status": "done",
-      "commit": "ffbc589"
-    },
-    {
-      "id": "step-39",
-      "type": "test",
-      "description": "Add .filter Undef propagation test in collection_eval_tests.rs: eval_method_filter_undef_propagation: [1, undef, 3].filter(|x| x > 0) -> Undef. The predicate (x > 0) returns Undef when x is Undef (because Gt with Undef operand propagates Undef). The filter spec says 'propagate Undef' — if any element's predicate returns Undef, the entire filter result is Undef. Use an undef ValueCellId in the list to produce an Undef element that causes the predicate to return Undef.",
-      "status": "done",
-      "commit": "17de3f1"
-    },
-    {
-      "id": "step-40",
-      "type": "impl",
-      "description": "Verify .filter Undef propagation test passes. The implementation already handles this at line 484 (Value::Undef => return Value::Undef). Fix if the test unexpectedly fails.",
-      "status": "done",
-      "commit": "17de3f1"
-    },
-    {
-      "id": "step-41",
-      "type": "test",
-      "description": "Add test for UserFunctionCall inside lambda body used in a collection method. In collection_eval_tests.rs, add eval_method_map_with_user_function: create a CompiledFunction 'double' that returns x*2, create a list [1,2,3], call .map(|x| double(x)) where the lambda body is a UserFunctionCall node. Evaluate with EvalContext::new(&values, &[double_fn]). Assert result is List([2,4,6]). This test will FAIL because apply_lambda() currently uses EvalContext::simple() which drops the functions registry, so UserFunctionCall inside the lambda body returns Undef for every element, producing List([Undef, Undef, Undef]).",
-      "status": "done",
-      "commit": "a47f47d"
-    },
-    {
-      "id": "step-42",
-      "type": "impl",
-      "description": "Fix apply_lambda() context propagation. Change signature from pub fn apply_lambda(lambda: &Value, args: &[Value]) -> Value to pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value. Inside, replace EvalContext::simple(&eval_map) with ctx.with_scope(&eval_map) so functions and recursion_depth are preserved. Change eval_method_call signature from fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value to fn eval_method_call(obj: &Value, method: &str, args: &[Value], ctx: &EvalContext) -> Value. Update all apply_lambda call sites inside eval_method_call (.map, .filter, .fold, .all, .any, .generate) to pass ctx. Update the MethodCall arm in eval_expr (line 180) to pass ctx to eval_method_call. Existing tests using EvalContext::simple() will continue to work since simple() sets functions to &[] which is still valid.",
-      "status": "done",
-      "commit": "39f0f66"
+      "commit": "ce0690a"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add all 5 CompiledExprKind variants (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall) rather than reusing existing FunctionCall for methods",
-      "rationale": "MethodCall has a fundamentally different semantic: it dispatches on the receiver object's runtime type (List, Set, Map), not on a function name. Separate variants give clean pattern matching in the evaluator and accurate dependency tracking in collect_value_refs."
+      "decision": "Diff logic in lib crate, event emission in main.rs binary",
+      "rationale": "Tauri is an optional dependency (behind gui feature flag). Keeping diff.rs and watcher.rs in the lib ensures they're testable without a Tauri runtime. Only main.rs (which requires gui feature) calls AppHandle.emit()."
     },
     {
-      "decision": "Implement method call evaluation directly in reify-expr rather than routing through reify-stdlib",
-      "rationale": "Collection methods need access to apply_lambda (for .map, .filter, .fold) and eval_expr (for sub-expression evaluation), which are in reify-expr. Only dimension-aware sum may delegate to stdlib for consistency with existing numeric stdlib functions."
+      "decision": "Add last_state: Mutex<Option<GuiState>> to AppState for diff tracking",
+      "rationale": "Computing old state before operations would require locking the engine twice (once for old state, once for the operation). Storing the last emitted state is cheaper and simpler. Mutex<Option<>> because initial state is None."
     },
     {
-      "decision": "Test methods with arguments (.map, .filter, .fold, etc.) by constructing CompiledExpr trees directly rather than requiring end-to-end parsing",
-      "rationale": "The current tree-sitter grammar only has MemberAccess (obj.member) with no support for method calls with arguments (obj.method(args)). A grammar change to add method_call syntax is needed but out of scope for this task's stated modules. Property-style methods (.count, .sum, .keys, .values) work through MemberAccess already."
+      "decision": "Use notify crate v6 with manual debouncing rather than notify-debouncer-mini",
+      "rationale": "Fewer dependencies. Manual debouncing (HashMap<PathBuf, Instant>, skip if < 100ms) is simple and sufficient for our use case. The notify crate's own debouncer adds another crate and API surface."
     },
     {
-      "decision": "Compile MemberAccess to MethodCall only for known collection method names, not all member accesses",
-      "rationale": "Port member access (port.member) must continue to compile to ValueRef as it does today. The compiler should check if the member is a known collection method name (count, sum, keys, values) and only then produce MethodCall when it's NOT a port access. Unknown members remain diagnostic errors. This preserves backward compatibility."
+      "decision": "PartialEq on GUI types for diffing comparison",
+      "rationale": "The simplest approach for comparing snapshots. For MeshData with Vec<f32>, PartialEq compares bit-identical floats, which is correct for our use case -- if the same mesh is regenerated with identical vertices, we should skip it; any change at all should be sent."
     },
     {
-      "decision": "Use Kleene 3-valued logic for .all and .any, consistent with existing And/Or evaluation",
-      "rationale": "The spec requires: .all with undef element returns false if any false, undef if any undef and none false. This matches the Kleene AND/OR already implemented for BinOp::And and BinOp::Or in reify-expr."
+      "decision": "StateDelta includes both changed items and removed IDs",
+      "rationale": "When source is updated, entities may be added or removed. The frontend needs to know about removals (to clean up its store) as well as additions/changes. Removed items are identified by key strings since the full data no longer exists."
     },
     {
-      "decision": ".sum on empty list returns Int(0) rather than Undef",
-      "rationale": "Zero is the additive identity and the conventional sum of an empty sequence. This matches standard library behavior in most languages."
+      "decision": "FileWatcher takes a generic callback Fn(PathBuf) rather than AppHandle directly",
+      "rationale": "Keeps watcher.rs in the lib crate with no tauri dependency. The callback is supplied by main.rs with a closure that captures the AppHandle. This also makes the watcher fully testable."
     },
     {
-      "decision": "Thread EvalContext through apply_lambda and eval_method_call rather than storing functions in Value::Lambda",
-      "rationale": "Storing the function registry inside Value::Lambda would require cloning the entire &[CompiledFunction] slice at lambda creation time, adding allocation overhead and coupling Value to CompiledFunction ownership. Threading the context is cheaper (just a reference), follows the existing pattern used by eval_user_function_call (which uses ctx.with_scope()), and keeps Value as a pure data type. The with_scope() method already exists and correctly propagates functions and increments recursion_depth."
+      "decision": "Event names match frontend expectations exactly: mesh-update, value-update, constraint-update, evaluation-status, file-changed",
+      "rationale": "bridge.ts already has listeners for these exact event names. No frontend changes needed."
     }
   ],
   "reuse": [
     {
-      "what": "apply_lambda() function",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for .map, .filter, .fold, .all, .any, .generate -- each applies a lambda to collection elements"
+      "what": "GuiState, MeshData, ValueData, ConstraintData types",
+      "where": "gui/src-tauri/src/types.rs",
+      "how": "Add PartialEq derive for diffing. These are the exact types the diff function compares."
     },
     {
-      "what": "eval_add() function (addition logic with dimension awareness)",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for .sum implementation -- iterate and accumulate using the same add semantics that handle Int+Int, Real+Real, Scalar+Scalar with dimension checking"
+      "what": "AppState struct and _impl command pattern",
+      "where": "gui/src-tauri/src/commands.rs",
+      "how": "Extend AppState with last_state field. The existing _impl pattern (testable functions taking &Mutex<EngineSession>) is preserved; event emission wraps around it in main.rs."
     },
     {
-      "what": "Value::List/Set/Map variants and BTreeSet/BTreeMap",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Already implemented with PartialEq, Eq, Ord, content_hash, Display -- collection operations produce these existing Value variants"
+      "what": "app.emit() pattern for Tauri events",
+      "where": "gui/src-tauri/src/main.rs line 83 (focus_entity command)",
+      "how": "Same emit pattern used for all new events. AppHandle.emit(event_name, payload) with .ok() to ignore emission errors."
     },
     {
-      "what": "CompiledExpr::literal() constructor",
-      "where": "crates/reify-types/src/expr.rs",
-      "how": "Reuse for constructing literal sub-expressions within collection compilation"
+      "what": "Test helper pattern: make_loaded_session()",
+      "where": "gui/src-tauri/src/tests/commands_tests.rs",
+      "how": "Reuse same pattern for diff tests -- create an EngineSession, load bracket_source, build_gui_state to get test data."
     },
     {
-      "what": "Existing compiler pattern: compile_expr_guarded recursion",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "Collection literal compilation follows the same pattern -- recursively compile element expressions, then wrap in the collection CompiledExprKind variant"
+      "what": "reify_test_support fixtures (bracket_source, bracket_source_with_width, MockGeometryKernel)",
+      "where": "crates/reify-test-support",
+      "how": "Used in diff and watcher tests to create realistic GuiState snapshots for diffing."
     },
     {
-      "what": "EvalContext and ValueMap",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for method call evaluation context -- same pattern as function calls, pass context through for sub-expression evaluation"
-    },
-    {
-      "what": "Test patterns from lambda_eval_tests.rs",
-      "where": "crates/reify-expr/tests/lambda_eval_tests.rs",
-      "how": "Follow same pattern of constructing CompiledExpr trees and evaluating them with EvalContext::simple(). The lambda test helpers (make_value_lambda) can be adapted for collection tests."
-    },
-    {
-      "what": "EvalContext::with_scope() method",
-      "where": "crates/reify-expr/src/lib.rs:36",
-      "how": "Reuse for apply_lambda context propagation fix — with_scope creates a child context preserving functions and incrementing recursion_depth, exactly what apply_lambda needs instead of EvalContext::simple()"
+      "what": "Frontend event listener types (EvaluationStatus interface)",
+      "where": "gui/src/types.ts lines 92-96",
+      "how": "Backend EvaluationStatus struct mirrors the frontend TypeScript interface exactly: { phase: string, progress?: number }"
     }
-  ]
+  ],
+  "_session_id": "92-450197f5",
+  "_created_at": "2026-03-20T22:29:47.212994+00:00"
 }
