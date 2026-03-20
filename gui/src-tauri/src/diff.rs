@@ -20,6 +20,22 @@ pub struct StateDelta {
     pub removed_constraint_ids: Vec<String>,
 }
 
+impl StateDelta {
+    /// Create a delta containing all items from a GuiState as changed.
+    ///
+    /// Used for the initial state emission where there is no previous snapshot.
+    pub fn full(state: &GuiState) -> Self {
+        StateDelta {
+            changed_meshes: state.meshes.clone(),
+            changed_values: state.values.clone(),
+            changed_constraints: state.constraints.clone(),
+            removed_mesh_paths: vec![],
+            removed_value_ids: vec![],
+            removed_constraint_ids: vec![],
+        }
+    }
+}
+
 /// Compare two GuiState snapshots and return a minimal delta.
 ///
 /// Items are matched by key (entity_path for meshes, cell_id for values,
