@@ -435,3 +435,67 @@ fn eval_method_contains_set_not_found() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Bool(false));
 }
+
+// ─── Helpers for lambda construction ───
+
+/// Build a Value::Lambda from param names/ids, body CompiledExpr, and captures.
+fn make_value_lambda(
+    params: Vec<(&str, ValueCellId)>,
+    body: CompiledExpr,
+    captures: ValueMap,
+) -> Value {
+    Value::Lambda {
+        params: params
+            .into_iter()
+            .map(|(n, id)| (n.to_string(), id))
+            .collect(),
+        body: Box::new(body),
+        captures,
+    }
+}
+
+/// Build a CompiledExpr::Literal containing a lambda value.
+fn lambda_literal(
+    params: Vec<(&str, ValueCellId)>,
+    body: CompiledExpr,
+    captures: ValueMap,
+) -> CompiledExpr {
+    let lambda = make_value_lambda(params, body, captures);
+    CompiledExpr::literal(lambda, Type::Function {
+        params: vec![],
+        return_type: Box::new(Type::Int),
+    })
+}
+
+// ─── step-13: MethodCall .map ───
+
+#[test]
+fn eval_method_map_list() {
+    // [1, 2, 3].map(|x| x * 2) -> [2, 4, 6]
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Int,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "map".to_string(),
+        vec![lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::List(vec![Value::Int(2), Value::Int(4), Value::Int(6)]));
+}
