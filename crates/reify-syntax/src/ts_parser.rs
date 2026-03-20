@@ -1466,4 +1466,50 @@ mod tests {
             other => panic!("expected IndexAccess, got {:?}", other),
         }
     }
+
+    #[test]
+    fn parse_nested_list_literals() {
+        let kind = parse_let_expr("structure S { let x = [[1, 2], [3, 4]] }");
+        match kind {
+            ExprKind::ListLiteral(outer) => {
+                assert_eq!(outer.len(), 2);
+                match &outer[0].kind {
+                    ExprKind::ListLiteral(inner) => {
+                        assert_eq!(inner.len(), 2);
+                        assert!(matches!(&inner[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
+                        assert!(matches!(&inner[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
+                    }
+                    other => panic!("expected inner ListLiteral, got {:?}", other),
+                }
+                match &outer[1].kind {
+                    ExprKind::ListLiteral(inner) => {
+                        assert_eq!(inner.len(), 2);
+                        assert!(matches!(&inner[0].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON));
+                        assert!(matches!(&inner[1].kind, ExprKind::NumberLiteral(v) if (*v - 4.0).abs() < f64::EPSILON));
+                    }
+                    other => panic!("expected inner ListLiteral, got {:?}", other),
+                }
+            }
+            other => panic!("expected outer ListLiteral, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_collection_in_let_context() {
+        let source = "structure S { let x = [1, 2, 3] }";
+        let module = parse(source, reify_types::ModulePath::single("test"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert_eq!(module.declarations.len(), 1);
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+        assert_eq!(structure.members.len(), 1);
+        let let_decl = match &structure.members[0] {
+            MemberDecl::Let(l) => l,
+            other => panic!("expected Let, got {:?}", other),
+        };
+        assert_eq!(let_decl.name, "x");
+        assert!(matches!(&let_decl.value.kind, ExprKind::ListLiteral(elems) if elems.len() == 3));
+    }
 }
