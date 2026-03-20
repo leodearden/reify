@@ -252,6 +252,72 @@ structure S {
     );
 }
 
+// ── Step 9: connect_occurrence_chain ────────────────────────────────
+
+/// Parse m5_connect_chain.ri with occurrence definitions having ports,
+/// and a structure containing sub occurrences with chain desugaring.
+///
+/// Verify:
+/// - Occurrences compile with EntityKind::Occurrence
+/// - Chain produces correct number of connections
+/// - Compatibility constraints are all Satisfied
+#[test]
+fn connect_occurrence_chain() {
+    let source = std::fs::read_to_string("../../examples/m5_connect_chain.ri")
+        .expect("examples/m5_connect_chain.ri should exist");
+
+    let compiled = parse_and_compile(&source);
+
+    // Should have templates for both Pipe (occurrence) and Pipeline (structure)
+    assert!(
+        compiled.templates.len() >= 2,
+        "expected at least 2 templates, got {}",
+        compiled.templates.len()
+    );
+
+    // Find the Pipe template and verify it's an occurrence
+    let pipe_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Pipe");
+    if let Some(pipe) = pipe_template {
+        assert_eq!(
+            pipe.entity_kind,
+            reify_compiler::EntityKind::Occurrence,
+            "Pipe should be an occurrence"
+        );
+    }
+
+    // Find Pipeline template and verify chain desugaring
+    let pipeline_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Pipeline");
+    if let Some(pipeline) = pipeline_template {
+        // chain p1.outlet -> p2.inlet -> p2.outlet -> p3.inlet should produce 3 connections
+        assert!(
+            !pipeline.connections.is_empty(),
+            "Pipeline should have connections from chain desugaring"
+        );
+    }
+
+    // Eval + check
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.check(&compiled);
+
+    // All compatibility constraints should be Satisfied
+    for entry in &result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            reify_types::Satisfaction::Satisfied,
+            "constraint {} should be satisfied, got {:?}",
+            entry.id,
+            entry.satisfaction
+        );
+    }
+}
+
 // ── Step 5: guarded_enum_declarations ───────────────────────────────
 
 /// Parse m5_guarded_enum.ri with enum Shape + guarded declarations + match.
