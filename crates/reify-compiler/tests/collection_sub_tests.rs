@@ -1,6 +1,6 @@
 //! Collection sub-structure tests (task 64).
 
-use reify_types::Severity;
+use reify_types::{CompiledExprKind, Severity};
 
 /// Helper: parse + compile source, assert no errors, return compiled output.
 fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
@@ -153,4 +153,44 @@ fn compile_count_constraint() {
     let sub = &s_template.sub_components[0];
     assert!(sub.count_cell.is_some(), "sub should have count_cell set");
     assert_eq!(sub.count_cell.as_ref().unwrap().member, "__count_bolts");
+}
+
+// ─── step-15: bolts[0].diameter access via compiled expression ───
+
+#[test]
+fn compile_indexed_collection_member_access() {
+    let source = r#"
+        structure Bolt { param diameter : Scalar = 10mm }
+        structure S {
+            sub bolts : List<Bolt>
+            constraint bolts.count == 4
+            let d = bolts[0].diameter
+        }
+    "#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("should have template S");
+
+    // Find the 'd' let binding
+    let d_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d")
+        .expect("should have let binding 'd'");
+
+    // The expression should compile to a ValueRef with scoped ID S.bolts[0].diameter
+    let expr = d_cell.default_expr.as_ref().expect("d should have an expression");
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(id.entity, "S.bolts[0]", "entity should be S.bolts[0]");
+            assert_eq!(id.member, "diameter", "member should be diameter");
+        }
+        other => panic!(
+            "expected ValueRef(S.bolts[0].diameter), got {:?}",
+            other
+        ),
+    }
 }
