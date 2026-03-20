@@ -1288,6 +1288,7 @@ struct EntityDefRef<'a> {
     trait_bounds: &'a [String],
     members: &'a [reify_syntax::MemberDecl],
     span: SourceSpan,
+    #[allow(dead_code)]
     content_hash: ContentHash,
 }
 
