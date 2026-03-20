@@ -850,3 +850,99 @@ fn eval_method_generate_list() {
         Value::List(vec![Value::Int(0), Value::Int(2), Value::Int(4)])
     );
 }
+
+// ─── step-23/24: Set operations ───
+
+#[test]
+fn eval_method_set_union() {
+    // set{1, 2, 3}.union(set{3, 4}) -> Set({1, 2, 3, 4})
+    let set1 = CompiledExpr::set_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::Set(Box::new(Type::Int)),
+    );
+    let set2_arg = CompiledExpr::set_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+            CompiledExpr::literal(Value::Int(4), Type::Int),
+        ],
+        Type::Set(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        set1,
+        "union".to_string(),
+        vec![set2_arg],
+        Type::Set(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    let expected: BTreeSet<Value> = [Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)]
+        .into_iter()
+        .collect();
+    assert_eq!(result, Value::Set(expected));
+}
+
+#[test]
+fn eval_method_set_intersection() {
+    // set{1, 2, 3}.intersection(set{2, 3, 4}) -> Set({2, 3})
+    let set1 = CompiledExpr::set_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::Set(Box::new(Type::Int)),
+    );
+    let set2_arg = CompiledExpr::set_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+            CompiledExpr::literal(Value::Int(4), Type::Int),
+        ],
+        Type::Set(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        set1,
+        "intersection".to_string(),
+        vec![set2_arg],
+        Type::Set(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    let expected: BTreeSet<Value> = [Value::Int(2), Value::Int(3)].into_iter().collect();
+    assert_eq!(result, Value::Set(expected));
+}
+
+#[test]
+fn eval_method_set_difference() {
+    // set{1, 2, 3}.difference(set{2, 3, 4}) -> Set({1})
+    let set1 = CompiledExpr::set_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::Set(Box::new(Type::Int)),
+    );
+    let set2_arg = CompiledExpr::set_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+            CompiledExpr::literal(Value::Int(4), Type::Int),
+        ],
+        Type::Set(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        set1,
+        "difference".to_string(),
+        vec![set2_arg],
+        Type::Set(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    let expected: BTreeSet<Value> = [Value::Int(1)].into_iter().collect();
+    assert_eq!(result, Value::Set(expected));
+}
