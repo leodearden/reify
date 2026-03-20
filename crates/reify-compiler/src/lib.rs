@@ -1008,14 +1008,30 @@ fn compile_expr_guarded(
             let compiled_body =
                 compile_expr_guarded(body, &lambda_scope, enum_defs, functions, diagnostics, current_guard);
 
+            // Capture analysis: collect ValueRefs in body, filter to outer scope IDs
+            let lambda_param_ids: HashSet<ValueCellId> = params
+                .iter()
+                .map(|p| {
+                    let lambda_entity = format!("$lambda.{}", scope.entity_name);
+                    ValueCellId::new(&lambda_entity, &p.name)
+                })
+                .collect();
+            let all_refs = collect_value_refs(&compiled_body);
+            let mut seen = HashSet::new();
+            let mut captures: Vec<ValueCellId> = Vec::new();
+            for id in all_refs {
+                if !lambda_param_ids.contains(&id) && seen.insert(id.clone()) {
+                    captures.push(id);
+                }
+            }
+
             let return_type = compiled_body.result_type.clone();
             let result_type = Type::Function {
                 params: param_types,
                 return_type: Box::new(return_type),
             };
 
-            // Captures will be filled in step-10; for now, empty
-            CompiledExpr::lambda(compiled_params, compiled_body, vec![], result_type)
+            CompiledExpr::lambda(compiled_params, compiled_body, captures, result_type)
         }
     }
 }
