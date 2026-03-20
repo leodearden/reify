@@ -30,6 +30,8 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <Geom_Circle.hxx>
+#include <Geom_Plane.hxx>
+#include <Geom_Surface.hxx>
 
 // OCCT transforms
 #include <BRepBuilderAPI_Transform.hxx>
@@ -429,11 +431,26 @@ std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
 // --- Draft ---
 
 std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
-    const OcctShape& /* plane_shape */) {
+    const OcctShape& plane_shape) {
     try {
-        // Use the Z-up direction as the neutral plane direction
-        gp_Dir pull_dir(0, 0, 1);
-        gp_Pln neutral_plane(gp_Pnt(0, 0, 0), pull_dir);
+        // Extract the neutral plane from plane_shape's first face
+        gp_Dir pull_dir;
+        gp_Pln neutral_plane;
+        {
+            TopExp_Explorer face_ex(plane_shape.shape, TopAbs_FACE);
+            if (!face_ex.More()) {
+                throw std::runtime_error("draft_shape: plane_shape has no faces");
+            }
+            TopoDS_Face plane_face = TopoDS::Face(face_ex.Current());
+            Handle(Geom_Surface) surface = BRep_Tool::Surface(plane_face);
+            Handle(Geom_Plane) geom_plane = Handle(Geom_Plane)::DownCast(surface);
+            if (geom_plane.IsNull()) {
+                throw std::runtime_error(
+                    "draft_shape: plane_shape does not contain a planar face");
+            }
+            neutral_plane = geom_plane->Pln();
+            pull_dir = neutral_plane.Axis().Direction();
+        }
 
         BRepOffsetAPI_DraftAngle drafter(shape.shape);
 
