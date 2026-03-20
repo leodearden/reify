@@ -268,3 +268,84 @@ fn eval_method_count_empty_list() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Int(0));
 }
+
+// ─── step-9: MethodCall .sum ───
+
+#[test]
+fn eval_method_sum_ints() {
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Int(6));
+}
+
+#[test]
+fn eval_method_sum_reals() {
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        ],
+        Type::List(Box::new(Type::Real)),
+    );
+    let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Real(3.0));
+}
+
+#[test]
+fn eval_method_sum_scalars() {
+    let dim = reify_types::DimensionVector::LENGTH;
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Scalar { si_value: 0.001, dimension: dim }, Type::length()),
+            CompiledExpr::literal(Value::Scalar { si_value: 0.002, dimension: dim }, Type::length()),
+        ],
+        Type::List(Box::new(Type::length())),
+    );
+    let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::length());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    match result {
+        Value::Scalar { si_value, dimension } => {
+            assert!((si_value - 0.003).abs() < 1e-12);
+            assert_eq!(dimension, dim);
+        }
+        other => panic!("expected Scalar, got {:?}", other),
+    }
+}
+
+#[test]
+fn eval_method_sum_empty() {
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Int(0));
+}
+
+#[test]
+fn eval_method_sum_with_undef_element() {
+    let id = ValueCellId::new("S", "missing");
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::value_ref(id, Type::Int), // will be Undef
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), ".sum with Undef element should be Undef");
+}
