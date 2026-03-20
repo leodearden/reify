@@ -3,6 +3,9 @@
 //! Exercises multiple M5 features together through the full pipeline:
 //! parse → compile → eval/check → verify.
 
+use std::fs;
+
+use reify_compiler::module_dag::{compile_project, ModuleResolver};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_types::{ModulePath, Severity, ValueCellId};
 
@@ -105,4 +108,71 @@ fn trait_implementing_structure() {
         }
         other => panic!("expected Scalar for radius, got {:?}", other),
     }
+}
+
+// ── Step 3: multi_module_import ─────────────────────────────────────
+
+/// Create temp dir with two .ri files: one defining a structure, one importing it.
+/// Use ModuleResolver + compile_project to compile both modules.
+///
+/// Assert:
+/// - compile_project succeeds (no errors)
+/// - Both modules are compiled and returned
+#[test]
+fn multi_module_import() {
+    let dir = std::env::temp_dir()
+        .join("reify_m5_test")
+        .join(format!("multi_mod_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+
+    // Create stdlib dir (required by ModuleResolver)
+    let stdlib = dir.join("stdlib");
+    fs::create_dir_all(&stdlib).unwrap();
+
+    // shapes.ri — defines a structure
+    fs::write(
+        dir.join("shapes.ri"),
+        r#"
+structure def Circle {
+    param radius : Length = 10mm
+    let diameter = radius * 2
+}
+"#,
+    )
+    .unwrap();
+
+    // main.ri — imports shapes and defines its own structure
+    fs::write(
+        dir.join("main.ri"),
+        r#"
+import shapes
+
+structure def Assembly {
+    param size : Length = 20mm
+    constraint size > 5mm
+}
+"#,
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, &stdlib);
+    let result = compile_project(&dir.join("main.ri"), &resolver);
+
+    match result {
+        Ok(modules) => {
+            // Should have at least 2 modules (shapes + main)
+            assert!(
+                modules.len() >= 2,
+                "expected at least 2 compiled modules, got {}",
+                modules.len()
+            );
+        }
+        Err(errors) => {
+            panic!("compile_project failed: {:?}", errors);
+        }
+    }
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&dir);
 }
