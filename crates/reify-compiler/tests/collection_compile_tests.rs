@@ -325,3 +325,74 @@ fn e2e_empty_list() {
         other => panic!("expected empty List, got {:?}", other),
     }
 }
+
+// ─── step-35: Integration tests for .count and index access ───
+
+#[test]
+fn e2e_list_count() {
+    let compiled = compile_no_errors(
+        "structure S { let items = [1, 2, 3]  let n = items.count }",
+    );
+    // First evaluate 'items' to populate the ValueMap, then evaluate 'n'
+    let items_expr = get_cell_expr(&compiled, "items");
+    let n_expr = get_cell_expr(&compiled, "n");
+
+    let mut values = ValueMap::new();
+    let items_id = reify_types::ValueCellId::new("S", "items");
+    let items_val = reify_expr::eval_expr(items_expr, &reify_expr::EvalContext::simple(&values));
+    values.insert(items_id, items_val);
+
+    let result = reify_expr::eval_expr(n_expr, &reify_expr::EvalContext::simple(&values));
+    assert_eq!(result, Value::Int(3), "items.count should be 3");
+}
+
+#[test]
+fn e2e_list_index_access() {
+    let compiled = compile_no_errors(
+        "structure S { let items = [10, 20, 30]  let x = items[1] }",
+    );
+    let items_expr = get_cell_expr(&compiled, "items");
+    let x_expr = get_cell_expr(&compiled, "x");
+
+    let mut values = ValueMap::new();
+    let items_id = reify_types::ValueCellId::new("S", "items");
+    let items_val = reify_expr::eval_expr(items_expr, &reify_expr::EvalContext::simple(&values));
+    values.insert(items_id, items_val);
+
+    let result = reify_expr::eval_expr(x_expr, &reify_expr::EvalContext::simple(&values));
+    assert_eq!(result, Value::Int(20), "items[1] should be 20");
+}
+
+#[test]
+fn e2e_map_index_access() {
+    let compiled = compile_no_errors(
+        r#"structure S { let m = map{"a" => 10, "b" => 20}  let x = m["a"] }"#,
+    );
+    let m_expr = get_cell_expr(&compiled, "m");
+    let x_expr = get_cell_expr(&compiled, "x");
+
+    let mut values = ValueMap::new();
+    let m_id = reify_types::ValueCellId::new("S", "m");
+    let m_val = reify_expr::eval_expr(m_expr, &reify_expr::EvalContext::simple(&values));
+    values.insert(m_id, m_val);
+
+    let result = reify_expr::eval_expr(x_expr, &reify_expr::EvalContext::simple(&values));
+    assert_eq!(result, Value::Int(10), r#"m["a"] should be 10"#);
+}
+
+#[test]
+fn e2e_list_sum() {
+    let compiled = compile_no_errors(
+        "structure S { let items = [1, 2, 3]  let s = items.sum }",
+    );
+    let items_expr = get_cell_expr(&compiled, "items");
+    let s_expr = get_cell_expr(&compiled, "s");
+
+    let mut values = ValueMap::new();
+    let items_id = reify_types::ValueCellId::new("S", "items");
+    let items_val = reify_expr::eval_expr(items_expr, &reify_expr::EvalContext::simple(&values));
+    values.insert(items_id, items_val);
+
+    let result = reify_expr::eval_expr(s_expr, &reify_expr::EvalContext::simple(&values));
+    assert_eq!(result, Value::Int(6), "items.sum should be 6");
+}
