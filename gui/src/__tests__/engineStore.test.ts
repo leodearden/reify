@@ -14,6 +14,9 @@ vi.mock('../bridge', () => ({
   onValueUpdate: vi.fn(),
   onConstraintUpdate: vi.fn(),
   onEvaluationStatus: vi.fn(),
+  onMeshRemoved: vi.fn(),
+  onValueRemoved: vi.fn(),
+  onConstraintRemoved: vi.fn(),
 }));
 
 import {
@@ -21,6 +24,9 @@ import {
   onValueUpdate,
   onConstraintUpdate,
   onEvaluationStatus,
+  onMeshRemoved,
+  onValueRemoved,
+  onConstraintRemoved,
 } from '../bridge';
 import { createEngineStore } from '../stores/engineStore';
 
@@ -28,6 +34,9 @@ const mockOnMeshUpdate = vi.mocked(onMeshUpdate);
 const mockOnValueUpdate = vi.mocked(onValueUpdate);
 const mockOnConstraintUpdate = vi.mocked(onConstraintUpdate);
 const mockOnEvaluationStatus = vi.mocked(onEvaluationStatus);
+const mockOnMeshRemoved = vi.mocked(onMeshRemoved);
+const mockOnValueRemoved = vi.mocked(onValueRemoved);
+const mockOnConstraintRemoved = vi.mocked(onConstraintRemoved);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -229,6 +238,76 @@ describe('engineStore', () => {
 
       // Should be 1 batched notification, not 3 separate ones
       expect(updateCount).toBe(1);
+
+      dispose();
+    });
+  });
+
+  it('removeMesh deletes a mesh entry from state.meshes by entity_path', () => {
+    createRoot((dispose) => {
+      const { state, applyMeshUpdate, removeMesh } = createEngineStore();
+      applyMeshUpdate(sampleMesh);
+      expect(state.meshes['Bracket.body']).toBeDefined();
+
+      removeMesh('Bracket.body');
+      expect(state.meshes['Bracket.body']).toBeUndefined();
+      dispose();
+    });
+  });
+
+  it('removeValue deletes a value entry from state.values by cell_id', () => {
+    createRoot((dispose) => {
+      const { state, applyValueUpdates, removeValue } = createEngineStore();
+      applyValueUpdates([sampleValue]);
+      expect(state.values['cell_001']).toBeDefined();
+
+      removeValue('cell_001');
+      expect(state.values['cell_001']).toBeUndefined();
+      dispose();
+    });
+  });
+
+  it('removeConstraint deletes a constraint entry from state.constraints by node_id', () => {
+    createRoot((dispose) => {
+      const { state, applyConstraintUpdates, removeConstraint } = createEngineStore();
+      applyConstraintUpdates([sampleConstraint]);
+      expect(state.constraints['constraint_001']).toBeDefined();
+
+      removeConstraint('constraint_001');
+      expect(state.constraints['constraint_001']).toBeUndefined();
+      dispose();
+    });
+  });
+
+  it('subscribeToEvents wires removal listeners and cleanup calls all seven unlisten fns', async () => {
+    await createRoot(async (dispose) => {
+      const unlistenMesh = vi.fn();
+      const unlistenValue = vi.fn();
+      const unlistenConstraint = vi.fn();
+      const unlistenStatus = vi.fn();
+      const unlistenMeshRemoved = vi.fn();
+      const unlistenValueRemoved = vi.fn();
+      const unlistenConstraintRemoved = vi.fn();
+
+      mockOnMeshUpdate.mockResolvedValue(unlistenMesh);
+      mockOnValueUpdate.mockResolvedValue(unlistenValue);
+      mockOnConstraintUpdate.mockResolvedValue(unlistenConstraint);
+      mockOnEvaluationStatus.mockResolvedValue(unlistenStatus);
+      mockOnMeshRemoved.mockResolvedValue(unlistenMeshRemoved);
+      mockOnValueRemoved.mockResolvedValue(unlistenValueRemoved);
+      mockOnConstraintRemoved.mockResolvedValue(unlistenConstraintRemoved);
+
+      const { subscribeToEvents } = createEngineStore();
+      const cleanup = await subscribeToEvents();
+
+      expect(mockOnMeshRemoved).toHaveBeenCalledWith(expect.any(Function));
+      expect(mockOnValueRemoved).toHaveBeenCalledWith(expect.any(Function));
+      expect(mockOnConstraintRemoved).toHaveBeenCalledWith(expect.any(Function));
+
+      cleanup();
+      expect(unlistenMeshRemoved).toHaveBeenCalled();
+      expect(unlistenValueRemoved).toHaveBeenCalled();
+      expect(unlistenConstraintRemoved).toHaveBeenCalled();
 
       dispose();
     });
