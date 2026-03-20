@@ -163,3 +163,32 @@ fn apply_lambda_simple() {
     let result = apply_lambda(&lambda, &[Value::Int(5)]);
     assert_eq!(result, Value::Int(10));
 }
+
+/// step-21: Apply a lambda with captures — `factor=3`, lambda `|x| x * factor`,
+/// apply to `[Int(5)]` returns `Int(15)`.
+#[test]
+fn apply_lambda_with_captures() {
+    use reify_expr::apply_lambda;
+
+    let x_id = ValueCellId::new("$lambda", "x");
+    let factor_id = ValueCellId::new("S", "factor");
+
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(factor_id.clone(), Type::Int),
+        Type::Real,
+    );
+
+    let mut captures = ValueMap::new();
+    captures.insert(factor_id.clone(), Value::Int(3));
+
+    let lambda = Value::Lambda {
+        params: vec!["x".to_string()],
+        body: Box::new(body),
+        captures,
+    };
+
+    let result = apply_lambda(&lambda, &[Value::Int(5)]);
+    assert_eq!(result, Value::Int(15));
+}
