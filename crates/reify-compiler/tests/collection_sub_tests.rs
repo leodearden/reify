@@ -105,3 +105,52 @@ fn compile_instantiation_sub() {
     assert_eq!(sub.structure_name, "Rib");
     assert!(!sub.is_collection, "compiled SubComponentDecl should have is_collection=false");
 }
+
+// ─── step-5: count constraint recognition ───
+
+#[test]
+fn compile_count_constraint() {
+    let source = r#"
+        structure Bolt { param diameter : Scalar = 10mm }
+        structure S {
+            param n : Int = 4
+            sub bolts : List<Bolt>
+            constraint bolts.count == n
+        }
+    "#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("should have template S");
+
+    // Verify synthetic count cell exists
+    let count_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "__count_bolts")
+        .expect("should have __count_bolts value cell");
+    assert_eq!(count_cell.kind, reify_compiler::ValueCellKind::Let);
+    assert_eq!(count_cell.cell_type, reify_types::Type::Int);
+
+    // Verify count cell is in structure_controlling
+    assert!(
+        s_template.structure_controlling.contains(&count_cell.id),
+        "count cell should be in structure_controlling"
+    );
+
+    // Verify count cell's default_expr is a ValueRef to 'n'
+    let expr = count_cell.default_expr.as_ref().expect("should have default_expr");
+    match &expr.kind {
+        reify_types::CompiledExprKind::ValueRef(id) => {
+            assert_eq!(id.member, "n", "count expression should reference param n");
+        }
+        other => panic!("expected ValueRef, got {:?}", other),
+    }
+
+    // Verify SubComponentDecl has count_cell set
+    let sub = &s_template.sub_components[0];
+    assert!(sub.count_cell.is_some(), "sub should have count_cell set");
+    assert_eq!(sub.count_cell.as_ref().unwrap().member, "__count_bolts");
+}
