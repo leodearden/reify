@@ -91,11 +91,11 @@ impl Value {
             }
             Value::String(s) => ContentHash::of(&[3]).combine(ContentHash::of_str(s)),
             Value::Scalar { si_value, dimension } => {
-                let normalized = if *si_value == 0.0 { 0.0f64 } else { *si_value };
-                let bits = if normalized.is_nan() {
+                // Canonicalize NaN but preserve -0.0 (PartialEq uses to_bits)
+                let bits = if si_value.is_nan() {
                     f64::NAN.to_bits()
                 } else {
-                    normalized.to_bits()
+                    si_value.to_bits()
                 };
                 let mut buf = [0u8; 9];
                 buf[0] = 4;
