@@ -489,6 +489,32 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
             format!("{}({})", function_name, arg_strs.join(", "))
         }
         CompiledExprKind::Lambda { .. } => "<lambda>".to_string(),
+        CompiledExprKind::ListLiteral(elems) => {
+            let elem_strs: Vec<String> = elems.iter().map(format_expr).collect();
+            format!("[{}]", elem_strs.join(", "))
+        }
+        CompiledExprKind::SetLiteral(elems) => {
+            let elem_strs: Vec<String> = elems.iter().map(format_expr).collect();
+            format!("set{{{}}}", elem_strs.join(", "))
+        }
+        CompiledExprKind::MapLiteral(entries) => {
+            let entry_strs: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("{} => {}", format_expr(k), format_expr(v)))
+                .collect();
+            format!("map{{{}}}", entry_strs.join(", "))
+        }
+        CompiledExprKind::IndexAccess { object, index } => {
+            format!("{}[{}]", format_expr(object), format_expr(index))
+        }
+        CompiledExprKind::MethodCall { object, method, args } => {
+            if args.is_empty() {
+                format!("{}.{}", format_expr(object), method)
+            } else {
+                let arg_strs: Vec<String> = args.iter().map(format_expr).collect();
+                format!("{}.{}({})", format_expr(object), method, arg_strs.join(", "))
+            }
+        }
     }
 }
 

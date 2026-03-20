@@ -367,7 +367,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 Value::List(items) => {
                     let results: Vec<Value> = items
                         .iter()
-                        .map(|item| apply_lambda(lambda, &[item.clone()]))
+                        .map(|item| apply_lambda(lambda, std::slice::from_ref(item)))
                         .collect();
                     Value::List(results)
                 }
@@ -383,7 +383,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 Value::List(items) => {
                     let mut has_undef = false;
                     for item in items {
-                        match apply_lambda(lambda, &[item.clone()]) {
+                        match apply_lambda(lambda, std::slice::from_ref(item)) {
                             Value::Bool(false) => return Value::Bool(false),
                             Value::Bool(true) => {}
                             Value::Undef => has_undef = true,
@@ -404,7 +404,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 Value::List(items) => {
                     let mut has_undef = false;
                     for item in items {
-                        match apply_lambda(lambda, &[item.clone()]) {
+                        match apply_lambda(lambda, std::slice::from_ref(item)) {
                             Value::Bool(true) => return Value::Bool(true),
                             Value::Bool(false) => {}
                             Value::Undef => has_undef = true,
@@ -477,7 +477,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 Value::List(items) => {
                     let mut results = Vec::new();
                     for item in items {
-                        let pred = apply_lambda(lambda, &[item.clone()]);
+                        let pred = apply_lambda(lambda, std::slice::from_ref(item));
                         match pred {
                             Value::Bool(true) => results.push(item.clone()),
                             Value::Bool(false) => {} // skip
