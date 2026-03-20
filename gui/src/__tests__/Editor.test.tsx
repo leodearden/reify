@@ -160,3 +160,23 @@ describe('Editor save (Ctrl+S)', () => {
     expect(store.state.dirtyFiles).not.toContain(file1.path);
   });
 });
+
+describe('Editor cursor tracking', () => {
+  it('dispatching selection update sets cursor position in store', () => {
+    const store = setupStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Move cursor to line 2, column 5 (offset: line1 length + newline + 5)
+    // file1 content: 'structure Bracket {\n  param width = 80mm\n}'
+    //  line 1: 'structure Bracket {' (19 chars) + '\n' = offset 20
+    //  line 2, col 5 => offset 25
+    const offset = 25;
+    view.dispatch({ selection: { anchor: offset } });
+
+    expect(store.state.cursorPosition).not.toBeNull();
+    expect(store.state.cursorPosition!.line).toBe(2);
+    expect(store.state.cursorPosition!.column).toBe(5);
+  });
+});
