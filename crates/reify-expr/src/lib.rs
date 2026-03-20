@@ -1,7 +1,7 @@
 use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, UnOp, Value, ValueCellId, ValueMap};
 
 /// Maximum recursion depth for user-defined function calls.
-const MAX_RECURSION_DEPTH: u32 = 1000;
+const MAX_RECURSION_DEPTH: u32 = 256;
 
 /// Evaluation context: provides values, user-defined functions, and recursion tracking.
 pub struct EvalContext<'a> {
@@ -113,25 +113,10 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             eval_user_function_call(function_name, args, ctx)
         }
 
-        CompiledExprKind::Lambda {
-            params,
-            param_ids,
-            body,
-            captures,
-        } => {
-            let mut capture_map = ValueMap::new();
-            for cap_id in captures {
-                capture_map.insert(cap_id.clone(), ctx.values.get_or_undef(cap_id));
-            }
-            Value::Lambda {
-                params: params
-                    .iter()
-                    .zip(param_ids.iter())
-                    .map(|((name, _), id)| (name.clone(), id.clone()))
-                    .collect(),
-                body: body.clone(),
-                captures: capture_map,
-            }
+        CompiledExprKind::Lambda { .. } => {
+            // Lambda values are returned as closures; evaluation is handled
+            // by apply_lambda (task-58). Return Undef as placeholder.
+            Value::Undef
         }
     }
 }
@@ -187,33 +172,6 @@ fn eval_user_function_call(
     // Evaluate result expression with final scope
     let final_ctx = ctx.with_scope(&scope);
     eval_expr(&func.body.result_expr, &final_ctx)
-}
-
-/// Apply a lambda closure to a list of argument values.
-///
-/// Returns Undef if:
-/// - The value is not a Lambda
-/// - Argument count doesn't match param count
-pub fn apply_lambda(lambda: &Value, args: &[Value]) -> Value {
-    match lambda {
-        Value::Lambda {
-            params,
-            body,
-            captures,
-        } => {
-            if args.len() != params.len() {
-                return Value::Undef;
-            }
-
-            let mut eval_map = captures.clone();
-            for ((_, id), arg) in params.iter().zip(args.iter()) {
-                eval_map.insert(id.clone(), arg.clone());
-            }
-
-            eval_expr(body, &EvalContext::simple(&eval_map))
-        }
-        _ => Value::Undef,
-    }
 }
 
 fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Value {
