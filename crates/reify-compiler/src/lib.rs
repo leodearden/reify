@@ -538,6 +538,34 @@ fn compile_expr(
             );
             CompiledExpr::literal(Value::Undef, Type::Real)
         }
+        reify_syntax::ExprKind::ListLiteral(_) => {
+            diagnostics.push(
+                Diagnostic::error("list literals not yet supported in compiler")
+                    .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
+            );
+            CompiledExpr::literal(Value::Undef, Type::Real)
+        }
+        reify_syntax::ExprKind::SetLiteral(_) => {
+            diagnostics.push(
+                Diagnostic::error("set literals not yet supported in compiler")
+                    .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
+            );
+            CompiledExpr::literal(Value::Undef, Type::Real)
+        }
+        reify_syntax::ExprKind::MapLiteral(_) => {
+            diagnostics.push(
+                Diagnostic::error("map literals not yet supported in compiler")
+                    .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
+            );
+            CompiledExpr::literal(Value::Undef, Type::Real)
+        }
+        reify_syntax::ExprKind::IndexAccess { .. } => {
+            diagnostics.push(
+                Diagnostic::error("index access not yet supported in compiler")
+                    .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
+            );
+            CompiledExpr::literal(Value::Undef, Type::Real)
+        }
         reify_syntax::ExprKind::EnumAccess { type_name, variant } => {
             // Look up the enum type in the registry
             if let Some(enum_def) = enum_defs.iter().find(|e| e.name == *type_name) {

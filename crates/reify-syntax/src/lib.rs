@@ -189,6 +189,17 @@ pub enum ExprKind {
         then_branch: Box<Expr>,
         else_branch: Box<Expr>,
     },
+    /// List literal: `[1, 2, 3]`
+    ListLiteral(Vec<Expr>),
+    /// Set literal: `set{1, 2, 3}`
+    SetLiteral(Vec<Expr>),
+    /// Map literal: `map{"a" => 1, "b" => 2}`
+    MapLiteral(Vec<(Expr, Expr)>),
+    /// Index access: `expr[index]`
+    IndexAccess {
+        object: Box<Expr>,
+        index: Box<Expr>,
+    },
     /// Auto keyword: solver-determined parameter value
     Auto,
 }

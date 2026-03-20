@@ -1,6 +1,14 @@
 /// @file Tree-sitter grammar for the Reify CAD language (M1 subset)
 /// @author Reify Authors
 
+/**
+ * Comma-separated list of `rule`, with optional trailing comma.
+ * Returns `optional(seq(rule, repeat(seq(',', rule)), optional(',')))`.
+ */
+function commaSep(rule) {
+  return optional(seq(rule, repeat(seq(',', rule)), optional(',')));
+}
+
 module.exports = grammar({
   name: 'reify',
 
@@ -165,6 +173,7 @@ module.exports = grammar({
       $.binary_expression,
       $.unary_expression,
       $.conditional_expression,
+      $.index_access,
       $._primary_expression,
     ),
 
@@ -204,6 +213,9 @@ module.exports = grammar({
       $.bool_literal,
       $.function_call,
       $.member_access,
+      $.list_literal,
+      $.set_literal,
+      $.map_literal,
       $.identifier,
       $.parenthesized_expression,
     ),
@@ -238,6 +250,27 @@ module.exports = grammar({
     )),
 
     parenthesized_expression: $ => seq('(', $._expression, ')'),
+
+    // ── Collection literals ─────────────────────────────────
+    list_literal: $ => seq('[', commaSep($._expression), ']'),
+
+    set_literal: $ => seq('set', '{', commaSep($._expression), '}'),
+
+    map_literal: $ => seq('map', '{', commaSep($.map_entry), '}'),
+
+    map_entry: $ => seq(
+      field('key', $._expression),
+      '=>',
+      field('value', $._expression),
+    ),
+
+    // ── Index access ────────────────────────────────────────
+    index_access: $ => prec.left(8, seq(
+      field('object', $._expression),
+      '[',
+      field('index', $._expression),
+      ']',
+    )),
 
     // ── Literals ────────────────────────────────────────────
     number_literal: $ => token(/\d+(\.\d+)?/),

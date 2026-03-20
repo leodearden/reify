@@ -493,6 +493,10 @@ impl<'a> Lowering<'a> {
             "bool_literal" => self.lower_bool_literal(node),
             "identifier" => self.lower_identifier(node),
             "function_call" => self.lower_function_call(node),
+            "list_literal" => self.lower_list_literal(node),
+            "set_literal" => self.lower_set_literal(node),
+            "map_literal" => self.lower_map_literal(node),
+            "index_access" => self.lower_index_access(node),
             "member_access" => self.lower_member_access(node),
             "parenthesized_expression" => {
                 // Unwrap parenthesized expression — find the inner expression
@@ -642,6 +646,76 @@ impl<'a> Lowering<'a> {
 
         Some(Expr {
             kind: ExprKind::FunctionCall { name, args },
+            span: self.span(node),
+        })
+    }
+
+    fn lower_list_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let mut elements = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.is_named()
+                && let Some(expr) = self.lower_expr(child)
+            {
+                elements.push(expr);
+            }
+        }
+        Some(Expr {
+            kind: ExprKind::ListLiteral(elements),
+            span: self.span(node),
+        })
+    }
+
+    fn lower_set_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let mut elements = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.is_named()
+                && let Some(expr) = self.lower_expr(child)
+            {
+                elements.push(expr);
+            }
+        }
+        Some(Expr {
+            kind: ExprKind::SetLiteral(elements),
+            span: self.span(node),
+        })
+    }
+
+    fn lower_map_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let mut entries = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "map_entry"
+                && let Some(entry) = self.lower_map_entry(child)
+            {
+                entries.push(entry);
+            }
+        }
+        Some(Expr {
+            kind: ExprKind::MapLiteral(entries),
+            span: self.span(node),
+        })
+    }
+
+    fn lower_map_entry(&self, node: tree_sitter::Node) -> Option<(Expr, Expr)> {
+        let key_node = node.child_by_field_name("key")?;
+        let value_node = node.child_by_field_name("value")?;
+        let key = self.lower_expr(key_node)?;
+        let value = self.lower_expr(value_node)?;
+        Some((key, value))
+    }
+
+    fn lower_index_access(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let object_node = node.child_by_field_name("object")?;
+        let index_node = node.child_by_field_name("index")?;
+        let object = self.lower_expr(object_node)?;
+        let index = self.lower_expr(index_node)?;
+        Some(Expr {
+            kind: ExprKind::IndexAccess {
+                object: Box::new(object),
+                index: Box::new(index),
+            },
             span: self.span(node),
         })
     }
@@ -1273,5 +1347,188 @@ mod tests {
             "Expected zero ERROR nodes, got tree:\n{}",
             root.to_sexp()
         );
+    }
+
+    // ── Collection literal tests ──────────────────────────
+
+    /// Helper: parse a source string wrapping an expression in a structure let,
+    /// and return the ExprKind of the let's value.
+    fn parse_let_expr(source: &str) -> ExprKind {
+        let module = parse(source, reify_types::ModulePath::single("test"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+        let let_decl = match &structure.members[0] {
+            MemberDecl::Let(l) => l,
+            other => panic!("expected Let, got {:?}", other),
+        };
+        let_decl.value.kind.clone()
+    }
+
+    #[test]
+    fn parse_list_literal_three_elements() {
+        let kind = parse_let_expr("structure S { let x = [1, 2, 3] }");
+        match kind {
+            ExprKind::ListLiteral(elems) => {
+                assert_eq!(elems.len(), 3);
+                assert!(matches!(&elems[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
+                assert!(matches!(&elems[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
+                assert!(matches!(&elems[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON));
+            }
+            other => panic!("expected ListLiteral, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_list_literal_empty() {
+        let kind = parse_let_expr("structure S { let x = [] }");
+        match kind {
+            ExprKind::ListLiteral(elems) => {
+                assert_eq!(elems.len(), 0);
+            }
+            other => panic!("expected ListLiteral, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_set_literal_three_elements() {
+        let kind = parse_let_expr("structure S { let x = set{1, 2, 3} }");
+        match kind {
+            ExprKind::SetLiteral(elems) => {
+                assert_eq!(elems.len(), 3);
+                assert!(matches!(&elems[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
+                assert!(matches!(&elems[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
+                assert!(matches!(&elems[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON));
+            }
+            other => panic!("expected SetLiteral, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_set_literal_empty() {
+        let kind = parse_let_expr("structure S { let x = set{} }");
+        match kind {
+            ExprKind::SetLiteral(elems) => {
+                assert_eq!(elems.len(), 0);
+            }
+            other => panic!("expected SetLiteral, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_map_literal_two_entries() {
+        let kind = parse_let_expr(r#"structure S { let x = map{"a" => 1, "b" => 2} }"#);
+        match kind {
+            ExprKind::MapLiteral(entries) => {
+                assert_eq!(entries.len(), 2);
+                assert!(matches!(&entries[0].0.kind, ExprKind::StringLiteral(s) if s == "a"));
+                assert!(matches!(&entries[0].1.kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
+                assert!(matches!(&entries[1].0.kind, ExprKind::StringLiteral(s) if s == "b"));
+                assert!(matches!(&entries[1].1.kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
+            }
+            other => panic!("expected MapLiteral, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_map_literal_empty() {
+        let kind = parse_let_expr("structure S { let x = map{} }");
+        match kind {
+            ExprKind::MapLiteral(entries) => {
+                assert_eq!(entries.len(), 0);
+            }
+            other => panic!("expected MapLiteral, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_index_access_number() {
+        let kind = parse_let_expr("structure S { let x = items[0] }");
+        match kind {
+            ExprKind::IndexAccess { object, index } => {
+                assert!(matches!(&object.kind, ExprKind::Ident(n) if n == "items"));
+                assert!(matches!(&index.kind, ExprKind::NumberLiteral(v) if (*v - 0.0).abs() < f64::EPSILON));
+            }
+            other => panic!("expected IndexAccess, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_index_access_string_key() {
+        let kind = parse_let_expr(r#"structure S { let x = m["key"] }"#);
+        match kind {
+            ExprKind::IndexAccess { object, index } => {
+                assert!(matches!(&object.kind, ExprKind::Ident(n) if n == "m"));
+                assert!(matches!(&index.kind, ExprKind::StringLiteral(s) if s == "key"));
+            }
+            other => panic!("expected IndexAccess, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_nested_list_literals() {
+        let kind = parse_let_expr("structure S { let x = [[1, 2], [3, 4]] }");
+        match kind {
+            ExprKind::ListLiteral(outer) => {
+                assert_eq!(outer.len(), 2);
+                match &outer[0].kind {
+                    ExprKind::ListLiteral(inner) => {
+                        assert_eq!(inner.len(), 2);
+                        assert!(matches!(&inner[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
+                        assert!(matches!(&inner[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
+                    }
+                    other => panic!("expected inner ListLiteral, got {:?}", other),
+                }
+                match &outer[1].kind {
+                    ExprKind::ListLiteral(inner) => {
+                        assert_eq!(inner.len(), 2);
+                        assert!(matches!(&inner[0].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON));
+                        assert!(matches!(&inner[1].kind, ExprKind::NumberLiteral(v) if (*v - 4.0).abs() < f64::EPSILON));
+                    }
+                    other => panic!("expected inner ListLiteral, got {:?}", other),
+                }
+            }
+            other => panic!("expected outer ListLiteral, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_collection_in_let_context() {
+        let source = "structure S { let x = [1, 2, 3] }";
+        let module = parse(source, reify_types::ModulePath::single("test"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert_eq!(module.declarations.len(), 1);
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+        assert_eq!(structure.members.len(), 1);
+        let let_decl = match &structure.members[0] {
+            MemberDecl::Let(l) => l,
+            other => panic!("expected Let, got {:?}", other),
+        };
+        assert_eq!(let_decl.name, "x");
+        assert!(matches!(&let_decl.value.kind, ExprKind::ListLiteral(elems) if elems.len() == 3));
+    }
+
+    #[test]
+    fn parse_collections_no_regression_on_bracket() {
+        let module = parse_bracket();
+        assert!(module.errors.is_empty(), "expected no errors: {:?}", module.errors);
+        assert_eq!(module.declarations.len(), 1);
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+        assert_eq!(structure.name, "Bracket");
+        assert_eq!(structure.members.len(), 10, "expected 10 members (5 params, 2 lets, 3 constraints)");
+        let params = structure.members.iter().filter(|m| matches!(m, MemberDecl::Param(_))).count();
+        let lets = structure.members.iter().filter(|m| matches!(m, MemberDecl::Let(_))).count();
+        let constraints = structure.members.iter().filter(|m| matches!(m, MemberDecl::Constraint(_))).count();
+        assert_eq!(params, 5, "expected 5 params");
+        assert_eq!(lets, 2, "expected 2 lets");
+        assert_eq!(constraints, 3, "expected 3 constraints");
     }
 }
