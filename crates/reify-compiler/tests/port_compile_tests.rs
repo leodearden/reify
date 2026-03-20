@@ -59,3 +59,49 @@ structure def S {
         port.members[0].id.member
     );
 }
+
+// ── Step 13: port type checking ────────────────────────────────────
+
+#[test]
+fn compile_port_type_check_known() {
+    let source = r#"
+trait MechPort {
+    param diameter : Length
+}
+
+structure def S {
+    port mount : MechPort {
+        param diameter : Length = 5mm
+    }
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    // No warning about unknown port type since MechPort is defined
+    let type_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unknown port type"))
+        .collect();
+    assert!(type_warnings.is_empty(), "unexpected type warnings: {:?}", type_warnings);
+}
+
+#[test]
+fn compile_port_type_check_unknown() {
+    let source = r#"
+structure def S {
+    port mount : NonExistentTrait {
+        param d : Length = 5mm
+    }
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    // Should have a warning about unknown port type
+    let type_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unknown port type"))
+        .collect();
+    assert_eq!(type_warnings.len(), 1, "expected 1 unknown port type warning, got: {:?}", diagnostics);
+}
