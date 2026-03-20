@@ -8,7 +8,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_geometry::DispatchPlanner;
@@ -16,6 +16,7 @@ use reify_gui::commands::AppState;
 use reify_gui::diff::{compute_delta, StateDelta};
 use reify_gui::engine::EngineSession;
 use reify_gui::types::EvaluationStatus;
+use reify_gui::watcher::FileWatcher;
 use reify_kernel_occt::OcctKernelHandle;
 
 // --- Event emission helpers ---
@@ -157,11 +158,14 @@ fn main() {
 
     // Check for initial file from command-line args or environment
     let mut session = session;
-    if let Some(path) = std::env::args().nth(1) {
-        let path = std::path::Path::new(&path);
+    let mut initial_file: Option<std::path::PathBuf> = None;
+    if let Some(path_str) = std::env::args().nth(1) {
+        let path = std::path::PathBuf::from(&path_str);
         if path.exists() && path.extension().is_some_and(|ext| ext == "ri") {
-            if let Err(e) = session.load_file(path) {
+            if let Err(e) = session.load_file(&path) {
                 eprintln!("Warning: failed to load initial file {}: {}", path.display(), e);
+            } else {
+                initial_file = Some(path);
             }
         }
     }
@@ -173,6 +177,60 @@ fn main() {
 
     tauri::Builder::default()
         .manage(app_state)
+        .setup(move |app| {
+            // If an initial file was loaded, start watching its parent directory
+            if let Some(ref file_path) = initial_file {
+                if let Some(parent) = file_path.parent() {
+                    let app_handle = app.handle().clone();
+                    let watched_file = file_path.clone();
+
+                    match FileWatcher::new(parent, move |changed_path| {
+                        // Read the changed file and update the engine
+                        if let Ok(content) = std::fs::read_to_string(&changed_path) {
+                            let state: tauri::State<'_, AppState> = app_handle.state();
+                            let path_str = changed_path.to_string_lossy().to_string();
+
+                            emit_status(&app_handle, "evaluating");
+                            if let Ok(gui_state) =
+                                reify_gui::commands::update_source_impl(
+                                    &state.engine,
+                                    &path_str,
+                                    &content,
+                                )
+                            {
+                                let delta = compute_delta(&state.last_state, &gui_state);
+                                emit_delta(&app_handle, &delta);
+                            }
+                            emit_status(&app_handle, "idle");
+
+                            // Also emit file-changed event
+                            app_handle
+                                .emit(
+                                    "file-changed",
+                                    reify_gui::types::FileData {
+                                        path: changed_path.to_string_lossy().to_string(),
+                                        content,
+                                    },
+                                )
+                                .ok();
+                        }
+                    }) {
+                        Ok(watcher) => {
+                            // Store watcher in managed state to keep it alive
+                            app.manage(watcher);
+                            eprintln!(
+                                "Watching {} for changes",
+                                watched_file.display()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: failed to start file watcher: {}", e);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_initial_state,
             set_parameter,
