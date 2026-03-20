@@ -151,3 +151,77 @@ fn exists_empty_list_vacuous_falsity() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Bool(false));
 }
+
+/// step-9: forall over [1, Undef, 3] with x>0 -> Undef (no false, but undef present)
+#[test]
+fn forall_with_undef_no_false() {
+    let x_id = ValueCellId::new("$quant0.S", "x");
+    let collection = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Undef, Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let predicate = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+    let expr = make_quantifier(QuantifierKind::ForAll, "x", x_id, collection, predicate);
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// step-9: exists over [1, Undef, 3] with x>2 -> true (short-circuit on 3>2=true)
+#[test]
+fn exists_with_undef_has_true() {
+    let x_id = ValueCellId::new("$quant0.S", "x");
+    let collection = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Undef, Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let predicate = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Bool,
+    );
+    let expr = make_quantifier(QuantifierKind::Exists, "x", x_id, collection, predicate);
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(true));
+}
+
+/// step-9: exists over [Undef, -1] with x>0 -> Undef (no true, undef present)
+#[test]
+fn exists_with_undef_no_true() {
+    let x_id = ValueCellId::new("$quant0.S", "x");
+    let collection = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Undef, Type::Int),
+            CompiledExpr::literal(Value::Int(-1), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let predicate = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+    let expr = make_quantifier(QuantifierKind::Exists, "x", x_id, collection, predicate);
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
