@@ -1956,4 +1956,65 @@ mod tests {
             wire.err()
         );
     }
+
+    #[test]
+    fn draft_uses_plane_shape_not_hardcoded_z() {
+        // Verify that draft_shape extracts the neutral plane from plane_shape
+        // rather than using a hardcoded Z-up direction. We test this by
+        // drafting with a non-planar shape as plane — after the fix, this
+        // should error with "does not contain a planar face" because the
+        // code actually tries to extract the plane from the shape.
+        // Currently FAILS because draft_shape ignores plane_shape, so a
+        // sphere (non-planar) is accepted and draft proceeds with Z-up.
+        let mut kernel = OcctKernel::new();
+
+        // Target box
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(20.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(20.0),
+            })
+            .unwrap();
+
+        // Use a sphere as the "plane" — a sphere has no planar faces.
+        // After fix: should get an explicit error about non-planar face.
+        // Before fix: plane_shape is ignored, so draft either succeeds
+        // with Z-up or fails for unrelated reasons.
+        let sphere_h = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(10.0),
+            })
+            .unwrap();
+
+        let result = kernel.execute(&GeometryOp::Draft {
+            target: box_h.id,
+            angle: Value::Real(0.05),
+            plane: sphere_h.id,
+        });
+
+        // After the fix, we expect an OperationFailed error whose message
+        // mentions "planar" — the code should detect that the sphere's
+        // face is not planar and throw an explicit error.
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("planar"),
+                    "expected error about non-planar face, got: {msg}"
+                );
+            }
+            Ok(_) => {
+                panic!(
+                    "draft with sphere as plane should fail \
+                     (sphere has no planar faces), but succeeded"
+                );
+            }
+            Err(other) => {
+                panic!(
+                    "expected OperationFailed with 'planar' message, got: {:?}",
+                    other
+                );
+            }
+        }
+    }
 }
