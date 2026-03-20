@@ -13,7 +13,7 @@ use tauri::{Emitter, Manager};
 use reify_constraints::SimpleConstraintChecker;
 use reify_geometry::DispatchPlanner;
 use reify_gui::commands::AppState;
-use reify_gui::diff::{compute_delta, StateDelta};
+use reify_gui::diff::{compute_delta, delta_to_events, StateDelta};
 use reify_gui::engine::EngineSession;
 use reify_gui::types::EvaluationStatus;
 use reify_gui::watcher::FileWatcher;
@@ -21,16 +21,10 @@ use reify_kernel_occt::OcctKernelHandle;
 
 // --- Event emission helpers ---
 
-/// Emit targeted events for each changed item in a StateDelta.
+/// Emit targeted events for each changed/removed item in a StateDelta.
 fn emit_delta(app: &tauri::AppHandle, delta: &StateDelta) {
-    for mesh in &delta.changed_meshes {
-        app.emit("mesh-update", mesh).ok();
-    }
-    for value in &delta.changed_values {
-        app.emit("value-update", value).ok();
-    }
-    for constraint in &delta.changed_constraints {
-        app.emit("constraint-update", constraint).ok();
+    for (event_name, payload) in delta_to_events(delta) {
+        app.emit(&event_name, payload).ok();
     }
 }
 
