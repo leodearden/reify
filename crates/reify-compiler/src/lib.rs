@@ -1750,14 +1750,19 @@ fn compile_structure(
                 .chain(g.else_constraints.iter().map(|c| c.expr.content_hash))
         });
 
-        // Port member hashes
+        // Port member hashes (including identity fields for incremental invalidation)
         let port_hashes = ports.iter().flat_map(|p| {
-            p.members.iter().map(|m| {
+            // Port identity fields: name, direction, type_name
+            std::iter::once(ContentHash::of_str(&p.name))
+            .chain(std::iter::once(ContentHash::of(&[p.direction as u8])))
+            .chain(std::iter::once(ContentHash::of_str(&p.type_name)))
+            // Port member default_expr hashes
+            .chain(p.members.iter().map(|m| {
                 m.default_expr
                     .as_ref()
                     .map(|e| e.content_hash)
                     .unwrap_or(ContentHash(0))
-            })
+            }))
             .chain(p.constraints.iter().map(|c| c.expr.content_hash))
         });
 
