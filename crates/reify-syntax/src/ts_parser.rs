@@ -99,11 +99,6 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Structure(decl));
                     }
                 }
-                "occurrence_definition" => {
-                    if let Some(decl) = self.lower_occurrence(child) {
-                        self.declarations.push(Declaration::Occurrence(decl));
-                    }
-                }
                 "import_declaration" => {
                     if let Some(decl) = self.lower_import(child) {
                         self.declarations.push(Declaration::Import(decl));
@@ -641,27 +636,6 @@ impl<'a> Lowering<'a> {
         let content_hash = self.content_hash(node);
 
         Some(StructureDef {
-            name,
-            is_pub,
-            type_params,
-            trait_bounds,
-            members,
-            span: self.span(node),
-            content_hash,
-        })
-    }
-
-    fn lower_occurrence(&mut self, node: tree_sitter::Node) -> Option<OccurrenceDef> {
-        let name_node = node.child_by_field_name("name")?;
-        let name = self.node_text(name_node).to_string();
-
-        let is_pub = self.has_pub_keyword(node);
-        let type_params = self.lower_type_parameters(node);
-        let trait_bounds = self.find_trait_bound_list(node);
-        let members = self.lower_members(node);
-        let content_hash = self.content_hash(node);
-
-        Some(OccurrenceDef {
             name,
             is_pub,
             type_params,

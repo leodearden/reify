@@ -87,19 +87,11 @@ pub struct CompiledModule {
     pub content_hash: ContentHash,
 }
 
-/// Whether a TopologyTemplate was compiled from a structure or an occurrence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntityKind {
-    Structure,
-    Occurrence,
-}
-
-/// A topology template — compiled from a StructureDef or OccurrenceDef.
+/// A topology template — compiled from a StructureDef.
 /// Contains all the value cells, constraints, and realizations.
 #[derive(Debug, Clone)]
 pub struct TopologyTemplate {
     pub name: String,
-    pub entity_kind: EntityKind,
     pub visibility: Visibility,
     pub value_cells: Vec<ValueCellDecl>,
     pub constraints: Vec<CompiledConstraint>,
@@ -1168,8 +1160,7 @@ pub fn compile(
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
-                let entity_ref = EntityDefRef::from(structure);
-                let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &mut diagnostics);
+                let template = compile_structure(structure, &enum_defs, &functions, &trait_registry, &mut diagnostics);
                 templates.push(template);
             }
             reify_syntax::Declaration::Enum(_) => {
@@ -1195,11 +1186,6 @@ pub fn compile(
             }
             reify_syntax::Declaration::Trait(_) => {
                 // Already compiled in trait pre-pass above.
-            }
-            reify_syntax::Declaration::Occurrence(occurrence) => {
-                let entity_ref = EntityDefRef::from(occurrence);
-                let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &mut diagnostics);
-                templates.push(template);
             }
         }
     }
@@ -1279,57 +1265,15 @@ pub fn compile(
     }
 }
 
-/// Shared reference to entity definition fields (used by both StructureDef and OccurrenceDef).
-struct EntityDefRef<'a> {
-    name: &'a str,
-    is_pub: bool,
-    #[allow(dead_code)]
-    type_params: &'a [reify_syntax::TypeParamDecl],
-    trait_bounds: &'a [String],
-    members: &'a [reify_syntax::MemberDecl],
-    span: SourceSpan,
-    #[allow(dead_code)]
-    content_hash: ContentHash,
-}
-
-impl<'a> From<&'a reify_syntax::StructureDef> for EntityDefRef<'a> {
-    fn from(s: &'a reify_syntax::StructureDef) -> Self {
-        EntityDefRef {
-            name: &s.name,
-            is_pub: s.is_pub,
-            type_params: &s.type_params,
-            trait_bounds: &s.trait_bounds,
-            members: &s.members,
-            span: s.span,
-            content_hash: s.content_hash,
-        }
-    }
-}
-
-impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
-    fn from(o: &'a reify_syntax::OccurrenceDef) -> Self {
-        EntityDefRef {
-            name: &o.name,
-            is_pub: o.is_pub,
-            type_params: &o.type_params,
-            trait_bounds: &o.trait_bounds,
-            members: &o.members,
-            span: o.span,
-            content_hash: o.content_hash,
-        }
-    }
-}
-
-/// Compile a single entity definition (structure or occurrence) into a topology template.
-fn compile_entity(
-    structure: &EntityDefRef<'_>,
-    entity_kind: EntityKind,
+/// Compile a single structure definition into a topology template.
+fn compile_structure(
+    structure: &reify_syntax::StructureDef,
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> TopologyTemplate {
-    let entity_name = structure.name;
+    let entity_name = &structure.name;
     let mut scope = CompilationScope::new(entity_name);
     let mut value_cells = Vec::new();
     let mut constraints = Vec::new();
@@ -1346,7 +1290,7 @@ fn compile_entity(
     // First pass: register all param and let names into the scope so they can
     // reference each other (forward references within the structure).
     // We need types for the scope, so we resolve types in this pass as well.
-    for member in structure.members {
+    for member in &structure.members {
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
@@ -1451,7 +1395,7 @@ fn compile_entity(
     }
 
     // Second pass: compile all members.
-    for member in structure.members {
+    for member in &structure.members {
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let id = ValueCellId::new(entity_name, &param.name);
@@ -1766,7 +1710,7 @@ fn compile_entity(
     let mut realizations = Vec::new();
     let mut realization_index: u32 = 0;
 
-    for member in structure.members {
+    for member in &structure.members {
         if let reify_syntax::MemberDecl::Let(let_decl) = member
             && is_geometry_let(&let_decl.value)
             && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, enum_defs, functions, diagnostics)
@@ -2003,33 +1947,8 @@ fn compile_entity(
         }
     }
 
-    // Port direction validation for occurrences: warn if missing in/out ports.
-    if entity_kind == EntityKind::Occurrence {
-        let has_in = ports.iter().any(|p| p.direction == reify_types::PortDirection::In);
-        let has_out = ports.iter().any(|p| p.direction == reify_types::PortDirection::Out);
-        if !has_in {
-            diagnostics.push(
-                Diagnostic::warning(format!(
-                    "occurrence '{}' has no input port; occurrences typically consume input structures",
-                    entity_name
-                ))
-                .with_label(DiagnosticLabel::new(structure.span, "occurrence defined here")),
-            );
-        }
-        if !has_out {
-            diagnostics.push(
-                Diagnostic::warning(format!(
-                    "occurrence '{}' has no output port; occurrences typically produce output structures",
-                    entity_name
-                ))
-                .with_label(DiagnosticLabel::new(structure.span, "occurrence defined here")),
-            );
-        }
-    }
-
     TopologyTemplate {
-        name: entity_name.to_string(),
-        entity_kind,
+        name: entity_name.clone(),
         visibility,
         value_cells,
         constraints,
@@ -2425,7 +2344,7 @@ fn compile_per_decl_constraint_guard(
 /// Injects trait defaults for members not overridden by the structure.
 #[allow(clippy::too_many_arguments)]
 fn check_trait_conformance(
-    structure: &EntityDefRef<'_>,
+    structure: &reify_syntax::StructureDef,
     trait_registry: &HashMap<String, &CompiledTrait>,
     scope: &mut CompilationScope,
     value_cells: &mut Vec<ValueCellDecl>,
@@ -2481,7 +2400,7 @@ fn check_trait_conformance(
     let mut seen_requirement_names: HashMap<String, Type> = HashMap::new();
     let mut seen_default_names: HashMap<String, Type> = HashMap::new();
 
-    for trait_name in structure.trait_bounds {
+    for trait_name in &structure.trait_bounds {
         collect_all_requirements(
             trait_name,
             trait_registry,
@@ -2573,7 +2492,7 @@ fn check_trait_conformance(
                 if !structure_members.contains_key(&default.name) {
                     // Inject default param into value_cells
                     let cell_id = ValueCellId {
-                        entity: structure.name.to_string(),
+                        entity: structure.name.clone(),
                         member: default.name.clone(),
                     };
 
@@ -2594,7 +2513,7 @@ fn check_trait_conformance(
             DefaultKind::Let(let_decl) => {
                 if !structure_members.contains_key(&default.name) {
                     let cell_id = ValueCellId {
-                        entity: structure.name.to_string(),
+                        entity: structure.name.clone(),
                         member: default.name.clone(),
                     };
 
@@ -2629,7 +2548,7 @@ fn check_trait_conformance(
                     );
 
                     let constraint_id = ConstraintNodeId {
-                        entity: structure.name.to_string(),
+                        entity: structure.name.clone(),
                         index: *constraint_index,
                     };
                     *constraint_index += 1;

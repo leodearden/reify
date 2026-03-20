@@ -15,7 +15,6 @@ pub struct ParsedModule {
 #[derive(Debug, Clone)]
 pub enum Declaration {
     Structure(StructureDef),
-    Occurrence(OccurrenceDef),
     Import(ImportDecl),
     Enum(EnumDecl),
     Function(FnDef),
@@ -25,19 +24,6 @@ pub enum Declaration {
 /// A structure definition (the primary entity type in Reify).
 #[derive(Debug, Clone)]
 pub struct StructureDef {
-    pub name: String,
-    pub is_pub: bool,
-    pub type_params: Vec<TypeParamDecl>,
-    pub trait_bounds: Vec<String>,
-    pub members: Vec<MemberDecl>,
-    pub span: SourceSpan,
-    pub content_hash: ContentHash,
-}
-
-/// An occurrence definition (a process/transformation entity type in Reify).
-/// Structurally identical to StructureDef but semantically represents a process.
-#[derive(Debug, Clone)]
-pub struct OccurrenceDef {
     pub name: String,
     pub is_pub: bool,
     pub type_params: Vec<TypeParamDecl>,
