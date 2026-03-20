@@ -2558,9 +2558,17 @@ fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
         CompiledExprKind::Lambda { body, .. } => {
             collect_body_refs_inner(body, refs);
         }
-        CompiledExprKind::Quantifier { collection, predicate, .. } => {
+        CompiledExprKind::Quantifier { variable_id, collection, predicate, .. } => {
             collect_body_refs_inner(collection, refs);
-            collect_body_refs_inner(predicate, refs);
+            // Filter out the quantifier's bound variable from predicate refs,
+            // mirroring collect_value_refs_inner in reify-types/src/expr.rs.
+            let mut pred_refs = Vec::new();
+            collect_body_refs_inner(predicate, &mut pred_refs);
+            for r in pred_refs {
+                if r != *variable_id {
+                    refs.push(r);
+                }
+            }
         }
         CompiledExprKind::Literal(_) => {}
         CompiledExprKind::ListLiteral(elements) => {
