@@ -143,6 +143,7 @@ use reify_types::{ConstraintNodeId, RealizationNodeId};
 /// Builder for `TopologyTemplate`.
 pub struct TopologyTemplateBuilder {
     name: String,
+    visibility: reify_compiler::Visibility,
     value_cells: Vec<ValueCellDecl>,
     constraints: Vec<CompiledConstraint>,
     realizations: Vec<RealizationDecl>,
@@ -154,12 +155,18 @@ impl TopologyTemplateBuilder {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            visibility: reify_compiler::Visibility::Private,
             value_cells: Vec::new(),
             constraints: Vec::new(),
             realizations: Vec::new(),
             sub_components: Vec::new(),
             objective: None,
         }
+    }
+
+    pub fn visibility(mut self, vis: reify_compiler::Visibility) -> Self {
+        self.visibility = vis;
+        self
     }
 
     pub fn param(
@@ -294,6 +301,7 @@ impl TopologyTemplateBuilder {
 
         TopologyTemplate {
             name: self.name,
+            visibility: self.visibility,
             value_cells: self.value_cells,
             constraints: self.constraints,
             realizations: self.realizations,

@@ -29,6 +29,7 @@ pub struct CompiledModule {
 #[derive(Debug, Clone)]
 pub struct TopologyTemplate {
     pub name: String,
+    pub visibility: Visibility,
     pub value_cells: Vec<ValueCellDecl>,
     pub constraints: Vec<CompiledConstraint>,
     pub realizations: Vec<RealizationDecl>,
@@ -1039,8 +1040,15 @@ fn compile_structure(
         ContentHash::combine_all(all_hashes)
     };
 
+    let visibility = if structure.is_pub {
+        Visibility::Public
+    } else {
+        Visibility::Private
+    };
+
     TopologyTemplate {
         name: entity_name.clone(),
+        visibility,
         value_cells,
         constraints,
         realizations,
