@@ -1253,4 +1253,48 @@ mod tests {
             other => panic!("expected Real, got {:?}", other),
         }
     }
+
+    // ── User function evaluation tests ──────────────────────────────────
+
+    use reify_types::{CompiledFnBody, CompiledFunction, ContentHash};
+
+    fn make_double_fn() -> CompiledFunction {
+        // fn double(x: Real) -> Real { x + x }
+        CompiledFunction {
+            name: "double".to_string(),
+            is_pub: false,
+            params: vec![("x".to_string(), Type::Real)],
+            return_type: Type::Real,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: CompiledExpr::binop(
+                    BinOp::Add,
+                    vref("double", "x", Type::Real),
+                    vref("double", "x", Type::Real),
+                    Type::Real,
+                ),
+            },
+            content_hash: ContentHash::of(b"double"),
+        }
+    }
+
+    #[test]
+    fn eval_user_fn_double() {
+        let double_fn = make_double_fn();
+        let call_expr = CompiledExpr {
+            content_hash: ContentHash::of(b"call_double"),
+            result_type: Type::Real,
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "double".to_string(),
+                args: vec![lit(Value::Real(5.0), Type::Real)],
+            },
+        };
+        let values = ValueMap::new();
+        let ctx = EvalContext::new(&values, &[double_fn]);
+        let result = eval_expr(&call_expr, &ctx);
+        match result {
+            Value::Real(v) => assert!((v - 10.0).abs() < 1e-12, "expected 10.0, got {}", v),
+            other => panic!("expected Real(10.0), got {:?}", other),
+        }
+    }
 }
