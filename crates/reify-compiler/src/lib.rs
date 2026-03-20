@@ -12,6 +12,8 @@ use reify_types::{
 #[derive(Debug, Clone)]
 pub struct CompiledImport {
     pub path: String,
+    pub kind: reify_syntax::ImportKind,
+    pub is_pub: bool,
     pub span: SourceSpan,
 }
 
@@ -764,6 +766,8 @@ pub fn compile(
             reify_syntax::Declaration::Import(import) => {
                 imports.push(CompiledImport {
                     path: import.path.clone(),
+                    kind: import.kind.clone(),
+                    is_pub: import.is_pub,
                     span: import.span,
                 });
                 diagnostics.push(
