@@ -16,8 +16,8 @@
     {
       "id": "pre-1",
       "description": "Add `slvs = \"0.6.0\"` dependency to crates/reify-constraints/Cargo.toml under [dependencies]. Run `cargo check -p reify-constraints` to verify it compiles. The slvs crate bundles SolveSpace source and compiles it via cc/bindgen — no system library needed.",
-      "status": "pending",
-      "commit": null,
+      "status": "done",
+      "commit": "2613a84",
       "tests": []
     }
   ],
@@ -26,148 +26,148 @@
       "id": "step-1",
       "type": "test",
       "description": "Write failing test in crates/reify-constraints/tests/solvespace_tests.rs: `solvespace_solver_is_send_sync`. Import SolveSpaceSolver (which doesn't exist yet) and assert it implements Send + Sync via `fn assert_send_sync<T: Send + Sync>() {}; assert_send_sync::<SolveSpaceSolver>();`. Also test it can be boxed as `Box<dyn ConstraintSolver>`. This test will fail to compile because SolveSpaceSolver doesn't exist yet.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "41fb9b3"
     },
     {
       "id": "step-2",
       "type": "impl",
       "description": "Create crates/reify-constraints/src/solvespace.rs with a minimal `SolveSpaceSolver` struct. Implement `ConstraintSolver` for it with a stub that returns `SolveResult::NoProgress { reason: \"not yet implemented\" }`. Add `mod solvespace;` to lib.rs and `pub use solvespace::SolveSpaceSolver;`. Verify the Send+Sync test passes.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "46f0fb3"
     },
     {
       "id": "step-3",
       "type": "test",
       "description": "Write failing test: `solve_simple_point_distance_constraint`. Create a ResolutionProblem with two auto params (point x and y coordinates), and a constraint expression representing `distance(point, origin) == 10mm` using a FunctionCall(std::geo::pt_pt_distance) expression compared via Eq to a literal Scalar. Expect SolveResult::Solved with values where the resulting distance is approximately 10mm (within tolerance). Currently returns NoProgress.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "cda0938"
     },
     {
       "id": "step-4",
       "type": "impl",
       "description": "Implement the constraint pattern recognition layer in solvespace.rs. Create an enum `GeometricConstraintPattern` with variants: PtPtDistance { pt_a_params, pt_b_params, distance_si }, Angle { line_a_params, line_b_params, angle_rad }, Parallel { line_a_params, line_b_params }, Perpendicular { line_a_params, line_b_params }, Coincident { pt_a_params, pt_b_params }. Implement `fn recognize_pattern(expr: &CompiledExpr, auto_params: &[AutoParam], current_values: &ValueMap) -> Option<GeometricConstraintPattern>` that pattern-matches the expression tree. Start with PtPtDistance: match `BinOp(Eq, FunctionCall{qualified_name containing 'distance', args=[point_a_expr, point_b_expr]}, literal_scalar)` and extract the auto param IDs from the point expressions.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "29e04da"
     },
     {
       "id": "step-5",
       "type": "impl",
       "description": "Implement the core solve method for SolveSpaceSolver. For each constraint in the ResolutionProblem: (1) recognize the geometric pattern, (2) create slvs entities (3D points from auto params, lines from point pairs), (3) add the corresponding slvs constraint (PtPtDistance, Angle, Parallel, etc.), (4) call sys.solve(), (5) read back solved point coordinates and map to ValueCellId→Value entries. Handle the mapping between Reify's ValueCellId-based auto params and slvs's entity/parameter system. Use a fresh slvs::System per solve call. Make the simple distance test pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "29e04da"
     },
     {
       "id": "step-6",
       "type": "test",
       "description": "Write failing test: `solve_angle_constraint`. Create a problem with auto params for two line endpoints, and a constraint `angle(line1, line2) == 90deg` (perpendicular). Expect Solved with line endpoints that form a 90-degree angle.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "ae1e715"
     },
     {
       "id": "step-7",
       "type": "impl",
       "description": "Add angle constraint pattern recognition: match `BinOp(Eq, FunctionCall{qualified_name containing 'angle', args=[line1_expr, line2_expr]}, literal_angle_scalar)`. Map to slvs Angle constraint. Extract line endpoint auto params from the expressions. Implement the slvs entity creation for LineSegments from point pairs.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "ae1e715"
     },
     {
       "id": "step-8",
       "type": "test",
       "description": "Write failing test: `solve_parallel_constraint`. Create a problem with auto params for two line segments, and a constraint `parallel(line1, line2)`. Expect Solved with line endpoints where the two lines are parallel (direction vectors proportional).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "47b5cbd"
     },
     {
       "id": "step-9",
       "type": "impl",
       "description": "Add parallel constraint pattern recognition: match FunctionCall with qualified_name containing 'parallel'. Map to slvs Parallel constraint (no value parameter needed — it's a boolean geometric relationship). Make the parallel test pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "47b5cbd"
     },
     {
       "id": "step-10",
       "type": "test",
       "description": "Write failing test: `solve_coincident_constraint`. Create a problem with two pairs of auto params (x1,y1) and (x2,y2) representing two points, and a coincident constraint. Expect Solved with both points at the same location.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "47b5cbd"
     },
     {
       "id": "step-11",
       "type": "impl",
       "description": "Add coincident point pattern recognition: match FunctionCall with qualified_name containing 'coincident' or a distance == 0 pattern. Map to slvs PointsCoincident constraint. Make the coincident test pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "47b5cbd"
     },
     {
       "id": "step-12",
       "type": "test",
       "description": "Write failing test: `solve_overconstrained_returns_infeasible`. Create a problem with contradictory constraints: point-to-point distance == 10mm AND point-to-point distance == 20mm for the same point pair. Expect SolveResult::Infeasible with diagnostics.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "47b5cbd"
     },
     {
       "id": "step-13",
       "type": "impl",
       "description": "Handle slvs solve failures. When sys.solve() returns SolveResult::Fail, map the FailReason (Inconsistent → Infeasible with diagnostic listing failed constraints, Nonconvergent → NoProgress). Make the overconstrained test pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "47b5cbd"
     },
     {
       "id": "step-14",
       "type": "test",
       "description": "Write failing test: `solve_underconstrained_solves_with_dof`. Create a problem with a single point and only one distance constraint (underconstrained — point can be anywhere on a sphere). Expect SolveResult::Solved (solver finds a valid position) with remaining degrees of freedom.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "47b5cbd"
     },
     {
       "id": "step-15",
       "type": "impl",
       "description": "Ensure underconstrained systems are handled: slvs reports dof > 0 but still returns Ok with a solution. Map this to SolveResult::Solved with the solved values. The test should pass if the solver finds any valid position satisfying the constraint.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "47b5cbd"
     },
     {
       "id": "step-16",
       "type": "test",
       "description": "Write failing test: `solve_unrecognized_pattern_falls_through`. Create a ResolutionProblem with a constraint expression that uses a geometric function but doesn't match any known pattern (e.g., a complex nested expression). Expect SolveResult::NoProgress with a descriptive reason, not a panic.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "47b5cbd"
     },
     {
       "id": "step-17",
       "type": "impl",
       "description": "Add graceful fallback for unrecognized constraint patterns. If recognize_pattern returns None for any constraint, return SolveResult::NoProgress with a message like 'unrecognized geometric constraint pattern'. This ensures the solver never panics on unexpected input.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "47b5cbd"
     },
     {
       "id": "step-18",
       "type": "test",
       "description": "Write integration test in registry_tests.rs: `registry_dispatches_geometric_to_solvespace`. Create a SolverRegistry with DimensionalSolver for dimensional and SolveSpaceSolver for geometric. Create a problem with a geometric constraint (distance via std::geo::distance function call, classified as Geometric by ConstraintClassifier). Verify the registry dispatches to SolveSpaceSolver and returns Solved.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "c722114"
     },
     {
       "id": "step-19",
       "type": "impl",
       "description": "Ensure SolveSpaceSolver is properly exported and can be wired into SolverRegistry. Update lib.rs exports if needed. The test should pass with the existing SolverRegistry infrastructure — it already has the geometric slot and solver_for() dispatch logic. Verify the full integration test passes.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "c722114"
     },
     {
       "id": "step-20",
       "type": "test",
       "description": "Write integration test in registry_tests.rs: `registry_mixed_dimensional_and_geometric`. Create a problem with two independent subproblems: one dimensional (thickness > 2mm, handled by DimensionalSolver) and one geometric (distance constraint, handled by SolveSpaceSolver). Verify both are solved correctly and merged.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "c722114"
     },
     {
       "id": "step-21",
       "type": "impl",
       "description": "Verify the mixed-domain decomposition and dispatch works end-to-end. The decompose_into_components function already handles multi-domain decomposition, and SolverRegistry merges results. Fix any issues that arise. Run the full test suite to ensure no regressions.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "c722114"
     }
   ],
   "design_decisions": [
