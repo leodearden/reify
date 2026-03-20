@@ -115,6 +115,41 @@ impl CompiledExpr {
         }
     }
 
+    /// Recursively walk the expression tree, calling `f` on each node (pre-order).
+    ///
+    /// This is the canonical traversal for `CompiledExprKind`. All callers
+    /// that need to visit expression nodes should use this method rather than
+    /// implementing their own match on `CompiledExprKind`. This ensures that
+    /// when new variants are added, only this single method needs updating.
+    pub fn walk(&self, f: &mut impl FnMut(&CompiledExpr)) {
+        f(self);
+        match &self.kind {
+            CompiledExprKind::Literal(_) => {}
+            CompiledExprKind::ValueRef(_) => {}
+            CompiledExprKind::BinOp { left, right, .. } => {
+                left.walk(f);
+                right.walk(f);
+            }
+            CompiledExprKind::UnOp { operand, .. } => {
+                operand.walk(f);
+            }
+            CompiledExprKind::FunctionCall { args, .. } => {
+                for arg in args {
+                    arg.walk(f);
+                }
+            }
+            CompiledExprKind::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                condition.walk(f);
+                then_branch.walk(f);
+                else_branch.walk(f);
+            }
+        }
+    }
+
     /// Create a unary operation expression.
     pub fn unop(op: UnOp, operand: CompiledExpr, result_type: Type) -> Self {
         let content_hash =
