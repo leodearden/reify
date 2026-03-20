@@ -137,6 +137,41 @@ pub fn diff_gui_state(old: &GuiState, new: &GuiState) -> StateDelta {
     }
 }
 
+/// Convert a StateDelta into a list of (event_name, payload) tuples.
+///
+/// This is a pure function with no Tauri dependency — fully testable.
+/// Changed items produce update events; removed IDs produce removal events.
+pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
+    let mut events = Vec::new();
+
+    for mesh in &delta.changed_meshes {
+        if let Ok(val) = serde_json::to_value(mesh) {
+            events.push(("mesh-update".to_string(), val));
+        }
+    }
+    for value in &delta.changed_values {
+        if let Ok(val) = serde_json::to_value(value) {
+            events.push(("value-update".to_string(), val));
+        }
+    }
+    for constraint in &delta.changed_constraints {
+        if let Ok(val) = serde_json::to_value(constraint) {
+            events.push(("constraint-update".to_string(), val));
+        }
+    }
+    for path in &delta.removed_mesh_paths {
+        events.push(("mesh-removed".to_string(), serde_json::Value::String(path.clone())));
+    }
+    for id in &delta.removed_value_ids {
+        events.push(("value-removed".to_string(), serde_json::Value::String(id.clone())));
+    }
+    for id in &delta.removed_constraint_ids {
+        events.push(("constraint-removed".to_string(), serde_json::Value::String(id.clone())));
+    }
+
+    events
+}
+
 /// Compute a delta against the last known state, then store the new state.
 ///
 /// If `last_state` is `None` (first call), returns a full delta.
