@@ -1,34 +1,43 @@
 {
-  "task_id": "62",
-  "title": "Collection compilation + operations",
+  "task_id": "90",
+  "title": "CodeMirror editor component + file tabs",
   "files": [
-    "crates/reify-types/src/expr.rs",
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-stdlib/src/lib.rs",
-    "crates/reify-expr/tests/collection_eval_tests.rs",
-    "crates/reify-compiler/tests/collection_compile_tests.rs"
+    "gui/src/editor/Editor.tsx",
+    "gui/src/editor/FileTabs.tsx",
+    "gui/src/editor/Editor.module.css",
+    "gui/src/editor/FileTabs.module.css",
+    "gui/src/__tests__/Editor.test.tsx",
+    "gui/src/__tests__/FileTabs.test.tsx",
+    "gui/package.json",
+    "gui/test/language.test.ts"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-compiler",
-    "crates/reify-expr",
-    "crates/reify-stdlib"
+    "gui/src/editor",
+    "gui/src/__tests__",
+    "gui/test",
+    "gui"
   ],
-  "analysis": "This task implements collection compilation and operations across the Reify pipeline. The codebase already has: (1) Value::List/Set/Map variants in reify-types, (2) Type::List/Set/Map types, (3) syntax parsing for list/set/map literals and index access in reify-syntax, (4) stub error handlers in the compiler for collection syntax nodes, (5) apply_lambda in reify-expr for calling lambda closures.\n\nThe work involves: (A) Adding 5 new CompiledExprKind variants to reify-types (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall), (B) Implementing their evaluation in reify-expr including all collection methods (count, sum, map, filter, fold, all, any, contains, concat, generate for List; count, contains, union, intersection, difference for Set; count, keys, values, contains_key for Map), (C) Implementing compilation in reify-compiler replacing the current stubs, (D) Adding dimension-aware sum to reify-stdlib.\n\nKey constraint: The current grammar supports MemberAccess (obj.member) but not method_call with args (obj.method(args)). Property-style methods (.count, .sum, .keys, .values) compile from MemberAccess. Methods with args (.map, .filter, .fold, .contains, .union, etc.) will be tested at the CompiledExpr level directly. Full end-to-end parsing of method calls with arguments requires a grammar change (tree-sitter-reify) which is out of scope for this task's modules.\n\nUndef propagation follows the spec: undef collection -> undef result, known-structure-unknown-elements -> count works but sum propagates, Kleene 3-valued logic for .all/.any.\n\nReview feedback identified three blocking issues: (1) Missing Kleene tests for .any — the implementation is correct but untested for [undef, false].any -> Undef and [true, undef].any -> Bool(true). (2) Missing .filter Undef propagation test — the implementation already returns Undef when predicate returns Undef (line 484) but no test covers it. (3) apply_lambda() uses EvalContext::simple() which drops the function registry, so UserFunctionCall nodes inside lambda bodies silently return Undef. The fix requires threading EvalContext through apply_lambda and eval_method_call.",
+  "analysis": "Task 90 requires creating two SolidJS components: Editor.tsx (mounts CodeMirror 6 with Reify language support) and FileTabs.tsx (tab bar for open files). Both connect to the existing editorStore and bridge layer.\n\nExisting infrastructure:\n- gui/src/editor/reifyLanguage.ts: exports reifyLanguage() returning LanguageSupport with Lezer parser configured with folding, indentation, and closeBrackets config in languageData\n- gui/src/editor/highlight.ts: exports reifyHighlighting (styleTags) wired into the parser via '@external propSource reifyHighlighting from ./highlight' in the Lezer grammar (line 205). The generated reifyParser.js imports and applies this automatically. So syntax highlighting is included when reifyLanguage() is used.\n- gui/src/stores/editorStore.ts: createEditorStore() factory returning state (openFiles, activeFile, dirtyFiles, cursorPosition) and mutators (openFile, closeFile, setActiveFile, markDirty, markClean, setCursorPosition)\n- gui/src/bridge.ts: updateSource(path, content), saveFile(path), openFile(path) wrapping Tauri invoke()\n- gui/src/types.ts: FileData { path: string, content: string }\n\nInstalled CodeMirror packages: @codemirror/language (dep), @codemirror/state (dep), @codemirror/view (devDep). Missing: @codemirror/commands (needed for defaultKeymap, history, historyKeymap).\n\nTesting approach: FileTabs is pure SolidJS testable with @solidjs/testing-library. Editor tests mock Tauri APIs via vi.mock following bridge.test.ts pattern. CM6 EditorView works in jsdom for basic operations. Tests create fresh editorStore instances per test.\n\nComponent design: Both components receive editorStore as prop for testability. Editor creates CM6 EditorView on mount with reifyLanguage, bracketMatching, syntaxHighlighting, history, keybindings. createEffect watches activeFile for file switching. FileTabs reads openFiles/activeFile/dirtyFiles from store.\n\nReview feedback: Two blocking issues in gui/test/language.test.ts require fixes: (1) bracket-matching test line 86-88 has tautological assertion \u2014 the `|| openNode.name === '{'` fallback always passes since the node was found by matching `cursor.name === '{'`. Must import NodeProp from @lezer/common and assert NodeProp.closedBy directly. (2) auto-indent test lines 130-138 only re-checks language name/parser existence, never tests indentation. Must use getIndentation() from @codemirror/language with an EditorState to verify Block nodes produce non-zero indent.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add CompiledExprKind variants (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall) to reify-types/src/expr.rs. Update walk(), collect_value_refs_inner(), and add constructor helpers. ListLiteral(Vec<CompiledExpr>), SetLiteral(Vec<CompiledExpr>), MapLiteral(Vec<(CompiledExpr, CompiledExpr)>), IndexAccess { object: Box<CompiledExpr>, index: Box<CompiledExpr> }, MethodCall { object: Box<CompiledExpr>, method: String, args: Vec<CompiledExpr> }.",
+      "description": "Add @codemirror/commands to gui/package.json dependencies (provides defaultKeymap, history, historyKeymap essential for a functional editor with undo/redo). Run npm install to update package-lock.json.",
       "status": "done",
-      "commit": "5345877",
+      "commit": "ee7f118",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Update collect_body_refs_inner() in reify-compiler/src/lib.rs to handle the 5 new CompiledExprKind variants (recurse into sub-expressions for dependency tracking).",
+      "description": "Create gui/src/editor/Editor.module.css with styles: .container fills available space (flex: 1, overflow: hidden), dark background from --reify-editor-bg. Inner .cm-editor and .cm-scroller get height: 100%.",
       "status": "done",
-      "commit": "5345877",
+      "commit": "06c168f",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Create gui/src/editor/FileTabs.module.css with styles: .tabBar horizontal flex with --reify-surface background and bottom border. .tab button with padding, border-right separator, --reify-text-secondary color. .tab.active with --reify-accent bottom border and --reify-text color. .dirty dot indicator with --reify-warning color. .closeBtn small X button with hover state.",
+      "status": "done",
+      "commit": "06c168f",
       "tests": []
     }
   ],
@@ -36,368 +45,191 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests in crates/reify-expr/tests/collection_eval_tests.rs for list literal evaluation: eval ListLiteral([Int(1), Int(2), Int(3)]) -> Value::List([Int(1), Int(2), Int(3)]), empty list, and list with nested expressions.",
+      "description": "Write failing tests for FileTabs in gui/src/__tests__/FileTabs.test.tsx: (1) renders tab for each open file with data-testid='file-tab', (2) shows filename basename not full path, (3) active tab has aria-selected='true', (4) dirty files show dirty indicator (data-testid='dirty-indicator'), (5) each tab has close button (data-testid='close-tab'), (6) clicking tab calls setActiveFile, (7) clicking close calls closeFile without switching tab. Use @solidjs/testing-library render/screen/fireEvent with fresh createEditorStore().",
       "status": "done",
-      "commit": "f0c939f"
+      "commit": "039b9d5"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::ListLiteral in reify-expr/src/lib.rs -- evaluate each element expression and collect into Value::List. Add SetLiteral and MapLiteral eval simultaneously since they follow the same pattern.",
+      "description": "Implement FileTabs.tsx: SolidJS component receiving store prop. Renders div.tabBar with <For each={store.state.openFiles}> producing tab buttons. Each tab shows basename via path.split('/').pop(), sets aria-selected, conditionally renders dirty indicator span when path in dirtyFiles, includes close button. onClick tab calls setActiveFile(path). onClick close calls closeFile(path) with e.stopPropagation().",
       "status": "done",
-      "commit": "4b100a0"
+      "commit": "f33c6ad"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for set literal evaluation (SetLiteral -> Value::Set with dedup) and map literal evaluation (MapLiteral -> Value::Map).",
+      "description": "Write failing tests for Editor mounting in gui/src/__tests__/Editor.test.tsx: (1) renders container div with data-testid='editor-container', (2) container has .cm-editor child (CM6 mounted), (3) editor contains active file content. Mock @tauri-apps/api/core and @tauri-apps/api/event via vi.mock. Create editorStore, openFile with test FileData, render Editor.",
       "status": "done",
-      "commit": "fdff49c"
+      "commit": "98fc395"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify set/map literal eval passes (already implemented in step-2). If not, fix.",
+      "description": "Implement basic Editor.tsx: SolidJS component with store prop. Creates div ref container. onMount: finds active file, creates EditorState.create({ doc, extensions: [reifyLanguage(), bracketMatching(), syntaxHighlighting(defaultHighlightStyle), history(), keymap.of([...defaultKeymap, ...historyKeymap])] }), creates EditorView({ state, parent }). onCleanup destroys view. Returns div with data-testid and styles.",
       "status": "done",
-      "commit": "fdff49c"
+      "commit": "22fd5cf"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for IndexAccess evaluation: list[1] -> element, list[out-of-bounds] -> Undef, map[key] -> value, map[missing-key] -> Undef, list[undef] -> Undef, undef[0] -> Undef.",
+      "description": "Write failing tests for doc change handling: (1) dispatching CM6 insert transaction causes store.markDirty to be called (dirty state tracks on edit), (2) after 300ms debounce, bridge.updateSource called with path and new content (use vi.useFakeTimers + advanceTimersByTime), (3) rapid edits collapse into single updateSource call.",
       "status": "done",
-      "commit": "efdcbc0"
+      "commit": "0182159"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::IndexAccess in reify-expr/src/lib.rs -- evaluate object and index, dispatch based on Value::List (Int index) and Value::Map (key lookup). Out of bounds / missing -> Undef.",
+      "description": "Wire doc change in Editor.tsx: Add EditorView.updateListener to extensions. On docChanged: call store.markDirty(path), clearTimeout debounce timer, set new 300ms setTimeout calling bridge.updateSource(path, newContent). Store timer ref for cleanup in onCleanup.",
       "status": "done",
-      "commit": "bdb0466"
+      "commit": "a80b77d"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for MethodCall .count on lists, sets, and maps: [1,2,3].count -> Int(3), set{1,2,3}.count -> Int(3), map{'a'=>1}.count -> Int(1), [].count -> Int(0).",
+      "description": "Write failing tests for save: (1) triggering save calls bridge.saveFile with active file path, (2) save clears dirty flag (store.state.dirtyFiles no longer contains path). Test by accessing EditorView and invoking the save keybinding handler or by simulating Ctrl+S.",
       "status": "done",
-      "commit": "4d10692"
+      "commit": "a1a1c02"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::MethodCall in reify-expr/src/lib.rs -- start with .count method dispatching on Value::List/Set/Map to return their length as Value::Int.",
+      "description": "Wire Ctrl+S in Editor.tsx: Add { key: 'Mod-s', run: () => { bridge.saveFile(path); store.markClean(path); return true; }, preventDefault: true } to keymap. Returns true to stop propagation, preventDefault stops browser save dialog.",
       "status": "done",
-      "commit": "5bc7369"
+      "commit": "8b15ac2"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for MethodCall .sum: [1,2,3].sum -> Int(6), [1.0,2.0].sum -> Real(3.0), [1mm,2mm].sum -> Scalar(0.003, LENGTH), [].sum -> Int(0), [1,undef,3].sum -> Undef.",
+      "description": "Write failing tests for cursor tracking: dispatching CM6 selection transaction to a known offset in a multi-line doc causes store.setCursorPosition to be called with correct line and column numbers.",
       "status": "done",
-      "commit": "ca6f9b9"
+      "commit": "aa56c65"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement .sum method in eval_method_call -- iterate list elements, accumulate using add logic (reuse eval_add pattern from reify-expr), handle dimension-aware scalar addition. Add dimension-aware collection sum helper to reify-stdlib if needed.",
+      "description": "Wire cursor tracking in Editor.tsx: In updateListener, when update.selectionSet: compute pos from selection.main.head, get line via state.doc.lineAt(pos), call store.setCursorPosition(line.number, pos - line.from).",
       "status": "done",
-      "commit": "8f16e83"
+      "commit": "966d051"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing tests for MethodCall .contains: [1,2,3].contains(2) -> Bool(true), [1,2,3].contains(5) -> Bool(false), set{1,2,3}.contains(2) -> Bool(true), set{1,2,3}.contains(5) -> Bool(false).",
+      "description": "Write failing tests for active file switching: (1) changing store.activeFile (via setActiveFile) updates editor document content to new file, (2) switching back restores original content. Render Editor with two files opened, verify content changes on tab switch.",
       "status": "done",
-      "commit": "adad14c"
+      "commit": "83108ca"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement .contains method for List and Set -- check if the argument value is present in the collection.",
+      "description": "Wire file switching in Editor.tsx: Add createEffect watching () => store.state.activeFile. When changed and view exists: find file in openFiles, dispatch transaction replacing entire doc (from: 0, to: doc.length, insert: newContent), set selection to 0. Track previous activeFile to avoid redundant updates.",
       "status": "done",
-      "commit": "e45b383"
+      "commit": "632f03c"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing tests for MethodCall .map: [1,2,3].map(|x| x*2) -> List([2,4,6]). Construct the MethodCall with a lambda arg CompiledExpr.",
+      "description": "Fix tautological bracket-matching test in gui/test/language.test.ts (lines 86-88). Replace the 'matches curly braces' test body: import NodeProp from @lezer/common, remove the tautological `|| openNode.name === '{'` fallback, and assert `expect(openNode.type.prop(NodeProp.closedBy)).toBeDefined()` directly. This ensures the test actually verifies that @detectDelim wired the closedBy NodeProp onto the '{' token type \u2014 a regression in bracket-matching configuration will now cause the test to fail. Verify the test passes with the current grammar (which does have @detectDelim).",
       "status": "done",
-      "commit": "76616ca"
+      "commit": "649cff8"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement .map method -- evaluate the lambda arg to get Value::Lambda, then apply_lambda to each element, collect results into new Value::List.",
+      "description": "Fix non-testing auto-indent test in gui/test/language.test.ts (lines 130-138). Replace the 'Block node uses delimited indent' test body: import EditorState from @codemirror/state and getIndentation from @codemirror/language, create an EditorState with doc 'structure S {\\n  param x = 1mm\\n}' and reifyLanguage() extension, call getIndentation(state, pos) where pos is the offset of the newline after '{' (i.e. the start of the second line), and assert the returned indent level is greater than 0. This verifies that the indentNodeProp configuration with delimitedIndent on Block nodes actually produces indentation. Remove the old assertions that only checked language.name and parser existence.",
       "status": "done",
-      "commit": "277ad8a"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .filter: [1,2,3,4].filter(|x| x > 2) -> List([3,4]), empty result case.",
-      "status": "done",
-      "commit": "ce250d7"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Implement .filter method -- apply_lambda to each element, keep elements where result is Bool(true), discard where Bool(false), propagate Undef.",
-      "status": "done",
-      "commit": "984c541"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .fold: [1,2,3].fold(0, |acc,x| acc+x) -> Int(6), fold with initial value.",
-      "status": "done",
-      "commit": "b772290"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Implement .fold method -- evaluate init, then for each element apply 2-arg lambda with (accumulator, element), thread result through.",
-      "status": "done",
-      "commit": "a45a565"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .all and .any: [1,2,3].all(|x| x>0) -> Bool(true), [1,2,3].any(|x| x>2) -> Bool(true), [1,2,3].all(|x| x>2) -> Bool(false), [1,2,3].any(|x| x>5) -> Bool(false). Kleene: [1,undef,3].all(|x| x>0) -> Undef, [false,undef].all(|x| x) -> Bool(false).",
-      "status": "done",
-      "commit": "aa25e42"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Implement .all and .any methods with Kleene 3-valued logic: .all returns false if any false, undef if any undef and none false, true otherwise. .any returns true if any true, undef if any undef and none true, false otherwise.",
-      "status": "done",
-      "commit": "11193fc"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .concat and .generate on lists: [1,2].concat([3,4]) -> List([1,2,3,4]), [].generate(3, |i| i*2) -> List([0,2,4]).",
-      "status": "done",
-      "commit": "cdb4e22"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Implement .concat (merge two lists) and .generate (create list from count + lambda, applying lambda to indices 0..count) methods.",
-      "status": "done",
-      "commit": "c028a19"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write failing tests for set operations: set{1,2,3}.union(set{3,4}) -> Set({1,2,3,4}), set{1,2,3}.intersection(set{2,3,4}) -> Set({2,3}), set{1,2,3}.difference(set{2,3,4}) -> Set({1}).",
-      "status": "done",
-      "commit": "24e6082"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Implement set .union, .intersection, .difference methods using BTreeSet operations.",
-      "status": "done",
-      "commit": "a735a38"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Write failing tests for map methods: map{'a'=>1}.keys -> List(['a']), map{'a'=>1}.values -> List([1]), map{'a'=>1}.contains_key('a') -> Bool(true), map{'a'=>1}.contains_key('b') -> Bool(false).",
-      "status": "done",
-      "commit": "ddf1d72"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "Implement map .keys, .values (return as Value::List), .contains_key methods.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-27",
-      "type": "test",
-      "description": "Write failing tests for undef propagation edge cases: undef.count -> Undef, [1,undef,3].count -> Int(3), [1,undef,3].sum -> Undef, undef[0] -> Undef, [1,2,3][undef] -> Undef, undef.map(lambda) -> Undef.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-28",
-      "type": "impl",
-      "description": "Verify undef propagation passes -- most cases should already work from the MethodCall dispatch checking for Undef object. Fix any gaps.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-29",
-      "type": "test",
-      "description": "Write failing compiler tests in crates/reify-compiler/tests/collection_compile_tests.rs: compile 'let x = [1, 2, 3]' -> CompiledExprKind::ListLiteral, compile 'let x = set{1, 2}' -> SetLiteral, compile 'let x = map{\"a\" => 1}' -> MapLiteral, compile 'let x = items[0]' -> IndexAccess.",
-      "status": "done",
-      "commit": "4048d2f"
-    },
-    {
-      "id": "step-30",
-      "type": "impl",
-      "description": "Implement compilation of ListLiteral, SetLiteral, MapLiteral, IndexAccess in reify-compiler -- replace the current stub error handlers with actual compilation that recursively compiles element expressions and produces the new CompiledExprKind variants.",
-      "status": "done",
-      "commit": "89320f7"
-    },
-    {
-      "id": "step-31",
-      "type": "test",
-      "description": "Write failing compiler test: compile 'let n = items.count' where items is a known let binding -> CompiledExprKind::MethodCall { method: 'count', args: [] }. Test property-style method compilation from MemberAccess syntax.",
-      "status": "done",
-      "commit": "802d2be"
-    },
-    {
-      "id": "step-32",
-      "type": "impl",
-      "description": "Implement compilation of MemberAccess -> MethodCall in reify-compiler. When the member is a known collection method name (count, sum, keys, values) and it's NOT a port access, compile it as MethodCall with empty args. Keep port access logic intact.",
-      "status": "done",
-      "commit": "5e96a5b"
-    },
-    {
-      "id": "step-33",
-      "type": "test",
-      "description": "Write integration test: parse + compile + eval 'structure S { let x = [1, 2, 3] }' -> verify x evaluates to Value::List([Int(1), Int(2), Int(3)]). Test parse + compile + eval for set and map literals too.",
-      "status": "done",
-      "commit": "59ab3b6"
-    },
-    {
-      "id": "step-34",
-      "type": "impl",
-      "description": "Verify integration tests pass end-to-end. Fix any issues in the parse -> compile -> eval pipeline for collection literals.",
-      "status": "done",
-      "commit": "59ab3b6"
-    },
-    {
-      "id": "step-35",
-      "type": "test",
-      "description": "Write integration test: parse + compile + eval 'structure S { let items = [1, 2, 3]  let n = items.count }' -> verify n evaluates to Int(3). Also test list index access integration.",
-      "status": "done",
-      "commit": "4469cc0"
-    },
-    {
-      "id": "step-36",
-      "type": "impl",
-      "description": "Verify property method and index access integration tests pass. Fix any issues.",
-      "status": "done",
-      "commit": "4469cc0"
-    },
-    {
-      "id": "step-37",
-      "type": "test",
-      "description": "Add Kleene 3-valued logic tests for .any in collection_eval_tests.rs: (1) eval_method_any_kleene_undef: [undef, false].any(|x| x) -> Undef (no true present, but undef present means result is indeterminate). (2) eval_method_any_kleene_true_wins: [true, undef].any(|x| x) -> Bool(true) (true dominates undef in Kleene OR). These mirror the existing eval_method_all_kleene_undef and eval_method_all_kleene_false_wins tests.",
-      "status": "done",
-      "commit": "ffbc589"
-    },
-    {
-      "id": "step-38",
-      "type": "impl",
-      "description": "Verify .any Kleene tests pass. The implementation already has the correct Kleene logic (lines 398-417: true short-circuits, false skips, undef flags has_undef, final check returns Undef if has_undef else Bool(false)). Fix if any test unexpectedly fails.",
-      "status": "done",
-      "commit": "ffbc589"
-    },
-    {
-      "id": "step-39",
-      "type": "test",
-      "description": "Add .filter Undef propagation test in collection_eval_tests.rs: eval_method_filter_undef_propagation: [1, undef, 3].filter(|x| x > 0) -> Undef. The predicate (x > 0) returns Undef when x is Undef (because Gt with Undef operand propagates Undef). The filter spec says 'propagate Undef' — if any element's predicate returns Undef, the entire filter result is Undef. Use an undef ValueCellId in the list to produce an Undef element that causes the predicate to return Undef.",
-      "status": "done",
-      "commit": "17de3f1"
-    },
-    {
-      "id": "step-40",
-      "type": "impl",
-      "description": "Verify .filter Undef propagation test passes. The implementation already handles this at line 484 (Value::Undef => return Value::Undef). Fix if the test unexpectedly fails.",
-      "status": "done",
-      "commit": "17de3f1"
-    },
-    {
-      "id": "step-41",
-      "type": "test",
-      "description": "Add test for UserFunctionCall inside lambda body used in a collection method. In collection_eval_tests.rs, add eval_method_map_with_user_function: create a CompiledFunction 'double' that returns x*2, create a list [1,2,3], call .map(|x| double(x)) where the lambda body is a UserFunctionCall node. Evaluate with EvalContext::new(&values, &[double_fn]). Assert result is List([2,4,6]). This test will FAIL because apply_lambda() currently uses EvalContext::simple() which drops the functions registry, so UserFunctionCall inside the lambda body returns Undef for every element, producing List([Undef, Undef, Undef]).",
-      "status": "done",
-      "commit": "a47f47d"
-    },
-    {
-      "id": "step-42",
-      "type": "impl",
-      "description": "Fix apply_lambda() context propagation. Change signature from pub fn apply_lambda(lambda: &Value, args: &[Value]) -> Value to pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value. Inside, replace EvalContext::simple(&eval_map) with ctx.with_scope(&eval_map) so functions and recursion_depth are preserved. Change eval_method_call signature from fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value to fn eval_method_call(obj: &Value, method: &str, args: &[Value], ctx: &EvalContext) -> Value. Update all apply_lambda call sites inside eval_method_call (.map, .filter, .fold, .all, .any, .generate) to pass ctx. Update the MethodCall arm in eval_expr (line 180) to pass ctx to eval_method_call. Existing tests using EvalContext::simple() will continue to work since simple() sets functions to &[] which is still valid.",
-      "status": "done",
-      "commit": "39f0f66"
+      "commit": "c4bfaf0"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add all 5 CompiledExprKind variants (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall) rather than reusing existing FunctionCall for methods",
-      "rationale": "MethodCall has a fundamentally different semantic: it dispatches on the receiver object's runtime type (List, Set, Map), not on a function name. Separate variants give clean pattern matching in the evaluator and accurate dependency tracking in collect_value_refs."
+      "decision": "Pass editorStore as a prop rather than using SolidJS context or a global singleton",
+      "rationale": "Makes testing trivial (fresh store per test), avoids global mutable state. Parent component (App.tsx, wired in task 93) creates the store. Context can be added later if prop drilling becomes deep."
     },
     {
-      "decision": "Implement method call evaluation directly in reify-expr rather than routing through reify-stdlib",
-      "rationale": "Collection methods need access to apply_lambda (for .map, .filter, .fold) and eval_expr (for sub-expression evaluation), which are in reify-expr. Only dimension-aware sum may delegate to stdlib for consistency with existing numeric stdlib functions."
+      "decision": "Add @codemirror/commands as a dependency",
+      "rationale": "Editor without defaultKeymap and history (undo/redo) would be non-functional. This is the minimum additional package needed beyond what is already in package.json."
     },
     {
-      "decision": "Test methods with arguments (.map, .filter, .fold, etc.) by constructing CompiledExpr trees directly rather than requiring end-to-end parsing",
-      "rationale": "The current tree-sitter grammar only has MemberAccess (obj.member) with no support for method calls with arguments (obj.method(args)). A grammar change to add method_call syntax is needed but out of scope for this task's stated modules. Property-style methods (.count, .sum, .keys, .values) work through MemberAccess already."
+      "decision": "Use EditorView.updateListener for doc changes and cursor tracking",
+      "rationale": "updateListener is the idiomatic CM6 way to react to state changes. Provides docChanged and selectionSet flags, handling both concerns in a single extension."
     },
     {
-      "decision": "Compile MemberAccess to MethodCall only for known collection method names, not all member accesses",
-      "rationale": "Port member access (port.member) must continue to compile to ValueRef as it does today. The compiler should check if the member is a known collection method name (count, sum, keys, values) and only then produce MethodCall when it's NOT a port access. Unknown members remain diagnostic errors. This preserves backward compatibility."
+      "decision": "Debounce updateSource at 300ms but call markDirty immediately",
+      "rationale": "Dirty indicator should respond instantly to user edits (UX feedback). Bridge calls to backend should be debounced to avoid flooding evaluation engine. 300ms matches task spec."
     },
     {
-      "decision": "Use Kleene 3-valued logic for .all and .any, consistent with existing And/Or evaluation",
-      "rationale": "The spec requires: .all with undef element returns false if any false, undef if any undef and none false. This matches the Kleene AND/OR already implemented for BinOp::And and BinOp::Or in reify-expr."
+      "decision": "No separate highlight wiring needed in Editor.tsx",
+      "rationale": "Grammar file has '@external propSource reifyHighlighting from ./highlight' causing generated parser to import and apply styleTags automatically. Only need syntaxHighlighting(defaultHighlightStyle) for CSS rendering of tags."
     },
     {
-      "decision": ".sum on empty list returns Int(0) rather than Undef",
-      "rationale": "Zero is the additive identity and the conventional sum of an empty sequence. This matches standard library behavior in most languages."
+      "decision": "CSS modules for component styling",
+      "rationale": "Matches existing App.module.css pattern. Scoped class names prevent conflicts. Vite handles natively."
     },
     {
-      "decision": "Thread EvalContext through apply_lambda and eval_method_call rather than storing functions in Value::Lambda",
-      "rationale": "Storing the function registry inside Value::Lambda would require cloning the entire &[CompiledFunction] slice at lambda creation time, adding allocation overhead and coupling Value to CompiledFunction ownership. Threading the context is cheaper (just a reference), follows the existing pattern used by eval_user_function_call (which uses ctx.with_scope()), and keeps Value as a pure data type. The with_scope() method already exists and correctly propagates functions and increments recursion_depth."
+      "decision": "FileTabs shows basename of file path",
+      "rationale": "Tab bars show short filenames for readability. Full path can be tooltip. For .ri files, basename is most useful."
+    },
+    {
+      "decision": "Replace entire document on file switch rather than per-file EditorState",
+      "rationale": "Simpler: one EditorView, swap doc via transaction. Per-file state preserves undo history but adds significant complexity. Can upgrade later."
+    },
+    {
+      "decision": "Fix bracket-matching test by importing NodeProp.closedBy from @lezer/common instead of using Symbol.for('closedBy')",
+      "rationale": "Symbol.for('closedBy') is not the correct API \u2014 NodeProp uses its own internal storage, not global Symbols. NodeProp.closedBy is the canonical way to access this prop. Removing the tautological || fallback ensures the test actually fails when @detectDelim is missing from the grammar."
+    },
+    {
+      "decision": "Fix auto-indent test using getIndentation() from @codemirror/language with a real EditorState",
+      "rationale": "getIndentation(state, pos) is the public CM6 API for querying indentation at a position. Creating an EditorState with the reifyLanguage extension and checking indent at the line after '{' verifies the full indentNodeProp \u2192 delimitedIndent pipeline end-to-end, without relying on implementation details."
     }
   ],
   "reuse": [
     {
-      "what": "apply_lambda() function",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for .map, .filter, .fold, .all, .any, .generate -- each applies a lambda to collection elements"
+      "what": "createEditorStore() factory and EditorState type",
+      "where": "gui/src/stores/editorStore.ts",
+      "how": "Both components receive store as prop. Tests create fresh instances. Store provides openFile, closeFile, setActiveFile, markDirty, markClean, setCursorPosition."
     },
     {
-      "what": "eval_add() function (addition logic with dimension awareness)",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for .sum implementation -- iterate and accumulate using the same add semantics that handle Int+Int, Real+Real, Scalar+Scalar with dimension checking"
+      "what": "reifyLanguage() LanguageSupport",
+      "where": "gui/src/editor/reifyLanguage.ts",
+      "how": "Called in Editor.tsx as CM6 extension. Includes Lezer parser with folding, indentation, closeBrackets config, and syntax highlighting via @external propSource."
     },
     {
-      "what": "Value::List/Set/Map variants and BTreeSet/BTreeMap",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Already implemented with PartialEq, Eq, Ord, content_hash, Display -- collection operations produce these existing Value variants"
+      "what": "bridge functions (updateSource, saveFile, openFile)",
+      "where": "gui/src/bridge.ts",
+      "how": "Editor.tsx imports updateSource for debounced doc changes, saveFile for Ctrl+S, openFile for loading file content."
     },
     {
-      "what": "CompiledExpr::literal() constructor",
-      "where": "crates/reify-types/src/expr.rs",
-      "how": "Reuse for constructing literal sub-expressions within collection compilation"
+      "what": "FileData type",
+      "where": "gui/src/types.ts",
+      "how": "Typing open file data ({ path, content }) in both components and tests."
     },
     {
-      "what": "Existing compiler pattern: compile_expr_guarded recursion",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "Collection literal compilation follows the same pattern -- recursively compile element expressions, then wrap in the collection CompiledExprKind variant"
+      "what": "CSS custom properties (--reify-*)",
+      "where": "gui/src/theme.ts",
+      "how": "CSS modules reference --reify-surface, --reify-border, --reify-text, --reify-accent, --reify-warning, --reify-editor-bg, --reify-font-mono for theming."
     },
     {
-      "what": "EvalContext and ValueMap",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for method call evaluation context -- same pattern as function calls, pass context through for sub-expression evaluation"
+      "what": "Test patterns: vi.mock, render/screen, createRoot",
+      "where": "gui/src/__tests__/bridge.test.ts, App.test.tsx, editorStore.test.ts",
+      "how": "Follow same patterns: vi.mock for Tauri APIs, render(() => <Component />) and screen.getByTestId() for component tests, vi.fn() for verifying calls."
     },
     {
-      "what": "Test patterns from lambda_eval_tests.rs",
-      "where": "crates/reify-expr/tests/lambda_eval_tests.rs",
-      "how": "Follow same pattern of constructing CompiledExpr trees and evaluating them with EvalContext::simple(). The lambda test helpers (make_value_lambda) can be adapted for collection tests."
+      "what": "vitest.config.ts (jsdom, solidPlugin, transformMode)",
+      "where": "gui/vitest.config.ts",
+      "how": "Existing config handles SolidJS JSX and jsdom. No changes needed for new tests."
     },
     {
-      "what": "EvalContext::with_scope() method",
-      "where": "crates/reify-expr/src/lib.rs:36",
-      "how": "Reuse for apply_lambda context propagation fix — with_scope creates a child context preserving functions and incrementing recursion_depth, exactly what apply_lambda needs instead of EvalContext::simple()"
+      "what": "NodeProp from @lezer/common",
+      "where": "gui/node_modules/@lezer/common (already installed as transitive dep of @lezer/lr)",
+      "how": "Import NodeProp in language.test.ts to access NodeProp.closedBy for the bracket-matching assertion fix."
+    },
+    {
+      "what": "getIndentation from @codemirror/language",
+      "where": "gui/node_modules/@codemirror/language (already a direct dependency)",
+      "how": "Import getIndentation in language.test.ts to query indent level at a position in an EditorState, verifying the indentNodeProp configuration end-to-end."
     }
-  ]
+  ],
+  "_session_id": "90-292da32c",
+  "_created_at": "2026-03-20T22:34:58.088760+00:00"
 }
