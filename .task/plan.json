@@ -159,8 +159,8 @@
       "id": "step-16",
       "type": "impl",
       "description": "Wire functions through Engine evaluation. Update reify-eval/src/lib.rs:\n1. In Engine::eval(), change all eval_expr calls from EvalContext::simple(&values) to EvalContext::new(&values, &module.functions).\n2. In Engine::eval_cached(), same change — module is available as parameter.\n3. In evaluate_let_bindings(), add a `functions: &[CompiledFunction]` parameter, pass to EvalContext::new.\n4. In Engine::check() and Engine::build(), pass module.functions to constraint input and eval contexts.\n5. In the concurrent eval path (reify-runtime/src/concurrent_eval.rs), add a functions field to ConcurrentEvalAdapter (populated from the module). Use it when constructing EvalContext.\n6. In reify-constraints callers, use input.functions from ConstraintInput.\n7. Run full test suite to verify everything works end-to-end.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "19fb353"
     }
   ],
   "design_decisions": [
