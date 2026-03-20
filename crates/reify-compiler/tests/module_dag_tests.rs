@@ -377,6 +377,55 @@ fn backward_compatible_single_module_no_imports() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+// ── Step 35: in_progress cleanup on error ────────────────────────
+
+#[test]
+fn dag_recovers_after_parse_error_in_dependency() {
+    let dir = test_dir("in_progress_cleanup");
+
+    // Module a imports b
+    fs::write(
+        dir.join("a.ri"),
+        "import b\nstructure A { param x: Scalar = 1mm }",
+    )
+    .unwrap();
+
+    // Module b has invalid syntax (parse error)
+    fs::write(dir.join("b.ri"), "this is not valid reify syntax !!!").unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+
+    // First attempt: should fail because b has parse errors
+    let result1 = dag.compile_module("a", &resolver);
+    assert!(
+        result1.is_err(),
+        "first attempt should fail due to parse error in b"
+    );
+
+    // Fix module b on disk
+    fs::write(
+        dir.join("b.ri"),
+        "structure B { param y: Scalar = 2mm }",
+    )
+    .unwrap();
+
+    // Second attempt on the SAME dag instance: should succeed
+    // This proves in_progress was cleaned up after the first failure
+    let result2 = dag.compile_module("a", &resolver);
+    assert!(
+        result2.is_ok(),
+        "second attempt should succeed after fixing b, got: {:?}",
+        result2.unwrap_err()
+    );
+
+    // Verify both modules are in the DAG
+    assert!(dag.modules.contains_key("a"), "should have module 'a'");
+    assert!(dag.modules.contains_key("b"), "should have module 'b'");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 // ── Step 33: CompiledImport preserves kind and is_pub ────────────
 
 #[test]
