@@ -359,6 +359,47 @@ structure def S : Safe {
     );
 }
 
+/// Step 23: Duplicate default injection — two distinct traits with same-named default param.
+/// Currently `collect_all_requirements` pushes defaults unconditionally, producing TWO
+/// ValueCellDecl entries for 'size'. Test asserts exactly one 'size' value cell exists.
+#[test]
+fn duplicate_default_injection_deduped() {
+    let source = r#"
+trait A {
+    param size : Length = 10mm
+}
+
+trait B {
+    param size : Length = 5mm
+}
+
+structure def X : A + B {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    // No error-severity diagnostics expected (same name + same type → dedup, not conflict).
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Exactly one 'size' value cell should exist (not two).
+    let size_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "size")
+        .collect();
+    assert_eq!(
+        size_cells.len(),
+        1,
+        "expected exactly 1 'size' value cell after dedup, got {}",
+        size_cells.len()
+    );
+}
+
 /// Step 21b: Trait with constraint and param — both injected correctly.
 #[test]
 fn trait_constraint_and_param_both_injected() {
