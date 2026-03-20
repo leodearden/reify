@@ -469,6 +469,75 @@ structure def Y : A + B {
     assert_eq!(size_cells.len(), 1, "expected exactly 1 'size' value cell");
 }
 
+/// Step 27a: Unlabeled constraint defaults from two traits — both injected.
+/// Since labeled constraints are not yet supported in the grammar (label is always None),
+/// unlabeled constraints from distinct traits are both injected (no dedup for unnamed).
+#[test]
+fn unlabeled_constraint_defaults_from_two_traits() {
+    let source = r#"
+trait A {
+    param x : Length
+    constraint x > 0mm
+}
+
+trait B {
+    param x : Length
+    constraint x > 0mm
+}
+
+structure def X : A + B {
+    param x : Length = 5mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Both unlabeled constraints are injected (unnamed defaults always push).
+    assert!(
+        template.constraints.len() >= 2,
+        "expected at least 2 constraints from two traits, got {}",
+        template.constraints.len()
+    );
+}
+
+/// Step 27b: Structure provides its own constraint — trait constraints still injected
+/// (since all are unlabeled and there's no label-based override).
+#[test]
+fn structure_constraint_with_trait_constraints() {
+    let source = r#"
+trait A {
+    param x : Length
+    constraint x > 0mm
+}
+
+structure def X : A {
+    param x : Length = 5mm
+    constraint x > 1mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Structure's constraint + trait's unlabeled constraint = at least 2.
+    assert!(
+        template.constraints.len() >= 2,
+        "expected at least 2 constraints (structure + trait), got {}",
+        template.constraints.len()
+    );
+}
+
 /// Step 21b: Trait with constraint and param — both injected correctly.
 #[test]
 fn trait_constraint_and_param_both_injected() {
