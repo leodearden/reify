@@ -235,6 +235,373 @@ fn solve_angle_constraint() {
                 );
             }
         }
-        other => panic!("expected Solved, got {:?}", other),
+        other => panic!("expected Solved for angle, got {:?}", other),
+    }
+}
+
+/// Solve a parallel constraint between two lines.
+///
+/// line1: fixed from (0,0,0) to (0.01, 0.01, 0) — 45 degree diagonal
+/// line2: from fixed (0.02, 0, 0) to auto (x2, y2, 0)
+/// Constraint: parallel(line1, line2)
+#[test]
+fn solve_parallel_constraint() {
+    let solver = SolveSpaceSolver;
+
+    let x2_id = vcid("Line2", "ex");
+    let y2_id = vcid("Line2", "ey");
+
+    let zero = literal(Value::Scalar {
+        si_value: 0.0,
+        dimension: DimensionVector::LENGTH,
+    });
+    let l = |v: f64| {
+        literal(Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        })
+    };
+
+    // line1: (0,0,0) → (0.01, 0.01, 0)
+    let origin = geo_fn(
+        "point3d",
+        vec![zero.clone(), zero.clone(), zero.clone()],
+        Type::dimensionless_scalar(),
+    );
+    let pt1_end = geo_fn(
+        "point3d",
+        vec![l(0.01), l(0.01), zero.clone()],
+        Type::dimensionless_scalar(),
+    );
+
+    // line2: (0.02, 0, 0) → (x2, y2, 0) — auto params
+    let pt2_start = geo_fn(
+        "point3d",
+        vec![l(0.02), zero.clone(), zero.clone()],
+        Type::dimensionless_scalar(),
+    );
+    let pt2_end = geo_fn(
+        "point3d",
+        vec![
+            value_ref_typed("Line2", "ex", Type::length()),
+            value_ref_typed("Line2", "ey", Type::length()),
+            zero.clone(),
+        ],
+        Type::dimensionless_scalar(),
+    );
+
+    let line1 = geo_fn(
+        "line_segment",
+        vec![origin, pt1_end],
+        Type::dimensionless_scalar(),
+    );
+    let line2 = geo_fn(
+        "line_segment",
+        vec![pt2_start, pt2_end],
+        Type::dimensionless_scalar(),
+    );
+
+    // parallel(line1, line2) — boolean constraint (top-level function call)
+    let constraint_expr = geo_fn("parallel", vec![line1, line2], Type::Bool);
+
+    let mut current = ValueMap::new();
+    current.insert(
+        x2_id.clone(),
+        Value::Scalar {
+            si_value: 0.03,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    current.insert(
+        y2_id.clone(),
+        Value::Scalar {
+            si_value: 0.005,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x2_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
+            AutoParam {
+                id: y2_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
+        ],
+        constraints: vec![(cnid("Parallel", 0), constraint_expr)],
+        current_values: current,
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let x2 = values.get(&x2_id).unwrap().as_f64().unwrap();
+            let y2 = values.get(&y2_id).unwrap().as_f64().unwrap();
+
+            // line1 direction: (0.01, 0.01, 0) → slope = 1
+            // line2 direction: (x2 - 0.02, y2 - 0, 0)
+            // Parallel means cross product ≈ 0
+            let dx2 = x2 - 0.02;
+            let dy2 = y2;
+            let cross = 0.01 * dy2 - 0.01 * dx2;
+            assert!(
+                cross.abs() < 1e-6,
+                "lines should be parallel: cross product = {} (x2={}, y2={})",
+                cross,
+                x2,
+                y2,
+            );
+        }
+        other => panic!("expected Solved for parallel, got {:?}", other),
+    }
+}
+
+/// Solve a coincident constraint between two points.
+#[test]
+fn solve_coincident_constraint() {
+    let solver = SolveSpaceSolver;
+
+    let x1_id = vcid("P1", "x");
+    let y1_id = vcid("P1", "y");
+    let x2_id = vcid("P2", "x");
+    let y2_id = vcid("P2", "y");
+
+    let zero = literal(Value::Scalar {
+        si_value: 0.0,
+        dimension: DimensionVector::LENGTH,
+    });
+
+    let pt1 = geo_fn(
+        "point3d",
+        vec![
+            value_ref_typed("P1", "x", Type::length()),
+            value_ref_typed("P1", "y", Type::length()),
+            zero.clone(),
+        ],
+        Type::dimensionless_scalar(),
+    );
+    let pt2 = geo_fn(
+        "point3d",
+        vec![
+            value_ref_typed("P2", "x", Type::length()),
+            value_ref_typed("P2", "y", Type::length()),
+            zero,
+        ],
+        Type::dimensionless_scalar(),
+    );
+
+    let constraint_expr = geo_fn("coincident", vec![pt1, pt2], Type::Bool);
+
+    let mut current = ValueMap::new();
+    current.insert(x1_id.clone(), Value::Scalar { si_value: 0.01, dimension: DimensionVector::LENGTH });
+    current.insert(y1_id.clone(), Value::Scalar { si_value: 0.02, dimension: DimensionVector::LENGTH });
+    current.insert(x2_id.clone(), Value::Scalar { si_value: 0.03, dimension: DimensionVector::LENGTH });
+    current.insert(y2_id.clone(), Value::Scalar { si_value: 0.04, dimension: DimensionVector::LENGTH });
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam { id: x1_id.clone(), param_type: Type::length(), bounds: None },
+            AutoParam { id: y1_id.clone(), param_type: Type::length(), bounds: None },
+            AutoParam { id: x2_id.clone(), param_type: Type::length(), bounds: None },
+            AutoParam { id: y2_id.clone(), param_type: Type::length(), bounds: None },
+        ],
+        constraints: vec![(cnid("Coin", 0), constraint_expr)],
+        current_values: current,
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let x1 = values.get(&x1_id).unwrap().as_f64().unwrap();
+            let y1 = values.get(&y1_id).unwrap().as_f64().unwrap();
+            let x2 = values.get(&x2_id).unwrap().as_f64().unwrap();
+            let y2 = values.get(&y2_id).unwrap().as_f64().unwrap();
+            assert!(
+                (x1 - x2).abs() < 1e-6 && (y1 - y2).abs() < 1e-6,
+                "points should be coincident: ({}, {}) vs ({}, {})",
+                x1, y1, x2, y2,
+            );
+        }
+        other => panic!("expected Solved for coincident, got {:?}", other),
+    }
+}
+
+/// Overconstrained system returns Infeasible.
+#[test]
+fn solve_overconstrained_returns_infeasible() {
+    let solver = SolveSpaceSolver;
+
+    let x_id = vcid("Point", "x");
+    let y_id = vcid("Point", "y");
+
+    let zero = literal(Value::Scalar {
+        si_value: 0.0,
+        dimension: DimensionVector::LENGTH,
+    });
+
+    let pt = geo_fn(
+        "point3d",
+        vec![
+            value_ref_typed("Point", "x", Type::length()),
+            value_ref_typed("Point", "y", Type::length()),
+            zero.clone(),
+        ],
+        Type::dimensionless_scalar(),
+    );
+    let origin = geo_fn(
+        "point3d",
+        vec![zero.clone(), zero.clone(), zero],
+        Type::dimensionless_scalar(),
+    );
+
+    // distance(pt, origin) == 10mm
+    let dist1 = geo_fn("pt_pt_distance", vec![pt.clone(), origin.clone()], Type::length());
+    let c1 = eq(dist1, literal(mm(10.0)));
+
+    // distance(pt, origin) == 20mm — contradicts c1
+    let dist2 = geo_fn("pt_pt_distance", vec![pt, origin], Type::length());
+    let c2 = eq(dist2, literal(mm(20.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: None },
+            AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: None },
+        ],
+        constraints: vec![
+            (cnid("Over", 0), c1),
+            (cnid("Over", 1), c2),
+        ],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(!diagnostics.is_empty(), "should have diagnostics");
+        }
+        SolveResult::NoProgress { .. } => {
+            // Also acceptable — solver couldn't converge
+        }
+        SolveResult::Solved { .. } => {
+            panic!("overconstrained system should not be Solved");
+        }
+    }
+}
+
+/// Underconstrained system still solves (finds any valid position).
+#[test]
+fn solve_underconstrained_solves_with_dof() {
+    let solver = SolveSpaceSolver;
+
+    let x_id = vcid("Point", "x");
+    let y_id = vcid("Point", "y");
+    let z_id = vcid("Point", "z");
+
+    let zero = literal(Value::Scalar {
+        si_value: 0.0,
+        dimension: DimensionVector::LENGTH,
+    });
+
+    let pt = geo_fn(
+        "point3d",
+        vec![
+            value_ref_typed("Point", "x", Type::length()),
+            value_ref_typed("Point", "y", Type::length()),
+            value_ref_typed("Point", "z", Type::length()),
+        ],
+        Type::dimensionless_scalar(),
+    );
+    let origin = geo_fn(
+        "point3d",
+        vec![zero.clone(), zero.clone(), zero],
+        Type::dimensionless_scalar(),
+    );
+
+    let dist = geo_fn("pt_pt_distance", vec![pt, origin], Type::length());
+    let constraint_expr = eq(dist, literal(mm(15.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: None },
+            AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: None },
+            AutoParam { id: z_id.clone(), param_type: Type::length(), bounds: None },
+        ],
+        constraints: vec![(cnid("Under", 0), constraint_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let x = values.get(&x_id).unwrap().as_f64().unwrap();
+            let y = values.get(&y_id).unwrap().as_f64().unwrap();
+            let z = values.get(&z_id).unwrap().as_f64().unwrap();
+            let dist = (x * x + y * y + z * z).sqrt();
+            assert!(
+                (dist - 0.015).abs() < 1e-6,
+                "distance should be ~15mm (0.015m), got {} m",
+                dist,
+            );
+        }
+        other => panic!("expected Solved for underconstrained, got {:?}", other),
+    }
+}
+
+/// Unrecognized geometric pattern returns NoProgress, not a panic.
+#[test]
+fn solve_unrecognized_pattern_falls_through() {
+    let solver = SolveSpaceSolver;
+
+    let x_id = vcid("Point", "x");
+
+    // A complex nested expression that doesn't match any known pattern
+    let unknown_fn = CompiledExpr {
+        kind: CompiledExprKind::FunctionCall {
+            function: ResolvedFunction {
+                name: "some_exotic_constraint".to_string(),
+                qualified_name: "std::geo::some_exotic_constraint".to_string(),
+            },
+            args: vec![value_ref_typed("Point", "x", Type::length())],
+        },
+        result_type: Type::dimensionless_scalar(),
+        content_hash: ContentHash::of(b"exotic"),
+    };
+    let constraint_expr = gt(unknown_fn, literal(Value::Real(5.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id,
+            param_type: Type::length(),
+            bounds: None,
+        }],
+        constraints: vec![(cnid("Unknown", 0), constraint_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::NoProgress { reason } => {
+            assert!(
+                reason.contains("unrecognized"),
+                "reason should mention unrecognized, got: {}",
+                reason,
+            );
+        }
+        other => panic!("expected NoProgress for unrecognized pattern, got {:?}", other),
     }
 }

@@ -5,6 +5,7 @@
 //! (stateless), making it trivially Send + Sync.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use reify_types::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, Diagnostic,
@@ -18,6 +19,14 @@ use crate::slvs_sys::{
     SLVS_RESULT_INCONSISTENT, SLVS_RESULT_OKAY, SLVS_RESULT_TOO_MANY_UNKNOWNS,
 };
 
+/// Global mutex to serialize access to the libslvs solver.
+///
+/// SolveSpace's library code uses global mutable state internally
+/// (e.g. the `SS` static sketch object), so concurrent calls to
+/// `Slvs_Solve` cause data races and crashes. This mutex ensures
+/// only one solve runs at a time.
+static SLVS_LOCK: Mutex<()> = Mutex::new(());
+
 /// Geometric constraint solver backed by SolveSpace's libslvs.
 ///
 /// Solves geometric constraints (point distances, angles, parallelism,
@@ -25,7 +34,9 @@ use crate::slvs_sys::{
 /// entities and constraints, solving, then reading back results.
 ///
 /// A fresh `Slvs_System` is created per `solve()` call — no internal
-/// mutable state — so this type is trivially `Send + Sync`.
+/// mutable state — so this type is `Send + Sync`. Thread safety is
+/// ensured by a global mutex around `Slvs_Solve` calls, since libslvs
+/// uses internal global state.
 pub struct SolveSpaceSolver;
 
 // ---------------------------------------------------------------------------
@@ -408,6 +419,8 @@ struct SystemBuilder {
     mapping: ParamMapping,
     /// Track which entities are already created for points.
     point_entities: HashMap<PointKey, Slvs_hEntity>,
+    /// Lazily-created XY workplane entity handle for 2D constraints.
+    workplane: Option<Slvs_hEntity>,
 }
 
 const FIXED_GROUP: Slvs_hGroup = 1;
@@ -429,6 +442,7 @@ impl SystemBuilder {
             constraints: Vec::new(),
             mapping: ParamMapping::new(),
             point_entities: HashMap::new(),
+            workplane: None,
         }
     }
 
@@ -477,7 +491,12 @@ impl SystemBuilder {
     }
 
     /// Add a param for an auto coordinate. If the cell_id is Some and is an auto param,
-    /// map it to SOLVE_GROUP; otherwise add a fixed param in FIXED_GROUP.
+    /// map it to SOLVE_GROUP; otherwise add a param in SOLVE_GROUP with its fixed value.
+    ///
+    /// All params within Auto points go into SOLVE_GROUP to avoid mixed-group
+    /// Jacobian rank issues in libslvs. "Fixed" coordinates (no cell_id or
+    /// non-auto cell_id) are initialized to their value but not mapped, so
+    /// their solved values are ignored in the output.
     fn add_auto_coord(
         &mut self,
         cell_id: &Option<ValueCellId>,
@@ -500,18 +519,19 @@ impl SystemBuilder {
                 self.mapping.insert(id.clone(), h);
                 return h;
             }
-            // Not an auto param — treat as fixed from current values
+            // Not an auto param — put in SOLVE_GROUP with current value
+            // (avoids mixed-group Jacobian issues, but not mapped so value is ignored)
             let val = current_values
                 .get(id)
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0);
             let h = self.alloc.param();
-            self.params.push(Slvs_Param::new(h, FIXED_GROUP, val));
+            self.params.push(Slvs_Param::new(h, SOLVE_GROUP, val));
             h
         } else {
-            // No cell_id — fixed at 0
+            // No cell_id — put in SOLVE_GROUP at 0 (not mapped, value ignored)
             let h = self.alloc.param();
-            self.params.push(Slvs_Param::new(h, FIXED_GROUP, 0.0));
+            self.params.push(Slvs_Param::new(h, SOLVE_GROUP, 0.0));
             h
         }
     }
@@ -524,10 +544,69 @@ impl SystemBuilder {
         eh
     }
 
-    /// Add a constraint.
+    /// Get or create the default XY workplane.
+    ///
+    /// Some constraints (parallel, perpendicular, angle) require a workplane
+    /// in SolveSpace. We create an XY workplane at the origin in FIXED_GROUP.
+    fn get_workplane(&mut self) -> Slvs_hEntity {
+        if let Some(wp) = self.workplane {
+            return wp;
+        }
+
+        // Origin point for workplane (at 0,0,0)
+        let ox = self.alloc.param();
+        let oy = self.alloc.param();
+        let oz = self.alloc.param();
+        self.params.push(Slvs_Param::new(ox, FIXED_GROUP, 0.0));
+        self.params.push(Slvs_Param::new(oy, FIXED_GROUP, 0.0));
+        self.params.push(Slvs_Param::new(oz, FIXED_GROUP, 0.0));
+        let origin_e = self.alloc.entity();
+        self.entities
+            .push(Slvs_Entity::point_3d(origin_e, FIXED_GROUP, ox, oy, oz));
+
+        // Normal for XY plane: quaternion (1, 0, 0, 0) = identity rotation
+        let nw = self.alloc.param();
+        let nx = self.alloc.param();
+        let ny = self.alloc.param();
+        let nz = self.alloc.param();
+        self.params.push(Slvs_Param::new(nw, FIXED_GROUP, 1.0));
+        self.params.push(Slvs_Param::new(nx, FIXED_GROUP, 0.0));
+        self.params.push(Slvs_Param::new(ny, FIXED_GROUP, 0.0));
+        self.params.push(Slvs_Param::new(nz, FIXED_GROUP, 0.0));
+        let normal_e = self.alloc.entity();
+        let mut normal_entity = Slvs_Entity::zeroed_with(normal_e, FIXED_GROUP, slvs_sys::SLVS_E_NORMAL_IN_3D);
+        normal_entity.param = [nw, nx, ny, nz];
+        self.entities.push(normal_entity);
+
+        // Workplane entity
+        let wp_e = self.alloc.entity();
+        let mut wp_entity = Slvs_Entity::zeroed_with(wp_e, FIXED_GROUP, slvs_sys::SLVS_E_WORKPLANE);
+        wp_entity.point[0] = origin_e;
+        wp_entity.normal = normal_e;
+        self.entities.push(wp_entity);
+
+        self.workplane = Some(wp_e);
+        wp_e
+    }
+
+    /// Add a constraint, optionally on a workplane.
     fn add_constraint(
         &mut self,
         type_: std::os::raw::c_int,
+        val_a: f64,
+        pt_a: Slvs_hEntity,
+        pt_b: Slvs_hEntity,
+        entity_a: Slvs_hEntity,
+        entity_b: Slvs_hEntity,
+    ) {
+        self.add_constraint_wrkpl(type_, SLVS_FREE_IN_3D, val_a, pt_a, pt_b, entity_a, entity_b);
+    }
+
+    /// Add a constraint on a specific workplane.
+    fn add_constraint_wrkpl(
+        &mut self,
+        type_: std::os::raw::c_int,
+        wrkpl: Slvs_hEntity,
         val_a: f64,
         pt_a: Slvs_hEntity,
         pt_b: Slvs_hEntity,
@@ -539,7 +618,7 @@ impl SystemBuilder {
             ch,
             SOLVE_GROUP,
             type_,
-            SLVS_FREE_IN_3D,
+            wrkpl,
             val_a,
             pt_a,
             pt_b,
@@ -575,9 +654,16 @@ impl SystemBuilder {
             result: 0,
         };
 
+        // Lock the global mutex — libslvs uses internal global state and
+        // is not safe to call concurrently.
+        let _guard = SLVS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         unsafe {
             slvs_sys::Slvs_Solve(&mut sys, SOLVE_GROUP);
         }
+
+        // Drop guard after solve completes
+        drop(_guard);
 
         match sys.result {
             SLVS_RESULT_OKAY => SlvsSolveResult::Ok {
@@ -747,7 +833,9 @@ fn add_pattern_to_builder(
             let lb_end = builder.add_point(&line_b.end, auto_params, current_values);
             let line_a_e = builder.add_line_segment(la_start, la_end);
             let line_b_e = builder.add_line_segment(lb_start, lb_end);
-            builder.add_constraint(SLVS_C_PARALLEL, 0.0, 0, 0, line_a_e, line_b_e);
+            // Parallel/perpendicular require a workplane in SolveSpace
+            let wp = builder.get_workplane();
+            builder.add_constraint_wrkpl(SLVS_C_PARALLEL, wp, 0.0, 0, 0, line_a_e, line_b_e);
         }
         GeometricPattern::Perpendicular { line_a, line_b } => {
             let la_start = builder.add_point(&line_a.start, auto_params, current_values);
@@ -756,7 +844,8 @@ fn add_pattern_to_builder(
             let lb_end = builder.add_point(&line_b.end, auto_params, current_values);
             let line_a_e = builder.add_line_segment(la_start, la_end);
             let line_b_e = builder.add_line_segment(lb_start, lb_end);
-            builder.add_constraint(SLVS_C_PERPENDICULAR, 0.0, 0, 0, line_a_e, line_b_e);
+            let wp = builder.get_workplane();
+            builder.add_constraint_wrkpl(SLVS_C_PERPENDICULAR, wp, 0.0, 0, 0, line_a_e, line_b_e);
         }
         GeometricPattern::Coincident { pt_a, pt_b } => {
             let ea = builder.add_point(pt_a, auto_params, current_values);
@@ -773,3 +862,4 @@ fn dimension_of(ty: &Type) -> DimensionVector {
         _ => DimensionVector::DIMENSIONLESS,
     }
 }
+

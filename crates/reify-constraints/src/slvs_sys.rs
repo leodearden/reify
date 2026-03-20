@@ -165,7 +165,7 @@ impl Slvs_Param {
 }
 
 impl Slvs_Entity {
-    fn zeroed(h: Slvs_hEntity, group: Slvs_hGroup, type_: c_int) -> Self {
+    pub fn zeroed_with(h: Slvs_hEntity, group: Slvs_hGroup, type_: c_int) -> Self {
         Self {
             h,
             group,
@@ -185,7 +185,7 @@ impl Slvs_Entity {
         py: Slvs_hParam,
         pz: Slvs_hParam,
     ) -> Self {
-        let mut e = Self::zeroed(h, group, SLVS_E_POINT_IN_3D);
+        let mut e = Self::zeroed_with(h, group, SLVS_E_POINT_IN_3D);
         e.param = [px, py, pz, 0];
         e
     }
@@ -196,7 +196,7 @@ impl Slvs_Entity {
         pt_a: Slvs_hEntity,
         pt_b: Slvs_hEntity,
     ) -> Self {
-        let mut e = Self::zeroed(h, group, SLVS_E_LINE_SEGMENT);
+        let mut e = Self::zeroed_with(h, group, SLVS_E_LINE_SEGMENT);
         e.point = [pt_a, pt_b, 0, 0];
         e
     }
