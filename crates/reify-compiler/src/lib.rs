@@ -495,6 +495,7 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 
 /// Name scope: maps identifier names to (ValueCellId, Type, Option<guard_cell_id>)
 /// within a structure. The guard cell ID tracks which guard (if any) protects this name.
+#[derive(Clone)]
 struct CompilationScope {
     entity_name: String,
     names: HashMap<String, (ValueCellId, Type, Option<ValueCellId>)>,
@@ -969,9 +970,52 @@ fn compile_expr_guarded(
                 content_hash,
             }
         }
-        reify_syntax::ExprKind::Lambda { .. } => {
-            // Lambda compilation will be implemented in step-8.
-            CompiledExpr::literal(Value::Undef, Type::Real)
+        reify_syntax::ExprKind::Lambda { params, body } => {
+            // Create a nested scope with lambda params registered
+            let mut lambda_scope = scope.clone();
+
+            let mut compiled_params: Vec<(String, Option<Type>)> = Vec::new();
+            let mut param_types: Vec<Type> = Vec::new();
+
+            for param in params {
+                let ty = if let Some(type_expr) = &param.type_expr {
+                    match resolve_type_name(&type_expr.name) {
+                        Some(t) => t,
+                        None => {
+                            diagnostics.push(Diagnostic::error(format!(
+                                "unresolved type in lambda param '{}': {}",
+                                param.name, type_expr.name
+                            )));
+                            Type::Real // fallback
+                        }
+                    }
+                } else {
+                    Type::Real // default untyped params to Real
+                };
+
+                // Register param in lambda scope with synthetic entity name
+                let lambda_entity = format!("$lambda.{}", scope.entity_name);
+                let param_id = ValueCellId::new(&lambda_entity, &param.name);
+                lambda_scope
+                    .names
+                    .insert(param.name.clone(), (param_id, ty.clone(), None));
+
+                param_types.push(ty.clone());
+                compiled_params.push((param.name.clone(), param.type_expr.as_ref().map(|_| ty)));
+            }
+
+            // Compile body in the nested scope
+            let compiled_body =
+                compile_expr_guarded(body, &lambda_scope, enum_defs, functions, diagnostics, current_guard);
+
+            let return_type = compiled_body.result_type.clone();
+            let result_type = Type::Function {
+                params: param_types,
+                return_type: Box::new(return_type),
+            };
+
+            // Captures will be filled in step-10; for now, empty
+            CompiledExpr::lambda(compiled_params, compiled_body, vec![], result_type)
         }
     }
 }
