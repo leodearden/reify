@@ -1965,12 +1965,31 @@ fn compile_entity(
             ))
         });
 
+        // Connection identity hashes: left_port, operator, right_port, port_mappings, connector_sub
+        let connection_hashes = connections.iter().flat_map(|c| {
+            std::iter::once(ContentHash::of_str(&c.left_port))
+                .chain(std::iter::once(ContentHash::of_str(&format!("{:?}", c.operator))))
+                .chain(std::iter::once(ContentHash::of_str(&c.right_port)))
+                .chain(
+                    c.port_mappings
+                        .iter()
+                        .map(|(l, r)| ContentHash::of_str(&format!("{}_{}", l, r))),
+                )
+                .chain(std::iter::once(
+                    c.connector_sub
+                        .as_ref()
+                        .map(|s| ContentHash::of_str(s))
+                        .unwrap_or(ContentHash(0)),
+                ))
+        });
+
         let all_hashes = std::iter::once(name_hash)
             .chain(vc_hashes)
             .chain(constraint_hashes)
             .chain(sub_hashes)
             .chain(guard_hashes)
-            .chain(port_hashes);
+            .chain(port_hashes)
+            .chain(connection_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
