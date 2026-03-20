@@ -855,9 +855,93 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    fn lower_port(&mut self, _node: tree_sitter::Node) -> Option<PortDecl> {
-        // Stub: will be implemented in step-2.
-        None
+    fn lower_port(&mut self, node: tree_sitter::Node) -> Option<PortDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let type_node = node.child_by_field_name("type")?;
+        let type_name = self.node_text(type_node).to_string();
+
+        // Optional inline direction
+        let direction = node.child_by_field_name("direction").map(|d| {
+            match self.node_text(d) {
+                "in" => PortDirection::In,
+                "out" => PortDirection::Out,
+                "bidi" => PortDirection::Bidi,
+                other => {
+                    self.errors.push(ParseError {
+                        message: format!("unknown port direction: {}", other),
+                        span: self.span(d),
+                    });
+                    PortDirection::Bidi
+                }
+            }
+        });
+
+        // Optional body: port_body node contains members, direction setting, frame setting
+        let (members, body_direction, frame_expr) = if let Some(body_node) = node.child_by_field_name("body") {
+            self.lower_port_body(body_node)
+        } else {
+            (Vec::new(), None, None)
+        };
+
+        // Body direction overrides inline direction
+        let final_direction = body_direction.or(direction);
+
+        Some(PortDecl {
+            name,
+            direction: final_direction,
+            type_name,
+            members,
+            frame_expr,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_port_body(&mut self, node: tree_sitter::Node) -> (Vec<MemberDecl>, Option<PortDirection>, Option<Expr>) {
+        let mut members = Vec::new();
+        let mut body_direction = None;
+        let mut frame_expr = None;
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "param_declaration" => {
+                    if let Some(p) = self.lower_param(child) {
+                        members.push(MemberDecl::Param(p));
+                    }
+                }
+                "let_declaration" => {
+                    if let Some(l) = self.lower_let(child) {
+                        members.push(MemberDecl::Let(l));
+                    }
+                }
+                "constraint_declaration" => {
+                    if let Some(c) = self.lower_constraint(child) {
+                        members.push(MemberDecl::Constraint(c));
+                    }
+                }
+                "port_direction_setting" => {
+                    if let Some(value_node) = child.child_by_field_name("value") {
+                        body_direction = Some(match self.node_text(value_node) {
+                            "in" => PortDirection::In,
+                            "out" => PortDirection::Out,
+                            "bidi" => PortDirection::Bidi,
+                            _ => PortDirection::Bidi,
+                        });
+                    }
+                }
+                "port_frame_setting" => {
+                    if let Some(value_node) = child.child_by_field_name("value") {
+                        frame_expr = self.lower_expr(value_node);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        (members, body_direction, frame_expr)
     }
 
     fn lower_named_arg(&self, node: tree_sitter::Node) -> Option<(String, Expr)> {
