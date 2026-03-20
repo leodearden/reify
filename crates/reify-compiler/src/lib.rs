@@ -906,48 +906,46 @@ fn compile_expr_guarded(
                 }
 
             // Check if this is an indexed collection member access: collection[i].member
-            if let reify_syntax::ExprKind::IndexAccess { object: idx_obj, index } = &object.kind {
-                if let reify_syntax::ExprKind::Ident(name) = &idx_obj.kind {
-                    if scope.collection_sub_names.contains(name.as_str()) {
-                        // For literal integer index, resolve directly to a scoped ValueRef
-                        if let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind {
-                            let i = *n as i64;
-                            let scoped_entity = format!("{}.{}[{}]", scope.entity_name, name, i);
-                            let scoped_id = ValueCellId::new(&scoped_entity, member);
-                            let content_hash = ContentHash::of_str(&format!("ref:{}.{}[{}].{}", scope.entity_name, name, i, member));
-                            return CompiledExpr {
-                                kind: CompiledExprKind::ValueRef(scoped_id),
-                                result_type: Type::Real,
-                                content_hash,
-                            };
-                        }
-                        // For non-literal index, compile as IndexAccess + MemberAccess chain
-                        let collection_ref = CompiledExpr::literal(
-                            Value::Undef,
-                            Type::List(Box::new(Type::StructureRef(name.clone()))),
-                        );
-                        let compiled_idx = compile_expr_guarded(index, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
-                        let idx_access = CompiledExpr::index_access(collection_ref, compiled_idx, Type::StructureRef(name.clone()));
-                        return CompiledExpr::method_call(idx_access, member.clone(), vec![], Type::Real);
-                    }
+            if let reify_syntax::ExprKind::IndexAccess { object: idx_obj, index } = &object.kind
+                && let reify_syntax::ExprKind::Ident(name) = &idx_obj.kind
+                && scope.collection_sub_names.contains(name.as_str())
+            {
+                // For literal integer index, resolve directly to a scoped ValueRef
+                if let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind {
+                    let i = *n as i64;
+                    let scoped_entity = format!("{}.{}[{}]", scope.entity_name, name, i);
+                    let scoped_id = ValueCellId::new(&scoped_entity, member);
+                    let content_hash = ContentHash::of_str(&format!("ref:{}.{}[{}].{}", scope.entity_name, name, i, member));
+                    return CompiledExpr {
+                        kind: CompiledExprKind::ValueRef(scoped_id),
+                        result_type: Type::Real,
+                        content_hash,
+                    };
                 }
+                // For non-literal index, compile as IndexAccess + MemberAccess chain
+                let collection_ref = CompiledExpr::literal(
+                    Value::Undef,
+                    Type::List(Box::new(Type::StructureRef(name.clone()))),
+                );
+                let compiled_idx = compile_expr_guarded(index, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+                let idx_access = CompiledExpr::index_access(collection_ref, compiled_idx, Type::StructureRef(name.clone()));
+                return CompiledExpr::method_call(idx_access, member.clone(), vec![], Type::Real);
             }
 
             // Check if this is a collection sub member access: collection.count
-            if let reify_syntax::ExprKind::Ident(name) = &object.kind {
-                if scope.collection_sub_names.contains(name.as_str()) {
-                    if member == "count" {
-                        // Resolve to the synthetic __count_ cell
-                        let count_member = format!("__count_{}", name);
-                        let count_id = ValueCellId::new(&scope.entity_name, &count_member);
-                        let content_hash = ContentHash::of_str(&format!("ref:{}.{}", scope.entity_name, count_member));
-                        return CompiledExpr {
-                            kind: CompiledExprKind::ValueRef(count_id),
-                            result_type: Type::Int,
-                            content_hash,
-                        };
-                    }
-                }
+            if let reify_syntax::ExprKind::Ident(name) = &object.kind
+                && scope.collection_sub_names.contains(name.as_str())
+                && member == "count"
+            {
+                // Resolve to the synthetic __count_ cell
+                let count_member = format!("__count_{}", name);
+                let count_id = ValueCellId::new(&scope.entity_name, &count_member);
+                let content_hash = ContentHash::of_str(&format!("ref:{}.{}", scope.entity_name, count_member));
+                return CompiledExpr {
+                    kind: CompiledExprKind::ValueRef(count_id),
+                    result_type: Type::Int,
+                    content_hash,
+                };
             }
 
             // For non-port member access, check if it's a known collection method
@@ -4258,14 +4256,12 @@ fn extract_collection_count(
     expr: &reify_syntax::Expr,
     collection_sub_names: &HashSet<String>,
 ) -> Option<String> {
-    if let reify_syntax::ExprKind::MemberAccess { object, member } = &expr.kind {
-        if member == "count" {
-            if let reify_syntax::ExprKind::Ident(name) = &object.kind {
-                if collection_sub_names.contains(name.as_str()) {
-                    return Some(name.clone());
-                }
-            }
-        }
+    if let reify_syntax::ExprKind::MemberAccess { object, member } = &expr.kind
+        && member == "count"
+        && let reify_syntax::ExprKind::Ident(name) = &object.kind
+        && collection_sub_names.contains(name.as_str())
+    {
+        return Some(name.clone());
     }
     None
 }
