@@ -23,6 +23,7 @@ pub enum Declaration {
 #[derive(Debug, Clone)]
 pub struct StructureDef {
     pub name: String,
+    pub is_pub: bool,
     pub members: Vec<MemberDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
@@ -72,6 +73,7 @@ pub struct ParamDecl {
 #[derive(Debug, Clone)]
 pub struct LetDecl {
     pub name: String,
+    pub is_pub: bool,
     pub type_expr: Option<TypeExpr>,
     pub value: Expr,
     pub where_clause: Option<WhereClause>,
@@ -129,6 +131,7 @@ pub struct ImportDecl {
 #[derive(Debug, Clone)]
 pub struct EnumDecl {
     pub name: String,
+    pub is_pub: bool,
     pub variants: Vec<String>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,

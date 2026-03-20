@@ -143,6 +143,7 @@ use reify_types::{ConstraintNodeId, RealizationNodeId};
 /// Builder for `TopologyTemplate`.
 pub struct TopologyTemplateBuilder {
     name: String,
+    visibility: reify_compiler::Visibility,
     value_cells: Vec<ValueCellDecl>,
     constraints: Vec<CompiledConstraint>,
     realizations: Vec<RealizationDecl>,
@@ -154,12 +155,18 @@ impl TopologyTemplateBuilder {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            visibility: reify_compiler::Visibility::Private,
             value_cells: Vec::new(),
             constraints: Vec::new(),
             realizations: Vec::new(),
             sub_components: Vec::new(),
             objective: None,
         }
+    }
+
+    pub fn visibility(mut self, vis: reify_compiler::Visibility) -> Self {
+        self.visibility = vis;
+        self
     }
 
     pub fn param(
@@ -172,6 +179,7 @@ impl TopologyTemplateBuilder {
         self.value_cells.push(ValueCellDecl {
             id: ValueCellId::new(entity, member),
             kind: ValueCellKind::Param,
+            visibility: reify_compiler::Visibility::Public,
             cell_type,
             default_expr: default,
             span: SourceSpan::new(0, 0),
@@ -188,6 +196,7 @@ impl TopologyTemplateBuilder {
         self.value_cells.push(ValueCellDecl {
             id: ValueCellId::new(entity, member),
             kind: ValueCellKind::Auto,
+            visibility: reify_compiler::Visibility::Public,
             cell_type,
             default_expr: None,
             span: SourceSpan::new(0, 0),
@@ -205,6 +214,7 @@ impl TopologyTemplateBuilder {
         self.value_cells.push(ValueCellDecl {
             id: ValueCellId::new(entity, member),
             kind: ValueCellKind::Let,
+            visibility: reify_compiler::Visibility::Private,
             cell_type,
             default_expr: Some(expr),
             span: SourceSpan::new(0, 0),
@@ -259,6 +269,7 @@ impl TopologyTemplateBuilder {
             content_hash: ContentHash::of_str(&format!("sub {} = {}", name, structure_name)),
             name,
             structure_name,
+            visibility: reify_compiler::Visibility::Public,
             args,
             span: SourceSpan::new(0, 0),
         });
@@ -291,6 +302,7 @@ impl TopologyTemplateBuilder {
 
         TopologyTemplate {
             name: self.name,
+            visibility: self.visibility,
             value_cells: self.value_cells,
             constraints: self.constraints,
             realizations: self.realizations,

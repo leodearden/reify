@@ -1,6 +1,6 @@
 {
-  "task_id": "55",
-  "title": "Match expressions — grammar, parser, compiler, eval",
+  "task_id": "68",
+  "title": "Pub visibility + name scoping",
   "files": [
     "tree-sitter-reify/grammar.js",
     "tree-sitter-reify/src/parser.c",
@@ -8,40 +8,24 @@
     "tree-sitter-reify/src/node-types.json",
     "crates/reify-syntax/src/lib.rs",
     "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/match_tests.rs",
-    "crates/reify-types/src/expr.rs",
+    "crates/reify-syntax/tests/visibility_tests.rs",
     "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/match_compile_tests.rs",
-    "crates/reify-expr/src/lib.rs"
+    "crates/reify-compiler/tests/visibility_compile_tests.rs",
+    "crates/reify-test-support/src/fixtures.rs"
   ],
   "modules": [
     "tree-sitter-reify",
     "crates/reify-syntax",
-    "crates/reify-types",
     "crates/reify-compiler",
-    "crates/reify-expr"
+    "crates/reify-test-support"
   ],
-  "analysis": "This task adds match expressions for pattern matching on enum values. The feature spans four modules:\n\n1. **Grammar (tree-sitter-reify/grammar.js)**: Add `match_expression` as a primary expression with `match_arm` and `match_pattern` rules. The `match` keyword is new — no conflicts with existing grammar. Match expression uses `{` `}` delimiters with `=>` arm separators (same `=>` as map_entry). Pattern supports `|` for multi-variant arms and `_` for wildcard. Adding match_expression to `_expression` choices (alongside conditional_expression) rather than `_primary_expression` since it has a block body.\n\n2. **Parser AST (crates/reify-syntax/src/lib.rs)**: Add `ExprKind::Match { discriminant: Box<Expr>, arms: Vec<MatchArm> }` and `MatchArm { patterns: Vec<String>, body: Expr, span: SourceSpan }`. The `_` wildcard is stored as the string \"_\".\n\n3. **Parser lowering (crates/reify-syntax/src/ts_parser.rs)**: Add lowering for `match_expression`, `match_arm`, and `match_pattern` CST nodes. Pattern follows existing conditional_expression lowering.\n\n4. **Compiled types (crates/reify-types/src/expr.rs)**: Add `CompiledExprKind::Match { discriminant: Box<CompiledExpr>, arms: Vec<CompiledMatchArm> }` and `CompiledMatchArm { patterns: Vec<String>, body: CompiledExpr }`.\n\n5. **Compiler (crates/reify-compiler/src/lib.rs)**: Compile match expressions: recursively compile discriminant and arm bodies. Perform exhaustiveness checking — if the discriminant's inferred type is `Type::Enum(name)`, look up the enum def and verify all variants are covered by arm patterns or a wildcard `_`.\n\n6. **Expression eval (crates/reify-expr/src/lib.rs)**: Evaluate match: eval discriminant, if Undef return Undef. If `Value::Enum { variant, .. }`, find first arm whose patterns contain the variant or is wildcard `_`. Eval that arm's body. No match → Undef.\n\nKey considerations:\n- Grammar precedence: match_expression should be at the same level as conditional_expression (right-associative, prec 0) since both are control flow expressions with block-like bodies.\n- Exhaustiveness: only checked when discriminant type is a known `Type::Enum`. For unknown types, no check (graceful degradation).\n- `_` wildcard: stored as the literal string \"_\" in patterns. During eval, \"_\" matches anything. During exhaustiveness check, if any arm has \"_\" pattern, all variants are considered covered.\n- Content hashing: match expressions need a content hash combining discriminant + all arm hashes, using a new tag byte (6) to avoid collisions.",
+  "analysis": "This task adds `pub` keyword support and visibility rules to the Reify language. The work spans three layers:\n\n1. **Grammar (tree-sitter-reify/grammar.js):** Add `optional('pub')` prefix to `structure_definition`, `let_declaration`, and `enum_declaration`. Currently none of these have a `pub` prefix. The grammar changes require regenerating the parser (parser.c, grammar.json, node-types.json).\n\n2. **Parser (crates/reify-syntax):** Add `is_pub: bool` field to `StructureDef`, `LetDecl`, and `EnumDecl` in lib.rs. Update `ts_parser.rs` lowering functions (`lower_structure`, `lower_let`, `lower_enum`) to detect the `pub` keyword from the CST by checking for an anonymous child node with text `pub`.\n\n3. **Compiler (crates/reify-compiler):** Add a `Visibility` enum (`Public`/`Private`). Add `visibility: Visibility` field to `ValueCellDecl`, `TopologyTemplate`, and `SubComponentDecl`. Set visibility based on member kind:\n   - `param` → Public (externally settable)\n   - `sub` → Public (named sub-components accessible)\n   - `let` → Private by default; Public if `is_pub` on source LetDecl\n   - `constraint` → Private (internal)\n   - `TopologyTemplate` → derives from `StructureDef.is_pub`\n\nCross-scope member access visibility *enforcement* (rejecting `entity.private_let`) is deferred since member access is currently unsupported in the compiler (emits 'not yet supported' diagnostic). We add the visibility *metadata* now so it's ready when member access is implemented.\n\nExisting tests use both the hand-built `bracket_parsed_module()` fixture (in reify-test-support) and direct source parsing. The fixture needs `is_pub: false` added to its `StructureDef` and `LetDecl` entries for backward compatibility. The bracket_compiled_module() builder also needs updating if TopologyTemplate gets a visibility field.\n\nNote: The task description mentions `FnDef` and `TraitDecl` but these types don't exist yet in the codebase. We only add `pub` support for currently existing types: `StructureDef`, `LetDecl`, `EnumDecl`.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add match_expression, match_arm, and match_pattern grammar rules to tree-sitter-reify/grammar.js:\n\n1. Add `match_expression` rule: `match_expression: $ => seq('match', field('discriminant', $._expression), '{', repeat1($.match_arm), '}')`\n2. Add `match_arm` rule: `match_arm: $ => seq(field('pattern', $.match_pattern), '=>', field('body', $._expression))`\n3. Add `match_pattern` rule: `match_pattern: $ => choice(seq($.identifier, repeat(seq('|', $.identifier))), '_')` — note the `_` wildcard is a literal token, not tree-sitter's anonymous node\n4. Add `match_expression` to `_expression` choices (alongside conditional_expression)\n5. Run `cd tree-sitter-reify && tree-sitter generate` to regenerate parser.c, grammar.json, node-types.json\n6. Verify with a quick parse test",
+      "description": "Update tree-sitter grammar to add optional 'pub' prefix to structure_definition, let_declaration, and enum_declaration. Run `npx tree-sitter generate` in tree-sitter-reify/ to regenerate parser.c, grammar.json, and node-types.json. Verify the grammar compiles and the crate builds.",
       "status": "done",
-      "commit": "ba302c9",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Add Match ExprKind variant to crates/reify-syntax/src/lib.rs:\n\n```rust\n/// Match expression: `match d { In => 1, Out => 2 }`\nMatch {\n    discriminant: Box<Expr>,\n    arms: Vec<MatchArm>,\n},\n```\n\nAdd MatchArm struct:\n```rust\n/// A match arm: `Pattern1 | Pattern2 => body`\npub struct MatchArm {\n    pub patterns: Vec<String>,\n    pub body: Expr,\n    pub span: SourceSpan,\n}\n```\n\nThis is a type-only change.",
-      "status": "done",
-      "commit": "f92e461",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Add CompiledExprKind::Match variant and CompiledMatchArm struct to crates/reify-types/src/expr.rs:\n\n```rust\n/// Match expression.\nMatch {\n    discriminant: Box<CompiledExpr>,\n    arms: Vec<CompiledMatchArm>,\n},\n```\n\n```rust\n/// A compiled match arm.\n#[derive(Debug, Clone)]\npub struct CompiledMatchArm {\n    pub patterns: Vec<String>,\n    pub body: CompiledExpr,\n}\n```\n\nAlso add a placeholder arm in compile_expr() in the compiler for ExprKind::Match to prevent compilation errors (emit diagnostic + return Undef), and a placeholder arm in eval_expr() in reify-expr (return Undef).",
-      "status": "done",
-      "commit": "f92e461",
+      "commit": "34b81e1",
       "tests": []
     }
   ],
@@ -49,215 +33,172 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test for basic match expression parsing in crates/reify-syntax/tests/match_tests.rs:\n\n`parse_match_three_arms`: Parse `structure S { param d : Direction  let x = match d { In => 1, Out => 2, Bidi => 3 } }` with an `enum Direction { In, Out, Bidi }` declaration. Extract the let's value expr, assert it is ExprKind::Match with a discriminant Ident(\"d\") and 3 arms. Assert arm patterns are [\"In\"], [\"Out\"], [\"Bidi\"] and bodies are NumberLiteral(1), NumberLiteral(2), NumberLiteral(3).\n\nFails because lower_expr doesn't handle 'match_expression' node kind yet.",
+      "description": "Write failing parser tests in crates/reify-syntax/tests/visibility_tests.rs:\n\n1. `parse_pub_structure` — parse `pub structure Bracket { param w: Scalar = 80mm }` and assert `is_pub == true` on StructureDef.\n2. `parse_structure_default_not_pub` — parse `structure Bracket { ... }` (no pub) and assert `is_pub == false`.\n\nFails because StructureDef doesn't have `is_pub` field yet.",
       "status": "done",
-      "commit": "9afd941"
+      "commit": "3d649a3"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement match_expression lowering in ts_parser.rs:\n1. Add 'match_expression' case to lower_expr() match dispatch\n2. Implement lower_match_expr(): extract field('discriminant'), lower it. Iterate named children for 'match_arm' kind. For each arm, call lower_match_arm(). Return ExprKind::Match { discriminant, arms }.\n3. Implement lower_match_arm(): extract field('pattern') (match_pattern node), extract field('body'), lower body. For pattern: iterate children of the match_pattern node — collect identifiers and skip '|' tokens. If the pattern text is '_', store \"_\". Return MatchArm { patterns, body, span }.\n\nStep-1 test passes.",
+      "description": "Add `is_pub: bool` to StructureDef in crates/reify-syntax/src/lib.rs. Update `lower_structure` in ts_parser.rs to detect 'pub' keyword by checking if any anonymous child has text 'pub'. Update bracket_parsed_module() fixture in reify-test-support to include `is_pub: false`. Step-1 tests pass.",
       "status": "done",
-      "commit": "094154a"
+      "commit": "7078ee9"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test for multi-variant pattern arm parsing in crates/reify-syntax/tests/match_tests.rs:\n\n`parse_match_multi_variant_arm`: Parse `structure S { let x = match d { Socket | Button => \"recessed\", Slider => \"raised\" } }`. Assert the first arm has patterns [\"Socket\", \"Button\"] and body StringLiteral(\"recessed\"). Assert second arm has patterns [\"Slider\"].",
+      "description": "Write failing parser tests in visibility_tests.rs:\n\n1. `parse_pub_let` — parse `structure S { pub let x = 5 }` and assert the LetDecl has `is_pub == true`.\n2. `parse_let_default_not_pub` — parse `structure S { param a: Scalar = 1mm  let y = a * 2 }` and assert LetDecl `is_pub == false`.\n\nFails because LetDecl doesn't have `is_pub` field yet.",
       "status": "done",
-      "commit": "8130509"
+      "commit": "b0b9ea0"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify multi-variant arm lowering works. The lower_match_arm implementation from step-2 should already handle `|`-separated identifiers by iterating named children. If tests fail, fix the pattern iteration logic.\n\nStep-3 test passes.",
+      "description": "Add `is_pub: bool` to LetDecl in crates/reify-syntax/src/lib.rs. Update `lower_let` in ts_parser.rs to detect 'pub' keyword. Update bracket_parsed_module() fixture LetDecl entries with `is_pub: false`. Step-3 tests pass.",
       "status": "done",
-      "commit": "8130509"
+      "commit": "130c41a"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test for wildcard pattern parsing in crates/reify-syntax/tests/match_tests.rs:\n\n`parse_match_wildcard_arm`: Parse `structure S { let x = match d { In => 1, _ => 0 } }`. Assert second arm has patterns [\"_\"] and body NumberLiteral(0).",
+      "description": "Write failing parser tests in visibility_tests.rs:\n\n1. `parse_pub_enum` — parse `pub enum Direction { In, Out }` and assert EnumDecl `is_pub == true`.\n2. `parse_enum_default_not_pub` — parse `enum Direction { In, Out }` and assert EnumDecl `is_pub == false`.\n\nFails because EnumDecl doesn't have `is_pub` field yet.",
       "status": "done",
-      "commit": "8130509"
+      "commit": "60bb62c"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Ensure wildcard lowering works. The `_` token in match_pattern should be captured as the string \"_\" in patterns. If tree-sitter treats `_` as anonymous, may need to check unnamed children too. Fix if needed.\n\nStep-5 test passes.",
+      "description": "Add `is_pub: bool` to EnumDecl in crates/reify-syntax/src/lib.rs. Update `lower_enum` in ts_parser.rs to detect 'pub' keyword. Step-5 tests pass.",
       "status": "done",
-      "commit": "8130509"
+      "commit": "99b2b52"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test for match compilation with exhaustiveness in crates/reify-compiler/tests/match_compile_tests.rs:\n\n`compile_match_exhaustive_passes`: Build a ParsedModule with `enum Direction { In, Out, Bidi }` and `structure S { param d  let x = match d { In => 1, Out => 2, Bidi => 3 } }`. Compile, assert no error diagnostics (warnings OK). Verify the compiled template has the match expression in the let's default_expr.\n\nFails because compile_expr's Match arm is a placeholder returning Undef.",
+      "description": "Write failing compiler tests in crates/reify-compiler/tests/visibility_compile_tests.rs:\n\n1. `compile_param_visibility_public` — compile a structure with a param, assert its ValueCellDecl.visibility is Visibility::Public.\n2. `compile_let_visibility_private_by_default` — compile a structure with a plain let, assert its ValueCellDecl.visibility is Visibility::Private.\n\nFails because ValueCellDecl doesn't have `visibility` field and Visibility enum doesn't exist.",
       "status": "done",
-      "commit": "cd455af"
+      "commit": "d99f565"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement match expression compilation in crates/reify-compiler/src/lib.rs:\n\nReplace the placeholder Match arm in compile_expr() with real compilation:\n1. Recursively compile the discriminant expression\n2. For each MatchArm, compile the body expression. Store patterns as-is.\n3. Build CompiledExprKind::Match { discriminant, arms }\n4. Determine result_type from the first arm's body result_type\n5. Compute content_hash using tag byte [6], combining discriminant hash + all arm pattern/body hashes\n\nDo NOT add exhaustiveness checking yet — that's step-10.\n\nStep-7 test passes (no error diagnostics since exhaustiveness not yet checked).",
+      "description": "Add `Visibility` enum (Public, Private) with derive(Debug, Clone, Copy, PartialEq, Eq, Hash) to crates/reify-compiler/src/lib.rs. Add `visibility: Visibility` to `ValueCellDecl`. Set visibility in compile_structure: Param/Auto → Public, Let → Private. Step-7 tests pass.",
       "status": "done",
-      "commit": "be01b17"
+      "commit": "92907a0"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test for exhaustiveness diagnostic in crates/reify-compiler/tests/match_compile_tests.rs:\n\n`compile_match_missing_variant_emits_diagnostic`: Build ParsedModule with `enum Direction { In, Out, Bidi }` and `structure S { param d  let x = match d { In => 1, Out => 2 } }` (missing Bidi, no wildcard). Compile, assert diagnostics contain an error message mentioning \"Bidi\" or \"exhaustive\" or \"missing variant\".\n\nFails because exhaustiveness checking is not implemented yet.",
+      "description": "Write failing compiler test in visibility_compile_tests.rs:\n\n`compile_pub_let_visibility_public` — compile `pub let volume = w * h` inside a structure and assert its ValueCellDecl.visibility is Visibility::Public.\n\nFails because is_pub is not yet propagated to Visibility.",
       "status": "done",
-      "commit": "517881d"
+      "commit": "9307f33"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement exhaustiveness checking in compile_expr() Match arm (crates/reify-compiler/src/lib.rs):\n\nAfter compiling the match expression:\n1. Check if the discriminant's result_type is Type::Enum(name)\n2. If so, look up the enum_def by name in enum_defs\n3. Collect all variant names covered by arm patterns (flatten all arms' patterns)\n4. If any pattern is \"_\" (wildcard), skip checking — all variants are covered\n5. Otherwise, compute missing = enum_def.variants - covered_patterns\n6. If missing is non-empty, emit a diagnostic error listing the missing variants\n\nStep-9 test passes.",
+      "description": "Update compile_structure in the compiler: when compiling a LetDecl, check its `is_pub` field — if true, set ValueCellDecl.visibility to Public instead of Private. Step-9 test passes.",
       "status": "done",
-      "commit": "517881d"
+      "commit": "cd61c07"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test for match with wildcard passes exhaustiveness in crates/reify-compiler/tests/match_compile_tests.rs:\n\n`compile_match_wildcard_is_exhaustive`: Build ParsedModule with `enum Direction { In, Out, Bidi }` and `structure S { param d  let x = match d { In => 1, _ => 0 } }`. Compile, assert NO error diagnostics.\n\nShould pass if step-10 correctly treats \"_\" as covering all variants.",
+      "description": "Write failing compiler test in visibility_compile_tests.rs:\n\n`compile_template_visibility` — compile `pub structure Bracket { ... }` and assert TopologyTemplate.visibility is Visibility::Public. Also compile `structure Internal { ... }` (no pub) and assert Visibility::Private.",
       "status": "done",
-      "commit": "517881d"
+      "commit": "43add05"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Verify wildcard exhaustiveness works. Fix if needed. Step-11 test passes.",
+      "description": "Add `visibility: Visibility` to `TopologyTemplate`. Set it from StructureDef.is_pub during compile_structure. Update bracket_compiled_module() builder and TopologyTemplateBuilder in test-support if needed. Step-11 test passes.",
       "status": "done",
-      "commit": "517881d"
+      "commit": "e058e38"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test for match eval basic case in crates/reify-expr/src/lib.rs tests module:\n\n`eval_match_basic`: Build a CompiledExpr::Match with discriminant = literal Enum(\"Direction\", \"In\"), three arms: [\"In\"] => Int(1), [\"Out\"] => Int(2), [\"Bidi\"] => Int(3). Eval against empty ValueMap. Assert result is Value::Int(1).\n\nFails because eval_expr's Match arm is a placeholder returning Undef.",
+      "description": "Write failing compiler test in visibility_compile_tests.rs:\n\n`compile_sub_visibility_public` — compile a structure with a sub declaration and assert SubComponentDecl.visibility is Visibility::Public (subs are public by default).",
       "status": "done",
-      "commit": "5f0bc94"
+      "commit": "630ebb7"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement match expression evaluation in crates/reify-expr/src/lib.rs:\n\nReplace the placeholder Match arm in eval_expr() with real evaluation:\n1. Eval discriminant\n2. If discriminant is Undef, return Undef (short-circuit)\n3. Extract variant from Value::Enum { variant, .. }\n4. Iterate arms, find first arm where patterns contains variant or patterns contains \"_\"\n5. Eval that arm's body and return\n6. No matching arm → return Undef\n\nStep-13 test passes.",
+      "description": "Add `visibility: Visibility` to `SubComponentDecl`. Set sub_components to Public by default. Step-13 test passes.",
       "status": "done",
-      "commit": "b484aa4"
+      "commit": "acf68f6"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write test for match eval Undef propagation in crates/reify-expr/src/lib.rs tests:\n\n`eval_match_undef_discriminant`: Build CompiledExpr::Match with discriminant = literal Undef, arms with Int bodies. Eval. Assert result is Value::Undef (short-circuit, no arm body evaluated).",
+      "description": "Write backward compatibility test in visibility_compile_tests.rs:\n\n`backward_compat_bracket_compiles_cleanly` — parse and compile the canonical bracket source (no pub keywords), assert zero diagnostics, correct number of value_cells/constraints, and all params have Public visibility while the volume let has Private visibility.",
       "status": "done",
-      "commit": "5f0bc94"
+      "commit": "a667cac"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Verify Undef propagation works. The implementation from step-14 should already handle this. Step-15 test passes.",
+      "description": "Fix any remaining backward compatibility issues. Ensure all existing tests pass with the new fields. Run the full test suite (`cargo test` in workspace root). All existing boundary1, boundary2, guard, and match tests must still pass.",
       "status": "done",
-      "commit": "b484aa4"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write test for match eval with wildcard in crates/reify-expr/src/lib.rs tests:\n\n`eval_match_wildcard`: Build CompiledExpr::Match with discriminant = Enum(\"Direction\", \"Bidi\"), two arms: [\"In\"] => Int(1), [\"_\"] => Int(99). Eval. Assert result is Value::Int(99) since \"Bidi\" doesn't match \"In\" but does match wildcard \"_\".",
-      "status": "done",
-      "commit": "5f0bc94"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Verify wildcard eval works. Step-17 test passes.",
-      "status": "done",
-      "commit": "b484aa4"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write test for match eval with multi-variant pattern in crates/reify-expr/src/lib.rs tests:\n\n`eval_match_multi_variant_pattern`: Build CompiledExpr::Match with discriminant = Enum(\"Control\", \"Button\"), two arms: [\"Socket\", \"Button\"] => String(\"recessed\"), [\"Slider\"] => String(\"raised\"). Eval. Assert result is Value::String(\"recessed\") since \"Button\" is in the first arm's patterns.",
-      "status": "done",
-      "commit": "5f0bc94"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Verify multi-variant pattern eval works. Step-19 test passes.",
-      "status": "done",
-      "commit": "b484aa4"
+      "commit": "a667cac"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Store wildcard `_` as the literal string \"_\" in pattern lists",
-      "rationale": "Simple and uniform — avoids introducing a separate enum for patterns. During eval, check `pattern == \"_\"` to match anything. During exhaustiveness, if any arm contains \"_\", skip variant coverage checking. This is safe because \"_\" is not a valid Reify identifier (it's reserved by tree-sitter grammar as a keyword token in match_pattern)."
+      "decision": "Only add `pub` to types that currently exist (StructureDef, LetDecl, EnumDecl), not FnDef/TraitDecl",
+      "rationale": "FnDef and TraitDecl don't exist in the codebase yet. Those will be added by their respective tasks. Adding pub support for non-existent types would create dead code that may not match the eventual API."
     },
     {
-      "decision": "Place match_expression in _expression choices (not _primary_expression)",
-      "rationale": "Match expression has a block body delimited by `{}`, similar to conditional_expression (if/then/else). It is a compound expression form, not a simple primary like literals or identifiers. Placing it at the expression level alongside conditional_expression and binary_expression avoids precedence issues."
+      "decision": "Default visibility: params/subs → Public, lets/constraints → Private, top-level structures/enums → Private",
+      "rationale": "Matches the task spec. Params and named subs are the external interface of a structure; lets are internal computations. Top-level declarations default to module-private (need explicit `pub` to be importable from other modules)."
     },
     {
-      "decision": "Use repeat1($.match_arm) requiring at least one arm",
-      "rationale": "An empty match `match x {}` is semantically meaningless and likely a mistake. Requiring at least one arm produces a parse error for empty matches, catching user errors early."
+      "decision": "Visibility is added as a field on compiled types (ValueCellDecl, TopologyTemplate, SubComponentDecl) rather than a separate lookup table",
+      "rationale": "Follows existing codebase patterns where all metadata (kind, type, span, content_hash) lives directly on declaration structs. Co-locating visibility is simpler and consistent."
     },
     {
-      "decision": "Exhaustiveness check only for known enum types",
-      "rationale": "If the discriminant type isn't Type::Enum (e.g., it's Type::Real or inference failed), skip exhaustiveness checking. This provides graceful degradation — the check fires when useful but doesn't block compilation when type information is incomplete."
+      "decision": "Cross-scope visibility enforcement (rejecting entity.private_let) is NOT implemented in this task",
+      "rationale": "The compiler currently emits 'member access not yet supported' for entity.field expressions. Adding visibility checking would have no observable effect since the access is already rejected. We add the visibility metadata now; enforcement comes when member access is implemented."
     },
     {
-      "decision": "Content hash tag byte [6] for match expressions",
-      "rationale": "The existing compiled expression hash tags are: [0]=Literal, [1]=ValueRef, [2]=BinOp, [3]=UnOp, [4]=FunctionCall, [5]=Conditional. Tag [6] is the next available for Match expressions, maintaining domain separation."
+      "decision": "Grammar uses optional('pub') as first element in seq() — 'pub' appears as anonymous child node",
+      "rationale": "Simplest tree-sitter pattern. The 'pub' keyword appears as an anonymous child that can be detected by iterating children and checking node text == 'pub'. No need for a separate named rule or field, keeping grammar minimal."
     },
     {
-      "decision": "First-match semantics for arm evaluation",
-      "rationale": "When multiple arms could match (e.g., overlapping multi-variant patterns), the first matching arm wins. This is consistent with Rust, ML, and other pattern-matching languages, and simple to implement."
+      "decision": "Detect 'pub' in lowering by iterating anonymous children and checking text, not by field name",
+      "rationale": "Tree-sitter anonymous string tokens ('pub') cannot be addressed by field('is_pub', ...). The existing pattern in the codebase is to iterate children and check kind/text (e.g., detecting 'else' in guarded_block lowering). We follow this same pattern."
     }
   ],
   "reuse": [
     {
-      "what": "Existing lower_expr() match dispatch pattern",
-      "where": "crates/reify-syntax/src/ts_parser.rs lower_expr()",
-      "how": "Add 'match_expression' case to the existing match on node.kind(), following the pattern of 'conditional_expression' and other compound expressions."
+      "what": "Test helper pattern: parse source and extract first structure's members",
+      "where": "crates/reify-syntax/tests/guard_tests.rs — `parse_members()` helper",
+      "how": "Adopt the same `parse_members()` helper function in visibility_tests.rs for extracting and inspecting structure members."
     },
     {
-      "what": "Field-based child extraction pattern",
-      "where": "crates/reify-syntax/src/ts_parser.rs lower_conditional()",
-      "how": "Match expression lowering uses child_by_field_name('discriminant') and child_by_field_name('pattern')/child_by_field_name('body') for arms, same pattern as conditional's child_by_field_name('condition')/child_by_field_name('then')/child_by_field_name('else')."
+      "what": "Compiler test pattern: parse source → compile → inspect template",
+      "where": "crates/reify-compiler/tests/boundary2_producer.rs (e.g., compile_auto_param, compile_minimize_objective)",
+      "how": "Visibility compiler tests follow the same pattern: parse a source string, compile, inspect the compiled template's value_cells and their properties."
     },
     {
-      "what": "Compile_expr recursive dispatch pattern",
-      "where": "crates/reify-compiler/src/lib.rs compile_expr()",
-      "how": "The Match arm follows the same pattern as Conditional — recursively compile sub-expressions, build a CompiledExprKind variant, compute content_hash by combining sub-hashes."
+      "what": "bracket_parsed_module() fixture",
+      "where": "crates/reify-test-support/src/fixtures.rs",
+      "how": "Extend with `is_pub: false` on StructureDef and LetDecl entries to maintain backward compatibility with existing tests."
     },
     {
-      "what": "Eval_expr match dispatch pattern",
-      "where": "crates/reify-expr/src/lib.rs eval_expr()",
-      "how": "The Match arm follows the Conditional pattern: eval discriminant first, then dispatch based on its value. Undef propagation matches the conditional's Undef handling."
+      "what": "Anonymous child node text checking pattern",
+      "where": "crates/reify-syntax/src/ts_parser.rs — lower_guarded_block checks `self.node_text(child) == \"else\"`",
+      "how": "Same pattern for detecting 'pub': iterate children, check if any anonymous child has text 'pub'."
     },
     {
-      "what": "EnumDef lookup in compiler",
-      "where": "crates/reify-compiler/src/lib.rs ExprKind::EnumAccess arm",
-      "how": "Exhaustiveness checking reuses the same `enum_defs.iter().find(|e| e.name == *type_name)` lookup pattern used for enum variant validation in EnumAccess compilation."
+      "what": "ValueCellKind enum pattern",
+      "where": "crates/reify-compiler/src/lib.rs — ValueCellKind with derive(Debug, Clone, Copy, PartialEq, Eq, Hash)",
+      "how": "Model the Visibility enum after ValueCellKind with the same derives."
     },
     {
-      "what": "Enum value pattern matching in eval",
-      "where": "crates/reify-expr/src/lib.rs eval_eq()",
-      "how": "The match eval logic extracts `variant` from `Value::Enum { variant, .. }`, same pattern as enum equality comparison in eval_eq."
-    },
-    {
-      "what": "Test helper parse_members pattern",
-      "where": "crates/reify-syntax/tests/guard_tests.rs",
-      "how": "Parser tests use the same pattern: wrap source in `structure S { ... }`, parse, extract first structure's members. Reuse this pattern for match expression parser tests."
-    },
-    {
-      "what": "Compiler test ParsedModule construction",
-      "where": "crates/reify-compiler/tests/boundary1_consumer.rs",
-      "how": "Compiler tests manually construct ParsedModule with specific declarations. Reuse this pattern for match exhaustiveness tests, adding enum and structure declarations."
-    },
-    {
-      "what": "Eval test helper functions (lit, enum_lit)",
-      "where": "crates/reify-expr/src/lib.rs tests module",
-      "how": "Reuse the existing lit() and enum_lit() helpers to construct compiled match expression test inputs."
+      "what": "TopologyTemplateBuilder in test support",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "May need updating to accept/set visibility on TopologyTemplate. Extend builder with `.visibility(Visibility::Public)` method if needed."
     }
   ]
 }

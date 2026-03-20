@@ -139,6 +139,7 @@ fn type_error_dimension_mismatch() {
         path: ModulePath::single("dim_mismatch"),
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Bad".into(),
+            is_pub: false,
             members: vec![
                 MemberDecl::Param(ParamDecl {
                     name: "thickness".into(),
@@ -159,6 +160,7 @@ fn type_error_dimension_mismatch() {
                 }),
                 MemberDecl::Let(LetDecl {
                     name: "bad".into(),
+                    is_pub: false,
                     type_expr: None,
                     value: Expr {
                         kind: ExprKind::BinOp {
@@ -216,6 +218,7 @@ fn constraint_non_bool_produces_warning() {
         path: ModulePath::single("non_bool_constraint"),
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Bad".into(),
+            is_pub: false,
             members: vec![
                 MemberDecl::Param(ParamDecl {
                     name: "width".into(),
@@ -391,6 +394,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
         path: ModulePath::single("mul_div_dims"),
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Good".into(),
+            is_pub: false,
             members: vec![
                 MemberDecl::Param(ParamDecl {
                     name: "width".into(),
@@ -429,6 +433,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                 // let area = width * height (Length * Length → Area)
                 MemberDecl::Let(LetDecl {
                     name: "area".into(),
+                    is_pub: false,
                     type_expr: None,
                     value: Expr {
                         kind: ExprKind::BinOp {
@@ -451,6 +456,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                 // let ratio = width / height (Length / Length → dimensionless Real)
                 MemberDecl::Let(LetDecl {
                     name: "ratio".into(),
+                    is_pub: false,
                     type_expr: None,
                     value: Expr {
                         kind: ExprKind::BinOp {
@@ -1174,6 +1180,7 @@ fn scalar_plus_int_type_error() {
         path: ModulePath::single("scalar_plus_int"),
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Bad".into(),
+            is_pub: false,
             members: vec![
                 MemberDecl::Param(ParamDecl {
                     name: "width".into(),
@@ -1195,6 +1202,7 @@ fn scalar_plus_int_type_error() {
                 // let bad = width + 5
                 MemberDecl::Let(LetDecl {
                     name: "bad".into(),
+                    is_pub: false,
                     type_expr: None,
                     value: Expr {
                         kind: ExprKind::BinOp {

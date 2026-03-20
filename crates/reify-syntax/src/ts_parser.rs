@@ -64,6 +64,17 @@ impl<'a> Lowering<'a> {
         ContentHash::of_str(self.node_text(node))
     }
 
+    /// Check if a node has an anonymous 'pub' keyword child.
+    fn has_pub_keyword(&self, node: tree_sitter::Node) -> bool {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if !child.is_named() && self.node_text(child) == "pub" {
+                return true;
+            }
+        }
+        false
+    }
+
     // ── Top-level lowering ──────────────────────────────────
 
     fn lower_source_file(&mut self, node: tree_sitter::Node) {
@@ -131,6 +142,9 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        // Detect 'pub' keyword by checking anonymous children
+        let is_pub = self.has_pub_keyword(node);
+
         // Collect variant identifiers — skip 'enum', name, '{', '}', ','
         let mut variants = Vec::new();
         let mut cursor = node.walk();
@@ -142,6 +156,7 @@ impl<'a> Lowering<'a> {
 
         Some(EnumDecl {
             name,
+            is_pub,
             variants,
             span: self.span(node),
             content_hash: self.content_hash(node),
@@ -255,12 +270,16 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        // Detect 'pub' keyword by checking anonymous children
+        let is_pub = self.has_pub_keyword(node);
+
         let members = self.lower_members(node);
 
         let content_hash = self.content_hash(node);
 
         Some(StructureDef {
             name,
+            is_pub,
             members,
             span: self.span(node),
             content_hash,
@@ -368,6 +387,9 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        // Detect 'pub' keyword by checking anonymous children
+        let is_pub = self.has_pub_keyword(node);
+
         let type_expr = node.child_by_field_name("type").map(|t| {
             let ident = if t.kind() == "type_expr" {
                 t.child(0).unwrap_or(t)
@@ -387,6 +409,7 @@ impl<'a> Lowering<'a> {
 
         Some(LetDecl {
             name,
+            is_pub,
             type_expr,
             value,
             where_clause,

@@ -29,6 +29,7 @@ pub struct CompiledModule {
 #[derive(Debug, Clone)]
 pub struct TopologyTemplate {
     pub name: String,
+    pub visibility: Visibility,
     pub value_cells: Vec<ValueCellDecl>,
     pub constraints: Vec<CompiledConstraint>,
     pub realizations: Vec<RealizationDecl>,
@@ -42,6 +43,7 @@ pub struct TopologyTemplate {
 pub struct SubComponentDecl {
     pub name: String,
     pub structure_name: String,
+    pub visibility: Visibility,
     pub args: Vec<(String, CompiledExpr)>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
@@ -52,6 +54,7 @@ pub struct SubComponentDecl {
 pub struct ValueCellDecl {
     pub id: ValueCellId,
     pub kind: ValueCellKind,
+    pub visibility: Visibility,
     pub cell_type: Type,
     pub default_expr: Option<CompiledExpr>,
     pub span: SourceSpan,
@@ -65,6 +68,13 @@ pub enum ValueCellKind {
     Let,
     /// Solver-determined parameter: starts as Undef, value provided by constraint solver.
     Auto,
+}
+
+/// Visibility of a declaration: `Public` if accessible from outside, `Private` if internal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Visibility {
+    Public,
+    Private,
 }
 
 /// A compiled constraint.
@@ -880,6 +890,7 @@ fn compile_structure(
                     value_cells.push(ValueCellDecl {
                         id,
                         kind: ValueCellKind::Auto,
+                        visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,
                         span: param.span,
@@ -893,6 +904,7 @@ fn compile_structure(
                     value_cells.push(ValueCellDecl {
                         id,
                         kind: ValueCellKind::Param,
+                        visibility: Visibility::Public,
                         cell_type,
                         default_expr,
                         span: param.span,
@@ -912,9 +924,16 @@ fn compile_structure(
                 // Update the scope with the inferred type
                 scope.register(&let_decl.name, cell_type.clone());
 
+                let visibility = if let_decl.is_pub {
+                    Visibility::Public
+                } else {
+                    Visibility::Private
+                };
+
                 value_cells.push(ValueCellDecl {
                     id,
                     kind: ValueCellKind::Let,
+                    visibility,
                     cell_type,
                     default_expr: Some(compiled_expr),
                     span: let_decl.span,
@@ -958,6 +977,7 @@ fn compile_structure(
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
                     structure_name: sub.structure_name.clone(),
+                    visibility: Visibility::Public,
                     args: compiled_args,
                     span: sub.span,
                     content_hash: sub.content_hash,
@@ -1022,8 +1042,15 @@ fn compile_structure(
         ContentHash::combine_all(all_hashes)
     };
 
+    let visibility = if structure.is_pub {
+        Visibility::Public
+    } else {
+        Visibility::Private
+    };
+
     TopologyTemplate {
         name: entity_name.clone(),
+        visibility,
         value_cells,
         constraints,
         realizations,
