@@ -180,7 +180,12 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
-        let is_pub = false;
+        // Detect 'pub' keyword among anonymous children
+        let is_pub = {
+            let mut cursor = node.walk();
+            node.children(&mut cursor)
+                .any(|c| !c.is_named() && self.node_text(c) == "pub")
+        };
         let type_params = vec![];
 
         // Extract refinements from optional trait_bound_list child

@@ -152,3 +152,20 @@ fn parse_trait_associated_type_no_default() {
         other => panic!("expected AssociatedType, got {:?}", other),
     }
 }
+
+// ── Step 11: pub trait ────────────────────────────────────────────
+
+#[test]
+fn parse_pub_trait() {
+    let (decls, errors) = parse_decls("pub trait Visible { param color : Scalar }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let trait_decl = match &decls[0] {
+        Declaration::Trait(t) => t,
+        other => panic!("expected Trait, got {:?}", other),
+    };
+
+    assert!(trait_decl.is_pub);
+    assert_eq!(trait_decl.name, "Visible");
+    assert_eq!(trait_decl.members.len(), 1);
+}
