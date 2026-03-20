@@ -1,0 +1,142 @@
+{
+  "task_id": "53",
+  "title": "Extend Value/Type enums for M5 types",
+  "files": [
+    "crates/reify-types/src/value.rs",
+    "crates/reify-types/src/ty.rs",
+    "crates/reify-types/src/traits.rs",
+    "crates/reify-types/src/lib.rs",
+    "crates/reify-types/tests/m5_types.rs",
+    "crates/reify-types/tests/exports.rs"
+  ],
+  "modules": ["crates/reify-types"],
+  "analysis": "This task is FULLY IMPLEMENTED. All Value variants (Enum, List, Set, Map, Option), Type variants (Enum, List, Set, Map, Option, Function), trait definition types (EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam, PortDirection), Ord for Value, Display impls, content_hash impls, and exhaustive match arms are already in place. All 171 tests pass (150 unit + 2 export integration + 19 M5 type integration). External crates use wildcard/matches! patterns on Value and Type, so they are not affected by the new variants. No code changes are needed — this plan serves as verification-only.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Verify Value::Enum variant exists with Display (Color::Red), PartialEq, Ord, and content_hash — tests already exist in value.rs (value_enum_debug, value_enum_equality, value_enum_ordering, value_enum_content_hash, value_display_enum)",
+      "status": "done",
+      "commit": "0201008"
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "Verify Value::List variant with Display ([1, 2, 3]), equality, ordering, nesting, and content_hash — tests already exist in value.rs (value_list_equality, value_list_empty, value_list_nested, value_list_ordering, value_list_content_hash, value_display_list)",
+      "status": "done",
+      "commit": "0201008"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Verify Value::Set with BTreeSet operations (insert, contains), equality regardless of insertion order, ordering, content_hash — tests already exist in value.rs (value_set_basic, value_set_equality, value_set_ordering, value_set_content_hash, value_display_set)",
+      "status": "done",
+      "commit": "0201008"
+    },
+    {
+      "id": "step-4",
+      "type": "test",
+      "description": "Verify Value::Map with BTreeMap operations (insert, get), equality, ordering, content_hash — tests already exist in value.rs (value_map_basic, value_map_equality, value_map_ordering, value_map_content_hash, value_display_map)",
+      "status": "done",
+      "commit": "0201008"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Verify Value::Option(Some/None) with Display (Some(42)/None), equality, ordering (None < Some), content_hash — tests already exist in value.rs (value_option_some_and_none, value_option_equality, value_option_ordering, value_option_content_hash, value_display_option)",
+      "status": "done",
+      "commit": "0201008"
+    },
+    {
+      "id": "step-6",
+      "type": "test",
+      "description": "Verify Value::Ord cross-type ordering: Undef < Bool < Int < Real < Scalar < String < Enum < List < Set < Map < Option — test already exists in value.rs (value_ord_cross_type_ordering, plus within-type tests)",
+      "status": "done",
+      "commit": "0201008"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Verify Type::Enum, List, Set, Map, Option, Function variants with Display output — tests already exist in ty.rs (type_enum_display, type_list_display, type_set_display, type_map_display, type_option_display, type_function_display, type_function_multi_params_display, type_new_variants_not_numeric)",
+      "status": "done",
+      "commit": "0201008"
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Verify EnumDef construction, field access, and contains_variant — tests in tests/m5_types.rs (enum_def_construction_and_lookup, enum_def_debug_clone_eq)",
+      "status": "done",
+      "commit": "0201008"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Verify TraitDef, TraitMember (all 6 variants), TraitRef, TraitBound, TypeParam, PortDirection construction and trait bounds (Debug, Clone, PartialEq, Eq) — tests in tests/m5_types.rs (trait_def_full_construction, trait_member_param/port/sub/let_and_constraint/associated_type, trait_ref_construction/equality, trait_bound_wraps_trait_ref, type_param_construction/no_bounds_no_default, port_direction_variants/debug_clone_eq_copy_hash)",
+      "status": "done",
+      "commit": "0201008"
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Verify all M5 types are exported from crate root (lib.rs re-exports) — tests in tests/exports.rs (all_m5_types_exported) and tests/m5_types.rs (all_m5_types_exported_from_crate_root, value_display_via_public_api)",
+      "status": "done",
+      "commit": "0201008"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Verify no cross-domain hash collisions between Value and Satisfaction content hashes — tests in value.rs (value_option_none_hash_not_equal_satisfaction_satisfied, value_option_some_hash_not_equal_satisfaction_violated, value_and_satisfaction_content_hash_tags_no_cross_domain_collisions)",
+      "status": "done",
+      "commit": "0201008"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "All work already implemented — plan is verification-only",
+      "rationale": "All Value variants (Enum, List, Set, Map, Option), Type variants (Enum, List, Set, Map, Option, Function), trait definition types (EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam, PortDirection), Ord for Value, Display, content_hash, and all tests (171 total) are already in place and passing. No code changes are needed."
+    },
+    {
+      "decision": "Value::Ord uses type-tag discriminant for cross-type ordering",
+      "rationale": "Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10. This provides a deterministic total order required for BTreeSet<Value> and BTreeMap<Value, Value>."
+    },
+    {
+      "decision": "f64 ordering uses to_bits() for total order consistency",
+      "rationale": "NaN and -0.0 need deterministic ordering. Using to_bits() gives a total order consistent with the PartialEq implementation."
+    },
+    {
+      "decision": "Value::Option content_hash uses tag [11] to avoid collision with Satisfaction tag [10]",
+      "rationale": "Satisfaction uses tag [10] exclusively. Value::Option originally collided; moved to tag [11] with regression tests to prevent future collisions."
+    },
+    {
+      "decision": "TraitMember::Sub uses trait_ref instead of plain type",
+      "rationale": "Sub-structures reference traits (which can have type arguments), not raw types. Using TraitRef allows Sub { name: 'child', trait_ref: TraitRef { name: 'Component', type_args: [] } }."
+    },
+    {
+      "decision": "TraitMember::Port includes PortDirection field",
+      "rationale": "Ports need direction information (In, Out, Bidi) for connection checking in M5. Including it in the Port variant keeps port metadata colocated."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "ContentHash infrastructure",
+      "where": "crates/reify-types/src/hash.rs",
+      "how": "Used ContentHash::of() and .combine() for all new Value variant content hashes, following existing patterns from Bool/Int/Real/String/Scalar/Undef."
+    },
+    {
+      "what": "DimensionVector",
+      "where": "crates/reify-types/src/dimension.rs",
+      "how": "Scalar variant's dimension field and Ord implementation comparing dimensions first, then value bits."
+    },
+    {
+      "what": "Existing test patterns",
+      "where": "crates/reify-types/src/value.rs (tests module)",
+      "how": "New variant tests follow the same structure: construction, equality, ordering, content_hash determinism, Display output."
+    },
+    {
+      "what": "BTreeSet/BTreeMap from std",
+      "where": "std::collections",
+      "how": "Used directly for Value::Set and Value::Map, enabled by implementing Ord on Value."
+    }
+  ]
+}
