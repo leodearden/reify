@@ -1,174 +1,303 @@
 {
-  "task_id": "53",
-  "title": "Extend Value/Type enums for M5 types",
+  "task_id": "66",
+  "title": "Trait conformance + compilation",
   "files": [
-    "crates/reify-types/src/value.rs",
-    "crates/reify-types/src/ty.rs",
-    "crates/reify-types/src/traits.rs",
-    "crates/reify-types/src/lib.rs",
-    "crates/reify-types/tests/m5_types.rs",
-    "crates/reify-types/tests/exports.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/trait_conformance_tests.rs"
   ],
-  "modules": ["crates/reify-types"],
-  "analysis": "This task is FULLY IMPLEMENTED for the M5 type extensions. However, code review identified a blocking bug: content_hash for Value::Real and Value::Scalar normalizes -0.0 to 0.0 before hashing (lines 84, 95), but PartialEq uses to_bits() comparison (lines 150, 153), making -0.0 != 0.0. This violates the cache invariant: values that are not equal MUST have different content hashes (with high probability), otherwise the incremental caching system will suppress recomputation producing silently stale results. The fix (Option A from review) is to remove -0.0 normalization from content_hash and use to_bits() directly, keeping NaN canonicalization intact. The existing test `neg_zero_normalized` (line 417) asserts the broken behavior and must be updated. Steps 1-11 are the original verification-only steps (all done). Steps 12-15 address the blocking review feedback.",
-  "prerequisites": [],
+  "modules": [
+    "crates/reify-compiler"
+  ],
+  "analysis": "Task 65 (grammar + parser for traits) is done. The parser already produces Declaration::Trait(TraitDecl) with name, is_pub, type_params, refinements, members (Vec<MemberDecl>), and structures have trait_bounds: Vec<String>. The compiler currently skips trait declarations with a comment 'Trait compilation deferred to a later milestone' at line 961. This task implements:\n\n1. **CompiledTrait data structures** — new types: CompiledTrait, TraitRequirement, RequirementKind, TraitDefault, DefaultKind.\n2. **Trait compilation** — a pre-pass that compiles TraitDecl into CompiledTrait, builds a trait registry (HashMap<String, CompiledTrait>).\n3. **Conformance checking** — when compiling a structure with non-empty trait_bounds, resolve each trait, recursively collect all requirements (including from refinement chains), and verify the structure satisfies them.\n4. **Default merging** — if a trait provides defaults and structure doesn't override, inject the defaults into the TopologyTemplate.\n5. **Composition conflict detection** — same name + different types across traits → error.\n\nKey observations from code reading:\n- resolve_type_name (line 333) currently only handles Scalar, Bool, Int, Real, String. For trait conformance with type names like 'Length' and 'Mass' in tests, we extend it to map Length → Scalar{LENGTH}, Mass → Scalar{MASS}.\n- Trait members use the same MemberDecl enum as structures, so we reuse compile_expr and type resolution.\n- The trait registry is module-local (matches existing pattern where cross-module import resolution is noted but not fully wired).\n- The compile() function (line 889) handles pre-passes for enums and functions. We add a similar pre-pass for traits.\n- compile_structure() (line 1038) is the main function to modify for conformance checking.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Extend resolve_type_name() (lib.rs:333) to recognize 'Length' as Type::Scalar{dimension: DimensionVector::LENGTH} and 'Mass' as Type::Scalar{dimension: DimensionVector::MASS}. These are dimensional scalar aliases needed for trait conformance tests.",
+      "status": "done",
+      "commit": "58cb0ac",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Verify Value::Enum variant exists with Display (Color::Red), PartialEq, Ord, and content_hash — tests already exist in value.rs (value_enum_debug, value_enum_equality, value_enum_ordering, value_enum_content_hash, value_display_enum)",
+      "description": "Write failing test: compile a trait declaration produces CompiledTrait in CompiledModule.trait_defs. Parse `trait Fastener { param thread_pitch : Length }`, verify module.trait_defs has 1 entry with correct name 'Fastener' and 1 required member named 'thread_pitch' with RequirementKind::Param(Scalar{LENGTH}).",
       "status": "done",
-      "commit": "0201008"
+      "commit": "a3bb156"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Verify Value::List variant with Display ([1, 2, 3]), equality, ordering, nesting, and content_hash — tests already exist in value.rs (value_list_equality, value_list_empty, value_list_nested, value_list_ordering, value_list_content_hash, value_display_list)",
+      "type": "impl",
+      "description": "Add CompiledTrait, TraitRequirement, RequirementKind, TraitDefault, DefaultKind structs to lib.rs. Add trait_defs: Vec<CompiledTrait> field to CompiledModule. Implement compile_trait() function that converts TraitDecl into CompiledTrait by iterating members: Param without default → RequirementKind::Param(Type), Param with default → TraitDefault, Let without value → RequirementKind::Let(Type), Constraint → RequirementKind::Constraint, Sub → RequirementKind::Sub(structure_name). Wire into compile() pre-pass replacing the no-op Trait(_) => {} arm. Include trait_defs content hashes in module content_hash.",
       "status": "done",
-      "commit": "0201008"
+      "commit": "06f7f0a"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Verify Value::Set with BTreeSet operations (insert, contains), equality regardless of insertion order, ordering, content_hash — tests already exist in value.rs (value_set_basic, value_set_equality, value_set_ordering, value_set_content_hash, value_display_set)",
+      "description": "Write failing test: simple conformance — `trait Fastener { param thread_pitch : Length }` and `structure def Bolt : Fastener { param thread_pitch : Length = 20mm }` — compiles with no error-severity diagnostics.",
       "status": "done",
-      "commit": "0201008"
+      "commit": "238d31f"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Verify Value::Map with BTreeMap operations (insert, get), equality, ordering, content_hash — tests already exist in value.rs (value_map_basic, value_map_equality, value_map_ordering, value_map_content_hash, value_display_map)",
+      "type": "impl",
+      "description": "Implement trait registry (HashMap<String, &CompiledTrait>) built in compile() after trait pre-pass. Add trait_registry parameter to compile_structure(). Implement check_trait_conformance() that: resolves trait by name in registry, iterates required_members, checks each against structure members by name and type. Pass diagnostics for unresolvable trait names. For satisfied requirements, no diagnostic.",
       "status": "done",
-      "commit": "0201008"
+      "commit": "3fb1b5a"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Verify Value::Option(Some/None) with Display (Some(42)/None), equality, ordering (None < Some), content_hash — tests already exist in value.rs (value_option_some_and_none, value_option_equality, value_option_ordering, value_option_content_hash, value_display_option)",
+      "description": "Write failing test: missing member — `trait Fastener { param thread_pitch : Length }`, `structure def Bolt : Fastener { param length : Length = 10mm }` → error diagnostic containing 'missing required member' and 'thread_pitch'.",
       "status": "done",
-      "commit": "0201008"
+      "commit": "6944627"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Verify Value::Ord cross-type ordering: Undef < Bool < Int < Real < Scalar < String < Enum < List < Set < Map < Option — test already exists in value.rs (value_ord_cross_type_ordering, plus within-type tests)",
+      "type": "impl",
+      "description": "Ensure check_trait_conformance produces an error diagnostic when a required member name is not found among structure members. Error message includes trait name, missing member name, and expected type.",
       "status": "done",
-      "commit": "0201008"
+      "commit": "3fb1b5a"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Verify Type::Enum, List, Set, Map, Option, Function variants with Display output — tests already exist in ty.rs (type_enum_display, type_list_display, type_set_display, type_map_display, type_option_display, type_function_display, type_function_multi_params_display, type_new_variants_not_numeric)",
+      "description": "Write failing test: type mismatch — `trait Weighted { param mass : Mass }`, `structure def S : Weighted { param mass : Length = 5mm }` → error diagnostic about type mismatch (expected Mass, got Length).",
       "status": "done",
-      "commit": "0201008"
+      "commit": "fcbe483"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Verify EnumDef construction, field access, and contains_variant — tests in tests/m5_types.rs (enum_def_construction_and_lookup, enum_def_debug_clone_eq)",
+      "type": "impl",
+      "description": "Add type compatibility checking in conformance: when a structure has the required member by name but the type doesn't match exactly, emit an error diagnostic with expected vs actual type. Use Type equality (==) for conformance checking.",
       "status": "done",
-      "commit": "0201008"
+      "commit": "3fb1b5a"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Verify TraitDef, TraitMember (all 6 variants), TraitRef, TraitBound, TypeParam, PortDirection construction and trait bounds (Debug, Clone, PartialEq, Eq) — tests in tests/m5_types.rs (trait_def_full_construction, trait_member_param/port/sub/let_and_constraint/associated_type, trait_ref_construction/equality, trait_bound_wraps_trait_ref, type_param_construction/no_bounds_no_default, port_direction_variants/debug_clone_eq_copy_hash)",
+      "description": "Write failing test: default merging — `trait HasSize { param size : Length = 10mm }`, `structure def S : HasSize { }` → S should compile without errors, and the TopologyTemplate should contain a value cell for 'size' with the trait's default expression (10mm).",
       "status": "done",
-      "commit": "0201008"
+      "commit": "c17565b"
     },
     {
       "id": "step-10",
-      "type": "test",
-      "description": "Verify all M5 types are exported from crate root (lib.rs re-exports) — tests in tests/exports.rs (all_m5_types_exported) and tests/m5_types.rs (all_m5_types_exported_from_crate_root, value_display_via_public_api)",
+      "type": "impl",
+      "description": "Implement default member injection: after conformance checking identifies defaults not overridden by the structure, inject them as additional value cells (for param/let defaults) or constraints (for constraint defaults) into the TopologyTemplate. Compile default expressions using a temporary CompilationScope with the structure's existing members.",
       "status": "done",
-      "commit": "0201008"
+      "commit": "3fb1b5a"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Verify no cross-domain hash collisions between Value and Satisfaction content hashes — tests in value.rs (value_option_none_hash_not_equal_satisfaction_satisfied, value_option_some_hash_not_equal_satisfaction_violated, value_and_satisfaction_content_hash_tags_no_cross_domain_collisions)",
+      "description": "Write test: default override — `trait HasSize { param size : Length = 10mm }`, `structure def S : HasSize { param size : Length = 20mm }` → structure's value (20mm) is used, no error, only one 'size' value cell exists.",
       "status": "done",
-      "commit": "0201008"
+      "commit": "fe298d5"
     },
     {
       "id": "step-12",
-      "type": "test",
-      "description": "Write failing tests for hash-equality invariant on Real and Scalar -0.0: (1) `real_neg_zero_hash_differs_from_pos_zero` — asserts Value::Real(-0.0).content_hash() != Value::Real(0.0).content_hash(), since PartialEq considers them different (to_bits). (2) `scalar_neg_zero_hash_differs_from_pos_zero` — same for Value::Scalar with si_value -0.0 vs 0.0. (3) `hash_equality_invariant_real` — asserts that for any two Value::Real(a), Value::Real(b), if a != b then a.content_hash() != b.content_hash() (spot-check with -0.0/0.0 pair). Also update existing `neg_zero_normalized` test to assert_ne instead of assert_eq (rename to `real_neg_zero_not_normalized_in_hash`). These tests will FAIL against the current implementation which normalizes -0.0 to 0.0 in content_hash.",
+      "type": "impl",
+      "description": "Ensure conformance logic correctly detects that a structure-provided member satisfies the requirement even when a default exists. The member's presence prevents default injection. Verify with test from step-11.",
       "status": "done",
-      "commit": "7ae369a"
+      "commit": "3fb1b5a"
     },
     {
       "id": "step-13",
-      "type": "impl",
-      "description": "Fix content_hash for Value::Real: remove -0.0 normalization, use to_bits() directly. Change line 84 from `let normalized = if *r == 0.0 { 0.0f64 } else { *r };` to just use `*r` directly (keeping NaN canonicalization). The resulting code: `let bits = if r.is_nan() { f64::NAN.to_bits() } else { r.to_bits() };`. This makes content_hash consistent with PartialEq (both use to_bits). All step-12 tests should now pass.",
+      "type": "test",
+      "description": "Write failing test: multiple trait bounds — `trait A { param a : Length }`, `trait B { param b : Length }`, `structure def X : A + B { param a : Length = 1mm  param b : Length = 2mm }` → no errors, both requirements satisfied.",
       "status": "done",
-      "commit": "e46ca1d"
+      "commit": "092b719"
     },
     {
       "id": "step-14",
-      "type": "test",
-      "description": "Write failing test for Scalar hash-equality invariant: `scalar_neg_zero_hash_consistency` — asserts Value::Scalar { si_value: -0.0, dimension: LENGTH }.content_hash() != Value::Scalar { si_value: 0.0, dimension: LENGTH }.content_hash(). This test will FAIL because the Scalar content_hash (line 95) still normalizes -0.0.",
+      "type": "impl",
+      "description": "Ensure conformance checking iterates over all entries in structure.trait_bounds, resolving and checking each trait independently. All requirement violations collected before returning.",
       "status": "done",
-      "commit": "ab5761b"
+      "commit": "3fb1b5a"
     },
     {
       "id": "step-15",
-      "type": "impl",
-      "description": "Fix content_hash for Value::Scalar: remove -0.0 normalization from si_value hashing. Change line 95 from `let normalized = if *si_value == 0.0 { 0.0f64 } else { *si_value };` to use `*si_value` directly (keeping NaN canonicalization). The resulting code: `let bits = if si_value.is_nan() { f64::NAN.to_bits() } else { si_value.to_bits() };`. Run full test suite to confirm all 171+ tests pass with the fix.",
+      "type": "test",
+      "description": "Write failing test: diamond inheritance — `trait C { param x : Length }`, `trait A : C { }`, `trait B : C { }`, `structure def X : A + B { param x : Length = 5mm }` → no errors. The requirement from C, reachable via both A and B, is checked once.",
       "status": "done",
-      "commit": "d7c2eaf"
+      "commit": "730ccc3"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement collect_all_requirements(trait_name, registry) that recursively walks refinement chains, collecting requirements from parent traits. Deduplicate by member name: if the same name appears from multiple paths with the same type, keep one. If same name with different types, it's a conflict (handled in step-18). Use a HashSet<String> to track visited traits to handle diamonds.",
+      "status": "done",
+      "commit": "3fb1b5a"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing test: composition conflict — `trait A { param size : Length }`, `trait B { param size : Mass }`, `structure def X : A + B { param size : Length = 5mm }` → error diagnostic about conflicting requirements for 'size' (Length vs Mass).",
+      "status": "done",
+      "commit": "b70ef23"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Implement conflict detection: when collecting requirements from multiple traits (including via refinement chains), if two requirements share a member name but have different types, emit a compile error about the conflict. This check happens during requirement collection before per-member checking.",
+      "status": "done",
+      "commit": "3fb1b5a"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing test: deep trait chain — `trait A { param x : Length }`, `trait B : A { param y : Length }`, `trait C : B { param z : Length }`, `structure def S : C { param x : Length = 1mm  param y : Length = 2mm  param z : Length = 3mm }` → S must satisfy requirements from A (x), B (y), and C (z). No errors.",
+      "status": "done",
+      "commit": "3fe8942"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Verify transitive requirement collection handles deep chains (C→B→A). The collect_all_requirements function should walk the entire chain. Fix if needed.",
+      "status": "done",
+      "commit": "3fb1b5a"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing test: constraint from trait — `trait Safe { constraint x > 0 }`, structure conforms without having a matching constraint → default constraint is injected. Also test: two traits require a labeled constraint 'min_size'. A structure with a single 'min_size' constraint satisfies both.",
+      "status": "done",
+      "commit": "2c1445b"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Implement constraint requirement and default handling: Constraint members in traits become requirements (matched by label if labeled, or injected as defaults if they have an expression). For labeled constraints, a single constraint in the structure with matching label satisfies requirements from multiple traits.",
+      "status": "done",
+      "commit": "2c1445b"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write failing test for duplicate default injection (review issue: data_integrity / missing_test_for_correctness_bug). Two distinct traits `trait A { param size : Length = 10mm }` and `trait B { param size : Length = 5mm }`, `structure def X : A + B { }` (no override). Currently `collect_all_requirements` pushes defaults from every trait unconditionally, producing TWO ValueCellDecl entries with the same ValueCellId {entity: 'X', member: 'size'}, corrupting the TopologyTemplate. Test asserts: exactly one 'size' value cell exists after compilation.",
+      "status": "done",
+      "commit": "bae9e7c"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Fix duplicate default injection by adding `seen_defaults: HashMap<String, Type>` parameter to `collect_all_requirements`. Before pushing a named default (non-empty name), extract its type (cell_type for Param, Type::Real for Let, skip type check for Constraint) and check `seen_defaults`. If same name + same type: skip silently (dedup). If same name + different type: emit a conflict diagnostic for the default and skip. If not seen: insert name→type and push the default. For unnamed defaults (empty name, e.g. unlabeled constraints), always push without dedup. Thread the new `seen_defaults` parameter through from `check_trait_conformance` where it is initialized as an empty HashMap.",
+      "status": "done",
+      "commit": "eb3a807"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Write test for default conflict detection across traits with different types. `trait A { param size : Length = 10mm }`, `trait B { param size : Mass = 5kg }` (same name, DIFFERENT types in defaults), `structure def X : A + B { }`. Expect a conflict diagnostic mentioning 'size' and 'conflicting'. Also test the resolution: `structure def Y : A + B { param size : Length = 7mm }` should compile without conflict because the structure overrides the default, making the conflict moot (both defaults are skipped).",
+      "status": "done",
+      "commit": "1723cae"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Verify step-25 test passes with the implementation from step-24. The seen_defaults HashMap<String, Type> comparison already handles type mismatch → conflict diagnostic. For the resolution case where the structure provides its own member, the `!structure_members.contains_key` guard at injection time already prevents injection, so the conflict diagnostic from collection is still emitted but the duplicate injection is avoided. If the test expects NO diagnostic when the structure overrides, suppress default conflict diagnostics when the structure provides the member — check `structure_members` before emitting. Fix accordingly.",
+      "status": "done",
+      "commit": "eb3a807"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Write tests for labeled constraint default dedup and RequirementKind::Constraint dead code cleanup (review issues: dead_code_untested_path, behavioral_incorrectness). (a) Two traits with same labeled constraint default: `trait A { param x : Length  constraint min_size : x > 0mm }`, `trait B { param x : Length  constraint min_size : x > 0mm }`, `structure def X : A + B { param x : Length = 5mm }` → no errors, exactly ONE 'min_size' constraint injected (not two). (b) Same two traits but structure provides its own `constraint min_size : x > 1mm` → structure's constraint used, zero additional 'min_size' constraints injected from defaults. These cover the step-21 dual-trait/labeled-constraint scenario that was described but untested.",
+      "status": "done",
+      "commit": "780d945"
+    },
+    {
+      "id": "step-28",
+      "type": "impl",
+      "description": "Remove the dead `RequirementKind::Constraint(Option<String>)` variant from the enum and its unreachable match arm in `check_trait_conformance` (lines 2232-2246). In the current AST, `ConstraintDecl` always has `expr: Expr` (non-optional), so there is no way to express a bodyless constraint requirement — all constraints in traits are necessarily defaults. Fix the misleading comment at lines 1031-1033 in `compile_trait` to accurately say 'Labeled constraint with expression in trait → default (override detection uses label matching)'. Keep the `structure_constraint_labels` collection since it is still used for constraint default dedup at the injection site (line 2337). Verify all existing tests still pass after the enum change.",
+      "status": "done",
+      "commit": "ba3c209"
     }
   ],
   "design_decisions": [
     {
-      "decision": "All work already implemented — plan is verification-only",
-      "rationale": "All Value variants (Enum, List, Set, Map, Option), Type variants (Enum, List, Set, Map, Option, Function), trait definition types (EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam, PortDirection), Ord for Value, Display, content_hash, and all tests (171 total) are already in place and passing. No code changes are needed."
+      "decision": "Extend resolve_type_name to support 'Length' → Scalar{LENGTH} and 'Mass' → Scalar{MASS}",
+      "rationale": "The language spec and existing trait parser tests use type names like 'Length' and 'Mass'. These need to resolve to dimensioned scalar types for conformance type checking to work. This is a small, safe addition to an existing function."
     },
     {
-      "decision": "Value::Ord uses type-tag discriminant for cross-type ordering",
-      "rationale": "Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10. This provides a deterministic total order required for BTreeSet<Value> and BTreeMap<Value, Value>."
+      "decision": "Build trait registry as module-local HashMap<String, CompiledTrait>",
+      "rationale": "Follows existing pattern where cross-module resolution is noted but not implemented. Import resolution for traits can be added when multi-module compilation is fully wired up."
     },
     {
-      "decision": "f64 ordering uses to_bits() for total order consistency",
-      "rationale": "NaN and -0.0 need deterministic ordering. Using to_bits() gives a total order consistent with the PartialEq implementation."
+      "decision": "Requirements vs defaults determined by presence of default expression",
+      "rationale": "A trait member with no default is a requirement (must be provided by the structure). A trait member with a default (e.g., param size : Length = 10mm) provides a fallback. For params, the default is ParamDecl.default. For lets, the LetDecl always has a value so all lets are either requirements (value references undefined names) or defaults."
     },
     {
-      "decision": "Value::Option content_hash uses tag [11] to avoid collision with Satisfaction tag [10]",
-      "rationale": "Satisfaction uses tag [10] exclusively. Value::Option originally collided; moved to tag [11] with regression tests to prevent future collisions."
+      "decision": "Conformance checking happens inside compile_structure, after first-pass name registration but before reference safety pass",
+      "rationale": "Default members need to be injected into the structure's value_cells/constraints before the reference safety analysis runs, so conformance checking and default injection must happen during structure compilation."
     },
     {
-      "decision": "TraitMember::Sub uses trait_ref instead of plain type",
-      "rationale": "Sub-structures reference traits (which can have type arguments), not raw types. Using TraitRef allows Sub { name: 'child', trait_ref: TraitRef { name: 'Component', type_args: [] } }."
+      "decision": "Deduplication of requirements by name for diamond patterns",
+      "rationale": "When A : C and B : C, and X : A + B, the requirement from C appears via both paths. Deduplication by member name ensures it's only checked once and prevents false 'conflict' errors when types agree."
     },
     {
-      "decision": "TraitMember::Port includes PortDirection field",
-      "rationale": "Ports need direction information (In, Out, Bidi) for connection checking in M5. Including it in the Port variant keeps port metadata colocated."
+      "decision": "Type matching for conformance uses exact type equality (==), not type_compatible()",
+      "rationale": "For trait conformance, the structure member must have exactly the same type as the trait requirement. The existing type_compatible() allows Int→Real widening which would be too permissive for trait contracts where dimensional precision matters."
     },
     {
-      "decision": "Fix hash-equality invariant using Option A: remove -0.0 normalization from content_hash, use to_bits() directly",
-      "rationale": "Review identified that content_hash normalizes -0.0→0.0 but PartialEq uses to_bits() (making -0.0 != 0.0). This breaks the cache invariant: unequal values must hash differently. Option A (use to_bits() in hash) is lower risk than Option B (normalize in Eq) because it requires no change to Ord/Eq contracts already relied upon by BTreeSet/BTreeMap. NaN canonicalization is retained since it's consistent (NaN == NaN via to_bits(), and canonical NaN bits are stable)."
+      "decision": "Trait members that are lets with expressions are treated as defaults (not requirements)",
+      "rationale": "In the TraitDecl AST, LetDecl always has a value expression. A let binding with an expression provides a computed default. If the structure provides its own let with the same name, the structure's version takes precedence."
+    },
+    {
+      "decision": "Params without defaults in traits are strict requirements",
+      "rationale": "A param declared in a trait without a default (no = expr) means the conforming structure MUST provide it. This is the fundamental contract of trait conformance."
+    },
+    {
+      "decision": "Remove RequirementKind::Constraint as dead code rather than implementing bodyless constraint requirements",
+      "rationale": "The ConstraintDecl AST node always has `expr: Expr` (non-optional), so there is no way to express a constraint requirement without a body in the current grammar. Rather than changing the grammar/AST (which is out of scope for this task), we remove the dead variant. All constraints in traits are defaults — they are injected unless the structure provides its own constraint with the same label. This can be revisited if the grammar later adds optional constraint bodies."
+    },
+    {
+      "decision": "Deduplicate defaults across distinct traits using seen_defaults HashMap<String, Type>",
+      "rationale": "The existing `visited_traits` set prevents revisiting the same trait (diamond pattern), but does NOT prevent two distinct traits from contributing defaults with the same member name. Without dedup, two ValueCellDecl entries with the same ValueCellId are injected, corrupting the TopologyTemplate. The fix mirrors the existing `seen_names` pattern used for requirement dedup: same name + same type → skip silently, same name + different type → conflict diagnostic."
     }
   ],
   "reuse": [
     {
-      "what": "ContentHash infrastructure",
-      "where": "crates/reify-types/src/hash.rs",
-      "how": "Used ContentHash::of() and .combine() for all new Value variant content hashes, following existing patterns from Bool/Int/Real/String/Scalar/Undef."
+      "what": "resolve_type_name() function",
+      "where": "crates/reify-compiler/src/lib.rs:333",
+      "how": "Extend with 'Length' and 'Mass' cases. Reuse for resolving types in trait member compilation."
     },
     {
-      "what": "DimensionVector",
-      "where": "crates/reify-types/src/dimension.rs",
-      "how": "Scalar variant's dimension field and Ord implementation comparing dimensions first, then value bits."
+      "what": "compile_expr() and compile_expr_guarded()",
+      "where": "crates/reify-compiler/src/lib.rs:469-884",
+      "how": "Reuse for compiling default expressions in trait members when injecting defaults."
     },
     {
-      "what": "Existing test patterns",
-      "where": "crates/reify-types/src/value.rs (tests module)",
-      "how": "New variant tests follow the same structure: construction, equality, ordering, content_hash determinism, Display output."
+      "what": "CompilationScope",
+      "where": "crates/reify-compiler/src/lib.rs:437-464",
+      "how": "Create a temporary scope when compiling trait default expressions during injection."
     },
     {
-      "what": "BTreeSet/BTreeMap from std",
-      "where": "std::collections",
-      "how": "Used directly for Value::Set and Value::Map, enabled by implementing Ord on Value."
+      "what": "Test helper pattern: compile_first_template()",
+      "where": "crates/reify-compiler/tests/guard_compilation.rs:10-16",
+      "how": "Create similar helper for trait conformance tests that returns (CompiledModule) or (TopologyTemplate, Vec<Diagnostic>)."
+    },
+    {
+      "what": "ContentHash combining pattern",
+      "where": "crates/reify-compiler/src/lib.rs:996-1024",
+      "how": "Follow same pattern for CompiledTrait content hashing and including trait_defs in module hash."
+    },
+    {
+      "what": "Existing MemberDecl enum and member processing logic",
+      "where": "reify_syntax::MemberDecl (crates/reify-syntax/src/lib.rs:38-47)",
+      "how": "Trait members use the same MemberDecl variants (Param, Let, Constraint, Sub). Reuse the same match arms when categorizing trait members into requirements and defaults."
+    },
+    {
+      "what": "Diagnostic construction patterns",
+      "where": "crates/reify-compiler/src/lib.rs throughout",
+      "how": "Follow existing patterns: Diagnostic::error(msg).with_label(DiagnosticLabel::new(span, hint)). Push to diagnostics vec."
+    },
+    {
+      "what": "seen_names HashMap pattern for requirement dedup in collect_all_requirements",
+      "where": "crates/reify-compiler/src/lib.rs:2184 (seen_requirement_names) and collect_all_requirements lines 2406-2430",
+      "how": "Mirror this exact pattern for default deduplication: HashMap<String, Type> tracking seen default names, with type comparison for conflict detection vs silent dedup."
     }
   ]
 }

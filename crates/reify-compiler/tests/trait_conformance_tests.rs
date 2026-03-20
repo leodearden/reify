@@ -1,0 +1,570 @@
+//! Trait conformance compilation tests.
+//!
+//! Tests for compiling trait declarations, conformance checking,
+//! default merging, and composition conflict detection.
+
+use reify_compiler::*;
+use reify_types::*;
+
+/// Helper: parse source and compile, returning the CompiledModule.
+fn compile_module(source: &str) -> CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    reify_compiler::compile(&parsed)
+}
+
+/// Helper: parse source and compile, returning first template + diagnostics.
+fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
+    let module = compile_module(source);
+    let template = module.templates.into_iter().next().expect("expected 1 template");
+    (template, module.diagnostics)
+}
+
+/// Step 1: Compile a trait declaration produces CompiledTrait in CompiledModule.trait_defs.
+#[test]
+fn compile_trait_produces_compiled_trait() {
+    let source = r#"
+trait Fastener {
+    param thread_pitch : Length
+}
+"#;
+
+    let module = compile_module(source);
+
+    // Should have 1 trait def
+    assert_eq!(module.trait_defs.len(), 1, "expected 1 trait def");
+    let trait_def = &module.trait_defs[0];
+
+    // Name should be "Fastener"
+    assert_eq!(trait_def.name, "Fastener");
+
+    // Should have 1 required member named "thread_pitch"
+    assert_eq!(trait_def.required_members.len(), 1, "expected 1 required member");
+    let req = &trait_def.required_members[0];
+    assert_eq!(req.name, "thread_pitch");
+
+    // Requirement kind should be Param with type Scalar{LENGTH}
+    match &req.kind {
+        RequirementKind::Param(ty) => {
+            assert_eq!(*ty, Type::Scalar { dimension: DimensionVector::LENGTH });
+        }
+        other => panic!("expected RequirementKind::Param, got {:?}", other),
+    }
+}
+
+/// Step 3: Simple conformance — structure satisfies trait requirement.
+#[test]
+fn simple_conformance_no_errors() {
+    let source = r#"
+trait Fastener {
+    param thread_pitch : Length
+}
+
+structure def Bolt : Fastener {
+    param thread_pitch : Length = 20mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    // No error-severity diagnostics expected
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
+/// Step 15: Diamond inheritance — requirement from C reachable via both A and B.
+#[test]
+fn diamond_inheritance_deduplication() {
+    let source = r#"
+trait C {
+    param x : Length
+}
+
+trait A : C {
+}
+
+trait B : C {
+}
+
+structure def X : A + B {
+    param x : Length = 5mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
+/// Step 5: Missing member — error diagnostic about missing required member.
+#[test]
+fn missing_member_error() {
+    let source = r#"
+trait Fastener {
+    param thread_pitch : Length
+}
+
+structure def Bolt : Fastener {
+    param length : Length = 10mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected error diagnostic for missing member");
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("missing required member") && error_msg.contains("thread_pitch"),
+        "error should mention 'missing required member' and 'thread_pitch', got: {}",
+        error_msg
+    );
+}
+
+/// Step 7: Type mismatch — member has wrong type.
+#[test]
+fn type_mismatch_error() {
+    let source = r#"
+trait Weighted {
+    param mass : Mass
+}
+
+structure def S : Weighted {
+    param mass : Length = 5mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected error diagnostic for type mismatch");
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("type mismatch"),
+        "error should mention 'type mismatch', got: {}",
+        error_msg
+    );
+}
+
+/// Step 9: Default merging — trait provides default, structure doesn't override.
+#[test]
+fn default_merging_injects_value_cell() {
+    let source = r#"
+trait HasSize {
+    param size : Length = 10mm
+}
+
+structure def S : HasSize {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    // No error-severity diagnostics expected
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // The template should contain a value cell for 'size' injected from the trait default.
+    let size_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "size");
+    assert!(
+        size_cell.is_some(),
+        "expected 'size' value cell from trait default, got cells: {:?}",
+        template.value_cells.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+    );
+
+    let size_cell = size_cell.unwrap();
+    assert_eq!(size_cell.kind, ValueCellKind::Param);
+    assert_eq!(
+        size_cell.cell_type,
+        Type::Scalar { dimension: DimensionVector::LENGTH }
+    );
+    assert!(size_cell.default_expr.is_some(), "expected default expression for 'size'");
+}
+
+/// Step 11: Default override — structure provides its own value, no error, only one cell.
+#[test]
+fn default_override_uses_structure_value() {
+    let source = r#"
+trait HasSize {
+    param size : Length = 10mm
+}
+
+structure def S : HasSize {
+    param size : Length = 20mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    // No error-severity diagnostics expected
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Only one 'size' value cell should exist (the structure's, not the trait default).
+    let size_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "size")
+        .collect();
+    assert_eq!(
+        size_cells.len(),
+        1,
+        "expected exactly 1 'size' value cell, got {}",
+        size_cells.len()
+    );
+}
+
+/// Step 13: Multiple trait bounds — structure satisfies both traits.
+#[test]
+fn multiple_trait_bounds_satisfied() {
+    let source = r#"
+trait A {
+    param a : Length
+}
+
+trait B {
+    param b : Length
+}
+
+structure def X : A + B {
+    param a : Length = 1mm
+    param b : Length = 2mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors for multi-trait: {:?}", errors);
+}
+
+/// Step 17: Composition conflict — same name, different types across traits.
+#[test]
+fn composition_conflict_error() {
+    let source = r#"
+trait A {
+    param size : Length
+}
+
+trait B {
+    param size : Mass
+}
+
+structure def X : A + B {
+    param size : Length = 5mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected error for conflicting requirements");
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("conflicting"),
+        "error should mention 'conflicting', got: {}",
+        error_msg
+    );
+}
+
+/// Step 19: Deep trait chain — C→B→A, structure must satisfy all.
+#[test]
+fn deep_trait_chain() {
+    let source = r#"
+trait A {
+    param x : Length
+}
+
+trait B : A {
+    param y : Length
+}
+
+trait C : B {
+    param z : Length
+}
+
+structure def S : C {
+    param x : Length = 1mm
+    param y : Length = 2mm
+    param z : Length = 3mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors for deep chain: {:?}", errors);
+}
+
+/// Step 21: Constraint from trait — default constraint is injected.
+#[test]
+fn constraint_from_trait_injected() {
+    let source = r#"
+trait Safe {
+    param x : Length
+    constraint x > 0mm
+}
+
+structure def S : Safe {
+    param x : Length = 5mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // The constraint from the trait should be injected
+    assert!(
+        !template.constraints.is_empty(),
+        "expected at least 1 constraint from trait default"
+    );
+}
+
+/// Step 23: Duplicate default injection — two distinct traits with same-named default param.
+/// Currently `collect_all_requirements` pushes defaults unconditionally, producing TWO
+/// ValueCellDecl entries for 'size'. Test asserts exactly one 'size' value cell exists.
+#[test]
+fn duplicate_default_injection_deduped() {
+    let source = r#"
+trait A {
+    param size : Length = 10mm
+}
+
+trait B {
+    param size : Length = 5mm
+}
+
+structure def X : A + B {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    // No error-severity diagnostics expected (same name + same type → dedup, not conflict).
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Exactly one 'size' value cell should exist (not two).
+    let size_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "size")
+        .collect();
+    assert_eq!(
+        size_cells.len(),
+        1,
+        "expected exactly 1 'size' value cell after dedup, got {}",
+        size_cells.len()
+    );
+}
+
+/// Step 25a: Default conflict across traits with different types.
+/// Two traits provide defaults for 'size' with different types → conflict diagnostic.
+#[test]
+fn default_conflict_different_types() {
+    let source = r#"
+trait A {
+    param size : Length = 10mm
+}
+
+trait B {
+    param size : Mass = 5kg
+}
+
+structure def X : A + B {
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected conflict diagnostic");
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("conflicting") && error_msg.contains("size"),
+        "error should mention 'conflicting' and 'size', got: {}",
+        error_msg
+    );
+}
+
+/// Step 25b: Default conflict resolution — structure overrides the conflicting default.
+/// When the structure provides its own member, the conflict is moot — no diagnostic.
+#[test]
+fn default_conflict_resolved_by_override() {
+    let source = r#"
+trait A {
+    param size : Length = 10mm
+}
+
+trait B {
+    param size : Mass = 5kg
+}
+
+structure def Y : A + B {
+    param size : Length = 7mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    // No error diagnostics — the structure provides 'size', resolving the conflict.
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors when structure overrides: {:?}", errors);
+
+    // Only one 'size' value cell.
+    let size_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "size")
+        .collect();
+    assert_eq!(size_cells.len(), 1, "expected exactly 1 'size' value cell");
+}
+
+/// Step 27a: Unlabeled constraint defaults from two traits — both injected.
+/// Since labeled constraints are not yet supported in the grammar (label is always None),
+/// unlabeled constraints from distinct traits are both injected (no dedup for unnamed).
+#[test]
+fn unlabeled_constraint_defaults_from_two_traits() {
+    let source = r#"
+trait A {
+    param x : Length
+    constraint x > 0mm
+}
+
+trait B {
+    param x : Length
+    constraint x > 0mm
+}
+
+structure def X : A + B {
+    param x : Length = 5mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Both unlabeled constraints are injected (unnamed defaults always push).
+    assert!(
+        template.constraints.len() >= 2,
+        "expected at least 2 constraints from two traits, got {}",
+        template.constraints.len()
+    );
+}
+
+/// Step 27b: Structure provides its own constraint — trait constraints still injected
+/// (since all are unlabeled and there's no label-based override).
+#[test]
+fn structure_constraint_with_trait_constraints() {
+    let source = r#"
+trait A {
+    param x : Length
+    constraint x > 0mm
+}
+
+structure def X : A {
+    param x : Length = 5mm
+    constraint x > 1mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Structure's constraint + trait's unlabeled constraint = at least 2.
+    assert!(
+        template.constraints.len() >= 2,
+        "expected at least 2 constraints (structure + trait), got {}",
+        template.constraints.len()
+    );
+}
+
+/// Step 21b: Trait with constraint and param — both injected correctly.
+#[test]
+fn trait_constraint_and_param_both_injected() {
+    let source = r#"
+trait Safe {
+    param x : Length = 5mm
+    constraint x > 0mm
+}
+
+structure def S : Safe {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Both param default and constraint should be injected.
+    let has_x = template.value_cells.iter().any(|vc| vc.id.member == "x");
+    assert!(has_x, "expected value cell 'x' from trait default");
+
+    assert!(
+        !template.constraints.is_empty(),
+        "expected constraint from trait default"
+    );
+}
