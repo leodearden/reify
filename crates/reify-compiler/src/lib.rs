@@ -1315,7 +1315,7 @@ fn compile_structure(
         check_trait_conformance(
             structure,
             trait_registry,
-            &scope,
+            &mut scope,
             &mut value_cells,
             &mut constraints,
             &mut constraint_index,
@@ -2129,7 +2129,7 @@ fn compile_per_decl_constraint_guard(
 fn check_trait_conformance(
     structure: &reify_syntax::StructureDef,
     trait_registry: &HashMap<String, &CompiledTrait>,
-    scope: &CompilationScope,
+    scope: &mut CompilationScope,
     value_cells: &mut Vec<ValueCellDecl>,
     constraints: &mut Vec<CompiledConstraint>,
     constraint_index: &mut u32,
@@ -2265,6 +2265,19 @@ fn check_trait_conformance(
                     );
                 }
             }
+        }
+    }
+
+    // Pre-register default member names in scope so their expressions can
+    // reference each other (e.g., constraint x > 0 references param x from same trait).
+    for default in &all_defaults {
+        if !structure_members.contains_key(&default.name) && !default.name.is_empty() {
+            let ty = match &default.kind {
+                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
+                DefaultKind::Let(_) => Type::Real,
+                DefaultKind::Constraint(_) => continue,
+            };
+            scope.register(&default.name, ty);
         }
     }
 

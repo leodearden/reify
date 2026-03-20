@@ -329,3 +329,63 @@ structure def S : C {
         .collect();
     assert!(errors.is_empty(), "unexpected errors for deep chain: {:?}", errors);
 }
+
+/// Step 21: Constraint from trait — default constraint is injected.
+#[test]
+fn constraint_from_trait_injected() {
+    let source = r#"
+trait Safe {
+    param x : Length
+    constraint x > 0mm
+}
+
+structure def S : Safe {
+    param x : Length = 5mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // The constraint from the trait should be injected
+    assert!(
+        !template.constraints.is_empty(),
+        "expected at least 1 constraint from trait default"
+    );
+}
+
+/// Step 21b: Trait with constraint and param — both injected correctly.
+#[test]
+fn trait_constraint_and_param_both_injected() {
+    let source = r#"
+trait Safe {
+    param x : Length = 5mm
+    constraint x > 0mm
+}
+
+structure def S : Safe {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Both param default and constraint should be injected.
+    let has_x = template.value_cells.iter().any(|vc| vc.id.member == "x");
+    assert!(has_x, "expected value cell 'x' from trait default");
+
+    assert!(
+        !template.constraints.is_empty(),
+        "expected constraint from trait default"
+    );
+}
