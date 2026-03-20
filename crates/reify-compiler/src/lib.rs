@@ -603,6 +603,8 @@ struct CompilationScope {
     names: HashMap<String, (ValueCellId, Type, Option<ValueCellId>)>,
     /// Names of ports declared in this structure, for member access disambiguation.
     port_names: HashSet<String>,
+    /// Names of collection sub-components (sub name : List<T>), for count expression handling.
+    collection_sub_names: HashSet<String>,
 }
 
 impl CompilationScope {
@@ -611,6 +613,7 @@ impl CompilationScope {
             entity_name: entity_name.to_string(),
             names: HashMap::new(),
             port_names: HashSet::new(),
+            collection_sub_names: HashSet::new(),
         }
     }
 
@@ -1674,7 +1677,7 @@ fn compile_entity(
     let mut scope = CompilationScope::new(entity_name);
     let mut value_cells = Vec::new();
     let mut constraints = Vec::new();
-    let mut sub_components = Vec::new();
+    let mut sub_components: Vec<SubComponentDecl> = Vec::new();
     let mut ports: Vec<CompiledPort> = Vec::new();
     let mut port_names: HashMap<String, SourceSpan> = HashMap::new();
     let mut duplicate_port_names: HashSet<String> = HashSet::new();
@@ -1791,6 +1794,11 @@ fn compile_entity(
                         }
                         _ => {}
                     }
+                }
+            }
+            reify_syntax::MemberDecl::Sub(sub) => {
+                if sub.is_collection {
+                    scope.collection_sub_names.insert(sub.name.clone());
                 }
             }
             _ => {}
@@ -1945,47 +1953,68 @@ fn compile_entity(
                 }
             }
             reify_syntax::MemberDecl::Constraint(constraint) => {
-                let compiled_expr = compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
-
-                // Check that the constraint expression produces Bool
-                if compiled_expr.result_type != Type::Bool {
-                    diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "constraint expression has type {}, expected Bool",
-                            compiled_expr.result_type,
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            constraint.expr.span,
-                            "expected Bool",
-                        )),
-                    );
-                }
-
-                let id = ConstraintNodeId::new(entity_name, constraint_index);
-                let cc = CompiledConstraint {
-                    id,
-                    label: constraint.label.clone(),
-                    expr: compiled_expr,
-                    span: constraint.span,
-                    domain: None,
-                };
-                constraint_index += 1;
-
-                if let Some(wc) = &constraint.where_clause {
-                    compile_per_decl_constraint_guard(
-                        entity_name,
-                        wc,
-                        cc,
-                        &mut scope,
-                        enum_defs,
-                        functions,
-                        diagnostics,
-                        &mut guarded_groups,
-                        &mut structure_controlling,
-                        &mut guard_index,
-                    );
+                // Detect collection count constraint pattern:
+                //   `collection_name.count == expr`  or  `expr == collection_name.count`
+                if let Some((coll_name, count_expr)) = extract_count_constraint(&constraint.expr, &scope.collection_sub_names) {
+                    let compiled_rhs = compile_expr(count_expr, &scope, enum_defs, functions, diagnostics);
+                    let count_member = format!("__count_{}", coll_name);
+                    let count_id = ValueCellId::new(entity_name, &count_member);
+                    value_cells.push(ValueCellDecl {
+                        id: count_id.clone(),
+                        kind: ValueCellKind::Let,
+                        visibility: Visibility::Private,
+                        cell_type: Type::Int,
+                        default_expr: Some(compiled_rhs),
+                        span: constraint.span,
+                    });
+                    structure_controlling.insert(count_id.clone());
+                    // Store count_cell on the matching SubComponentDecl
+                    if let Some(sub) = sub_components.iter_mut().find(|s| s.name == coll_name) {
+                        sub.count_cell = Some(count_id);
+                    }
                 } else {
-                    constraints.push(cc);
+                    let compiled_expr = compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
+
+                    // Check that the constraint expression produces Bool
+                    if compiled_expr.result_type != Type::Bool {
+                        diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "constraint expression has type {}, expected Bool",
+                                compiled_expr.result_type,
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                constraint.expr.span,
+                                "expected Bool",
+                            )),
+                        );
+                    }
+
+                    let id = ConstraintNodeId::new(entity_name, constraint_index);
+                    let cc = CompiledConstraint {
+                        id,
+                        label: constraint.label.clone(),
+                        expr: compiled_expr,
+                        span: constraint.span,
+                        domain: None,
+                    };
+                    constraint_index += 1;
+
+                    if let Some(wc) = &constraint.where_clause {
+                        compile_per_decl_constraint_guard(
+                            entity_name,
+                            wc,
+                            cc,
+                            &mut scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            &mut guarded_groups,
+                            &mut structure_controlling,
+                            &mut guard_index,
+                        );
+                    } else {
+                        constraints.push(cc);
+                    }
                 }
             }
             reify_syntax::MemberDecl::Sub(sub) => {
@@ -4154,6 +4183,46 @@ fn compile_geometry_call(
         }
         _ => None,
     }
+}
+
+/// Detect if a constraint expression matches the count constraint pattern:
+///   `collection_name.count == expr`  or  `expr == collection_name.count`
+/// Returns `(collection_name, count_expr)` where count_expr is the non-.count side.
+fn extract_count_constraint<'a>(
+    expr: &'a reify_syntax::Expr,
+    collection_sub_names: &HashSet<String>,
+) -> Option<(String, &'a reify_syntax::Expr)> {
+    if let reify_syntax::ExprKind::BinOp { op, left, right } = &expr.kind {
+        if op != "==" {
+            return None;
+        }
+        // Check LHS: collection_name.count == expr
+        if let Some(name) = extract_collection_count(left, collection_sub_names) {
+            return Some((name, right));
+        }
+        // Check RHS: expr == collection_name.count
+        if let Some(name) = extract_collection_count(right, collection_sub_names) {
+            return Some((name, left));
+        }
+    }
+    None
+}
+
+/// Check if an expression is `collection_name.count` for a known collection sub.
+fn extract_collection_count(
+    expr: &reify_syntax::Expr,
+    collection_sub_names: &HashSet<String>,
+) -> Option<String> {
+    if let reify_syntax::ExprKind::MemberAccess { object, member } = &expr.kind {
+        if member == "count" {
+            if let reify_syntax::ExprKind::Ident(name) = &object.kind {
+                if collection_sub_names.contains(name.as_str()) {
+                    return Some(name.clone());
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
