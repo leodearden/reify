@@ -122,3 +122,41 @@ structure def S {
         );
     }
 }
+
+/// Test that an incompatible connection (In -> In) produces a Violated constraint.
+#[test]
+fn eval_incompatible_connect_constraint() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : in T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b
+}
+"#;
+
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    // Should have a direction error diagnostic, but still produce a connection
+    let template = &compiled.templates[0];
+    assert_eq!(template.connections.len(), 1, "expected 1 connection");
+    let compat_id = &template.connections[0].compatibility_constraint;
+
+    // Use real constraint checker so literal Bool(false) evaluates to Violated
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.check(&compiled);
+
+    let compat_entry = result
+        .constraint_results
+        .iter()
+        .find(|e| e.id == *compat_id);
+    assert!(compat_entry.is_some(), "expected compatibility constraint in results");
+    assert_eq!(
+        compat_entry.unwrap().satisfaction,
+        Satisfaction::Violated,
+        "In->In connection should be Violated"
+    );
+}

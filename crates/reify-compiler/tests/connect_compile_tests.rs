@@ -285,3 +285,134 @@ structure def S {
         t1.content_hash
     );
 }
+
+// ── compile_connect_reverse_ok ───────────────────────────────────────
+
+#[test]
+fn compile_connect_reverse_ok() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : in T { param d : Length = 5mm }
+    port b : out T { param d : Length = 5mm }
+    connect a <- b
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    assert_eq!(template.connections[0].operator, reify_syntax::ConnectOp::Reverse);
+}
+
+// ── compile_connect_reverse_direction_error ──────────────────────────
+
+#[test]
+fn compile_connect_reverse_direction_error() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : out T { param d : Length = 5mm }
+    connect a <- b
+}
+"#;
+    let (_template, diagnostics) = compile_first_template(source);
+    let dir_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("incompatible port directions"))
+        .collect();
+    assert!(!dir_errors.is_empty(), "expected direction error, got: {:?}", diagnostics);
+}
+
+// ── compile_connect_bidirectional_direction_error ────────────────────
+
+#[test]
+fn compile_connect_bidirectional_direction_error() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : bidi T { param d : Length = 5mm }
+    connect a <-> b
+}
+"#;
+    let (_template, diagnostics) = compile_first_template(source);
+    let dir_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("bidirectional connect"))
+        .collect();
+    assert!(!dir_errors.is_empty(), "expected bidirectional error, got: {:?}", diagnostics);
+}
+
+// ── compile_connect_port_mapping_propagation ─────────────────────────
+
+#[test]
+fn compile_connect_port_mapping_propagation() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b { shaft -> input_bore }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    assert_eq!(template.connections[0].port_mappings, vec![("shaft".to_string(), "input_bore".to_string())]);
+}
+
+// ── compile_connect_unknown_port ─────────────────────────────────────
+
+#[test]
+fn compile_connect_unknown_port() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    connect a -> nonexistent
+}
+"#;
+    let (_template, diagnostics) = compile_first_template(source);
+    let undef_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
+        .collect();
+    assert!(!undef_errors.is_empty(), "expected undefined port error, got: {:?}", diagnostics);
+}
+
+// ── connector_sub_hash_isolates_params ───────────────────────────────
+
+#[test]
+fn connector_sub_hash_isolates_params() {
+    let source = r#"
+trait T { param d : Length }
+structure def BoltSet { param grade : Real = 8.8 }
+structure def S1 {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b : BoltSet { grade = 8.8 }
+}
+structure def S2 {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b : BoltSet { grade = 10.9 }
+}
+"#;
+    let module = compile_module(source);
+    let errors: Vec<_> = module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let s1 = module.templates.iter().find(|t| t.name == "S1").expect("S1");
+    let s2 = module.templates.iter().find(|t| t.name == "S2").expect("S2");
+
+    let s1_conn = s1.sub_components.iter().find(|s| s.name.starts_with("__connector_")).expect("S1 connector");
+    let s2_conn = s2.sub_components.iter().find(|s| s.name.starts_with("__connector_")).expect("S2 connector");
+
+    assert_ne!(
+        s1_conn.content_hash, s2_conn.content_hash,
+        "same connector type with different param values must produce different hashes"
+    );
+}

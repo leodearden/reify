@@ -204,3 +204,34 @@ fn parse_connect_with_member_access() {
         other => panic!("expected MemberAccess, got {:?}", other),
     }
 }
+
+// ── parse_connect_reverse ─────────────────────────────────────────
+
+#[test]
+fn parse_connect_reverse() {
+    let (decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a <- b }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let connect = match &structure.members[2] {
+        MemberDecl::Connect(c) => c,
+        other => panic!("expected Connect, got {:?}", other),
+    };
+
+    assert_eq!(connect.operator, ConnectOp::Reverse);
+
+    match &connect.left.expr.kind {
+        ExprKind::Ident(name) => assert_eq!(name, "a"),
+        other => panic!("expected Ident('a'), got {:?}", other),
+    }
+    match &connect.right.expr.kind {
+        ExprKind::Ident(name) => assert_eq!(name, "b"),
+        other => panic!("expected Ident('b'), got {:?}", other),
+    }
+}
