@@ -1,34 +1,32 @@
 {
-  "task_id": "62",
-  "title": "Collection compilation + operations",
+  "task_id": "91",
+  "title": "Property editor + constraint panel components",
   "files": [
-    "crates/reify-types/src/expr.rs",
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-stdlib/src/lib.rs",
-    "crates/reify-expr/tests/collection_eval_tests.rs",
-    "crates/reify-compiler/tests/collection_compile_tests.rs"
+    "gui/src/panels/PropertyEditor.tsx",
+    "gui/src/panels/PropertyEditor.module.css",
+    "gui/src/panels/ConstraintPanel.tsx",
+    "gui/src/panels/ConstraintPanel.module.css",
+    "gui/src/panels/Toolbar.tsx",
+    "gui/src/panels/Toolbar.module.css",
+    "gui/src/panels/StatusBar.tsx",
+    "gui/src/panels/StatusBar.module.css",
+    "gui/src/panels/index.ts",
+    "gui/src/__tests__/PropertyEditor.test.tsx",
+    "gui/src/__tests__/ConstraintPanel.test.tsx",
+    "gui/src/__tests__/Toolbar.test.tsx",
+    "gui/src/__tests__/StatusBar.test.tsx"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-compiler",
-    "crates/reify-expr",
-    "crates/reify-stdlib"
+    "gui/src/panels",
+    "gui/src/__tests__"
   ],
-  "analysis": "This task implements collection compilation and operations across the Reify pipeline. The codebase already has: (1) Value::List/Set/Map variants in reify-types, (2) Type::List/Set/Map types, (3) syntax parsing for list/set/map literals and index access in reify-syntax, (4) stub error handlers in the compiler for collection syntax nodes, (5) apply_lambda in reify-expr for calling lambda closures.\n\nThe work involves: (A) Adding 5 new CompiledExprKind variants to reify-types (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall), (B) Implementing their evaluation in reify-expr including all collection methods (count, sum, map, filter, fold, all, any, contains, concat, generate for List; count, contains, union, intersection, difference for Set; count, keys, values, contains_key for Map), (C) Implementing compilation in reify-compiler replacing the current stubs, (D) Adding dimension-aware sum to reify-stdlib.\n\nKey constraint: The current grammar supports MemberAccess (obj.member) but not method_call with args (obj.method(args)). Property-style methods (.count, .sum, .keys, .values) compile from MemberAccess. Methods with args (.map, .filter, .fold, .contains, .union, etc.) will be tested at the CompiledExpr level directly. Full end-to-end parsing of method calls with arguments requires a grammar change (tree-sitter-reify) which is out of scope for this task's modules.\n\nUndef propagation follows the spec: undef collection -> undef result, known-structure-unknown-elements -> count works but sum propagates, Kleene 3-valued logic for .all/.any.\n\nReview feedback identified three blocking issues: (1) Missing Kleene tests for .any — the implementation is correct but untested for [undef, false].any -> Undef and [true, undef].any -> Bool(true). (2) Missing .filter Undef propagation test — the implementation already returns Undef when predicate returns Undef (line 484) but no test covers it. (3) apply_lambda() uses EvalContext::simple() which drops the function registry, so UserFunctionCall nodes inside lambda bodies silently return Undef. The fix requires threading EvalContext through apply_lambda and eval_method_call.",
+  "analysis": "Task 91 creates four UI panel components for the Reify GUI: PropertyEditor, ConstraintPanel, Toolbar, and StatusBar. The codebase already has a solid foundation: types.ts defines ValueData (cell_id, name, value, unit, determinacy, entity_path) and ConstraintData (node_id, expression, status, details, parameter_ids). The engineStore holds values as Record<string, ValueData> keyed by cell_id, and constraints as Record<string, ConstraintData> keyed by node_id. The bridge module exports setParameter(cellId, value) for editing. selectionStore provides selectedEntity/hoveredEntity for cross-highlighting. Theme tokens are set as CSS custom properties (--reify-*). The project uses SolidJS with CSS modules, vitest + @solidjs/testing-library for testing. Tests mock the bridge module with vi.mock. The panels/ directory does not exist yet and must be created. All components are pure presentational SolidJS components that receive store state and callbacks as props (following the existing pattern of factory functions returning state + actions). Note: the task description mentions ValueData.kind and ConstraintData.label fields that don't exist in the actual types - we'll use the actual type definitions (determinacy for kind, details for label). The entity_path prefix (everything before the last dot) serves as the structure group key for PropertyEditor grouping. Entity paths follow the pattern 'StructureName.paramName' as seen in test data (e.g. 'Bracket.width').",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add CompiledExprKind variants (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall) to reify-types/src/expr.rs. Update walk(), collect_value_refs_inner(), and add constructor helpers. ListLiteral(Vec<CompiledExpr>), SetLiteral(Vec<CompiledExpr>), MapLiteral(Vec<(CompiledExpr, CompiledExpr)>), IndexAccess { object: Box<CompiledExpr>, index: Box<CompiledExpr> }, MethodCall { object: Box<CompiledExpr>, method: String, args: Vec<CompiledExpr> }.",
+      "description": "Create gui/src/panels/ directory and gui/src/panels/index.ts barrel export with placeholder exports for all four components. Create empty CSS module files for each component.",
       "status": "done",
-      "commit": "5345877",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Update collect_body_refs_inner() in reify-compiler/src/lib.rs to handle the 5 new CompiledExprKind variants (recurse into sub-expressions for dependency tracking).",
-      "status": "done",
-      "commit": "5345877",
+      "commit": "f11d2bb",
       "tests": []
     }
   ],
@@ -36,368 +34,192 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests in crates/reify-expr/tests/collection_eval_tests.rs for list literal evaluation: eval ListLiteral([Int(1), Int(2), Int(3)]) -> Value::List([Int(1), Int(2), Int(3)]), empty list, and list with nested expressions.",
+      "description": "Write failing tests for PropertyEditor basic rendering in gui/src/__tests__/PropertyEditor.test.tsx: (1) renders with data-testid='property-editor', (2) renders a search/filter input at top with placeholder text, (3) groups values by entity_path prefix showing structure name as collapsible group headers (e.g. entity_path 'Bracket.width' groups under 'Bracket'), (4) shows empty state message when no values provided",
       "status": "done",
-      "commit": "f0c939f"
+      "commit": "2bf98aa"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::ListLiteral in reify-expr/src/lib.rs -- evaluate each element expression and collect into Value::List. Add SetLiteral and MapLiteral eval simultaneously since they follow the same pattern.",
+      "description": "Implement PropertyEditor.tsx basic rendering and PropertyEditor.module.css: SolidJS component receiving values (Record<string, ValueData>), selectedEntity (string|null), and onSetParameter callback as props. Groups values by entity_path prefix (first dot-separated segment). Renders search input, collapsible group headers, and empty state. CSS uses --reify-* custom properties.",
       "status": "done",
-      "commit": "4b100a0"
+      "commit": "c3fb81f"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for set literal evaluation (SetLiteral -> Value::Set with dedup) and map literal evaluation (MapLiteral -> Value::Map).",
+      "description": "Write failing tests for PropertyEditor parameter rows: (1) each row displays name, formatted value, unit badge, and determinacy badge, (2) determinacy badge has correct data-determinacy attribute (determined/auto/constrained/undef) for styling, (3) determined params have editable input, auto/constrained/undef have read-only display, (4) editing a determined param value and pressing Enter calls onSetParameter(cellId, newValue)",
       "status": "done",
-      "commit": "fdff49c"
+      "commit": "251ce64"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify set/map literal eval passes (already implemented in step-2). If not, fix.",
+      "description": "Implement PropertyEditor parameter rows: render name, value (editable input for 'determined', read-only span for others), unit badge, determinacy badge with data-determinacy attribute. onKeyDown handler on input calls onSetParameter on Enter key. Determinacy badge colors via CSS: determined=--reify-success (green), auto=--reify-accent (blue), constrained=--reify-warning (yellow), undef=--reify-text-muted (gray).",
       "status": "done",
-      "commit": "fdff49c"
+      "commit": "c3fb81f"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for IndexAccess evaluation: list[1] -> element, list[out-of-bounds] -> Undef, map[key] -> value, map[missing-key] -> Undef, list[undef] -> Undef, undef[0] -> Undef.",
+      "description": "Write failing tests for PropertyEditor interactive features: (1) collapse/expand: clicking a group header toggles visibility of child parameter rows, (2) search/filter: typing in filter input hides non-matching parameters and groups, (3) selection highlighting: when selectedEntity matches a structure group prefix, that group gets a 'selected' CSS class and auto-expands",
       "status": "done",
-      "commit": "efdcbc0"
+      "commit": "a22c9be"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::IndexAccess in reify-expr/src/lib.rs -- evaluate object and index, dispatch based on Value::List (Int index) and Value::Map (key lookup). Out of bounds / missing -> Undef.",
+      "description": "Implement PropertyEditor interactivity: (1) collapsedGroups signal Set to track collapsed state, clicking header toggles, (2) filterText signal filters values by name substring match (case-insensitive), empty groups after filtering are hidden, (3) selectedEntity prop comparison against entity_path prefixes to add 'selected' class and force-expand matching group.",
       "status": "done",
-      "commit": "bdb0466"
+      "commit": "c3fb81f"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for MethodCall .count on lists, sets, and maps: [1,2,3].count -> Int(3), set{1,2,3}.count -> Int(3), map{'a'=>1}.count -> Int(1), [].count -> Int(0).",
+      "description": "Write failing tests for ConstraintPanel basic rendering in gui/src/__tests__/ConstraintPanel.test.tsx: (1) renders with data-testid='constraint-panel', (2) renders flat list of constraints, (3) each constraint row shows expression text and status badge, (4) status badges have correct data-status attribute: 'satisfied' (green checkmark), 'violated' (red X), other/indeterminate (gray ?), (5) constraints are sorted with violated first, then indeterminate, then satisfied, (6) empty state message when no constraints",
       "status": "done",
-      "commit": "4d10692"
+      "commit": "051bfd2"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::MethodCall in reify-expr/src/lib.rs -- start with .count method dispatching on Value::List/Set/Map to return their length as Value::Int.",
+      "description": "Implement ConstraintPanel.tsx and ConstraintPanel.module.css: SolidJS component receiving constraints (Record<string, ConstraintData>) and values (Record<string, ValueData>) as props. Renders sorted flat list with status badges. Sort priority: violated=0, indeterminate=1, satisfied=2. Status badges use --reify-error (red), --reify-success (green), --reify-text-muted (gray) theme tokens.",
       "status": "done",
-      "commit": "5bc7369"
+      "commit": "f886d07"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for MethodCall .sum: [1,2,3].sum -> Int(6), [1.0,2.0].sum -> Real(3.0), [1mm,2mm].sum -> Scalar(0.003, LENGTH), [].sum -> Int(0), [1,undef,3].sum -> Undef.",
+      "description": "Write failing tests for ConstraintPanel expansion: (1) clicking a violated constraint row expands it to show expression text and contributing parameter values (looked up via parameter_ids from values prop), (2) clicking again collapses it, (3) satisfied constraints are not expandable (no expand indicator), (4) expanded violated constraint shows each contributing parameter as 'name = value'",
       "status": "done",
-      "commit": "ca6f9b9"
+      "commit": "99f91ec"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement .sum method in eval_method_call -- iterate list elements, accumulate using add logic (reuse eval_add pattern from reify-expr), handle dimension-aware scalar addition. Add dimension-aware collection sum helper to reify-stdlib if needed.",
+      "description": "Implement ConstraintPanel expansion: expandedNodes signal Set tracks expanded node_ids. Click handler on violated/indeterminate rows toggles expansion. When expanded, render expression text and for each parameter_id look up ValueData from values prop to display 'name = value' entries. Satisfied rows have no expand affordance.",
       "status": "done",
-      "commit": "8f16e83"
+      "commit": "f886d07"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing tests for MethodCall .contains: [1,2,3].contains(2) -> Bool(true), [1,2,3].contains(5) -> Bool(false), set{1,2,3}.contains(2) -> Bool(true), set{1,2,3}.contains(5) -> Bool(false).",
+      "description": "Write failing tests for Toolbar in gui/src/__tests__/Toolbar.test.tsx: (1) renders with data-testid='toolbar', (2) renders an Export button with text 'Export', (3) renders a Fit to View button with text 'Fit to View', (4) clicking Export calls onExport callback, (5) clicking Fit to View calls onFitToView callback",
       "status": "done",
-      "commit": "adad14c"
+      "commit": "d801228"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement .contains method for List and Set -- check if the argument value is present in the collection.",
+      "description": "Implement Toolbar.tsx and Toolbar.module.css: Simple SolidJS component with two buttons. Takes onExport and onFitToView callback props. Styled with --reify-accent for button backgrounds, --reify-surface-hover for hover states.",
       "status": "done",
-      "commit": "e45b383"
+      "commit": "20c068b"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing tests for MethodCall .map: [1,2,3].map(|x| x*2) -> List([2,4,6]). Construct the MethodCall with a lambda arg CompiledExpr.",
+      "description": "Write failing tests for StatusBar in gui/src/__tests__/StatusBar.test.tsx: (1) renders with data-testid='status-bar', (2) displays evaluation phase text from evalStatus prop (e.g. 'idle', 'evaluating'), (3) displays triangle count computed from meshes (sum of indices.length/3 across all meshes), (4) displays constraint summary counts showing number satisfied, violated, and indeterminate",
       "status": "done",
-      "commit": "76616ca"
+      "commit": "97ad3bb"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement .map method -- evaluate the lambda arg to get Value::Lambda, then apply_lambda to each element, collect results into new Value::List.",
+      "description": "Implement StatusBar.tsx and StatusBar.module.css: Receives evalStatus (EvaluationStatus), meshes (Record<string, MeshData>), and constraints (Record<string, ConstraintData>) as props. Computes triangle count as sum of mesh.indices.length/3. Computes constraint summary by counting status values. Renders horizontal bar with phase, triangles, and constraint counts.",
       "status": "done",
-      "commit": "277ad8a"
+      "commit": "02098e9"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing tests for MethodCall .filter: [1,2,3,4].filter(|x| x > 2) -> List([3,4]), empty result case.",
+      "description": "Write smoke integration test: import all four components from gui/src/panels/index.ts barrel export, render each with minimal valid props, verify all mount without errors and have their expected data-testid attributes",
       "status": "done",
-      "commit": "ce250d7"
+      "commit": "b105638"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement .filter method -- apply_lambda to each element, keep elements where result is Bool(true), discard where Bool(false), propagate Undef.",
+      "description": "Finalize panels/index.ts barrel export with all four named exports. Run full test suite with 'vitest run' to verify all tests pass.",
       "status": "done",
-      "commit": "984c541"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .fold: [1,2,3].fold(0, |acc,x| acc+x) -> Int(6), fold with initial value.",
-      "status": "done",
-      "commit": "b772290"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Implement .fold method -- evaluate init, then for each element apply 2-arg lambda with (accumulator, element), thread result through.",
-      "status": "done",
-      "commit": "a45a565"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .all and .any: [1,2,3].all(|x| x>0) -> Bool(true), [1,2,3].any(|x| x>2) -> Bool(true), [1,2,3].all(|x| x>2) -> Bool(false), [1,2,3].any(|x| x>5) -> Bool(false). Kleene: [1,undef,3].all(|x| x>0) -> Undef, [false,undef].all(|x| x) -> Bool(false).",
-      "status": "done",
-      "commit": "aa25e42"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Implement .all and .any methods with Kleene 3-valued logic: .all returns false if any false, undef if any undef and none false, true otherwise. .any returns true if any true, undef if any undef and none true, false otherwise.",
-      "status": "done",
-      "commit": "11193fc"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .concat and .generate on lists: [1,2].concat([3,4]) -> List([1,2,3,4]), [].generate(3, |i| i*2) -> List([0,2,4]).",
-      "status": "done",
-      "commit": "cdb4e22"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Implement .concat (merge two lists) and .generate (create list from count + lambda, applying lambda to indices 0..count) methods.",
-      "status": "done",
-      "commit": "c028a19"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write failing tests for set operations: set{1,2,3}.union(set{3,4}) -> Set({1,2,3,4}), set{1,2,3}.intersection(set{2,3,4}) -> Set({2,3}), set{1,2,3}.difference(set{2,3,4}) -> Set({1}).",
-      "status": "done",
-      "commit": "24e6082"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Implement set .union, .intersection, .difference methods using BTreeSet operations.",
-      "status": "done",
-      "commit": "a735a38"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Write failing tests for map methods: map{'a'=>1}.keys -> List(['a']), map{'a'=>1}.values -> List([1]), map{'a'=>1}.contains_key('a') -> Bool(true), map{'a'=>1}.contains_key('b') -> Bool(false).",
-      "status": "done",
-      "commit": "ddf1d72"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "Implement map .keys, .values (return as Value::List), .contains_key methods.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-27",
-      "type": "test",
-      "description": "Write failing tests for undef propagation edge cases: undef.count -> Undef, [1,undef,3].count -> Int(3), [1,undef,3].sum -> Undef, undef[0] -> Undef, [1,2,3][undef] -> Undef, undef.map(lambda) -> Undef.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-28",
-      "type": "impl",
-      "description": "Verify undef propagation passes -- most cases should already work from the MethodCall dispatch checking for Undef object. Fix any gaps.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-29",
-      "type": "test",
-      "description": "Write failing compiler tests in crates/reify-compiler/tests/collection_compile_tests.rs: compile 'let x = [1, 2, 3]' -> CompiledExprKind::ListLiteral, compile 'let x = set{1, 2}' -> SetLiteral, compile 'let x = map{\"a\" => 1}' -> MapLiteral, compile 'let x = items[0]' -> IndexAccess.",
-      "status": "done",
-      "commit": "4048d2f"
-    },
-    {
-      "id": "step-30",
-      "type": "impl",
-      "description": "Implement compilation of ListLiteral, SetLiteral, MapLiteral, IndexAccess in reify-compiler -- replace the current stub error handlers with actual compilation that recursively compiles element expressions and produces the new CompiledExprKind variants.",
-      "status": "done",
-      "commit": "89320f7"
-    },
-    {
-      "id": "step-31",
-      "type": "test",
-      "description": "Write failing compiler test: compile 'let n = items.count' where items is a known let binding -> CompiledExprKind::MethodCall { method: 'count', args: [] }. Test property-style method compilation from MemberAccess syntax.",
-      "status": "done",
-      "commit": "802d2be"
-    },
-    {
-      "id": "step-32",
-      "type": "impl",
-      "description": "Implement compilation of MemberAccess -> MethodCall in reify-compiler. When the member is a known collection method name (count, sum, keys, values) and it's NOT a port access, compile it as MethodCall with empty args. Keep port access logic intact.",
-      "status": "done",
-      "commit": "5e96a5b"
-    },
-    {
-      "id": "step-33",
-      "type": "test",
-      "description": "Write integration test: parse + compile + eval 'structure S { let x = [1, 2, 3] }' -> verify x evaluates to Value::List([Int(1), Int(2), Int(3)]). Test parse + compile + eval for set and map literals too.",
-      "status": "done",
-      "commit": "59ab3b6"
-    },
-    {
-      "id": "step-34",
-      "type": "impl",
-      "description": "Verify integration tests pass end-to-end. Fix any issues in the parse -> compile -> eval pipeline for collection literals.",
-      "status": "done",
-      "commit": "59ab3b6"
-    },
-    {
-      "id": "step-35",
-      "type": "test",
-      "description": "Write integration test: parse + compile + eval 'structure S { let items = [1, 2, 3]  let n = items.count }' -> verify n evaluates to Int(3). Also test list index access integration.",
-      "status": "done",
-      "commit": "4469cc0"
-    },
-    {
-      "id": "step-36",
-      "type": "impl",
-      "description": "Verify property method and index access integration tests pass. Fix any issues.",
-      "status": "done",
-      "commit": "4469cc0"
-    },
-    {
-      "id": "step-37",
-      "type": "test",
-      "description": "Add Kleene 3-valued logic tests for .any in collection_eval_tests.rs: (1) eval_method_any_kleene_undef: [undef, false].any(|x| x) -> Undef (no true present, but undef present means result is indeterminate). (2) eval_method_any_kleene_true_wins: [true, undef].any(|x| x) -> Bool(true) (true dominates undef in Kleene OR). These mirror the existing eval_method_all_kleene_undef and eval_method_all_kleene_false_wins tests.",
-      "status": "done",
-      "commit": "ffbc589"
-    },
-    {
-      "id": "step-38",
-      "type": "impl",
-      "description": "Verify .any Kleene tests pass. The implementation already has the correct Kleene logic (lines 398-417: true short-circuits, false skips, undef flags has_undef, final check returns Undef if has_undef else Bool(false)). Fix if any test unexpectedly fails.",
-      "status": "done",
-      "commit": "ffbc589"
-    },
-    {
-      "id": "step-39",
-      "type": "test",
-      "description": "Add .filter Undef propagation test in collection_eval_tests.rs: eval_method_filter_undef_propagation: [1, undef, 3].filter(|x| x > 0) -> Undef. The predicate (x > 0) returns Undef when x is Undef (because Gt with Undef operand propagates Undef). The filter spec says 'propagate Undef' — if any element's predicate returns Undef, the entire filter result is Undef. Use an undef ValueCellId in the list to produce an Undef element that causes the predicate to return Undef.",
-      "status": "done",
-      "commit": "17de3f1"
-    },
-    {
-      "id": "step-40",
-      "type": "impl",
-      "description": "Verify .filter Undef propagation test passes. The implementation already handles this at line 484 (Value::Undef => return Value::Undef). Fix if the test unexpectedly fails.",
-      "status": "done",
-      "commit": "17de3f1"
-    },
-    {
-      "id": "step-41",
-      "type": "test",
-      "description": "Add test for UserFunctionCall inside lambda body used in a collection method. In collection_eval_tests.rs, add eval_method_map_with_user_function: create a CompiledFunction 'double' that returns x*2, create a list [1,2,3], call .map(|x| double(x)) where the lambda body is a UserFunctionCall node. Evaluate with EvalContext::new(&values, &[double_fn]). Assert result is List([2,4,6]). This test will FAIL because apply_lambda() currently uses EvalContext::simple() which drops the functions registry, so UserFunctionCall inside the lambda body returns Undef for every element, producing List([Undef, Undef, Undef]).",
-      "status": "done",
-      "commit": "a47f47d"
-    },
-    {
-      "id": "step-42",
-      "type": "impl",
-      "description": "Fix apply_lambda() context propagation. Change signature from pub fn apply_lambda(lambda: &Value, args: &[Value]) -> Value to pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value. Inside, replace EvalContext::simple(&eval_map) with ctx.with_scope(&eval_map) so functions and recursion_depth are preserved. Change eval_method_call signature from fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value to fn eval_method_call(obj: &Value, method: &str, args: &[Value], ctx: &EvalContext) -> Value. Update all apply_lambda call sites inside eval_method_call (.map, .filter, .fold, .all, .any, .generate) to pass ctx. Update the MethodCall arm in eval_expr (line 180) to pass ctx to eval_method_call. Existing tests using EvalContext::simple() will continue to work since simple() sets functions to &[] which is still valid.",
-      "status": "done",
-      "commit": "39f0f66"
+      "commit": "b105638"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add all 5 CompiledExprKind variants (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall) rather than reusing existing FunctionCall for methods",
-      "rationale": "MethodCall has a fundamentally different semantic: it dispatches on the receiver object's runtime type (List, Set, Map), not on a function name. Separate variants give clean pattern matching in the evaluator and accurate dependency tracking in collect_value_refs."
+      "decision": "Components receive data and callbacks as props rather than importing stores directly",
+      "rationale": "Follows the existing codebase pattern where stores are created via factory functions (createEngineStore, createSelectionStore) and composed at the App level. Props make components testable without needing to set up global store context - tests can pass mock data directly."
     },
     {
-      "decision": "Implement method call evaluation directly in reify-expr rather than routing through reify-stdlib",
-      "rationale": "Collection methods need access to apply_lambda (for .map, .filter, .fold) and eval_expr (for sub-expression evaluation), which are in reify-expr. Only dimension-aware sum may delegate to stdlib for consistency with existing numeric stdlib functions."
+      "decision": "Entity path grouping uses the first dot-separated segment as structure name",
+      "rationale": "ValueData.entity_path follows the pattern 'StructureName.paramName' (seen in test data: 'Bracket.width', 'Bracket.height'). Splitting on first '.' gives the structure group name naturally."
     },
     {
-      "decision": "Test methods with arguments (.map, .filter, .fold, etc.) by constructing CompiledExpr trees directly rather than requiring end-to-end parsing",
-      "rationale": "The current tree-sitter grammar only has MemberAccess (obj.member) with no support for method calls with arguments (obj.method(args)). A grammar change to add method_call syntax is needed but out of scope for this task's stated modules. Property-style methods (.count, .sum, .keys, .values) work through MemberAccess already."
+      "decision": "Determinacy badge colors map to theme tokens: determined=--reify-success (green), auto=--reify-accent (blue), constrained=--reify-warning (yellow), undef=--reify-text-muted (gray)",
+      "rationale": "Matches the task description color scheme and reuses existing theme tokens from theme.ts rather than introducing new colors."
     },
     {
-      "decision": "Compile MemberAccess to MethodCall only for known collection method names, not all member accesses",
-      "rationale": "Port member access (port.member) must continue to compile to ValueRef as it does today. The compiler should check if the member is a known collection method name (count, sum, keys, values) and only then produce MethodCall when it's NOT a port access. Unknown members remain diagnostic errors. This preserves backward compatibility."
+      "decision": "Constraint sort order: violated first, then indeterminate, then satisfied",
+      "rationale": "Task specifies 'sort by status (violated first)'. Placing indeterminate between violated and satisfied provides a natural severity ordering for user attention."
     },
     {
-      "decision": "Use Kleene 3-valued logic for .all and .any, consistent with existing And/Or evaluation",
-      "rationale": "The spec requires: .all with undef element returns false if any false, undef if any undef and none false. This matches the Kleene AND/OR already implemented for BinOp::And and BinOp::Or in reify-expr."
+      "decision": "CSS modules pattern following existing App.module.css convention",
+      "rationale": "The codebase already uses CSS modules (App.module.css) with --reify-* custom properties. Following the same pattern for consistency."
     },
     {
-      "decision": ".sum on empty list returns Int(0) rather than Undef",
-      "rationale": "Zero is the additive identity and the conventional sum of an empty sequence. This matches standard library behavior in most languages."
+      "decision": "Use the actual ConstraintData.details field (not 'label') for constraint display text",
+      "rationale": "The task description mentions ConstraintData.label but the actual type in types.ts has 'details: string | null'. We follow the actual code, not the potentially stale task description."
     },
     {
-      "decision": "Thread EvalContext through apply_lambda and eval_method_call rather than storing functions in Value::Lambda",
-      "rationale": "Storing the function registry inside Value::Lambda would require cloning the entire &[CompiledFunction] slice at lambda creation time, adding allocation overhead and coupling Value to CompiledFunction ownership. Threading the context is cheaper (just a reference), follows the existing pattern used by eval_user_function_call (which uses ctx.with_scope()), and keeps Value as a pure data type. The with_scope() method already exists and correctly propagates functions and increments recursion_depth."
+      "decision": "Triangle count computed from mesh indices.length / 3",
+      "rationale": "Standard indexed triangle mesh convention where every 3 indices form one triangle. MeshData.indices is a Uint32Array of vertex indices."
+    },
+    {
+      "decision": "Use data-testid and data-* attributes for test selectors and state assertions",
+      "rationale": "The existing test suite uses data-testid for component identification (App.test.tsx). Using data-determinacy and data-status attributes enables both CSS styling and test assertions without coupling to CSS class names."
     }
   ],
   "reuse": [
     {
-      "what": "apply_lambda() function",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for .map, .filter, .fold, .all, .any, .generate -- each applies a lambda to collection elements"
+      "what": "ValueData and ConstraintData type definitions",
+      "where": "gui/src/types.ts",
+      "how": "Import directly for prop type annotations in all panel components"
     },
     {
-      "what": "eval_add() function (addition logic with dimension awareness)",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for .sum implementation -- iterate and accumulate using the same add semantics that handle Int+Int, Real+Real, Scalar+Scalar with dimension checking"
+      "what": "EngineState interface and createEngineStore pattern",
+      "where": "gui/src/stores/engineStore.ts",
+      "how": "Components receive the store's state fields as props (values: Record<string, ValueData>, constraints: Record<string, ConstraintData>, evalStatus, meshes)"
     },
     {
-      "what": "Value::List/Set/Map variants and BTreeSet/BTreeMap",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Already implemented with PartialEq, Eq, Ord, content_hash, Display -- collection operations produce these existing Value variants"
+      "what": "SelectionState and createSelectionStore",
+      "where": "gui/src/stores/selectionStore.ts",
+      "how": "PropertyEditor receives selectedEntity prop from selection store for cross-highlighting"
     },
     {
-      "what": "CompiledExpr::literal() constructor",
-      "where": "crates/reify-types/src/expr.rs",
-      "how": "Reuse for constructing literal sub-expressions within collection compilation"
+      "what": "setParameter bridge function signature",
+      "where": "gui/src/bridge.ts",
+      "how": "Passed as onSetParameter callback prop to PropertyEditor for inline editing. Signature: (cellId: string, value: string) => Promise<void>"
     },
     {
-      "what": "Existing compiler pattern: compile_expr_guarded recursion",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "Collection literal compilation follows the same pattern -- recursively compile element expressions, then wrap in the collection CompiledExprKind variant"
+      "what": "THEME_TOKENS and CSS custom properties (--reify-*)",
+      "where": "gui/src/theme.ts and gui/src/App.module.css",
+      "how": "All panel CSS modules reference --reify-* custom properties for consistent theming. Specific tokens: --reify-success, --reify-error, --reify-warning, --reify-accent, --reify-text-muted, --reify-panel-bg, --reify-border, --reify-surface-hover"
     },
     {
-      "what": "EvalContext and ValueMap",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for method call evaluation context -- same pattern as function calls, pass context through for sub-expression evaluation"
+      "what": "Testing patterns: vitest + @solidjs/testing-library + render/screen",
+      "where": "gui/src/__tests__/App.test.tsx",
+      "how": "Follow same test structure: import from vitest, render(() => <Component />), use screen.getByTestId and screen.getByText for assertions"
     },
     {
-      "what": "Test patterns from lambda_eval_tests.rs",
-      "where": "crates/reify-expr/tests/lambda_eval_tests.rs",
-      "how": "Follow same pattern of constructing CompiledExpr trees and evaluating them with EvalContext::simple(). The lambda test helpers (make_value_lambda) can be adapted for collection tests."
+      "what": "EvaluationStatus and MeshData types",
+      "where": "gui/src/types.ts",
+      "how": "StatusBar uses EvaluationStatus for phase display and MeshData for triangle count computation"
     },
     {
-      "what": "EvalContext::with_scope() method",
-      "where": "crates/reify-expr/src/lib.rs:36",
-      "how": "Reuse for apply_lambda context propagation fix — with_scope creates a child context preserving functions and incrementing recursion_depth, exactly what apply_lambda needs instead of EvalContext::simple()"
+      "what": "CSS module patterns",
+      "where": "gui/src/App.module.css",
+      "how": "Follow same conventions: var(--reify-*) with fallback values, .panel h3 style for headers, clean class naming"
     }
-  ]
+  ],
+  "_session_id": "91-6e4256aa",
+  "_created_at": "2026-03-20T22:28:42.007620+00:00"
 }
