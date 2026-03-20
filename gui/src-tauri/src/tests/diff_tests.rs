@@ -188,3 +188,35 @@ fn full_delta_contains_all_items_from_state() {
     assert!(delta.removed_value_ids.is_empty());
     assert!(delta.removed_constraint_ids.is_empty());
 }
+
+#[test]
+fn compute_delta_none_last_state_returns_full_then_diff() {
+    use std::sync::Mutex;
+    use crate::diff::compute_delta;
+
+    let last_state: Mutex<Option<GuiState>> = Mutex::new(None);
+
+    let state1 = GuiState {
+        meshes: vec![sample_mesh("Bracket.body", vec![0.0, 0.0, 0.0])],
+        values: vec![sample_value("Bracket.width", "80")],
+        constraints: vec![],
+        files: vec![],
+    };
+
+    // First call with None last_state → full delta
+    let delta = compute_delta(&last_state, &state1);
+    assert_eq!(delta.changed_meshes.len(), 1, "full: all meshes");
+    assert_eq!(delta.changed_values.len(), 1, "full: all values");
+
+    // Second call with changed state → minimal diff
+    let state2 = GuiState {
+        meshes: vec![sample_mesh("Bracket.body", vec![0.0, 0.0, 0.0])], // unchanged
+        values: vec![sample_value("Bracket.width", "120")],             // changed
+        constraints: vec![],
+        files: vec![],
+    };
+    let delta = compute_delta(&last_state, &state2);
+    assert!(delta.changed_meshes.is_empty(), "diff: mesh unchanged");
+    assert_eq!(delta.changed_values.len(), 1, "diff: value changed");
+    assert_eq!(delta.changed_values[0].value, "120");
+}
