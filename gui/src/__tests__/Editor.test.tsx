@@ -1,6 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@solidjs/testing-library';
+import { EditorView } from '@codemirror/view';
 import { createEditorStore } from '../stores/editorStore';
+import * as bridge from '../bridge';
 import type { FileData } from '../types';
 
 // Mock Tauri API modules before importing Editor
@@ -18,6 +20,11 @@ const file2: FileData = { path: '/project/src/mount.ri', content: 'structure Mou
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 function setupStore(files: FileData[] = [file1]) {
@@ -48,5 +55,64 @@ describe('Editor mounting', () => {
     const cmContent = container.querySelector('.cm-content');
     expect(cmContent).not.toBeNull();
     expect(cmContent!.textContent).toContain('structure Bracket');
+  });
+});
+
+/** Get the CM6 EditorView instance from the rendered container. */
+function getEditorView(container: HTMLElement): EditorView {
+  const cmEditor = container.querySelector('.cm-editor')!;
+  return EditorView.findFromDOM(cmEditor as HTMLElement)!;
+}
+
+describe('Editor doc change handling', () => {
+  it('editing marks file as dirty immediately', () => {
+    const store = setupStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Insert text via CM6 dispatch
+    view.dispatch({ changes: { from: 0, insert: '// comment\n' } });
+
+    expect(store.state.dirtyFiles).toContain(file1.path);
+  });
+
+  it('calls bridge.updateSource after 300ms debounce', () => {
+    const store = setupStore();
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    view.dispatch({ changes: { from: 0, insert: '// comment\n' } });
+
+    // Not called immediately
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    // After 300ms debounce
+    vi.advanceTimersByTime(300);
+    expect(updateSpy).toHaveBeenCalledWith(file1.path, expect.stringContaining('// comment'));
+  });
+
+  it('rapid edits collapse into a single updateSource call', () => {
+    const store = setupStore();
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Three rapid edits
+    view.dispatch({ changes: { from: 0, insert: 'a' } });
+    vi.advanceTimersByTime(100);
+    view.dispatch({ changes: { from: 1, insert: 'b' } });
+    vi.advanceTimersByTime(100);
+    view.dispatch({ changes: { from: 2, insert: 'c' } });
+
+    // Not yet
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    // 300ms after last edit
+    vi.advanceTimersByTime(300);
+    expect(updateSpy).toHaveBeenCalledTimes(1);
   });
 });
