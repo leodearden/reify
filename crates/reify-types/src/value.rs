@@ -150,7 +150,11 @@ impl Value {
                     h = h.combine(ContentHash::of_str(p));
                 }
                 h = h.combine(body.content_hash);
-                for (id, val) in captures.iter() {
+                // Sort captures by key before hashing to match PartialEq behavior,
+                // ensuring the invariant `a == b → a.content_hash() == b.content_hash()`.
+                let mut sorted_caps: Vec<_> = captures.iter().collect();
+                sorted_caps.sort_by_key(|(id, _)| format!("{}", id));
+                for (id, val) in sorted_caps {
                     h = h.combine(ContentHash::of_str(&format!("{}", id)));
                     h = h.combine(val.content_hash());
                 }
