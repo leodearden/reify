@@ -788,6 +788,50 @@ fn eval_method_all_kleene_false_wins() {
     assert_eq!(result, Value::Bool(false));
 }
 
+// ─── step-37: Kleene 3-valued logic tests for .any ───
+
+#[test]
+fn eval_method_any_kleene_undef() {
+    // [undef, false].any(|x| x) -> Undef (no true present, undef present => indeterminate)
+    let x_id = ValueCellId::new("$lambda_anyk.S", "x");
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Bool);
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let undef_id = ValueCellId::new("S", "missing_any_k");
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::value_ref(undef_id, Type::Bool),
+            CompiledExpr::literal(Value::Bool(false), Type::Bool),
+        ],
+        Type::List(Box::new(Type::Bool)),
+    );
+    let expr = CompiledExpr::method_call(list, "any".to_string(), vec![lambda_arg], Type::Bool);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "[undef, false].any(|x| x) should be Undef");
+}
+
+#[test]
+fn eval_method_any_kleene_true_wins() {
+    // [true, undef].any(|x| x) -> Bool(true) (true dominates undef in Kleene OR)
+    let x_id = ValueCellId::new("$lambda_anyk2.S", "x");
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Bool);
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let undef_id = ValueCellId::new("S", "missing_any_k2");
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            CompiledExpr::value_ref(undef_id, Type::Bool),
+        ],
+        Type::List(Box::new(Type::Bool)),
+    );
+    let expr = CompiledExpr::method_call(list, "any".to_string(), vec![lambda_arg], Type::Bool);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(true));
+}
+
 // ─── step-21/22: MethodCall .concat and .generate ───
 
 #[test]
@@ -1027,4 +1071,104 @@ fn eval_method_map_contains_key_not_found() {
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Bool(false));
+}
+
+// ─── step-27/28: Undef propagation edge cases ───
+
+#[test]
+fn eval_undef_count() {
+    // undef.count -> Undef
+    let id = ValueCellId::new("S", "missing_list");
+    let obj = CompiledExpr::value_ref(id, Type::List(Box::new(Type::Int)));
+    let expr = CompiledExpr::method_call(obj, "count".to_string(), vec![], Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "undef.count should be Undef");
+}
+
+#[test]
+fn eval_list_with_undef_count() {
+    // [1, undef, 3].count -> Int(3) (count the structure, not the values)
+    let undef_id = ValueCellId::new("S", "missing_elem");
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::value_ref(undef_id, Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(list, "count".to_string(), vec![], Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Int(3));
+}
+
+#[test]
+fn eval_list_with_undef_sum() {
+    // [1, undef, 3].sum -> Undef
+    let undef_id = ValueCellId::new("S", "missing_elem2");
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::value_ref(undef_id, Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "[1,undef,3].sum should be Undef");
+}
+
+#[test]
+fn eval_undef_index() {
+    // undef[0] -> Undef (already covered in step-5, but verify here too)
+    let id = ValueCellId::new("S", "missing_coll");
+    let obj = CompiledExpr::value_ref(id, Type::List(Box::new(Type::Int)));
+    let idx = CompiledExpr::literal(Value::Int(0), Type::Int);
+    let expr = CompiledExpr::index_access(obj, idx, Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "undef[0] should be Undef");
+}
+
+#[test]
+fn eval_list_undef_index() {
+    // [1,2,3][undef] -> Undef (already covered, verify again)
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let undef_id = ValueCellId::new("S", "missing_idx");
+    let idx = CompiledExpr::value_ref(undef_id, Type::Int);
+    let expr = CompiledExpr::index_access(list, idx, Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "[1,2,3][undef] should be Undef");
+}
+
+#[test]
+fn eval_undef_map_method() {
+    // undef.map(lambda) -> Undef
+    let x_id = ValueCellId::new("$lambda_undef.S", "x");
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Int);
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let id = ValueCellId::new("S", "missing_for_map");
+    let obj = CompiledExpr::value_ref(id, Type::List(Box::new(Type::Int)));
+    let expr = CompiledExpr::method_call(
+        obj,
+        "map".to_string(),
+        vec![lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "undef.map(lambda) should be Undef");
 }
