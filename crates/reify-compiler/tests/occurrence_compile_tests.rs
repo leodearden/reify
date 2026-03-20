@@ -176,3 +176,35 @@ occurrence def Welding {
         port_direction_warnings
     );
 }
+
+// ── step-17: sub declaration referencing an occurrence ─────────────────
+
+#[test]
+fn compile_occurrence_sub_instantiation() {
+    let source = r#"
+occurrence def Welding {
+    param method : Length = 10mm
+}
+
+structure def Assembly {
+    sub step = Welding(method: 10mm)
+}
+"#;
+    let module = compile_module(source);
+
+    // Should have 2 templates: Welding (occurrence) and Assembly (structure)
+    assert_eq!(module.templates.len(), 2, "expected 2 templates");
+
+    let assembly = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("expected Assembly template");
+    assert_eq!(assembly.entity_kind, EntityKind::Structure);
+    assert_eq!(
+        assembly.sub_components.len(),
+        1,
+        "expected 1 sub-component"
+    );
+    assert_eq!(assembly.sub_components[0].structure_name, "Welding");
+}
