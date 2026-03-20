@@ -138,13 +138,14 @@ use std::collections::HashSet;
 
 use reify_compiler::{
     CompiledConstraint, CompiledGeometryOp, CompiledGuardedGroup, CompiledImport, CompiledModule,
-    RealizationDecl, SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
+    EntityKind, RealizationDecl, SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
 };
 use reify_types::{ConstraintNodeId, RealizationNodeId};
 
 /// Builder for `TopologyTemplate`.
 pub struct TopologyTemplateBuilder {
     name: String,
+    entity_kind: EntityKind,
     visibility: reify_compiler::Visibility,
     value_cells: Vec<ValueCellDecl>,
     constraints: Vec<CompiledConstraint>,
@@ -159,6 +160,7 @@ impl TopologyTemplateBuilder {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            entity_kind: EntityKind::Structure,
             visibility: reify_compiler::Visibility::Private,
             value_cells: Vec::new(),
             constraints: Vec::new(),
@@ -350,6 +352,7 @@ impl TopologyTemplateBuilder {
 
         TopologyTemplate {
             name: self.name,
+            entity_kind: self.entity_kind,
             visibility: self.visibility,
             value_cells: self.value_cells,
             constraints: self.constraints,

@@ -2345,6 +2345,68 @@
     }
   },
   {
+    "type": "occurrence_definition",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "constraint_declaration",
+          "named": true
+        },
+        {
+          "type": "guarded_block",
+          "named": true
+        },
+        {
+          "type": "let_declaration",
+          "named": true
+        },
+        {
+          "type": "maximize_declaration",
+          "named": true
+        },
+        {
+          "type": "minimize_declaration",
+          "named": true
+        },
+        {
+          "type": "param_declaration",
+          "named": true
+        },
+        {
+          "type": "port_declaration",
+          "named": true
+        },
+        {
+          "type": "sub_declaration",
+          "named": true
+        },
+        {
+          "type": "trait_bound_list",
+          "named": true
+        },
+        {
+          "type": "type_parameters",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "param_declaration",
     "named": true,
     "fields": {
@@ -2849,6 +2911,10 @@
         },
         {
           "type": "import_declaration",
+          "named": true
+        },
+        {
+          "type": "occurrence_definition",
           "named": true
         },
         {
@@ -3469,6 +3535,10 @@
   {
     "type": "number_literal",
     "named": true
+  },
+  {
+    "type": "occurrence",
+    "named": false
   },
   {
     "type": "out",
