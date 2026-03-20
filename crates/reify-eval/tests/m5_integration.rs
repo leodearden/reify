@@ -276,30 +276,28 @@ fn connect_occurrence_chain() {
     );
 
     // Find the Pipe template and verify it's an occurrence
-    let pipe_template = compiled
+    let pipe = compiled
         .templates
         .iter()
-        .find(|t| t.name == "Pipe");
-    if let Some(pipe) = pipe_template {
-        assert_eq!(
-            pipe.entity_kind,
-            reify_compiler::EntityKind::Occurrence,
-            "Pipe should be an occurrence"
-        );
-    }
+        .find(|t| t.name == "Pipe")
+        .expect("should have a Pipe template");
+    assert_eq!(
+        pipe.entity_kind,
+        reify_compiler::EntityKind::Occurrence,
+        "Pipe should be an occurrence"
+    );
 
     // Find Pipeline template and verify chain desugaring
-    let pipeline_template = compiled
+    let pipeline = compiled
         .templates
         .iter()
-        .find(|t| t.name == "Pipeline");
-    if let Some(pipeline) = pipeline_template {
-        // chain p1.outlet -> p2.inlet -> p2.outlet -> p3.inlet should produce 3 connections
-        assert!(
-            !pipeline.connections.is_empty(),
-            "Pipeline should have connections from chain desugaring"
-        );
-    }
+        .find(|t| t.name == "Pipeline")
+        .expect("should have a Pipeline template");
+    // chain p1.outlet -> p2.inlet -> p2.outlet -> p3.inlet should produce 3 connections
+    assert!(
+        !pipeline.connections.is_empty(),
+        "Pipeline should have connections from chain desugaring"
+    );
 
     // Eval + check
     let checker = MockConstraintChecker::new();
