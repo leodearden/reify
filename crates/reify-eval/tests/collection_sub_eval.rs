@@ -276,3 +276,87 @@ fn edit_param_count_change_re_elaborates_collection() {
         "should not have bolts[6]"
     );
 }
+
+// ─── step-19: collection value aggregation ───
+
+#[test]
+fn eval_collection_list_aggregation() {
+    // Bolt template: param grade : Real = 8.8
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "grade",
+            Type::Real,
+            Some(CompiledExpr::literal(Value::Real(8.8), Type::Real)),
+        )
+        .build();
+
+    // Parent template: param n=3, count_cell __count_bolts = n, collection sub bolts
+    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(3), Type::Int)),
+        )
+        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component(
+            "bolts",
+            "Bolt",
+            ValueCellId::new("Parent", "__count_bolts"),
+        )
+        // Let binding that references the synthetic list of bolt grades
+        .let_binding(
+            "Parent",
+            "grades",
+            Type::List(Box::new(Type::Real)),
+            CompiledExpr::value_ref(
+                ValueCellId::new("Parent", "__list_bolts"),
+                Type::List(Box::new(Type::Real)),
+            ),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // The synthetic __list_bolts cell should exist with a List of grade values
+    let list_id = ValueCellId::new("Parent", "__list_bolts");
+    let list_val = result.values.get(&list_id);
+    assert!(
+        list_val.is_some(),
+        "should have synthetic __list_bolts cell with a List value"
+    );
+
+    match list_val.unwrap() {
+        Value::List(items) => {
+            assert_eq!(items.len(), 3, "should have 3 items in bolt list");
+        }
+        other => panic!("expected List, got {:?}", other),
+    }
+
+    // The grades let binding should resolve to the same List value
+    let grades_id = ValueCellId::new("Parent", "grades");
+    let grades_val = result.values.get(&grades_id);
+    assert!(
+        grades_val.is_some(),
+        "should have grades value cell"
+    );
+    match grades_val.unwrap() {
+        Value::List(items) => {
+            assert_eq!(items.len(), 3, "grades should have 3 items");
+            for item in items {
+                assert_eq!(item, &Value::Real(8.8), "each grade should be 8.8");
+            }
+        }
+        other => panic!("expected grades to be a List, got {:?}", other),
+    }
+}
