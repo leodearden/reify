@@ -1,9 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@solidjs/testing-library';
 import { createEditorStore } from '../stores/editorStore';
 import type { FileData } from '../types';
 
-// Mock Tauri API modules
+// Mock Tauri API modules before importing Editor
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
 }));
@@ -11,16 +11,13 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(),
 }));
 
+import { Editor } from '../editor/Editor';
+
 const file1: FileData = { path: '/project/src/bracket.ri', content: 'structure Bracket {\n  param width = 80mm\n}' };
 const file2: FileData = { path: '/project/src/mount.ri', content: 'structure Mount {}' };
 
-// Dynamically import Editor after mocks are set up
-let Editor: typeof import('../editor/Editor').Editor;
-
-beforeEach(async () => {
+beforeEach(() => {
   vi.clearAllMocks();
-  const mod = await import('../editor/Editor');
-  Editor = mod.Editor;
 });
 
 function setupStore(files: FileData[] = [file1]) {
