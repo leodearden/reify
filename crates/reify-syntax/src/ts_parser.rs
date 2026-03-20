@@ -98,6 +98,11 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Enum(decl));
                     }
                 }
+                "trait_declaration" => {
+                    if let Some(decl) = self.lower_trait(child) {
+                        self.declarations.push(Declaration::Trait(decl));
+                    }
+                }
                 "ERROR" => {
                     self.errors.push(ParseError {
                         message: format!("syntax error: {}", self.node_text(child)),
@@ -146,6 +151,44 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
+    }
+
+    fn lower_trait(&mut self, node: tree_sitter::Node) -> Option<TraitDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let is_pub = false;
+        let type_params = vec![];
+        let refinements = vec![];
+
+        let members = self.lower_trait_members(node);
+
+        Some(TraitDecl {
+            name,
+            is_pub,
+            type_params,
+            refinements,
+            members,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    /// Collect members from trait_member children of a trait_declaration node.
+    fn lower_trait_members(&mut self, node: tree_sitter::Node) -> Vec<MemberDecl> {
+        let mut members = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "trait_member" {
+                // trait_member is a choice node wrapping the actual member
+                if let Some(inner) = child.named_child(0) {
+                    if let Some(member) = self.lower_member(inner) {
+                        members.push(member);
+                    }
+                }
+            }
+        }
+        members
     }
 
     /// Lower a single member node (used by both lower_structure and lower_guarded_block).
@@ -227,6 +270,10 @@ impl<'a> Lowering<'a> {
                 } else {
                     self.lower_guarded_block(child)
                 }
+            }
+            "associated_type" => {
+                // Stub: associated type lowering not yet implemented
+                None
             }
             "ERROR" => {
                 self.errors.push(ParseError {
