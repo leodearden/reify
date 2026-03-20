@@ -322,6 +322,60 @@ fn lambda_content_hash_deterministic_and_distinct() {
     );
 }
 
+/// step-29: Two Value::Lambda instances with identical params and body but with
+/// captures inserted in different orders should have equal content_hash.
+/// This tests the invariant `a == b → a.content_hash() == b.content_hash()`.
+#[test]
+fn lambda_content_hash_invariant_capture_insertion_order() {
+    let x_id = ValueCellId::new("$lambda", "x");
+    let cap_a_id = ValueCellId::new("S", "a_var");
+    let cap_b_id = ValueCellId::new("S", "b_var");
+
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(cap_a_id.clone(), Type::Int),
+            CompiledExpr::value_ref(cap_b_id.clone(), Type::Int),
+            Type::Int,
+        ),
+        Type::Real,
+    );
+
+    // Lambda A: insert capture 'a_var' first, then 'b_var'
+    let mut captures_a = ValueMap::new();
+    captures_a.insert(cap_a_id.clone(), Value::Int(10));
+    captures_a.insert(cap_b_id.clone(), Value::Int(20));
+
+    let lambda_a = Value::Lambda {
+        params: vec!["x".to_string()],
+        body: Box::new(body.clone()),
+        captures: captures_a,
+    };
+
+    // Lambda B: insert capture 'b_var' first, then 'a_var' (reverse order)
+    let mut captures_b = ValueMap::new();
+    captures_b.insert(cap_b_id.clone(), Value::Int(20));
+    captures_b.insert(cap_a_id.clone(), Value::Int(10));
+
+    let lambda_b = Value::Lambda {
+        params: vec!["x".to_string()],
+        body: Box::new(body),
+        captures: captures_b,
+    };
+
+    // PartialEq should consider them equal (sorts captures before comparing)
+    assert_eq!(lambda_a, lambda_b, "lambdas with same captures in different insertion order should be equal");
+
+    // content_hash must also be equal (invariant: a == b → a.content_hash() == b.content_hash())
+    assert_eq!(
+        lambda_a.content_hash(),
+        lambda_b.content_hash(),
+        "content_hash invariant violated: equal lambdas must have equal hashes"
+    );
+}
+
 /// step-27: Integration test — full pipeline parse → compile → eval for a structure
 /// with a lambda that captures a value from the same structure.
 #[test]
