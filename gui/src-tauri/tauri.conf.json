@@ -1,0 +1,22 @@
+{
+  "productName": "Reify",
+  "version": "0.1.0",
+  "identifier": "dev.reify.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Reify",
+        "width": 1400,
+        "height": 900,
+        "resizable": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": false
+  }
+}

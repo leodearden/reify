@@ -1,0 +1,29 @@
+export const THEME_TOKENS: Record<string, string> = {
+  background: '#1e1e2e',
+  surface: '#2a2a3a',
+  surfaceHover: '#313244',
+  text: '#cdd6f4',
+  textSecondary: '#a6adc8',
+  textMuted: '#6c7086',
+  accent: '#89b4fa',
+  accentHover: '#74c7ec',
+  border: '#45475a',
+  error: '#f38ba8',
+  warning: '#fab387',
+  success: '#a6e3a1',
+  editorBg: '#1e1e2e',
+  viewportBg: '#181825',
+  panelBg: '#2a2a3a',
+  fontMono: '"JetBrains Mono", "Fira Code", "Cascadia Code", monospace',
+};
+
+function camelToKebab(str: string): string {
+  return str.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+}
+
+export function applyTheme(): void {
+  const style = document.documentElement.style;
+  for (const [key, value] of Object.entries(THEME_TOKENS)) {
+    style.setProperty(`--reify-${camelToKebab(key)}`, value);
+  }
+}
