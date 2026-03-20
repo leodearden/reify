@@ -195,7 +195,7 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
             };
 
             // Evaluate expression (pure, no lock held)
-            let val = reify_expr::eval_expr(expr, &current_values);
+            let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&current_values));
 
             // Compute dependency trace
             let trace = extract_dependency_trace(expr);

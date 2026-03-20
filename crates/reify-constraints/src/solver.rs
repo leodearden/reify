@@ -90,8 +90,8 @@ fn extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> {
 /// or 0.0 if satisfied. No squaring, no epsilon offset. Used for
 /// accurate feasibility checking (not for optimization cost).
 fn comparison_residual(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap) -> f64 {
-    let lhs = reify_expr::eval_expr(left, values).as_f64();
-    let rhs = reify_expr::eval_expr(right, values).as_f64();
+    let lhs = reify_expr::eval_expr(left, &reify_expr::EvalContext::simple(values)).as_f64();
+    let rhs = reify_expr::eval_expr(right, &reify_expr::EvalContext::simple(values)).as_f64();
 
     match (lhs, rhs) {
         (Some(l), Some(r)) => match op {
@@ -127,8 +127,8 @@ fn comparison_residual(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, val
 /// Returns 0.0 if satisfied. For non-decomposable boolean constraints,
 /// uses a fixed penalty when violated.
 fn comparison_violation(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap) -> f64 {
-    let lhs = reify_expr::eval_expr(left, values).as_f64();
-    let rhs = reify_expr::eval_expr(right, values).as_f64();
+    let lhs = reify_expr::eval_expr(left, &reify_expr::EvalContext::simple(values)).as_f64();
+    let rhs = reify_expr::eval_expr(right, &reify_expr::EvalContext::simple(values)).as_f64();
 
     match (lhs, rhs) {
         (Some(l), Some(r)) => match op {
@@ -189,7 +189,7 @@ fn constraint_residual(expr: &CompiledExpr, values: &ValueMap) -> f64 {
                     lr.min(rr)
                 }
                 _ => {
-                    match reify_expr::eval_expr(expr, values) {
+                    match reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values)) {
                         Value::Bool(true) => 0.0,
                         Value::Bool(false) => 1.0,
                         Value::Undef => 10.0,
@@ -199,7 +199,7 @@ fn constraint_residual(expr: &CompiledExpr, values: &ValueMap) -> f64 {
             }
         }
         _ => {
-            match reify_expr::eval_expr(expr, values) {
+            match reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values)) {
                 Value::Bool(true) => 0.0,
                 Value::Bool(false) => 1.0,
                 Value::Undef => 10.0,
@@ -233,7 +233,7 @@ fn constraint_violation(expr: &CompiledExpr, values: &ValueMap) -> f64 {
                 }
                 _ => {
                     // Not a logical/comparison op; evaluate as boolean
-                    match reify_expr::eval_expr(expr, values) {
+                    match reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values)) {
                         Value::Bool(true) => 0.0,
                         Value::Bool(false) => 1.0,
                         Value::Undef => 10.0,
@@ -244,7 +244,7 @@ fn constraint_violation(expr: &CompiledExpr, values: &ValueMap) -> f64 {
         }
         _ => {
             // Non-binop expression (e.g., literal bool, function call)
-            match reify_expr::eval_expr(expr, values) {
+            match reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values)) {
                 Value::Bool(true) => 0.0,
                 Value::Bool(false) => 1.0,
                 Value::Undef => 10.0,
@@ -300,10 +300,10 @@ struct ConstraintCostFunction<'a> {
 /// or a non-finite float (NaN, Inf).
 fn eval_objective(objective: &OptimizationObjective, values: &ValueMap) -> Option<f64> {
     match objective {
-        OptimizationObjective::Minimize(expr) => reify_expr::eval_expr(expr, values)
+        OptimizationObjective::Minimize(expr) => reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values))
             .as_f64()
             .filter(|v| v.is_finite()),
-        OptimizationObjective::Maximize(expr) => reify_expr::eval_expr(expr, values)
+        OptimizationObjective::Maximize(expr) => reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values))
             .as_f64()
             .filter(|v| v.is_finite())
             .map(|v| -v),

@@ -97,6 +97,6 @@ fn undef_propagation_through_eval_expr() {
 
     // Empty value map → thickness is Undef
     let values = ValueMap::new();
-    let result = reify_expr::eval_expr(&expr, &values);
+    let result = reify_expr::eval_expr(&expr, &reify_expr::EvalContext::simple(&values));
     assert!(result.is_undef(), "should propagate undef");
 }

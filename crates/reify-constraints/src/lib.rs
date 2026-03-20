@@ -17,7 +17,7 @@ impl ConstraintChecker for SimpleConstraintChecker {
             .constraints
             .iter()
             .map(|(id, expr)| {
-                let value = reify_expr::eval_expr(expr, input.values);
+                let value = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(input.values, input.functions));
                 let (satisfaction, diagnostics) = match value {
                     Value::Bool(true) => (Satisfaction::Satisfied, ConstraintDiagnostics::default()),
                     Value::Bool(false) => (

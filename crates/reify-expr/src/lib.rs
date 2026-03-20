@@ -1,27 +1,73 @@
-use reify_types::{BinOp, CompiledExpr, CompiledExprKind, UnOp, Value, ValueMap};
+use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, UnOp, Value, ValueCellId, ValueMap};
 
-/// Evaluate a compiled expression against a set of values.
+/// Maximum recursion depth for user-defined function calls.
+const MAX_RECURSION_DEPTH: u32 = 1000;
+
+/// Evaluation context: provides values, user-defined functions, and recursion tracking.
+pub struct EvalContext<'a> {
+    /// Current values of all cells.
+    pub values: &'a ValueMap,
+    /// User-defined functions available for evaluation.
+    pub functions: &'a [CompiledFunction],
+    /// Current recursion depth (private — managed internally).
+    recursion_depth: u32,
+}
+
+impl<'a> EvalContext<'a> {
+    /// Create a new evaluation context with values and user-defined functions.
+    pub fn new(values: &'a ValueMap, functions: &'a [CompiledFunction]) -> Self {
+        Self {
+            values,
+            functions,
+            recursion_depth: 0,
+        }
+    }
+
+    /// Create a simple evaluation context with no user-defined functions.
+    pub fn simple(values: &'a ValueMap) -> Self {
+        Self {
+            values,
+            functions: &[],
+            recursion_depth: 0,
+        }
+    }
+
+    /// Create a child context with a new scope (for function body evaluation).
+    fn with_scope<'b>(&self, values: &'b ValueMap) -> EvalContext<'b>
+    where
+        'a: 'b,
+    {
+        EvalContext {
+            values,
+            functions: self.functions,
+            recursion_depth: self.recursion_depth + 1,
+        }
+    }
+}
+
+/// Evaluate a compiled expression against an evaluation context.
 ///
 /// Pure recursive evaluator implementing:
 /// - Undef propagation (strict for arithmetic, Kleene for logic)
 /// - Dimensional arithmetic (add/sub require same dimension, mul/div combine dimensions)
 /// - Division by zero → Undef
-pub fn eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value {
+/// - User-defined function calls with recursion depth limit
+pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
     match &expr.kind {
         CompiledExprKind::Literal(v) => v.clone(),
 
-        CompiledExprKind::ValueRef(id) => values.get_or_undef(id),
+        CompiledExprKind::ValueRef(id) => ctx.values.get_or_undef(id),
 
         CompiledExprKind::BinOp { op, left, right } => {
-            eval_binop(*op, left, right, values)
+            eval_binop(*op, left, right, ctx)
         }
 
         CompiledExprKind::UnOp { op, operand } => {
-            eval_unop(*op, operand, values)
+            eval_unop(*op, operand, ctx)
         }
 
         CompiledExprKind::FunctionCall { function, args } => {
-            let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, values)).collect();
+            let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
             // Strict Undef propagation: if any arg is Undef, short-circuit
             if evaluated_args.iter().any(|v| v.is_undef()) {
                 return Value::Undef;
@@ -33,7 +79,7 @@ pub fn eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value {
             discriminant,
             arms,
         } => {
-            let disc_val = eval_expr(discriminant, values);
+            let disc_val = eval_expr(discriminant, ctx);
             if disc_val.is_undef() {
                 return Value::Undef;
             }
@@ -41,7 +87,7 @@ pub fn eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value {
             if let Value::Enum { variant, .. } = &disc_val {
                 for arm in arms {
                     if arm.patterns.iter().any(|p| p == variant || p == "_") {
-                        return eval_expr(&arm.body, values);
+                        return eval_expr(&arm.body, ctx);
                     }
                 }
             }
@@ -54,19 +100,17 @@ pub fn eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value {
             then_branch,
             else_branch,
         } => {
-            let cond = eval_expr(condition, values);
+            let cond = eval_expr(condition, ctx);
             match cond {
-                Value::Bool(true) => eval_expr(then_branch, values),
-                Value::Bool(false) => eval_expr(else_branch, values),
+                Value::Bool(true) => eval_expr(then_branch, ctx),
+                Value::Bool(false) => eval_expr(else_branch, ctx),
                 Value::Undef => Value::Undef,
                 _ => Value::Undef, // type error: condition is not bool
             }
         }
 
-        CompiledExprKind::UserFunctionCall { .. } => {
-            // User-defined function evaluation is a separate task.
-            // Return Undef for now.
-            Value::Undef
+        CompiledExprKind::UserFunctionCall { function_name, args } => {
+            eval_user_function_call(function_name, args, ctx)
         }
 
         CompiledExprKind::Lambda { .. } => {
@@ -77,16 +121,69 @@ pub fn eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value {
     }
 }
 
-fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap) -> Value {
+/// Evaluate a user-defined function call.
+fn eval_user_function_call(
+    function_name: &str,
+    args: &[CompiledExpr],
+    ctx: &EvalContext,
+) -> Value {
+    // Evaluate arguments
+    let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
+
+    // Strict Undef propagation: if any arg is Undef, short-circuit
+    if evaluated_args.iter().any(|v| v.is_undef()) {
+        return Value::Undef;
+    }
+
+    // Check recursion depth
+    if ctx.recursion_depth >= MAX_RECURSION_DEPTH {
+        return Value::Undef;
+    }
+
+    // Look up function by name + arity
+    let func = ctx
+        .functions
+        .iter()
+        .find(|f| f.name == function_name && f.params.len() == args.len());
+
+    let func = match func {
+        Some(f) => f,
+        None => return Value::Undef, // no matching function
+    };
+
+    // Build fresh scope with parameter bindings
+    let mut scope = ValueMap::new();
+    for ((param_name, _param_type), arg_val) in func.params.iter().zip(evaluated_args) {
+        scope.insert(
+            ValueCellId::new(&func.name, param_name),
+            arg_val,
+        );
+    }
+
+    // Evaluate let bindings in order, growing the scope
+    for (binding_name, binding_expr) in &func.body.let_bindings {
+        let val = {
+            let body_ctx = ctx.with_scope(&scope);
+            eval_expr(binding_expr, &body_ctx)
+        };
+        scope.insert(ValueCellId::new(&func.name, binding_name), val);
+    }
+
+    // Evaluate result expression with final scope
+    let final_ctx = ctx.with_scope(&scope);
+    eval_expr(&func.body.result_expr, &final_ctx)
+}
+
+fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Value {
     // Kleene three-valued logic: short-circuit with Undef support
     match op {
-        BinOp::And => return eval_and(left, right, values),
-        BinOp::Or => return eval_or(left, right, values),
+        BinOp::And => return eval_and(left, right, ctx),
+        BinOp::Or => return eval_or(left, right, ctx),
         _ => {}
     }
 
-    let lv = eval_expr(left, values);
-    let rv = eval_expr(right, values);
+    let lv = eval_expr(left, ctx);
+    let rv = eval_expr(right, ctx);
 
     // Strict undef propagation for arithmetic/comparison
     if lv.is_undef() || rv.is_undef() {
@@ -111,12 +208,12 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, values: &Val
 }
 
 /// Kleene AND: false ∧ Undef = false
-fn eval_and(left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap) -> Value {
-    let lv = eval_expr(left, values);
+fn eval_and(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Value {
+    let lv = eval_expr(left, ctx);
     match lv {
         Value::Bool(false) => Value::Bool(false),
         Value::Bool(true) => {
-            let rv = eval_expr(right, values);
+            let rv = eval_expr(right, ctx);
             match rv {
                 Value::Bool(b) => Value::Bool(b),
                 Value::Undef => Value::Undef,
@@ -124,7 +221,7 @@ fn eval_and(left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap) -> Val
             }
         }
         Value::Undef => {
-            let rv = eval_expr(right, values);
+            let rv = eval_expr(right, ctx);
             match rv {
                 Value::Bool(false) => Value::Bool(false),
                 _ => Value::Undef,
@@ -135,12 +232,12 @@ fn eval_and(left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap) -> Val
 }
 
 /// Kleene OR: true ∨ Undef = true
-fn eval_or(left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap) -> Value {
-    let lv = eval_expr(left, values);
+fn eval_or(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Value {
+    let lv = eval_expr(left, ctx);
     match lv {
         Value::Bool(true) => Value::Bool(true),
         Value::Bool(false) => {
-            let rv = eval_expr(right, values);
+            let rv = eval_expr(right, ctx);
             match rv {
                 Value::Bool(b) => Value::Bool(b),
                 Value::Undef => Value::Undef,
@@ -148,7 +245,7 @@ fn eval_or(left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap) -> Valu
             }
         }
         Value::Undef => {
-            let rv = eval_expr(right, values);
+            let rv = eval_expr(right, ctx);
             match rv {
                 Value::Bool(true) => Value::Bool(true),
                 _ => Value::Undef,
@@ -449,8 +546,8 @@ fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
     }
 }
 
-fn eval_unop(op: UnOp, operand: &CompiledExpr, values: &ValueMap) -> Value {
-    let v = eval_expr(operand, values);
+fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
+    let v = eval_expr(operand, ctx);
     if v.is_undef() {
         return Value::Undef;
     }
@@ -496,7 +593,7 @@ mod tests {
     fn literal_evaluation() {
         let expr = lit(Value::Int(42), Type::Int);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Int(42) => {}
             other => panic!("expected Int(42), got {:?}", other),
         }
@@ -507,7 +604,7 @@ mod tests {
         let expr = vref("Bracket", "width", Type::length());
         let mut values = ValueMap::new();
         values.insert(ValueCellId::new("Bracket", "width"), mm_val(80.0));
-        let result = eval_expr(&expr, &values);
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
         assert!(!result.is_undef());
         let v = result.as_f64().unwrap();
         assert!((v - 0.08).abs() < 1e-12);
@@ -517,7 +614,7 @@ mod tests {
     fn value_ref_missing_returns_undef() {
         let expr = vref("Bracket", "width", Type::length());
         let values = ValueMap::new();
-        assert!(eval_expr(&expr, &values).is_undef());
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
@@ -526,7 +623,7 @@ mod tests {
         let right = lit(mm_val(20.0), Type::length());
         let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::length());
         let values = ValueMap::new();
-        let result = eval_expr(&expr, &values);
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
         let v = result.as_f64().unwrap();
         assert!((v - 0.1).abs() < 1e-12);
     }
@@ -545,7 +642,7 @@ mod tests {
         );
         let expr = CompiledExpr::binop(BinOp::Add, length, mass, Type::length());
         let values = ValueMap::new();
-        assert!(eval_expr(&expr, &values).is_undef());
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
@@ -561,7 +658,7 @@ mod tests {
             },
         );
         let values = ValueMap::new();
-        let result = eval_expr(&expr, &values);
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
             Value::Scalar { si_value, dimension } => {
                 assert!((si_value - 0.008).abs() < 1e-12);
@@ -577,7 +674,7 @@ mod tests {
         let right = lit(Value::Int(0), Type::Int);
         let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::Int);
         let values = ValueMap::new();
-        assert!(eval_expr(&expr, &values).is_undef());
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
@@ -586,7 +683,7 @@ mod tests {
         let right = lit(mm_val(2.0), Type::length());
         let expr = CompiledExpr::binop(BinOp::Gt, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(true) => {}
             other => panic!("expected Bool(true), got {:?}", other),
         }
@@ -598,7 +695,7 @@ mod tests {
         let right = lit(mm_val(2.0), Type::length());
         let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::length());
         let values = ValueMap::new();
-        assert!(eval_expr(&expr, &values).is_undef());
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
@@ -608,7 +705,7 @@ mod tests {
         let right = lit(Value::Undef, Type::Bool);
         let expr = CompiledExpr::binop(BinOp::And, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(false) => {}
             other => panic!("expected Bool(false), got {:?}", other),
         }
@@ -621,7 +718,7 @@ mod tests {
         let right = lit(Value::Bool(false), Type::Bool);
         let expr = CompiledExpr::binop(BinOp::And, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(false) => {}
             other => panic!("expected Bool(false), got {:?}", other),
         }
@@ -634,7 +731,7 @@ mod tests {
         let right = lit(Value::Undef, Type::Bool);
         let expr = CompiledExpr::binop(BinOp::Or, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(true) => {}
             other => panic!("expected Bool(true), got {:?}", other),
         }
@@ -647,7 +744,7 @@ mod tests {
         let right = lit(Value::Bool(true), Type::Bool);
         let expr = CompiledExpr::binop(BinOp::And, left, right, Type::Bool);
         let values = ValueMap::new();
-        assert!(eval_expr(&expr, &values).is_undef());
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
@@ -655,7 +752,7 @@ mod tests {
         let operand = lit(mm_val(5.0), Type::length());
         let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::length());
         let values = ValueMap::new();
-        let result = eval_expr(&expr, &values);
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
         let v = result.as_f64().unwrap();
         assert!((v - (-0.005)).abs() < 1e-12);
     }
@@ -665,7 +762,7 @@ mod tests {
         let operand = lit(Value::Bool(true), Type::Bool);
         let expr = CompiledExpr::unop(UnOp::Not, operand, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(false) => {}
             other => panic!("expected Bool(false), got {:?}", other),
         }
@@ -686,7 +783,7 @@ mod tests {
             },
         };
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Int(1) => {}
             other => panic!("expected Int(1), got {:?}", other),
         }
@@ -707,7 +804,7 @@ mod tests {
             },
         };
         let values = ValueMap::new();
-        assert!(eval_expr(&expr, &values).is_undef());
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
@@ -724,7 +821,7 @@ mod tests {
             },
         );
         let values = ValueMap::new();
-        let result = eval_expr(&expr, &values);
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
             Value::Scalar { si_value, dimension } => {
                 assert!((si_value - 9e-6).abs() < 1e-15);
@@ -763,7 +860,7 @@ mod tests {
             },
         );
 
-        let result = eval_expr(&volume, &values);
+        let result = eval_expr(&volume, &EvalContext::simple(&values));
         match &result {
             Value::Scalar { si_value, dimension } => {
                 // 0.08 * 0.1 * 0.005 = 4e-5 m³
@@ -790,7 +887,7 @@ mod tests {
             },
         };
         let values = ValueMap::new();
-        let result = eval_expr(&expr, &values);
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
             Value::Real(v) => assert!((v - 3.0).abs() < 1e-12),
             other => panic!("expected Real(3.0), got {:?}", other),
@@ -820,7 +917,7 @@ mod tests {
             },
         };
         let values = ValueMap::new();
-        let result = eval_expr(&expr, &values);
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
             Value::Real(v) => assert!((v - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-10),
             other => panic!("expected Real(~0.7071), got {:?}", other),
@@ -842,7 +939,7 @@ mod tests {
             },
         };
         let values = ValueMap::new();
-        assert!(eval_expr(&expr, &values).is_undef());
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
@@ -861,7 +958,7 @@ mod tests {
             },
         };
         let values = ValueMap::new();
-        assert!(eval_expr(&expr, &values).is_undef());
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
@@ -887,7 +984,7 @@ mod tests {
                 dimension: DimensionVector::LENGTH,
             },
         );
-        let result = eval_expr(&expr, &values);
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
             Value::Scalar {
                 si_value,
@@ -915,7 +1012,7 @@ mod tests {
             },
         };
         let values = ValueMap::new();
-        assert!(eval_expr(&expr, &values).is_undef());
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
@@ -939,7 +1036,7 @@ mod tests {
         );
         let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(false) => {}
             other => panic!("expected Bool(false), got {:?}", other),
         }
@@ -952,7 +1049,7 @@ mod tests {
         let right = lit(mm_val(80.0), Type::length());
         let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(true) => {}
             other => panic!("expected Bool(true), got {:?}", other),
         }
@@ -965,7 +1062,7 @@ mod tests {
         let right = lit(mm_val(100.0), Type::length());
         let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(false) => {}
             other => panic!("expected Bool(false), got {:?}", other),
         }
@@ -992,7 +1089,7 @@ mod tests {
         );
         let expr = CompiledExpr::binop(BinOp::Lt, left, right, Type::Bool);
         let values = ValueMap::new();
-        assert!(eval_expr(&expr, &values).is_undef());
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
@@ -1002,7 +1099,7 @@ mod tests {
         let right = lit(mm_val(5.0), Type::length());
         let expr = CompiledExpr::binop(BinOp::Lt, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(true) => {}
             other => panic!("expected Bool(true), got {:?}", other),
         }
@@ -1021,7 +1118,7 @@ mod tests {
         let right = lit(Value::Int(5), Type::Int);
         let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(false) => {}
             other => panic!("expected Bool(false), got {:?}", other),
         }
@@ -1048,7 +1145,7 @@ mod tests {
         );
         let expr = CompiledExpr::binop(BinOp::Ne, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(true) => {}
             other => panic!("expected Bool(true), got {:?}", other),
         }
@@ -1072,7 +1169,7 @@ mod tests {
         let right = enum_lit("Direction", "In");
         let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(true) => {}
             other => panic!("expected Bool(true), got {:?}", other),
         }
@@ -1084,7 +1181,7 @@ mod tests {
         let right = enum_lit("Direction", "Out");
         let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(false) => {}
             other => panic!("expected Bool(false), got {:?}", other),
         }
@@ -1096,7 +1193,7 @@ mod tests {
         let right = enum_lit("ThreadSystem", "ISO");
         let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(false) => {}
             other => panic!("expected Bool(false), got {:?}", other),
         }
@@ -1108,7 +1205,7 @@ mod tests {
         let right = enum_lit("Direction", "Out");
         let expr = CompiledExpr::binop(BinOp::Ne, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Bool(true) => {}
             other => panic!("expected Bool(true), got {:?}", other),
         }
@@ -1121,7 +1218,7 @@ mod tests {
         let expr = CompiledExpr::binop(BinOp::Lt, left, right, Type::Bool);
         let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &values).is_undef(),
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
             "comparison on enums should return Undef"
         );
     }
@@ -1155,7 +1252,7 @@ mod tests {
             },
         };
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Int(1) => {}
             other => panic!("expected Int(1), got {:?}", other),
         }
@@ -1179,7 +1276,7 @@ mod tests {
             },
         };
         let values = ValueMap::new();
-        assert!(eval_expr(&expr, &values).is_undef());
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
@@ -1205,7 +1302,7 @@ mod tests {
             },
         };
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Int(99) => {}
             other => panic!("expected Int(99), got {:?}", other),
         }
@@ -1234,7 +1331,7 @@ mod tests {
             },
         };
         let values = ValueMap::new();
-        match eval_expr(&expr, &values) {
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::String(s) => assert_eq!(s, "recessed"),
             other => panic!("expected String(\"recessed\"), got {:?}", other),
         }
@@ -1247,7 +1344,7 @@ mod tests {
         let right = lit(mm_val(20.0), Type::length());
         let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::Real);
         let values = ValueMap::new();
-        let result = eval_expr(&expr, &values);
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
             Value::Real(v) => assert!((v - 4.0).abs() < 1e-12),
             other => panic!("expected Real, got {:?}", other),
@@ -1290,7 +1387,8 @@ mod tests {
             },
         };
         let values = ValueMap::new();
-        let ctx = EvalContext::new(&values, &[double_fn]);
+        let functions = [double_fn];
+        let ctx = EvalContext::new(&values, &functions);
         let result = eval_expr(&call_expr, &ctx);
         match result {
             Value::Real(v) => assert!((v - 10.0).abs() < 1e-12, "expected 10.0, got {}", v),

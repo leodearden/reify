@@ -536,7 +536,7 @@ impl Engine {
                                         && let Some(node) = setup.graph.value_cells.get(vcid)
                                         && let Some(ref expr) = node.default_expr
                                     {
-                                        let val = reify_expr::eval_expr(expr, &result.values);
+                                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&result.values));
                                         result.values.insert(vcid.clone(), val.clone());
                                         result.snapshot_values.insert(
                                             vcid.clone(),
@@ -682,7 +682,7 @@ impl Engine {
                         payload: None,
                     });
 
-                    let val = reify_expr::eval_expr(expr, &values);
+                    let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
                     values.insert(cell.id.clone(), val.clone());
 
                     // Update snapshot values
@@ -722,7 +722,7 @@ impl Engine {
             // then conditionally evaluate members based on guard truth value.
             for group in &template.guarded_groups {
                 // Evaluate the guard cell expression
-                let guard_val = reify_expr::eval_expr(&group.guard_expr, &values);
+                let guard_val = reify_expr::eval_expr(&group.guard_expr, &reify_expr::EvalContext::simple(&values));
                 values.insert(group.guard_value_cell.clone(), guard_val.clone());
 
                 let guard_determinacy = match &guard_val {
@@ -745,7 +745,7 @@ impl Engine {
                             || cell.kind == ValueCellKind::Let
                         {
                             if let Some(ref expr) = cell.default_expr {
-                                let val = reify_expr::eval_expr(expr, &values);
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
                                 values.insert(cell.id.clone(), val.clone());
                                 snapshot.values.insert(
                                     cell.id.clone(),
@@ -782,7 +782,7 @@ impl Engine {
                             || cell.kind == ValueCellKind::Let
                         {
                             if let Some(ref expr) = cell.default_expr {
-                                let val = reify_expr::eval_expr(expr, &values);
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
                                 values.insert(cell.id.clone(), val.clone());
                                 snapshot.values.insert(
                                     cell.id.clone(),
@@ -847,10 +847,10 @@ impl Engine {
                     // Check if a matching arg was provided
                     let val = if let Some((_name, arg_expr)) = sub.args.iter().find(|(name, _)| name == member) {
                         // Evaluate arg expression against the PARENT's values map
-                        reify_expr::eval_expr(arg_expr, &values)
+                        reify_expr::eval_expr(arg_expr, &reify_expr::EvalContext::simple(&values))
                     } else if let Some(ref default_expr) = cell.default_expr {
                         // Evaluate child param's default against the child-local map
-                        reify_expr::eval_expr(default_expr, &child_values)
+                        reify_expr::eval_expr(default_expr, &reify_expr::EvalContext::simple(&child_values))
                     } else {
                         Value::Undef
                     };
@@ -919,7 +919,7 @@ impl Engine {
                     let member = &child_cell_id.member;
 
                     // Evaluate against child-local map (references child-original IDs)
-                    let val = reify_expr::eval_expr(expr, &child_values);
+                    let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&child_values));
                     child_values.insert(child_cell_id.clone(), val.clone());
 
                     // Insert into main values and snapshot with scoped ID
@@ -1198,7 +1198,7 @@ impl Engine {
                     payload: None,
                 });
 
-                let val = reify_expr::eval_expr(expr, &values);
+                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot.values.insert(
                     vcid.clone(),
@@ -1273,7 +1273,7 @@ impl Engine {
                     // Re-evaluate the guard cell's expression
                     let guard_val = if let Some(node) = graph.value_cells.get(&group.guard_cell) {
                         if let Some(ref expr) = node.default_expr {
-                            reify_expr::eval_expr(expr, &values)
+                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values))
                         } else {
                             Value::Undef
                         }
@@ -1298,7 +1298,7 @@ impl Engine {
                             if let Some(node) = graph.value_cells.get(mid)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &values);
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     mid.clone(), (val, DeterminacyState::Determined),
@@ -1316,7 +1316,7 @@ impl Engine {
                             if let Some(node) = graph.value_cells.get(mid)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &values);
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     mid.clone(), (val, DeterminacyState::Determined),
@@ -1452,7 +1452,7 @@ impl Engine {
                                         && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
                                         && let Some(ref expr) = node.default_expr
                                     {
-                                        let val = reify_expr::eval_expr(expr, &values);
+                                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
                                         values.insert(vcid.clone(), val.clone());
                                         new_snapshot.values.insert(
                                             vcid.clone(),
@@ -1518,7 +1518,7 @@ impl Engine {
                             if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &values);
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     member_id.clone(),
@@ -1542,7 +1542,7 @@ impl Engine {
                             if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &values);
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     member_id.clone(),
@@ -1827,7 +1827,7 @@ impl Engine {
                     let val = if let Some(override_val) = self.param_overrides.get(&cell.id) {
                         override_val.clone()
                     } else if let Some(ref expr) = cell.default_expr {
-                        reify_expr::eval_expr(expr, &values)
+                        reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values))
                     } else {
                         reify_types::Value::Undef
                     };
@@ -1920,7 +1920,7 @@ impl Engine {
                         payload: None,
                     });
 
-                    let val = reify_expr::eval_expr(expr, &values);
+                    let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
 
                     // Build dependency trace from expression refs
                     let trace = extract_dependency_trace(expr);
@@ -2342,7 +2342,7 @@ impl Engine {
                 payload: None,
             });
 
-            let val = reify_expr::eval_expr(expr, values);
+            let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values));
             values.insert(cell_id.clone(), val.clone());
 
             snapshot.values.insert(
@@ -2384,7 +2384,7 @@ fn compile_geometry_op(
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .map(|(_, expr)| reify_expr::eval_expr(expr, values))
+                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values)))
                     .unwrap_or(reify_types::Value::Undef)
             };
 
@@ -2435,7 +2435,7 @@ fn compile_geometry_op(
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .map(|(_, expr)| reify_expr::eval_expr(expr, values))
+                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values)))
                     .unwrap_or(reify_types::Value::Undef)
             };
             match kind {
@@ -2454,7 +2454,7 @@ fn compile_geometry_op(
                         .iter()
                         .filter(|(n, _)| n.starts_with("face_"))
                         .filter_map(|(_, expr)| {
-                            reify_expr::eval_expr(expr, values).as_f64().map(|v| v as usize)
+                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values)).as_f64().map(|v| v as usize)
                         })
                         .collect();
                     Some(reify_types::GeometryOp::Shell {
@@ -2492,7 +2492,7 @@ fn compile_geometry_op(
             let eval_arg_f64 = |name: &str| -> f64 {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, values).as_f64())
+                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values)).as_f64())
                     .unwrap_or(0.0)
             };
             match kind {
@@ -2521,13 +2521,13 @@ fn compile_geometry_op(
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .map(|(_, expr)| reify_expr::eval_expr(expr, values))
+                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values)))
                     .unwrap_or(reify_types::Value::Undef)
             };
             let eval_arg_f64 = |name: &str| -> f64 {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, values).as_f64())
+                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values)).as_f64())
                     .unwrap_or(0.0)
             };
             // Pattern operations resolve target via step index
