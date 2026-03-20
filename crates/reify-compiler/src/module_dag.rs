@@ -87,6 +87,12 @@ pub struct ModuleDag {
     in_progress: HashSet<String>,
 }
 
+impl Default for ModuleDag {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModuleDag {
     pub fn new() -> Self {
         Self {
