@@ -75,6 +75,21 @@ pub enum CompiledExprKind {
         method: String,
         args: Vec<CompiledExpr>,
     },
+    /// Quantifier expression: forall/exists variable in collection: predicate
+    Quantifier {
+        kind: QuantifierKind,
+        variable: String,
+        variable_id: ValueCellId,
+        collection: Box<CompiledExpr>,
+        predicate: Box<CompiledExpr>,
+    },
+}
+
+/// The kind of quantifier: universal (forall) or existential (exists).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QuantifierKind {
+    ForAll,
+    Exists,
 }
 
 /// A compiled match arm.
@@ -249,6 +264,10 @@ impl CompiledExpr {
                     arg.walk(f);
                 }
             }
+            CompiledExprKind::Quantifier { collection, predicate, .. } => {
+                collection.walk(f);
+                predicate.walk(f);
+            }
         }
     }
 
@@ -340,6 +359,18 @@ impl CompiledExpr {
                     arg.collect_value_refs_inner(refs);
                 }
             }
+            CompiledExprKind::Quantifier { variable_id, collection, predicate, .. } => {
+                // Collection refs are always dependencies
+                collection.collect_value_refs_inner(refs);
+                // Predicate refs excluding the bound variable
+                let mut pred_refs = Vec::new();
+                predicate.collect_value_refs_inner(&mut pred_refs);
+                for r in pred_refs {
+                    if r != *variable_id {
+                        refs.push(r);
+                    }
+                }
+            }
         }
     }
 
@@ -426,6 +457,36 @@ impl CompiledExpr {
                 index: Box::new(index),
             },
             result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a quantifier expression.
+    pub fn quantifier(
+        kind: QuantifierKind,
+        variable: String,
+        variable_id: ValueCellId,
+        collection: CompiledExpr,
+        predicate: CompiledExpr,
+    ) -> Self {
+        let kind_byte = match kind {
+            QuantifierKind::ForAll => 0,
+            QuantifierKind::Exists => 1,
+        };
+        let content_hash = ContentHash::of(&[13, kind_byte])
+            .combine(ContentHash::of_str(&variable))
+            .combine(ContentHash::of_str(&format!("{}", variable_id)))
+            .combine(collection.content_hash)
+            .combine(predicate.content_hash);
+        CompiledExpr {
+            kind: CompiledExprKind::Quantifier {
+                kind,
+                variable,
+                variable_id,
+                collection: Box::new(collection),
+                predicate: Box::new(predicate),
+            },
+            result_type: Type::Bool,
             content_hash,
         }
     }

@@ -179,6 +179,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
             eval_method_call(&obj, method, &evaluated_args, ctx)
         }
+
+        CompiledExprKind::Quantifier { .. } => {
+            // TODO: implement quantifier evaluation in step-6
+            Value::Undef
+        }
     }
 }
 

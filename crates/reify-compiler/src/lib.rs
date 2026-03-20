@@ -1089,9 +1089,40 @@ fn compile_expr_guarded(
 
             CompiledExpr::lambda(compiled_params, param_ids, compiled_body, captures, result_type)
         }
-        reify_syntax::ExprKind::Quantifier { .. } => {
-            // TODO: implement quantifier compilation in step-4
-            CompiledExpr::literal(Value::Undef, Type::Bool)
+        reify_syntax::ExprKind::Quantifier { kind, variable, collection, predicate } => {
+            let quant_entity = format!("$quant{}.{}", lambda_counter, scope.entity_name);
+            *lambda_counter += 1;
+
+            // Compile collection in the outer scope
+            let compiled_collection =
+                compile_expr_guarded(collection, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+
+            // Create a nested scope with the bound variable
+            let mut quant_scope = scope.clone();
+            let variable_id = ValueCellId::new(&quant_entity, variable);
+            // Default type to Real for the bound variable; the actual type
+            // depends on the collection element type but we don't have full
+            // type inference yet
+            quant_scope
+                .names
+                .insert(variable.clone(), (variable_id.clone(), Type::Real, None));
+
+            // Compile predicate in the nested scope
+            let compiled_predicate =
+                compile_expr_guarded(predicate, &quant_scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+
+            let compiled_kind = match kind {
+                reify_syntax::QuantifierKind::ForAll => reify_types::QuantifierKind::ForAll,
+                reify_syntax::QuantifierKind::Exists => reify_types::QuantifierKind::Exists,
+            };
+
+            CompiledExpr::quantifier(
+                compiled_kind,
+                variable.clone(),
+                variable_id,
+                compiled_collection,
+                compiled_predicate,
+            )
         }
     }
 }
@@ -2526,6 +2557,10 @@ fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
         }
         CompiledExprKind::Lambda { body, .. } => {
             collect_body_refs_inner(body, refs);
+        }
+        CompiledExprKind::Quantifier { collection, predicate, .. } => {
+            collect_body_refs_inner(collection, refs);
+            collect_body_refs_inner(predicate, refs);
         }
         CompiledExprKind::Literal(_) => {}
         CompiledExprKind::ListLiteral(elements) => {
