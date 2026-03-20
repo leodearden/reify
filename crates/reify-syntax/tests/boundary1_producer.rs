@@ -360,6 +360,8 @@ fn all_spans_valid() {
             MemberDecl::GuardedGroup(g) => g.span,
             MemberDecl::AssociatedType(a) => a.span,
             MemberDecl::Port(p) => p.span,
+            MemberDecl::Connect(c) => c.span,
+            MemberDecl::Chain(c) => c.span,
         };
         assert!(span.start < span.end, "span should be non-empty");
     }

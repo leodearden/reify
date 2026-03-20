@@ -106,11 +106,25 @@ pub struct TopologyTemplate {
     pub realizations: Vec<RealizationDecl>,
     pub sub_components: Vec<SubComponentDecl>,
     pub ports: Vec<CompiledPort>,
+    pub connections: Vec<CompiledConnection>,
     pub guarded_groups: Vec<CompiledGuardedGroup>,
     /// ValueCellIds whose boolean value controls topology (guard cells).
     pub structure_controlling: HashSet<ValueCellId>,
     pub objective: Option<OptimizationObjective>,
     pub content_hash: ContentHash,
+}
+
+/// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
+#[derive(Debug, Clone)]
+pub struct CompiledConnection {
+    pub left_port: String,
+    pub operator: reify_syntax::ConnectOp,
+    pub right_port: String,
+    pub connector_sub: Option<String>,
+    pub compatibility_constraint: ConstraintNodeId,
+    pub port_mappings: Vec<(String, String)>,
+    pub frame_constraint: Option<ConstraintNodeId>,
+    pub span: SourceSpan,
 }
 
 /// A compiled port declaration — compiled from a PortDecl.
@@ -1403,9 +1417,11 @@ fn compile_entity(
     let mut duplicate_port_names: HashSet<String> = HashSet::new();
     let mut guarded_groups: Vec<CompiledGuardedGroup> = Vec::new();
     let mut structure_controlling: HashSet<ValueCellId> = HashSet::new();
+    let mut connections: Vec<CompiledConnection> = Vec::new();
     let mut objective: Option<OptimizationObjective> = None;
     let mut constraint_index: u32 = 0;
     let mut guard_index: u32 = 0;
+    let mut connector_index: u32 = 0;
 
     // First pass: register all param and let names into the scope so they can
     // reference each other (forward references within the structure).
@@ -1825,6 +1841,74 @@ fn compile_entity(
                     frame_expr,
                 });
             }
+            reify_syntax::MemberDecl::Connect(connect_decl) => {
+                let ctx = ConnectContext {
+                    entity_name,
+                    ports: &ports,
+                    scope: &scope,
+                    enum_defs,
+                    functions,
+                };
+                let mut acc = ConnectAccumulator {
+                    constraints: &mut constraints,
+                    constraint_index: &mut constraint_index,
+                    connections: &mut connections,
+                    sub_components: &mut sub_components,
+                    connector_index: &mut connector_index,
+                };
+                compile_connection(
+                    &ctx,
+                    &ConnectInput {
+                        left_expr: &connect_decl.left.expr,
+                        operator: connect_decl.operator,
+                        right_expr: &connect_decl.right.expr,
+                        connector_type: connect_decl.connector_type.as_deref(),
+                        params: &connect_decl.params,
+                        port_mappings: &connect_decl.port_mappings,
+                        span: connect_decl.span,
+                    },
+                    diagnostics,
+                    &mut acc,
+                );
+            }
+            reify_syntax::MemberDecl::Chain(chain_decl) => {
+                if chain_decl.elements.len() < 2 {
+                    diagnostics.push(Diagnostic::error(
+                        "chain statement requires at least two elements",
+                    ).with_label(DiagnosticLabel::new(chain_decl.span, "too few elements")));
+                }
+                let ctx = ConnectContext {
+                    entity_name,
+                    ports: &ports,
+                    scope: &scope,
+                    enum_defs,
+                    functions,
+                };
+                // Desugar chain into pairwise Forward connections
+                for pair in chain_decl.elements.windows(2) {
+                    let mut acc = ConnectAccumulator {
+                        constraints: &mut constraints,
+                        constraint_index: &mut constraint_index,
+                        connections: &mut connections,
+                        sub_components: &mut sub_components,
+                        connector_index: &mut connector_index,
+                    };
+                    compile_connection(
+                        &ctx,
+                        &ConnectInput {
+                            left_expr: &pair[0],
+                            operator: reify_syntax::ConnectOp::Forward,
+                            right_expr: &pair[1],
+                            connector_type: None,
+                            params: &[],
+                            port_mappings: &[],
+                            span: chain_decl.span,
+                        },
+                        diagnostics,
+                        &mut acc,
+                    );
+                }
+            }
         }
     }
 
@@ -1903,12 +1987,31 @@ fn compile_entity(
             ))
         });
 
+        // Connection identity hashes: left_port, operator, right_port, port_mappings, connector_sub
+        let connection_hashes = connections.iter().flat_map(|c| {
+            std::iter::once(ContentHash::of_str(&c.left_port))
+                .chain(std::iter::once(ContentHash::of(&[c.operator.as_u8()])))
+                .chain(std::iter::once(ContentHash::of_str(&c.right_port)))
+                .chain(
+                    c.port_mappings
+                        .iter()
+                        .flat_map(|(l, r)| [ContentHash::of_str(l), ContentHash::of_str(r)]),
+                )
+                .chain(std::iter::once(
+                    c.connector_sub
+                        .as_ref()
+                        .map(|s| ContentHash::of_str(s))
+                        .unwrap_or(ContentHash(0)),
+                ))
+        });
+
         let all_hashes = std::iter::once(name_hash)
             .chain(vc_hashes)
             .chain(constraint_hashes)
             .chain(sub_hashes)
             .chain(guard_hashes)
-            .chain(port_hashes);
+            .chain(port_hashes)
+            .chain(connection_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -2102,11 +2205,242 @@ fn compile_entity(
         realizations,
         sub_components,
         ports,
+        connections,
         guarded_groups,
         structure_controlling,
         objective,
         content_hash,
     }
+}
+
+/// Extract a port name from a port reference expression.
+/// Returns `None` for unsupported expression kinds (complex expressions).
+fn resolve_port_name(expr: &reify_syntax::Expr) -> Option<String> {
+    match &expr.kind {
+        reify_syntax::ExprKind::Ident(name) => Some(name.clone()),
+        reify_syntax::ExprKind::MemberAccess { object, member } => {
+            match &object.kind {
+                reify_syntax::ExprKind::Ident(obj_name) => Some(format!("{}.{}", obj_name, member)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Check if a source port direction is forward-compatible with a destination port direction.
+fn is_forward_compatible(source: reify_types::PortDirection, dest: reify_types::PortDirection) -> bool {
+    use reify_types::PortDirection::*;
+    matches!(
+        (source, dest),
+        (Out, In) | (Out, Bidi) | (Bidi, In) | (Bidi, Bidi) | (Bidi, Out) | (In, Bidi)
+    )
+}
+
+/// Accumulated outputs from connection compilation.
+struct ConnectAccumulator<'a> {
+    constraints: &'a mut Vec<CompiledConstraint>,
+    constraint_index: &'a mut u32,
+    connections: &'a mut Vec<CompiledConnection>,
+    sub_components: &'a mut Vec<SubComponentDecl>,
+    connector_index: &'a mut u32,
+}
+
+/// Read-only context for compiling connections.
+struct ConnectContext<'a> {
+    entity_name: &'a str,
+    ports: &'a [CompiledPort],
+    scope: &'a CompilationScope,
+    enum_defs: &'a [reify_types::EnumDef],
+    functions: &'a [CompiledFunction],
+}
+
+/// Per-statement inputs for compiling a single connection.
+struct ConnectInput<'a> {
+    left_expr: &'a reify_syntax::Expr,
+    operator: reify_syntax::ConnectOp,
+    right_expr: &'a reify_syntax::Expr,
+    connector_type: Option<&'a str>,
+    params: &'a [(String, reify_syntax::Expr)],
+    port_mappings: &'a [(String, String)],
+    span: SourceSpan,
+}
+
+/// Compile a single connection (from connect statement or chain desugaring).
+fn compile_connection(
+    ctx: &ConnectContext,
+    input: &ConnectInput,
+    diagnostics: &mut Vec<Diagnostic>,
+    acc: &mut ConnectAccumulator,
+) {
+    let left_expr = input.left_expr;
+    let right_expr = input.right_expr;
+    let operator = input.operator;
+    let span = input.span;
+    let connector_type = input.connector_type;
+    let params = input.params;
+    let port_mappings = input.port_mappings;
+    let left_port = match resolve_port_name(left_expr) {
+        Some(name) => name,
+        None => {
+            diagnostics.push(
+                Diagnostic::error("invalid port reference in connect statement")
+                    .with_label(DiagnosticLabel::new(left_expr.span, "unsupported expression")),
+            );
+            return;
+        }
+    };
+    let right_port = match resolve_port_name(right_expr) {
+        Some(name) => name,
+        None => {
+            diagnostics.push(
+                Diagnostic::error("invalid port reference in connect statement")
+                    .with_label(DiagnosticLabel::new(right_expr.span, "unsupported expression")),
+            );
+            return;
+        }
+    };
+
+    // Look up port directions for compatibility checking
+    let dir_of = |name: &str| ctx.ports.iter().find(|p| p.name == name).map(|p| p.direction);
+    let left_dir = dir_of(&left_port);
+    let right_dir = dir_of(&right_port);
+
+    // Bare ident (no dot) that doesn't match any port is undefined
+    let is_bare = |name: &str| !name.contains('.');
+    if is_bare(&left_port) && left_dir.is_none() {
+        diagnostics.push(
+            Diagnostic::error(format!("undefined port '{}' in connect statement", left_port))
+                .with_label(DiagnosticLabel::new(span, "undefined port")),
+        );
+    }
+    if is_bare(&right_port) && right_dir.is_none() {
+        diagnostics.push(
+            Diagnostic::error(format!("undefined port '{}' in connect statement", right_port))
+                .with_label(DiagnosticLabel::new(span, "undefined port")),
+        );
+    }
+
+    // Direction compatibility check
+    let compatible = match operator {
+        reify_syntax::ConnectOp::Forward => {
+            match (left_dir, right_dir) {
+                (Some(l), Some(r)) => {
+                    if is_forward_compatible(l, r) {
+                        true
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "incompatible port directions for connect: {:?} -> {:?}",
+                                l, r
+                            ))
+                            .with_label(DiagnosticLabel::new(span, "incompatible directions")),
+                        );
+                        false
+                    }
+                }
+                _ => true, // Can't check unknown/dotted ports
+            }
+        }
+        reify_syntax::ConnectOp::Reverse => {
+            match (left_dir, right_dir) {
+                (Some(l), Some(r)) => {
+                    if is_forward_compatible(r, l) {
+                        true
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "incompatible port directions for connect: {:?} <- {:?}",
+                                l, r
+                            ))
+                            .with_label(DiagnosticLabel::new(span, "incompatible directions")),
+                        );
+                        false
+                    }
+                }
+                _ => true,
+            }
+        }
+        reify_syntax::ConnectOp::Bidirectional => {
+            match (left_dir, right_dir) {
+                (Some(l), Some(r)) => {
+                    if l == reify_types::PortDirection::Bidi && r == reify_types::PortDirection::Bidi {
+                        true
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "bidirectional connect requires both ports to be bidi, got {:?} <-> {:?}",
+                                l, r
+                            ))
+                            .with_label(DiagnosticLabel::new(span, "both ports must be bidi")),
+                        );
+                        false
+                    }
+                }
+                _ => true,
+            }
+        }
+    };
+
+    // Create compatibility constraint
+    let compat_id = ConstraintNodeId::new(ctx.entity_name, *acc.constraint_index);
+    let compat_expr = CompiledExpr::literal(
+        Value::Bool(compatible),
+        Type::Bool,
+    );
+    acc.constraints.push(CompiledConstraint {
+        id: compat_id.clone(),
+        label: Some(format!("connect_compat_{}_{}", left_port, right_port)),
+        expr: compat_expr,
+        domain: None,
+        span,
+    });
+    *acc.constraint_index += 1;
+
+    // Handle connector sub-entity
+    let connector_sub = if let Some(conn_type) = connector_type {
+        let connector_name = format!("__connector_{}", *acc.connector_index);
+        *acc.connector_index += 1;
+
+        let compiled_args: Vec<(String, CompiledExpr)> = params
+            .iter()
+            .map(|(name, expr)| {
+                (name.clone(), compile_expr(expr, ctx.scope, ctx.enum_defs, ctx.functions, diagnostics))
+            })
+            .collect();
+
+        let mut conn_hash = ContentHash::of_str(conn_type)
+            .combine(ContentHash::of(&[operator.as_u8()]))
+            .combine(ContentHash::of_str(&left_port))
+            .combine(ContentHash::of_str(&right_port));
+        for (_, expr) in &compiled_args {
+            conn_hash = conn_hash.combine(expr.content_hash);
+        }
+
+        acc.sub_components.push(SubComponentDecl {
+            name: connector_name.clone(),
+            structure_name: conn_type.to_string(),
+            visibility: Visibility::Private,
+            args: compiled_args,
+            span,
+            content_hash: conn_hash,
+        });
+
+        Some(connector_name)
+    } else {
+        None
+    };
+
+    acc.connections.push(CompiledConnection {
+        left_port,
+        operator,
+        right_port,
+        connector_sub,
+        compatibility_constraint: compat_id,
+        port_mappings: port_mappings.to_vec(),
+        frame_constraint: None,
+        span,
+    });
 }
 
 /// Collect all ValueCellId references from a compiled expression tree,
