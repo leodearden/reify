@@ -15,7 +15,7 @@
     "crates/reify-expr",
     "crates/reify-stdlib"
   ],
-  "analysis": "This task implements collection compilation and operations across the Reify pipeline. The codebase already has: (1) Value::List/Set/Map variants in reify-types, (2) Type::List/Set/Map types, (3) syntax parsing for list/set/map literals and index access in reify-syntax, (4) stub error handlers in the compiler for collection syntax nodes, (5) apply_lambda in reify-expr for calling lambda closures.\n\nThe work involves: (A) Adding 5 new CompiledExprKind variants to reify-types (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall), (B) Implementing their evaluation in reify-expr including all collection methods (count, sum, map, filter, fold, all, any, contains, concat, generate for List; count, contains, union, intersection, difference for Set; count, keys, values, contains_key for Map), (C) Implementing compilation in reify-compiler replacing the current stubs, (D) Adding dimension-aware sum to reify-stdlib.\n\nKey constraint: The current grammar supports MemberAccess (obj.member) but not method_call with args (obj.method(args)). Property-style methods (.count, .sum, .keys, .values) compile from MemberAccess. Methods with args (.map, .filter, .fold, .contains, .union, etc.) will be tested at the CompiledExpr level directly. Full end-to-end parsing of method calls with arguments requires a grammar change (tree-sitter-reify) which is out of scope for this task's modules.\n\nUndef propagation follows the spec: undef collection -> undef result, known-structure-unknown-elements -> count works but sum propagates, Kleene 3-valued logic for .all/.any.",
+  "analysis": "This task implements collection compilation and operations across the Reify pipeline. The codebase already has: (1) Value::List/Set/Map variants in reify-types, (2) Type::List/Set/Map types, (3) syntax parsing for list/set/map literals and index access in reify-syntax, (4) stub error handlers in the compiler for collection syntax nodes, (5) apply_lambda in reify-expr for calling lambda closures.\n\nThe work involves: (A) Adding 5 new CompiledExprKind variants to reify-types (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall), (B) Implementing their evaluation in reify-expr including all collection methods (count, sum, map, filter, fold, all, any, contains, concat, generate for List; count, contains, union, intersection, difference for Set; count, keys, values, contains_key for Map), (C) Implementing compilation in reify-compiler replacing the current stubs, (D) Adding dimension-aware sum to reify-stdlib.\n\nKey constraint: The current grammar supports MemberAccess (obj.member) but not method_call with args (obj.method(args)). Property-style methods (.count, .sum, .keys, .values) compile from MemberAccess. Methods with args (.map, .filter, .fold, .contains, .union, etc.) will be tested at the CompiledExpr level directly. Full end-to-end parsing of method calls with arguments requires a grammar change (tree-sitter-reify) which is out of scope for this task's modules.\n\nUndef propagation follows the spec: undef collection -> undef result, known-structure-unknown-elements -> count works but sum propagates, Kleene 3-valued logic for .all/.any.\n\nReview feedback identified three blocking issues: (1) Missing Kleene tests for .any — the implementation is correct but untested for [undef, false].any -> Undef and [true, undef].any -> Bool(true). (2) Missing .filter Undef propagation test — the implementation already returns Undef when predicate returns Undef (line 484) but no test covers it. (3) apply_lambda() uses EvalContext::simple() which drops the function registry, so UserFunctionCall nodes inside lambda bodies silently return Undef. The fix requires threading EvalContext through apply_lambda and eval_method_call.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -284,6 +284,48 @@
       "description": "Verify property method and index access integration tests pass. Fix any issues.",
       "status": "done",
       "commit": "4469cc0"
+    },
+    {
+      "id": "step-37",
+      "type": "test",
+      "description": "Add Kleene 3-valued logic tests for .any in collection_eval_tests.rs: (1) eval_method_any_kleene_undef: [undef, false].any(|x| x) -> Undef (no true present, but undef present means result is indeterminate). (2) eval_method_any_kleene_true_wins: [true, undef].any(|x| x) -> Bool(true) (true dominates undef in Kleene OR). These mirror the existing eval_method_all_kleene_undef and eval_method_all_kleene_false_wins tests.",
+      "status": "done",
+      "commit": "ffbc589"
+    },
+    {
+      "id": "step-38",
+      "type": "impl",
+      "description": "Verify .any Kleene tests pass. The implementation already has the correct Kleene logic (lines 398-417: true short-circuits, false skips, undef flags has_undef, final check returns Undef if has_undef else Bool(false)). Fix if any test unexpectedly fails.",
+      "status": "done",
+      "commit": "ffbc589"
+    },
+    {
+      "id": "step-39",
+      "type": "test",
+      "description": "Add .filter Undef propagation test in collection_eval_tests.rs: eval_method_filter_undef_propagation: [1, undef, 3].filter(|x| x > 0) -> Undef. The predicate (x > 0) returns Undef when x is Undef (because Gt with Undef operand propagates Undef). The filter spec says 'propagate Undef' — if any element's predicate returns Undef, the entire filter result is Undef. Use an undef ValueCellId in the list to produce an Undef element that causes the predicate to return Undef.",
+      "status": "done",
+      "commit": "17de3f1"
+    },
+    {
+      "id": "step-40",
+      "type": "impl",
+      "description": "Verify .filter Undef propagation test passes. The implementation already handles this at line 484 (Value::Undef => return Value::Undef). Fix if the test unexpectedly fails.",
+      "status": "done",
+      "commit": "17de3f1"
+    },
+    {
+      "id": "step-41",
+      "type": "test",
+      "description": "Add test for UserFunctionCall inside lambda body used in a collection method. In collection_eval_tests.rs, add eval_method_map_with_user_function: create a CompiledFunction 'double' that returns x*2, create a list [1,2,3], call .map(|x| double(x)) where the lambda body is a UserFunctionCall node. Evaluate with EvalContext::new(&values, &[double_fn]). Assert result is List([2,4,6]). This test will FAIL because apply_lambda() currently uses EvalContext::simple() which drops the functions registry, so UserFunctionCall inside the lambda body returns Undef for every element, producing List([Undef, Undef, Undef]).",
+      "status": "done",
+      "commit": "a47f47d"
+    },
+    {
+      "id": "step-42",
+      "type": "impl",
+      "description": "Fix apply_lambda() context propagation. Change signature from pub fn apply_lambda(lambda: &Value, args: &[Value]) -> Value to pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value. Inside, replace EvalContext::simple(&eval_map) with ctx.with_scope(&eval_map) so functions and recursion_depth are preserved. Change eval_method_call signature from fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value to fn eval_method_call(obj: &Value, method: &str, args: &[Value], ctx: &EvalContext) -> Value. Update all apply_lambda call sites inside eval_method_call (.map, .filter, .fold, .all, .any, .generate) to pass ctx. Update the MethodCall arm in eval_expr (line 180) to pass ctx to eval_method_call. Existing tests using EvalContext::simple() will continue to work since simple() sets functions to &[] which is still valid.",
+      "status": "done",
+      "commit": "39f0f66"
     }
   ],
   "design_decisions": [
@@ -310,6 +352,10 @@
     {
       "decision": ".sum on empty list returns Int(0) rather than Undef",
       "rationale": "Zero is the additive identity and the conventional sum of an empty sequence. This matches standard library behavior in most languages."
+    },
+    {
+      "decision": "Thread EvalContext through apply_lambda and eval_method_call rather than storing functions in Value::Lambda",
+      "rationale": "Storing the function registry inside Value::Lambda would require cloning the entire &[CompiledFunction] slice at lambda creation time, adding allocation overhead and coupling Value to CompiledFunction ownership. Threading the context is cheaper (just a reference), follows the existing pattern used by eval_user_function_call (which uses ctx.with_scope()), and keeps Value as a pure data type. The with_scope() method already exists and correctly propagates functions and increments recursion_depth."
     }
   ],
   "reuse": [
@@ -347,6 +393,11 @@
       "what": "Test patterns from lambda_eval_tests.rs",
       "where": "crates/reify-expr/tests/lambda_eval_tests.rs",
       "how": "Follow same pattern of constructing CompiledExpr trees and evaluating them with EvalContext::simple(). The lambda test helpers (make_value_lambda) can be adapted for collection tests."
+    },
+    {
+      "what": "EvalContext::with_scope() method",
+      "where": "crates/reify-expr/src/lib.rs:36",
+      "how": "Reuse for apply_lambda context propagation fix — with_scope creates a child context preserving functions and incrementing recursion_depth, exactly what apply_lambda needs instead of EvalContext::simple()"
     }
   ]
 }
