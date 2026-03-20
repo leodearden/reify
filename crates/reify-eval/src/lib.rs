@@ -1844,18 +1844,18 @@ impl Engine {
 
         // Execute geometry operations
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
-            let mut last_handle: Option<GeometryHandleId> = None;
+            let mut step_handles: Vec<GeometryHandleId> = Vec::new();
             let mut total_ops: usize = 0;
 
             for template in &module.templates {
                 for realization in &template.realizations {
                     for op in &realization.operations {
                         total_ops += 1;
-                        let geom_op = compile_geometry_op(op, &values, &last_handle);
+                        let geom_op = compile_geometry_op(op, &values, &step_handles);
                         match geom_op {
                             Some(geom_op) => match kernel.execute(&geom_op) {
                                 Ok(handle) => {
-                                    last_handle = Some(handle.id);
+                                    step_handles.push(handle.id);
                                 }
                                 Err(e) => {
                                     diagnostics.push(Diagnostic::error(
@@ -1875,13 +1875,13 @@ impl Engine {
 
             if total_ops == 0 {
                 None
-            } else if last_handle.is_none() {
+            } else if step_handles.is_empty() {
                 diagnostics.push(Diagnostic::error(
                     "all geometry operations failed; no geometry output produced",
                 ));
                 None
             } else {
-                let export_handle = last_handle.unwrap();
+                let export_handle = *step_handles.last().unwrap();
                 let mut output = Vec::new();
                 match kernel.export(export_handle, format, &mut output) {
                     Ok(()) => Some(output),
@@ -1917,7 +1917,7 @@ impl Engine {
 
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             // Execute geometry operations from realizations
-            let mut last_handle: Option<GeometryHandleId> = None;
+            let mut step_handles: Vec<GeometryHandleId> = Vec::new();
             let mut total_ops: usize = 0;
 
             for template in &module.templates {
@@ -1925,11 +1925,11 @@ impl Engine {
                     for op in &realization.operations {
                         total_ops += 1;
                         let geom_op =
-                            compile_geometry_op(op, &check_result.values, &last_handle);
+                            compile_geometry_op(op, &check_result.values, &step_handles);
                         match geom_op {
                             Some(geom_op) => match kernel.execute(&geom_op) {
                                 Ok(handle) => {
-                                    last_handle = Some(handle.id);
+                                    step_handles.push(handle.id);
                                 }
                                 Err(e) => {
                                     diagnostics.push(Diagnostic::error(
@@ -1947,7 +1947,7 @@ impl Engine {
                 }
             }
 
-            if last_handle.is_none() && total_ops > 0 {
+            if step_handles.is_empty() && total_ops > 0 {
                 // All geometry operations failed — skip export entirely
                 diagnostics.push(Diagnostic::error(
                     "all geometry operations failed; no geometry output produced",
@@ -1955,7 +1955,7 @@ impl Engine {
                 None
             } else {
                 // Export the result
-                let export_handle = last_handle.unwrap_or(GeometryHandleId(0));
+                let export_handle = step_handles.last().copied().unwrap_or(GeometryHandleId(0));
                 let mut output = Vec::new();
                 match kernel.export(export_handle, format, &mut output) {
                     Ok(()) => Some(output),
@@ -2057,7 +2057,7 @@ impl Engine {
 fn compile_geometry_op(
     op: &reify_compiler::CompiledGeometryOp,
     values: &ValueMap,
-    last_handle: &Option<GeometryHandleId>,
+    step_handles: &[GeometryHandleId],
 ) -> Option<reify_types::GeometryOp> {
     use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 
@@ -2088,8 +2088,8 @@ fn compile_geometry_op(
         CompiledGeometryOp::Boolean { op, left, right } => {
             let resolve_ref = |r: &GeomRef| -> Option<GeometryHandleId> {
                 match r {
-                    GeomRef::Step(_idx) => *last_handle,
-                    GeomRef::Sub(_name) => *last_handle,
+                    GeomRef::Step(_idx) => step_handles.last().copied(),
+                    GeomRef::Sub(_name) => step_handles.last().copied(),
                 }
             };
             let left_id = resolve_ref(left)?;
@@ -2111,7 +2111,7 @@ fn compile_geometry_op(
         }
         CompiledGeometryOp::Modify { kind, target, args } => {
             let target_id = match target {
-                GeomRef::Step(_) | GeomRef::Sub(_) => (*last_handle)?,
+                GeomRef::Step(_) | GeomRef::Sub(_) => step_handles.last().copied()?,
             };
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
@@ -2148,8 +2148,8 @@ fn compile_geometry_op(
                     let angle = eval_arg("angle");
                     // plane is passed as an expression that evaluates to a value;
                     // at this level we don't have the geometry handle yet, so we
-                    // use last_handle as a placeholder for the plane reference.
-                    let plane_id = *last_handle;
+                    // use step_handles.last() as a placeholder for the plane reference.
+                    let plane_id = step_handles.last().copied();
                     Some(reify_types::GeometryOp::Draft {
                         target: target_id,
                         angle,
@@ -2167,7 +2167,7 @@ fn compile_geometry_op(
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
             let target_id = match target {
-                GeomRef::Step(_) | GeomRef::Sub(_) => (*last_handle)?,
+                GeomRef::Step(_) | GeomRef::Sub(_) => step_handles.last().copied()?,
             };
             let eval_arg_f64 = |name: &str| -> f64 {
                 args.iter()
@@ -2210,8 +2210,8 @@ fn compile_geometry_op(
                     .and_then(|(_, expr)| reify_expr::eval_expr(expr, values).as_f64())
                     .unwrap_or(0.0)
             };
-            // Pattern operations use last_handle as the target geometry
-            let target_id = (*last_handle)?;
+            // Pattern operations use step_handles.last() as the target geometry
+            let target_id = step_handles.last().copied()?;
             match kind {
                 reify_compiler::PatternKind::Linear => {
                     Some(reify_types::GeometryOp::LinearPattern {
@@ -2263,9 +2263,9 @@ fn compile_geometry_op(
             match kind {
                 reify_compiler::SweepKind::Loft => {
                     // Loft needs profile geometry handles. For now, use
-                    // last_handle as a placeholder — full multi-handle
+                    // step_handles.last() as a placeholder — full multi-handle
                     // resolution requires a geometry handle registry.
-                    let profile_id = (*last_handle)?;
+                    let profile_id = step_handles.last().copied()?;
                     let profiles = vec![profile_id; args.len()];
                     Some(reify_types::GeometryOp::Loft { profiles })
                 }
@@ -2274,3 +2274,37 @@ fn compile_geometry_op(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_compiler::{CompiledGeometryOp, GeomRef, SweepKind};
+    use reify_types::GeometryHandleId;
+
+    #[test]
+    fn compile_geometry_op_sweep_resolves_distinct_profiles() {
+        // Two distinct step handles representing two wire profiles
+        let step_handles = vec![GeometryHandleId(100), GeometryHandleId(200)];
+        let values = ValueMap::new();
+
+        // Create a Loft sweep that references Step(0) and Step(1)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Loft,
+            profiles: vec![GeomRef::Step(0), GeomRef::Step(1)],
+            args: vec![],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles);
+        let result = result.expect("compile_geometry_op should return Some for Loft");
+
+        match result {
+            reify_types::GeometryOp::Loft { profiles } => {
+                assert_eq!(
+                    profiles,
+                    vec![GeometryHandleId(100), GeometryHandleId(200)],
+                    "Loft profiles should resolve Step(0) -> handle 100, Step(1) -> handle 200"
+                );
+            }
+            other => panic!("expected GeometryOp::Loft, got {:?}", other),
+        }
+    }
+}
