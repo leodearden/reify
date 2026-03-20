@@ -239,3 +239,76 @@ structure def S {
     assert_eq!(template.ports[2].direction, PortDirection::Bidi);
     assert_eq!(template.ports[3].direction, PortDirection::Bidi); // default
 }
+
+// ── Step 21: content hash includes port identity fields ─────────────
+
+#[test]
+fn compile_port_content_hash_includes_identity() {
+    // Two structures identical except for port name ('a' vs 'b')
+    let source_a = r#"
+trait MechPort { param d : Length }
+structure def S1 {
+    port a : MechPort { param d : Length = 5mm }
+}
+"#;
+    let source_b = r#"
+trait MechPort { param d : Length }
+structure def S1 {
+    port b : MechPort { param d : Length = 5mm }
+}
+"#;
+    let (tmpl_a, _) = compile_first_template(source_a);
+    let (tmpl_b, _) = compile_first_template(source_b);
+    assert_ne!(
+        tmpl_a.content_hash, tmpl_b.content_hash,
+        "renaming a port must change content_hash"
+    );
+}
+
+#[test]
+fn compile_port_content_hash_includes_direction() {
+    // Two structures identical except for port direction (in vs out)
+    let source_in = r#"
+trait MechPort { param d : Length }
+structure def S1 {
+    port x : in MechPort { param d : Length = 5mm }
+}
+"#;
+    let source_out = r#"
+trait MechPort { param d : Length }
+structure def S1 {
+    port x : out MechPort { param d : Length = 5mm }
+}
+"#;
+    let (tmpl_in, _) = compile_first_template(source_in);
+    let (tmpl_out, _) = compile_first_template(source_out);
+    assert_ne!(
+        tmpl_in.content_hash, tmpl_out.content_hash,
+        "changing port direction must change content_hash"
+    );
+}
+
+#[test]
+fn compile_port_content_hash_includes_type_name() {
+    // Two structures with different port type_name (MechPort vs RotaryPort)
+    let source_mech = r#"
+trait MechPort { param d : Length }
+trait RotaryPort { param d : Length }
+structure def S1 {
+    port x : MechPort { param d : Length = 5mm }
+}
+"#;
+    let source_rotary = r#"
+trait MechPort { param d : Length }
+trait RotaryPort { param d : Length }
+structure def S1 {
+    port x : RotaryPort { param d : Length = 5mm }
+}
+"#;
+    let (tmpl_mech, _) = compile_first_template(source_mech);
+    let (tmpl_rotary, _) = compile_first_template(source_rotary);
+    assert_ne!(
+        tmpl_mech.content_hash, tmpl_rotary.content_hash,
+        "changing port type_name must change content_hash"
+    );
+}
