@@ -822,14 +822,35 @@ fn compile_expr_guarded(
                     }
                 }
 
-            // For non-port member access, compile the object expression but emit a diagnostic
-            // since we don't yet support member access fully.
-            let _compiled_obj = compile_expr_guarded(object, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
-            diagnostics.push(
-                Diagnostic::error(format!("member access not yet supported: .{}", member))
-                    .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
-            );
-            CompiledExpr::literal(Value::Undef, Type::Real)
+            // For non-port member access, check if it's a known collection method
+            let compiled_obj = compile_expr_guarded(object, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let collection_methods = ["count", "sum", "keys", "values"];
+            if collection_methods.contains(&member.as_str()) {
+                // Infer result type from method and object type
+                let result_type = match member.as_str() {
+                    "count" => Type::Int,
+                    "sum" => match &compiled_obj.result_type {
+                        Type::List(inner) => (**inner).clone(),
+                        _ => Type::Real,
+                    },
+                    "keys" => match &compiled_obj.result_type {
+                        Type::Map(k, _) => Type::List(k.clone()),
+                        _ => Type::List(Box::new(Type::Real)),
+                    },
+                    "values" => match &compiled_obj.result_type {
+                        Type::Map(_, v) => Type::List(v.clone()),
+                        _ => Type::List(Box::new(Type::Real)),
+                    },
+                    _ => Type::Real,
+                };
+                CompiledExpr::method_call(compiled_obj, member.clone(), vec![], result_type)
+            } else {
+                diagnostics.push(
+                    Diagnostic::error(format!("member access not yet supported: .{}", member))
+                        .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
+                );
+                CompiledExpr::literal(Value::Undef, Type::Real)
+            }
         }
         reify_syntax::ExprKind::ListLiteral(elements) => {
             let compiled_elems: Vec<CompiledExpr> = elements
