@@ -141,6 +141,17 @@ mod tests {
     }
 
     #[test]
+    fn type_structure_ref_display() {
+        assert_eq!(format!("{}", Type::StructureRef("Bolt".into())), "Bolt");
+        assert_eq!(format!("{}", Type::StructureRef("Bracket".into())), "Bracket");
+    }
+
+    #[test]
+    fn type_structure_ref_not_numeric() {
+        assert!(!Type::StructureRef("Bolt".into()).is_numeric());
+    }
+
+    #[test]
     fn type_new_variants_not_numeric() {
         assert!(!Type::Enum("X".into()).is_numeric());
         assert!(!Type::List(Box::new(Type::Int)).is_numeric());
