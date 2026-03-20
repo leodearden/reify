@@ -48,8 +48,28 @@ module.exports = grammar({
 
     // ── Imports ──────────────────────────────────────────────
     import_declaration: $ => seq(
+      optional('pub'),
       'import',
-      $.string_literal,
+      field('path', $.import_path),
+      optional(choice(
+        // Destructured: import a.b.{C, D}
+        field('items', $.import_items),
+        // Aliased: import a.b as x  OR  import a.b.C as X
+        seq('as', field('alias', $.identifier)),
+      )),
+    ),
+
+    // Dot-separated module path: `std.mechanical.fasteners`
+    import_path: $ => seq(
+      $.identifier,
+      repeat(seq('.', $.identifier)),
+    ),
+
+    // Destructured import items: `{Bolt, Nut}`
+    import_items: $ => seq(
+      '{',
+      commaSep($.identifier),
+      '}',
     ),
 
     // ── Structure ───────────────────────────────────────────
