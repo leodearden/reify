@@ -2088,7 +2088,7 @@ fn compile_geometry_op(
         CompiledGeometryOp::Boolean { op, left, right } => {
             let resolve_ref = |r: &GeomRef| -> Option<GeometryHandleId> {
                 match r {
-                    GeomRef::Step(_idx) => step_handles.last().copied(),
+                    GeomRef::Step(idx) => step_handles.get(*idx).copied(),
                     GeomRef::Sub(_name) => step_handles.last().copied(),
                 }
             };
@@ -2111,7 +2111,8 @@ fn compile_geometry_op(
         }
         CompiledGeometryOp::Modify { kind, target, args } => {
             let target_id = match target {
-                GeomRef::Step(_) | GeomRef::Sub(_) => step_handles.last().copied()?,
+                GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
+                GeomRef::Sub(_) => step_handles.last().copied()?,
             };
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
@@ -2167,7 +2168,8 @@ fn compile_geometry_op(
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
             let target_id = match target {
-                GeomRef::Step(_) | GeomRef::Sub(_) => step_handles.last().copied()?,
+                GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
+                GeomRef::Sub(_) => step_handles.last().copied()?,
             };
             let eval_arg_f64 = |name: &str| -> f64 {
                 args.iter()
@@ -2197,7 +2199,7 @@ fn compile_geometry_op(
                 }
             }
         }
-        CompiledGeometryOp::Pattern { kind, args, .. } => {
+        CompiledGeometryOp::Pattern { kind, target, args } => {
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
                     .find(|(n, _)| n == name)
@@ -2210,8 +2212,11 @@ fn compile_geometry_op(
                     .and_then(|(_, expr)| reify_expr::eval_expr(expr, values).as_f64())
                     .unwrap_or(0.0)
             };
-            // Pattern operations use step_handles.last() as the target geometry
-            let target_id = step_handles.last().copied()?;
+            // Pattern operations resolve target via step index
+            let target_id = match target {
+                GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
+                GeomRef::Sub(_) => step_handles.last().copied()?,
+            };
             match kind {
                 reify_compiler::PatternKind::Linear => {
                     Some(reify_types::GeometryOp::LinearPattern {
@@ -2259,15 +2264,20 @@ fn compile_geometry_op(
                 }
             }
         }
-        CompiledGeometryOp::Sweep { kind, args, .. } => {
+        CompiledGeometryOp::Sweep { kind, profiles, .. } => {
             match kind {
                 reify_compiler::SweepKind::Loft => {
-                    // Loft needs profile geometry handles. For now, use
-                    // step_handles.last() as a placeholder — full multi-handle
-                    // resolution requires a geometry handle registry.
-                    let profile_id = step_handles.last().copied()?;
-                    let profiles = vec![profile_id; args.len()];
-                    Some(reify_types::GeometryOp::Loft { profiles })
+                    // Resolve each profile GeomRef to a handle via step_handles
+                    let resolved: Option<Vec<GeometryHandleId>> = profiles
+                        .iter()
+                        .map(|r| match r {
+                            GeomRef::Step(idx) => step_handles.get(*idx).copied(),
+                            GeomRef::Sub(_) => step_handles.last().copied(),
+                        })
+                        .collect();
+                    Some(reify_types::GeometryOp::Loft {
+                        profiles: resolved?,
+                    })
                 }
             }
         }
