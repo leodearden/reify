@@ -786,8 +786,8 @@ fn compile_expr_guarded(
         }
         reify_syntax::ExprKind::MemberAccess { object, member } => {
             // Check if this is a port member access (port_name.member_name)
-            if let reify_syntax::ExprKind::Ident(name) = &object.kind {
-                if scope.port_names.contains(name.as_str()) {
+            if let reify_syntax::ExprKind::Ident(name) = &object.kind
+                && scope.port_names.contains(name.as_str()) {
                     let composite_key = format!("{}.{}", name, member);
                     if let Some((id, ty)) = scope.resolve(&composite_key) {
                         let id = id.clone();
@@ -809,7 +809,6 @@ fn compile_expr_guarded(
                         return CompiledExpr::literal(Value::Undef, Type::Real);
                     }
                 }
-            }
 
             // For non-port member access, compile the object expression but emit a diagnostic
             // since we don't yet support member access fully.
