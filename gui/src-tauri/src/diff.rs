@@ -3,6 +3,8 @@
 // Pure functions that compare consecutive GuiState snapshots and produce
 // minimal deltas for targeted event emission. No tauri dependency.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::types::{ConstraintData, GuiState, MeshData, ValueData};
@@ -23,13 +25,97 @@ pub struct StateDelta {
 /// Items are matched by key (entity_path for meshes, cell_id for values,
 /// node_id for constraints). Changed/added items appear in `changed_*` vecs.
 /// Items present in `old` but missing from `new` appear in `removed_*` vecs.
-pub fn diff_gui_state(_old: &GuiState, _new: &GuiState) -> StateDelta {
+pub fn diff_gui_state(old: &GuiState, new: &GuiState) -> StateDelta {
+    // --- Values: keyed by cell_id ---
+    let old_values: HashMap<&str, &ValueData> =
+        old.values.iter().map(|v| (v.cell_id.as_str(), v)).collect();
+    let new_values: HashMap<&str, &ValueData> =
+        new.values.iter().map(|v| (v.cell_id.as_str(), v)).collect();
+
+    let changed_values: Vec<ValueData> = new
+        .values
+        .iter()
+        .filter(|v| {
+            old_values
+                .get(v.cell_id.as_str())
+                .map_or(true, |old_v| *old_v != *v)
+        })
+        .cloned()
+        .collect();
+
+    let removed_value_ids: Vec<String> = old
+        .values
+        .iter()
+        .filter(|v| !new_values.contains_key(v.cell_id.as_str()))
+        .map(|v| v.cell_id.clone())
+        .collect();
+
+    // --- Constraints: keyed by node_id ---
+    let old_constraints: HashMap<&str, &ConstraintData> = old
+        .constraints
+        .iter()
+        .map(|c| (c.node_id.as_str(), c))
+        .collect();
+    let new_constraints: HashMap<&str, &ConstraintData> = new
+        .constraints
+        .iter()
+        .map(|c| (c.node_id.as_str(), c))
+        .collect();
+
+    let changed_constraints: Vec<ConstraintData> = new
+        .constraints
+        .iter()
+        .filter(|c| {
+            old_constraints
+                .get(c.node_id.as_str())
+                .map_or(true, |old_c| *old_c != *c)
+        })
+        .cloned()
+        .collect();
+
+    let removed_constraint_ids: Vec<String> = old
+        .constraints
+        .iter()
+        .filter(|c| !new_constraints.contains_key(c.node_id.as_str()))
+        .map(|c| c.node_id.clone())
+        .collect();
+
+    // --- Meshes: keyed by entity_path ---
+    let old_meshes: HashMap<&str, &MeshData> = old
+        .meshes
+        .iter()
+        .map(|m| (m.entity_path.as_str(), m))
+        .collect();
+    let new_meshes: HashMap<&str, &MeshData> = new
+        .meshes
+        .iter()
+        .map(|m| (m.entity_path.as_str(), m))
+        .collect();
+
+    let changed_meshes: Vec<MeshData> = new
+        .meshes
+        .iter()
+        .filter(|m| {
+            old_meshes
+                .get(m.entity_path.as_str())
+                .map_or(true, |old_m| *old_m != *m)
+        })
+        .cloned()
+        .collect();
+
+    let removed_mesh_paths: Vec<String> = old
+        .meshes
+        .iter()
+        .filter(|m| !new_meshes.contains_key(m.entity_path.as_str()))
+        .map(|m| m.entity_path.clone())
+        .collect();
+
     StateDelta {
-        changed_meshes: vec![],
-        changed_values: vec![],
-        changed_constraints: vec![],
-        removed_mesh_paths: vec![],
-        removed_value_ids: vec![],
-        removed_constraint_ids: vec![],
+        changed_meshes,
+        changed_values,
+        changed_constraints,
+        removed_mesh_paths,
+        removed_value_ids,
+        removed_constraint_ids,
     }
 }
