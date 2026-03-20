@@ -132,3 +132,64 @@ describe('PropertyEditor parameter rows', () => {
     expect(onSetParam).toHaveBeenCalledWith('c1', '75');
   });
 });
+
+describe('PropertyEditor interactive features', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width' }),
+    c2: makeValue({ cell_id: 'c2', name: 'height', entity_path: 'Bracket.height' }),
+    c3: makeValue({ cell_id: 'c3', name: 'radius', entity_path: 'Cylinder.radius' }),
+  };
+
+  it('collapse/expand: clicking a group header toggles visibility of child rows', async () => {
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    // Initially all rows visible
+    expect(screen.getByText('width')).toBeTruthy();
+    expect(screen.getByText('height')).toBeTruthy();
+
+    // Click "Bracket" header to collapse
+    const bracketHeader = screen.getByText('Bracket');
+    fireEvent.click(bracketHeader);
+
+    // width and height should be hidden
+    expect(screen.queryByText('width')).toBeNull();
+    expect(screen.queryByText('height')).toBeNull();
+
+    // Cylinder params should still be visible
+    expect(screen.getByText('radius')).toBeTruthy();
+
+    // Click again to expand
+    fireEvent.click(bracketHeader);
+    expect(screen.getByText('width')).toBeTruthy();
+  });
+
+  it('search/filter: typing in filter input hides non-matching params and groups', async () => {
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const filterInput = screen.getByPlaceholderText('Filter properties...');
+
+    // Type "wid" to filter to only width
+    fireEvent.input(filterInput, { target: { value: 'wid' } });
+
+    expect(screen.getByText('width')).toBeTruthy();
+    expect(screen.queryByText('height')).toBeNull();
+    // Cylinder group should be hidden since no params match
+    expect(screen.queryByText('Cylinder')).toBeNull();
+    // Bracket group should still show (has matching param)
+    expect(screen.getByText('Bracket')).toBeTruthy();
+  });
+
+  it('selection highlighting: selected entity group gets selected class and auto-expands', async () => {
+    render(() => (
+      <PropertyEditor values={values} selectedEntity="Bracket.width" onSetParameter={vi.fn()} />
+    ));
+    const container = screen.getByTestId('property-editor');
+    const selectedGroup = container.querySelector('[data-selected]');
+    expect(selectedGroup).toBeTruthy();
+
+    // The selected group should contain Bracket's params
+    expect(selectedGroup!.textContent).toContain('Bracket');
+  });
+});
