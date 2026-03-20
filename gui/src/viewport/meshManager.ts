@@ -65,10 +65,37 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
 
   function updateMeshGeometry(mesh: Mesh, data: MeshData): void {
     const geometry = mesh.geometry as BufferGeometry;
-    geometry.setAttribute('position', new BufferAttribute(data.vertices, 3));
-    geometry.setIndex(new BufferAttribute(data.indices, 1));
+
+    // Reuse existing BufferAttribute objects to avoid orphaning GPU-side WebGLBuffers
+    const posAttr = geometry.getAttribute('position') as BufferAttribute | null;
+    if (posAttr) {
+      posAttr.array = data.vertices;
+      posAttr.count = data.vertices.length / 3;
+      posAttr.needsUpdate = true;
+    } else {
+      geometry.setAttribute('position', new BufferAttribute(data.vertices, 3));
+    }
+
+    const indexAttr = geometry.index;
+    if (indexAttr) {
+      indexAttr.array = data.indices;
+      indexAttr.count = data.indices.length;
+      indexAttr.needsUpdate = true;
+    } else {
+      geometry.setIndex(new BufferAttribute(data.indices, 1));
+    }
+
     if (data.normals) {
-      geometry.setAttribute('normal', new BufferAttribute(data.normals, 3));
+      const normalAttr = geometry.getAttribute('normal') as BufferAttribute | null;
+      if (normalAttr) {
+        normalAttr.array = data.normals;
+        normalAttr.count = data.normals.length / 3;
+        normalAttr.needsUpdate = true;
+      } else {
+        geometry.setAttribute('normal', new BufferAttribute(data.normals, 3));
+      }
+    } else if (geometry.getAttribute('normal')) {
+      geometry.deleteAttribute('normal');
     }
   }
 
