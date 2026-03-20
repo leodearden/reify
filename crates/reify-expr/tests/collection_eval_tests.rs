@@ -564,3 +564,71 @@ fn eval_method_filter_empty_result() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::List(vec![]));
 }
+
+// ─── step-17/18: MethodCall .fold ───
+
+#[test]
+fn eval_method_fold_sum() {
+    // [1, 2, 3].fold(0, |acc, x| acc + x) -> Int(6)
+    let acc_id = ValueCellId::new("$lambda_fold.S", "acc");
+    let x_id = ValueCellId::new("$lambda_fold.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(acc_id.clone(), Type::Int),
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        Type::Int,
+    );
+    let lambda_arg = lambda_literal(vec![("acc", acc_id), ("x", x_id)], body, ValueMap::new());
+
+    let init = CompiledExpr::literal(Value::Int(0), Type::Int);
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "fold".to_string(),
+        vec![init, lambda_arg],
+        Type::Int,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Int(6));
+}
+
+#[test]
+fn eval_method_fold_with_initial() {
+    // [1, 2, 3].fold(10, |acc, x| acc + x) -> Int(16)
+    let acc_id = ValueCellId::new("$lambda_fold2.S", "acc");
+    let x_id = ValueCellId::new("$lambda_fold2.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(acc_id.clone(), Type::Int),
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        Type::Int,
+    );
+    let lambda_arg = lambda_literal(vec![("acc", acc_id), ("x", x_id)], body, ValueMap::new());
+
+    let init = CompiledExpr::literal(Value::Int(10), Type::Int);
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "fold".to_string(),
+        vec![init, lambda_arg],
+        Type::Int,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Int(16));
+}
