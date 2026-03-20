@@ -282,6 +282,39 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 _ => Value::Undef,
             }
         },
+        "union" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            match (obj, &args[0]) {
+                (Value::Set(a), Value::Set(b)) => {
+                    Value::Set(a.union(b).cloned().collect())
+                }
+                _ => Value::Undef,
+            }
+        },
+        "intersection" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            match (obj, &args[0]) {
+                (Value::Set(a), Value::Set(b)) => {
+                    Value::Set(a.intersection(b).cloned().collect())
+                }
+                _ => Value::Undef,
+            }
+        },
+        "difference" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            match (obj, &args[0]) {
+                (Value::Set(a), Value::Set(b)) => {
+                    Value::Set(a.difference(b).cloned().collect())
+                }
+                _ => Value::Undef,
+            }
+        },
         "sum" => match obj {
             Value::List(items) => {
                 if items.is_empty() {
