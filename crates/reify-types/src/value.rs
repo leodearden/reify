@@ -1175,6 +1175,15 @@ mod tests {
     }
 
     #[test]
+    fn scalar_neg_zero_hash_consistency() {
+        // si_value -0.0 and 0.0 are different via PartialEq (to_bits), so content_hash must differ
+        let pos = Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH };
+        let neg = Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH };
+        assert_ne!(pos, neg);
+        assert_ne!(pos.content_hash(), neg.content_hash());
+    }
+
+    #[test]
     fn value_display_nested() {
         // List containing Option and Enum values
         let v = Value::List(vec![
