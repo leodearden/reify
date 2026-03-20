@@ -100,3 +100,58 @@ structure S {
         other => panic!("expected Lambda, got {:?}", other),
     }
 }
+
+/// step-11: Compile lambda with typed param `|x: Real| x + 1.0` — verify param
+/// type is recorded as Some(Type::Real) in the compiled output.
+#[test]
+fn compile_lambda_typed_param() {
+    let source = r#"
+structure S {
+    let f = |x: Real| x + 1.0
+}
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_typed"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let template = &compiled.templates[0];
+    let f_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "f")
+        .expect("should have 'f' value cell");
+
+    let f_expr = f_cell.default_expr.as_ref().expect("let should have expr");
+    match &f_expr.kind {
+        reify_types::CompiledExprKind::Lambda { params, .. } => {
+            assert_eq!(params.len(), 1);
+            assert_eq!(params[0].0, "x");
+            assert_eq!(
+                params[0].1,
+                Some(reify_types::Type::Real),
+                "param type should be Real"
+            );
+        }
+        other => panic!("expected Lambda, got {:?}", other),
+    }
+
+    // Also verify the result_type is a Function type
+    match &f_expr.result_type {
+        reify_types::Type::Function {
+            params,
+            return_type,
+        } => {
+            assert_eq!(params, &[reify_types::Type::Real]);
+            assert_eq!(**return_type, reify_types::Type::Real);
+        }
+        other => panic!("expected Function type, got {:?}", other),
+    }
+}
