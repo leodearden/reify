@@ -9,9 +9,15 @@ globalThis.ResizeObserver = class ResizeObserver {
   constructor(_cb: ResizeObserverCallback) {}
 };
 
-// Stub requestAnimationFrame/cancelAnimationFrame
-globalThis.requestAnimationFrame = vi.fn((cb) => setTimeout(cb, 0) as unknown as number);
-globalThis.cancelAnimationFrame = vi.fn((id) => clearTimeout(id));
+// RAF callback capture mechanism for race condition testing
+let rafCallbacks: Array<FrameRequestCallback> = [];
+let rafIdCounter = 1;
+
+globalThis.requestAnimationFrame = vi.fn((cb: FrameRequestCallback) => {
+  rafCallbacks.push(cb);
+  return rafIdCounter++;
+}) as unknown as typeof requestAnimationFrame;
+globalThis.cancelAnimationFrame = vi.fn((_id: number) => {}) as unknown as typeof cancelAnimationFrame;
 
 // Mock the viewport modules
 const mockResize = vi.fn();
@@ -60,6 +66,8 @@ import { Viewport } from '../../viewport';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  rafCallbacks = [];
+  rafIdCounter = 1;
 });
 
 describe('Viewport', () => {
@@ -78,5 +86,27 @@ describe('Viewport', () => {
     // Canvas should be inside the container
     const canvas = screen.getByTestId('viewport-canvas');
     expect(container.contains(canvas)).toBe(true);
+  });
+
+  it('animate loop does not call renderer.render after cleanup/dispose', () => {
+    const { unmount } = render(() => <Viewport meshes={{}} />);
+
+    // The initial animate() call should have been scheduled
+    expect(rafCallbacks.length).toBeGreaterThan(0);
+
+    // Clear the render mock to track only post-cleanup calls
+    mockRendererRender.mockClear();
+
+    // Unmount triggers onCleanup
+    unmount();
+
+    // Now manually invoke any captured RAF callback (simulating a pending frame firing after dispose)
+    const cb = rafCallbacks[rafCallbacks.length - 1];
+    if (cb) {
+      cb(performance.now());
+    }
+
+    // renderer.render should NOT have been called after cleanup
+    expect(mockRendererRender).not.toHaveBeenCalled();
   });
 });
