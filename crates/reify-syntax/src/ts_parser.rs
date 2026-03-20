@@ -142,6 +142,9 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        // Detect 'pub' keyword by checking anonymous children
+        let is_pub = self.has_pub_keyword(node);
+
         // Collect variant identifiers — skip 'enum', name, '{', '}', ','
         let mut variants = Vec::new();
         let mut cursor = node.walk();
@@ -153,6 +156,7 @@ impl<'a> Lowering<'a> {
 
         Some(EnumDecl {
             name,
+            is_pub,
             variants,
             span: self.span(node),
             content_hash: self.content_hash(node),

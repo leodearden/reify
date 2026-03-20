@@ -131,6 +131,7 @@ pub struct ImportDecl {
 #[derive(Debug, Clone)]
 pub struct EnumDecl {
     pub name: String,
+    pub is_pub: bool,
     pub variants: Vec<String>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
