@@ -63,56 +63,45 @@ impl ConstraintClassifier {
         flags.into_domain()
     }
 
-    /// Recursively walk the expression tree, collecting domain flags.
+    /// Walk the expression tree via `CompiledExpr::walk`, collecting domain
+    /// flags from domain-relevant node kinds (Literal, ValueRef, FunctionCall).
+    ///
+    /// Child traversal is handled by `walk()` — when new `CompiledExprKind`
+    /// variants are added, only `walk()` needs updating.
     fn collect_flags(expr: &CompiledExpr, flags: &mut DomainFlags) {
-        match &expr.kind {
-            CompiledExprKind::Literal(value) => {
-                match value {
-                    Value::Bool(_) => flags.has_logical = true,
-                    Value::Int(_) | Value::Real(_) | Value::Scalar { .. } => {
+        expr.walk(&mut |node| {
+            match &node.kind {
+                CompiledExprKind::Literal(value) => {
+                    match value {
+                        Value::Bool(_) => flags.has_logical = true,
+                        Value::Int(_) | Value::Real(_) | Value::Scalar { .. } => {
+                            flags.has_numeric = true;
+                        }
+                        Value::String(_) | Value::Undef => {
+                            // String and Undef don't contribute to domain classification
+                        }
+                    }
+                }
+                CompiledExprKind::ValueRef(_) => {
+                    // Classify based on the result type of the reference,
+                    // using the canonical Type::is_numeric() to stay consistent
+                    // with the type system (excludes String).
+                    if node.result_type.is_numeric() {
                         flags.has_numeric = true;
+                    } else if node.result_type == Type::Bool {
+                        flags.has_logical = true;
                     }
-                    Value::String(_) | Value::Undef => {
-                        // String and Undef don't contribute to domain classification
+                    // Type::String is a no-op — no domain flag set
+                }
+                CompiledExprKind::FunctionCall { function, .. } => {
+                    if is_geometry_qualified_name(&function.qualified_name) {
+                        flags.has_geometric = true;
                     }
                 }
+                // Child traversal handled by walk — no manual recursion needed
+                _ => {}
             }
-            CompiledExprKind::ValueRef(_) => {
-                // Classify based on the result type of the reference,
-                // using the canonical Type::is_numeric() to stay consistent
-                // with the type system (excludes String).
-                if expr.result_type.is_numeric() {
-                    flags.has_numeric = true;
-                } else if expr.result_type == Type::Bool {
-                    flags.has_logical = true;
-                }
-                // Type::String is a no-op — no domain flag set, consistent with Type::is_numeric()
-            }
-            CompiledExprKind::BinOp { left, right, .. } => {
-                Self::collect_flags(left, flags);
-                Self::collect_flags(right, flags);
-            }
-            CompiledExprKind::UnOp { operand, .. } => {
-                Self::collect_flags(operand, flags);
-            }
-            CompiledExprKind::FunctionCall { function, args } => {
-                if is_geometry_qualified_name(&function.qualified_name) {
-                    flags.has_geometric = true;
-                }
-                for arg in args {
-                    Self::collect_flags(arg, flags);
-                }
-            }
-            CompiledExprKind::Conditional {
-                condition,
-                then_branch,
-                else_branch,
-            } => {
-                Self::collect_flags(condition, flags);
-                Self::collect_flags(then_branch, flags);
-                Self::collect_flags(else_branch, flags);
-            }
-        }
+        });
     }
 }
 
