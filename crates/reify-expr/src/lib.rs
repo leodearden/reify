@@ -271,6 +271,28 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
             Value::Map(entries) => Value::Int(entries.len() as i64),
             _ => Value::Undef,
         },
+        "sum" => match obj {
+            Value::List(items) => {
+                if items.is_empty() {
+                    return Value::Int(0);
+                }
+                let mut acc = items[0].clone();
+                if acc.is_undef() {
+                    return Value::Undef;
+                }
+                for item in &items[1..] {
+                    if item.is_undef() {
+                        return Value::Undef;
+                    }
+                    acc = eval_add(&acc, item);
+                    if acc.is_undef() {
+                        return Value::Undef;
+                    }
+                }
+                acc
+            }
+            _ => Value::Undef,
+        },
         _ => Value::Undef,
     }
 }
