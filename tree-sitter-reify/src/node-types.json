@@ -28,6 +28,18 @@
           "named": true
         },
         {
+          "type": "index_access",
+          "named": true
+        },
+        {
+          "type": "list_literal",
+          "named": true
+        },
+        {
+          "type": "map_literal",
+          "named": true
+        },
+        {
           "type": "member_access",
           "named": true
         },
@@ -41,6 +53,10 @@
         },
         {
           "type": "quantity_literal",
+          "named": true
+        },
+        {
+          "type": "set_literal",
           "named": true
         },
         {
@@ -83,6 +99,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -96,6 +124,10 @@
           },
           {
             "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
             "named": true
           },
           {
@@ -187,6 +219,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -200,6 +244,10 @@
           },
           {
             "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
             "named": true
           },
           {
@@ -248,6 +296,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -261,6 +321,10 @@
           },
           {
             "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
             "named": true
           },
           {
@@ -298,6 +362,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -311,6 +387,10 @@
           },
           {
             "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
             "named": true
           },
           {
@@ -348,6 +428,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -361,6 +453,10 @@
           },
           {
             "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
             "named": true
           },
           {
@@ -404,6 +500,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -417,6 +525,10 @@
           },
           {
             "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
             "named": true
           },
           {
@@ -522,6 +634,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -535,6 +659,10 @@
           },
           {
             "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
             "named": true
           },
           {
@@ -599,6 +727,144 @@
     }
   },
   {
+    "type": "index_access",
+    "named": true,
+    "fields": {
+      "index": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "bool_literal",
+            "named": true
+          },
+          {
+            "type": "conditional_expression",
+            "named": true
+          },
+          {
+            "type": "function_call",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
+            "type": "member_access",
+            "named": true
+          },
+          {
+            "type": "number_literal",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
+            "named": true
+          },
+          {
+            "type": "string_literal",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      },
+      "object": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "bool_literal",
+            "named": true
+          },
+          {
+            "type": "conditional_expression",
+            "named": true
+          },
+          {
+            "type": "function_call",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
+            "type": "member_access",
+            "named": true
+          },
+          {
+            "type": "number_literal",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
+            "named": true
+          },
+          {
+            "type": "string_literal",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "let_declaration",
     "named": true,
     "fields": {
@@ -657,6 +923,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -673,6 +951,10 @@
             "named": true
           },
           {
+            "type": "set_literal",
+            "named": true
+          },
+          {
             "type": "string_literal",
             "named": true
           },
@@ -682,6 +964,230 @@
           }
         ]
       }
+    }
+  },
+  {
+    "type": "list_literal",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "binary_expression",
+          "named": true
+        },
+        {
+          "type": "bool_literal",
+          "named": true
+        },
+        {
+          "type": "conditional_expression",
+          "named": true
+        },
+        {
+          "type": "function_call",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "index_access",
+          "named": true
+        },
+        {
+          "type": "list_literal",
+          "named": true
+        },
+        {
+          "type": "map_literal",
+          "named": true
+        },
+        {
+          "type": "member_access",
+          "named": true
+        },
+        {
+          "type": "number_literal",
+          "named": true
+        },
+        {
+          "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "quantity_literal",
+          "named": true
+        },
+        {
+          "type": "set_literal",
+          "named": true
+        },
+        {
+          "type": "string_literal",
+          "named": true
+        },
+        {
+          "type": "unary_expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "map_entry",
+    "named": true,
+    "fields": {
+      "key": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "bool_literal",
+            "named": true
+          },
+          {
+            "type": "conditional_expression",
+            "named": true
+          },
+          {
+            "type": "function_call",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
+            "type": "member_access",
+            "named": true
+          },
+          {
+            "type": "number_literal",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
+            "named": true
+          },
+          {
+            "type": "string_literal",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "bool_literal",
+            "named": true
+          },
+          {
+            "type": "conditional_expression",
+            "named": true
+          },
+          {
+            "type": "function_call",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
+            "type": "member_access",
+            "named": true
+          },
+          {
+            "type": "number_literal",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
+            "named": true
+          },
+          {
+            "type": "string_literal",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "map_literal",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "map_entry",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -713,6 +1219,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -726,6 +1244,10 @@
           },
           {
             "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
             "named": true
           },
           {
@@ -789,6 +1311,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -802,6 +1336,10 @@
           },
           {
             "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
             "named": true
           },
           {
@@ -845,6 +1383,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -858,6 +1408,10 @@
           },
           {
             "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
             "named": true
           },
           {
@@ -921,6 +1475,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -934,6 +1500,10 @@
           },
           {
             "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
             "named": true
           },
           {
@@ -996,6 +1566,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -1009,6 +1591,10 @@
           },
           {
             "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
             "named": true
           },
           {
@@ -1082,6 +1668,18 @@
           "named": true
         },
         {
+          "type": "index_access",
+          "named": true
+        },
+        {
+          "type": "list_literal",
+          "named": true
+        },
+        {
+          "type": "map_literal",
+          "named": true
+        },
+        {
           "type": "member_access",
           "named": true
         },
@@ -1095,6 +1693,10 @@
         },
         {
           "type": "quantity_literal",
+          "named": true
+        },
+        {
+          "type": "set_literal",
           "named": true
         },
         {
@@ -1132,6 +1734,77 @@
           }
         ]
       }
+    }
+  },
+  {
+    "type": "set_literal",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "binary_expression",
+          "named": true
+        },
+        {
+          "type": "bool_literal",
+          "named": true
+        },
+        {
+          "type": "conditional_expression",
+          "named": true
+        },
+        {
+          "type": "function_call",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "index_access",
+          "named": true
+        },
+        {
+          "type": "list_literal",
+          "named": true
+        },
+        {
+          "type": "map_literal",
+          "named": true
+        },
+        {
+          "type": "member_access",
+          "named": true
+        },
+        {
+          "type": "number_literal",
+          "named": true
+        },
+        {
+          "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "quantity_literal",
+          "named": true
+        },
+        {
+          "type": "set_literal",
+          "named": true
+        },
+        {
+          "type": "string_literal",
+          "named": true
+        },
+        {
+          "type": "unary_expression",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -1312,6 +1985,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -1325,6 +2010,10 @@
           },
           {
             "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
             "named": true
           },
           {
@@ -1368,6 +2057,18 @@
             "named": true
           },
           {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
             "type": "member_access",
             "named": true
           },
@@ -1381,6 +2082,10 @@
           },
           {
             "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
             "named": true
           },
           {
@@ -1460,11 +2165,23 @@
     "named": false
   },
   {
+    "type": "=>",
+    "named": false
+  },
+  {
     "type": ">",
     "named": false
   },
   {
     "type": ">=",
+    "named": false
+  },
+  {
+    "type": "[",
+    "named": false
+  },
+  {
+    "type": "]",
     "named": false
   },
   {
@@ -1514,6 +2231,10 @@
     "extra": true
   },
   {
+    "type": "map",
+    "named": false
+  },
+  {
     "type": "maximize",
     "named": false
   },
@@ -1527,6 +2248,10 @@
   },
   {
     "type": "param",
+    "named": false
+  },
+  {
+    "type": "set",
     "named": false
   },
   {
