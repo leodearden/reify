@@ -134,12 +134,28 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             }
         }
 
-        CompiledExprKind::ListLiteral(_)
-        | CompiledExprKind::SetLiteral(_)
-        | CompiledExprKind::MapLiteral(_)
-        | CompiledExprKind::IndexAccess { .. }
+        CompiledExprKind::ListLiteral(elements) => {
+            let items: Vec<Value> = elements.iter().map(|e| eval_expr(e, ctx)).collect();
+            Value::List(items)
+        }
+
+        CompiledExprKind::SetLiteral(elements) => {
+            let items: std::collections::BTreeSet<Value> =
+                elements.iter().map(|e| eval_expr(e, ctx)).collect();
+            Value::Set(items)
+        }
+
+        CompiledExprKind::MapLiteral(entries) => {
+            let map: std::collections::BTreeMap<Value, Value> = entries
+                .iter()
+                .map(|(k, v)| (eval_expr(k, ctx), eval_expr(v, ctx)))
+                .collect();
+            Value::Map(map)
+        }
+
+        CompiledExprKind::IndexAccess { .. }
         | CompiledExprKind::MethodCall { .. } => {
-            // Placeholder — implemented in collection steps
+            // Placeholder — implemented in later collection steps
             Value::Undef
         }
     }
