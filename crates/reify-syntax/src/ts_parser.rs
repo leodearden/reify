@@ -153,13 +153,38 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Extract identifiers from a trait_bound_list node (e.g., `Rigid + Printable`).
+    fn lower_trait_bound_list(&self, node: tree_sitter::Node) -> Vec<String> {
+        let mut bounds = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "identifier" {
+                bounds.push(self.node_text(child).to_string());
+            }
+        }
+        bounds
+    }
+
+    /// Find a trait_bound_list child within a node and extract its bounds.
+    fn find_trait_bound_list(&self, node: tree_sitter::Node) -> Vec<String> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "trait_bound_list" {
+                return self.lower_trait_bound_list(child);
+            }
+        }
+        vec![]
+    }
+
     fn lower_trait(&mut self, node: tree_sitter::Node) -> Option<TraitDecl> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
         let is_pub = false;
         let type_params = vec![];
-        let refinements = vec![];
+
+        // Extract refinements from optional trait_bound_list child
+        let refinements = self.find_trait_bound_list(node);
 
         let members = self.lower_trait_members(node);
 
