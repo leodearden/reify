@@ -511,6 +511,8 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 struct CompilationScope {
     entity_name: String,
     names: HashMap<String, (ValueCellId, Type, Option<ValueCellId>)>,
+    /// Names of ports declared in this structure, for member access disambiguation.
+    port_names: HashSet<String>,
 }
 
 impl CompilationScope {
@@ -518,6 +520,7 @@ impl CompilationScope {
         CompilationScope {
             entity_name: entity_name.to_string(),
             names: HashMap::new(),
+            port_names: HashSet::new(),
         }
     }
 
@@ -782,12 +785,38 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::MemberAccess { object, member } => {
-            // For M1, compile the object expression but emit a diagnostic
+            // Check if this is a port member access (port_name.member_name)
+            if let reify_syntax::ExprKind::Ident(name) = &object.kind {
+                if scope.port_names.contains(name.as_str()) {
+                    let composite_key = format!("{}.{}", name, member);
+                    if let Some((id, ty)) = scope.resolve(&composite_key) {
+                        let id = id.clone();
+                        let ty = ty.clone();
+                        let content_hash = ContentHash::of_str(&format!("ref:{}", composite_key));
+                        return CompiledExpr {
+                            kind: CompiledExprKind::ValueRef(id),
+                            result_type: ty,
+                            content_hash,
+                        };
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "port '{}' has no member '{}'",
+                                name, member
+                            ))
+                            .with_label(DiagnosticLabel::new(expr.span, "unknown port member")),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Real);
+                    }
+                }
+            }
+
+            // For non-port member access, compile the object expression but emit a diagnostic
             // since we don't yet support member access fully.
             let _compiled_obj = compile_expr_guarded(object, scope, enum_defs, functions, diagnostics, current_guard);
             diagnostics.push(
                 Diagnostic::error(format!("member access not yet supported: .{}", member))
-                    .with_label(DiagnosticLabel::new(expr.span, "unsupported in M1")),
+                    .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
             );
             CompiledExpr::literal(Value::Undef, Type::Real)
         }
@@ -1320,6 +1349,7 @@ fn compile_structure(
             }
             reify_syntax::MemberDecl::Port(port_decl) => {
                 port_names.insert(port_decl.name.clone());
+                scope.port_names.insert(port_decl.name.clone());
                 // Register port body members with composite names: port_name.member_name
                 for port_member in &port_decl.members {
                     match port_member {
