@@ -173,8 +173,29 @@ module.exports = grammar({
       $.binary_expression,
       $.unary_expression,
       $.conditional_expression,
+      $.match_expression,
       $.index_access,
       $._primary_expression,
+    ),
+
+    // ── Match expression ────────────────────────────────────
+    match_expression: $ => prec.right(0, seq(
+      'match',
+      field('discriminant', $._expression),
+      '{',
+      repeat1($.match_arm),
+      '}',
+    )),
+
+    match_arm: $ => seq(
+      field('pattern', $.match_pattern),
+      '=>',
+      field('body', $._expression),
+    ),
+
+    match_pattern: $ => choice(
+      seq($.identifier, repeat(seq('|', $.identifier))),
+      '_',
     ),
 
     binary_expression: $ => choice(
