@@ -107,3 +107,106 @@ fn eval_map_literal() {
     expected.insert(Value::String("b".to_string()), Value::Int(2));
     assert_eq!(result, Value::Map(expected));
 }
+
+// ─── step-5: Index access evaluation ───
+
+#[test]
+fn eval_index_access_list() {
+    // [10, 20, 30][1] -> 20
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(10), Type::Int),
+            CompiledExpr::literal(Value::Int(20), Type::Int),
+            CompiledExpr::literal(Value::Int(30), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let idx = CompiledExpr::literal(Value::Int(1), Type::Int);
+    let expr = CompiledExpr::index_access(list, idx, Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Int(20));
+}
+
+#[test]
+fn eval_index_access_list_out_of_bounds() {
+    let list = CompiledExpr::list_literal(
+        vec![CompiledExpr::literal(Value::Int(1), Type::Int)],
+        Type::List(Box::new(Type::Int)),
+    );
+    let idx = CompiledExpr::literal(Value::Int(5), Type::Int);
+    let expr = CompiledExpr::index_access(list, idx, Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "out of bounds should be Undef");
+}
+
+#[test]
+fn eval_index_access_map() {
+    // map{"a" => 1, "b" => 2}["b"] -> 2
+    let map = CompiledExpr::map_literal(
+        vec![
+            (
+                CompiledExpr::literal(Value::String("a".to_string()), Type::String),
+                CompiledExpr::literal(Value::Int(1), Type::Int),
+            ),
+            (
+                CompiledExpr::literal(Value::String("b".to_string()), Type::String),
+                CompiledExpr::literal(Value::Int(2), Type::Int),
+            ),
+        ],
+        Type::Map(Box::new(Type::String), Box::new(Type::Int)),
+    );
+    let key = CompiledExpr::literal(Value::String("b".to_string()), Type::String);
+    let expr = CompiledExpr::index_access(map, key, Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Int(2));
+}
+
+#[test]
+fn eval_index_access_map_missing_key() {
+    let map = CompiledExpr::map_literal(
+        vec![(
+            CompiledExpr::literal(Value::String("a".to_string()), Type::String),
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+        )],
+        Type::Map(Box::new(Type::String), Box::new(Type::Int)),
+    );
+    let key = CompiledExpr::literal(Value::String("z".to_string()), Type::String);
+    let expr = CompiledExpr::index_access(map, key, Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "missing key should be Undef");
+}
+
+#[test]
+fn eval_index_access_undef_collection() {
+    // undef[0] -> Undef
+    let id = ValueCellId::new("S", "missing");
+    let obj = CompiledExpr::value_ref(id, Type::List(Box::new(Type::Int)));
+    let idx = CompiledExpr::literal(Value::Int(0), Type::Int);
+    let expr = CompiledExpr::index_access(obj, idx, Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "indexing Undef should be Undef");
+}
+
+#[test]
+fn eval_index_access_undef_index() {
+    // [1,2,3][undef] -> Undef
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let undef_id = ValueCellId::new("S", "missing");
+    let idx = CompiledExpr::value_ref(undef_id, Type::Int);
+    let expr = CompiledExpr::index_access(list, idx, Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "indexing with Undef should be Undef");
+}
