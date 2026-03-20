@@ -29,8 +29,23 @@ pub fn eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value {
             reify_stdlib::eval_builtin(&function.name, &evaluated_args)
         }
 
-        CompiledExprKind::Match { .. } => {
-            // Placeholder — real evaluation implemented in step-14
+        CompiledExprKind::Match {
+            discriminant,
+            arms,
+        } => {
+            let disc_val = eval_expr(discriminant, values);
+            if disc_val.is_undef() {
+                return Value::Undef;
+            }
+            // Extract variant from enum value
+            if let Value::Enum { variant, .. } = &disc_val {
+                for arm in arms {
+                    if arm.patterns.iter().any(|p| p == variant || p == "_") {
+                        return eval_expr(&arm.body, values);
+                    }
+                }
+            }
+            // No matching arm or non-enum discriminant
             Value::Undef
         }
 
