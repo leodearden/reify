@@ -154,3 +154,102 @@ fn compile_index_access() {
         other => panic!("expected IndexAccess, got {:?}", other),
     }
 }
+
+// ─── step-31: MemberAccess -> MethodCall compilation ───
+
+#[test]
+fn compile_member_access_count() {
+    // items.count should compile to MethodCall { method: "count", args: [] }
+    let compiled = compile_no_errors(
+        "structure S { let items = [1, 2, 3]  let n = items.count }",
+    );
+    let expr = get_cell_expr(&compiled, "n");
+    match &expr.kind {
+        CompiledExprKind::MethodCall {
+            object,
+            method,
+            args,
+        } => {
+            assert_eq!(method, "count");
+            assert!(args.is_empty(), "count takes no args");
+            assert!(
+                matches!(&object.kind, CompiledExprKind::ValueRef(id) if id.member == "items"),
+                "object: {:?}",
+                object.kind
+            );
+        }
+        other => panic!("expected MethodCall(count), got {:?}", other),
+    }
+}
+
+#[test]
+fn compile_member_access_sum() {
+    let compiled = compile_no_errors(
+        "structure S { let items = [1, 2, 3]  let s = items.sum }",
+    );
+    let expr = get_cell_expr(&compiled, "s");
+    match &expr.kind {
+        CompiledExprKind::MethodCall {
+            object,
+            method,
+            args,
+        } => {
+            assert_eq!(method, "sum");
+            assert!(args.is_empty());
+            assert!(
+                matches!(&object.kind, CompiledExprKind::ValueRef(id) if id.member == "items"),
+                "object: {:?}",
+                object.kind
+            );
+        }
+        other => panic!("expected MethodCall(sum), got {:?}", other),
+    }
+}
+
+#[test]
+fn compile_member_access_keys() {
+    let compiled = compile_no_errors(
+        r#"structure S { let m = map{"a" => 1}  let k = m.keys }"#,
+    );
+    let expr = get_cell_expr(&compiled, "k");
+    match &expr.kind {
+        CompiledExprKind::MethodCall {
+            object,
+            method,
+            args,
+        } => {
+            assert_eq!(method, "keys");
+            assert!(args.is_empty());
+            assert!(
+                matches!(&object.kind, CompiledExprKind::ValueRef(id) if id.member == "m"),
+                "object: {:?}",
+                object.kind
+            );
+        }
+        other => panic!("expected MethodCall(keys), got {:?}", other),
+    }
+}
+
+#[test]
+fn compile_member_access_values() {
+    let compiled = compile_no_errors(
+        r#"structure S { let m = map{"a" => 1}  let v = m.values }"#,
+    );
+    let expr = get_cell_expr(&compiled, "v");
+    match &expr.kind {
+        CompiledExprKind::MethodCall {
+            object,
+            method,
+            args,
+        } => {
+            assert_eq!(method, "values");
+            assert!(args.is_empty());
+            assert!(
+                matches!(&object.kind, CompiledExprKind::ValueRef(id) if id.member == "m"),
+                "object: {:?}",
+                object.kind
+            );
+        }
+        other => panic!("expected MethodCall(values), got {:?}", other),
+    }
+}
