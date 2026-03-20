@@ -97,3 +97,24 @@ fn file_data_serializes_with_expected_fields() {
     assert_eq!(v["path"], json!("bracket.ri"));
     assert_eq!(v["content"], json!("structure Bracket { }"));
 }
+
+#[test]
+fn evaluation_status_serializes_with_phase_and_optional_progress() {
+    // EvaluationStatus with no progress should omit the progress field
+    let status = EvaluationStatus {
+        phase: "idle".to_string(),
+        progress: None,
+    };
+    let v = serde_json::to_value(&status).unwrap();
+    assert_eq!(v["phase"], json!("idle"));
+    assert!(v.get("progress").is_none(), "progress should be omitted when None");
+
+    // EvaluationStatus with progress should include it
+    let status = EvaluationStatus {
+        phase: "evaluating".to_string(),
+        progress: Some(0.5),
+    };
+    let v = serde_json::to_value(&status).unwrap();
+    assert_eq!(v["phase"], json!("evaluating"));
+    assert_eq!(v["progress"], json!(0.5));
+}
