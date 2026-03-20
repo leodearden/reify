@@ -51,3 +51,41 @@ structure S {
         other => panic!("expected Lambda, got {:?}", other),
     }
 }
+
+/// step-3: Parse `|x: Real, y: Real| x + y` — 2 typed params.
+#[test]
+fn parse_lambda_two_typed_params() {
+    let source = r#"
+structure S {
+    let f = |x: Real, y: Real| x + y
+}
+"#;
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let let_decl = match &members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+    assert_eq!(let_decl.name, "f");
+
+    match &let_decl.value.kind {
+        ExprKind::Lambda { params, body } => {
+            assert_eq!(params.len(), 2);
+            assert_eq!(params[0].name, "x");
+            assert_eq!(params[0].type_expr.as_ref().unwrap().name, "Real");
+            assert_eq!(params[1].name, "y");
+            assert_eq!(params[1].type_expr.as_ref().unwrap().name, "Real");
+            // Body: x + y
+            match &body.kind {
+                ExprKind::BinOp { op, left, right } => {
+                    assert_eq!(op, "+");
+                    assert!(matches!(&left.kind, ExprKind::Ident(n) if n == "x"));
+                    assert!(matches!(&right.kind, ExprKind::Ident(n) if n == "y"));
+                }
+                other => panic!("expected BinOp(+), got {:?}", other),
+            }
+        }
+        other => panic!("expected Lambda, got {:?}", other),
+    }
+}
