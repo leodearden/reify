@@ -105,3 +105,32 @@ fn diff_detects_changed_constraint() {
     assert_eq!(delta.changed_constraints[0].status, "Violated");
     assert!(delta.removed_constraint_ids.is_empty());
 }
+
+#[test]
+fn diff_detects_changed_mesh_ignores_unchanged() {
+    let old = GuiState {
+        meshes: vec![
+            sample_mesh("Bracket.body", vec![0.0, 0.0, 0.0]),
+            sample_mesh("Bracket.hole", vec![1.0, 1.0, 1.0]),
+        ],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+    };
+    let new = GuiState {
+        meshes: vec![
+            sample_mesh("Bracket.body", vec![2.0, 2.0, 2.0]), // changed
+            sample_mesh("Bracket.hole", vec![1.0, 1.0, 1.0]), // unchanged
+        ],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+    };
+
+    let delta = diff_gui_state(&old, &new);
+
+    assert_eq!(delta.changed_meshes.len(), 1, "only changed mesh in delta");
+    assert_eq!(delta.changed_meshes[0].entity_path, "Bracket.body");
+    assert_eq!(delta.changed_meshes[0].vertices, vec![2.0, 2.0, 2.0]);
+    assert!(delta.removed_mesh_paths.is_empty());
+}
