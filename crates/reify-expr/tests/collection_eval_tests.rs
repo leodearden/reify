@@ -632,3 +632,158 @@ fn eval_method_fold_with_initial() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Int(16));
 }
+
+// ─── step-19/20: MethodCall .all and .any ───
+
+#[test]
+fn eval_method_all_true() {
+    // [1, 2, 3].all(|x| x > 0) -> Bool(true)
+    let x_id = ValueCellId::new("$lambda_all.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(list, "all".to_string(), vec![lambda_arg], Type::Bool);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(true));
+}
+
+#[test]
+fn eval_method_all_false() {
+    // [1, 2, 3].all(|x| x > 2) -> Bool(false)
+    let x_id = ValueCellId::new("$lambda_all2.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Bool,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(list, "all".to_string(), vec![lambda_arg], Type::Bool);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(false));
+}
+
+#[test]
+fn eval_method_any_true() {
+    // [1, 2, 3].any(|x| x > 2) -> Bool(true)
+    let x_id = ValueCellId::new("$lambda_any.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Bool,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(list, "any".to_string(), vec![lambda_arg], Type::Bool);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(true));
+}
+
+#[test]
+fn eval_method_any_false() {
+    // [1, 2, 3].any(|x| x > 5) -> Bool(false)
+    let x_id = ValueCellId::new("$lambda_any2.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(5), Type::Int),
+        Type::Bool,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(list, "any".to_string(), vec![lambda_arg], Type::Bool);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(false));
+}
+
+#[test]
+fn eval_method_all_kleene_undef() {
+    // [1, undef, 3].all(|x| x > 0) -> Undef (no false, but undef present)
+    let x_id = ValueCellId::new("$lambda_allk.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let undef_id = ValueCellId::new("S", "missing");
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::value_ref(undef_id, Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(list, "all".to_string(), vec![lambda_arg], Type::Bool);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), ".all with undef element and no false -> Undef");
+}
+
+#[test]
+fn eval_method_all_kleene_false_wins() {
+    // [false, undef].all(|x| x) -> Bool(false) (false dominates undef)
+    // We need a lambda that just returns its argument (identity)
+    let x_id = ValueCellId::new("$lambda_allk2.S", "x");
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Bool);
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let undef_id = ValueCellId::new("S", "missing2");
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Bool(false), Type::Bool),
+            CompiledExpr::value_ref(undef_id, Type::Bool),
+        ],
+        Type::List(Box::new(Type::Bool)),
+    );
+    let expr = CompiledExpr::method_call(list, "all".to_string(), vec![lambda_arg], Type::Bool);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(false));
+}
