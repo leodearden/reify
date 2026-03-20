@@ -54,3 +54,37 @@ fn parse_structure_default_not_pub() {
         other => panic!("expected Structure, got {:?}", other),
     }
 }
+
+// ── Step 3: pub let ────────────────────────────────────────────────
+
+#[test]
+fn parse_pub_let() {
+    let source = r#"structure S {
+    pub let x = 5
+}"#;
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(members.len(), 1);
+    let let_decl = match &members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+    assert_eq!(let_decl.name, "x");
+    assert!(let_decl.is_pub, "expected is_pub == true for pub let");
+}
+
+#[test]
+fn parse_let_default_not_pub() {
+    let source = r#"structure S {
+    param a: Scalar = 1mm
+    let y = a * 2
+}"#;
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    let let_decl = members.iter().find_map(|m| match m {
+        MemberDecl::Let(l) => Some(l),
+        _ => None,
+    }).expect("expected a let declaration");
+    assert_eq!(let_decl.name, "y");
+    assert!(!let_decl.is_pub, "expected is_pub == false for non-pub let");
+}
