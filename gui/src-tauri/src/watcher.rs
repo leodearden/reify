@@ -47,10 +47,10 @@ impl FileWatcher {
                         // Filter to .ri files only
                         if path.extension().is_some_and(|ext| ext == "ri") {
                             // Filter to target file if specified
-                            if let Some(ref target) = target_file {
-                                if path.file_name() != target.file_name() {
-                                    continue;
-                                }
+                            if let Some(ref target) = target_file
+                                && path.file_name() != target.file_name()
+                            {
+                                continue;
                             }
 
                             // Debounce: skip if we've seen this path recently
