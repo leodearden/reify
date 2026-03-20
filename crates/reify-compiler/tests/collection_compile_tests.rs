@@ -1,6 +1,6 @@
 //! Collection compilation tests (step-29 through step-36).
 
-use reify_types::{CompiledExprKind, Severity, Value};
+use reify_types::{CompiledExprKind, Severity, Value, ValueMap};
 
 /// Helper: parse + compile source, assert no errors, return compiled output.
 fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
@@ -251,5 +251,77 @@ fn compile_member_access_values() {
             );
         }
         other => panic!("expected MethodCall(values), got {:?}", other),
+    }
+}
+
+// ─── step-33: Integration tests (parse + compile + eval) for collection literals ───
+
+#[test]
+fn e2e_list_literal() {
+    let compiled = compile_no_errors("structure S { let x = [1, 2, 3] }");
+    let expr = get_cell_expr(&compiled, "x");
+    let values = ValueMap::new();
+    let result = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
+    match result {
+        Value::List(elems) => {
+            assert_eq!(elems.len(), 3);
+            assert_eq!(elems[0], Value::Int(1));
+            assert_eq!(elems[1], Value::Int(2));
+            assert_eq!(elems[2], Value::Int(3));
+        }
+        other => panic!("expected List, got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_set_literal() {
+    let compiled = compile_no_errors("structure S { let x = set{1, 2, 3} }");
+    let expr = get_cell_expr(&compiled, "x");
+    let values = ValueMap::new();
+    let result = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
+    match result {
+        Value::Set(elems) => {
+            assert_eq!(elems.len(), 3);
+            assert!(elems.contains(&Value::Int(1)));
+            assert!(elems.contains(&Value::Int(2)));
+            assert!(elems.contains(&Value::Int(3)));
+        }
+        other => panic!("expected Set, got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_map_literal() {
+    let compiled = compile_no_errors(r#"structure S { let x = map{"a" => 1, "b" => 2} }"#);
+    let expr = get_cell_expr(&compiled, "x");
+    let values = ValueMap::new();
+    let result = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
+    match result {
+        Value::Map(entries) => {
+            assert_eq!(entries.len(), 2);
+            assert_eq!(
+                entries.get(&Value::String("a".into())),
+                Some(&Value::Int(1))
+            );
+            assert_eq!(
+                entries.get(&Value::String("b".into())),
+                Some(&Value::Int(2))
+            );
+        }
+        other => panic!("expected Map, got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_empty_list() {
+    let compiled = compile_no_errors("structure S { let x = [] }");
+    let expr = get_cell_expr(&compiled, "x");
+    let values = ValueMap::new();
+    let result = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
+    match result {
+        Value::List(elems) => {
+            assert_eq!(elems.len(), 0);
+        }
+        other => panic!("expected empty List, got {:?}", other),
     }
 }
