@@ -199,6 +199,8 @@ module.exports = grammar({
       $.maximize_declaration,
       $.guarded_block,
       $.port_declaration,
+      $.connect_statement,
+      $.chain_statement,
     ),
 
     // ── Where clause (guard) ────────────────────────────────
@@ -310,6 +312,48 @@ module.exports = grammar({
       'frame',
       '=',
       field('value', $._expression),
+    ),
+
+    // ── Connect ───────────────────────────────────────────────
+    connect_statement: $ => seq(
+      'connect',
+      field('left', $.port_ref),
+      field('operator', $.connect_operator),
+      field('right', $.port_ref),
+      optional(seq(':', field('connector_type', $.identifier))),
+      optional(field('body', $.connect_body)),
+    ),
+
+    connect_operator: $ => choice('->', '<-', '<->'),
+
+    port_ref: $ => $._expression,
+
+    connect_body: $ => seq(
+      '{',
+      repeat(choice(
+        $.port_mapping,
+        $.connect_param_assignment,
+      )),
+      '}',
+    ),
+
+    port_mapping: $ => seq(
+      field('from', $.identifier),
+      '->',
+      field('to', $.identifier),
+    ),
+
+    connect_param_assignment: $ => seq(
+      field('name', $.identifier),
+      '=',
+      field('value', $._expression),
+    ),
+
+    // ── Chain ─────────────────────────────────────────────────
+    chain_statement: $ => seq(
+      'chain',
+      field('first', $._expression),
+      repeat1(seq('->', $._expression)),
     ),
 
     named_argument_list: $ => seq(
