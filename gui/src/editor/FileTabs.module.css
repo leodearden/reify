@@ -1,0 +1,61 @@
+.tabBar {
+  display: flex;
+  flex-direction: row;
+  background: var(--reify-surface, #313244);
+  border-bottom: 1px solid var(--reify-border, #45475a);
+  overflow-x: auto;
+  min-height: 32px;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: none;
+  border-right: 1px solid var(--reify-border, #45475a);
+  background: transparent;
+  color: var(--reify-text-secondary, #a6adc8);
+  font-size: 13px;
+  font-family: var(--reify-font-mono, 'JetBrains Mono', 'Fira Code', monospace);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  background: var(--reify-surface-hover, #3b3b50);
+}
+
+.tab.active {
+  color: var(--reify-text, #cdd6f4);
+  border-bottom: 2px solid var(--reify-accent, #89b4fa);
+}
+
+.dirty {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--reify-warning, #f9e2af);
+  flex-shrink: 0;
+}
+
+.closeBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--reify-text-secondary, #a6adc8);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.closeBtn:hover {
+  background: var(--reify-surface-hover, #3b3b50);
+  color: var(--reify-text, #cdd6f4);
+}

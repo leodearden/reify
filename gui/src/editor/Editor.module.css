@@ -1,0 +1,16 @@
+.container {
+  flex: 1;
+  overflow: hidden;
+  background: var(--reify-editor-bg, #1e1e2e);
+  display: flex;
+  flex-direction: column;
+}
+
+.container :global(.cm-editor) {
+  height: 100%;
+}
+
+.container :global(.cm-scroller) {
+  height: 100%;
+  font-family: var(--reify-font-mono, 'JetBrains Mono', 'Fira Code', monospace);
+}
