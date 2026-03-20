@@ -24,6 +24,7 @@ fn satisfied() {
     let input = ConstraintInput {
         constraints: vec![(cnid("Bracket", 0), &expr)],
         values: &values,
+        functions: &[],
     };
 
     let results = checker.check(&input);
@@ -40,6 +41,7 @@ fn violated() {
     let input = ConstraintInput {
         constraints: vec![(cnid("Bracket", 0), &expr)],
         values: &values,
+        functions: &[],
     };
 
     let results = checker.check(&input);
@@ -55,6 +57,7 @@ fn indeterminate_undef() {
     let input = ConstraintInput {
         constraints: vec![(cnid("Bracket", 0), &expr)],
         values: &values,
+        functions: &[],
     };
 
     let results = checker.check(&input);
@@ -78,6 +81,7 @@ fn compound_constraint_satisfied() {
     let input = ConstraintInput {
         constraints: vec![(cnid("Bracket", 0), &expr)],
         values: &values,
+        functions: &[],
     };
 
     let results = checker.check(&input);
@@ -102,6 +106,7 @@ fn batch_independent_results() {
     let input = ConstraintInput {
         constraints: vec![(cnid("Bracket", 0), &expr1), (cnid("Bracket", 1), &expr2)],
         values: &values,
+        functions: &[],
     };
 
     let results = checker.check(&input);
@@ -128,6 +133,7 @@ fn division_by_zero_does_not_panic() {
     let input = ConstraintInput {
         constraints: vec![(cnid("B", 0), &expr)],
         values: &values,
+        functions: &[],
     };
 
     let results = checker.check(&input);
@@ -160,6 +166,7 @@ fn bracket_all_constraints_satisfied() {
     let input = ConstraintInput {
         constraints: constraint_exprs,
         values: &values,
+        functions: &[],
     };
 
     let results = checker.check(&input);

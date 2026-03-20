@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::diagnostics::Diagnostic;
-use crate::expr::CompiledExpr;
+use crate::expr::{CompiledExpr, CompiledFunction};
 use crate::identity::{ConstraintNodeId, ValueCellId};
 use crate::ty::Type;
 use crate::value::{Satisfaction, Value, ValueMap};
@@ -13,6 +13,8 @@ pub struct ConstraintInput<'a> {
     pub constraints: Vec<(ConstraintNodeId, &'a CompiledExpr)>,
     /// Current values of all cells referenced by constraints.
     pub values: &'a ValueMap,
+    /// User-defined functions available for evaluation within constraint expressions.
+    pub functions: &'a [CompiledFunction],
 }
 
 /// Result of checking a single constraint.

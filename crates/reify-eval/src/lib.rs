@@ -1623,6 +1623,7 @@ impl Engine {
             let input = ConstraintInput {
                 constraints: constraint_pairs,
                 values,
+                functions: &[],
             };
 
             let results = self.constraint_checker.check(&input);
@@ -1993,6 +1994,7 @@ impl Engine {
             let input = ConstraintInput {
                 constraints: constraint_pairs,
                 values: &values,
+                functions: &[],
             };
 
             let results = self.constraint_checker.check(&input);
@@ -2083,6 +2085,7 @@ impl Engine {
             let input = ConstraintInput {
                 constraints: constraint_pairs,
                 values: &eval_result.values,
+                functions: &[],
             };
 
             let results = self.constraint_checker.check(&input);
@@ -2141,6 +2144,7 @@ impl Engine {
                 let input = ConstraintInput {
                     constraints: constraint_pairs,
                     values: &values,
+                    functions: &[],
                 };
 
                 let results = self.constraint_checker.check(&input);

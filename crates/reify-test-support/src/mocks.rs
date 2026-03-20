@@ -245,6 +245,7 @@ mod tests {
         let input = ConstraintInput {
             constraints: vec![(cnid.clone(), &expr)],
             values: &values,
+            functions: &[],
         };
 
         let results = checker.check(&input);
