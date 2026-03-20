@@ -91,6 +91,7 @@ fn simple_setup() -> ConcurrentEditSetup {
         snapshot_id: SnapshotId(1),
         parent_snapshot_id: SnapshotId(0),
         changed_cells,
+        functions: vec![],
     }
 }
 

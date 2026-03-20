@@ -17,7 +17,7 @@ impl ConstraintChecker for SimpleConstraintChecker {
             .constraints
             .iter()
             .map(|(id, expr)| {
-                let value = reify_expr::eval_expr(expr, input.values);
+                let value = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(input.values, input.functions));
                 let (satisfaction, diagnostics) = match value {
                     Value::Bool(true) => (Satisfaction::Satisfied, ConstraintDiagnostics::default()),
                     Value::Bool(false) => (
@@ -108,6 +108,7 @@ mod tests {
         let input = ConstraintInput {
             constraints: vec![(cnid("Bracket", 0), &expr)],
             values: &values,
+            functions: &[],
         };
 
         let results = checker.check(&input);
@@ -125,6 +126,7 @@ mod tests {
         let input = ConstraintInput {
             constraints: vec![(cnid("Bracket", 0), &expr)],
             values: &values,
+            functions: &[],
         };
 
         let results = checker.check(&input);
@@ -141,6 +143,7 @@ mod tests {
         let input = ConstraintInput {
             constraints: vec![(cnid("Bracket", 0), &expr)],
             values: &values,
+            functions: &[],
         };
 
         let results = checker.check(&input);
@@ -165,6 +168,7 @@ mod tests {
         let input = ConstraintInput {
             constraints: vec![(cnid("Bracket", 0), &expr)],
             values: &values,
+            functions: &[],
         };
 
         let results = checker.check(&input);
@@ -191,6 +195,7 @@ mod tests {
         let input = ConstraintInput {
             constraints: vec![(cnid("Bracket", 0), &expr1), (cnid("Bracket", 1), &expr2)],
             values: &values,
+            functions: &[],
         };
 
         let results = checker.check(&input);
@@ -217,6 +222,7 @@ mod tests {
         let input = ConstraintInput {
             constraints: vec![(cnid("Bracket", 0), &expr)],
             values: &values,
+            functions: &[],
         };
 
         // Should not panic

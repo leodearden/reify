@@ -32,6 +32,7 @@ fn all_resolution_types_exported() {
         constraints: vec![],
         current_values: reify_types::ValueMap::new(),
         objective: None,
+        functions: vec![],
     };
 
     // SolveResult

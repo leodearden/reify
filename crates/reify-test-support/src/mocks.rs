@@ -245,6 +245,7 @@ mod tests {
         let input = ConstraintInput {
             constraints: vec![(cnid.clone(), &expr)],
             values: &values,
+            functions: &[],
         };
 
         let results = checker.check(&input);
@@ -289,6 +290,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
+            functions: vec![],
         };
 
         match solver.solve(&problem) {
@@ -310,6 +312,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
+            functions: vec![],
         };
 
         match solver.solve(&problem) {
@@ -329,6 +332,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
+            functions: vec![],
         };
 
         match solver.solve(&problem) {

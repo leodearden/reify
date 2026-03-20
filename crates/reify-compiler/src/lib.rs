@@ -17,23 +17,7 @@ pub struct CompiledImport {
     pub span: SourceSpan,
 }
 
-/// A compiled user-defined function.
-#[derive(Debug, Clone)]
-pub struct CompiledFunction {
-    pub name: String,
-    pub is_pub: bool,
-    pub params: Vec<(String, Type)>,
-    pub return_type: Type,
-    pub body: CompiledFnBody,
-    pub content_hash: ContentHash,
-}
-
-/// A compiled function body: let bindings followed by a result expression.
-#[derive(Debug, Clone)]
-pub struct CompiledFnBody {
-    pub let_bindings: Vec<(String, CompiledExpr)>,
-    pub result_expr: CompiledExpr,
-}
+pub use reify_types::{CompiledFnBody, CompiledFunction};
 
 /// A compiled trait definition.
 #[derive(Debug, Clone)]

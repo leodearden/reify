@@ -689,7 +689,7 @@ fn e2e_stdlib_function_in_let_binding() {
     values.insert(w_id, reify_types::Value::length(0.08));
 
     // Evaluate the let expression — should produce a defined value, NOT Undef
-    let result = reify_expr::eval_expr(half_w_expr, &values);
+    let result = reify_expr::eval_expr(half_w_expr, &reify_expr::EvalContext::simple(&values));
     assert!(
         !result.is_undef(),
         "half_w = abs(w / 2) should produce a defined value, got Undef"
@@ -768,7 +768,7 @@ structure Bracket {
         reify_types::Value::length(0.1),
     );
 
-    let result = reify_expr::eval_expr(diag_expr, &values);
+    let result = reify_expr::eval_expr(diag_expr, &reify_expr::EvalContext::simple(&values));
     assert!(
         !result.is_undef(),
         "diag = sqrt(w*w + h*h) should produce non-Undef, got Undef"
@@ -1177,7 +1177,7 @@ structure S { constraint Direction.In == Direction.In }"#;
     assert_eq!(template.constraints.len(), 1);
 
     let constraint_expr = &template.constraints[0].expr;
-    let result = reify_expr::eval_expr(constraint_expr, &reify_types::ValueMap::new());
+    let result = reify_expr::eval_expr(constraint_expr, &reify_expr::EvalContext::simple(&reify_types::ValueMap::new()));
     match result {
         reify_types::Value::Bool(true) => {}
         other => panic!("expected Bool(true), got {:?}", other),

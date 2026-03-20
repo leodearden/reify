@@ -17,7 +17,8 @@ use reify_eval::deps::extract_dependency_trace;
 use reify_eval::graph::EvaluationGraph;
 use reify_eval::{CheckResult, ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
 use reify_types::{
-    ContentHash, DeterminacyState, PersistentMap, Value, ValueCellId, ValueMap, VersionId,
+    CompiledFunction, ContentHash, DeterminacyState, PersistentMap, Value, ValueCellId, ValueMap,
+    VersionId,
 };
 
 use crate::concurrent::{AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerError};
@@ -44,6 +45,8 @@ pub struct ConcurrentEvalAdapter {
     previous_hashes: Arc<HashMap<NodeId, ContentHash>>,
     /// Collected evaluation results.
     results: Arc<Mutex<Vec<ConcurrentNodeResult>>>,
+    /// User-defined functions for evaluating UserFunctionCall nodes.
+    functions: Vec<CompiledFunction>,
     /// Version for this evaluation.
     #[allow(dead_code)]
     version: VersionId,
@@ -61,6 +64,7 @@ impl ConcurrentEvalAdapter {
             snapshot_values: Arc::new(RwLock::new(setup.snapshot_values.clone())),
             previous_hashes: Arc::new(setup.previous_hashes.clone()),
             results: Arc::new(Mutex::new(Vec::new())),
+            functions: setup.functions.clone(),
             version: setup.version,
         }
     }
@@ -195,7 +199,7 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
             };
 
             // Evaluate expression (pure, no lock held)
-            let val = reify_expr::eval_expr(expr, &current_values);
+            let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&current_values, &self.functions));
 
             // Compute dependency trace
             let trace = extract_dependency_trace(expr);
