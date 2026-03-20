@@ -161,11 +161,17 @@ describe('engineStore', () => {
       const unlistenValue = vi.fn();
       const unlistenConstraint = vi.fn();
       const unlistenStatus = vi.fn();
+      const unlistenMeshRemoved = vi.fn();
+      const unlistenValueRemoved = vi.fn();
+      const unlistenConstraintRemoved = vi.fn();
 
       mockOnMeshUpdate.mockResolvedValue(unlistenMesh);
       mockOnValueUpdate.mockResolvedValue(unlistenValue);
       mockOnConstraintUpdate.mockResolvedValue(unlistenConstraint);
       mockOnEvaluationStatus.mockResolvedValue(unlistenStatus);
+      mockOnMeshRemoved.mockResolvedValue(unlistenMeshRemoved);
+      mockOnValueRemoved.mockResolvedValue(unlistenValueRemoved);
+      mockOnConstraintRemoved.mockResolvedValue(unlistenConstraintRemoved);
 
       const { subscribeToEvents } = createEngineStore();
       const cleanup = await subscribeToEvents();
@@ -181,6 +187,9 @@ describe('engineStore', () => {
       expect(unlistenValue).toHaveBeenCalled();
       expect(unlistenConstraint).toHaveBeenCalled();
       expect(unlistenStatus).toHaveBeenCalled();
+      expect(unlistenMeshRemoved).toHaveBeenCalled();
+      expect(unlistenValueRemoved).toHaveBeenCalled();
+      expect(unlistenConstraintRemoved).toHaveBeenCalled();
 
       dispose();
     });
@@ -318,12 +327,18 @@ describe('engineStore', () => {
       const unlistenMesh = vi.fn();
       const unlistenValue = vi.fn();
       const unlistenStatus = vi.fn();
+      const unlistenMeshRemoved = vi.fn();
+      const unlistenValueRemoved = vi.fn();
+      const unlistenConstraintRemoved = vi.fn();
 
       mockOnMeshUpdate.mockResolvedValue(unlistenMesh);
       mockOnValueUpdate.mockResolvedValue(unlistenValue);
       // onConstraintUpdate rejects — simulating an unavailable event
       mockOnConstraintUpdate.mockRejectedValue(new Error('event not available'));
       mockOnEvaluationStatus.mockResolvedValue(unlistenStatus);
+      mockOnMeshRemoved.mockResolvedValue(unlistenMeshRemoved);
+      mockOnValueRemoved.mockResolvedValue(unlistenValueRemoved);
+      mockOnConstraintRemoved.mockResolvedValue(unlistenConstraintRemoved);
 
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -341,6 +356,9 @@ describe('engineStore', () => {
       expect(unlistenMesh).toHaveBeenCalled();
       expect(unlistenValue).toHaveBeenCalled();
       expect(unlistenStatus).toHaveBeenCalled();
+      expect(unlistenMeshRemoved).toHaveBeenCalled();
+      expect(unlistenValueRemoved).toHaveBeenCalled();
+      expect(unlistenConstraintRemoved).toHaveBeenCalled();
 
       warnSpy.mockRestore();
       dispose();

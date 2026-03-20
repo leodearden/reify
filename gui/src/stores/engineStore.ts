@@ -12,6 +12,9 @@ import {
   onValueUpdate,
   onConstraintUpdate,
   onEvaluationStatus,
+  onMeshRemoved,
+  onValueRemoved,
+  onConstraintRemoved,
 } from '../bridge';
 
 export interface EngineState {
@@ -68,6 +71,18 @@ export function createEngineStore() {
     });
   }
 
+  function removeMesh(entityPath: string) {
+    setState('meshes', entityPath, undefined!);
+  }
+
+  function removeValue(cellId: string) {
+    setState('values', cellId, undefined!);
+  }
+
+  function removeConstraint(nodeId: string) {
+    setState('constraints', nodeId, undefined!);
+  }
+
   function setEvalStatus(status: EvaluationStatus) {
     setState('evalStatus', status);
   }
@@ -78,6 +93,9 @@ export function createEngineStore() {
       onValueUpdate((v) => applyValueUpdates([v])),
       onConstraintUpdate((c) => applyConstraintUpdates([c])),
       onEvaluationStatus(setEvalStatus),
+      onMeshRemoved(removeMesh),
+      onValueRemoved(removeValue),
+      onConstraintRemoved(removeConstraint),
     ]);
 
     const unlisteners: (() => void)[] = [];
@@ -102,6 +120,9 @@ export function createEngineStore() {
     applyMeshUpdate,
     applyValueUpdates,
     applyConstraintUpdates,
+    removeMesh,
+    removeValue,
+    removeConstraint,
     setEvalStatus,
     subscribeToEvents,
   };
