@@ -64,6 +64,17 @@ impl<'a> Lowering<'a> {
         ContentHash::of_str(self.node_text(node))
     }
 
+    /// Check if a node has an anonymous 'pub' keyword child.
+    fn has_pub_keyword(&self, node: tree_sitter::Node) -> bool {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if !child.is_named() && self.node_text(child) == "pub" {
+                return true;
+            }
+        }
+        false
+    }
+
     // ── Top-level lowering ──────────────────────────────────
 
     fn lower_source_file(&mut self, node: tree_sitter::Node) {
@@ -255,12 +266,16 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        // Detect 'pub' keyword by checking anonymous children
+        let is_pub = self.has_pub_keyword(node);
+
         let members = self.lower_members(node);
 
         let content_hash = self.content_hash(node);
 
         Some(StructureDef {
             name,
+            is_pub,
             members,
             span: self.span(node),
             content_hash,

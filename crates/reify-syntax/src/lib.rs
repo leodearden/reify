@@ -23,6 +23,7 @@ pub enum Declaration {
 #[derive(Debug, Clone)]
 pub struct StructureDef {
     pub name: String,
+    pub is_pub: bool,
     pub members: Vec<MemberDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
