@@ -66,6 +66,22 @@ pub struct GuardedGroupInfo {
     pub else_constraints: Vec<ConstraintNodeId>,
 }
 
+/// Metadata for a collection sub-component in the evaluation graph.
+/// Tracks the count cell and child template info needed for re-elaboration.
+#[derive(Debug, Clone)]
+pub struct CollectionSubInfo {
+    /// The parent template/entity name (e.g., "Parent").
+    pub parent_entity: String,
+    /// The sub-component name (e.g., "bolts").
+    pub sub_name: String,
+    /// The child structure name (e.g., "Bolt").
+    pub structure_name: String,
+    /// The count cell ValueCellId (e.g., Parent.__count_bolts).
+    pub count_cell: ValueCellId,
+    /// The child template's value cell declarations, stored for re-elaboration.
+    pub child_value_cells: Vec<(String, ValueCellKind, Type, Option<CompiledExpr>)>,
+}
+
 /// The evaluation graph: holds all typed nodes in PersistentMaps
 /// for O(1) clone with structural sharing.
 #[derive(Debug, Clone, Default)]
@@ -78,6 +94,8 @@ pub struct EvaluationGraph {
     pub guarded_groups: Vec<GuardedGroupInfo>,
     /// ValueCellIds whose boolean value controls topology (guard cells).
     pub structure_controlling: HashSet<ValueCellId>,
+    /// Collection sub-component metadata for count-based re-elaboration.
+    pub collection_subs: Vec<CollectionSubInfo>,
 }
 
 impl EvaluationGraph {
@@ -189,6 +207,18 @@ impl EvaluationGraph {
                                 graph.value_cells.insert(scoped_id, node);
                             }
                         }
+                    }
+                    // Store collection sub info for re-elaboration
+                    if let Some(count_id) = &sub.count_cell {
+                        graph.collection_subs.push(CollectionSubInfo {
+                            parent_entity: template.name.clone(),
+                            sub_name: sub.name.clone(),
+                            structure_name: sub.structure_name.clone(),
+                            count_cell: count_id.clone(),
+                            child_value_cells: child_template.value_cells.iter().map(|vc| {
+                                (vc.id.member.clone(), vc.kind, vc.cell_type.clone(), vc.default_expr.clone())
+                            }).collect(),
+                        });
                     }
                     // If count is None (Undef), no instances are created
                 } else {

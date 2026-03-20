@@ -1559,6 +1559,91 @@ impl Engine {
             }
         }
 
+        // ── Collection count re-elaboration phase ─────────────────────
+        // If any structure_controlling cell is a collection count cell and
+        // its value changed, add/remove instances to match the new count.
+        {
+            let collection_subs = new_snapshot.graph.collection_subs.clone();
+            for col_sub in &collection_subs {
+                let new_count_val = values.get(&col_sub.count_cell).cloned().unwrap_or(Value::Undef);
+                let old_count_val = self.eval_state.as_ref()
+                    .and_then(|s| s.snapshot.values.get(&col_sub.count_cell))
+                    .map(|(v, _)| v.clone())
+                    .unwrap_or(Value::Undef);
+
+                if new_count_val == old_count_val {
+                    continue;
+                }
+
+                // Remove old instances from graph and snapshot
+                let old_count = match &old_count_val {
+                    Value::Int(n) => *n,
+                    _ => 0,
+                };
+                for i in 0..old_count {
+                    let scoped_entity = format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
+                    for (member, _, _, _) in &col_sub.child_value_cells {
+                        let scoped_id = ValueCellId::new(&scoped_entity, member);
+                        new_snapshot.graph.value_cells.remove(&scoped_id);
+                        new_snapshot.values.remove(&scoped_id);
+                    }
+                }
+
+                // Create new instances based on new count
+                let new_count = match &new_count_val {
+                    Value::Int(n) => *n,
+                    _ => 0,
+                };
+                for i in 0..new_count {
+                    let scoped_entity = format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
+                    for (member, kind, cell_type, default_expr) in &col_sub.child_value_cells {
+                        let scoped_id = ValueCellId::new(&scoped_entity, member);
+                        let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
+                        let expr_hash = default_expr.as_ref()
+                            .map(|e| e.content_hash)
+                            .unwrap_or(ContentHash(0));
+                        let node = crate::graph::ValueCellNode {
+                            id: scoped_id.clone(),
+                            kind: *kind,
+                            cell_type: cell_type.clone(),
+                            default_expr: default_expr.clone(),
+                            content_hash: id_hash.combine(expr_hash),
+                        };
+                        new_snapshot.graph.value_cells.insert(scoped_id.clone(), node);
+
+                        // Evaluate the cell
+                        let val = if let Some(expr) = default_expr {
+                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions))
+                        } else {
+                            Value::Undef
+                        };
+                        values.insert(scoped_id.clone(), val.clone());
+                        new_snapshot.values.insert(
+                            scoped_id,
+                            (val, DeterminacyState::Determined),
+                        );
+                    }
+                }
+
+                // Rebuild values map from snapshot to remove stale entries
+                let mut new_values = ValueMap::new();
+                for (id, (val, _)) in new_snapshot.values.iter() {
+                    new_values.insert(id.clone(), val.clone());
+                }
+                values = new_values;
+
+                // Recompute topology fingerprint to reflect count change
+                let count_state_hash = ContentHash::of_str(&format!(
+                    "collection:{}={}",
+                    col_sub.count_cell, new_count
+                ));
+                new_snapshot.topology_fingerprint = new_snapshot
+                    .graph
+                    .topology_fingerprint()
+                    .combine(count_state_hash);
+            }
+        }
+
         // Store state (actual_eval_set excludes early-cutoff-skipped nodes)
         self.last_eval_set = actual_eval_set;
         self.eval_state.as_mut().unwrap().snapshot = new_snapshot;
