@@ -100,3 +100,79 @@ occurrence def Welding {
     assert_eq!(template.constraints.len(), 1, "expected 1 constraint");
     assert_eq!(template.constraints[0].expr.result_type, Type::Bool);
 }
+
+// ── step-15: port direction validation warnings ───────────────────────
+
+#[test]
+fn compile_occurrence_missing_in_port_warning() {
+    let source = r#"
+occurrence def Welding {
+    port result : out StructurePort {
+        param d : Length = 5mm
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    assert_eq!(template.entity_kind, EntityKind::Occurrence);
+
+    let warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("no input port"))
+        .collect();
+    assert!(
+        !warnings.is_empty(),
+        "expected warning about missing input port, got diagnostics: {:?}",
+        diagnostics
+    );
+}
+
+#[test]
+fn compile_occurrence_missing_out_port_warning() {
+    let source = r#"
+occurrence def Welding {
+    port workpiece : in StructurePort {
+        param d : Length = 5mm
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    assert_eq!(template.entity_kind, EntityKind::Occurrence);
+
+    let warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("no output port"))
+        .collect();
+    assert!(
+        !warnings.is_empty(),
+        "expected warning about missing output port, got diagnostics: {:?}",
+        diagnostics
+    );
+}
+
+#[test]
+fn compile_occurrence_with_both_ports_no_warning() {
+    let source = r#"
+occurrence def Welding {
+    port workpiece : in StructurePort {
+        param d : Length = 5mm
+    }
+    port result : out StructurePort {
+        param d : Length = 5mm
+    }
+}
+"#;
+    let (_, diagnostics) = compile_first_template(source);
+
+    let port_direction_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("no input port") || d.message.contains("no output port"))
+        .collect();
+    assert!(
+        port_direction_warnings.is_empty(),
+        "expected no port direction warnings, got: {:?}",
+        port_direction_warnings
+    );
+}
