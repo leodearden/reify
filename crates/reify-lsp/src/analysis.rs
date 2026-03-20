@@ -182,6 +182,7 @@ pub fn format_value(value: &Value) -> String {
             None => "none".to_string(),
             Some(v) => format!("some({})", format_value(v)),
         },
+        Value::Lambda { .. } => "<lambda>".to_string(),
         Value::Undef => "(undefined)".to_string(),
     }
 }

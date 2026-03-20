@@ -102,6 +102,7 @@ pub fn format_value(v: &Value) -> (String, String) {
             Some(inner) => format_value(inner),
             None => ("none".to_string(), String::new()),
         },
+        Value::Lambda { .. } => ("<lambda>".to_string(), String::new()),
         Value::Undef => ("undefined".to_string(), String::new()),
     }
 }

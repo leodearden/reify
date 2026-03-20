@@ -488,6 +488,7 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
             let arg_strs: Vec<String> = args.iter().map(format_expr).collect();
             format!("{}({})", function_name, arg_strs.join(", "))
         }
+        CompiledExprKind::Lambda { .. } => "<lambda>".to_string(),
     }
 }
 
@@ -535,6 +536,12 @@ fn collect_value_refs_inner(expr: &reify_types::CompiledExpr, refs: &mut Vec<Str
         CompiledExprKind::UserFunctionCall { args, .. } => {
             for arg in args {
                 collect_value_refs_inner(arg, refs);
+            }
+        }
+        CompiledExprKind::Lambda { body, captures, .. } => {
+            collect_value_refs_inner(body, refs);
+            for cap in captures {
+                refs.push(cap.to_string());
             }
         }
         CompiledExprKind::Literal(_) => {}
