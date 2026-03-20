@@ -65,3 +65,71 @@ structure S {
         other => panic!("expected Match, got {:?}", other),
     }
 }
+
+/// Parse match with multi-variant pattern: `Socket | Button => "recessed"`.
+#[test]
+fn parse_match_multi_variant_arm() {
+    let source = r#"structure S {
+    let x = match d { Socket | Button => "recessed", Slider => "raised" }
+}"#;
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let let_decl = match &members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+
+    match &let_decl.value.kind {
+        ExprKind::Match { arms, .. } => {
+            assert_eq!(arms.len(), 2, "expected 2 arms");
+
+            // First arm: Socket | Button => "recessed"
+            assert_eq!(arms[0].patterns, vec!["Socket", "Button"]);
+            match &arms[0].body.kind {
+                ExprKind::StringLiteral(s) => assert_eq!(s, "recessed"),
+                other => panic!("expected StringLiteral('recessed'), got {:?}", other),
+            }
+
+            // Second arm: Slider => "raised"
+            assert_eq!(arms[1].patterns, vec!["Slider"]);
+            match &arms[1].body.kind {
+                ExprKind::StringLiteral(s) => assert_eq!(s, "raised"),
+                other => panic!("expected StringLiteral('raised'), got {:?}", other),
+            }
+        }
+        other => panic!("expected Match, got {:?}", other),
+    }
+}
+
+/// Parse match with wildcard pattern: `_ => 0`.
+#[test]
+fn parse_match_wildcard_arm() {
+    let source = r#"structure S {
+    let x = match d { In => 1, _ => 0 }
+}"#;
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let let_decl = match &members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+
+    match &let_decl.value.kind {
+        ExprKind::Match { arms, .. } => {
+            assert_eq!(arms.len(), 2, "expected 2 arms");
+
+            // First arm: In => 1
+            assert_eq!(arms[0].patterns, vec!["In"]);
+
+            // Second arm: _ => 0 (wildcard)
+            assert_eq!(arms[1].patterns, vec!["_"]);
+            match &arms[1].body.kind {
+                ExprKind::NumberLiteral(v) => assert_eq!(*v, 0.0),
+                other => panic!("expected NumberLiteral(0), got {:?}", other),
+            }
+        }
+        other => panic!("expected Match, got {:?}", other),
+    }
+}
