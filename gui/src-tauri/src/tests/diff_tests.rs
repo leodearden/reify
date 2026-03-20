@@ -82,3 +82,26 @@ fn diff_detects_changed_value() {
     assert_eq!(delta.changed_values[0].value, "120");
     assert!(delta.removed_value_ids.is_empty());
 }
+
+#[test]
+fn diff_detects_changed_constraint() {
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
+        files: vec![],
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![sample_constraint("Bracket.0", "Violated")],
+        files: vec![],
+    };
+
+    let delta = diff_gui_state(&old, &new);
+
+    assert_eq!(delta.changed_constraints.len(), 1, "one constraint changed");
+    assert_eq!(delta.changed_constraints[0].node_id, "Bracket.0");
+    assert_eq!(delta.changed_constraints[0].status, "Violated");
+    assert!(delta.removed_constraint_ids.is_empty());
+}
