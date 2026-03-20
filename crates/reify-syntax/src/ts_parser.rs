@@ -1274,4 +1274,47 @@ mod tests {
             root.to_sexp()
         );
     }
+
+    // ── Collection literal tests ──────────────────────────
+
+    /// Helper: parse a source string wrapping an expression in a structure let,
+    /// and return the ExprKind of the let's value.
+    fn parse_let_expr(source: &str) -> ExprKind {
+        let module = parse(source, reify_types::ModulePath::single("test"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+        let let_decl = match &structure.members[0] {
+            MemberDecl::Let(l) => l,
+            other => panic!("expected Let, got {:?}", other),
+        };
+        let_decl.value.kind.clone()
+    }
+
+    #[test]
+    fn parse_list_literal_three_elements() {
+        let kind = parse_let_expr("structure S { let x = [1, 2, 3] }");
+        match kind {
+            ExprKind::ListLiteral(elems) => {
+                assert_eq!(elems.len(), 3);
+                assert!(matches!(&elems[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
+                assert!(matches!(&elems[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
+                assert!(matches!(&elems[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON));
+            }
+            other => panic!("expected ListLiteral, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_list_literal_empty() {
+        let kind = parse_let_expr("structure S { let x = [] }");
+        match kind {
+            ExprKind::ListLiteral(elems) => {
+                assert_eq!(elems.len(), 0);
+            }
+            other => panic!("expected ListLiteral, got {:?}", other),
+        }
+    }
 }
