@@ -1,0 +1,26 @@
+mod engine_tests;
+mod types_tests;
+mod commands_tests;
+
+// Step 11: Module structure verification — importing all public types.
+#[test]
+fn public_api_types_are_accessible() {
+    use crate::commands::AppState;
+    use crate::engine::EngineSession;
+    use crate::types::{
+        ConstraintData, FileData, GuiState, MeshData, SourceLocation, ValueData,
+    };
+
+    // Verify types are Clone+Debug by using trait bounds
+    fn assert_clone_debug<T: Clone + std::fmt::Debug>() {}
+    assert_clone_debug::<GuiState>();
+    assert_clone_debug::<MeshData>();
+    assert_clone_debug::<ValueData>();
+    assert_clone_debug::<ConstraintData>();
+    assert_clone_debug::<SourceLocation>();
+    assert_clone_debug::<FileData>();
+
+    // Verify AppState and EngineSession are usable as types
+    let _ = std::any::type_name::<AppState>();
+    let _ = std::any::type_name::<EngineSession>();
+}
