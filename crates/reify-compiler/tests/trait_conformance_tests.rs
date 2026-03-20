@@ -297,3 +297,35 @@ structure def X : A + B {
         error_msg
     );
 }
+
+/// Step 19: Deep trait chain — C→B→A, structure must satisfy all.
+#[test]
+fn deep_trait_chain() {
+    let source = r#"
+trait A {
+    param x : Length
+}
+
+trait B : A {
+    param y : Length
+}
+
+trait C : B {
+    param z : Length
+}
+
+structure def S : C {
+    param x : Length = 1mm
+    param y : Length = 2mm
+    param z : Length = 3mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors for deep chain: {:?}", errors);
+}
