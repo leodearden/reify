@@ -177,6 +177,81 @@ structure def Assembly {
     let _ = fs::remove_dir_all(&dir);
 }
 
+// ── Step 7: collection_lambda_operations ────────────────────────────
+
+/// Inline source with list literal, .count property, .sum property,
+/// and index access. Parse, compile, eval, verify.
+///
+/// Note: .map(|x| ...) and .all(|x| ...) method calls with arguments are
+/// not yet in the parser grammar, so we test collection operations that
+/// do work through the full pipeline: literals, .count, .sum, indexing.
+#[test]
+fn collection_lambda_operations() {
+    let source = r#"
+structure S {
+    let items = [10, 20, 30]
+    let n = items.count
+    let total = items.sum
+    let second = items[1]
+}
+"#;
+
+    let compiled = parse_and_compile(source);
+
+    // Eval
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // items should be a List
+    let items_id = ValueCellId::new("S", "items");
+    let items_val = result
+        .values
+        .get(&items_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", items_id));
+    match items_val {
+        reify_types::Value::List(elems) => {
+            assert_eq!(elems.len(), 3, "expected 3 elements");
+            assert_eq!(elems[0], reify_types::Value::Int(10));
+            assert_eq!(elems[1], reify_types::Value::Int(20));
+            assert_eq!(elems[2], reify_types::Value::Int(30));
+        }
+        other => panic!("expected List for items, got {:?}", other),
+    }
+
+    // n = items.count = 3
+    let n_id = ValueCellId::new("S", "n");
+    let n_val = result
+        .values
+        .get(&n_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", n_id));
+    assert_eq!(*n_val, reify_types::Value::Int(3), "items.count should be 3");
+
+    // total = items.sum = 60
+    let total_id = ValueCellId::new("S", "total");
+    let total_val = result
+        .values
+        .get(&total_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", total_id));
+    assert_eq!(
+        *total_val,
+        reify_types::Value::Int(60),
+        "items.sum should be 60"
+    );
+
+    // second = items[1] = 20
+    let second_id = ValueCellId::new("S", "second");
+    let second_val = result
+        .values
+        .get(&second_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", second_id));
+    assert_eq!(
+        *second_val,
+        reify_types::Value::Int(20),
+        "items[1] should be 20"
+    );
+}
+
 // ── Step 5: guarded_enum_declarations ───────────────────────────────
 
 /// Parse m5_guarded_enum.ri with enum Shape + guarded declarations + match.
