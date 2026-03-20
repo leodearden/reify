@@ -320,6 +320,28 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 _ => Value::Undef,
             }
         },
+        "filter" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            let lambda = &args[0];
+            match obj {
+                Value::List(items) => {
+                    let mut results = Vec::new();
+                    for item in items {
+                        let pred = apply_lambda(lambda, &[item.clone()]);
+                        match pred {
+                            Value::Bool(true) => results.push(item.clone()),
+                            Value::Bool(false) => {} // skip
+                            Value::Undef => return Value::Undef,
+                            _ => return Value::Undef,
+                        }
+                    }
+                    Value::List(results)
+                }
+                _ => Value::Undef,
+            }
+        },
         _ => Value::Undef,
     }
 }
