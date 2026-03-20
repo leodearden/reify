@@ -19,7 +19,7 @@
     "crates/reify-compiler",
     "crates/reify-types"
   ],
-  "analysis": "This task has been FULLY IMPLEMENTED. All code, tests, and integration points are in place. The implementation consists of three interlocking pieces:\n\n1. **ConstraintClassifier** (classifier.rs): Walks CompiledExpr trees and determines ConstraintDomain by collecting DomainFlags from leaf value types (Scalar/Real/Int \u2192 numeric, Bool \u2192 logical) and function calls (std::geo::* \u2192 geometric). Classification: numeric-only \u2192 Dimensional, logical-only \u2192 Logical, geometric present \u2192 Geometric, mixed \u2192 CrossDomain.\n\n2. **Connected-component decomposition** (decompose.rs): Uses union-find to build bipartite graph of constraints \u2194 auto params. Each connected component becomes an independent SubProblem with its own auto_params, constraints, and domain classification. Constraints referencing no auto params are excluded.\n\n3. **SolverRegistry** (registry.rs): Implements ConstraintSolver trait as a drop-in replacement for DimensionalSolver. Holds domain-specific solvers (dimensional required, geometric/logical/fallback optional). solve() decomposes the problem, dispatches sub-problems to appropriate solvers, and merges results.\n\n4. **Compiler integration** (reify-compiler/src/lib.rs): CompiledConstraint has `domain: Option<ConstraintDomain>` field (default None), allowing optional pre-classification at compile time.\n\nAll 50+ tests pass. The existing DimensionalSolver is used as both the dimensional and fallback solver, maintaining full backward compatibility.\n\n**POST-REVIEW FIXES (2 blocking issues):**\n\n1. **unnecessary_unsafe** (registry.rs:177-180) \u2014 FIXED in steps 13-14: Removed `unsafe impl Send/Sync for SolverRegistry` blocks. The compiler auto-derives Send + Sync from `ConstraintSolver: Send + Sync` supertrait bounds.\n\n2. **type_system_inconsistency** (classifier.rs:82-84) \u2014 Steps 15-16: `Type::String` is incorrectly included in the numeric arm of the `ValueRef` match in `collect_flags`, setting `has_numeric = true` for String-typed value references. The type system's own `Type::is_numeric()` (reify-types/src/ty.rs:42) explicitly excludes String: `matches!(self, Type::Int | Type::Real | Type::Scalar { .. })`. This causes String-typed ValueRefs to be misclassified as Dimensional. Fix: replace the manual match with `expr.result_type.is_numeric()` and handle `Type::String` as a no-op (no domain flag set).",
+  "analysis": "This task has been FULLY IMPLEMENTED. All code, tests, and integration points are in place. The implementation consists of three interlocking pieces:\n\n1. **ConstraintClassifier** (classifier.rs): Walks CompiledExpr trees and determines ConstraintDomain by collecting DomainFlags from leaf value types (Scalar/Real/Int \u2192 numeric, Bool \u2192 logical) and function calls (std::geo::* \u2192 geometric). Classification: numeric-only \u2192 Dimensional, logical-only \u2192 Logical, geometric present \u2192 Geometric, mixed \u2192 CrossDomain.\n\n2. **Connected-component decomposition** (decompose.rs): Uses union-find to build bipartite graph of constraints \u2194 auto params. Each connected component becomes an independent SubProblem with its own auto_params, constraints, and domain classification. Constraints referencing no auto params are excluded.\n\n3. **SolverRegistry** (registry.rs): Implements ConstraintSolver trait as a drop-in replacement for DimensionalSolver. Holds domain-specific solvers (dimensional required, geometric/logical/fallback optional). solve() decomposes the problem, dispatches sub-problems to appropriate solvers, and merges results.\n\n4. **Compiler integration** (reify-compiler/src/lib.rs): CompiledConstraint has `domain: Option<ConstraintDomain>` field (default None), allowing optional pre-classification at compile time.\n\nAll 50+ tests pass. The existing DimensionalSolver is used as both the dimensional and fallback solver, maintaining full backward compatibility.\n\n**POST-REVIEW FIXES (3 blocking issues):**\n\n1. **unnecessary_unsafe** (registry.rs:177-180) \u2014 FIXED in steps 13-14: Removed `unsafe impl Send/Sync for SolverRegistry` blocks.\n\n2. **type_system_inconsistency** (classifier.rs:82-84) \u2014 FIXED in steps 15-16: `Type::String` was incorrectly included in the numeric arm.\n\n3. **silent_correctness_failure** (registry.rs:104-122) \u2014 Steps 17-18: The objective assignment iterates components and assigns the objective to the first component whose auto_params intersect the objective's value refs, then stops. If the objective expression references auto params spread across multiple independent components, only the first matching component gets the objective. The design decision explicitly says params co-referenced by the objective must be merged, but this merge is never performed. Fix: modify `decompose_into_components` to accept an optional objective expression, and union all auto params referenced by the objective in the union-find structure before grouping into components. This ensures all objective-referenced params land in the same component. Then update `registry.rs` to pass the objective expression to `decompose_into_components`, and simplify the objective assignment logic (the objective always goes to the single component containing all its params).",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -147,7 +147,21 @@
       "type": "impl",
       "description": "Fix the type_system_inconsistency in crates/reify-constraints/src/classifier.rs (reviewer: architect_reviewer). In the `CompiledExprKind::ValueRef` arm of `collect_flags` (lines 80-87), replace the manual type match with the type system's canonical `is_numeric()` method. Change from:\n```rust\nmatch &expr.result_type {\n    Type::Bool => flags.has_logical = true,\n    Type::Int | Type::Real | Type::Scalar { .. } | Type::String => {\n        flags.has_numeric = true;\n    }\n}\n```\nTo:\n```rust\nif expr.result_type.is_numeric() {\n    flags.has_numeric = true;\n} else if expr.result_type == Type::Bool {\n    flags.has_logical = true;\n}\n// Type::String is a no-op \u2014 no domain flag set, consistent with Type::is_numeric()\n```\nThis aligns with the canonical `Type::is_numeric()` definition in reify-types/src/ty.rs:42 which returns `matches!(self, Type::Int | Type::Real | Type::Scalar { .. })`, explicitly excluding String. Verify all existing classifier tests plus the new step-15 regression tests pass.",
       "status": "done",
-      "commit": null
+      "commit": "4222aa3"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing tests for the silent_correctness_failure bug (reviewer: reviewer_robustness) — objective spanning multiple independent components must merge them.\n\n1. In `crates/reify-constraints/tests/registry_tests.rs`, add `objective_spanning_independent_components_merges_them`: Create params `a` (bounds [1mm, 100mm]) and `b` (bounds [1mm, 100mm]) with INDEPENDENT constraints `a > 5mm` and `b > 5mm` (no shared auto params, so without the fix these are 2 separate components). Add objective `Minimize(a + b)` which references both params. Assert both `a` and `b` are near 5mm (their lower feasible bound), since minimizing `a + b` jointly should push both toward the minimum. With the bug, only the first matching component gets the objective — the other component's param is solved without optimization and will likely be far from 5mm.\n\n2. In `crates/reify-constraints/tests/decompose_tests.rs`, add `objective_merges_independent_params_into_one_component`: Create 2 independent params `a` and `b` with independent constraints, and call `decompose_into_components` with a new third argument: `Some(&objective_expr)` where `objective_expr = a + b`. Assert the result is 1 component containing both params. This test will fail to compile because `decompose_into_components` currently only takes 2 arguments — the compilation failure IS the failing test, proving the API doesn't support objective-aware decomposition.",
+      "status": "done",
+      "commit": "e8d51fc"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Fix the silent_correctness_failure in decompose.rs and registry.rs (reviewer: reviewer_robustness).\n\n**decompose.rs changes:**\n1. Change `decompose_into_components` signature from `(auto_params, constraints)` to `(auto_params, constraints, objective: Option<&CompiledExpr>)`. Add a new parameter for the optional objective expression.\n2. After the constraint-based union-find loop (line 166) and before grouping by component root (line 173), add: if `objective` is `Some(obj_expr)`, collect its value refs via `collect_value_refs`, filter to auto param indices, and union all those indices together. This forces all objective-referenced auto params into the same component.\n3. Update existing callers: the `decompose_tests.rs` tests that call `decompose_into_components` with 2 args must be updated to pass `None` as the third argument.\n\n**registry.rs changes:**\n1. Extract the objective expression from `problem.objective` before calling `decompose_into_components`, and pass it as the third argument.\n2. Simplify the `objective_component` logic: since the objective's params are now guaranteed to be in one component (thanks to the union-find merge), the existing first-match iteration is correct — but we can simplify by noting it will always find exactly one matching component. No behavioral change needed in this section, only the `decompose_into_components` call site.\n\nVerify all existing tests plus new step-17 tests pass.",
+      "status": "done",
+      "commit": "18946bb"
     }
   ],
   "design_decisions": [
@@ -190,6 +204,10 @@
     {
       "decision": "Use Type::is_numeric() for ValueRef classification instead of manual match",
       "rationale": "The type system already has a canonical is_numeric() method (reify-types/src/ty.rs:42) that correctly defines numeric types as Int | Real | Scalar { .. }, explicitly excluding String. The classifier's ValueRef arm had a manual match that incorrectly included Type::String as numeric. Using the canonical method ensures the classifier stays consistent with the type system as new types are added, and prevents future divergence bugs. The Literal arm already uses Value variant matching which is inherently correct (Value::String doesn't exist as a numeric variant), so only the ValueRef arm needed fixing."
+    },
+    {
+      "decision": "Objective-aware decomposition: union objective-referenced params in the union-find rather than post-hoc component merging",
+      "rationale": "The objective expression acts as an additional linkage between auto params, identical to how constraints link params. Unioning objective-referenced params in the existing union-find structure (before grouping into components) is the simplest and most correct approach: it reuses the existing infrastructure, requires no post-hoc component merging logic, and guarantees all objective-referenced params end up in a single component. The alternative (detect multi-component objectives after decomposition and merge components) would require rebuilding component data structures and is more error-prone."
     }
   ],
   "reuse": [
@@ -226,7 +244,7 @@
     {
       "what": "Test helper patterns (mm(), vcid(), cnid(), expression builders)",
       "where": "crates/reify-test-support/src/values.rs and crates/reify-test-support/src/builders.rs",
-      "how": "Used extensively in all test files for constructing test expressions. Includes gt(), lt(), and(), eq(), value_ref(), literal(), value_ref_typed()."
+      "how": "Used extensively in all test files for constructing test expressions. Includes gt(), lt(), and(), eq(), value_ref(), literal(), value_ref_typed(), binop()."
     },
     {
       "what": "Engine::with_solver() builder pattern",
@@ -237,6 +255,16 @@
       "what": "Type::is_numeric() method",
       "where": "crates/reify-types/src/ty.rs:41-43",
       "how": "Canonical definition of which types are numeric: `matches!(self, Type::Int | Type::Real | Type::Scalar { .. })`. Used in step-16 to fix the classifier's ValueRef arm to be consistent with the type system, replacing the manual match that incorrectly included Type::String."
+    },
+    {
+      "what": "collect_value_refs_pub in decompose.rs",
+      "where": "crates/reify-constraints/src/decompose.rs:67-69",
+      "how": "Already exists as pub(crate) and is used by registry.rs for extracting objective value refs. The same function is reused in the new objective-aware decomposition logic to collect objective param refs for the union-find."
+    },
+    {
+      "what": "binop() test helper with BinOp::Add",
+      "where": "crates/reify-test-support/src/builders.rs:39-41",
+      "how": "Used to construct `a + b` objective expressions in step-17 tests. The `binop(BinOp::Add, ...)` helper infers result type (same dimension as left operand for Add)."
     }
   ],
   "_schema_version": 1
