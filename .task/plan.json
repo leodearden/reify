@@ -1,6 +1,6 @@
 {
-  "task_id": "61",
-  "title": "Collection literals — grammar, parser",
+  "task_id": "55",
+  "title": "Match expressions — grammar, parser, compiler, eval",
   "files": [
     "tree-sitter-reify/grammar.js",
     "tree-sitter-reify/src/parser.c",
@@ -8,34 +8,40 @@
     "tree-sitter-reify/src/node-types.json",
     "crates/reify-syntax/src/lib.rs",
     "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-compiler/src/lib.rs"
+    "crates/reify-syntax/tests/match_tests.rs",
+    "crates/reify-types/src/expr.rs",
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/match_compile_tests.rs",
+    "crates/reify-expr/src/lib.rs"
   ],
   "modules": [
     "tree-sitter-reify",
     "crates/reify-syntax",
-    "crates/reify-compiler"
+    "crates/reify-types",
+    "crates/reify-compiler",
+    "crates/reify-expr"
   ],
-  "analysis": "This task adds list, set, and map literal syntax plus index access to the Reify grammar and parser. The work spans three modules:\n\n1. **Grammar (tree-sitter-reify/grammar.js)**: Add 5 new rules — list_literal, set_literal, map_literal, map_entry, index_access. List/set/map are primary expressions; index_access is a postfix operation at precedence 8 (same as member_access and function_call). A commaSep helper function is needed (currently absent). `set` and `map` will become full keywords (consistent with existing keyword pattern for structure, param, let, etc.). No .ri files currently use these as identifiers.\n\n2. **Parser AST + lowering (crates/reify-syntax)**: Add 4 new ExprKind variants: ListLiteral(Vec<Expr>), SetLiteral(Vec<Expr>), MapLiteral(Vec<(Expr, Expr)>), IndexAccess { object, index }. Add CST→AST lowering for each new node type in ts_parser.rs. List/set lowering follows the existing argument_list pattern (iterate named children). Map lowering needs a map_entry sub-lowering. Index access follows the member_access field extraction pattern.\n\n3. **Compiler placeholder (crates/reify-compiler/src/lib.rs)**: The compiler's compile_expr() has an exhaustive match on ExprKind with no wildcard. Adding new variants without compiler arms causes compilation failure. Add placeholder arms emitting diagnostics and returning Undef, following the existing MemberAccess pattern.\n\nKey grammar challenges:\n- List literal `[...]` vs index access `expr[...]`: Tree-sitter resolves naturally — index_access wraps `$._expression, '[', ...]` requiring a preceding expression, while list_literal is a _primary_expression starting with `[`. No conflict expected.\n- `set{...}` / `map{...}`: The keywords `set` and `map` become reserved (tree-sitter auto-extracts keywords matching the identifier regex). This is acceptable since no existing code uses them as identifiers.\n\nThe grammar needs a conflict entry for `[$.index_access, $.list_literal]` in case tree-sitter sees ambiguity when a list literal is followed by `[` (e.g., `[1, 2][0]`). This may or may not be needed — we'll add it if tree-sitter generate complains.",
+  "analysis": "This task adds match expressions for pattern matching on enum values. The feature spans four modules:\n\n1. **Grammar (tree-sitter-reify/grammar.js)**: Add `match_expression` as a primary expression with `match_arm` and `match_pattern` rules. The `match` keyword is new — no conflicts with existing grammar. Match expression uses `{` `}` delimiters with `=>` arm separators (same `=>` as map_entry). Pattern supports `|` for multi-variant arms and `_` for wildcard. Adding match_expression to `_expression` choices (alongside conditional_expression) rather than `_primary_expression` since it has a block body.\n\n2. **Parser AST (crates/reify-syntax/src/lib.rs)**: Add `ExprKind::Match { discriminant: Box<Expr>, arms: Vec<MatchArm> }` and `MatchArm { patterns: Vec<String>, body: Expr, span: SourceSpan }`. The `_` wildcard is stored as the string \"_\".\n\n3. **Parser lowering (crates/reify-syntax/src/ts_parser.rs)**: Add lowering for `match_expression`, `match_arm`, and `match_pattern` CST nodes. Pattern follows existing conditional_expression lowering.\n\n4. **Compiled types (crates/reify-types/src/expr.rs)**: Add `CompiledExprKind::Match { discriminant: Box<CompiledExpr>, arms: Vec<CompiledMatchArm> }` and `CompiledMatchArm { patterns: Vec<String>, body: CompiledExpr }`.\n\n5. **Compiler (crates/reify-compiler/src/lib.rs)**: Compile match expressions: recursively compile discriminant and arm bodies. Perform exhaustiveness checking — if the discriminant's inferred type is `Type::Enum(name)`, look up the enum def and verify all variants are covered by arm patterns or a wildcard `_`.\n\n6. **Expression eval (crates/reify-expr/src/lib.rs)**: Evaluate match: eval discriminant, if Undef return Undef. If `Value::Enum { variant, .. }`, find first arm whose patterns contain the variant or is wildcard `_`. Eval that arm's body. No match → Undef.\n\nKey considerations:\n- Grammar precedence: match_expression should be at the same level as conditional_expression (right-associative, prec 0) since both are control flow expressions with block-like bodies.\n- Exhaustiveness: only checked when discriminant type is a known `Type::Enum`. For unknown types, no check (graceful degradation).\n- `_` wildcard: stored as the literal string \"_\" in patterns. During eval, \"_\" matches anything. During exhaustiveness check, if any arm has \"_\" pattern, all variants are considered covered.\n- Content hashing: match expressions need a content hash combining discriminant + all arm hashes, using a new tag byte (6) to avoid collisions.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add commaSep helper function and all 5 grammar rules to tree-sitter-reify/grammar.js:\n\n1. Add `commaSep(rule)` helper before module.exports: `function commaSep(rule) { return optional(seq(rule, repeat(seq(',', rule)), optional(','))); }`\n2. Add `list_literal: $ => seq('[', commaSep($._expression), ']')` — primary expression\n3. Add `set_literal: $ => seq('set', '{', commaSep($._expression), '}')` — primary expression\n4. Add `map_literal: $ => seq('map', '{', commaSep($.map_entry), '}')` — primary expression\n5. Add `map_entry: $ => seq(field('key', $._expression), '=>', field('value', $._expression))` — helper for map\n6. Add `index_access: $ => prec.left(8, seq(field('object', $._expression), '[', field('index', $._expression), ']'))` — postfix expression\n7. Add list_literal, set_literal, map_literal to _primary_expression choices\n8. Add index_access to _expression choices (alongside binary_expression, unary_expression, etc.)\n9. Run `tree-sitter generate` to regenerate parser.c, grammar.json, node-types.json\n10. Verify the grammar loads: `cargo test -p tree-sitter-reify`",
+      "description": "Add match_expression, match_arm, and match_pattern grammar rules to tree-sitter-reify/grammar.js:\n\n1. Add `match_expression` rule: `match_expression: $ => seq('match', field('discriminant', $._expression), '{', repeat1($.match_arm), '}')`\n2. Add `match_arm` rule: `match_arm: $ => seq(field('pattern', $.match_pattern), '=>', field('body', $._expression))`\n3. Add `match_pattern` rule: `match_pattern: $ => choice(seq($.identifier, repeat(seq('|', $.identifier))), '_')` — note the `_` wildcard is a literal token, not tree-sitter's anonymous node\n4. Add `match_expression` to `_expression` choices (alongside conditional_expression)\n5. Run `cd tree-sitter-reify && tree-sitter generate` to regenerate parser.c, grammar.json, node-types.json\n6. Verify with a quick parse test",
       "status": "done",
-      "commit": "bc0dbca",
+      "commit": "ba302c9",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Add 4 new ExprKind variants to crates/reify-syntax/src/lib.rs (after existing variants, before Auto):\n\n```rust\n/// List literal: `[1, 2, 3]`\nListLiteral(Vec<Expr>),\n/// Set literal: `set{1, 2, 3}`\nSetLiteral(Vec<Expr>),\n/// Map literal: `map{\"a\" => 1, \"b\" => 2}`\nMapLiteral(Vec<(Expr, Expr)>),\n/// Index access: `expr[index]`\nIndexAccess {\n    object: Box<Expr>,\n    index: Box<Expr>,\n},\n```\n\nThese are type-only changes with no logic.",
+      "description": "Add Match ExprKind variant to crates/reify-syntax/src/lib.rs:\n\n```rust\n/// Match expression: `match d { In => 1, Out => 2 }`\nMatch {\n    discriminant: Box<Expr>,\n    arms: Vec<MatchArm>,\n},\n```\n\nAdd MatchArm struct:\n```rust\n/// A match arm: `Pattern1 | Pattern2 => body`\npub struct MatchArm {\n    pub patterns: Vec<String>,\n    pub body: Expr,\n    pub span: SourceSpan,\n}\n```\n\nThis is a type-only change.",
       "status": "done",
-      "commit": "204775d",
+      "commit": "f92e461",
       "tests": []
     },
     {
       "id": "pre-3",
-      "description": "Add placeholder match arms in crates/reify-compiler/src/lib.rs compile_expr() for the 4 new ExprKind variants. Each emits a diagnostic and returns Undef, following the existing MemberAccess pattern:\n\n```rust\nreify_syntax::ExprKind::ListLiteral(_) => {\n    diagnostics.push(Diagnostic::error(\"list literals not yet supported in compiler\").with_label(DiagnosticLabel::new(expr.span, \"unsupported\")));\n    CompiledExpr::literal(Value::Undef, Type::Real)\n}\n```\n\nSame pattern for SetLiteral, MapLiteral, IndexAccess. This keeps the exhaustive match and prevents compilation failure.",
+      "description": "Add CompiledExprKind::Match variant and CompiledMatchArm struct to crates/reify-types/src/expr.rs:\n\n```rust\n/// Match expression.\nMatch {\n    discriminant: Box<CompiledExpr>,\n    arms: Vec<CompiledMatchArm>,\n},\n```\n\n```rust\n/// A compiled match arm.\n#[derive(Debug, Clone)]\npub struct CompiledMatchArm {\n    pub patterns: Vec<String>,\n    pub body: CompiledExpr,\n}\n```\n\nAlso add a placeholder arm in compile_expr() in the compiler for ExprKind::Match to prevent compilation errors (emit diagnostic + return Undef), and a placeholder arm in eval_expr() in reify-expr (return Undef).",
       "status": "done",
-      "commit": "112b94e",
+      "commit": "f92e461",
       "tests": []
     }
   ],
@@ -43,153 +49,215 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for list literal parsing in ts_parser.rs test module:\n\n1. `parse_list_literal_three_elements`: Parse `structure S { let x = [1, 2, 3] }`, extract the let's value, assert it is ExprKind::ListLiteral with 3 elements where each is NumberLiteral(1.0), NumberLiteral(2.0), NumberLiteral(3.0).\n2. `parse_list_literal_empty`: Parse `structure S { let x = [] }`, assert ExprKind::ListLiteral with 0 elements.\n\nBoth fail because lower_expr doesn't handle 'list_literal' yet.",
+      "description": "Write failing test for basic match expression parsing in crates/reify-syntax/tests/match_tests.rs:\n\n`parse_match_three_arms`: Parse `structure S { param d : Direction  let x = match d { In => 1, Out => 2, Bidi => 3 } }` with an `enum Direction { In, Out, Bidi }` declaration. Extract the let's value expr, assert it is ExprKind::Match with a discriminant Ident(\"d\") and 3 arms. Assert arm patterns are [\"In\"], [\"Out\"], [\"Bidi\"] and bodies are NumberLiteral(1), NumberLiteral(2), NumberLiteral(3).\n\nFails because lower_expr doesn't handle 'match_expression' node kind yet.",
       "status": "done",
-      "commit": "75bc292"
+      "commit": "9afd941"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement list_literal lowering in ts_parser.rs:\n1. Add 'list_literal' case to lower_expr() match\n2. Implement lower_list_literal(): iterate named children of the node, lower each via lower_expr(), collect into Vec<Expr>, return Expr { kind: ExprKind::ListLiteral(elements), span }. Use the same named-child iteration pattern as lower_function_call's argument_list handling.\n\nStep-1 tests pass.",
+      "description": "Implement match_expression lowering in ts_parser.rs:\n1. Add 'match_expression' case to lower_expr() match dispatch\n2. Implement lower_match_expr(): extract field('discriminant'), lower it. Iterate named children for 'match_arm' kind. For each arm, call lower_match_arm(). Return ExprKind::Match { discriminant, arms }.\n3. Implement lower_match_arm(): extract field('pattern') (match_pattern node), extract field('body'), lower body. For pattern: iterate children of the match_pattern node — collect identifiers and skip '|' tokens. If the pattern text is '_', store \"_\". Return MatchArm { patterns, body, span }.\n\nStep-1 test passes.",
       "status": "done",
-      "commit": "f5ceeed"
+      "commit": "094154a"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for set literal parsing in ts_parser.rs test module:\n\n1. `parse_set_literal_three_elements`: Parse `structure S { let x = set{1, 2, 3} }`, assert ExprKind::SetLiteral with 3 NumberLiteral elements.\n2. `parse_set_literal_empty`: Parse `structure S { let x = set{} }`, assert ExprKind::SetLiteral with 0 elements.\n\nBoth fail because lower_expr doesn't handle 'set_literal' yet.",
+      "description": "Write failing test for multi-variant pattern arm parsing in crates/reify-syntax/tests/match_tests.rs:\n\n`parse_match_multi_variant_arm`: Parse `structure S { let x = match d { Socket | Button => \"recessed\", Slider => \"raised\" } }`. Assert the first arm has patterns [\"Socket\", \"Button\"] and body StringLiteral(\"recessed\"). Assert second arm has patterns [\"Slider\"].",
       "status": "done",
-      "commit": "b6483ea"
+      "commit": "8130509"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement set_literal lowering in ts_parser.rs:\n1. Add 'set_literal' case to lower_expr() match\n2. Implement lower_set_literal(): same pattern as list — iterate named children, lower each, return ExprKind::SetLiteral(elements).\n\nStep-3 tests pass.",
+      "description": "Verify multi-variant arm lowering works. The lower_match_arm implementation from step-2 should already handle `|`-separated identifiers by iterating named children. If tests fail, fix the pattern iteration logic.\n\nStep-3 test passes.",
       "status": "done",
-      "commit": "9145b4d"
+      "commit": "8130509"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for map literal parsing in ts_parser.rs test module:\n\n1. `parse_map_literal_two_entries`: Parse `structure S { let x = map{\"a\" => 1, \"b\" => 2} }`, assert ExprKind::MapLiteral with 2 entries: (StringLiteral(\"a\"), NumberLiteral(1.0)) and (StringLiteral(\"b\"), NumberLiteral(2.0)).\n2. `parse_map_literal_empty`: Parse `structure S { let x = map{} }`, assert ExprKind::MapLiteral with 0 entries.\n\nBoth fail because lower_expr doesn't handle 'map_literal' yet.",
+      "description": "Write failing test for wildcard pattern parsing in crates/reify-syntax/tests/match_tests.rs:\n\n`parse_match_wildcard_arm`: Parse `structure S { let x = match d { In => 1, _ => 0 } }`. Assert second arm has patterns [\"_\"] and body NumberLiteral(0).",
       "status": "done",
-      "commit": "a9e0be6"
+      "commit": "8130509"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement map_literal and map_entry lowering in ts_parser.rs:\n1. Add 'map_literal' case to lower_expr() match\n2. Implement lower_map_literal(): iterate named children of the node, filter for kind=='map_entry', lower each via lower_map_entry(), collect into Vec<(Expr, Expr)>, return ExprKind::MapLiteral(entries).\n3. Implement lower_map_entry(): extract field('key') and field('value') children, lower each via lower_expr(), return (key, value) tuple.\n\nStep-5 tests pass.",
+      "description": "Ensure wildcard lowering works. The `_` token in match_pattern should be captured as the string \"_\" in patterns. If tree-sitter treats `_` as anonymous, may need to check unnamed children too. Fix if needed.\n\nStep-5 test passes.",
       "status": "done",
-      "commit": "0dd035c"
+      "commit": "8130509"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for index access parsing in ts_parser.rs test module:\n\n1. `parse_index_access_number`: Parse `structure S { let x = items[0] }`, assert ExprKind::IndexAccess with object=Ident(\"items\") and index=NumberLiteral(0.0).\n2. `parse_index_access_string_key`: Parse `structure S { let x = m[\"key\"] }`, assert ExprKind::IndexAccess with object=Ident(\"m\") and index=StringLiteral(\"key\").\n\nBoth fail because lower_expr doesn't handle 'index_access' yet.",
+      "description": "Write failing test for match compilation with exhaustiveness in crates/reify-compiler/tests/match_compile_tests.rs:\n\n`compile_match_exhaustive_passes`: Build a ParsedModule with `enum Direction { In, Out, Bidi }` and `structure S { param d  let x = match d { In => 1, Out => 2, Bidi => 3 } }`. Compile, assert no error diagnostics (warnings OK). Verify the compiled template has the match expression in the let's default_expr.\n\nFails because compile_expr's Match arm is a placeholder returning Undef.",
       "status": "done",
-      "commit": "3e6008f"
+      "commit": "cd455af"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement index_access lowering in ts_parser.rs:\n1. Add 'index_access' case to lower_expr() match\n2. Implement lower_index_access(): extract field('object') and field('index') via child_by_field_name(), lower each via lower_expr(), return ExprKind::IndexAccess { object: Box::new(obj), index: Box::new(idx) }. Pattern mirrors lower_member_access().\n\nStep-7 tests pass.",
+      "description": "Implement match expression compilation in crates/reify-compiler/src/lib.rs:\n\nReplace the placeholder Match arm in compile_expr() with real compilation:\n1. Recursively compile the discriminant expression\n2. For each MatchArm, compile the body expression. Store patterns as-is.\n3. Build CompiledExprKind::Match { discriminant, arms }\n4. Determine result_type from the first arm's body result_type\n5. Compute content_hash using tag byte [6], combining discriminant hash + all arm pattern/body hashes\n\nDo NOT add exhaustiveness checking yet — that's step-10.\n\nStep-7 test passes (no error diagnostics since exhaustiveness not yet checked).",
       "status": "done",
-      "commit": "228bd62"
+      "commit": "be01b17"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write tests for complex/nested collection cases in ts_parser.rs test module:\n\n1. `parse_nested_list_literals`: Parse `structure S { let x = [[1, 2], [3, 4]] }`, assert outer ListLiteral has 2 elements, each a ListLiteral with 2 NumberLiterals.\n2. `parse_collection_in_let_context`: Parse `structure S { let x = [1, 2, 3] }`, verify the full structure parses with no errors and the let member has name \"x\" with a ListLiteral value.\n\nThese should pass with existing lowering since it's recursive. If they fail, step-10 fixes issues.",
+      "description": "Write failing test for exhaustiveness diagnostic in crates/reify-compiler/tests/match_compile_tests.rs:\n\n`compile_match_missing_variant_emits_diagnostic`: Build ParsedModule with `enum Direction { In, Out, Bidi }` and `structure S { param d  let x = match d { In => 1, Out => 2 } }` (missing Bidi, no wildcard). Compile, assert diagnostics contain an error message mentioning \"Bidi\" or \"exhaustive\" or \"missing variant\".\n\nFails because exhaustiveness checking is not implemented yet.",
       "status": "done",
-      "commit": "29adba2"
+      "commit": "517881d"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Fix any issues with nested/complex collection parsing. Since lowering is recursive through lower_expr(), nested collections should work automatically. Verify and fix if needed. If all tests pass, this is a no-op verification step.",
+      "description": "Implement exhaustiveness checking in compile_expr() Match arm (crates/reify-compiler/src/lib.rs):\n\nAfter compiling the match expression:\n1. Check if the discriminant's result_type is Type::Enum(name)\n2. If so, look up the enum_def by name in enum_defs\n3. Collect all variant names covered by arm patterns (flatten all arms' patterns)\n4. If any pattern is \"_\" (wildcard), skip checking — all variants are covered\n5. Otherwise, compute missing = enum_def.variants - covered_patterns\n6. If missing is non-empty, emit a diagnostic error listing the missing variants\n\nStep-9 test passes.",
       "status": "done",
-      "commit": "29adba2"
+      "commit": "517881d"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write regression test in ts_parser.rs test module:\n\n`parse_collections_no_regression_on_bracket`: Call parse_bracket() (existing helper), assert no errors, assert 1 declaration (Structure), assert 10 members (5 params, 2 lets, 3 constraints). This is a lightweight check that collection literal additions don't break existing parsing. Also run `cargo test -p reify-syntax -p tree-sitter-reify` to verify all existing tests still pass.",
+      "description": "Write failing test for match with wildcard passes exhaustiveness in crates/reify-compiler/tests/match_compile_tests.rs:\n\n`compile_match_wildcard_is_exhaustive`: Build ParsedModule with `enum Direction { In, Out, Bidi }` and `structure S { param d  let x = match d { In => 1, _ => 0 } }`. Compile, assert NO error diagnostics.\n\nShould pass if step-10 correctly treats \"_\" as covering all variants.",
       "status": "done",
-      "commit": "dfed853"
+      "commit": "517881d"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Fix any regressions found. Run full `cargo test -p reify-syntax -p tree-sitter-reify -p reify-compiler` to verify all existing tests pass alongside new ones. The compiler tests should also pass since we added placeholder arms in pre-3.",
+      "description": "Verify wildcard exhaustiveness works. Fix if needed. Step-11 test passes.",
       "status": "done",
-      "commit": "dfed853"
+      "commit": "517881d"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test for match eval basic case in crates/reify-expr/src/lib.rs tests module:\n\n`eval_match_basic`: Build a CompiledExpr::Match with discriminant = literal Enum(\"Direction\", \"In\"), three arms: [\"In\"] => Int(1), [\"Out\"] => Int(2), [\"Bidi\"] => Int(3). Eval against empty ValueMap. Assert result is Value::Int(1).\n\nFails because eval_expr's Match arm is a placeholder returning Undef.",
+      "status": "done",
+      "commit": "5f0bc94"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Implement match expression evaluation in crates/reify-expr/src/lib.rs:\n\nReplace the placeholder Match arm in eval_expr() with real evaluation:\n1. Eval discriminant\n2. If discriminant is Undef, return Undef (short-circuit)\n3. Extract variant from Value::Enum { variant, .. }\n4. Iterate arms, find first arm where patterns contains variant or patterns contains \"_\"\n5. Eval that arm's body and return\n6. No matching arm → return Undef\n\nStep-13 test passes.",
+      "status": "done",
+      "commit": "b484aa4"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write test for match eval Undef propagation in crates/reify-expr/src/lib.rs tests:\n\n`eval_match_undef_discriminant`: Build CompiledExpr::Match with discriminant = literal Undef, arms with Int bodies. Eval. Assert result is Value::Undef (short-circuit, no arm body evaluated).",
+      "status": "done",
+      "commit": "5f0bc94"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Verify Undef propagation works. The implementation from step-14 should already handle this. Step-15 test passes.",
+      "status": "done",
+      "commit": "b484aa4"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write test for match eval with wildcard in crates/reify-expr/src/lib.rs tests:\n\n`eval_match_wildcard`: Build CompiledExpr::Match with discriminant = Enum(\"Direction\", \"Bidi\"), two arms: [\"In\"] => Int(1), [\"_\"] => Int(99). Eval. Assert result is Value::Int(99) since \"Bidi\" doesn't match \"In\" but does match wildcard \"_\".",
+      "status": "done",
+      "commit": "5f0bc94"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Verify wildcard eval works. Step-17 test passes.",
+      "status": "done",
+      "commit": "b484aa4"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write test for match eval with multi-variant pattern in crates/reify-expr/src/lib.rs tests:\n\n`eval_match_multi_variant_pattern`: Build CompiledExpr::Match with discriminant = Enum(\"Control\", \"Button\"), two arms: [\"Socket\", \"Button\"] => String(\"recessed\"), [\"Slider\"] => String(\"raised\"). Eval. Assert result is Value::String(\"recessed\") since \"Button\" is in the first arm's patterns.",
+      "status": "done",
+      "commit": "5f0bc94"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Verify multi-variant pattern eval works. Step-19 test passes.",
+      "status": "done",
+      "commit": "b484aa4"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Make `set` and `map` full keywords (not contextual)",
-      "rationale": "Tree-sitter automatically treats string literals that match the identifier regex as keywords. This is consistent with existing keywords (structure, param, let, constraint, minimize, maximize, etc.). No existing .ri files use set/map as identifiers. True contextual keywords would require a custom scanner, adding complexity for no current benefit."
+      "decision": "Store wildcard `_` as the literal string \"_\" in pattern lists",
+      "rationale": "Simple and uniform — avoids introducing a separate enum for patterns. During eval, check `pattern == \"_\"` to match anything. During exhaustiveness, if any arm contains \"_\", skip variant coverage checking. This is safe because \"_\" is not a valid Reify identifier (it's reserved by tree-sitter grammar as a keyword token in match_pattern)."
     },
     {
-      "decision": "Add commaSep helper function to grammar.js",
-      "rationale": "The grammar currently uses inline comma-separated patterns (e.g., in argument_list, named_argument_list, enum variants). A helper function improves readability and reduces duplication for the 3 new comma-separated rules. This is standard tree-sitter convention."
+      "decision": "Place match_expression in _expression choices (not _primary_expression)",
+      "rationale": "Match expression has a block body delimited by `{}`, similar to conditional_expression (if/then/else). It is a compound expression form, not a simple primary like literals or identifiers. Placing it at the expression level alongside conditional_expression and binary_expression avoids precedence issues."
     },
     {
-      "decision": "Index access uses same precedence level (8) as member_access and function_call",
-      "rationale": "Indexing is a postfix operation semantically equivalent to member access. Matching precedence ensures consistent left-to-right chaining: `a.b[0].c` and `f()[0]` parse naturally with left associativity."
+      "decision": "Use repeat1($.match_arm) requiring at least one arm",
+      "rationale": "An empty match `match x {}` is semantically meaningless and likely a mistake. Requiring at least one arm produces a parse error for empty matches, catching user errors early."
     },
     {
-      "decision": "Add explicit placeholder arms in compiler rather than a wildcard match",
-      "rationale": "The compiler's compile_expr has an exhaustive match on ExprKind with no wildcard arm. Adding explicit placeholder arms (emitting diagnostics + returning Undef) preserves this safety property. Future ExprKind additions will still trigger compile errors, ensuring complete handling. This follows the existing MemberAccess placeholder pattern."
+      "decision": "Exhaustiveness check only for known enum types",
+      "rationale": "If the discriminant type isn't Type::Enum (e.g., it's Type::Real or inference failed), skip exhaustiveness checking. This provides graceful degradation — the check fires when useful but doesn't block compilation when type information is incomplete."
     },
     {
-      "decision": "Use field names in grammar rules for index_access and map_entry",
-      "rationale": "Using field('object', ...) and field('index', ...) for index_access, and field('key', ...) / field('value', ...) for map_entry enables clean CST→AST lowering via child_by_field_name(), consistent with existing patterns like member_access (field 'object', 'member') and binary_expression (field 'left', 'op', 'right')."
+      "decision": "Content hash tag byte [6] for match expressions",
+      "rationale": "The existing compiled expression hash tags are: [0]=Literal, [1]=ValueRef, [2]=BinOp, [3]=UnOp, [4]=FunctionCall, [5]=Conditional. Tag [6] is the next available for Match expressions, maintaining domain separation."
     },
     {
-      "decision": "List literal `[...]` is a primary expression; index access `expr[...]` is at expression level",
-      "rationale": "Tree-sitter resolves the `[` ambiguity by parse position: index_access wraps `$._expression, '[', $._expression, ']'` requiring a preceding expression (prec.left(8)), while list_literal starts with `[` and is a _primary_expression choice. This means `[1, 2][0]` correctly parses as index_access on a list_literal."
-    },
-    {
-      "decision": "Map entry uses `=>` separator (not `:` or other)",
-      "rationale": "Per the task spec, map entries use `key => value` syntax. The `=>` operator is distinct from `:` (used for type annotations and named arguments) avoiding ambiguity. It is not currently used elsewhere in the grammar."
+      "decision": "First-match semantics for arm evaluation",
+      "rationale": "When multiple arms could match (e.g., overlapping multi-variant patterns), the first matching arm wins. This is consistent with Rust, ML, and other pattern-matching languages, and simple to implement."
     }
   ],
   "reuse": [
     {
       "what": "Existing lower_expr() match dispatch pattern",
       "where": "crates/reify-syntax/src/ts_parser.rs lower_expr()",
-      "how": "Add new cases to the existing match for 'list_literal', 'set_literal', 'map_literal', 'index_access' following the same string-match-on-node-kind pattern as other expression types."
-    },
-    {
-      "what": "Named child iteration for comma-separated items",
-      "where": "crates/reify-syntax/src/ts_parser.rs lower_function_call()",
-      "how": "The function_call lowering iterates named children of argument_list. Reuse same pattern for list/set elements: iterate named children of the literal node, call lower_expr() on each, collect into Vec."
+      "how": "Add 'match_expression' case to the existing match on node.kind(), following the pattern of 'conditional_expression' and other compound expressions."
     },
     {
       "what": "Field-based child extraction pattern",
-      "where": "crates/reify-syntax/src/ts_parser.rs lower_member_access() and lower_binary_expr()",
-      "how": "Use child_by_field_name('object') and child_by_field_name('index') for index_access lowering, matching how member_access extracts 'object'/'member' and binary_expression extracts 'left'/'op'/'right'."
+      "where": "crates/reify-syntax/src/ts_parser.rs lower_conditional()",
+      "how": "Match expression lowering uses child_by_field_name('discriminant') and child_by_field_name('pattern')/child_by_field_name('body') for arms, same pattern as conditional's child_by_field_name('condition')/child_by_field_name('then')/child_by_field_name('else')."
     },
     {
-      "what": "Test pattern: parse expression in structure wrapper",
-      "where": "crates/reify-syntax/src/ts_parser.rs tests and crates/reify-syntax/tests/guard_tests.rs parse_members()",
-      "how": "Tests wrap expressions in `structure S { let x = EXPR }` then extract the let's value to test expression parsing. Reuse this pattern for all collection literal tests."
+      "what": "Compile_expr recursive dispatch pattern",
+      "where": "crates/reify-compiler/src/lib.rs compile_expr()",
+      "how": "The Match arm follows the same pattern as Conditional — recursively compile sub-expressions, build a CompiledExprKind variant, compute content_hash by combining sub-hashes."
     },
     {
-      "what": "Compiler placeholder pattern for unsupported expressions",
-      "where": "crates/reify-compiler/src/lib.rs ExprKind::MemberAccess arm (line 531-539)",
-      "how": "The MemberAccess arm emits a diagnostic ('not yet supported'), compiles the sub-expression, and returns Undef literal. Same pattern for the 4 new ExprKind variant placeholders."
+      "what": "Eval_expr match dispatch pattern",
+      "where": "crates/reify-expr/src/lib.rs eval_expr()",
+      "how": "The Match arm follows the Conditional pattern: eval discriminant first, then dispatch based on its value. Undef propagation matches the conditional's Undef handling."
     },
     {
-      "what": "Lowering helper methods: node_text(), span(), content_hash()",
-      "where": "crates/reify-syntax/src/ts_parser.rs Lowering impl (lines 53-65)",
-      "how": "Reuse these helpers in all new lowering functions to extract text, create spans, and compute content hashes from tree-sitter nodes."
+      "what": "EnumDef lookup in compiler",
+      "where": "crates/reify-compiler/src/lib.rs ExprKind::EnumAccess arm",
+      "how": "Exhaustiveness checking reuses the same `enum_defs.iter().find(|e| e.name == *type_name)` lookup pattern used for enum variant validation in EnumAccess compilation."
     },
     {
-      "what": "Grammar comma-separated list pattern",
-      "where": "tree-sitter-reify/grammar.js argument_list (line 228-232) and enum variants (line 36)",
-      "how": "Extract into a commaSep(rule) helper: `optional(seq(rule, repeat(seq(',', rule)), optional(',')))`. Apply to list, set, and map literal comma-separated contents."
+      "what": "Enum value pattern matching in eval",
+      "where": "crates/reify-expr/src/lib.rs eval_eq()",
+      "how": "The match eval logic extracts `variant` from `Value::Enum { variant, .. }`, same pattern as enum equality comparison in eval_eq."
+    },
+    {
+      "what": "Test helper parse_members pattern",
+      "where": "crates/reify-syntax/tests/guard_tests.rs",
+      "how": "Parser tests use the same pattern: wrap source in `structure S { ... }`, parse, extract first structure's members. Reuse this pattern for match expression parser tests."
+    },
+    {
+      "what": "Compiler test ParsedModule construction",
+      "where": "crates/reify-compiler/tests/boundary1_consumer.rs",
+      "how": "Compiler tests manually construct ParsedModule with specific declarations. Reuse this pattern for match exhaustiveness tests, adding enum and structure declarations."
+    },
+    {
+      "what": "Eval test helper functions (lit, enum_lit)",
+      "where": "crates/reify-expr/src/lib.rs tests module",
+      "how": "Reuse the existing lit() and enum_lit() helpers to construct compiled match expression test inputs."
     }
   ]
 }
