@@ -654,10 +654,10 @@ impl<'a> Lowering<'a> {
         let mut elements = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.is_named() {
-                if let Some(expr) = self.lower_expr(child) {
-                    elements.push(expr);
-                }
+            if child.is_named()
+                && let Some(expr) = self.lower_expr(child)
+            {
+                elements.push(expr);
             }
         }
         Some(Expr {
@@ -670,10 +670,10 @@ impl<'a> Lowering<'a> {
         let mut elements = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.is_named() {
-                if let Some(expr) = self.lower_expr(child) {
-                    elements.push(expr);
-                }
+            if child.is_named()
+                && let Some(expr) = self.lower_expr(child)
+            {
+                elements.push(expr);
             }
         }
         Some(Expr {
@@ -686,10 +686,10 @@ impl<'a> Lowering<'a> {
         let mut entries = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "map_entry" {
-                if let Some(entry) = self.lower_map_entry(child) {
-                    entries.push(entry);
-                }
+            if child.kind() == "map_entry"
+                && let Some(entry) = self.lower_map_entry(child)
+            {
+                entries.push(entry);
             }
         }
         Some(Expr {
