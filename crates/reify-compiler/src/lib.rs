@@ -64,8 +64,6 @@ pub enum RequirementKind {
     Param(Type),
     /// A let with a specific type: `let x : Length`
     Let(Type),
-    /// A constraint (labeled): `constraint min_size : x > 0`
-    Constraint(Option<String>),
     /// A sub-component: `sub hole = Hole`
     Sub(String),
 }
@@ -1029,8 +1027,8 @@ fn compile_trait(
             }
             reify_syntax::MemberDecl::Constraint(constraint_decl) => {
                 if let Some(label) = &constraint_decl.label {
-                    // Labeled constraint without expression in struct → requirement
-                    // Constraint with expression → default
+                    // Labeled constraint with expression in trait → default
+                    // (override detection uses label matching at injection site)
                     defaults.push(TraitDefault {
                         name: label.clone(),
                         kind: DefaultKind::Constraint(constraint_decl.clone()),
@@ -2230,22 +2228,6 @@ fn check_trait_conformance(
                             )),
                         );
                     }
-                }
-            }
-            RequirementKind::Constraint(label) => {
-                if let Some(label) = label
-                    && !structure_constraint_labels.contains(label)
-                {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "missing required constraint '{}'",
-                            label
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            structure.span,
-                            "required by trait",
-                        )),
-                    );
                 }
             }
             RequirementKind::Sub(structure_name) => {
