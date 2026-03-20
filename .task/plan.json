@@ -9,40 +9,43 @@
     "examples/m5_user_function.ri",
     "examples/m5_geometry.ri"
   ],
-  "modules": ["crates/reify-eval/tests", "examples"],
-  "analysis": "This task creates comprehensive end-to-end integration tests exercising multiple M5 features together through the full pipeline (parse → compile → eval/check → verify). All individual M5 features (traits, enums, guards, collections, lambdas, occurrences, connect/chain, ports, user functions, geometry ops) are already implemented across the reify-syntax, reify-compiler, reify-eval, and reify-expr crates.\n\nThe existing e2e test pattern (see crates/reify-eval/tests/e2e_bracket.rs, fn_eval.rs, occurrence_eval.rs, connect_eval.rs, guard_eval.rs) uses: (1) parse source via reify_syntax::parse(), (2) compile via reify_compiler::compile(), (3) eval/check via Engine::new(checker, planner).eval/check(), (4) assert on values/constraints.\n\nKey adaptations from the task description to actual implementation:\n- No 'Mass' or 'Pressure' dimension types → use Length, Scalar, Real, Int instead\n- No 'forall' keyword → use .all(|b| ...) method call on collections\n- No 'realize {}' block → geometry is produced via let bindings calling geometry functions (e.g., let body = cylinder(...))\n- circular_pattern takes 9 positional args: (target, ox, oy, oz, ax, ay, az, count, angle)\n- No 'module' declaration in parser → multi-module test uses filesystem temp dirs with ModuleResolver\n- 'structure def' (with 'def') is valid syntax for definitions vs instances\n\nTests go in crates/reify-eval/tests/m5_integration.rs following the existing convention where integration tests live alongside other eval integration tests. Example .ri files go in examples/.",
+  "modules": [
+    "crates/reify-eval/tests",
+    "examples"
+  ],
+  "analysis": "This task creates comprehensive end-to-end integration tests exercising multiple M5 features together through the full pipeline (parse \u2192 compile \u2192 eval/check \u2192 verify). All individual M5 features (traits, enums, guards, collections, lambdas, occurrences, connect/chain, ports, user functions, geometry ops) are already implemented across the reify-syntax, reify-compiler, reify-eval, and reify-expr crates.\n\nThe existing e2e test pattern (see crates/reify-eval/tests/e2e_bracket.rs, fn_eval.rs, occurrence_eval.rs, connect_eval.rs, guard_eval.rs) uses: (1) parse source via reify_syntax::parse(), (2) compile via reify_compiler::compile(), (3) eval/check via Engine::new(checker, planner).eval/check(), (4) assert on values/constraints.\n\nKey adaptations from the task description to actual implementation:\n- No 'Mass' or 'Pressure' dimension types \u2192 use Length, Scalar, Real, Int instead\n- No 'forall' keyword \u2192 use .all(|b| ...) method call on collections\n- No 'realize {}' block \u2192 geometry is produced via let bindings calling geometry functions (e.g., let body = cylinder(...))\n- circular_pattern takes 9 positional args: (target, ox, oy, oz, ax, ay, az, count, angle)\n- No 'module' declaration in parser \u2192 multi-module test uses filesystem temp dirs with ModuleResolver\n- 'structure def' (with 'def') is valid syntax for definitions vs instances\n\nTests go in crates/reify-eval/tests/m5_integration.rs following the existing convention where integration tests live alongside other eval integration tests. Example .ri files go in examples/.\n\n**Post-review fix (step-17/step-18):** The connect_occurrence_chain test at lines 283-302 uses `if let Some(...)` to look up Pipe and Pipeline templates, which silently skips all assertions if the templates aren't found. This must be replaced with `.expect()` so a missing template causes a hard test failure rather than a vacuous pass.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create examples/m5_trait_structure.ri — structure implementing a trait with conformance checking",
+      "description": "Create examples/m5_trait_structure.ri \u2014 structure implementing a trait with conformance checking",
       "status": "done",
       "commit": "ee9f67e",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Create examples/m5_guarded_enum.ri — guarded declarations with enum matching (where clause + enum variant comparison)",
+      "description": "Create examples/m5_guarded_enum.ri \u2014 guarded declarations with enum matching (where clause + enum variant comparison)",
       "status": "done",
       "commit": "55bed87",
       "tests": []
     },
     {
       "id": "pre-3",
-      "description": "Create examples/m5_connect_chain.ri — occurrence definitions with ports, connect, and chain desugaring",
+      "description": "Create examples/m5_connect_chain.ri \u2014 occurrence definitions with ports, connect, and chain desugaring",
       "status": "done",
       "commit": "96ea604",
       "tests": []
     },
     {
       "id": "pre-4",
-      "description": "Create examples/m5_user_function.ri — user-defined function called in let binding, result used in constraint",
+      "description": "Create examples/m5_user_function.ri \u2014 user-defined function called in let binding, result used in constraint",
       "status": "done",
       "commit": "7895035",
       "tests": []
     },
     {
       "id": "pre-5",
-      "description": "Create examples/m5_geometry.ri — cylinder + circular_pattern geometry through full pipeline",
+      "description": "Create examples/m5_geometry.ri \u2014 cylinder + circular_pattern geometry through full pipeline",
       "status": "done",
       "commit": "d54d613",
       "tests": []
@@ -52,120 +55,134 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write test: trait_implementing_structure — parse m5_trait_structure.ri, compile, verify no errors, eval, check trait conformance (trait with required param + constraint, structure satisfying it). Assert: parse OK, compile OK (no error diagnostics), eval produces correct param values, constraint from trait is satisfied.",
+      "description": "Write test: trait_implementing_structure \u2014 parse m5_trait_structure.ri, compile, verify no errors, eval, check trait conformance (trait with required param + constraint, structure satisfying it). Assert: parse OK, compile OK (no error diagnostics), eval produces correct param values, constraint from trait is satisfied.",
       "status": "done",
       "commit": "d84c3cf"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix trait_implementing_structure test if needed — adjust .ri syntax or assertions to match actual parser/compiler behavior. Verify test passes.",
+      "description": "Fix trait_implementing_structure test if needed \u2014 adjust .ri syntax or assertions to match actual parser/compiler behavior. Verify test passes.",
       "status": "done",
       "commit": "d84c3cf"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test: multi_module_import — create temp dir with two .ri files (one defining a structure, one importing it), use ModuleResolver + compile_project to compile both modules, verify import resolution succeeds, sub-component from imported structure is compiled correctly.",
+      "description": "Write test: multi_module_import \u2014 create temp dir with two .ri files (one defining a structure, one importing it), use ModuleResolver + compile_project to compile both modules, verify import resolution succeeds, sub-component from imported structure is compiled correctly.",
       "status": "done",
       "commit": "3f7a449"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix multi_module_import test if needed — adjust source syntax, resolver paths, or assertions. Verify test passes.",
+      "description": "Fix multi_module_import test if needed \u2014 adjust source syntax, resolver paths, or assertions. Verify test passes.",
       "status": "done",
       "commit": "3f7a449"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test: guarded_enum_declarations — parse m5_guarded_enum.ri, compile, eval with guard true/false. Verify: enum compiles, where-clause with enum comparison creates guarded groups, conditional member activation works, match expression evaluates correctly.",
+      "description": "Write test: guarded_enum_declarations \u2014 parse m5_guarded_enum.ri, compile, eval with guard true/false. Verify: enum compiles, where-clause with enum comparison creates guarded groups, conditional member activation works, match expression evaluates correctly.",
       "status": "done",
       "commit": "b816861"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Fix guarded_enum_declarations test if needed — adjust enum/guard/match syntax or assertions. Verify test passes.",
+      "description": "Fix guarded_enum_declarations test if needed \u2014 adjust enum/guard/match syntax or assertions. Verify test passes.",
       "status": "done",
       "commit": "b816861"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test: collection_lambda_operations — inline source with list literal, .map(|x| ...) method call, .count property, and .all(|x| ...) quantifier. Parse, compile, eval, verify: list is created, map produces transformed list, count returns correct int, all/any returns correct bool.",
+      "description": "Write test: collection_lambda_operations \u2014 inline source with list literal, .map(|x| ...) method call, .count property, and .all(|x| ...) quantifier. Parse, compile, eval, verify: list is created, map produces transformed list, count returns correct int, all/any returns correct bool.",
       "status": "done",
       "commit": "12f087a"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Fix collection_lambda_operations test if needed — adjust collection syntax, lambda syntax, or method call names. Verify test passes.",
+      "description": "Fix collection_lambda_operations test if needed \u2014 adjust collection syntax, lambda syntax, or method call names. Verify test passes.",
       "status": "done",
       "commit": "12f087a"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test: connect_occurrence_chain — parse m5_connect_chain.ri with occurrence definitions having ports, and a structure containing sub occurrences with chain desugaring. Verify: occurrences compile with EntityKind::Occurrence, chain produces correct number of connections, compatibility constraints are all Satisfied.",
+      "description": "Write test: connect_occurrence_chain \u2014 parse m5_connect_chain.ri with occurrence definitions having ports, and a structure containing sub occurrences with chain desugaring. Verify: occurrences compile with EntityKind::Occurrence, chain produces correct number of connections, compatibility constraints are all Satisfied.",
       "status": "done",
       "commit": "b0efe16"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Fix connect_occurrence_chain test if needed — adjust port/chain/connect syntax or assertions. Verify test passes.",
+      "description": "Fix connect_occurrence_chain test if needed \u2014 adjust port/chain/connect syntax or assertions. Verify test passes.",
       "status": "done",
       "commit": "b0efe16"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test: user_fn_with_constraint — parse m5_user_function.ri defining a function and a structure that calls it in a let binding, with a constraint on the result. Verify: function compiles, let binding evaluates to correct value, constraint evaluates correctly (satisfied or violated as designed).",
+      "description": "Write test: user_fn_with_constraint \u2014 parse m5_user_function.ri defining a function and a structure that calls it in a let binding, with a constraint on the result. Verify: function compiles, let binding evaluates to correct value, constraint evaluates correctly (satisfied or violated as designed).",
       "status": "done",
       "commit": "8b25061"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Fix user_fn_with_constraint test if needed — adjust function syntax, type annotations, or assertions. Verify test passes.",
+      "description": "Fix user_fn_with_constraint test if needed \u2014 adjust function syntax, type annotations, or assertions. Verify test passes.",
       "status": "done",
       "commit": "8b25061"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write test: geometry_cylinder_pattern — parse m5_geometry.ri with cylinder + circular_pattern through the full build pipeline (with OCCT kernel). Verify: geometry let bindings compile into realization ops, build produces valid STEP output containing ISO-10303-21 header. (Mirror e2e_bracket.rs pattern with real kernel.)",
+      "description": "Write test: geometry_cylinder_pattern \u2014 parse m5_geometry.ri with cylinder + circular_pattern through the full build pipeline (with OCCT kernel). Verify: geometry let bindings compile into realization ops, build produces valid STEP output containing ISO-10303-21 header. (Mirror e2e_bracket.rs pattern with real kernel.)",
       "status": "done",
       "commit": "1fa7515"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Fix geometry_cylinder_pattern test if needed — adjust geometry function call syntax (positional args for circular_pattern), kernel setup, or assertions. Verify test passes.",
+      "description": "Fix geometry_cylinder_pattern test if needed \u2014 adjust geometry function call syntax (positional args for circular_pattern), kernel setup, or assertions. Verify test passes.",
       "status": "done",
       "commit": "1fa7515"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write test: combined_m5_features — a single larger test combining multiple M5 features: enum + trait + guarded declaration + function call + constraint. Parse inline source, compile, eval, check. This exercises feature interaction paths that individual tests may miss.",
+      "description": "Write test: combined_m5_features \u2014 a single larger test combining multiple M5 features: enum + trait + guarded declaration + function call + constraint. Parse inline source, compile, eval, check. This exercises feature interaction paths that individual tests may miss.",
       "status": "done",
       "commit": "ed5fe8f"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Fix combined_m5_features test if needed — adjust syntax or assertions for the combined scenario. Verify test passes.",
+      "description": "Fix combined_m5_features test if needed \u2014 adjust syntax or assertions for the combined scenario. Verify test passes.",
       "status": "done",
       "commit": "ed5fe8f"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Fix silent-pass bug in connect_occurrence_chain (review feedback: silent_pass_on_missing_fixture / silent_test_vacuity). Replace `if let Some(pipe) = pipe_template { ... }` (line 283) with `let pipe = pipe_template.expect(\"should have a Pipe template\");` so missing Pipe template is a hard failure. Replace `if let Some(pipeline) = pipeline_template { ... }` (line 296) with `let pipeline = pipeline_template.expect(\"should have a Pipeline template\");` so missing Pipeline template is a hard failure. Both assertion blocks (EntityKind::Occurrence check and connections non-empty check) must execute unconditionally. Verify the test still passes after the change.",
+      "status": "done",
+      "commit": "aa82183"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Verify connect_occurrence_chain passes with the .expect() changes. If the templates are not found (indicating a real bug), investigate and fix the .ri source or template name matching. Run the full m5_integration test suite to confirm no regressions.",
+      "status": "done",
+      "commit": "aa82183"
     }
   ],
   "design_decisions": [
     {
       "decision": "Place integration tests in crates/reify-eval/tests/m5_integration.rs rather than workspace-root tests/",
-      "rationale": "The workspace has no root-level lib.rs/main.rs, so workspace-level integration tests won't compile. All existing e2e tests (e2e_bracket.rs, fn_eval.rs, etc.) live in crates/reify-eval/tests/ — this follows that established convention."
+      "rationale": "The workspace has no root-level lib.rs/main.rs, so workspace-level integration tests won't compile. All existing e2e tests (e2e_bracket.rs, fn_eval.rs, etc.) live in crates/reify-eval/tests/ \u2014 this follows that established convention."
     },
     {
       "decision": "Adapt task description syntax to match actual parser/compiler capabilities",
@@ -182,11 +199,15 @@
     {
       "decision": "One test file with all scenarios rather than separate files",
       "rationale": "All 7+ scenarios share the same dependency set (reify-syntax, reify-compiler, reify-eval, reify-constraints). A single m5_integration.rs file with helper functions is cleaner than 7 separate files, and follows the task description's file organization."
+    },
+    {
+      "decision": "Use .expect() instead of if-let for template lookups in tests",
+      "rationale": "Review feedback identified that `if let Some(...)` silently skips assertions when templates aren't found, making the test vacuously pass. Using `.expect()` ensures a missing template is a hard, visible failure. This matches the pattern used elsewhere in the test file (e.g., flange/panel lookups) and is the standard Rust testing convention for asserting presence before inspecting fields."
     }
   ],
   "reuse": [
     {
-      "what": "parse → compile → eval/check pipeline pattern",
+      "what": "parse \u2192 compile \u2192 eval/check pipeline pattern",
       "where": "crates/reify-eval/tests/e2e_bracket.rs, fn_eval.rs, occurrence_eval.rs, connect_eval.rs",
       "how": "Extract common helper: parse source, assert no parse errors, compile, assert no error diagnostics, eval/check via Engine. Identical to run_bracket_e2e() and the pattern in fn_eval.rs."
     },
@@ -210,5 +231,8 @@
       "where": "crates/reify-test-support/src/values.rs",
       "how": "Use mm(), meters(), vcid() etc. for constructing expected values in assertions."
     }
-  ]
+  ],
+  "_schema_version": 1,
+  "_session_id": "80-dff44d94",
+  "_created_at": "2026-03-20T22:18:12.902965+00:00"
 }
