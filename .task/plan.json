@@ -1,43 +1,51 @@
 {
-  "task_id": "70",
-  "title": "Port declarations",
+  "task_id": "57",
+  "title": "User-defined fn — evaluation",
   "files": [
-    "tree-sitter-reify/grammar.js",
-    "tree-sitter-reify/src/parser.c",
-    "crates/reify-syntax/src/lib.rs",
-    "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/port_tests.rs",
+    "crates/reify-types/src/expr.rs",
+    "crates/reify-types/src/lib.rs",
     "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/port_compile_tests.rs",
-    "crates/reify-types/src/traits.rs"
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/tests/boundary2_consumer.rs",
+    "crates/reify-eval/tests/fn_eval.rs",
+    "crates/reify-constraints/src/lib.rs",
+    "crates/reify-constraints/src/solver.rs",
+    "crates/reify-runtime/src/concurrent_eval.rs",
+    "crates/reify-test-support/src/builders.rs",
+    "crates/reify-compiler/tests/boundary2_producer.rs",
+    "crates/reify-types/src/constraint.rs"
   ],
   "modules": [
-    "tree-sitter-reify",
-    "crates/reify-syntax",
+    "crates/reify-types",
     "crates/reify-compiler",
-    "crates/reify-types"
+    "crates/reify-expr",
+    "crates/reify-eval",
+    "crates/reify-constraints",
+    "crates/reify-runtime",
+    "crates/reify-test-support"
   ],
-  "analysis": "This task adds port declaration support across the full pipeline: grammar -> parser -> compiler. Ports are typed interface points on structures (like mechanical mounting points) with direction (in/out/bidi), a trait type reference, and optional body containing params, lets, constraints, direction setting, and frame expressions.\n\nExisting patterns to follow:\n- Grammar: follows the same pattern as sub_declaration and other _member choices. String literal keywords like 'param', 'let', 'constraint' already work alongside the identifier regex without explicit `word` declaration.\n- Parser: PortDecl follows the same struct pattern as SubDecl/ParamDecl with name, type, span, content_hash fields. MemberDecl gets a new Port variant. Lowering follows the same pattern as lower_sub, lower_param.\n- Compiler: CompiledPort follows the pattern of SubComponentDecl. Port members become ValueCells with composite member names (port_name.member_name) for scope resolution. TopologyTemplate gets a ports field.\n- Port member access via dot notation requires updating the MemberAccess case in compile_expr_guarded to resolve port-qualified names.\n\nKey concern: Using 'in' as a keyword (for port direction) while 'in' is also used as a unit suffix (80in). This works because unit suffixes use token.immediate() which is a separate token type requiring no whitespace. Standalone 'in' with whitespace will match the keyword in port contexts. The trade-off is that 'in', 'out', 'bidi' become reserved words (can't be used as variable/type names), which is acceptable.\n\nDependency on task 65 (trait grammar/parser) is satisfied. PortDirection enum already exists in reify-types (added in task 53). The trait registry built in task 66 (trait conformance) is available for port type verification.\n\nCompilationScope currently uses HashMap<String, (ValueCellId, Type, Option<ValueCellId>)>. Port members will be registered with composite keys like 'port_name.member_name'. MemberAccess compilation currently emits 'not yet supported' error (line 772-781); this needs updating to recognize port member access patterns.\n\nREVIEW FIX (steps 21-26): Four blocking issues were found during review. (1-3) The port_hashes iterator in the content_hash computation (lines 1754-1762) only chains port member default_expr hashes and port constraint hashes. It omits port identity fields (name, direction, type_name) and frame_expr. This means renaming a port, flipping its direction, changing its type, or modifying its frame expression will NOT change the TopologyTemplate.content_hash, causing the Adapton-style incremental evaluator to serve stale cached results. Fix: extend port_hashes to include ContentHash::of_str(&p.name), ContentHash::of(&[p.direction as u8]), ContentHash::of_str(&p.type_name), and p.frame_expr hash. (4) When two ports share the same name, no diagnostic is emitted. The first pass silently discards the duplicate via HashSet::insert, and the second pass unconditionally pushes both CompiledPort entries. Fix: track seen port names with a HashMap<String, SourceSpan>, emit error diagnostic on duplicate, skip compiling the duplicate.",
+  "analysis": "Currently `eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value` in reify-expr handles all CompiledExprKind variants except UserFunctionCall, which returns Value::Undef as a stub. Task 56 (dependency) added the compiler support: UserFunctionCall { function_name, args } nodes are emitted when a user function call is resolved, and CompiledFunction/CompiledFnBody store the function's param list, let bindings, and result expression in CompiledModule.functions.\n\nThe compiler's CompilationScope creates ValueCellId(fn_name, param_name) for function parameters, so function body expressions use ValueRef(ValueCellId('double', 'x')) to reference param 'x' of function 'double'. This convention must be matched at evaluation time when building the function scope.\n\nApproach:\n1. Move CompiledFunction and CompiledFnBody from reify-compiler to reify-types (they're pure data types using only reify-types primitives: String, Type, CompiledExpr, ContentHash). Re-export from reify-compiler for backward compat.\n2. Create EvalContext struct in reify-expr with { values: &ValueMap, functions: &[CompiledFunction], recursion_depth: u32 }. Provides constructors: new(values, functions) and simple(values) (empty functions, depth 0).\n3. Change eval_expr signature to take &EvalContext. Update all ~40 call sites across reify-eval (20+), reify-constraints (11), reify-runtime (1), and test files (4). Most callers use EvalContext::simple(values); Engine callers use EvalContext::new(values, &module.functions).\n4. Implement UserFunctionCall evaluation: look up function by name+arity in ctx.functions, evaluate args, check Undef propagation, create fresh ValueMap scope with params bound, evaluate body let-bindings and result_expr.\n5. Add recursion depth limit (1000) returning Undef on exceeded.\n6. Wire functions through Engine evaluation paths.\n\nThe constraint subsystem (ConstraintInput, solver) also calls eval_expr. To support user functions in constraint expressions, add an optional functions field to ConstraintInput, or pass functions when constructing EvalContext in the solver. The practical approach: add `functions: &'a [CompiledFunction]` to ConstraintInput with a default of &[].",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add port grammar rules to tree-sitter-reify/grammar.js: (1) port_direction_keyword rule as choice('in','out','bidi'), (2) port_declaration rule with fields: name (identifier), optional direction (port_direction_keyword), type (identifier), optional body (port_body), (3) port_body rule with repeat(choice(param_declaration, let_declaration, constraint_declaration, port_direction_setting, port_frame_setting)), (4) port_direction_setting rule: seq('direction','=',field('value',port_direction_keyword)), (5) port_frame_setting rule: seq('frame','=',field('value',_expression)). Add port_declaration to _member choices. Add [$.port_declaration] to conflicts list. Run `npx tree-sitter generate` in tree-sitter-reify/ to regenerate src/parser.c.",
+      "description": "Move CompiledFunction and CompiledFnBody structs from crates/reify-compiler/src/lib.rs to crates/reify-types/src/expr.rs. These use only reify-types primitives (String, bool, Vec<(String,Type)>, Type, CompiledExpr, ContentHash). Add `pub use expr::{CompiledFunction, CompiledFnBody};` to reify-types/src/lib.rs. In reify-compiler/src/lib.rs, replace the struct definitions with `pub use reify_types::{CompiledFunction, CompiledFnBody};`. Verify: `cargo check -p reify-types -p reify-compiler -p reify-eval -p reify-constraints -p reify-runtime`.",
       "status": "done",
-      "commit": "6c0b6db",
+      "commit": "b568da5",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Add PortDecl struct and MemberDecl::Port(PortDecl) variant to crates/reify-syntax/src/lib.rs. PortDecl fields: name (String), direction (Option<reify_types::PortDirection>), type_name (String), members (Vec<MemberDecl>), frame_expr (Option<Expr>), span (SourceSpan), content_hash (ContentHash). Add use reify_types::PortDirection import.",
+      "description": "Update CompiledModuleBuilder in reify-test-support/src/builders.rs to support functions. Add `functions: Vec<reify_types::CompiledFunction>` field (initialized to Vec::new()), a `.function(f: CompiledFunction) -> Self` builder method, and include functions in the build() output. Also include function content_hashes in the module's content_hash computation. This enables building test modules with user-defined functions for E2E tests.",
       "status": "done",
-      "commit": "6c0b6db",
+      "commit": "76abd50",
       "tests": []
     },
     {
       "id": "pre-3",
-      "description": "Add stub lower_port method to ts_parser.rs Lowering impl that returns None, and add 'port_declaration' case to lower_member that calls lower_port and maps to MemberDecl::Port. This allows the code to compile and existing tests to pass before port lowering is implemented.",
+      "description": "Add `functions: &'a [CompiledFunction]` field to ConstraintInput in reify-types/src/constraint.rs. Default to &[] in all existing call sites that construct ConstraintInput (in reify-eval Engine check/build methods). This prepares the constraint subsystem to receive the function registry.",
       "status": "done",
-      "commit": "6c0b6db",
+      "commit": "be178f2",
       "tests": []
     }
   ],
@@ -45,279 +53,176 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in crates/reify-syntax/tests/port_tests.rs: parse_minimal_port - parses `structure S { port mount : MechanicalPort }` and asserts: 1 declaration, 1 member of type MemberDecl::Port, name='mount', type_name='MechanicalPort', direction=None, empty members vec, frame_expr=None. Uses same parse_decls helper pattern as trait_tests.rs.",
+      "description": "Write failing test in reify-expr/src/lib.rs tests: `eval_user_fn_double`. Construct a CompiledFunction for `fn double(x: Real) -> Real { x + x }`: name='double', params=[('x', Type::Real)], return_type=Type::Real, body=CompiledFnBody { let_bindings: vec![], result_expr: BinOp(Add, ValueRef(ValueCellId('double','x')), ValueRef(ValueCellId('double','x'))) }. Build a UserFunctionCall expr: function_name='double', args=[Literal(Real(5.0))]. Currently this returns Undef. Write the test expecting Real(10.0) — it will fail, proving the feature is needed.",
       "status": "done",
-      "commit": "564e7f4"
+      "commit": "2c33326"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement lower_port in ts_parser.rs: extract 'name' field (identifier), extract 'type' field (identifier -> type_name), handle optional 'direction' field (port_direction_keyword -> match text to PortDirection variant), handle optional 'body' field (stub returning empty members/None for now). Return Some(PortDecl {...}). Test parse_minimal_port passes.",
+      "description": "Create EvalContext struct and implement UserFunctionCall evaluation. This is the largest step:\n\n1. In reify-expr/src/lib.rs, define:\n   ```\n   pub struct EvalContext<'a> {\n       pub values: &'a ValueMap,\n       pub functions: &'a [CompiledFunction],\n       recursion_depth: u32,\n   }\n   ```\n   With constructors: `new(values, functions)` (depth=0), `simple(values)` (functions=&[], depth=0).\n   Private helper: `with_scope(values)` returns new EvalContext with same functions, depth+1.\n\n2. Change `eval_expr` signature to `eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value`.\n\n3. Thread ctx through all internal functions: eval_binop, eval_unop, eval_and, eval_or now take `ctx: &EvalContext` instead of `values: &ValueMap`, reading values from `ctx.values`.\n\n4. Implement UserFunctionCall arm:\n   - Find function by name in ctx.functions (first match)\n   - Evaluate arg expressions against ctx\n   - If any arg is Undef, return Undef (strict propagation)\n   - Check recursion_depth < MAX_RECURSION_DEPTH (1000), return Undef if exceeded\n   - Create fresh ValueMap, bind params: ValueCellId(fn_name, param_name) -> arg_value\n   - Evaluate let_bindings in order, inserting into scope\n   - Evaluate result_expr with new scope\n\n5. Update ALL callers:\n   - reify-eval/src/lib.rs: ~20 sites → EvalContext::simple(&values) initially (Engine integration in step-16)\n   - reify-constraints/src/lib.rs: 1 site → EvalContext::simple(input.values)\n   - reify-constraints/src/solver.rs: ~10 sites → EvalContext::simple(values)\n   - reify-runtime/src/concurrent_eval.rs: 1 site → EvalContext::simple(&current_values)\n   - reify-eval/tests/boundary2_consumer.rs: 1 site → EvalContext::simple(&values)\n   - reify-compiler/tests/boundary2_producer.rs: 3 sites → EvalContext::simple(&values)\n   - Internal tests in reify-expr: all sites → EvalContext::simple(&values)\n\n6. Verify all existing tests pass (only API change, no behavior change for non-UserFunctionCall exprs).",
       "status": "done",
-      "commit": "e503067"
+      "commit": "76ef687"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: parse_port_with_direction - parses `structure S { port shaft : in RotaryPort }` and asserts direction=Some(PortDirection::In), type_name='RotaryPort'. Also write parse_port_direction_out testing `port b : out T` -> direction=Some(Out) and parse_port_direction_bidi testing `port c : bidi T` -> direction=Some(Bidi).",
+      "description": "Write test: `eval_user_fn_with_let_bindings`. Construct `fn f(x: Real) -> Real { let y = x + 1; y * 2 }` — CompiledFunction with body.let_bindings = [('y', BinOp(Add, ValueRef('f','x'), Literal(Int(1))))] and body.result_expr = BinOp(Mul, ValueRef('f','y'), Literal(Int(2))). Create EvalContext with functions=[f]. Call f(4) via UserFunctionCall, expect Real(10.0). Tests that let bindings in function bodies evaluate correctly and are available to the result expression.",
       "status": "done",
-      "commit": "917b196"
+      "commit": "0d30a2b"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Ensure direction parsing works in lower_port. The 'direction' field in the CST is a port_direction_keyword node. Map its text content: 'in' -> PortDirection::In, 'out' -> PortDirection::Out, 'bidi' -> PortDirection::Bidi. Tests parse_port_with_direction, parse_port_direction_out, parse_port_direction_bidi pass.",
+      "description": "Fix let binding evaluation in function body if step-3 fails. Ensure each let binding's expression is evaluated against the current scope (which grows as bindings are added), and the binding result is inserted as ValueCellId(fn_name, binding_name). The step-2 implementation should already handle this — if the test passes, this is a no-op confirmation step.",
       "status": "done",
-      "commit": "917b196"
+      "commit": "0d30a2b"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: parse_port_with_body - parses `structure S { port x : MechPort { direction = out  param d : Length = 10mm  constraint d > 0mm } }` and asserts: direction from body = Some(PortDirection::Out), members contains 1 Param('d') and 1 Constraint, frame_expr=None.",
+      "description": "Write test: `eval_user_fn_recursive_factorial`. Construct `fn factorial(n: Int) -> Int { if n <= 1 then 1 else n * factorial(n - 1) }`. Body result_expr is Conditional { condition: BinOp(Le, ValueRef('factorial','n'), Literal(Int(1))), then_branch: Literal(Int(1)), else_branch: BinOp(Mul, ValueRef('factorial','n'), UserFunctionCall('factorial', [BinOp(Sub, ValueRef('factorial','n'), Literal(Int(1)))])) }. Call factorial(5), expect Int(120). Tests that recursion works: function re-enters eval with a new scope frame preserving the function registry.",
       "status": "done",
-      "commit": "9d5501d"
+      "commit": "0d30a2b"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement lower_port_body in ts_parser.rs: iterate named children of port_body node. For param_declaration/let_declaration/constraint_declaration -> delegate to existing lower_param/lower_let/lower_constraint and collect into members vec. For port_direction_setting -> extract 'value' field text and map to PortDirection. For port_frame_setting -> lower 'value' field via lower_expr. Integrate into lower_port: when body is present, call lower_port_body to get (members, body_direction, frame_expr). Body direction overrides inline direction. Test parse_port_with_body passes.",
+      "description": "Ensure recursion works. The UserFunctionCall evaluator uses ctx.with_scope(&new_values) which preserves the functions slice and increments depth. The recursive UserFunctionCall in the body re-enters the same code path with new param bindings. If factorial test passes, this is a no-op confirmation. If not, debug scope construction or depth threading.",
       "status": "done",
-      "commit": "9d5501d"
+      "commit": "0d30a2b"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test: parse_port_with_frame - parses `structure S { port x : MechPort { frame = origin } }` and asserts frame_expr is Some with ExprKind::Ident('origin'). Also test with function call: `frame = frame3(origin)` asserts FunctionCall expression.",
+      "description": "Write test: `eval_user_fn_recursion_depth_exceeded`. Construct `fn infinite(x: Int) -> Int { infinite(x) }` — unconditionally recursive. Call infinite(1), assert result is Value::Undef (should not stack-overflow, should hit the 1000-depth limit and return Undef gracefully).",
       "status": "done",
-      "commit": "9d5501d"
+      "commit": "0d30a2b"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Ensure frame expression lowering works in lower_port_body. The port_frame_setting node has a 'value' field containing an expression. Lower it via self.lower_expr(). Store in PortDecl.frame_expr. Test parse_port_with_frame passes.",
+      "description": "Ensure depth limit works. The step-2 implementation checks `ctx.recursion_depth >= MAX_RECURSION_DEPTH` at the top of UserFunctionCall handling and returns Undef. If the test passes, no-op. If it stack-overflows, the depth check is missing or not incrementing — fix accordingly.",
       "status": "done",
-      "commit": "9d5501d"
+      "commit": "0d30a2b"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test: parse_port_direction_override - parses `structure S { port x : in T { direction = out } }` and asserts direction=Some(PortDirection::Out), confirming body direction overrides inline direction.",
+      "description": "Write test: `eval_user_fn_undef_arg_propagation`. Call double(Undef) where double is the fn from step-1. Assert result is Value::Undef. Tests strict Undef propagation: if any argument evaluates to Undef, the function call short-circuits without evaluating the body.",
       "status": "done",
-      "commit": "9d5501d"
+      "commit": "0d30a2b"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Ensure direction override logic is correct in lower_port: body direction takes precedence over inline direction when both are present. The implementation from step-6 should handle this (body_direction.or(inline_direction)). Verify test parse_port_direction_override passes.",
+      "description": "Ensure Undef arg propagation works. Step-2 implementation checks `if evaluated_args.iter().any(|v| v.is_undef()) { return Value::Undef; }` before entering the function body. If test passes, no-op.",
       "status": "done",
-      "commit": "9d5501d"
+      "commit": "0d30a2b"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test in crates/reify-compiler/tests/port_compile_tests.rs: compile_port_creates_value_cells - compiles a structure with a port that has body params: `trait MechPort { param diameter : Length } structure def S { port mount : MechPort { param diameter : Length = 5mm } }`. Asserts: TopologyTemplate.ports has 1 CompiledPort with name='mount', direction=Bidi (default), type_name='MechPort'. Port members list has 1 ValueCellDecl with id.member containing 'mount.diameter'.",
+      "description": "Write test: `eval_user_fn_dimension_args`. Construct `fn area(w: Length, h: Length) -> Area { w * h }` with Scalar-typed params. Call area(80mm, 100mm) with args Scalar{si_value:0.08, dim:LENGTH}, Scalar{si_value:0.1, dim:LENGTH}. Assert result is Scalar{si_value:0.008, dim:AREA}. Tests that dimensional Scalar values flow correctly through function evaluation.",
       "status": "done",
-      "commit": "6dac58d"
+      "commit": "0d30a2b"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Add CompiledPort struct to reify-compiler/src/lib.rs (name: String, direction: PortDirection, type_name: String, members: Vec<ValueCellDecl>, frame_expr: Option<CompiledExpr>). Add ports: Vec<CompiledPort> field to TopologyTemplate (initialize empty in compile_structure). Handle MemberDecl::Port in compile_structure's first pass (register port member names in scope as 'port_name.member_name') and second pass (compile port params/lets as ValueCells with composite ValueCellId entity.port_name.member_name, compile constraints, build CompiledPort). Default direction to Bidi if not specified. Push CompiledPort to ports vec. Update TopologyTemplate construction. Update content_hash computation to include port hashes.",
+      "description": "Dimension handling should work automatically since the function body's BinOp(Mul) is evaluated by the existing eval_mul which combines dimension vectors. If the test passes, no-op. If not, debug the scope binding for Scalar values.",
       "status": "done",
-      "commit": "5bd41b1"
+      "commit": "0d30a2b"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test: compile_port_type_check_known - compiles structure with port referencing a known trait type (defined in same module). No error diagnostics. Also write compile_port_type_check_unknown: port references non-existent trait type -> warning diagnostic about unknown port type.",
+      "description": "Write test: `eval_user_fn_overload_by_arity`. Create two functions: `fn process(x: Real) -> Real { x * 2 }` and `fn process(x: Real, y: Real) -> Real { x + y }`. Call process(3.0) with 1 arg → expect Real(6.0). Call process(3.0, 4.0) with 2 args → expect Real(7.0). Tests that runtime lookup matches by name AND argument count.",
       "status": "done",
-      "commit": "8b17ac6"
+      "commit": "0d30a2b"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "In port compilation within compile_structure, verify port type_name against the trait_registry HashMap. If type_name not found in trait_registry, emit a warning diagnostic (not error, since trait may be in another module not yet resolved). Test compile_port_type_check_known and compile_port_type_check_unknown pass.",
+      "description": "Implement arity-based overload resolution. In the UserFunctionCall handler, when looking up by name, filter candidates by `fn.params.len() == args.len()`. If exactly one matches, use it. If zero or multiple match, return Undef. Update the lookup from simple name match to name+arity match.",
       "status": "done",
-      "commit": "3c47a8f"
+      "commit": "0d30a2b"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test: compile_port_member_access - compiles structure with a port and a let binding that references port.member via dot notation: `structure S { port mount : MechPort { param diameter : Length = 5mm }  let d = mount.diameter }`. Asserts the let 'd' compiles without error and its expression is a ValueRef to the correct composite ValueCellId.",
+      "description": "Write E2E integration test in new file crates/reify-eval/tests/fn_eval.rs. Parse and compile source text: `fn double(x: Real) -> Real { x + x }\\nstructure S { let v = double(3) }`. Use reify_syntax::parse() and reify_compiler::compile(). Create Engine with mock constraint checker, call engine.eval(&module). Assert the value for ValueCellId('S','v') == Real(6.0). This validates the complete pipeline from source text through compilation to evaluation, including the engine threading functions to eval_expr.",
       "status": "done",
-      "commit": "6304835"
+      "commit": "5650ad2"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Update MemberAccess case in compile_expr_guarded (currently emits error at line 772-781). When object is Ident(name): check if 'name' is a known port name (add port_names: HashSet<String> to CompilationScope, populated during port registration). If so, construct composite key 'name.member' and resolve via scope.resolve(). Return ValueRef with the composite ValueCellId. If name is not a port, fall through to existing error diagnostic. Test compile_port_member_access passes.",
-      "status": "done",
-      "commit": "b161530"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write test: compile_multiple_ports - compiles structure with two ports `port mount : MechPort { param d : Length = 5mm }  port shaft : RotaryPort { param rpm : Length = 100mm }`. Asserts TopologyTemplate.ports has 2 CompiledPorts with distinct names. Port members have unique ValueCellIds (S.mount.d vs S.shaft.rpm).",
-      "status": "done",
-      "commit": "e6492d3"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Verify multiple ports compile correctly. Fix any issues with duplicate name registration, port_names tracking, or ValueCellId conflicts. Test compile_multiple_ports passes.",
-      "status": "done",
-      "commit": "e6492d3"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write test: compile_port_direction_preserved - compiles structure with `port x : in MechPort { param d : Length = 5mm }`. Asserts CompiledPort.direction == PortDirection::In. Also test out and bidi directions are preserved through compilation.",
-      "status": "done",
-      "commit": "ec24ba4"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Ensure port direction from PortDecl is correctly propagated to CompiledPort. Default to Bidi when direction is None. Test compile_port_direction_preserved passes.",
-      "status": "done",
-      "commit": "ec24ba4"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing test in crates/reify-compiler/tests/port_compile_tests.rs: compile_port_content_hash_includes_identity — compiles two structures that are identical except for a port rename (port 'a' vs port 'b', same type, direction, members). Asserts that their TopologyTemplate.content_hash values are different. Also write compile_port_content_hash_includes_direction: two structures identical except port direction (in vs out) -> different content_hash. Also write compile_port_content_hash_includes_type_name: two structures with different port type_name (MechPort vs RotaryPort) -> different content_hash. These tests verify that port identity fields (name, direction, type_name) contribute to the template content hash for correct Adapton-style incremental invalidation.",
-      "status": "done",
-      "commit": "29f6b31"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Fix the port_hashes iterator in compile_structure's content_hash computation (lines 1754-1762 of lib.rs). Extend the flat_map closure to chain port identity hashes before the member/constraint hashes: (1) ContentHash::of_str(&p.name) for the port name, (2) ContentHash::of(&[p.direction as u8]) for direction, (3) ContentHash::of_str(&p.type_name) for the type name. This ensures renaming a port, flipping its direction, or changing its trait type invalidates the template hash. All three content_hash_includes tests pass.",
-      "status": "done",
-      "commit": "b764d12"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write failing test: compile_port_content_hash_includes_frame_expr — compiles two structures identical except one port has `frame = origin` and the other has `frame = offset` (or one has frame_expr and the other doesn't). Asserts their TopologyTemplate.content_hash values are different. This verifies that frame_expr contributes to the content hash, preventing the incremental evaluator from serving stale geometry when a port's frame expression changes.",
-      "status": "done",
-      "commit": "35fec31"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Further extend the port_hashes iterator to also chain the frame_expr content hash: `.chain(p.frame_expr.iter().map(|e| e.content_hash))` (or `.chain(std::iter::once(p.frame_expr.as_ref().map(|e| e.content_hash).unwrap_or(ContentHash(0))))`). This ensures frame expression changes invalidate the template hash. Test compile_port_content_hash_includes_frame_expr passes, along with all previous tests.",
-      "status": "done",
-      "commit": "706a494"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Write failing test: compile_duplicate_port_name_error — compiles a structure with two ports sharing the same name: `structure def S { port mount : MechPort { param d : Length = 5mm }  port mount : RotaryPort { param r : Length = 3mm } }`. Asserts: (1) at least one error diagnostic is emitted with a message containing 'duplicate port name' (or similar), (2) the TopologyTemplate.ports vec contains only 1 CompiledPort entry (the first one), not 2. This prevents scope corruption and undefined behavior in downstream consumers (solvers, exporters, LSP).",
-      "status": "done",
-      "commit": "4c533c8"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "Add duplicate port name detection in compile_structure. In the first pass (port registration, around lines 1349-1373), change port_names from a HashSet to a HashMap<String, SourceSpan> (or check the bool returned by HashSet::insert and use a separate HashMap for spans). When a port name is already present: (1) emit Diagnostic::error(format!(\"duplicate port name '{}'\", port_decl.name)).with_label(DiagnosticLabel::new(port_decl.span, \"duplicate defined here\")) — optionally also label the first occurrence's span if tracked, (2) do NOT register the duplicate port's members in scope (skip the inner for loop). In the second pass (port compilation, around line 1686), check if the port name was a duplicate (e.g., via a seen_port_names HashSet populated during first pass, or a duplicates HashSet), and `continue` to skip compiling the duplicate port, preventing a duplicate CompiledPort entry. Test compile_duplicate_port_name_error passes, along with all previous tests.",
-      "status": "done",
-      "commit": "3974e23"
+      "description": "Wire functions through Engine evaluation. Update reify-eval/src/lib.rs:\n1. In Engine::eval(), change all eval_expr calls from EvalContext::simple(&values) to EvalContext::new(&values, &module.functions).\n2. In Engine::eval_cached(), same change — module is available as parameter.\n3. In evaluate_let_bindings(), add a `functions: &[CompiledFunction]` parameter, pass to EvalContext::new.\n4. In Engine::check() and Engine::build(), pass module.functions to constraint input and eval contexts.\n5. In the concurrent eval path (reify-runtime/src/concurrent_eval.rs), add a functions field to ConcurrentEvalAdapter (populated from the module). Use it when constructing EvalContext.\n6. In reify-constraints callers, use input.functions from ConstraintInput.\n7. Run full test suite to verify everything works end-to-end.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use 'in', 'out', 'bidi' as keywords in the grammar via port_direction_keyword rule",
-      "rationale": "These become reserved words (can't be used as variable/type names). This is acceptable for a CAD language. The 'in' keyword doesn't conflict with inch unit suffix (80in) because unit suffixes use token.immediate() which is a separate token type. Tree-sitter's context-aware lexer correctly handles keywords vs identifiers based on parser state. Existing keywords like 'param', 'let', 'constraint' already work this way."
+      "decision": "Move CompiledFunction and CompiledFnBody from reify-compiler to reify-types",
+      "rationale": "These are pure data types composed entirely of reify-types primitives (String, bool, Type, CompiledExpr, ContentHash). Moving them follows the existing pattern where CompiledExpr, CompiledExprKind, CompiledMatchArm already live in reify-types. This avoids adding reify-compiler as a dependency of reify-expr, which would be architecturally backwards. Re-exporting from reify-compiler maintains backward compatibility."
     },
     {
-      "decision": "Port members use composite ValueCellIds with dotted member names (entity.port_name.member_name)",
-      "rationale": "Reuses the existing ValueCellId structure (entity + member fields) without requiring structural changes. The member field contains 'port_name.member_name' as a single string, e.g., ValueCellId { entity: 'Motor', member: 'shaft.diameter' }. This enables scope lookup via 'port_name.member_name' keys and preserves the existing scope resolution machinery."
+      "decision": "Change eval_expr signature to take &EvalContext (breaking change), update all callers",
+      "rationale": "The task explicitly requires this approach (Option 2). While a backward-compatible wrapper would minimize churn, the breaking change ensures all evaluation paths can support user functions uniformly. The migration is mechanical: most callers change `reify_expr::eval_expr(expr, &values)` to `reify_expr::eval_expr(expr, &EvalContext::simple(&values))`. This is a one-time cost that results in a cleaner API."
     },
     {
-      "decision": "Create named grammar rules for port_direction_keyword, port_direction_setting, port_frame_setting",
-      "rationale": "Named rules produce named CST nodes that are easy to identify during lowering. Anonymous sequences would require fragile positional child matching. Named rules follow the project's existing pattern (e.g., where_clause, named_argument)."
+      "decision": "EvalContext recursion_depth field is private with no public setter",
+      "rationale": "Callers should never set recursion depth — it's internal bookkeeping for preventing stack overflow. Only the UserFunctionCall evaluator increments it via the private with_scope() helper. This prevents misuse while keeping the public API clean."
     },
     {
-      "decision": "Port type checking emits warning, not error, for unknown type_name",
-      "rationale": "The port's type_name references a trait that may be defined in another module. Since cross-module resolution isn't implemented yet, we can't definitively say a type is missing. A warning alerts developers while not blocking compilation."
+      "decision": "Function scope is fully isolated (fresh ValueMap, no access to caller's values)",
+      "rationale": "User-defined functions in Reify are pure. The compiler's CompilationScope creates ValueCellId(fn_name, param_name) for parameters, meaning function body expressions only reference these IDs. A fresh ValueMap with only param and let-binding entries naturally enforces this isolation. The function registry (ctx.functions) is carried through for nested calls."
     },
     {
-      "decision": "Body direction overrides inline direction when both specified",
-      "rationale": "If both `port x : in T { direction = out }` are specified, the body direction takes precedence. The body's explicit setting is more intentional and specific."
+      "decision": "Runtime overload resolution by name + argument count",
+      "rationale": "The compiler already performs full type-based overload resolution at compile time. At runtime, name + arity is sufficient to distinguish overloads. This avoids threading type information through the evaluator and keeps the lookup simple."
     },
     {
-      "decision": "Port member access limited to same-structure ports (not cross-structure)",
-      "rationale": "Cross-structure port access (e.g., sub.port.member) requires sub-component type resolution which isn't implemented. This task only enables port member access within the declaring structure via scope-registered dotted names. Cross-structure access is deferred to a future task."
+      "decision": "Recursion depth limit of 1000 returning Value::Undef",
+      "rationale": "1000 allows deep legitimate recursion while preventing stack overflow. Returning Undef follows Reify's philosophy where failed/impossible computations produce Undef, which propagates upward cleanly. A diagnostic message would be ideal but Undef is sufficient for v0.1."
     },
     {
-      "decision": "Default direction is Bidi when not specified",
-      "rationale": "When no direction is given (inline or in body), the port defaults to bidirectional. This is the most permissive default and matches the PortDirection enum semantics from reify-types."
-    },
-    {
-      "decision": "Add port_names HashSet to CompilationScope for member access disambiguation",
-      "rationale": "The compiler needs to know which identifiers refer to ports (vs regular variables) when compiling MemberAccess expressions. A simple HashSet<String> of port names allows O(1) lookup. When the expression compiler sees `mount.diameter`, it checks if 'mount' is in port_names, and if so, resolves 'mount.diameter' as a composite scope key."
-    },
-    {
-      "decision": "Port identity fields (name, direction, type_name) and frame_expr must all contribute to TopologyTemplate.content_hash",
-      "rationale": "The project uses content hashes for Adapton-style incremental invalidation. If any semantically meaningful port field is omitted from the hash, changes to that field won't invalidate the cached result, causing the incremental evaluator to serve stale results. All other expression-bearing sub-structures (guard groups, value cells, constraints) contribute their hashes; ports must do the same for all identity fields and expressions. Using ContentHash::of(&[p.direction as u8]) gives a stable byte representation per direction variant."
-    },
-    {
-      "decision": "Duplicate port names emit an error diagnostic and skip the duplicate",
-      "rationale": "Silently accepting duplicate port names causes scope corruption (second port's members overwrite first's in the names HashMap) and produces a ports vec with two entries sharing the same name, which downstream consumers (solvers, exporters, LSP) don't handle. Emitting an error and skipping the duplicate is consistent with how other compilers handle redefinition errors. The first occurrence wins; the duplicate is skipped in both registration and compilation passes."
+      "decision": "Add functions field to ConstraintInput struct",
+      "rationale": "Constraint expressions can contain UserFunctionCall nodes. The solver evaluates these expressions repeatedly during optimization. Adding functions to ConstraintInput is the least-invasive way to provide the function registry to the constraint subsystem. Defaults to &[] for backward compatibility."
     }
   ],
   "reuse": [
     {
-      "what": "PortDirection enum",
-      "where": "crates/reify-types/src/traits.rs (already defined with In/Out/Bidi variants, re-exported from lib.rs)",
-      "how": "Import via reify_types::PortDirection in both parser (for PortDecl.direction) and compiler (for CompiledPort.direction). No changes needed to the enum."
+      "what": "Existing eval infrastructure (eval_binop, eval_unop, eval_add, eval_mul, Undef propagation, dimensional arithmetic)",
+      "where": "crates/reify-expr/src/lib.rs",
+      "how": "Function body expressions are standard CompiledExpr trees. Once the scope ValueMap is set up with param bindings, the entire evaluation infrastructure handles body evaluation without modification. Only the top-level threading changes from ValueMap to EvalContext."
     },
     {
-      "what": "lower_param, lower_let, lower_constraint methods in Lowering impl",
-      "where": "crates/reify-syntax/src/ts_parser.rs",
-      "how": "Port body members (param_declaration, let_declaration, constraint_declaration) reuse the exact same lowering methods as structure members. Called from lower_port_body."
+      "what": "CompilationScope ValueCellId convention: ValueCellId(entity_name, member_name)",
+      "where": "crates/reify-compiler/src/lib.rs CompilationScope::register()",
+      "how": "The compiler creates ValueCellId(fn_name, param_name) for function parameters. The evaluator mirrors this convention when binding arguments: ValueCellId('double', 'x') → arg_value. This ensures ValueRef nodes in the compiled body resolve correctly."
     },
     {
-      "what": "compile_expr, compile_expr_guarded functions",
-      "where": "crates/reify-compiler/src/lib.rs (lines 531-945)",
-      "how": "Port body expressions (param defaults, frame expression, constraint expressions) use the same expression compiler as structure members."
+      "what": "ValueMap with PersistentMap (im::HashMap) for O(1) structural-sharing clones",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "Each function call creates a new fresh ValueMap for its scope. The pattern of creating isolated child ValueMaps already exists in the engine's sub-component evaluation (child_values). PersistentMap makes this cheap."
     },
     {
-      "what": "CompilationScope register/resolve pattern",
-      "where": "crates/reify-compiler/src/lib.rs (lines 499-526)",
-      "how": "Port members registered in scope with dotted names (port_name.member_name) using the existing register() method with composite string keys. Port member access resolved via the existing scope.resolve() method."
+      "what": "Test expression builders (literal, value_ref_typed, binop, etc.)",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Use these to construct function body expressions and call argument expressions in unit tests, avoiding manual CompiledExpr construction."
     },
     {
-      "what": "ValueCellDecl, ValueCellKind, CompiledConstraint structs",
-      "where": "crates/reify-compiler/src/lib.rs (lines 155-190)",
-      "how": "Port members produce standard ValueCellDecl entries with composite ValueCellIds. Port constraints produce standard CompiledConstraint entries. No new types needed for the members themselves."
+      "what": "E2E test pattern: parse → compile → Engine.eval() → assert values",
+      "where": "crates/reify-eval/tests/e2e_bracket.rs, boundary2_consumer.rs",
+      "how": "Follow the established E2E testing pattern for the integration test. Use reify_syntax::parse(), reify_compiler::compile(), Engine::new(), engine.eval(&module), then check result values."
     },
     {
-      "what": "parse_decls / compile_module / compile_first_template helper patterns",
-      "where": "crates/reify-syntax/tests/trait_tests.rs and crates/reify-compiler/tests/trait_conformance_tests.rs",
-      "how": "Same helper function pattern for parsing and compiling test sources. Copy pattern into port_tests.rs and port_compile_tests.rs."
-    },
-    {
-      "what": "ContentHash, SourceSpan, node_text, span, content_hash utilities in Lowering",
-      "where": "crates/reify-syntax/src/ts_parser.rs (lines 53-65)",
-      "how": "Standard CST-to-AST lowering utilities reused for port declaration and body lowering."
-    },
-    {
-      "what": "Trait registry (HashMap<String, &CompiledTrait>)",
-      "where": "crates/reify-compiler/src/lib.rs (lines 1131-1134, built in compile())",
-      "how": "Reuse the trait registry already built in the compile() function for port type verification. Pass trait_registry to compile_structure (already passed) and use it to check port type_name."
-    },
-    {
-      "what": "Diagnostic construction patterns",
-      "where": "crates/reify-compiler/src/lib.rs throughout",
-      "how": "Follow existing patterns: Diagnostic::error(msg).with_label(DiagnosticLabel::new(span, hint)) or Diagnostic::warning(...). Push to diagnostics vec."
-    },
-    {
-      "what": "ContentHash::of, ContentHash::of_str, ContentHash::combine for identity hashing",
-      "where": "crates/reify-types/src/hash.rs (lines 9-35)",
-      "how": "Used to hash port identity fields into the content_hash computation. ContentHash::of(&[p.direction as u8]) hashes the direction discriminant byte; ContentHash::of_str(&p.name) and ContentHash::of_str(&p.type_name) hash string identity fields. Same pattern used throughout compile_structure for name_hash and in compile_function for parameter hashing."
+      "what": "CompiledModuleBuilder for constructing test modules",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "After adding .function() support, use the builder to construct modules with both functions and structures for programmatic E2E tests."
     }
-  ],
-  "_schema_version": 1
+  ]
 }
