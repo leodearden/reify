@@ -1019,6 +1019,7 @@ impl<'a> Lowering<'a> {
             structure_name,
             type_args,
             args,
+            is_collection: false,
             where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),

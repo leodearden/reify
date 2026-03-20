@@ -129,6 +129,7 @@ pub struct SubDecl {
     pub structure_name: String,
     pub type_args: Vec<TypeExpr>,
     pub args: Vec<(String, Expr)>,
+    pub is_collection: bool,
     pub where_clause: Option<WhereClause>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
