@@ -18,7 +18,7 @@
     "crates/reify-compiler",
     "crates/reify-eval"
   ],
-  "analysis": "This task adds 7 new GeometryOp variants (LinearPattern, CircularPattern, Mirror, Loft, Draft, Thicken, Shell) and 2 new GeometryQuery variants (Distance, MomentOfInertia) with full OCCT kernel implementations and compiler integration.\n\n## Architecture overview\n\nThe geometry pipeline flows: Compiler (CompiledGeometryOp) -> Eval (GeometryOp) -> Kernel (OCCT FFI) -> C++ (OCCT API).\n\n**Existing patterns:**\n- `GeometryOp` variants use `GeometryHandleId` for references and `Value` for user-visible parameters (like Fillet.radius) or `f64` for pre-evaluated params (like Translate.dx, Rotate.axis).\n- `GeometryQuery` variants take `GeometryHandleId` and return `Value`.\n- C++ functions in occt_wrapper.cpp follow try/catch(Standard_Failure/std::exception/...) pattern with OcctShape unique_ptr returns.\n- CXX bridge in ffi.rs declares C++ functions.\n- OcctKernel::execute() matches on GeometryOp variants, calls FFI, stores result via self.store().\n- OcctKernel::query() matches on GeometryQuery variants, calls FFI, wraps in Value.\n- Compiler has CompiledGeometryOp with categories: Primitive, Boolean, Modify, Transform.\n- Eval's compile_geometry_op() maps CompiledGeometryOp -> GeometryOp.\n- deps.rs extract_realization_dependencies() walks CompiledGeometryOp args for value refs.\n\n## Type design decisions\n\nFollowing existing conventions:\n- Pattern ops use `GeometryHandleId` for target, `[f64; 3]` for direction/axis vectors (like Rotate), `usize` for count, `Value` for spacing/angle (like Fillet.radius).\n- Mirror uses `[f64; 3]` for plane_origin and plane_normal.\n- Loft uses `Vec<GeometryHandleId>` for profiles.\n- Shell/Thicken/Draft use `Value` for thickness/offset/angle params.\n- Distance query takes two `GeometryHandleId`s.\n- MomentOfInertia takes `GeometryHandleId` + `[f64; 3]` axis.\n\n## OCCT libraries needed\n- TKOffset: for BRepOffsetAPI_ThruSections (Loft), BRepOffsetAPI_DraftAngle (Draft), BRepOffsetAPI_MakeThickSolid (Shell/Thicken)\n- Existing libs already cover: BRepBuilderAPI_Transform (patterns/mirror), BRepAlgoAPI_Fuse (pattern fusion), GProp_GProps (MomentOfInertia), BRepExtrema is in TKTopAlgo or may need its own link\n\n## Compiler additions\n- New `PatternKind` enum (Linear, Circular, Mirror) with `CompiledGeometryOp::Pattern` variant\n- New `SweepKind` enum (Loft) with `CompiledGeometryOp::Sweep` variant  \n- Extended `ModifyKind` with Shell, Draft, Thicken\n- New geometry function names in is_geometry_function() and compile_geometry_call()",
+  "analysis": "This task adds 7 new GeometryOp variants (LinearPattern, CircularPattern, Mirror, Loft, Draft, Thicken, Shell) and 2 new GeometryQuery variants (Distance, MomentOfInertia) with full OCCT kernel implementations and compiler integration.\n\n## Architecture overview\n\nThe geometry pipeline flows: Compiler (CompiledGeometryOp) -> Eval (GeometryOp) -> Kernel (OCCT FFI) -> C++ (OCCT API).\n\n**Existing patterns:**\n- `GeometryOp` variants use `GeometryHandleId` for references and `Value` for user-visible parameters (like Fillet.radius) or `f64` for pre-evaluated params (like Translate.dx, Rotate.axis).\n- `GeometryQuery` variants take `GeometryHandleId` and return `Value`.\n- C++ functions in occt_wrapper.cpp follow try/catch(Standard_Failure/std::exception/...) pattern with OcctShape unique_ptr returns.\n- CXX bridge in ffi.rs declares C++ functions.\n- OcctKernel::execute() matches on GeometryOp variants, calls FFI, stores result via self.store().\n- OcctKernel::query() matches on GeometryQuery variants, calls FFI, wraps in Value.\n- Compiler has CompiledGeometryOp with categories: Primitive, Boolean, Modify, Transform.\n- Eval's compile_geometry_op() maps CompiledGeometryOp -> GeometryOp.\n- deps.rs extract_realization_dependencies() walks CompiledGeometryOp args for value refs.\n\n## Review-identified blocking issues (addressed in steps 23-30)\n\n1. **Eval Sweep/Loft profile resolution broken**: compile_geometry_op only receives `last_handle: &Option<GeometryHandleId>`. The Sweep arm duplicates this for all profiles instead of resolving GeomRef::Step(i) to the handle produced at step i. Fix: introduce step_handles registry.\n\n2. **No eval-layer Loft test**: Kernel-level loft tests bypass compile_geometry_op entirely. Need an eval-layer test that exercises the full compile -> eval path for Loft.\n\n3. **draft_shape ignores plane_shape**: C++ function declares plane_shape but uses hardcoded Z-up neutral plane. Fix: extract plane from plane_shape or error explicitly.\n\n4. **make_circle_wire missing IsDone checks**: MakeEdge/MakeWire builders can fail silently. Fix: add IsDone() guards matching all other builders.\n\n## Type design decisions\n\nFollowing existing conventions:\n- Pattern ops use `GeometryHandleId` for target, `[f64; 3]` for direction/axis vectors (like Rotate), `usize` for count, `Value` for spacing/angle (like Fillet.radius).\n- Mirror uses `[f64; 3]` for plane_origin and plane_normal.\n- Loft uses `Vec<GeometryHandleId>` for profiles.\n- Shell/Thicken/Draft use `Value` for thickness/offset/angle params.\n- Distance query takes two `GeometryHandleId`s.\n- MomentOfInertia takes `GeometryHandleId` + `[f64; 3]` axis.\n\n## OCCT libraries needed\n- TKOffset: for BRepOffsetAPI_ThruSections (Loft), BRepOffsetAPI_DraftAngle (Draft), BRepOffsetAPI_MakeThickSolid (Shell/Thicken)\n- Existing libs already cover: BRepBuilderAPI_Transform (patterns/mirror), BRepAlgoAPI_Fuse (pattern fusion), GProp_GProps (MomentOfInertia), BRepExtrema is in TKTopAlgo or may need its own link\n\n## Compiler additions\n- New `PatternKind` enum (Linear, Circular, Mirror) with `CompiledGeometryOp::Pattern` variant\n- New `SweepKind` enum (Loft) with `CompiledGeometryOp::Sweep` variant  \n- Extended `ModifyKind` with Shell, Draft, Thicken\n- New geometry function names in is_geometry_function() and compile_geometry_call()",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -196,6 +196,62 @@
       "description": "Update crates/reify-compiler/src/lib.rs: (a) Extend is_geometry_function() to also match 'linear_pattern' | 'circular_pattern' | 'mirror' | 'loft' | 'shell' | 'thicken' | 'draft'. (b) Extend compile_geometry_call() to handle each new function name, mapping arguments to the appropriate CompiledGeometryOp variant (Pattern, Sweep, or extended Modify). For example, linear_pattern(target_ref, dx, dy, dz, count, spacing) maps to CompiledGeometryOp::Pattern { kind: PatternKind::Linear, ... }. (c) Update the eval compile_geometry_op() function in crates/reify-eval/src/lib.rs to map the new CompiledGeometryOp variants to the corresponding GeometryOp variants. Step-21 tests pass.",
       "status": "done",
       "commit": "7b3420a"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write a failing unit test `compile_geometry_op_sweep_resolves_distinct_profiles` in crates/reify-eval/src/lib.rs (add #[cfg(test)] mod tests block). This test exercises the Sweep/Loft profile resolution through compile_geometry_op. Steps: (1) Change compile_geometry_op signature from `last_handle: &Option<GeometryHandleId>` to `step_handles: &[GeometryHandleId]`. (2) Update all call sites in both execution loops (Engine::evaluate_realization ~line 1854 and Engine::build ~line 1928) to pass `&step_handles` — but keep `step_handles` as a single-element vec updated to last handle only (preserves old buggy behavior for now). (3) Inside compile_geometry_op, replace all `*last_handle` with `step_handles.last().copied()` so existing behavior is preserved. (4) Write the test: create step_handles = vec![GeometryHandleId(100), GeometryHandleId(200)], create a CompiledGeometryOp::Sweep { kind: SweepKind::Loft, profiles: vec![GeomRef::Step(0), GeomRef::Step(1)], args: vec![] }, call compile_geometry_op with step_handles, assert the returned GeometryOp::Loft has profiles == vec![GeometryHandleId(100), GeometryHandleId(200)]. This test FAILS because the Sweep arm still uses step_handles.last() for all profiles, producing vec![GeometryHandleId(200), GeometryHandleId(200)].",
+      "status": "done",
+      "commit": "fff2c99"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Fix compile_geometry_op GeomRef::Step resolution and update execution loops to maintain a step-indexed handle registry. (a) In the Sweep arm: iterate the `profiles` Vec<GeomRef>, resolve each GeomRef::Step(idx) via step_handles.get(idx).copied(), collect into Vec<GeometryHandleId>. Return None if any profile can't be resolved. (b) Fix Boolean arm's resolve_ref closure: GeomRef::Step(idx) -> step_handles.get(idx).copied(). (c) Fix Modify, Transform, and Pattern target resolution similarly: GeomRef::Step(idx) -> step_handles.get(idx).copied(), GeomRef::Sub(_) -> step_handles.last().copied(). (d) Update both execution loops (Engine::evaluate_realization and Engine::build) to maintain `let mut step_handles: Vec<GeometryHandleId> = Vec::new()` and push each successful handle.id to it (instead of overwriting last_handle). Derive last_handle from step_handles.last() where needed for export. Step-23 test passes.",
+      "status": "done",
+      "commit": "7c032e4"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Write failing test `make_circle_wire_rejects_degenerate_radius` in crates/reify-kernel-occt/src/lib.rs. Call ffi::ffi::make_circle_wire(0.0, 0.0) and assert it returns an Err (not a silently invalid shape). Also add `make_circle_wire_valid_produces_wire` test that creates a wire with radius=10.0, stores it, and verifies the kernel can query it without error (positive test to confirm IsDone checks don't break valid usage). The degenerate test should pass (Standard_ConstructionError is caught), but this establishes coverage for the error path. The key behavioral change tested is that the error message is clear and no null/invalid shape propagates.",
+      "status": "done",
+      "commit": "57ac0f8"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Add IsDone() checks to make_circle_wire() in crates/reify-kernel-occt/cpp/occt_wrapper.cpp. After BRepBuilderAPI_MakeEdge construction, add: `BRepBuilderAPI_MakeEdge edgeBuilder(circle); if (!edgeBuilder.IsDone()) throw std::runtime_error(\"make_circle_wire: MakeEdge failed\");`. After BRepBuilderAPI_MakeWire construction, add: `BRepBuilderAPI_MakeWire wireBuilder(edge); if (!wireBuilder.IsDone()) throw std::runtime_error(\"make_circle_wire: MakeWire failed\");`. Use the explicit builder variables rather than implicit conversion to get access to IsDone(). This matches the IsDone() guard pattern used on every other builder in occt_wrapper.cpp. Step-25 tests pass.",
+      "status": "done",
+      "commit": "4fef300"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Write failing test `draft_uses_plane_shape_not_hardcoded_z` in crates/reify-kernel-occt/src/lib.rs. Create a 20x20x20 box. (a) Create plane_z: a flat box (100x100x0.1) at z=0 — its top face normal is Z-up. Apply Draft with angle=0.1, get volume_z. (b) Create plane_x: a flat box (0.1x100x100) centered at x=0 — its face normal points in X direction. Apply Draft with angle=0.1, get volume_x. (c) Assert volume_z != volume_x (within reasonable tolerance). Currently FAILS because draft_shape ignores plane_shape entirely and uses hardcoded Z-up for both, producing identical volumes.",
+      "status": "done",
+      "commit": "6e4c75f"
+    },
+    {
+      "id": "step-28",
+      "type": "impl",
+      "description": "Fix draft_shape() in crates/reify-kernel-occt/cpp/occt_wrapper.cpp to extract the neutral plane from the plane_shape parameter. Implementation: (a) Use TopExp_Explorer to get the first face of plane_shape. (b) Use BRep_Tool::Surface(face) to get the surface. (c) Attempt Handle(Geom_Plane)::DownCast on the surface. If successful, extract the gp_Pln from it (plane.Pln()) and use its axis direction as pull_dir and the plane itself as neutral_plane. (d) If the downcast fails (surface is not planar), throw std::runtime_error(\"draft_shape: plane_shape does not contain a planar face\") — an explicit error is better than silent wrong geometry. (e) Include <BRep_Tool.hxx>, <Geom_Plane.hxx> headers. Step-27 test passes.",
+      "status": "done",
+      "commit": "8d9968f"
+    },
+    {
+      "id": "step-29",
+      "type": "test",
+      "description": "Write an end-to-end integration test `loft_through_full_eval_pipeline` in crates/reify-eval/src/lib.rs tests module. This test constructs a CompiledModule with a realization containing 3 ops: (op 0) Primitive::Sphere with small radius to act as a wire stand-in or use MakeCircleWire if available as a Primitive, (op 1) another Primitive, (op 2) Sweep { Loft, profiles: [Step(0), Step(1)] }. Run through Engine::build with the OcctKernel (if available in test cfg) or a mock kernel that records the GeometryOp calls and verifies the Loft op receives distinct handle IDs for profiles[0] and profiles[1]. This confirms the step_handles fix works end-to-end through the execution loop, not just at the compile_geometry_op function level.",
+      "status": "done",
+      "commit": "70dd0e0"
+    },
+    {
+      "id": "step-30",
+      "type": "impl",
+      "description": "Verify step-29 end-to-end test passes with the step_handles registry from step-24. If the test uses a mock kernel, ensure the mock properly records GeometryOp arguments. If using the real OcctKernel, ensure the test creates valid wire profiles that can be lofted. Fix any integration issues discovered — e.g., if the execution loop's step_handles accumulation doesn't work correctly when ops span multiple templates/realizations (each realization should have its own step_handles scope). Confirm all prior tests still pass.",
+      "status": "done",
+      "commit": "70dd0e0"
     }
   ],
   "design_decisions": [
@@ -230,6 +286,18 @@
     {
       "decision": "Loft may require a new MakeCircleWire primitive or profile extraction helper",
       "rationale": "BRepOffsetAPI_ThruSections requires wire profiles (TopoDS_Wire), but existing primitives produce solids. Options: (a) add a MakeCircleWire GeometryOp for creating wire profiles, (b) extract outer wire from face of existing solid in C++. Option (b) is preferred as it keeps the GeometryOp enum smaller and makes Loft work with any existing shape's face."
+    },
+    {
+      "decision": "Replace last_handle with step-indexed handle registry (step_handles: Vec<GeometryHandleId>) in compile_geometry_op and execution loops",
+      "rationale": "The original last_handle approach made ALL GeomRef::Step(idx) resolve to the same (most recent) handle, regardless of idx. This fundamentally breaks Loft (which needs distinct profiles from different steps) and silently produces wrong results for Booleans that reference non-adjacent steps. The step_handles vec accumulates every operation's output handle so GeomRef::Step(idx) resolves correctly to step_handles[idx]. This is a systemic fix that affects Sweep, Boolean, Modify, Transform, and Pattern arms."
+    },
+    {
+      "decision": "Extract neutral plane from plane_shape in draft_shape() rather than returning an error for all calls",
+      "rationale": "Returning OperationFailed('plane not supported') would break the existing passing draft test. Extracting the plane from the shape's first face via Geom_Plane downcast is the correct implementation of the API contract. If the shape doesn't have a planar face, an explicit error is thrown rather than silently substituting Z-up."
+    },
+    {
+      "decision": "Add IsDone() checks to make_circle_wire using explicit builder variables instead of implicit conversion",
+      "rationale": "The existing code uses implicit conversion (BRepBuilderAPI_MakeEdge(circle) -> TopoDS_Edge) which skips the IsDone check. Switching to explicit BRepBuilderAPI_MakeEdge edgeBuilder(circle); if (!edgeBuilder.IsDone()) throw ...; TopoDS_Edge edge = edgeBuilder.Edge(); matches the pattern used by every other builder in occt_wrapper.cpp and prevents silent propagation of null/invalid shapes."
     }
   ],
   "reuse": [
@@ -244,7 +312,7 @@
       "how": "MomentOfInertia uses the same GProp_GProps from BRepGProp::VolumeProperties, then calls props.MomentOfInertia(axis) instead of props.Mass()."
     },
     {
-      "what": "extract_f64 helper for Value \u2192 f64 conversion",
+      "what": "extract_f64 helper for Value -> f64 conversion",
       "where": "crates/reify-kernel-occt/src/lib.rs",
       "how": "Reused for extracting spacing, angle, thickness, offset from Value parameters in new GeometryOp implementations."
     },
@@ -277,6 +345,16 @@
       "what": "compile_geometry_op eval_arg/eval_arg_f64 closures",
       "where": "crates/reify-eval/src/lib.rs",
       "how": "New eval dispatch arms for Pattern/Sweep/extended Modify use the same closure pattern to evaluate expression arguments from the CompiledGeometryOp."
+    },
+    {
+      "what": "IsDone() guard pattern from other builders",
+      "where": "crates/reify-kernel-occt/cpp/occt_wrapper.cpp (fillet_shape, chamfer_shape, etc.)",
+      "how": "make_circle_wire IsDone checks follow the same pattern: construct builder, check IsDone(), throw on failure, extract result."
+    },
+    {
+      "what": "BRep_Tool::Surface + Geom_Plane::DownCast pattern",
+      "where": "OCCT standard practice for plane extraction from faces",
+      "how": "draft_shape extracts the neutral plane from plane_shape by getting the first face via TopExp_Explorer, getting its surface via BRep_Tool::Surface, and downcasting to Geom_Plane to extract the gp_Pln."
     }
   ]
 }
