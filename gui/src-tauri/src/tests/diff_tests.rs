@@ -59,3 +59,26 @@ fn diff_identical_states_returns_empty_delta() {
     assert!(delta.removed_value_ids.is_empty(), "no values removed");
     assert!(delta.removed_constraint_ids.is_empty(), "no constraints removed");
 }
+
+#[test]
+fn diff_detects_changed_value() {
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![sample_value("Bracket.width", "80")],
+        constraints: vec![],
+        files: vec![],
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![sample_value("Bracket.width", "120")],
+        constraints: vec![],
+        files: vec![],
+    };
+
+    let delta = diff_gui_state(&old, &new);
+
+    assert_eq!(delta.changed_values.len(), 1, "one value changed");
+    assert_eq!(delta.changed_values[0].cell_id, "Bracket.width");
+    assert_eq!(delta.changed_values[0].value, "120");
+    assert!(delta.removed_value_ids.is_empty());
+}
