@@ -2,20 +2,53 @@
 //
 // Wires the EngineSession with SimpleConstraintChecker + DispatchPlanner + OcctKernelHandle,
 // wraps it in AppState, and starts the Tauri application with all command handlers.
+// After state-mutating commands, diffs old vs new state and emits targeted events.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::{Arc, Mutex};
 
+use tauri::Emitter;
+
 use reify_constraints::SimpleConstraintChecker;
 use reify_geometry::DispatchPlanner;
 use reify_gui::commands::AppState;
+use reify_gui::diff::{compute_delta, StateDelta};
 use reify_gui::engine::EngineSession;
+use reify_gui::types::EvaluationStatus;
 use reify_kernel_occt::OcctKernelHandle;
+
+// --- Event emission helpers ---
+
+/// Emit targeted events for each changed item in a StateDelta.
+fn emit_delta(app: &tauri::AppHandle, delta: &StateDelta) {
+    for mesh in &delta.changed_meshes {
+        app.emit("mesh-update", mesh).ok();
+    }
+    for value in &delta.changed_values {
+        app.emit("value-update", value).ok();
+    }
+    for constraint in &delta.changed_constraints {
+        app.emit("constraint-update", constraint).ok();
+    }
+}
+
+/// Emit an evaluation-status event.
+fn emit_status(app: &tauri::AppHandle, phase: &str) {
+    app.emit(
+        "evaluation-status",
+        EvaluationStatus {
+            phase: phase.to_string(),
+            progress: None,
+        },
+    )
+    .ok();
+}
 
 // --- Tauri command wrappers ---
 // These thin wrappers delegate to the _impl functions in commands.rs,
 // extracting the engine from Tauri's managed state.
+// State-mutating commands emit evaluation-status and targeted events.
 
 #[tauri::command]
 fn get_initial_state(
@@ -26,20 +59,36 @@ fn get_initial_state(
 
 #[tauri::command]
 fn set_parameter(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     cell_id: String,
     value: String,
 ) -> Result<reify_gui::types::GuiState, String> {
-    reify_gui::commands::set_parameter_impl(&state.engine, &cell_id, &value)
+    emit_status(&app, "evaluating");
+    let result = reify_gui::commands::set_parameter_impl(&state.engine, &cell_id, &value);
+    if let Ok(ref gui_state) = result {
+        let delta = compute_delta(&state.last_state, gui_state);
+        emit_delta(&app, &delta);
+    }
+    emit_status(&app, "idle");
+    result
 }
 
 #[tauri::command]
 fn update_source(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     path: String,
     content: String,
 ) -> Result<reify_gui::types::GuiState, String> {
-    reify_gui::commands::update_source_impl(&state.engine, &path, &content)
+    emit_status(&app, "evaluating");
+    let result = reify_gui::commands::update_source_impl(&state.engine, &path, &content);
+    if let Ok(ref gui_state) = result {
+        let delta = compute_delta(&state.last_state, gui_state);
+        emit_delta(&app, &delta);
+    }
+    emit_status(&app, "idle");
+    result
 }
 
 #[tauri::command]
@@ -54,10 +103,18 @@ fn open_file(path: String) -> Result<reify_gui::types::FileData, String> {
 
 #[tauri::command]
 fn open_file_engine(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> Result<reify_gui::types::GuiState, String> {
-    reify_gui::commands::open_file_engine_impl(&state.engine, &path)
+    emit_status(&app, "evaluating");
+    let result = reify_gui::commands::open_file_engine_impl(&state.engine, &path);
+    if let Ok(ref gui_state) = result {
+        let delta = compute_delta(&state.last_state, gui_state);
+        emit_delta(&app, &delta);
+    }
+    emit_status(&app, "idle");
+    result
 }
 
 #[tauri::command]
