@@ -994,19 +994,38 @@ impl<'a> Lowering<'a> {
         let struct_node = node.child_by_field_name("structure_name")?;
         let structure_name = self.node_text(struct_node).to_string();
 
-        // Extract optional type arguments: Box<Bolt>
-        let type_args = self.lower_type_args_from_node(node);
+        // Detect collection form: `sub name : List<StructName>`
+        // by checking for the "List" keyword token among children.
+        let mut is_collection = false;
+        {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "List" || self.node_text(child) == "List" {
+                    is_collection = true;
+                    break;
+                }
+            }
+        }
+
+        // Extract optional type arguments: Box<Bolt> (only for non-collection form)
+        let type_args = if is_collection {
+            Vec::new()
+        } else {
+            self.lower_type_args_from_node(node)
+        };
 
         let mut args = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "named_argument_list" {
-                let mut arg_cursor = child.walk();
-                for arg_child in child.children(&mut arg_cursor) {
-                    if arg_child.kind() == "named_argument"
-                        && let Some(pair) = self.lower_named_arg(arg_child)
-                    {
-                        args.push(pair);
+        if !is_collection {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "named_argument_list" {
+                    let mut arg_cursor = child.walk();
+                    for arg_child in child.children(&mut arg_cursor) {
+                        if arg_child.kind() == "named_argument"
+                            && let Some(pair) = self.lower_named_arg(arg_child)
+                        {
+                            args.push(pair);
+                        }
                     }
                 }
             }
@@ -1019,7 +1038,7 @@ impl<'a> Lowering<'a> {
             structure_name,
             type_args,
             args,
-            is_collection: false,
+            is_collection,
             where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),
