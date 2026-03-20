@@ -136,6 +136,56 @@ fn constraint_without_auto_params_excluded() {
     assert!(components[0].auto_params.contains(&a));
 }
 
+/// Nested Conditional expression: all ValueRefs across condition/then/else
+/// branches are collected into one component because a single constraint
+/// references all of them.
+///
+/// This locks in behavior before refactoring collect_value_refs to use walk().
+#[test]
+fn collect_value_refs_handles_nested_conditional() {
+    let a = vcid("Part", "a");
+    let b = vcid("Part", "b");
+    let c = vcid("Part", "c");
+    let d = vcid("Part", "d");
+
+    let auto_params = vec![
+        AutoParam { id: a.clone(), param_type: Type::length(), bounds: None },
+        AutoParam { id: b.clone(), param_type: Type::length(), bounds: None },
+        AutoParam { id: c.clone(), param_type: Type::length(), bounds: None },
+        AutoParam { id: d.clone(), param_type: Type::length(), bounds: None },
+    ];
+
+    // Build a Conditional expression:
+    //   if (a > b) then (c > 1mm) else (d > 2mm)
+    // This references {a, b, c, d} across all branches.
+    let condition = gt(value_ref("Part", "a"), value_ref("Part", "b"));
+    let then_branch = gt(value_ref("Part", "c"), literal(mm(1.0)));
+    let else_branch = gt(value_ref("Part", "d"), literal(mm(2.0)));
+
+    let conditional = reify_types::CompiledExpr {
+        kind: reify_types::CompiledExprKind::Conditional {
+            condition: Box::new(condition),
+            then_branch: Box::new(then_branch),
+            else_branch: Box::new(else_branch),
+        },
+        result_type: Type::Bool,
+        content_hash: reify_types::ContentHash::of(b"test_cond"),
+    };
+
+    // Single constraint using the conditional expression
+    let constraints = vec![(cnid("Part", 0), conditional)];
+
+    let components = decompose_into_components(&auto_params, &constraints, None);
+
+    // All 4 params referenced by one constraint → 1 component with all 4 params
+    assert_eq!(components.len(), 1, "single constraint should yield 1 component");
+    assert_eq!(components[0].auto_params.len(), 4, "all 4 params should be in the component");
+    assert!(components[0].auto_params.contains(&a));
+    assert!(components[0].auto_params.contains(&b));
+    assert!(components[0].auto_params.contains(&c));
+    assert!(components[0].auto_params.contains(&d));
+}
+
 /// Objective expression merges independent params into one component.
 ///
 /// When the objective references params from multiple independent components,
