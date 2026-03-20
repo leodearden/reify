@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { MeshStandardMaterial } from 'three';
 import type { MeshData } from '../../types';
 
 // Track all created mocks
@@ -143,7 +144,7 @@ describe('meshManager', () => {
 
     const mesh = manager.getSceneMeshes().get('A')!;
     expect(mesh.geometry.index).toBeDefined();
-    expect(mesh.geometry.index.array).toBe(indices);
+    expect(mesh.geometry.index!.array).toBe(indices);
   });
 
   it('created mesh geometry has normal attribute from normals', () => {
@@ -188,19 +189,19 @@ describe('meshManager', () => {
     expect(manager.getSceneMeshes().size).toBe(1);
     expect(manager.getSceneMeshes().has('A')).toBe(false);
     expect(meshA.geometry.dispose).toHaveBeenCalled();
-    expect(meshA.material.dispose).toHaveBeenCalled();
+    expect((meshA.material as MeshStandardMaterial).dispose).toHaveBeenCalled();
     expect(mockSceneRemove).toHaveBeenCalledWith(meshA);
   });
 
   it('each entity_path gets a deterministic color (same path = same color)', () => {
     const { manager } = setup();
     manager.sync({ A: makeMeshData('A') });
-    const colorA1 = manager.getSceneMeshes().get('A')!.material.color;
+    const colorA1 = (manager.getSceneMeshes().get('A')!.material as MeshStandardMaterial).color;
 
     // Recreate and sync again
     manager.sync({});
     manager.sync({ A: makeMeshData('A') });
-    const colorA2 = manager.getSceneMeshes().get('A')!.material.color;
+    const colorA2 = (manager.getSceneMeshes().get('A')!.material as MeshStandardMaterial).color;
 
     // Color for same path should be deterministic
     expect(colorA1).toBeDefined();
@@ -218,8 +219,8 @@ describe('meshManager', () => {
     const mesh2 = manager.getSceneMeshes().get('Bracket.hole')!;
 
     // Both should have color defined (specific values depend on hash)
-    expect(mesh1.material.color).toBeDefined();
-    expect(mesh2.material.color).toBeDefined();
+    expect((mesh1.material as MeshStandardMaterial).color).toBeDefined();
+    expect((mesh2.material as MeshStandardMaterial).color).toBeDefined();
   });
 
   it('dispose removes and disposes all meshes from scene', () => {
@@ -233,9 +234,9 @@ describe('meshManager', () => {
 
     expect(manager.getSceneMeshes().size).toBe(0);
     expect(meshA.geometry.dispose).toHaveBeenCalled();
-    expect(meshA.material.dispose).toHaveBeenCalled();
+    expect((meshA.material as MeshStandardMaterial).dispose).toHaveBeenCalled();
     expect(meshB.geometry.dispose).toHaveBeenCalled();
-    expect(meshB.material.dispose).toHaveBeenCalled();
+    expect((meshB.material as MeshStandardMaterial).dispose).toHaveBeenCalled();
     expect(mockSceneRemove).toHaveBeenCalledWith(meshA);
     expect(mockSceneRemove).toHaveBeenCalledWith(meshB);
   });
