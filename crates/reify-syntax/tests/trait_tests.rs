@@ -224,3 +224,39 @@ fn parse_trait_with_multi_type_params() {
     assert_eq!(trait_decl.type_params[1].name, "B");
     assert!(trait_decl.type_params[1].bounds.is_empty());
 }
+
+// ── Step 17: backward compatibility ───────────────────────────────
+
+#[test]
+fn backward_compat_bracket_source() {
+    let source = reify_test_support::bracket_source();
+    let (decls, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    assert_eq!(structure.name, "Bracket");
+    assert!(!structure.is_pub);
+    assert!(structure.type_params.is_empty());
+    assert!(structure.trait_bounds.is_empty());
+    assert_eq!(structure.members.len(), 10);
+}
+
+#[test]
+fn backward_compat_no_def_keyword() {
+    let (decls, errors) = parse_decls("structure S { param x : Scalar = 5mm }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    assert_eq!(structure.name, "S");
+    assert_eq!(structure.members.len(), 1);
+}
