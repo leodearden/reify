@@ -595,13 +595,42 @@ fn compile_expr(
                 CompiledExpr::literal(Value::Undef, Type::Real)
             }
         }
-        reify_syntax::ExprKind::Match { .. } => {
-            // Placeholder — real compilation implemented in step-8
-            diagnostics.push(
-                Diagnostic::error("match expressions not yet compiled")
-                    .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
-            );
-            CompiledExpr::literal(Value::Undef, Type::Real)
+        reify_syntax::ExprKind::Match { discriminant, arms } => {
+            let compiled_discriminant = compile_expr(discriminant, scope, enum_defs, diagnostics);
+            let compiled_arms: Vec<reify_types::CompiledMatchArm> = arms
+                .iter()
+                .map(|arm| {
+                    let body = compile_expr(&arm.body, scope, enum_defs, diagnostics);
+                    reify_types::CompiledMatchArm {
+                        patterns: arm.patterns.clone(),
+                        body,
+                    }
+                })
+                .collect();
+
+            // Result type from the first arm's body
+            let result_type = compiled_arms
+                .first()
+                .map(|a| a.body.result_type.clone())
+                .unwrap_or(Type::Real);
+
+            // Content hash: tag [6] + discriminant + all arms
+            let mut content_hash = ContentHash::of(&[6]).combine(compiled_discriminant.content_hash);
+            for arm in &compiled_arms {
+                for pattern in &arm.patterns {
+                    content_hash = content_hash.combine(ContentHash::of_str(pattern));
+                }
+                content_hash = content_hash.combine(arm.body.content_hash);
+            }
+
+            CompiledExpr {
+                kind: CompiledExprKind::Match {
+                    discriminant: Box::new(compiled_discriminant),
+                    arms: compiled_arms,
+                },
+                result_type,
+                content_hash,
+            }
         }
         reify_syntax::ExprKind::Auto => {
             // Auto expressions should not appear inside compile_expr — they are
