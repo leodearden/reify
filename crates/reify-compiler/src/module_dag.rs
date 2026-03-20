@@ -156,20 +156,26 @@ impl ModuleDag {
         // Mark in-progress for cycle detection
         self.in_progress.insert(module_path.to_string());
 
-        // Recursively compile dependencies
-        for decl in &parsed.declarations {
-            if let reify_syntax::Declaration::Import(import) = decl {
-                self.compile_module(&import.path, resolver)?;
+        // Use inner closure to guarantee in_progress cleanup on all exit paths
+        let result = (|| -> Result<CompiledModule, Vec<Diagnostic>> {
+            // Recursively compile dependencies
+            for decl in &parsed.declarations {
+                if let reify_syntax::Declaration::Import(import) = decl {
+                    self.compile_module(&import.path, resolver)?;
+                }
             }
-        }
 
-        // Compile this module
-        let compiled = crate::compile(&parsed);
+            // Compile this module
+            Ok(crate::compile(&parsed))
+        })();
 
-        // Remove from in-progress
+        // Always remove from in-progress, whether the inner block succeeded or failed
         self.in_progress.remove(module_path);
 
-        // Record in post-order
+        // Propagate error after cleanup
+        let compiled = result?;
+
+        // Record in post-order (only on success)
         self.topo_order.push(module_path.to_string());
         self.modules.insert(module_path.to_string(), compiled);
 
