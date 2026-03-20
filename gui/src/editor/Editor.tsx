@@ -4,6 +4,7 @@ import { EditorView, keymap } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { bracketMatching, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
 import { reifyLanguage } from './reifyLanguage';
+import { updateSource } from '../bridge';
 import type { createEditorStore } from '../stores/editorStore';
 import styles from './Editor.module.css';
 
@@ -14,6 +15,7 @@ export interface EditorProps {
 export function Editor(props: EditorProps) {
   let containerRef!: HTMLDivElement;
   let view: EditorView | undefined;
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
   onMount(() => {
     const activeFile = props.store.state.activeFile;
@@ -28,6 +30,18 @@ export function Editor(props: EditorProps) {
         syntaxHighlighting(defaultHighlightStyle),
         history(),
         keymap.of([...defaultKeymap, ...historyKeymap]),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            const path = props.store.state.activeFile;
+            if (path) {
+              props.store.markDirty(path);
+              clearTimeout(debounceTimer);
+              debounceTimer = setTimeout(() => {
+                updateSource(path, update.state.doc.toString());
+              }, 300);
+            }
+          }
+        }),
       ],
     });
 
@@ -35,6 +49,7 @@ export function Editor(props: EditorProps) {
   });
 
   onCleanup(() => {
+    clearTimeout(debounceTimer);
     view?.destroy();
   });
 
