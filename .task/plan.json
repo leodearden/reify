@@ -5,7 +5,9 @@
     "crates/reify-compiler/src/lib.rs",
     "crates/reify-compiler/tests/trait_conformance_tests.rs"
   ],
-  "modules": ["crates/reify-compiler"],
+  "modules": [
+    "crates/reify-compiler"
+  ],
   "analysis": "Task 65 (grammar + parser for traits) is done. The parser already produces Declaration::Trait(TraitDecl) with name, is_pub, type_params, refinements, members (Vec<MemberDecl>), and structures have trait_bounds: Vec<String>. The compiler currently skips trait declarations with a comment 'Trait compilation deferred to a later milestone' at line 961. This task implements:\n\n1. **CompiledTrait data structures** — new types: CompiledTrait, TraitRequirement, RequirementKind, TraitDefault, DefaultKind.\n2. **Trait compilation** — a pre-pass that compiles TraitDecl into CompiledTrait, builds a trait registry (HashMap<String, CompiledTrait>).\n3. **Conformance checking** — when compiling a structure with non-empty trait_bounds, resolve each trait, recursively collect all requirements (including from refinement chains), and verify the structure satisfies them.\n4. **Default merging** — if a trait provides defaults and structure doesn't override, inject the defaults into the TopologyTemplate.\n5. **Composition conflict detection** — same name + different types across traits → error.\n\nKey observations from code reading:\n- resolve_type_name (line 333) currently only handles Scalar, Bool, Int, Real, String. For trait conformance with type names like 'Length' and 'Mass' in tests, we extend it to map Length → Scalar{LENGTH}, Mass → Scalar{MASS}.\n- Trait members use the same MemberDecl enum as structures, so we reuse compile_expr and type resolution.\n- The trait registry is module-local (matches existing pattern where cross-module import resolution is noted but not fully wired).\n- The compile() function (line 889) handles pre-passes for enums and functions. We add a similar pre-pass for traits.\n- compile_structure() (line 1038) is the main function to modify for conformance checking.",
   "prerequisites": [
     {
@@ -170,6 +172,48 @@
       "description": "Implement constraint requirement and default handling: Constraint members in traits become requirements (matched by label if labeled, or injected as defaults if they have an expression). For labeled constraints, a single constraint in the structure with matching label satisfies requirements from multiple traits.",
       "status": "done",
       "commit": "2c1445b"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write failing test for duplicate default injection (review issue: data_integrity / missing_test_for_correctness_bug). Two distinct traits `trait A { param size : Length = 10mm }` and `trait B { param size : Length = 5mm }`, `structure def X : A + B { }` (no override). Currently `collect_all_requirements` pushes defaults from every trait unconditionally, producing TWO ValueCellDecl entries with the same ValueCellId {entity: 'X', member: 'size'}, corrupting the TopologyTemplate. Test asserts: exactly one 'size' value cell exists after compilation.",
+      "status": "done",
+      "commit": "bae9e7c"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Fix duplicate default injection by adding `seen_defaults: HashMap<String, Type>` parameter to `collect_all_requirements`. Before pushing a named default (non-empty name), extract its type (cell_type for Param, Type::Real for Let, skip type check for Constraint) and check `seen_defaults`. If same name + same type: skip silently (dedup). If same name + different type: emit a conflict diagnostic for the default and skip. If not seen: insert name→type and push the default. For unnamed defaults (empty name, e.g. unlabeled constraints), always push without dedup. Thread the new `seen_defaults` parameter through from `check_trait_conformance` where it is initialized as an empty HashMap.",
+      "status": "done",
+      "commit": "eb3a807"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Write test for default conflict detection across traits with different types. `trait A { param size : Length = 10mm }`, `trait B { param size : Mass = 5kg }` (same name, DIFFERENT types in defaults), `structure def X : A + B { }`. Expect a conflict diagnostic mentioning 'size' and 'conflicting'. Also test the resolution: `structure def Y : A + B { param size : Length = 7mm }` should compile without conflict because the structure overrides the default, making the conflict moot (both defaults are skipped).",
+      "status": "done",
+      "commit": "1723cae"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Verify step-25 test passes with the implementation from step-24. The seen_defaults HashMap<String, Type> comparison already handles type mismatch → conflict diagnostic. For the resolution case where the structure provides its own member, the `!structure_members.contains_key` guard at injection time already prevents injection, so the conflict diagnostic from collection is still emitted but the duplicate injection is avoided. If the test expects NO diagnostic when the structure overrides, suppress default conflict diagnostics when the structure provides the member — check `structure_members` before emitting. Fix accordingly.",
+      "status": "done",
+      "commit": "eb3a807"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Write tests for labeled constraint default dedup and RequirementKind::Constraint dead code cleanup (review issues: dead_code_untested_path, behavioral_incorrectness). (a) Two traits with same labeled constraint default: `trait A { param x : Length  constraint min_size : x > 0mm }`, `trait B { param x : Length  constraint min_size : x > 0mm }`, `structure def X : A + B { param x : Length = 5mm }` → no errors, exactly ONE 'min_size' constraint injected (not two). (b) Same two traits but structure provides its own `constraint min_size : x > 1mm` → structure's constraint used, zero additional 'min_size' constraints injected from defaults. These cover the step-21 dual-trait/labeled-constraint scenario that was described but untested.",
+      "status": "done",
+      "commit": "780d945"
+    },
+    {
+      "id": "step-28",
+      "type": "impl",
+      "description": "Remove the dead `RequirementKind::Constraint(Option<String>)` variant from the enum and its unreachable match arm in `check_trait_conformance` (lines 2232-2246). In the current AST, `ConstraintDecl` always has `expr: Expr` (non-optional), so there is no way to express a bodyless constraint requirement — all constraints in traits are necessarily defaults. Fix the misleading comment at lines 1031-1033 in `compile_trait` to accurately say 'Labeled constraint with expression in trait → default (override detection uses label matching)'. Keep the `structure_constraint_labels` collection since it is still used for constraint default dedup at the injection site (line 2337). Verify all existing tests still pass after the enum change.",
+      "status": "done",
+      "commit": "ba3c209"
     }
   ],
   "design_decisions": [
@@ -204,6 +248,14 @@
     {
       "decision": "Params without defaults in traits are strict requirements",
       "rationale": "A param declared in a trait without a default (no = expr) means the conforming structure MUST provide it. This is the fundamental contract of trait conformance."
+    },
+    {
+      "decision": "Remove RequirementKind::Constraint as dead code rather than implementing bodyless constraint requirements",
+      "rationale": "The ConstraintDecl AST node always has `expr: Expr` (non-optional), so there is no way to express a constraint requirement without a body in the current grammar. Rather than changing the grammar/AST (which is out of scope for this task), we remove the dead variant. All constraints in traits are defaults — they are injected unless the structure provides its own constraint with the same label. This can be revisited if the grammar later adds optional constraint bodies."
+    },
+    {
+      "decision": "Deduplicate defaults across distinct traits using seen_defaults HashMap<String, Type>",
+      "rationale": "The existing `visited_traits` set prevents revisiting the same trait (diamond pattern), but does NOT prevent two distinct traits from contributing defaults with the same member name. Without dedup, two ValueCellDecl entries with the same ValueCellId are injected, corrupting the TopologyTemplate. The fix mirrors the existing `seen_names` pattern used for requirement dedup: same name + same type → skip silently, same name + different type → conflict diagnostic."
     }
   ],
   "reuse": [
@@ -241,6 +293,11 @@
       "what": "Diagnostic construction patterns",
       "where": "crates/reify-compiler/src/lib.rs throughout",
       "how": "Follow existing patterns: Diagnostic::error(msg).with_label(DiagnosticLabel::new(span, hint)). Push to diagnostics vec."
+    },
+    {
+      "what": "seen_names HashMap pattern for requirement dedup in collect_all_requirements",
+      "where": "crates/reify-compiler/src/lib.rs:2184 (seen_requirement_names) and collect_all_requirements lines 2406-2430",
+      "how": "Mirror this exact pattern for default deduplication: HashMap<String, Type> tracking seen default names, with type comparison for conflict detection vs silent dedup."
     }
   ]
 }
