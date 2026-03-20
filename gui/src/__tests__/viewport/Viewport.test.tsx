@@ -1,6 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@solidjs/testing-library';
 
+// Stub ResizeObserver for jsdom (which doesn't support it)
+globalThis.ResizeObserver = class ResizeObserver {
+  observe = vi.fn();
+  unobserve = vi.fn();
+  disconnect = vi.fn();
+  constructor(_cb: ResizeObserverCallback) {}
+};
+
+// Stub requestAnimationFrame/cancelAnimationFrame
+globalThis.requestAnimationFrame = vi.fn((cb) => setTimeout(cb, 0) as unknown as number);
+globalThis.cancelAnimationFrame = vi.fn((id) => clearTimeout(id));
+
 // Mock the viewport modules
 const mockResize = vi.fn();
 const mockRendererRender = vi.fn();
