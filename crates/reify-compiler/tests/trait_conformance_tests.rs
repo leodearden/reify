@@ -74,3 +74,32 @@ structure def Bolt : Fastener {
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 }
+
+/// Step 5: Missing member — error diagnostic about missing required member.
+#[test]
+fn missing_member_error() {
+    let source = r#"
+trait Fastener {
+    param thread_pitch : Length
+}
+
+structure def Bolt : Fastener {
+    param length : Length = 10mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected error diagnostic for missing member");
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("missing required member") && error_msg.contains("thread_pitch"),
+        "error should mention 'missing required member' and 'thread_pitch', got: {}",
+        error_msg
+    );
+}
