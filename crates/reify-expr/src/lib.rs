@@ -320,6 +320,48 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 _ => Value::Undef,
             }
         },
+        "all" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            let lambda = &args[0];
+            match obj {
+                Value::List(items) => {
+                    let mut has_undef = false;
+                    for item in items {
+                        match apply_lambda(lambda, &[item.clone()]) {
+                            Value::Bool(false) => return Value::Bool(false),
+                            Value::Bool(true) => {}
+                            Value::Undef => has_undef = true,
+                            _ => return Value::Undef,
+                        }
+                    }
+                    if has_undef { Value::Undef } else { Value::Bool(true) }
+                }
+                _ => Value::Undef,
+            }
+        },
+        "any" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            let lambda = &args[0];
+            match obj {
+                Value::List(items) => {
+                    let mut has_undef = false;
+                    for item in items {
+                        match apply_lambda(lambda, &[item.clone()]) {
+                            Value::Bool(true) => return Value::Bool(true),
+                            Value::Bool(false) => {}
+                            Value::Undef => has_undef = true,
+                            _ => return Value::Undef,
+                        }
+                    }
+                    if has_undef { Value::Undef } else { Value::Bool(false) }
+                }
+                _ => Value::Undef,
+            }
+        },
         "fold" => {
             if args.len() != 2 {
                 return Value::Undef;
