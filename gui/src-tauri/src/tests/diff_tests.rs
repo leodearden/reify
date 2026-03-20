@@ -1,4 +1,4 @@
-use crate::diff::diff_gui_state;
+use crate::diff::{diff_gui_state, StateDelta};
 use crate::types::*;
 
 fn empty_state() -> GuiState {
@@ -165,4 +165,26 @@ fn diff_handles_added_and_removed_entities() {
     // old_param is removed
     assert_eq!(delta.removed_value_ids.len(), 1);
     assert_eq!(delta.removed_value_ids[0], "Bracket.old_param");
+}
+
+#[test]
+fn full_delta_contains_all_items_from_state() {
+    let state = GuiState {
+        meshes: vec![
+            sample_mesh("Bracket.body", vec![0.0, 0.0, 0.0]),
+            sample_mesh("Bracket.hole", vec![1.0, 1.0, 1.0]),
+        ],
+        values: vec![sample_value("Bracket.width", "80")],
+        constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
+        files: vec![],
+    };
+
+    let delta = StateDelta::full(&state);
+
+    assert_eq!(delta.changed_meshes.len(), 2);
+    assert_eq!(delta.changed_values.len(), 1);
+    assert_eq!(delta.changed_constraints.len(), 1);
+    assert!(delta.removed_mesh_paths.is_empty());
+    assert!(delta.removed_value_ids.is_empty());
+    assert!(delta.removed_constraint_ids.is_empty());
 }
