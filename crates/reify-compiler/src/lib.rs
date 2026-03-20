@@ -614,6 +614,44 @@ fn compile_expr(
                 .map(|a| a.body.result_type.clone())
                 .unwrap_or(Type::Real);
 
+            // Exhaustiveness check: if discriminant is a known enum type,
+            // verify all variants are covered by arm patterns or a wildcard.
+            if let Type::Enum(ref enum_name) = compiled_discriminant.result_type {
+                if let Some(enum_def) = enum_defs.iter().find(|e| e.name == *enum_name) {
+                    let has_wildcard = compiled_arms
+                        .iter()
+                        .any(|arm| arm.patterns.iter().any(|p| p == "_"));
+
+                    if !has_wildcard {
+                        let covered: std::collections::HashSet<&str> = compiled_arms
+                            .iter()
+                            .flat_map(|arm| arm.patterns.iter().map(|p| p.as_str()))
+                            .collect();
+
+                        let missing: Vec<&str> = enum_def
+                            .variants
+                            .iter()
+                            .filter(|v| !covered.contains(v.as_str()))
+                            .map(|v| v.as_str())
+                            .collect();
+
+                        if !missing.is_empty() {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "non-exhaustive match on '{}': missing variant(s) {}",
+                                    enum_name,
+                                    missing.join(", ")
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "missing variants",
+                                )),
+                            );
+                        }
+                    }
+                }
+            }
+
             // Content hash: tag [6] + discriminant + all arms
             let mut content_hash = ContentHash::of(&[6]).combine(compiled_discriminant.content_hash);
             for arm in &compiled_arms {

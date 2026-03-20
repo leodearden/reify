@@ -5,7 +5,7 @@
 fn compile_match_exhaustive_passes() {
     let source = r#"enum Direction { In, Out, Bidi }
 structure S {
-    param d : Scalar
+    let d = Direction.In
     let x = match d { In => 1, Out => 2, Bidi => 3 }
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_match"));
@@ -13,7 +13,7 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    // No error diagnostics expected (the placeholder emits an error)
+    // No error diagnostics expected
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -54,7 +54,7 @@ structure S {
 fn compile_match_missing_variant_emits_diagnostic() {
     let source = r#"enum Direction { In, Out, Bidi }
 structure S {
-    param d : Scalar
+    let d = Direction.In
     let x = match d { In => 1, Out => 2 }
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_missing"));
@@ -87,7 +87,7 @@ structure S {
 fn compile_match_wildcard_is_exhaustive() {
     let source = r#"enum Direction { In, Out, Bidi }
 structure S {
-    param d : Scalar
+    let d = Direction.In
     let x = match d { In => 1, _ => 0 }
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_wildcard"));
