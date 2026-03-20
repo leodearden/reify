@@ -328,7 +328,9 @@ fn eval_collection_list_aggregation() {
     let mut engine = Engine::new(Box::new(checker), None);
     let result = engine.eval(&module);
 
-    // The synthetic __list_bolts cell should exist with a List of grade values
+    // The synthetic __list_bolts cell should exist as a List of instance grade values.
+    // For each collection instance, the engine gathers the child param values.
+    // Since Bolt has one param (grade=8.8), the list is [Real(8.8), Real(8.8), Real(8.8)].
     let list_id = ValueCellId::new("Parent", "__list_bolts");
     let list_val = result.values.get(&list_id);
     assert!(
@@ -339,11 +341,15 @@ fn eval_collection_list_aggregation() {
     match list_val.unwrap() {
         Value::List(items) => {
             assert_eq!(items.len(), 3, "should have 3 items in bolt list");
+            // Each item should be Real(8.8) — the single param value for each Bolt instance
+            for item in items {
+                assert_eq!(item, &Value::Real(8.8), "each bolt grade should be 8.8");
+            }
         }
         other => panic!("expected List, got {:?}", other),
     }
 
-    // The grades let binding should resolve to the same List value
+    // The grades let binding (which references __list_bolts) should have the same value
     let grades_id = ValueCellId::new("Parent", "grades");
     let grades_val = result.values.get(&grades_id);
     assert!(
