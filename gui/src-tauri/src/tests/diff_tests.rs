@@ -220,3 +220,69 @@ fn compute_delta_none_last_state_returns_full_then_diff() {
     assert_eq!(delta.changed_values.len(), 1, "diff: value changed");
     assert_eq!(delta.changed_values[0].value, "120");
 }
+
+#[test]
+fn delta_to_events_returns_correct_tuples_for_changes_and_removals() {
+    use crate::diff::delta_to_events;
+
+    let delta = StateDelta {
+        changed_meshes: vec![sample_mesh("Bracket.body", vec![1.0, 2.0, 3.0])],
+        changed_values: vec![sample_value("Bracket.width", "120")],
+        changed_constraints: vec![sample_constraint("Bracket.0", "Violated")],
+        removed_mesh_paths: vec!["Bracket.old_body".to_string()],
+        removed_value_ids: vec!["Bracket.old_param".to_string()],
+        removed_constraint_ids: vec!["Bracket.old_constraint".to_string()],
+    };
+
+    let events = delta_to_events(&delta);
+
+    // Should have 6 events: 3 changes + 3 removals
+    assert_eq!(events.len(), 6, "expected 6 events, got {}", events.len());
+
+    // Check mesh-update event
+    let mesh_events: Vec<_> = events.iter().filter(|(name, _)| name == "mesh-update").collect();
+    assert_eq!(mesh_events.len(), 1);
+    assert_eq!(mesh_events[0].1["entity_path"], "Bracket.body");
+
+    // Check value-update event
+    let value_events: Vec<_> = events.iter().filter(|(name, _)| name == "value-update").collect();
+    assert_eq!(value_events.len(), 1);
+    assert_eq!(value_events[0].1["cell_id"], "Bracket.width");
+
+    // Check constraint-update event
+    let constraint_events: Vec<_> = events.iter().filter(|(name, _)| name == "constraint-update").collect();
+    assert_eq!(constraint_events.len(), 1);
+    assert_eq!(constraint_events[0].1["node_id"], "Bracket.0");
+
+    // Check mesh-removed event
+    let mesh_removed: Vec<_> = events.iter().filter(|(name, _)| name == "mesh-removed").collect();
+    assert_eq!(mesh_removed.len(), 1);
+    assert_eq!(mesh_removed[0].1.as_str().unwrap(), "Bracket.old_body");
+
+    // Check value-removed event
+    let value_removed: Vec<_> = events.iter().filter(|(name, _)| name == "value-removed").collect();
+    assert_eq!(value_removed.len(), 1);
+    assert_eq!(value_removed[0].1.as_str().unwrap(), "Bracket.old_param");
+
+    // Check constraint-removed event
+    let constraint_removed: Vec<_> = events.iter().filter(|(name, _)| name == "constraint-removed").collect();
+    assert_eq!(constraint_removed.len(), 1);
+    assert_eq!(constraint_removed[0].1.as_str().unwrap(), "Bracket.old_constraint");
+}
+
+#[test]
+fn delta_to_events_returns_empty_vec_for_empty_delta() {
+    use crate::diff::delta_to_events;
+
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+    };
+
+    let events = delta_to_events(&delta);
+    assert!(events.is_empty(), "empty delta should produce no events");
+}
