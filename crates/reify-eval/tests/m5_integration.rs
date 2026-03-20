@@ -406,3 +406,94 @@ fn guarded_enum_declarations() {
         other => panic!("expected Scalar or Undef for diameter, got {:?}", other),
     }
 }
+
+// ── Step 11: user_fn_with_constraint ────────────────────────────────
+
+/// Parse m5_user_function.ri defining `fn area(w, h) -> Real { w * h }` and
+/// `structure def Panel` that calls `area(width, height)` in a let binding,
+/// with `constraint surface_area > 10000`.
+///
+/// Assert:
+/// - Parse OK, Compile OK
+/// - surface_area = area(200, 100) = 20000
+/// - constraint surface_area > 10000 is Satisfied
+#[test]
+fn user_fn_with_constraint() {
+    let source = std::fs::read_to_string("../../examples/m5_user_function.ri")
+        .expect("examples/m5_user_function.ri should exist");
+
+    let compiled = parse_and_compile(&source);
+
+    // Should have a template for Panel
+    assert!(
+        !compiled.templates.is_empty(),
+        "expected at least one template"
+    );
+    let panel = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Panel")
+        .expect("should have a Panel template");
+    assert_eq!(panel.name, "Panel");
+
+    // Eval
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // Check width = 200
+    let width_id = ValueCellId::new("Panel", "width");
+    let width_val = result
+        .values
+        .get(&width_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", width_id));
+    match width_val {
+        reify_types::Value::Real(v) => {
+            assert!(
+                (v - 200.0).abs() < 1e-12,
+                "expected 200.0, got {}",
+                v
+            );
+        }
+        reify_types::Value::Int(v) => {
+            assert_eq!(*v, 200, "expected 200, got {}", v);
+        }
+        other => panic!("expected Real(200) or Int(200), got {:?}", other),
+    }
+
+    // Check surface_area = area(200, 100) = 20000
+    let sa_id = ValueCellId::new("Panel", "surface_area");
+    let sa_val = result
+        .values
+        .get(&sa_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", sa_id));
+    match sa_val {
+        reify_types::Value::Real(v) => {
+            assert!(
+                (v - 20000.0).abs() < 1e-9,
+                "expected 20000.0, got {}",
+                v
+            );
+        }
+        reify_types::Value::Int(v) => {
+            assert_eq!(*v, 20000, "expected 20000, got {}", v);
+        }
+        other => panic!("expected Real(20000) or Int(20000), got {:?}", other),
+    }
+
+    // Check that the constraint surface_area > 10000 is present
+    let result = engine.check(&compiled);
+    assert!(
+        !result.constraint_results.is_empty(),
+        "expected at least one constraint"
+    );
+    // With MockConstraintChecker, all constraints are Satisfied
+    for entry in &result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            reify_types::Satisfaction::Satisfied,
+            "constraint {} should be satisfied",
+            entry.id
+        );
+    }
+}
