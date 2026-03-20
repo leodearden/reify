@@ -1187,6 +1187,9 @@ pub fn compile(
             reify_syntax::Declaration::Trait(_) => {
                 // Already compiled in trait pre-pass above.
             }
+            reify_syntax::Declaration::Occurrence(_) => {
+                // TODO: compile occurrences (step-10)
+            }
         }
     }
 
