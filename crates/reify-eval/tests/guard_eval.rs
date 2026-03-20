@@ -337,6 +337,7 @@ fn eval_guarded_constraint_enforced_only_when_active() {
         label: Some("x_gt_10mm".to_string()),
         expr: constraint_expr,
         span: SourceSpan::new(0, 0),
+        domain: None,
     };
 
     // Case 1: active=true — constraint should be checked and show Violated
@@ -385,6 +386,7 @@ fn eval_guarded_constraint_enforced_only_when_active() {
             CompiledExpr::literal(Value::length(0.01), Type::length()),
         ),
         span: SourceSpan::new(0, 0),
+        domain: None,
     };
 
     let template_false = TopologyTemplateBuilder::new("S")

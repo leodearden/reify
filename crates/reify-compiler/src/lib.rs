@@ -3,9 +3,9 @@ pub mod module_dag;
 use std::collections::{HashMap, HashSet};
 
 use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, DimensionVector,
-    Diagnostic, DiagnosticLabel, OptimizationObjective, RealizationNodeId, ResolvedFunction,
-    SourceSpan, Type, UnOp, Value, ValueCellId,
+    BinOp, CompiledExpr, CompiledExprKind, ConstraintDomain, ConstraintNodeId, ContentHash,
+    DimensionVector, Diagnostic, DiagnosticLabel, OptimizationObjective, RealizationNodeId,
+    ResolvedFunction, SourceSpan, Type, UnOp, Value, ValueCellId,
 };
 
 /// A compiled import declaration.
@@ -183,6 +183,9 @@ pub struct CompiledConstraint {
     pub label: Option<String>,
     pub expr: CompiledExpr,
     pub span: SourceSpan,
+    /// Optional pre-classified constraint domain. When `None`, the
+    /// classifier determines the domain at solve time.
+    pub domain: Option<ConstraintDomain>,
 }
 
 /// A realization declaration — specifies geometry to produce.
@@ -1520,6 +1523,7 @@ fn compile_structure(
                     label: constraint.label.clone(),
                     expr: compiled_expr,
                     span: constraint.span,
+                    domain: None,
                 };
                 constraint_index += 1;
 
@@ -1683,6 +1687,7 @@ fn compile_structure(
                                 label: constraint.label.clone(),
                                 expr: compiled_expr,
                                 span: constraint.span,
+                                domain: None,
                             });
                             constraint_index += 1;
                         }
@@ -2241,6 +2246,7 @@ fn compile_guarded_members(
                     label: constraint.label.clone(),
                     expr: compiled_expr,
                     span: constraint.span,
+                    domain: None,
                 });
                 *constraint_index += 1;
             }
@@ -2558,6 +2564,7 @@ fn check_trait_conformance(
                         label: constraint_decl.label.clone(),
                         expr: compiled_expr,
                         span: default.span,
+                        domain: None,
                     });
                 }
             }

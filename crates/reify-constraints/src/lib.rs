@@ -1,4 +1,11 @@
+mod classifier;
+mod decompose;
+mod registry;
 mod solver;
+
+pub use classifier::ConstraintClassifier;
+pub use decompose::{decompose_into_components, SubProblem};
+pub use registry::SolverRegistry;
 pub use solver::DimensionalSolver;
 
 use reify_types::{

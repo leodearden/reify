@@ -1275,6 +1275,44 @@ fn compile_duplicate_function_signature_error() {
     );
 }
 
+/// CompiledConstraint domain field: compiler sets it to None by default.
+/// Construction with Some(domain) is also valid.
+#[test]
+fn compiled_constraint_domain_field() {
+    // Verify compiler-produced constraints have domain: None
+    let module = bracket_compiled_module();
+    let template = &module.templates[0];
+    for constraint in &template.constraints {
+        assert!(
+            constraint.domain.is_none(),
+            "compiler should set domain to None by default, but constraint {} has {:?}",
+            constraint.id,
+            constraint.domain
+        );
+    }
+
+    // Verify manual construction with Some(domain) works
+    use reify_types::{ConstraintDomain, ConstraintNodeId, SourceSpan};
+    let manual = reify_compiler::CompiledConstraint {
+        id: ConstraintNodeId::new("Test", 0),
+        label: Some("test".to_string()),
+        expr: reify_types::CompiledExpr::literal(reify_types::Value::Bool(true), reify_types::Type::Bool),
+        span: SourceSpan::new(0, 0),
+        domain: Some(ConstraintDomain::Dimensional),
+    };
+    assert_eq!(manual.domain, Some(ConstraintDomain::Dimensional));
+
+    // Verify None construction backward compatibility
+    let compat = reify_compiler::CompiledConstraint {
+        id: ConstraintNodeId::new("Test", 1),
+        label: None,
+        expr: reify_types::CompiledExpr::literal(reify_types::Value::Bool(true), reify_types::Type::Bool),
+        span: SourceSpan::new(0, 0),
+        domain: None,
+    };
+    assert!(compat.domain.is_none());
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
