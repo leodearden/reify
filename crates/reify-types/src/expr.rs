@@ -58,6 +58,23 @@ pub enum CompiledExprKind {
         body: Box<CompiledExpr>,
         captures: Vec<ValueCellId>,
     },
+    /// List literal: [expr1, expr2, ...]
+    ListLiteral(Vec<CompiledExpr>),
+    /// Set literal: set{expr1, expr2, ...}
+    SetLiteral(Vec<CompiledExpr>),
+    /// Map literal: map{key1 => val1, key2 => val2, ...}
+    MapLiteral(Vec<(CompiledExpr, CompiledExpr)>),
+    /// Index access: object[index]
+    IndexAccess {
+        object: Box<CompiledExpr>,
+        index: Box<CompiledExpr>,
+    },
+    /// Method call: object.method(args...)
+    MethodCall {
+        object: Box<CompiledExpr>,
+        method: String,
+        args: Vec<CompiledExpr>,
+    },
 }
 
 /// A compiled match arm.
@@ -206,6 +223,32 @@ impl CompiledExpr {
             CompiledExprKind::Lambda { body, .. } => {
                 body.walk(f);
             }
+            CompiledExprKind::ListLiteral(elements) => {
+                for elem in elements {
+                    elem.walk(f);
+                }
+            }
+            CompiledExprKind::SetLiteral(elements) => {
+                for elem in elements {
+                    elem.walk(f);
+                }
+            }
+            CompiledExprKind::MapLiteral(entries) => {
+                for (key, val) in entries {
+                    key.walk(f);
+                    val.walk(f);
+                }
+            }
+            CompiledExprKind::IndexAccess { object, index } => {
+                object.walk(f);
+                index.walk(f);
+            }
+            CompiledExprKind::MethodCall { object, args, .. } => {
+                object.walk(f);
+                for arg in args {
+                    arg.walk(f);
+                }
+            }
         }
     }
 
@@ -271,6 +314,32 @@ impl CompiledExpr {
                     refs.push(cap.clone());
                 }
             }
+            CompiledExprKind::ListLiteral(elements) => {
+                for elem in elements {
+                    elem.collect_value_refs_inner(refs);
+                }
+            }
+            CompiledExprKind::SetLiteral(elements) => {
+                for elem in elements {
+                    elem.collect_value_refs_inner(refs);
+                }
+            }
+            CompiledExprKind::MapLiteral(entries) => {
+                for (key, val) in entries {
+                    key.collect_value_refs_inner(refs);
+                    val.collect_value_refs_inner(refs);
+                }
+            }
+            CompiledExprKind::IndexAccess { object, index } => {
+                object.collect_value_refs_inner(refs);
+                index.collect_value_refs_inner(refs);
+            }
+            CompiledExprKind::MethodCall { object, args, .. } => {
+                object.collect_value_refs_inner(refs);
+                for arg in args {
+                    arg.collect_value_refs_inner(refs);
+                }
+            }
         }
     }
 
@@ -301,6 +370,84 @@ impl CompiledExpr {
                 param_ids,
                 body: Box::new(body),
                 captures,
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a list literal expression.
+    pub fn list_literal(elements: Vec<CompiledExpr>, result_type: Type) -> Self {
+        let mut content_hash = ContentHash::of(&[8]);
+        for elem in &elements {
+            content_hash = content_hash.combine(elem.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::ListLiteral(elements),
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a set literal expression.
+    pub fn set_literal(elements: Vec<CompiledExpr>, result_type: Type) -> Self {
+        let mut content_hash = ContentHash::of(&[9]);
+        for elem in &elements {
+            content_hash = content_hash.combine(elem.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::SetLiteral(elements),
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a map literal expression.
+    pub fn map_literal(entries: Vec<(CompiledExpr, CompiledExpr)>, result_type: Type) -> Self {
+        let mut content_hash = ContentHash::of(&[10]);
+        for (key, val) in &entries {
+            content_hash = content_hash.combine(key.content_hash).combine(val.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::MapLiteral(entries),
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create an index access expression.
+    pub fn index_access(object: CompiledExpr, index: CompiledExpr, result_type: Type) -> Self {
+        let content_hash = ContentHash::of(&[11])
+            .combine(object.content_hash)
+            .combine(index.content_hash);
+        CompiledExpr {
+            kind: CompiledExprKind::IndexAccess {
+                object: Box::new(object),
+                index: Box::new(index),
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a method call expression.
+    pub fn method_call(
+        object: CompiledExpr,
+        method: String,
+        args: Vec<CompiledExpr>,
+        result_type: Type,
+    ) -> Self {
+        let mut content_hash = ContentHash::of(&[12])
+            .combine(object.content_hash)
+            .combine(ContentHash::of_str(&method));
+        for arg in &args {
+            content_hash = content_hash.combine(arg.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::MethodCall {
+                object: Box::new(object),
+                method,
+                args,
             },
             result_type,
             content_hash,

@@ -822,42 +822,79 @@ fn compile_expr_guarded(
                     }
                 }
 
-            // For non-port member access, compile the object expression but emit a diagnostic
-            // since we don't yet support member access fully.
-            let _compiled_obj = compile_expr_guarded(object, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
-            diagnostics.push(
-                Diagnostic::error(format!("member access not yet supported: .{}", member))
-                    .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
-            );
-            CompiledExpr::literal(Value::Undef, Type::Real)
+            // For non-port member access, check if it's a known collection method
+            let compiled_obj = compile_expr_guarded(object, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let collection_methods = ["count", "sum", "keys", "values"];
+            if collection_methods.contains(&member.as_str()) {
+                // Infer result type from method and object type
+                let result_type = match member.as_str() {
+                    "count" => Type::Int,
+                    "sum" => match &compiled_obj.result_type {
+                        Type::List(inner) => (**inner).clone(),
+                        _ => Type::Real,
+                    },
+                    "keys" => match &compiled_obj.result_type {
+                        Type::Map(k, _) => Type::List(k.clone()),
+                        _ => Type::List(Box::new(Type::Real)),
+                    },
+                    "values" => match &compiled_obj.result_type {
+                        Type::Map(_, v) => Type::List(v.clone()),
+                        _ => Type::List(Box::new(Type::Real)),
+                    },
+                    _ => Type::Real,
+                };
+                CompiledExpr::method_call(compiled_obj, member.clone(), vec![], result_type)
+            } else {
+                diagnostics.push(
+                    Diagnostic::error(format!("member access not yet supported: .{}", member))
+                        .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
+                );
+                CompiledExpr::literal(Value::Undef, Type::Real)
+            }
         }
-        reify_syntax::ExprKind::ListLiteral(_) => {
-            diagnostics.push(
-                Diagnostic::error("list literals not yet supported in compiler")
-                    .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
-            );
-            CompiledExpr::literal(Value::Undef, Type::Real)
+        reify_syntax::ExprKind::ListLiteral(elements) => {
+            let compiled_elems: Vec<CompiledExpr> = elements
+                .iter()
+                .map(|e| compile_expr_guarded(e, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter))
+                .collect();
+            // Infer element type from first element, default to Real for empty lists
+            let elem_type = compiled_elems.first().map(|e| e.result_type.clone()).unwrap_or(Type::Real);
+            let result_type = Type::List(Box::new(elem_type));
+            CompiledExpr::list_literal(compiled_elems, result_type)
         }
-        reify_syntax::ExprKind::SetLiteral(_) => {
-            diagnostics.push(
-                Diagnostic::error("set literals not yet supported in compiler")
-                    .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
-            );
-            CompiledExpr::literal(Value::Undef, Type::Real)
+        reify_syntax::ExprKind::SetLiteral(elements) => {
+            let compiled_elems: Vec<CompiledExpr> = elements
+                .iter()
+                .map(|e| compile_expr_guarded(e, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter))
+                .collect();
+            let elem_type = compiled_elems.first().map(|e| e.result_type.clone()).unwrap_or(Type::Real);
+            let result_type = Type::Set(Box::new(elem_type));
+            CompiledExpr::set_literal(compiled_elems, result_type)
         }
-        reify_syntax::ExprKind::MapLiteral(_) => {
-            diagnostics.push(
-                Diagnostic::error("map literals not yet supported in compiler")
-                    .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
-            );
-            CompiledExpr::literal(Value::Undef, Type::Real)
+        reify_syntax::ExprKind::MapLiteral(entries) => {
+            let compiled_entries: Vec<(CompiledExpr, CompiledExpr)> = entries
+                .iter()
+                .map(|(k, v)| {
+                    let ck = compile_expr_guarded(k, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+                    let cv = compile_expr_guarded(v, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+                    (ck, cv)
+                })
+                .collect();
+            let key_type = compiled_entries.first().map(|(k, _)| k.result_type.clone()).unwrap_or(Type::String);
+            let val_type = compiled_entries.first().map(|(_, v)| v.result_type.clone()).unwrap_or(Type::Real);
+            let result_type = Type::Map(Box::new(key_type), Box::new(val_type));
+            CompiledExpr::map_literal(compiled_entries, result_type)
         }
-        reify_syntax::ExprKind::IndexAccess { .. } => {
-            diagnostics.push(
-                Diagnostic::error("index access not yet supported in compiler")
-                    .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
-            );
-            CompiledExpr::literal(Value::Undef, Type::Real)
+        reify_syntax::ExprKind::IndexAccess { object, index } => {
+            let compiled_obj = compile_expr_guarded(object, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let compiled_idx = compile_expr_guarded(index, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            // Infer result type from collection's element type
+            let result_type = match &compiled_obj.result_type {
+                Type::List(inner) => (**inner).clone(),
+                Type::Map(_, val) => (**val).clone(),
+                _ => Type::Real,
+            };
+            CompiledExpr::index_access(compiled_obj, compiled_idx, result_type)
         }
         reify_syntax::ExprKind::EnumAccess { type_name, variant } => {
             // Look up the enum type in the registry
@@ -2487,6 +2524,32 @@ fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
             collect_body_refs_inner(body, refs);
         }
         CompiledExprKind::Literal(_) => {}
+        CompiledExprKind::ListLiteral(elements) => {
+            for elem in elements {
+                collect_body_refs_inner(elem, refs);
+            }
+        }
+        CompiledExprKind::SetLiteral(elements) => {
+            for elem in elements {
+                collect_body_refs_inner(elem, refs);
+            }
+        }
+        CompiledExprKind::MapLiteral(entries) => {
+            for (key, val) in entries {
+                collect_body_refs_inner(key, refs);
+                collect_body_refs_inner(val, refs);
+            }
+        }
+        CompiledExprKind::IndexAccess { object, index } => {
+            collect_body_refs_inner(object, refs);
+            collect_body_refs_inner(index, refs);
+        }
+        CompiledExprKind::MethodCall { object, args, .. } => {
+            collect_body_refs_inner(object, refs);
+            for arg in args {
+                collect_body_refs_inner(arg, refs);
+            }
+        }
     }
 }
 

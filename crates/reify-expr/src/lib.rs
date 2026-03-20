@@ -133,6 +133,52 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 captures: capture_map,
             }
         }
+
+        CompiledExprKind::ListLiteral(elements) => {
+            let items: Vec<Value> = elements.iter().map(|e| eval_expr(e, ctx)).collect();
+            Value::List(items)
+        }
+
+        CompiledExprKind::SetLiteral(elements) => {
+            let items: std::collections::BTreeSet<Value> =
+                elements.iter().map(|e| eval_expr(e, ctx)).collect();
+            Value::Set(items)
+        }
+
+        CompiledExprKind::MapLiteral(entries) => {
+            let map: std::collections::BTreeMap<Value, Value> = entries
+                .iter()
+                .map(|(k, v)| (eval_expr(k, ctx), eval_expr(v, ctx)))
+                .collect();
+            Value::Map(map)
+        }
+
+        CompiledExprKind::IndexAccess { object, index } => {
+            let obj = eval_expr(object, ctx);
+            let idx = eval_expr(index, ctx);
+            if obj.is_undef() || idx.is_undef() {
+                return Value::Undef;
+            }
+            match (&obj, &idx) {
+                (Value::List(items), Value::Int(i)) => {
+                    let i = *i as usize;
+                    items.get(i).cloned().unwrap_or(Value::Undef)
+                }
+                (Value::Map(entries), key) => {
+                    entries.get(key).cloned().unwrap_or(Value::Undef)
+                }
+                _ => Value::Undef,
+            }
+        }
+
+        CompiledExprKind::MethodCall { object, method, args } => {
+            let obj = eval_expr(object, ctx);
+            if obj.is_undef() {
+                return Value::Undef;
+            }
+            let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
+            eval_method_call(&obj, method, &evaluated_args, ctx)
+        }
     }
 }
 
@@ -194,7 +240,7 @@ fn eval_user_function_call(
 /// Returns Undef if:
 /// - The value is not a Lambda
 /// - Argument count doesn't match param count
-pub fn apply_lambda(lambda: &Value, args: &[Value]) -> Value {
+pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value {
     match lambda {
         Value::Lambda {
             params,
@@ -210,8 +256,240 @@ pub fn apply_lambda(lambda: &Value, args: &[Value]) -> Value {
                 eval_map.insert(id.clone(), arg.clone());
             }
 
-            eval_expr(body, &EvalContext::simple(&eval_map))
+            eval_expr(body, &ctx.with_scope(&eval_map))
         }
+        _ => Value::Undef,
+    }
+}
+
+/// Evaluate a method call on a collection value.
+fn eval_method_call(obj: &Value, method: &str, args: &[Value], ctx: &EvalContext) -> Value {
+    match method {
+        "count" => match obj {
+            Value::List(items) => Value::Int(items.len() as i64),
+            Value::Set(items) => Value::Int(items.len() as i64),
+            Value::Map(entries) => Value::Int(entries.len() as i64),
+            _ => Value::Undef,
+        },
+        "contains" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            let needle = &args[0];
+            match obj {
+                Value::List(items) => Value::Bool(items.contains(needle)),
+                Value::Set(items) => Value::Bool(items.contains(needle)),
+                _ => Value::Undef,
+            }
+        },
+        "union" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            match (obj, &args[0]) {
+                (Value::Set(a), Value::Set(b)) => {
+                    Value::Set(a.union(b).cloned().collect())
+                }
+                _ => Value::Undef,
+            }
+        },
+        "intersection" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            match (obj, &args[0]) {
+                (Value::Set(a), Value::Set(b)) => {
+                    Value::Set(a.intersection(b).cloned().collect())
+                }
+                _ => Value::Undef,
+            }
+        },
+        "keys" => match obj {
+            Value::Map(entries) => {
+                Value::List(entries.keys().cloned().collect())
+            }
+            _ => Value::Undef,
+        },
+        "values" => match obj {
+            Value::Map(entries) => {
+                Value::List(entries.values().cloned().collect())
+            }
+            _ => Value::Undef,
+        },
+        "contains_key" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Map(entries) => Value::Bool(entries.contains_key(&args[0])),
+                _ => Value::Undef,
+            }
+        },
+        "difference" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            match (obj, &args[0]) {
+                (Value::Set(a), Value::Set(b)) => {
+                    Value::Set(a.difference(b).cloned().collect())
+                }
+                _ => Value::Undef,
+            }
+        },
+        "sum" => match obj {
+            Value::List(items) => {
+                if items.is_empty() {
+                    return Value::Int(0);
+                }
+                let mut acc = items[0].clone();
+                if acc.is_undef() {
+                    return Value::Undef;
+                }
+                for item in &items[1..] {
+                    if item.is_undef() {
+                        return Value::Undef;
+                    }
+                    acc = eval_add(&acc, item);
+                    if acc.is_undef() {
+                        return Value::Undef;
+                    }
+                }
+                acc
+            }
+            _ => Value::Undef,
+        },
+        "map" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            let lambda = &args[0];
+            match obj {
+                Value::List(items) => {
+                    let results: Vec<Value> = items
+                        .iter()
+                        .map(|item| apply_lambda(lambda, std::slice::from_ref(item), ctx))
+                        .collect();
+                    Value::List(results)
+                }
+                _ => Value::Undef,
+            }
+        },
+        "all" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            let lambda = &args[0];
+            match obj {
+                Value::List(items) => {
+                    let mut has_undef = false;
+                    for item in items {
+                        match apply_lambda(lambda, std::slice::from_ref(item), ctx) {
+                            Value::Bool(false) => return Value::Bool(false),
+                            Value::Bool(true) => {}
+                            Value::Undef => has_undef = true,
+                            _ => return Value::Undef,
+                        }
+                    }
+                    if has_undef { Value::Undef } else { Value::Bool(true) }
+                }
+                _ => Value::Undef,
+            }
+        },
+        "any" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            let lambda = &args[0];
+            match obj {
+                Value::List(items) => {
+                    let mut has_undef = false;
+                    for item in items {
+                        match apply_lambda(lambda, std::slice::from_ref(item), ctx) {
+                            Value::Bool(true) => return Value::Bool(true),
+                            Value::Bool(false) => {}
+                            Value::Undef => has_undef = true,
+                            _ => return Value::Undef,
+                        }
+                    }
+                    if has_undef { Value::Undef } else { Value::Bool(false) }
+                }
+                _ => Value::Undef,
+            }
+        },
+        "fold" => {
+            if args.len() != 2 {
+                return Value::Undef;
+            }
+            let init = &args[0];
+            let lambda = &args[1];
+            match obj {
+                Value::List(items) => {
+                    let mut acc = init.clone();
+                    for item in items {
+                        acc = apply_lambda(lambda, &[acc, item.clone()], ctx);
+                        if acc.is_undef() {
+                            return Value::Undef;
+                        }
+                    }
+                    acc
+                }
+                _ => Value::Undef,
+            }
+        },
+        "concat" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            match (obj, &args[0]) {
+                (Value::List(a), Value::List(b)) => {
+                    let mut result = a.clone();
+                    result.extend(b.iter().cloned());
+                    Value::List(result)
+                }
+                _ => Value::Undef,
+            }
+        },
+        "generate" => {
+            if args.len() != 2 {
+                return Value::Undef;
+            }
+            let count = match &args[0] {
+                Value::Int(n) => *n,
+                _ => return Value::Undef,
+            };
+            let lambda = &args[1];
+            match obj {
+                Value::List(_) => {
+                    let results: Vec<Value> = (0..count)
+                        .map(|i| apply_lambda(lambda, &[Value::Int(i)], ctx))
+                        .collect();
+                    Value::List(results)
+                }
+                _ => Value::Undef,
+            }
+        },
+        "filter" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            let lambda = &args[0];
+            match obj {
+                Value::List(items) => {
+                    let mut results = Vec::new();
+                    for item in items {
+                        let pred = apply_lambda(lambda, std::slice::from_ref(item), ctx);
+                        match pred {
+                            Value::Bool(true) => results.push(item.clone()),
+                            Value::Bool(false) => {} // skip
+                            Value::Undef => return Value::Undef,
+                            _ => return Value::Undef,
+                        }
+                    }
+                    Value::List(results)
+                }
+                _ => Value::Undef,
+            }
+        },
         _ => Value::Undef,
     }
 }

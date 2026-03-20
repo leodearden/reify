@@ -1051,7 +1051,7 @@ mod tests {
 
     #[test]
     fn value_display_real() {
-        assert_eq!(format!("{}", Value::Real(3.14)), "3.14");
+        assert_eq!(format!("{}", Value::Real(3.15)), "3.15");
         assert_eq!(format!("{}", Value::Real(0.0)), "0");
         assert_eq!(format!("{}", Value::Real(-2.5)), "-2.5");
     }

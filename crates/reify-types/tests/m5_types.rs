@@ -336,7 +336,7 @@ fn value_display_via_public_api() {
     // Primitives
     assert_eq!(format!("{}", Value::Bool(true)), "true");
     assert_eq!(format!("{}", Value::Int(42)), "42");
-    assert_eq!(format!("{}", Value::Real(3.14)), "3.14");
+    assert_eq!(format!("{}", Value::Real(3.15)), "3.15");
     assert_eq!(format!("{}", Value::String("hello".into())), "\"hello\"");
     assert_eq!(format!("{}", Value::Undef), "undef");
 
