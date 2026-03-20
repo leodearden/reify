@@ -16,6 +16,7 @@ fn watcher_detects_ri_file_modification() {
 
     let _watcher = FileWatcher::new(
         &dir,
+        None,
         move |path| {
             changed_clone.lock().unwrap().push(path);
         },
@@ -55,6 +56,7 @@ fn watcher_ignores_non_ri_file_changes() {
 
     let _watcher = FileWatcher::new(
         &dir,
+        None,
         move |path| {
             changed_clone.lock().unwrap().push(path);
         },

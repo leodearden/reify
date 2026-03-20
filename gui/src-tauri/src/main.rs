@@ -186,7 +186,7 @@ fn main() {
                     let app_handle = app.handle().clone();
                     let watched_file = file_path.clone();
 
-                    match FileWatcher::new(parent, move |changed_path| {
+                    match FileWatcher::new(parent, None, move |changed_path| {
                         // Read the changed file and update the engine
                         if let Ok(content) = std::fs::read_to_string(&changed_path) {
                             let state: tauri::State<'_, AppState> = app_handle.state();

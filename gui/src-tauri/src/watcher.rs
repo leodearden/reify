@@ -22,9 +22,12 @@ pub struct FileWatcher {
 impl FileWatcher {
     /// Create a new FileWatcher that monitors `dir` for .ri file changes.
     ///
+    /// When `target_file` is `Some`, only events for the file with that name
+    /// trigger the callback. When `None`, all .ri files trigger the callback.
+    ///
     /// The `callback` is invoked with the path of each changed .ri file,
     /// debounced to avoid rapid duplicate notifications.
-    pub fn new<F>(dir: &Path, callback: F) -> Result<Self, String>
+    pub fn new<F>(dir: &Path, target_file: Option<PathBuf>, callback: F) -> Result<Self, String>
     where
         F: Fn(PathBuf) + Send + 'static,
     {
@@ -43,6 +46,13 @@ impl FileWatcher {
                     for path in event.paths {
                         // Filter to .ri files only
                         if path.extension().is_some_and(|ext| ext == "ri") {
+                            // Filter to target file if specified
+                            if let Some(ref target) = target_file {
+                                if path.file_name() != target.file_name() {
+                                    continue;
+                                }
+                            }
+
                             // Debounce: skip if we've seen this path recently
                             let mut guard = last_seen.lock().unwrap();
                             let now = Instant::now();
