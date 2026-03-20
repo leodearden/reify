@@ -76,3 +76,27 @@ occurrence def Welding {
     assert_eq!(result_port.type_name, "StructurePort");
     assert!(!result_port.members.is_empty(), "expected port members");
 }
+
+// ── step-13: compile occurrence with constraints ──────────────────────
+
+#[test]
+fn compile_occurrence_with_constraints() {
+    let source = r#"
+occurrence def Welding {
+    param speed : Length = 100mm
+    constraint speed > 0mm
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    // No error diagnostics expected
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    assert_eq!(template.entity_kind, EntityKind::Occurrence);
+    assert_eq!(template.constraints.len(), 1, "expected 1 constraint");
+    assert_eq!(template.constraints[0].expr.result_type, Type::Bool);
+}
