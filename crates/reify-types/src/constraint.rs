@@ -96,6 +96,8 @@ pub struct ResolutionProblem {
     pub current_values: ValueMap,
     /// Optional optimization objective.
     pub objective: Option<OptimizationObjective>,
+    /// User-defined functions available for evaluating expressions.
+    pub functions: Vec<CompiledFunction>,
 }
 
 /// Trait for constraint checking. Lives in reify-types for dependency inversion —
@@ -222,6 +224,7 @@ mod tests {
             constraints: vec![],
             current_values: crate::value::ValueMap::new(),
             objective: None,
+            functions: vec![],
         };
         assert!(problem.auto_params.is_empty());
         assert!(problem.constraints.is_empty());
@@ -247,6 +250,7 @@ mod tests {
             )],
             current_values: values,
             objective: Some(OptimizationObjective::Minimize(make_literal_expr())),
+            functions: vec![],
         };
         assert_eq!(problem.auto_params.len(), 1);
         assert_eq!(problem.constraints.len(), 1);
@@ -349,6 +353,7 @@ mod tests {
             constraints: vec![],
             current_values: crate::value::ValueMap::new(),
             objective: None,
+            functions: vec![],
         };
         let result = solver.solve(&problem);
         match result {

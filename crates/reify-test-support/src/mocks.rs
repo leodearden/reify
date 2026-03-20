@@ -290,6 +290,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
+            functions: vec![],
         };
 
         match solver.solve(&problem) {
@@ -311,6 +312,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
+            functions: vec![],
         };
 
         match solver.solve(&problem) {
@@ -330,6 +332,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
+            functions: vec![],
         };
 
         match solver.solve(&problem) {

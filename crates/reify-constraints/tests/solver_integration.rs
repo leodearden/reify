@@ -33,6 +33,7 @@ fn single_param_feasibility_via_trait_object() {
         ],
         current_values: ValueMap::new(),
         objective: None,
+        functions: vec![],
     };
 
     let result = solver.solve(&problem);
@@ -81,6 +82,7 @@ fn maximize_objective() {
         ],
         current_values: ValueMap::new(),
         objective: Some(objective),
+        functions: vec![],
     };
 
     let result = solver.solve(&problem);
@@ -121,6 +123,7 @@ fn send_sync_verification() {
         constraints: vec![],
         current_values: ValueMap::new(),
         objective: None,
+        functions: vec![],
     };
     let result = solver.solve(&problem);
     assert!(matches!(result, SolveResult::Solved { .. }));
@@ -162,6 +165,7 @@ fn false_negative_small_violation() {
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: current,
         objective: None,
+        functions: vec![],
     };
 
     let result = solver.solve(&problem);
@@ -227,6 +231,7 @@ fn false_negative_multiple_small_violations() {
         ],
         current_values: current,
         objective: None,
+        functions: vec![],
     };
 
     let result = solver.solve(&problem);
@@ -295,6 +300,7 @@ fn false_negative_mixed_scale() {
         ],
         current_values: current,
         objective: None,
+        functions: vec![],
     };
 
     let result = solver.solve(&problem);
@@ -328,6 +334,7 @@ fn bounds_dont_hide_infeasibility() {
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: ValueMap::new(),
         objective: None,
+        functions: vec![],
     };
 
     let result = solver.solve(&problem);
@@ -373,6 +380,7 @@ fn compound_and_constraint() {
         constraints: vec![(cnid("Part", 0), compound)],
         current_values: ValueMap::new(),
         objective: None,
+        functions: vec![],
     };
 
     let result = solver.solve(&problem);
@@ -419,6 +427,7 @@ fn minimize_undef_objective_returns_no_progress() {
         ],
         current_values: ValueMap::new(),
         objective: Some(objective),
+        functions: vec![],
     };
 
     let result = solver.solve(&problem);
@@ -458,6 +467,7 @@ fn maximize_undef_objective_returns_no_progress() {
         ],
         current_values: ValueMap::new(),
         objective: Some(objective),
+        functions: vec![],
     };
 
     let result = solver.solve(&problem);

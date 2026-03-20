@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State};
 use argmin::solver::neldermead::NelderMead;
 use reify_types::{
-    AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ConstraintSolver,
-    DimensionVector, OptimizationObjective, ResolutionProblem, SolveResult, Type, Value, ValueMap,
+    AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintNodeId,
+    ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem, SolveResult, Type,
+    Value, ValueMap,
 };
 
 /// Maximum iterations for Nelder-Mead.
@@ -89,9 +90,9 @@ fn extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> {
 /// Returns the absolute distance by which the constraint is violated,
 /// or 0.0 if satisfied. No squaring, no epsilon offset. Used for
 /// accurate feasibility checking (not for optimization cost).
-fn comparison_residual(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap) -> f64 {
-    let lhs = reify_expr::eval_expr(left, &reify_expr::EvalContext::simple(values)).as_f64();
-    let rhs = reify_expr::eval_expr(right, &reify_expr::EvalContext::simple(values)).as_f64();
+fn comparison_residual(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap, functions: &[CompiledFunction]) -> f64 {
+    let lhs = reify_expr::eval_expr(left, &reify_expr::EvalContext::new(values, functions)).as_f64();
+    let rhs = reify_expr::eval_expr(right, &reify_expr::EvalContext::new(values, functions)).as_f64();
 
     match (lhs, rhs) {
         (Some(l), Some(r)) => match op {
@@ -126,9 +127,9 @@ fn comparison_residual(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, val
 /// sub-expressions to get numeric values and computes a continuous violation.
 /// Returns 0.0 if satisfied. For non-decomposable boolean constraints,
 /// uses a fixed penalty when violated.
-fn comparison_violation(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap) -> f64 {
-    let lhs = reify_expr::eval_expr(left, &reify_expr::EvalContext::simple(values)).as_f64();
-    let rhs = reify_expr::eval_expr(right, &reify_expr::EvalContext::simple(values)).as_f64();
+fn comparison_violation(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap, functions: &[CompiledFunction]) -> f64 {
+    let lhs = reify_expr::eval_expr(left, &reify_expr::EvalContext::new(values, functions)).as_f64();
+    let rhs = reify_expr::eval_expr(right, &reify_expr::EvalContext::new(values, functions)).as_f64();
 
     match (lhs, rhs) {
         (Some(l), Some(r)) => match op {
@@ -169,27 +170,27 @@ fn comparison_violation(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, va
 /// Same decomposition structure as `constraint_violation` but returns
 /// absolute residual values. For And composites, returns the max of
 /// sub-residuals (both must hold). For Or, returns the min (one suffices).
-fn constraint_residual(expr: &CompiledExpr, values: &ValueMap) -> f64 {
+fn constraint_residual(expr: &CompiledExpr, values: &ValueMap, functions: &[CompiledFunction]) -> f64 {
     match &expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             match op {
                 BinOp::Gt | BinOp::Ge | BinOp::Lt | BinOp::Le | BinOp::Eq | BinOp::Ne => {
-                    comparison_residual(*op, left, right, values)
+                    comparison_residual(*op, left, right, values, functions)
                 }
                 BinOp::And => {
                     // AND: worst case (max) of sub-residuals
-                    let lr = constraint_residual(left, values);
-                    let rr = constraint_residual(right, values);
+                    let lr = constraint_residual(left, values, functions);
+                    let rr = constraint_residual(right, values, functions);
                     lr.max(rr)
                 }
                 BinOp::Or => {
                     // OR: best case (min) of sub-residuals
-                    let lr = constraint_residual(left, values);
-                    let rr = constraint_residual(right, values);
+                    let lr = constraint_residual(left, values, functions);
+                    let rr = constraint_residual(right, values, functions);
                     lr.min(rr)
                 }
                 _ => {
-                    match reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values)) {
+                    match reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)) {
                         Value::Bool(true) => 0.0,
                         Value::Bool(false) => 1.0,
                         Value::Undef => 10.0,
@@ -199,7 +200,7 @@ fn constraint_residual(expr: &CompiledExpr, values: &ValueMap) -> f64 {
             }
         }
         _ => {
-            match reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values)) {
+            match reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)) {
                 Value::Bool(true) => 0.0,
                 Value::Bool(false) => 1.0,
                 Value::Undef => 10.0,
@@ -213,27 +214,27 @@ fn constraint_residual(expr: &CompiledExpr, values: &ValueMap) -> f64 {
 ///
 /// Tries to decompose comparison expressions for continuous violation.
 /// Falls back to binary penalty for non-decomposable expressions.
-fn constraint_violation(expr: &CompiledExpr, values: &ValueMap) -> f64 {
+fn constraint_violation(expr: &CompiledExpr, values: &ValueMap, functions: &[CompiledFunction]) -> f64 {
     // First try decomposing into a comparison
     match &expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             match op {
                 BinOp::Gt | BinOp::Ge | BinOp::Lt | BinOp::Le | BinOp::Eq | BinOp::Ne => {
-                    comparison_violation(*op, left, right, values)
+                    comparison_violation(*op, left, right, values, functions)
                 }
                 BinOp::And => {
                     // AND: sum violations of both sides
-                    constraint_violation(left, values) + constraint_violation(right, values)
+                    constraint_violation(left, values, functions) + constraint_violation(right, values, functions)
                 }
                 BinOp::Or => {
                     // OR: minimum violation of both sides
-                    let lv = constraint_violation(left, values);
-                    let rv = constraint_violation(right, values);
+                    let lv = constraint_violation(left, values, functions);
+                    let rv = constraint_violation(right, values, functions);
                     lv.min(rv)
                 }
                 _ => {
                     // Not a logical/comparison op; evaluate as boolean
-                    match reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values)) {
+                    match reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)) {
                         Value::Bool(true) => 0.0,
                         Value::Bool(false) => 1.0,
                         Value::Undef => 10.0,
@@ -244,7 +245,7 @@ fn constraint_violation(expr: &CompiledExpr, values: &ValueMap) -> f64 {
         }
         _ => {
             // Non-binop expression (e.g., literal bool, function call)
-            match reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values)) {
+            match reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)) {
                 Value::Bool(true) => 0.0,
                 Value::Bool(false) => 1.0,
                 Value::Undef => 10.0,
@@ -262,10 +263,11 @@ fn constraint_violation(expr: &CompiledExpr, values: &ValueMap) -> f64 {
 fn max_constraint_residual(
     constraints: &[(ConstraintNodeId, CompiledExpr)],
     values: &ValueMap,
+    functions: &[CompiledFunction],
 ) -> f64 {
     constraints
         .iter()
-        .map(|(_, expr)| constraint_residual(expr, values))
+        .map(|(_, expr)| constraint_residual(expr, values, functions))
         .fold(0.0_f64, f64::max)
 }
 
@@ -276,10 +278,11 @@ fn max_constraint_residual(
 fn compute_total_violation(
     constraints: &[(ConstraintNodeId, CompiledExpr)],
     values: &ValueMap,
+    functions: &[CompiledFunction],
 ) -> f64 {
     constraints
         .iter()
-        .map(|(_, expr)| constraint_violation(expr, values))
+        .map(|(_, expr)| constraint_violation(expr, values, functions))
         .sum()
 }
 
@@ -292,18 +295,19 @@ struct ConstraintCostFunction<'a> {
     constraints: &'a [(ConstraintNodeId, CompiledExpr)],
     base_values: &'a ValueMap,
     objective: &'a Option<OptimizationObjective>,
+    functions: &'a [CompiledFunction],
 }
 
 /// Evaluate an optimization objective expression, returning its f64 value.
 /// For Minimize, returns the value directly. For Maximize, negates it.
 /// Returns None if the expression evaluates to a non-numeric value (Undef)
 /// or a non-finite float (NaN, Inf).
-fn eval_objective(objective: &OptimizationObjective, values: &ValueMap) -> Option<f64> {
+fn eval_objective(objective: &OptimizationObjective, values: &ValueMap, functions: &[CompiledFunction]) -> Option<f64> {
     match objective {
-        OptimizationObjective::Minimize(expr) => reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values))
+        OptimizationObjective::Minimize(expr) => reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions))
             .as_f64()
             .filter(|v| v.is_finite()),
-        OptimizationObjective::Maximize(expr) => reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(values))
+        OptimizationObjective::Maximize(expr) => reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions))
             .as_f64()
             .filter(|v| v.is_finite())
             .map(|v| -v),
@@ -326,12 +330,12 @@ impl CostFunction for ConstraintCostFunction<'_> {
         }
 
         let values = build_trial_values(self.base_values, self.auto_params, &clamped);
-        let violation = compute_total_violation(self.constraints, &values);
+        let violation = compute_total_violation(self.constraints, &values, self.functions);
 
         let cost = match self.objective {
             Some(obj) => {
                 // Combine objective with penalty for constraint violations and bounds
-                let obj_value = eval_objective(obj, &values)
+                let obj_value = eval_objective(obj, &values, self.functions)
                     .unwrap_or(UNDEF_OBJECTIVE_PENALTY);
                 obj_value + PENALTY_WEIGHT * violation + PENALTY_WEIGHT * bound_penalty
             }
@@ -402,7 +406,7 @@ impl ConstraintSolver for DimensionalSolver {
                 &problem.auto_params,
                 &initial,
             );
-            let max_residual = max_constraint_residual(&problem.constraints, &trial_values);
+            let max_residual = max_constraint_residual(&problem.constraints, &trial_values, &problem.functions);
             if max_residual <= FEASIBILITY_THRESHOLD {
                 let mut values = HashMap::new();
                 for (param, &val) in problem.auto_params.iter().zip(initial.iter()) {
@@ -423,6 +427,7 @@ impl ConstraintSolver for DimensionalSolver {
             constraints: &problem.constraints,
             base_values: &problem.current_values,
             objective: &problem.objective,
+            functions: &problem.functions,
         };
 
         // Extract initial point and build simplex
@@ -473,7 +478,7 @@ impl ConstraintSolver for DimensionalSolver {
             &problem.auto_params,
             &clamped,
         );
-        let final_max_residual = max_constraint_residual(&problem.constraints, &final_values);
+        let final_max_residual = max_constraint_residual(&problem.constraints, &final_values, &problem.functions);
         if final_max_residual > FEASIBILITY_THRESHOLD {
             return SolveResult::Infeasible {
                 diagnostics: vec![reify_types::Diagnostic {
@@ -490,7 +495,7 @@ impl ConstraintSolver for DimensionalSolver {
         // Post-solve objective validation: if the objective is still non-numeric
         // at the solution point, report NoProgress rather than Solved.
         if let Some(obj) = &problem.objective
-            && eval_objective(obj, &final_values).is_none()
+            && eval_objective(obj, &final_values, &problem.functions).is_none()
         {
             return SolveResult::NoProgress {
                 reason: "objective expression evaluated to undefined at solution point"
@@ -614,7 +619,7 @@ mod tests {
         );
 
         let constraints = vec![(ConstraintNodeId::new("Bracket", 0), expr)];
-        let violation = compute_total_violation(&constraints, &values);
+        let violation = compute_total_violation(&constraints, &values, &[]);
         assert!(
             violation.abs() < 1e-15,
             "satisfied constraint should have zero violation, got {}",
@@ -651,7 +656,7 @@ mod tests {
         );
 
         let constraints = vec![(ConstraintNodeId::new("Bracket", 0), expr)];
-        let violation = compute_total_violation(&constraints, &values);
+        let violation = compute_total_violation(&constraints, &values, &[]);
         assert!(
             violation > 0.0,
             "violated constraint should have positive violation"
@@ -709,7 +714,7 @@ mod tests {
             (ConstraintNodeId::new("Bracket", 0), expr1),
             (ConstraintNodeId::new("Bracket", 1), expr2),
         ];
-        let violation = compute_total_violation(&constraints, &values);
+        let violation = compute_total_violation(&constraints, &values, &[]);
         // Only the violated constraint contributes
         assert!(
             violation > 0.0,
@@ -727,6 +732,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
+            functions: vec![],
         };
 
         let result = solver.solve(&problem);
@@ -782,6 +788,7 @@ mod tests {
             ],
             current_values: ValueMap::new(),
             objective: None,
+            functions: vec![],
         };
 
         let result = solver.solve(&problem);
@@ -845,6 +852,7 @@ mod tests {
             ],
             current_values: ValueMap::new(),
             objective: None,
+            functions: vec![],
         };
 
         let result = solver.solve(&problem);
@@ -907,6 +915,7 @@ mod tests {
             ],
             current_values: ValueMap::new(),
             objective: Some(objective),
+            functions: vec![],
         };
 
         let result = solver.solve(&problem);
@@ -993,6 +1002,7 @@ mod tests {
             ],
             current_values: ValueMap::new(),
             objective: None,
+            functions: vec![],
         };
 
         let result = solver.solve(&problem);
@@ -1052,6 +1062,7 @@ mod tests {
             constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
             current_values: ValueMap::new(),
             objective: None,
+            functions: vec![],
         };
 
         let result = solver.solve(&problem);
@@ -1113,6 +1124,7 @@ mod tests {
             ],
             current_values: ValueMap::new(),
             objective: None,
+            functions: vec![],
         };
 
         let result = solver.solve(&problem);
@@ -1144,7 +1156,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values);
+        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[]);
         assert!(
             (res - 1e-7).abs() < 1e-12,
             "Gt violated by 1e-7 should have residual ~1e-7, got {:.2e}",
@@ -1166,7 +1178,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Ge, &l_expr, &r_expr, &values);
+        let res = comparison_residual(BinOp::Ge, &l_expr, &r_expr, &values, &[]);
         assert_eq!(res, 0.0, "Ge with l==r should be satisfied (residual=0)");
     }
 
@@ -1185,7 +1197,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Lt, &l_expr, &r_expr, &values);
+        let res = comparison_residual(BinOp::Lt, &l_expr, &r_expr, &values, &[]);
         assert!(
             (res - 0.005).abs() < 1e-15,
             "Lt violated by 0.005 should have residual 0.005, got {}",
@@ -1207,7 +1219,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Le, &l_expr, &r_expr, &values);
+        let res = comparison_residual(BinOp::Le, &l_expr, &r_expr, &values, &[]);
         assert_eq!(res, 0.0, "Le with l<r should be satisfied");
     }
 
@@ -1225,7 +1237,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Eq, &l_expr, &r_expr, &values);
+        let res = comparison_residual(BinOp::Eq, &l_expr, &r_expr, &values, &[]);
         assert!(
             (res - 1e-6).abs() < 1e-12,
             "Eq with difference 1e-6 should have residual 1e-6, got {:.2e}",
@@ -1252,7 +1264,7 @@ mod tests {
             Value::Scalar { si_value: 1.9999999, dimension: DimensionVector::LENGTH },
         );
 
-        let res = constraint_residual(&expr, &values);
+        let res = constraint_residual(&expr, &values, &[]);
         assert!(
             (res - 1e-7).abs() < 1e-12,
             "single Gt constraint_residual should delegate correctly, got {:.2e}",
@@ -1292,7 +1304,7 @@ mod tests {
             Value::Scalar { si_value: 0.99999, dimension: DimensionVector::LENGTH },
         );
 
-        let res = constraint_residual(&and_expr, &values);
+        let res = constraint_residual(&and_expr, &values, &[]);
         // max(1e-7, 1e-5) = 1e-5
         assert!(
             (res - 1e-5).abs() < 1e-10,
@@ -1333,7 +1345,7 @@ mod tests {
             Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
         );
 
-        let res = constraint_residual(&or_expr, &values);
+        let res = constraint_residual(&or_expr, &values, &[]);
         assert_eq!(res, 0.0, "Or with one satisfied should return 0.0");
     }
 
@@ -1377,7 +1389,7 @@ mod tests {
             Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
         );
 
-        let res = max_constraint_residual(&constraints, &values);
+        let res = max_constraint_residual(&constraints, &values, &[]);
         assert!(
             (res - 1e-5).abs() < 1e-10,
             "should return worst violation ~1e-5, got {:.2e}",
@@ -1405,7 +1417,7 @@ mod tests {
             Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
         );
 
-        let res = max_constraint_residual(&constraints, &values);
+        let res = max_constraint_residual(&constraints, &values, &[]);
         assert_eq!(res, 0.0, "all satisfied should return 0.0");
     }
 
@@ -1415,7 +1427,7 @@ mod tests {
 
         let constraints = vec![];
         let values = ValueMap::new();
-        let res = max_constraint_residual(&constraints, &values);
+        let res = max_constraint_residual(&constraints, &values, &[]);
         assert_eq!(res, 0.0, "empty constraints should return 0.0");
     }
 
@@ -1427,13 +1439,13 @@ mod tests {
         let values = ValueMap::new();
 
         let t = CompiledExpr::literal(Value::Bool(true), Type::Bool);
-        assert_eq!(constraint_residual(&t, &values), 0.0);
+        assert_eq!(constraint_residual(&t, &values, &[]), 0.0);
 
         let f = CompiledExpr::literal(Value::Bool(false), Type::Bool);
-        assert_eq!(constraint_residual(&f, &values), 1.0);
+        assert_eq!(constraint_residual(&f, &values, &[]), 1.0);
 
         let u = CompiledExpr::literal(Value::Undef, Type::Bool);
-        assert_eq!(constraint_residual(&u, &values), 10.0);
+        assert_eq!(constraint_residual(&u, &values, &[]), 10.0);
     }
 
     #[test]
@@ -1445,7 +1457,7 @@ mod tests {
         let l_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
         let r_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values);
+        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[]);
         assert_eq!(res, 1.0, "Non-numeric inputs should give residual 1.0");
     }
 
@@ -1480,6 +1492,7 @@ mod tests {
             constraints: &constraints,
             base_values: &base_values,
             objective: &None,
+            functions: &[],
         };
 
         // In bounds: x=0.005
@@ -1534,6 +1547,7 @@ mod tests {
             constraints: &constraints,
             base_values: &base_values,
             objective: &objective,
+            functions: &[],
         };
 
         // x=0.005 is in bounds and satisfies x > 0, but objective is Undef
@@ -1586,6 +1600,7 @@ mod tests {
             constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
             current_values: current,
             objective: None,
+            functions: vec![],
         };
 
         let result = solver.solve(&problem);
