@@ -320,6 +320,26 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 _ => Value::Undef,
             }
         },
+        "fold" => {
+            if args.len() != 2 {
+                return Value::Undef;
+            }
+            let init = &args[0];
+            let lambda = &args[1];
+            match obj {
+                Value::List(items) => {
+                    let mut acc = init.clone();
+                    for item in items {
+                        acc = apply_lambda(lambda, &[acc, item.clone()]);
+                        if acc.is_undef() {
+                            return Value::Undef;
+                        }
+                    }
+                    acc
+                }
+                _ => Value::Undef,
+            }
+        },
         "filter" => {
             if args.len() != 1 {
                 return Value::Undef;
