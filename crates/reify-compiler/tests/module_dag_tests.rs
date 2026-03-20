@@ -376,3 +376,46 @@ fn backward_compatible_single_module_no_imports() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ── Step 33: CompiledImport preserves kind and is_pub ────────────
+
+#[test]
+fn compiled_import_preserves_kind_and_is_pub() {
+    let dir = test_dir("compiled_import_fields");
+
+    // Module a defines a pub structure Helper
+    fs::write(
+        dir.join("a.ri"),
+        "pub structure Helper {\n    param v: Scalar = 1mm\n}",
+    )
+    .unwrap();
+
+    // Module b has a pub import (re-export) and a plain module import
+    fs::write(
+        dir.join("b.ri"),
+        "pub import a.Helper\nimport a\nstructure Wrapper {\n    param w: Scalar = 2mm\n}",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project(&dir.join("b.ri"), &resolver);
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+
+    let modules = result.unwrap();
+    let b_module = modules.last().unwrap();
+
+    // b should have 2 imports
+    assert_eq!(b_module.imports.len(), 2, "expected 2 imports in b");
+
+    // First import: `pub import a.Helper` → Entity("Helper"), is_pub=true
+    let imp0 = &b_module.imports[0];
+    assert_eq!(imp0.kind, reify_syntax::ImportKind::Entity("Helper".to_string()));
+    assert!(imp0.is_pub, "first import should be pub");
+
+    // Second import: `import a` → Module, is_pub=false
+    let imp1 = &b_module.imports[1];
+    assert_eq!(imp1.kind, reify_syntax::ImportKind::Module);
+    assert!(!imp1.is_pub, "second import should not be pub");
+
+    let _ = fs::remove_dir_all(&dir);
+}
