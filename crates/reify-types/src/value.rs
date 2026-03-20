@@ -414,10 +414,45 @@ mod tests {
     }
 
     #[test]
-    fn neg_zero_normalized() {
+    fn real_neg_zero_not_normalized_in_hash() {
+        // -0.0 and 0.0 are different via PartialEq (to_bits), so content_hash must differ
         let pos = Value::Real(0.0);
         let neg = Value::Real(-0.0);
-        assert_eq!(pos.content_hash(), neg.content_hash());
+        assert_ne!(pos.content_hash(), neg.content_hash());
+    }
+
+    #[test]
+    fn real_neg_zero_hash_differs_from_pos_zero() {
+        let pos = Value::Real(0.0);
+        let neg = Value::Real(-0.0);
+        // PartialEq uses to_bits(), so -0.0 != 0.0
+        assert_ne!(pos, neg);
+        // Therefore content_hash must also differ (cache invariant)
+        assert_ne!(pos.content_hash(), neg.content_hash());
+    }
+
+    #[test]
+    fn scalar_neg_zero_hash_differs_from_pos_zero() {
+        let pos = Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH };
+        let neg = Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH };
+        // PartialEq uses to_bits(), so -0.0 != 0.0
+        assert_ne!(pos, neg);
+        // Therefore content_hash must also differ (cache invariant)
+        assert_ne!(pos.content_hash(), neg.content_hash());
+    }
+
+    #[test]
+    fn hash_equality_invariant_real() {
+        // Spot-check: for -0.0 and 0.0, if a != b then a.content_hash() != b.content_hash()
+        let a = Value::Real(-0.0);
+        let b = Value::Real(0.0);
+        if a != b {
+            assert_ne!(
+                a.content_hash(),
+                b.content_hash(),
+                "hash-equality invariant violated: unequal values must have different hashes"
+            );
+        }
     }
 
     #[test]
