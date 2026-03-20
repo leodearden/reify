@@ -960,6 +960,7 @@ impl<'a> Lowering<'a> {
             "unary_expression" => self.lower_unary_expr(node),
             "conditional_expression" => self.lower_conditional(node),
             "match_expression" => self.lower_match_expr(node),
+            "lambda_expression" => self.lower_lambda_expression(node),
             "quantity_literal" => self.lower_quantity_literal(node),
             "number_literal" => self.lower_number_literal(node),
             "string_literal" => self.lower_string_literal(node),
@@ -1043,6 +1044,53 @@ impl<'a> Lowering<'a> {
                 then_branch: Box::new(then_branch),
                 else_branch: Box::new(else_branch),
             },
+            span: self.span(node),
+        })
+    }
+
+    fn lower_lambda_expression(&self, node: tree_sitter::Node) -> Option<Expr> {
+        // Collect lambda_param children
+        let mut params = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "lambda_param" {
+                if let Some(param) = self.lower_lambda_param(child) {
+                    params.push(param);
+                }
+            }
+        }
+
+        let body_node = node.child_by_field_name("body")?;
+        let body = self.lower_expr(body_node)?;
+
+        Some(Expr {
+            kind: ExprKind::Lambda {
+                params,
+                body: Box::new(body),
+            },
+            span: self.span(node),
+        })
+    }
+
+    fn lower_lambda_param(&self, node: tree_sitter::Node) -> Option<LambdaParam> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let type_expr = node.child_by_field_name("type").map(|t| {
+            let ident = if t.kind() == "type_expr" {
+                t.child(0).unwrap_or(t)
+            } else {
+                t
+            };
+            TypeExpr {
+                name: self.node_text(ident).to_string(),
+                span: self.span(ident),
+            }
+        });
+
+        Some(LambdaParam {
+            name,
+            type_expr,
             span: self.span(node),
         })
     }
