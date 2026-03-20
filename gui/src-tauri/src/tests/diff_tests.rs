@@ -134,3 +134,35 @@ fn diff_detects_changed_mesh_ignores_unchanged() {
     assert_eq!(delta.changed_meshes[0].vertices, vec![2.0, 2.0, 2.0]);
     assert!(delta.removed_mesh_paths.is_empty());
 }
+
+#[test]
+fn diff_handles_added_and_removed_entities() {
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![
+            sample_value("Bracket.width", "80"),
+            sample_value("Bracket.old_param", "10"),
+        ],
+        constraints: vec![],
+        files: vec![],
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![
+            sample_value("Bracket.width", "80"),
+            sample_value("Bracket.new_param", "20"), // added
+        ],
+        constraints: vec![],
+        files: vec![],
+    };
+
+    let delta = diff_gui_state(&old, &new);
+
+    // new_param is added (appears in changed_values)
+    assert_eq!(delta.changed_values.len(), 1);
+    assert_eq!(delta.changed_values[0].cell_id, "Bracket.new_param");
+
+    // old_param is removed
+    assert_eq!(delta.removed_value_ids.len(), 1);
+    assert_eq!(delta.removed_value_ids[0], "Bracket.old_param");
+}
