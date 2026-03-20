@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { LanguageSupport } from '@codemirror/language';
 import { highlightTree } from '@lezer/highlight';
 import { classHighlighter } from '@lezer/highlight';
+import { NodeProp } from '@lezer/common';
 import { reifyLanguage, reifyLRLanguage } from '../src/editor/reifyLanguage.js';
 
 describe('reifyLanguage()', () => {
@@ -84,8 +85,7 @@ describe('bracket matching', () => {
     expect(closeBrace).not.toBeNull();
     // The @detectDelim directive should add closedBy/openedBy props
     const openNode = tree.resolve(openBrace!.from, 1);
-    expect(openNode.type.prop(/* NodeProp.closedBy */ Symbol.for('closedBy')) ||
-           openNode.name === '{').toBeTruthy();
+    expect(openNode.type.prop(NodeProp.closedBy)).toBeDefined();
   });
 
   it('matches parentheses', () => {
