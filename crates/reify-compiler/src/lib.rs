@@ -43,6 +43,7 @@ pub struct TopologyTemplate {
 pub struct SubComponentDecl {
     pub name: String,
     pub structure_name: String,
+    pub visibility: Visibility,
     pub args: Vec<(String, CompiledExpr)>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
@@ -976,6 +977,7 @@ fn compile_structure(
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
                     structure_name: sub.structure_name.clone(),
+                    visibility: Visibility::Public,
                     args: compiled_args,
                     span: sub.span,
                     content_hash: sub.content_hash,

@@ -269,6 +269,7 @@ impl TopologyTemplateBuilder {
             content_hash: ContentHash::of_str(&format!("sub {} = {}", name, structure_name)),
             name,
             structure_name,
+            visibility: reify_compiler::Visibility::Public,
             args,
             span: SourceSpan::new(0, 0),
         });
