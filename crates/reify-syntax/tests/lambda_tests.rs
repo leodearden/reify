@@ -89,3 +89,58 @@ structure S {
         other => panic!("expected Lambda, got {:?}", other),
     }
 }
+
+/// step-5: Parse `|| true` (zero-param lambda).
+#[test]
+fn parse_lambda_zero_params() {
+    let source = r#"
+structure S {
+    let f = || true
+}
+"#;
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let let_decl = match &members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+
+    match &let_decl.value.kind {
+        ExprKind::Lambda { params, body } => {
+            assert_eq!(params.len(), 0);
+            assert!(matches!(&body.kind, ExprKind::BoolLiteral(true)));
+        }
+        other => panic!("expected Lambda, got {:?}", other),
+    }
+}
+
+/// step-5: Parse `|x, y, z| x + y + z` (3-param untyped lambda).
+#[test]
+fn parse_lambda_three_params() {
+    let source = r#"
+structure S {
+    let f = |x, y, z| x + y + z
+}
+"#;
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let let_decl = match &members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+
+    match &let_decl.value.kind {
+        ExprKind::Lambda { params, body } => {
+            assert_eq!(params.len(), 3);
+            assert_eq!(params[0].name, "x");
+            assert_eq!(params[1].name, "y");
+            assert_eq!(params[2].name, "z");
+            assert!(params.iter().all(|p| p.type_expr.is_none()));
+            // Body should be a nested BinOp (x + y) + z
+            assert!(matches!(&body.kind, ExprKind::BinOp { op, .. } if op == "+"));
+        }
+        other => panic!("expected Lambda, got {:?}", other),
+    }
+}
