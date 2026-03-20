@@ -17,7 +17,7 @@
     "gui/src/viewport",
     "gui/src/__tests__/viewport"
   ],
-  "analysis": "This task creates the Three.js 3D viewport for the Reify GUI. The gui/ directory already has a well-structured SolidJS app with Tauri bridge, engineStore (which holds meshes as Record<string, MeshData>), theme tokens (viewportBg: '#181825'), and comprehensive test patterns using vitest + @solidjs/testing-library + jsdom.\n\nKey observations:\n1. MeshData uses typed arrays (Float32Array for vertices/normals, Uint32Array for indices) \u2014 maps directly to Three.js BufferGeometry attributes.\n2. engineStore.state.meshes is a Record<string, MeshData> keyed by entity_path \u2014 meshManager needs to diff this to create/update/remove Three.js Mesh objects.\n3. jsdom doesn't support WebGL, so all Three.js classes must be mocked in tests. We test logic/wiring, not actual rendering.\n4. The app uses pnpm (pnpm-lock.yaml exists), so we use pnpm for dependency installation.\n5. Theme provides viewportBg (#181825) for the renderer background.\n6. The task description mentions 'distinct colors per entity_path' \u2014 we'll use a deterministic color palette (hash entity_path to pick from a set of Catppuccin-style accent colors).\n\nArchitecture:\n- scene.ts: Factory function returning {scene, camera, renderer, lights}. Sets up PerspectiveCamera, ambient+directional lights, GridHelper, AxesHelper, and configures renderer with dark background.\n- controls.ts: Thin wrapper around OrbitControls, exposing orbit/pan/zoom with sensible defaults and a dispose method.\n- meshManager.ts: Pure logic class that maintains a Map<string, THREE.Mesh> and provides a sync(meshes: Record<string, MeshData>) method that diffs the current Three.js meshes against incoming data.\n- Viewport.tsx: SolidJS component with a canvas ref, initializes scene/renderer/controls onMount, uses createEffect to subscribe to engineStore.meshes, handles resize, runs requestAnimationFrame loop, cleans up onCleanup.",
+  "analysis": "This task creates the Three.js 3D viewport for the Reify GUI. The gui/ directory already has a well-structured SolidJS app with Tauri bridge, engineStore (which holds meshes as Record<string, MeshData>), theme tokens (viewportBg: '#181825'), and comprehensive test patterns using vitest + @solidjs/testing-library + jsdom.\n\nKey observations:\n1. MeshData uses typed arrays (Float32Array for vertices/normals, Uint32Array for indices) \u2014 maps directly to Three.js BufferGeometry attributes.\n2. engineStore.state.meshes is a Record<string, MeshData> keyed by entity_path \u2014 meshManager needs to diff this to create/update/remove Three.js Mesh objects.\n3. jsdom doesn't support WebGL, so all Three.js classes must be mocked in tests. We test logic/wiring, not actual rendering.\n4. The app uses pnpm (pnpm-lock.yaml exists), so we use pnpm for dependency installation.\n5. Theme provides viewportBg (#181825) for the renderer background.\n6. The task description mentions 'distinct colors per entity_path' \u2014 we'll use a deterministic color palette (hash entity_path to pick from a set of Catppuccin-style accent colors).\n\nArchitecture:\n- scene.ts: Factory function returning {scene, camera, renderer, lights}. Sets up PerspectiveCamera, ambient+directional lights, GridHelper, AxesHelper, and configures renderer with dark background.\n- controls.ts: Thin wrapper around OrbitControls, exposing orbit/pan/zoom with sensible defaults and a dispose method.\n- meshManager.ts: Pure logic class that maintains a Map<string, THREE.Mesh> and provides a sync(meshes: Record<string, MeshData>) method that diffs the current Three.js meshes against incoming data.\n- Viewport.tsx: SolidJS component with a canvas ref, initializes scene/renderer/controls onMount, uses createEffect to subscribe to engineStore.meshes, handles resize, runs requestAnimationFrame loop, cleans up onCleanup.\n\nReview fixes (post-implementation):\n- [gpu_memory_leak] updateMeshGeometry creates new BufferAttribute objects every sync, orphaning GPU-side WebGLBuffer allocations. Fix: reuse existing BufferAttribute objects, reassign .array and set .needsUpdate = true.\n- [test_does_not_test_what_it_claims] Deterministic color test only asserts toBeDefined() but never checks equality. Fix: assert colorA2.value === colorA1.value and assert against known expected palette entry.\n- [race_condition] RAF animate loop races with onCleanup \u2014 renderer.render() can be called on a disposed renderer. Fix: introduce disposed flag, guard animate body.\n- [stale_data] updateMeshGeometry never removes normal attribute when data.normals becomes null. Fix: add else branch with geometry.deleteAttribute('normal').",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -90,6 +90,34 @@
       "description": "Implement Viewport.tsx: SolidJS component that creates a container div (100% width/height) with a <canvas> ref inside. onMount: initialize createScene(canvas, w, h), createControls(camera, renderer.domElement), createMeshManager(scene). Use createEffect watching a meshes prop (Record<string, MeshData>) to call meshManager.sync(). Set up ResizeObserver on the container div to call scene resize + renderer.setSize. Start requestAnimationFrame render loop (controls.update + renderer.render(scene, camera)). onCleanup: cancel RAF, dispose controls, dispose meshManager, dispose renderer, disconnect ResizeObserver. Implement index.ts to export Viewport component, and re-export createScene, createControls, createMeshManager for testability.",
       "status": "done",
       "commit": "cc0e117"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing tests for meshManager GPU memory leak and stale normals fixes in gui/src/__tests__/viewport/meshManager.test.ts. Enhance MockBufferGeometry to add getAttribute(name) method (returns this.attributes[name]) and deleteAttribute(name) method (deletes this.attributes[name]). Add needsUpdate property tracking to MockBufferAttribute. (1) New test 'update reuses existing BufferAttribute objects and sets needsUpdate': sync a mesh, capture the position attribute object reference, sync with new vertices, assert the attribute is the SAME object (toBe identity check), its .array points to the new Float32Array, and .needsUpdate === true. Repeat for index. (2) New test 'update with normals becoming null removes stale normal attribute': sync a mesh with normals, confirm normal attribute exists, then sync the same entity with normals=null, assert geometry.attributes.normal is undefined. (3) Fix existing test 'each entity_path gets a deterministic color (same path = same color)': replace toBeDefined() with expect(colorA2.value).toBe(colorA1.value), and add assertion that colorA1.value equals the expected palette entry (djb2 hash of 'A' = 65, abs(65) % 8 = 1, so expected is '#cba6f7'). These tests will fail against the current implementation.",
+      "status": "done",
+      "commit": "2c12914"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Fix meshManager.ts updateMeshGeometry() to address GPU memory leak and stale normals. (1) GPU leak fix: instead of creating new BufferAttribute objects, retrieve existing attributes via geometry.getAttribute('position')/getAttribute('normal'), reassign .array, update .count, and set .needsUpdate = true. For index: retrieve geometry.index, reassign .array, .count, .needsUpdate. (2) Stale normals fix: add an else branch after the normals check: if data.normals is null and geometry has an existing 'normal' attribute, call geometry.deleteAttribute('normal'). The getAttribute approach reuses the same WebGLBuffer on the GPU side rather than orphaning the old one.",
+      "status": "done",
+      "commit": "9a763dc"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test for Viewport RAF race condition in gui/src/__tests__/viewport/Viewport.test.tsx. Replace the simple requestAnimationFrame stub with one that captures callbacks. New test 'animate loop does not call renderer.render after cleanup/dispose': render the Viewport, capture the RAF callback, trigger component cleanup (unmount), then manually invoke the captured animate callback, assert that mockRendererRender was NOT called after the cleanup point. Also test that animationFrameId is initialized safely (cancelAnimationFrame is called with a valid number, not undefined). This test will fail against the current implementation because there is no disposed guard.",
+      "status": "done",
+      "commit": "59e7ade"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Fix Viewport.tsx RAF race condition. (1) Add 'let disposed = false' at the top of the onMount block. (2) Set 'disposed = true' as the very first statement in onCleanup, before cancelAnimationFrame. (3) Guard the animate() function body: 'if (disposed) return;' before controls.update() and renderer.render(). (4) Initialize animationFrameId to 0 (instead of leaving uninitialized) for safety with cancelAnimationFrame.",
+      "status": "done",
+      "commit": "3252579"
     }
   ],
   "design_decisions": [
@@ -124,6 +152,18 @@
     {
       "decision": "Viewport accepts meshes as a prop rather than directly importing engineStore",
       "rationale": "Keeps the Viewport component decoupled from the specific store implementation, making it easier to test (pass mock data) and reuse. The parent component (App.tsx or a layout component) is responsible for wiring engineStore.state.meshes to the Viewport prop."
+    },
+    {
+      "decision": "Reuse BufferAttribute objects on geometry update instead of creating new ones",
+      "rationale": "Three.js WebGLRenderer tracks GPU-side WebGLBuffer allocations by attribute object identity. Creating a new BufferAttribute on each update orphans the old GPU buffer, causing a memory leak. Reusing the same object and setting needsUpdate=true re-uploads data via the existing WebGLBuffer."
+    },
+    {
+      "decision": "Use a disposed flag to guard the RAF animation loop against cleanup races",
+      "rationale": "cancelAnimationFrame only cancels a pending frame. If animate() is currently executing when onCleanup fires, the renderer.render() call happens after dispose(). A boolean guard checked at the top of animate() prevents this race without adding complexity."
+    },
+    {
+      "decision": "Explicitly delete stale normal attributes when normals become null",
+      "rationale": "MeshStandardMaterial uses normals for PBR lighting. If a mesh update removes normals (e.g., switching to flat data), the old mismatched normals cause incorrect lighting. Calling geometry.deleteAttribute('normal') ensures the material falls back to computed normals."
     }
   ],
   "reuse": [
@@ -159,5 +199,5 @@
     }
   ],
   "_session_id": "89-9cfafe99",
-  "_created_at": "2026-03-20T22:29:02.868588+00:00"
+  "_created_at": "2026-03-20T22:53:23.390073+00:00"
 }
