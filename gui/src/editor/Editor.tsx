@@ -16,9 +16,11 @@ export function Editor(props: EditorProps) {
   let containerRef!: HTMLDivElement;
   let view: EditorView | undefined;
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  let previousActiveFile: string | null = null;
 
   onMount(() => {
     const activeFile = props.store.state.activeFile;
+    previousActiveFile = activeFile;
     const file = props.store.state.openFiles.find((f) => f.path === activeFile);
     const doc = file?.content ?? '';
 
@@ -66,6 +68,21 @@ export function Editor(props: EditorProps) {
     });
 
     view = new EditorView({ state, parent: containerRef });
+  });
+
+  // Watch for active file changes and swap document content
+  createEffect(() => {
+    const activeFile = props.store.state.activeFile;
+    if (!view || activeFile === previousActiveFile) return;
+    previousActiveFile = activeFile;
+
+    const file = props.store.state.openFiles.find((f) => f.path === activeFile);
+    const newContent = file?.content ?? '';
+
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: newContent },
+      selection: { anchor: 0 },
+    });
   });
 
   onCleanup(() => {
