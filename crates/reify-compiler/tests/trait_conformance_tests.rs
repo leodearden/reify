@@ -209,3 +209,30 @@ structure def S : HasSize {
         size_cells.len()
     );
 }
+
+/// Step 13: Multiple trait bounds — structure satisfies both traits.
+#[test]
+fn multiple_trait_bounds_satisfied() {
+    let source = r#"
+trait A {
+    param a : Length
+}
+
+trait B {
+    param b : Length
+}
+
+structure def X : A + B {
+    param a : Length = 1mm
+    param b : Length = 2mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
