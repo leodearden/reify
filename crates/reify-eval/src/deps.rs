@@ -341,7 +341,7 @@ mod tests {
                 kind: ValueCellKind::Param,
                 cell_type: Type::Real,
                 default_expr: None,
-                content_hash: ContentHash::of_str(*name),
+                content_hash: ContentHash::of_str(name),
             });
         }
 

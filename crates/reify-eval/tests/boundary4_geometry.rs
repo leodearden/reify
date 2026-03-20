@@ -77,8 +77,8 @@ fn mock_kernel_tessellate() {
         .unwrap();
 
     let mesh = kernel.tessellate(handle.id, 0.1).unwrap();
-    assert!(mesh.vertices.len() > 0, "mesh should have vertices");
-    assert!(mesh.indices.len() % 3 == 0, "indices should be triangle triples");
+    assert!(!mesh.vertices.is_empty(), "mesh should have vertices");
+    assert!(mesh.indices.len().is_multiple_of(3), "indices should be triangle triples");
 }
 
 #[test]
@@ -343,7 +343,7 @@ mod occt_tests {
             "mesh should have vertices"
         );
         assert!(
-            mesh.indices.len() % 3 == 0,
+            mesh.indices.len().is_multiple_of(3),
             "indices should be triangle triples, got len={}",
             mesh.indices.len()
         );

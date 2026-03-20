@@ -134,9 +134,11 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 
 // --- Topology builders ---
 
+use std::collections::HashSet;
+
 use reify_compiler::{
-    CompiledConstraint, CompiledGeometryOp, CompiledImport, CompiledModule, RealizationDecl,
-    SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
+    CompiledConstraint, CompiledGeometryOp, CompiledGuardedGroup, CompiledImport, CompiledModule,
+    RealizationDecl, SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
 };
 use reify_types::{ConstraintNodeId, RealizationNodeId};
 
@@ -148,6 +150,8 @@ pub struct TopologyTemplateBuilder {
     constraints: Vec<CompiledConstraint>,
     realizations: Vec<RealizationDecl>,
     sub_components: Vec<SubComponentDecl>,
+    guarded_groups: Vec<CompiledGuardedGroup>,
+    structure_controlling: HashSet<ValueCellId>,
     objective: Option<reify_types::OptimizationObjective>,
 }
 
@@ -160,6 +164,8 @@ impl TopologyTemplateBuilder {
             constraints: Vec::new(),
             realizations: Vec::new(),
             sub_components: Vec::new(),
+            guarded_groups: Vec::new(),
+            structure_controlling: HashSet::new(),
             objective: None,
         }
     }
@@ -276,6 +282,28 @@ impl TopologyTemplateBuilder {
         self
     }
 
+    pub fn guarded_group(
+        mut self,
+        guard_expr: CompiledExpr,
+        guard_value_cell: ValueCellId,
+        members: Vec<ValueCellDecl>,
+        constraints: Vec<CompiledConstraint>,
+        else_members: Vec<ValueCellDecl>,
+        else_constraints: Vec<CompiledConstraint>,
+    ) -> Self {
+        self.structure_controlling.insert(guard_value_cell.clone());
+        self.guarded_groups.push(CompiledGuardedGroup {
+            guard_expr,
+            guard_value_cell,
+            members,
+            constraints,
+            else_members,
+            else_constraints,
+            parent_guard: None,
+        });
+        self
+    }
+
     pub fn build(self) -> TopologyTemplate {
         // Build a content-sensitive hash matching compile_structure() logic.
         let content_hash = {
@@ -292,10 +320,29 @@ impl TopologyTemplateBuilder {
 
             let sub_hashes = self.sub_components.iter().map(|s| s.content_hash);
 
+            let guard_hashes = self.guarded_groups.iter().flat_map(|g| {
+                std::iter::once(g.guard_expr.content_hash)
+                    .chain(g.members.iter().map(|m| {
+                        m.default_expr
+                            .as_ref()
+                            .map(|e| e.content_hash)
+                            .unwrap_or(ContentHash(0))
+                    }))
+                    .chain(g.constraints.iter().map(|c| c.expr.content_hash))
+                    .chain(g.else_members.iter().map(|m| {
+                        m.default_expr
+                            .as_ref()
+                            .map(|e| e.content_hash)
+                            .unwrap_or(ContentHash(0))
+                    }))
+                    .chain(g.else_constraints.iter().map(|c| c.expr.content_hash))
+            });
+
             let all_hashes = std::iter::once(name_hash)
                 .chain(vc_hashes)
                 .chain(constraint_hashes)
-                .chain(sub_hashes);
+                .chain(sub_hashes)
+                .chain(guard_hashes);
 
             ContentHash::combine_all(all_hashes)
         };
@@ -307,6 +354,8 @@ impl TopologyTemplateBuilder {
             constraints: self.constraints,
             realizations: self.realizations,
             sub_components: self.sub_components,
+            guarded_groups: self.guarded_groups,
+            structure_controlling: self.structure_controlling,
             objective: self.objective,
             content_hash,
         }

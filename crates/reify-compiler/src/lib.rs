@@ -1,6 +1,6 @@
 pub mod module_dag;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, DimensionVector,
@@ -38,6 +38,9 @@ pub struct TopologyTemplate {
     pub constraints: Vec<CompiledConstraint>,
     pub realizations: Vec<RealizationDecl>,
     pub sub_components: Vec<SubComponentDecl>,
+    pub guarded_groups: Vec<CompiledGuardedGroup>,
+    /// ValueCellIds whose boolean value controls topology (guard cells).
+    pub structure_controlling: HashSet<ValueCellId>,
     pub objective: Option<OptimizationObjective>,
     pub content_hash: ContentHash,
 }
@@ -51,6 +54,27 @@ pub struct SubComponentDecl {
     pub args: Vec<(String, CompiledExpr)>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+/// A compiled guarded group — a set of members/constraints active only when a guard condition is true.
+#[derive(Debug, Clone)]
+pub struct CompiledGuardedGroup {
+    /// The compiled guard condition expression.
+    pub guard_expr: CompiledExpr,
+    /// Synthetic ValueCellId for the guard (Bool, Let kind).
+    pub guard_value_cell: ValueCellId,
+    /// Members active when guard is true.
+    pub members: Vec<ValueCellDecl>,
+    /// Constraints active when guard is true.
+    pub constraints: Vec<CompiledConstraint>,
+    /// Members active when guard is false (else branch).
+    pub else_members: Vec<ValueCellDecl>,
+    /// Constraints active when guard is false (else branch).
+    pub else_constraints: Vec<CompiledConstraint>,
+    /// Parent guard ValueCellId for nested guards (None for top-level guards).
+    /// Used to suppress false-positive cross-guard diagnostics when
+    /// inner guard members reference outer guard members.
+    pub parent_guard: Option<ValueCellId>,
 }
 
 /// A value cell declaration (param or let).
@@ -339,10 +363,11 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 
 // --- Compilation context ---
 
-/// Name scope: maps identifier names to (ValueCellId, Type) within a structure.
+/// Name scope: maps identifier names to (ValueCellId, Type, Option<guard_cell_id>)
+/// within a structure. The guard cell ID tracks which guard (if any) protects this name.
 struct CompilationScope {
     entity_name: String,
-    names: HashMap<String, (ValueCellId, Type)>,
+    names: HashMap<String, (ValueCellId, Type, Option<ValueCellId>)>,
 }
 
 impl CompilationScope {
@@ -355,12 +380,18 @@ impl CompilationScope {
 
     fn register(&mut self, name: &str, ty: Type) {
         let id = ValueCellId::new(&self.entity_name, name);
-        self.names.insert(name.to_string(), (id, ty));
+        self.names.insert(name.to_string(), (id, ty, None));
     }
 
-    fn resolve(&self, name: &str) -> Option<&(ValueCellId, Type)> {
-        self.names.get(name)
+    fn register_guarded(&mut self, name: &str, ty: Type, guard: ValueCellId) {
+        let id = ValueCellId::new(&self.entity_name, name);
+        self.names.insert(name.to_string(), (id, ty, Some(guard)));
     }
+
+    fn resolve(&self, name: &str) -> Option<(&ValueCellId, &Type)> {
+        self.names.get(name).map(|(id, ty, _)| (id, ty))
+    }
+
 }
 
 /// Compile an `Expr` from the AST into a `CompiledExpr`.
@@ -371,6 +402,21 @@ fn compile_expr(
     scope: &CompilationScope,
     enum_defs: &[reify_types::EnumDef],
     diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    compile_expr_guarded(expr, scope, enum_defs, diagnostics, None)
+}
+
+/// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
+///
+/// When `current_guard` is Some, references to names guarded by a different
+/// guard will produce a diagnostic error about unsafe unguarded references.
+#[allow(clippy::only_used_in_recursion)]
+fn compile_expr_guarded(
+    expr: &reify_syntax::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_types::EnumDef],
+    diagnostics: &mut Vec<Diagnostic>,
+    current_guard: Option<&ValueCellId>,
 ) -> CompiledExpr {
     match &expr.kind {
         reify_syntax::ExprKind::NumberLiteral(v) => {
@@ -418,8 +464,8 @@ fn compile_expr(
             }
         }
         reify_syntax::ExprKind::BinOp { op, left, right } => {
-            let compiled_left = compile_expr(left, scope, enum_defs, diagnostics);
-            let compiled_right = compile_expr(right, scope, enum_defs, diagnostics);
+            let compiled_left = compile_expr_guarded(left, scope, enum_defs, diagnostics, current_guard);
+            let compiled_right = compile_expr_guarded(right, scope, enum_defs, diagnostics, current_guard);
             match resolve_binop(op) {
                 Some(bin_op) => {
                     let result_type = infer_binop_type(
@@ -482,7 +528,7 @@ fn compile_expr(
             }
         }
         reify_syntax::ExprKind::UnOp { op, operand } => {
-            let compiled_operand = compile_expr(operand, scope, enum_defs, diagnostics);
+            let compiled_operand = compile_expr_guarded(operand, scope, enum_defs, diagnostics, current_guard);
             match resolve_unop(op) {
                 Some(un_op) => {
                     let result_type = match un_op {
@@ -503,7 +549,7 @@ fn compile_expr(
         reify_syntax::ExprKind::FunctionCall { name, args } => {
             let compiled_args: Vec<CompiledExpr> = args
                 .iter()
-                .map(|arg| compile_expr(arg, scope, enum_defs, diagnostics))
+                .map(|arg| compile_expr_guarded(arg, scope, enum_defs, diagnostics, current_guard))
                 .collect();
 
             let resolved = ResolvedFunction {
@@ -545,7 +591,7 @@ fn compile_expr(
         reify_syntax::ExprKind::MemberAccess { object, member } => {
             // For M1, compile the object expression but emit a diagnostic
             // since we don't yet support member access fully.
-            let _compiled_obj = compile_expr(object, scope, enum_defs, diagnostics);
+            let _compiled_obj = compile_expr_guarded(object, scope, enum_defs, diagnostics, current_guard);
             diagnostics.push(
                 Diagnostic::error(format!("member access not yet supported: .{}", member))
                     .with_label(DiagnosticLabel::new(expr.span, "unsupported in M1")),
@@ -610,11 +656,11 @@ fn compile_expr(
             }
         }
         reify_syntax::ExprKind::Match { discriminant, arms } => {
-            let compiled_discriminant = compile_expr(discriminant, scope, enum_defs, diagnostics);
+            let compiled_discriminant = compile_expr_guarded(discriminant, scope, enum_defs, diagnostics, current_guard);
             let compiled_arms: Vec<reify_types::CompiledMatchArm> = arms
                 .iter()
                 .map(|arm| {
-                    let body = compile_expr(&arm.body, scope, enum_defs, diagnostics);
+                    let body = compile_expr_guarded(&arm.body, scope, enum_defs, diagnostics, current_guard);
                     reify_types::CompiledMatchArm {
                         patterns: arm.patterns.clone(),
                         body,
@@ -695,9 +741,9 @@ fn compile_expr(
             then_branch,
             else_branch,
         } => {
-            let compiled_cond = compile_expr(condition, scope, enum_defs, diagnostics);
-            let compiled_then = compile_expr(then_branch, scope, enum_defs, diagnostics);
-            let compiled_else = compile_expr(else_branch, scope, enum_defs, diagnostics);
+            let compiled_cond = compile_expr_guarded(condition, scope, enum_defs, diagnostics, current_guard);
+            let compiled_then = compile_expr_guarded(then_branch, scope, enum_defs, diagnostics, current_guard);
+            let compiled_else = compile_expr_guarded(else_branch, scope, enum_defs, diagnostics, current_guard);
             let result_type = compiled_then.result_type.clone();
 
             let content_hash = ContentHash::of(&[5])
@@ -829,8 +875,11 @@ fn compile_structure(
     let mut value_cells = Vec::new();
     let mut constraints = Vec::new();
     let mut sub_components = Vec::new();
+    let mut guarded_groups: Vec<CompiledGuardedGroup> = Vec::new();
+    let mut structure_controlling: HashSet<ValueCellId> = HashSet::new();
     let mut objective: Option<OptimizationObjective> = None;
     let mut constraint_index: u32 = 0;
+    let mut guard_index: u32 = 0;
 
     // First pass: register all param and let names into the scope so they can
     // reference each other (forward references within the structure).
@@ -872,6 +921,10 @@ fn compile_structure(
                 // We'll update this after the expression is compiled.
                 scope.register(&let_decl.name, Type::Real);
             }
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                register_guarded_names(&g.members, &mut scope, diagnostics);
+                register_guarded_names(&g.else_members, &mut scope, diagnostics);
+            }
             _ => {}
         }
     }
@@ -892,29 +945,45 @@ fn compile_structure(
                     Some(reify_syntax::Expr { kind: reify_syntax::ExprKind::Auto, .. })
                 );
 
-                if is_auto {
-                    value_cells.push(ValueCellDecl {
+                let decl = if is_auto {
+                    ValueCellDecl {
                         id,
                         kind: ValueCellKind::Auto,
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,
                         span: param.span,
-                    });
+                    }
                 } else {
                     let default_expr = param
                         .default
                         .as_ref()
                         .map(|expr| compile_expr(expr, &scope, enum_defs, diagnostics));
 
-                    value_cells.push(ValueCellDecl {
+                    ValueCellDecl {
                         id,
                         kind: ValueCellKind::Param,
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr,
                         span: param.span,
-                    });
+                    }
+                };
+
+                if let Some(wc) = &param.where_clause {
+                    compile_per_decl_guard(
+                        entity_name,
+                        wc,
+                        decl,
+                        &mut scope,
+                        enum_defs,
+                        diagnostics,
+                        &mut guarded_groups,
+                        &mut structure_controlling,
+                        &mut guard_index,
+                    );
+                } else {
+                    value_cells.push(decl);
                 }
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
@@ -936,14 +1005,30 @@ fn compile_structure(
                     Visibility::Private
                 };
 
-                value_cells.push(ValueCellDecl {
+                let decl = ValueCellDecl {
                     id,
                     kind: ValueCellKind::Let,
                     visibility,
                     cell_type,
                     default_expr: Some(compiled_expr),
                     span: let_decl.span,
-                });
+                };
+
+                if let Some(wc) = &let_decl.where_clause {
+                    compile_per_decl_guard(
+                        entity_name,
+                        wc,
+                        decl,
+                        &mut scope,
+                        enum_defs,
+                        diagnostics,
+                        &mut guarded_groups,
+                        &mut structure_controlling,
+                        &mut guard_index,
+                    );
+                } else {
+                    value_cells.push(decl);
+                }
             }
             reify_syntax::MemberDecl::Constraint(constraint) => {
                 let compiled_expr = compile_expr(&constraint.expr, &scope, enum_defs, diagnostics);
@@ -963,13 +1048,29 @@ fn compile_structure(
                 }
 
                 let id = ConstraintNodeId::new(entity_name, constraint_index);
-                constraints.push(CompiledConstraint {
+                let cc = CompiledConstraint {
                     id,
                     label: constraint.label.clone(),
                     expr: compiled_expr,
                     span: constraint.span,
-                });
+                };
                 constraint_index += 1;
+
+                if let Some(wc) = &constraint.where_clause {
+                    compile_per_decl_constraint_guard(
+                        entity_name,
+                        wc,
+                        cc,
+                        &mut scope,
+                        enum_defs,
+                        diagnostics,
+                        &mut guarded_groups,
+                        &mut structure_controlling,
+                        &mut guard_index,
+                    );
+                } else {
+                    constraints.push(cc);
+                }
             }
             reify_syntax::MemberDecl::Sub(sub) => {
                 let compiled_args: Vec<(String, CompiledExpr)> = sub
@@ -997,9 +1098,19 @@ fn compile_structure(
                 let compiled_expr = compile_expr(&max_decl.expr, &scope, enum_defs, diagnostics);
                 objective = Some(OptimizationObjective::Maximize(compiled_expr));
             }
-            reify_syntax::MemberDecl::GuardedGroup(_) => {
-                // Guard evaluation semantics are not yet implemented in the compiler.
-                // Guarded groups will be handled in a future task.
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                compile_block_guard(
+                    entity_name,
+                    g,
+                    None, // no outer guard
+                    &mut scope,
+                    enum_defs,
+                    diagnostics,
+                    &mut guarded_groups,
+                    &mut structure_controlling,
+                    &mut guard_index,
+                    &mut constraint_index,
+                );
             }
         }
     }
@@ -1040,10 +1151,30 @@ fn compile_structure(
         // Sub-component content hashes
         let sub_hashes = sub_components.iter().map(|s| s.content_hash);
 
+        // Guarded group hashes: include guard_expr + all member/constraint/else content
+        let guard_hashes = guarded_groups.iter().flat_map(|g| {
+            std::iter::once(g.guard_expr.content_hash)
+                .chain(g.members.iter().map(|m| {
+                    m.default_expr
+                        .as_ref()
+                        .map(|e| e.content_hash)
+                        .unwrap_or(ContentHash(0))
+                }))
+                .chain(g.constraints.iter().map(|c| c.expr.content_hash))
+                .chain(g.else_members.iter().map(|m| {
+                    m.default_expr
+                        .as_ref()
+                        .map(|e| e.content_hash)
+                        .unwrap_or(ContentHash(0))
+                }))
+                .chain(g.else_constraints.iter().map(|c| c.expr.content_hash))
+        });
+
         let all_hashes = std::iter::once(name_hash)
             .chain(vc_hashes)
             .chain(constraint_hashes)
-            .chain(sub_hashes);
+            .chain(sub_hashes)
+            .chain(guard_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -1054,6 +1185,156 @@ fn compile_structure(
         Visibility::Private
     };
 
+    // Reference safety: detect unguarded references to guarded members.
+    {
+        let mut guarded_cell_map: HashMap<ValueCellId, ValueCellId> = HashMap::new();
+        for group in &guarded_groups {
+            for m in &group.members {
+                guarded_cell_map.insert(m.id.clone(), group.guard_value_cell.clone());
+            }
+            for m in &group.else_members {
+                guarded_cell_map.insert(m.id.clone(), group.guard_value_cell.clone());
+            }
+        }
+
+        // Build parent_guard chain for nested guard ancestor checking.
+        // Maps guard_value_cell -> parent_guard (None for top-level guards).
+        let guard_parent_map: HashMap<ValueCellId, Option<ValueCellId>> = guarded_groups
+            .iter()
+            .map(|g| (g.guard_value_cell.clone(), g.parent_guard.clone()))
+            .collect();
+
+        // Check if ref_guard is an ancestor of current_guard in the parent chain.
+        // Returns true if ref_guard == current_guard OR if ref_guard appears
+        // in the ancestor chain of current_guard (via parent_guard links).
+        let is_ancestor_guard = |ref_guard: &ValueCellId, current_guard: &ValueCellId| -> bool {
+            if ref_guard == current_guard {
+                return true;
+            }
+            let mut cursor = guard_parent_map.get(current_guard).and_then(|p| p.as_ref());
+            while let Some(ancestor) = cursor {
+                if ancestor == ref_guard {
+                    return true;
+                }
+                cursor = guard_parent_map.get(ancestor).and_then(|p| p.as_ref());
+            }
+            false
+        };
+
+        for vc in &value_cells {
+            if let Some(expr) = &vc.default_expr {
+                for ref_id in collect_value_refs(expr) {
+                    if guarded_cell_map.contains_key(&ref_id) {
+                        diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "unguarded reference to guarded cell '{}'",
+                                ref_id.member,
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                vc.span,
+                                "references a conditionally-active member",
+                            )),
+                        );
+                    }
+                }
+            }
+        }
+        for c in &constraints {
+            for ref_id in collect_value_refs(&c.expr) {
+                if guarded_cell_map.contains_key(&ref_id) {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "unguarded reference to guarded cell '{}'",
+                            ref_id.member,
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            c.span,
+                            "constraint references a conditionally-active member",
+                        )),
+                    );
+                }
+            }
+        }
+        for group in &guarded_groups {
+            for m in &group.members {
+                if let Some(expr) = &m.default_expr {
+                    for ref_id in collect_value_refs(expr) {
+                        if let Some(ref_guard) = guarded_cell_map.get(&ref_id)
+                            && !is_ancestor_guard(ref_guard, &group.guard_value_cell)
+                        {
+                            diagnostics.push(
+                                Diagnostic::warning(format!(
+                                    "reference to differently-guarded cell '{}'",
+                                    ref_id.member,
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    m.span,
+                                    "referenced member under a different guard",
+                                )),
+                            );
+                        }
+                    }
+                }
+            }
+            for m in &group.else_members {
+                if let Some(expr) = &m.default_expr {
+                    for ref_id in collect_value_refs(expr) {
+                        if let Some(ref_guard) = guarded_cell_map.get(&ref_id)
+                            && !is_ancestor_guard(ref_guard, &group.guard_value_cell)
+                        {
+                            diagnostics.push(
+                                Diagnostic::warning(format!(
+                                    "reference to differently-guarded cell '{}'",
+                                    ref_id.member,
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    m.span,
+                                    "referenced member under a different guard",
+                                )),
+                            );
+                        }
+                    }
+                }
+            }
+            for c in &group.constraints {
+                for ref_id in collect_value_refs(&c.expr) {
+                    if let Some(ref_guard) = guarded_cell_map.get(&ref_id)
+                        && !is_ancestor_guard(ref_guard, &group.guard_value_cell)
+                    {
+                        diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "reference to differently-guarded cell '{}'",
+                                ref_id.member,
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                c.span,
+                                "constraint references member under a different guard",
+                            )),
+                        );
+                    }
+                }
+            }
+            for c in &group.else_constraints {
+                for ref_id in collect_value_refs(&c.expr) {
+                    if let Some(ref_guard) = guarded_cell_map.get(&ref_id)
+                        && !is_ancestor_guard(ref_guard, &group.guard_value_cell)
+                    {
+                        diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "reference to differently-guarded cell '{}'",
+                                ref_id.member,
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                c.span,
+                                "constraint references member under a different guard",
+                            )),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     TopologyTemplate {
         name: entity_name.clone(),
         visibility,
@@ -1061,9 +1342,368 @@ fn compile_structure(
         constraints,
         realizations,
         sub_components,
+        guarded_groups,
+        structure_controlling,
         objective,
         content_hash,
     }
+}
+
+/// Collect all ValueCellId references from a compiled expression tree.
+fn collect_value_refs(expr: &CompiledExpr) -> Vec<ValueCellId> {
+    let mut refs = Vec::new();
+    collect_value_refs_inner(expr, &mut refs);
+    refs
+}
+
+fn collect_value_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => refs.push(id.clone()),
+        CompiledExprKind::BinOp { left, right, .. } => {
+            collect_value_refs_inner(left, refs);
+            collect_value_refs_inner(right, refs);
+        }
+        CompiledExprKind::UnOp { operand, .. } => {
+            collect_value_refs_inner(operand, refs);
+        }
+        CompiledExprKind::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_value_refs_inner(arg, refs);
+            }
+        }
+        CompiledExprKind::Conditional { condition, then_branch, else_branch } => {
+            collect_value_refs_inner(condition, refs);
+            collect_value_refs_inner(then_branch, refs);
+            collect_value_refs_inner(else_branch, refs);
+        }
+        CompiledExprKind::Match { discriminant, arms } => {
+            collect_value_refs_inner(discriminant, refs);
+            for arm in arms {
+                collect_value_refs_inner(&arm.body, refs);
+            }
+        }
+        CompiledExprKind::Literal(_) => {}
+    }
+}
+
+/// Register names from guarded group members in the compilation scope (pass 1).
+/// Recursively handles nested guarded groups.
+fn register_guarded_names(
+    members: &[reify_syntax::MemberDecl],
+    scope: &mut CompilationScope,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for member in members {
+        match member {
+            reify_syntax::MemberDecl::Param(param) => {
+                let ty = if let Some(type_expr) = &param.type_expr {
+                    resolve_type_name(&type_expr.name).unwrap_or_else(|| {
+                        diagnostics.push(
+                            Diagnostic::error(format!("unresolved type: {}", type_expr.name))
+                                .with_label(DiagnosticLabel::new(type_expr.span, "unknown type name")),
+                        );
+                        Type::Real
+                    })
+                } else {
+                    Type::Real
+                };
+                scope.register(&param.name, ty);
+            }
+            reify_syntax::MemberDecl::Let(let_decl) => {
+                if !is_geometry_let(&let_decl.value) {
+                    scope.register(&let_decl.name, Type::Real);
+                }
+            }
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                register_guarded_names(&g.members, scope, diagnostics);
+                register_guarded_names(&g.else_members, scope, diagnostics);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Compile a block-level `where` guard into a CompiledGuardedGroup.
+///
+/// Creates a synthetic guard ValueCell and compiles all members within the block.
+/// If `outer_guard` is Some, the guard expression becomes AND(outer_guard, inner_condition).
+#[allow(clippy::too_many_arguments)]
+fn compile_block_guard(
+    entity_name: &str,
+    g: &reify_syntax::GuardedGroupDecl,
+    outer_guard: Option<&ValueCellId>,
+    scope: &mut CompilationScope,
+    enum_defs: &[reify_types::EnumDef],
+    diagnostics: &mut Vec<Diagnostic>,
+    guarded_groups: &mut Vec<CompiledGuardedGroup>,
+    structure_controlling: &mut HashSet<ValueCellId>,
+    guard_index: &mut u32,
+    constraint_index: &mut u32,
+) {
+    let inner_condition = compile_expr(&g.condition, scope, enum_defs, diagnostics);
+
+    // If there's an outer guard, conjoin: guard = outer && inner
+    let guard_expr = if let Some(outer_id) = outer_guard {
+        let outer_ref = CompiledExpr::value_ref(outer_id.clone(), Type::Bool);
+        CompiledExpr::binop(BinOp::And, outer_ref, inner_condition, Type::Bool)
+    } else {
+        inner_condition
+    };
+
+    let guard_cell_id = ValueCellId::new(entity_name, format!("__guard_{}", guard_index));
+    *guard_index += 1;
+    structure_controlling.insert(guard_cell_id.clone());
+
+    let mut members = Vec::new();
+    let mut group_constraints = Vec::new();
+
+    // Compile main members
+    compile_guarded_members(
+        entity_name,
+        &g.members,
+        &guard_cell_id,
+        scope,
+        enum_defs,
+        diagnostics,
+        &mut members,
+        &mut group_constraints,
+        guarded_groups,
+        structure_controlling,
+        guard_index,
+        constraint_index,
+    );
+
+    let mut else_members = Vec::new();
+    let mut else_constraints = Vec::new();
+
+    // Compile else members
+    if !g.else_members.is_empty() {
+        compile_guarded_members(
+            entity_name,
+            &g.else_members,
+            &guard_cell_id,
+            scope,
+            enum_defs,
+            diagnostics,
+            &mut else_members,
+            &mut else_constraints,
+            guarded_groups,
+            structure_controlling,
+            guard_index,
+            constraint_index,
+        );
+    }
+
+    // Update scope to mark all members and else_members as guarded
+    for m in &members {
+        scope.register_guarded(&m.id.member, m.cell_type.clone(), guard_cell_id.clone());
+    }
+    for m in &else_members {
+        scope.register_guarded(&m.id.member, m.cell_type.clone(), guard_cell_id.clone());
+    }
+
+    guarded_groups.push(CompiledGuardedGroup {
+        guard_expr,
+        guard_value_cell: guard_cell_id,
+        members,
+        constraints: group_constraints,
+        else_members,
+        else_constraints,
+        parent_guard: outer_guard.cloned(),
+    });
+}
+
+/// Compile members within a guarded block into ValueCellDecls and CompiledConstraints.
+/// Handles nested GuardedGroupDecls recursively.
+#[allow(clippy::too_many_arguments)]
+fn compile_guarded_members(
+    entity_name: &str,
+    ast_members: &[reify_syntax::MemberDecl],
+    current_guard: &ValueCellId,
+    scope: &mut CompilationScope,
+    enum_defs: &[reify_types::EnumDef],
+    diagnostics: &mut Vec<Diagnostic>,
+    members: &mut Vec<ValueCellDecl>,
+    group_constraints: &mut Vec<CompiledConstraint>,
+    guarded_groups: &mut Vec<CompiledGuardedGroup>,
+    structure_controlling: &mut HashSet<ValueCellId>,
+    guard_index: &mut u32,
+    constraint_index: &mut u32,
+) {
+    let guard_ctx = Some(current_guard);
+    for member in ast_members {
+        match member {
+            reify_syntax::MemberDecl::Param(param) => {
+                let id = ValueCellId::new(entity_name, &param.name);
+                let cell_type = scope
+                    .resolve(&param.name)
+                    .map(|(_, ty)| ty.clone())
+                    .unwrap_or(Type::Real);
+
+                let is_auto = matches!(
+                    param.default.as_ref(),
+                    Some(reify_syntax::Expr { kind: reify_syntax::ExprKind::Auto, .. })
+                );
+
+                let decl = if is_auto {
+                    ValueCellDecl {
+                        id,
+                        kind: ValueCellKind::Auto,
+                        visibility: Visibility::Public,
+                        cell_type,
+                        default_expr: None,
+                        span: param.span,
+                    }
+                } else {
+                    let default_expr = param
+                        .default
+                        .as_ref()
+                        .map(|expr| compile_expr_guarded(expr, scope, enum_defs, diagnostics, guard_ctx));
+                    ValueCellDecl {
+                        id,
+                        kind: ValueCellKind::Param,
+                        visibility: Visibility::Public,
+                        cell_type,
+                        default_expr,
+                        span: param.span,
+                    }
+                };
+                members.push(decl);
+            }
+            reify_syntax::MemberDecl::Let(let_decl) => {
+                if is_geometry_let(&let_decl.value) {
+                    continue;
+                }
+                let compiled_expr = compile_expr_guarded(&let_decl.value, scope, enum_defs, diagnostics, guard_ctx);
+                let cell_type = compiled_expr.result_type.clone();
+                let id = ValueCellId::new(entity_name, &let_decl.name);
+
+                let visibility = if let_decl.is_pub {
+                    Visibility::Public
+                } else {
+                    Visibility::Private
+                };
+
+                members.push(ValueCellDecl {
+                    id,
+                    kind: ValueCellKind::Let,
+                    visibility,
+                    cell_type,
+                    default_expr: Some(compiled_expr),
+                    span: let_decl.span,
+                });
+            }
+            reify_syntax::MemberDecl::Constraint(constraint) => {
+                let compiled_expr = compile_expr_guarded(&constraint.expr, scope, enum_defs, diagnostics, guard_ctx);
+                if compiled_expr.result_type != Type::Bool {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "constraint expression has type {}, expected Bool",
+                            compiled_expr.result_type,
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            constraint.expr.span,
+                            "expected Bool",
+                        )),
+                    );
+                }
+                let id = ConstraintNodeId::new(entity_name, *constraint_index);
+                group_constraints.push(CompiledConstraint {
+                    id,
+                    label: constraint.label.clone(),
+                    expr: compiled_expr,
+                    span: constraint.span,
+                });
+                *constraint_index += 1;
+            }
+            reify_syntax::MemberDecl::GuardedGroup(nested) => {
+                // Nested guard: compile with current guard as outer
+                compile_block_guard(
+                    entity_name,
+                    nested,
+                    Some(current_guard),
+                    scope,
+                    enum_defs,
+                    diagnostics,
+                    guarded_groups,
+                    structure_controlling,
+                    guard_index,
+                    constraint_index,
+                );
+            }
+            _ => {
+                // Sub, Minimize, Maximize within guarded blocks: not yet handled
+            }
+        }
+    }
+}
+
+/// Compile a per-declaration `where` clause into a single-member CompiledGuardedGroup.
+///
+/// Creates a synthetic guard ValueCell (Bool, Let kind) with the guard condition as
+/// its default expression, and wraps the member in a CompiledGuardedGroup.
+#[allow(clippy::too_many_arguments)]
+fn compile_per_decl_guard(
+    entity_name: &str,
+    wc: &reify_syntax::WhereClause,
+    member_decl: ValueCellDecl,
+    scope: &mut CompilationScope,
+    enum_defs: &[reify_types::EnumDef],
+    diagnostics: &mut Vec<Diagnostic>,
+    guarded_groups: &mut Vec<CompiledGuardedGroup>,
+    structure_controlling: &mut HashSet<ValueCellId>,
+    guard_index: &mut u32,
+) {
+    let guard_expr = compile_expr(&wc.condition, scope, enum_defs, diagnostics);
+    let guard_cell_id = ValueCellId::new(entity_name, format!("__guard_{}", guard_index));
+    *guard_index += 1;
+
+    // Update scope to mark this member as guarded (for reference safety checking)
+    let member_name = member_decl.id.member.clone();
+    let member_type = member_decl.cell_type.clone();
+
+    structure_controlling.insert(guard_cell_id.clone());
+    guarded_groups.push(CompiledGuardedGroup {
+        guard_expr,
+        guard_value_cell: guard_cell_id.clone(),
+        members: vec![member_decl],
+        constraints: vec![],
+        else_members: vec![],
+        else_constraints: vec![],
+        parent_guard: None,
+    });
+
+    scope.register_guarded(&member_name, member_type, guard_cell_id);
+}
+
+/// Compile a per-declaration `where` clause for a constraint into a single-constraint
+/// CompiledGuardedGroup.
+#[allow(clippy::too_many_arguments)]
+fn compile_per_decl_constraint_guard(
+    entity_name: &str,
+    wc: &reify_syntax::WhereClause,
+    constraint: CompiledConstraint,
+    scope: &mut CompilationScope,
+    enum_defs: &[reify_types::EnumDef],
+    diagnostics: &mut Vec<Diagnostic>,
+    guarded_groups: &mut Vec<CompiledGuardedGroup>,
+    structure_controlling: &mut HashSet<ValueCellId>,
+    guard_index: &mut u32,
+) {
+    let guard_expr = compile_expr(&wc.condition, scope, enum_defs, diagnostics);
+    let guard_cell_id = ValueCellId::new(entity_name, format!("__guard_{}", guard_index));
+    *guard_index += 1;
+
+    structure_controlling.insert(guard_cell_id.clone());
+    guarded_groups.push(CompiledGuardedGroup {
+        guard_expr,
+        guard_value_cell: guard_cell_id,
+        members: vec![],
+        constraints: vec![constraint],
+        else_members: vec![],
+        else_constraints: vec![],
+        parent_guard: None,
+    });
 }
 
 /// Check if a let declaration's value is a geometry-producing function call.

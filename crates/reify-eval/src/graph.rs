@@ -1,9 +1,11 @@
 // EvaluationGraph: typed graph nodes backed by PersistentMap.
 
+use std::collections::HashSet;
+
 use reify_compiler::{CompiledGeometryOp, TopologyTemplate, ValueCellKind};
 use reify_types::{
     CompiledExpr, ConstraintNodeId, ContentHash, PersistentMap, RealizationNodeId,
-    ResolutionNodeId, Type, ValueCellId,
+    ResolutionNodeId, Type, Value, ValueCellId, ValueMap,
 };
 
 /// A value cell node in the evaluation graph.
@@ -48,6 +50,22 @@ pub struct ResolutionNodeData {
     pub content_hash: ContentHash,
 }
 
+/// Metadata for a guarded group in the evaluation graph.
+/// Tracks which cells and constraints are conditionally active.
+#[derive(Debug, Clone)]
+pub struct GuardedGroupInfo {
+    /// The guard ValueCellId (Bool, Let kind) that controls this group.
+    pub guard_cell: ValueCellId,
+    /// Members active when guard is true.
+    pub members: Vec<ValueCellId>,
+    /// Constraints active when guard is true.
+    pub constraints: Vec<ConstraintNodeId>,
+    /// Members active when guard is false (else branch).
+    pub else_members: Vec<ValueCellId>,
+    /// Constraints active when guard is false (else branch).
+    pub else_constraints: Vec<ConstraintNodeId>,
+}
+
 /// The evaluation graph: holds all typed nodes in PersistentMaps
 /// for O(1) clone with structural sharing.
 #[derive(Debug, Clone, Default)]
@@ -56,6 +74,10 @@ pub struct EvaluationGraph {
     pub constraints: PersistentMap<ConstraintNodeId, ConstraintNodeData>,
     pub realizations: PersistentMap<RealizationNodeId, RealizationNodeData>,
     pub resolutions: PersistentMap<ResolutionNodeId, ResolutionNodeData>,
+    /// Guarded groups with conditional membership.
+    pub guarded_groups: Vec<GuardedGroupInfo>,
+    /// ValueCellIds whose boolean value controls topology (guard cells).
+    pub structure_controlling: HashSet<ValueCellId>,
 }
 
 impl EvaluationGraph {
@@ -135,9 +157,151 @@ impl EvaluationGraph {
                     graph.value_cells.insert(scoped_id, node);
                 }
             }
+
+            // Guarded groups: create guard ValueCell nodes, member/else nodes,
+            // constraint/else-constraint nodes, and store GuardedGroupInfo metadata.
+            for group in &template.guarded_groups {
+                // 1. Create ValueCellNode for the guard cell (Bool, Let kind)
+                let guard_id = &group.guard_value_cell;
+                let guard_id_hash = ContentHash::of_str(&format!("{}", guard_id));
+                let guard_expr_hash = group.guard_expr.content_hash;
+                let guard_node = ValueCellNode {
+                    id: guard_id.clone(),
+                    kind: reify_compiler::ValueCellKind::Let,
+                    cell_type: Type::Bool,
+                    default_expr: Some(group.guard_expr.clone()),
+                    content_hash: guard_id_hash.combine(guard_expr_hash),
+                };
+                graph.value_cells.insert(guard_id.clone(), guard_node);
+
+                // 2. Create ValueCellNodes for all members
+                let mut member_ids = Vec::new();
+                for cell in &group.members {
+                    let id_hash = ContentHash::of_str(&format!("{}", cell.id));
+                    let expr_hash = cell.default_expr.as_ref()
+                        .map(|e| e.content_hash)
+                        .unwrap_or(ContentHash(0));
+                    let node = ValueCellNode {
+                        id: cell.id.clone(),
+                        kind: cell.kind,
+                        cell_type: cell.cell_type.clone(),
+                        default_expr: cell.default_expr.clone(),
+                        content_hash: id_hash.combine(expr_hash),
+                    };
+                    graph.value_cells.insert(cell.id.clone(), node);
+                    member_ids.push(cell.id.clone());
+                }
+
+                // 3. Create ConstraintNodeData for guard-true constraints
+                let mut constraint_ids = Vec::new();
+                for constraint in &group.constraints {
+                    let id_hash = ContentHash::of_str(&format!("{}", constraint.id));
+                    let node = ConstraintNodeData {
+                        id: constraint.id.clone(),
+                        label: constraint.label.clone(),
+                        expr: constraint.expr.clone(),
+                        content_hash: id_hash.combine(constraint.expr.content_hash),
+                    };
+                    graph.constraints.insert(constraint.id.clone(), node);
+                    constraint_ids.push(constraint.id.clone());
+                }
+
+                // 4. Create ValueCellNodes for else_members
+                let mut else_member_ids = Vec::new();
+                for cell in &group.else_members {
+                    let id_hash = ContentHash::of_str(&format!("{}", cell.id));
+                    let expr_hash = cell.default_expr.as_ref()
+                        .map(|e| e.content_hash)
+                        .unwrap_or(ContentHash(0));
+                    let node = ValueCellNode {
+                        id: cell.id.clone(),
+                        kind: cell.kind,
+                        cell_type: cell.cell_type.clone(),
+                        default_expr: cell.default_expr.clone(),
+                        content_hash: id_hash.combine(expr_hash),
+                    };
+                    graph.value_cells.insert(cell.id.clone(), node);
+                    else_member_ids.push(cell.id.clone());
+                }
+
+                // 5. Create ConstraintNodeData for else constraints
+                let mut else_constraint_ids = Vec::new();
+                for constraint in &group.else_constraints {
+                    let id_hash = ContentHash::of_str(&format!("{}", constraint.id));
+                    let node = ConstraintNodeData {
+                        id: constraint.id.clone(),
+                        label: constraint.label.clone(),
+                        expr: constraint.expr.clone(),
+                        content_hash: id_hash.combine(constraint.expr.content_hash),
+                    };
+                    graph.constraints.insert(constraint.id.clone(), node);
+                    else_constraint_ids.push(constraint.id.clone());
+                }
+
+                // 6. Store GuardedGroupInfo
+                graph.guarded_groups.push(GuardedGroupInfo {
+                    guard_cell: guard_id.clone(),
+                    members: member_ids,
+                    constraints: constraint_ids,
+                    else_members: else_member_ids,
+                    else_constraints: else_constraint_ids,
+                });
+
+                // 7. Add guard cell to structure_controlling
+                graph.structure_controlling.insert(guard_id.clone());
+            }
         }
 
         graph
+    }
+
+    /// Determine which constraint IDs are active given the current values.
+    ///
+    /// For each guarded group, inspects the guard cell's value:
+    /// - true: group.constraints are active
+    /// - false: group.else_constraints are active
+    /// - Undef/other: neither branch is active
+    ///
+    /// Constraints not referenced in any guarded group are always active.
+    pub fn active_constraint_ids(&self, values: &ValueMap) -> HashSet<ConstraintNodeId> {
+        // Collect all constraint IDs that are under some guard
+        let mut guarded_ids: HashSet<ConstraintNodeId> = HashSet::new();
+        let mut active_ids: HashSet<ConstraintNodeId> = HashSet::new();
+
+        for group in &self.guarded_groups {
+            for cid in &group.constraints {
+                guarded_ids.insert(cid.clone());
+            }
+            for cid in &group.else_constraints {
+                guarded_ids.insert(cid.clone());
+            }
+
+            let guard_val = values.get(&group.guard_cell);
+            match guard_val {
+                Some(Value::Bool(true)) => {
+                    for cid in &group.constraints {
+                        active_ids.insert(cid.clone());
+                    }
+                }
+                Some(Value::Bool(false)) => {
+                    for cid in &group.else_constraints {
+                        active_ids.insert(cid.clone());
+                    }
+                }
+                _ => {
+                    // Undef or non-Bool: neither branch active
+                }
+            }
+        }
+
+        // All unguarded constraints are always active
+        for (cid, _) in self.constraints.iter() {
+            if !guarded_ids.contains(cid) {
+                active_ids.insert(cid.clone());
+            }
+        }
+
+        active_ids
     }
 
     /// Compute a deterministic fingerprint of the graph topology.
@@ -168,7 +332,24 @@ impl EvaluationGraph {
             ContentHash::combine_all(hashes)
         };
 
-        ContentHash::combine_all([vc_hash, cn_hash, real_hash, res_hash])
+        let guard_hash = {
+            let mut per_group: Vec<ContentHash> = self.guarded_groups.iter().map(|g| {
+                let guard_id_hash = ContentHash::of_str(&format!("{}", g.guard_cell));
+                let mut member_strs: Vec<String> = g.members.iter().map(|m| format!("{}", m)).collect();
+                member_strs.sort();
+                let member_hashes: Vec<ContentHash> = member_strs.iter().map(|s| ContentHash::of_str(s)).collect();
+                let members_hash = ContentHash::combine_all(member_hashes);
+                let mut else_strs: Vec<String> = g.else_members.iter().map(|m| format!("{}", m)).collect();
+                else_strs.sort();
+                let else_hashes: Vec<ContentHash> = else_strs.iter().map(|s| ContentHash::of_str(s)).collect();
+                let else_hash = ContentHash::combine_all(else_hashes);
+                ContentHash::combine_all([guard_id_hash, members_hash, else_hash])
+            }).collect();
+            per_group.sort_by_key(|h| h.0);
+            ContentHash::combine_all(per_group)
+        };
+
+        ContentHash::combine_all([vc_hash, cn_hash, real_hash, res_hash, guard_hash])
     }
 }
 
@@ -859,5 +1040,71 @@ mod tests {
         assert_eq!(h_node.kind, ValueCellKind::Param);
         let hh_node = graph.value_cells.get(&scoped_half_h).unwrap();
         assert_eq!(hh_node.kind, ValueCellKind::Let);
+    }
+
+    /// Two graphs with identical value_cell nodes but different GuardedGroupInfo
+    /// member bindings must produce different topology fingerprints.
+    /// Exposes the bug where guard_hash only hashes the guard_cell ID string,
+    /// ignoring member bindings.
+    #[test]
+    fn topology_fingerprint_distinguishes_guard_groupings() {
+        let guard_cell = ValueCellId::new("S", "__guard_0");
+        let x = ValueCellId::new("S", "x");
+        let y = ValueCellId::new("S", "y");
+
+        // Shared nodes: guard, x, y all present in both graphs
+        let guard_node = ValueCellNode {
+            id: guard_cell.clone(),
+            kind: ValueCellKind::Let,
+            cell_type: Type::Bool,
+            default_expr: Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+            content_hash: ContentHash::of_str("guard_0"),
+        };
+        let x_node = ValueCellNode {
+            id: x.clone(),
+            kind: ValueCellKind::Param,
+            cell_type: Type::length(),
+            default_expr: Some(CompiledExpr::literal(Value::length(0.005), Type::length())),
+            content_hash: ContentHash::of_str("x"),
+        };
+        let y_node = ValueCellNode {
+            id: y.clone(),
+            kind: ValueCellKind::Param,
+            cell_type: Type::length(),
+            default_expr: Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+            content_hash: ContentHash::of_str("y"),
+        };
+
+        // Graph A: guard_cell guards [x], else_members=[]
+        let mut graph_a = EvaluationGraph::default();
+        graph_a.value_cells.insert(guard_cell.clone(), guard_node.clone());
+        graph_a.value_cells.insert(x.clone(), x_node.clone());
+        graph_a.value_cells.insert(y.clone(), y_node.clone());
+        graph_a.guarded_groups.push(GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![x.clone()],
+            constraints: vec![],
+            else_members: vec![],
+            else_constraints: vec![],
+        });
+
+        // Graph B: guard_cell guards [y], else_members=[]
+        let mut graph_b = EvaluationGraph::default();
+        graph_b.value_cells.insert(guard_cell.clone(), guard_node);
+        graph_b.value_cells.insert(x.clone(), x_node);
+        graph_b.value_cells.insert(y.clone(), y_node);
+        graph_b.guarded_groups.push(GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![y.clone()],
+            constraints: vec![],
+            else_members: vec![],
+            else_constraints: vec![],
+        });
+
+        assert_ne!(
+            graph_a.topology_fingerprint(),
+            graph_b.topology_fingerprint(),
+            "fingerprints must differ when guard groups bind different members"
+        );
     }
 }
