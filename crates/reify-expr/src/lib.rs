@@ -271,6 +271,17 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
             Value::Map(entries) => Value::Int(entries.len() as i64),
             _ => Value::Undef,
         },
+        "contains" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            let needle = &args[0];
+            match obj {
+                Value::List(items) => Value::Bool(items.contains(needle)),
+                Value::Set(items) => Value::Bool(items.contains(needle)),
+                _ => Value::Undef,
+            }
+        },
         "sum" => match obj {
             Value::List(items) => {
                 if items.is_empty() {
