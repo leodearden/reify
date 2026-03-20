@@ -173,3 +173,39 @@ structure def S : HasSize {
     );
     assert!(size_cell.default_expr.is_some(), "expected default expression for 'size'");
 }
+
+/// Step 11: Default override — structure provides its own value, no error, only one cell.
+#[test]
+fn default_override_uses_structure_value() {
+    let source = r#"
+trait HasSize {
+    param size : Length = 10mm
+}
+
+structure def S : HasSize {
+    param size : Length = 20mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    // No error-severity diagnostics expected
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Only one 'size' value cell should exist (the structure's, not the trait default).
+    let size_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "size")
+        .collect();
+    assert_eq!(
+        size_cells.len(),
+        1,
+        "expected exactly 1 'size' value cell, got {}",
+        size_cells.len()
+    );
+}
