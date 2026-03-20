@@ -106,11 +106,24 @@ pub struct TopologyTemplate {
     pub realizations: Vec<RealizationDecl>,
     pub sub_components: Vec<SubComponentDecl>,
     pub ports: Vec<CompiledPort>,
+    pub connections: Vec<CompiledConnection>,
     pub guarded_groups: Vec<CompiledGuardedGroup>,
     /// ValueCellIds whose boolean value controls topology (guard cells).
     pub structure_controlling: HashSet<ValueCellId>,
     pub objective: Option<OptimizationObjective>,
     pub content_hash: ContentHash,
+}
+
+/// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
+#[derive(Debug, Clone)]
+pub struct CompiledConnection {
+    pub left_port: String,
+    pub operator: reify_syntax::ConnectOp,
+    pub right_port: String,
+    pub connector_sub: Option<String>,
+    pub compatibility_constraint: ConstraintNodeId,
+    pub port_mappings: Vec<(String, String)>,
+    pub span: SourceSpan,
 }
 
 /// A compiled port declaration — compiled from a PortDecl.
@@ -1825,6 +1838,9 @@ fn compile_entity(
                     frame_expr,
                 });
             }
+            reify_syntax::MemberDecl::Connect(_) | reify_syntax::MemberDecl::Chain(_) => {
+                // Connect/chain compilation handled in a later pass.
+            }
         }
     }
 
@@ -2102,6 +2118,7 @@ fn compile_entity(
         realizations,
         sub_components,
         ports,
+        connections: Vec::new(),
         guarded_groups,
         structure_controlling,
         objective,

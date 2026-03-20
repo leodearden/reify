@@ -1415,6 +1415,8 @@ mod tests {
             MemberDecl::GuardedGroup(_) => "guarded_group".into(),
             MemberDecl::AssociatedType(a) => format!("type:{}", a.name),
             MemberDecl::Port(p) => format!("port:{}", p.name),
+            MemberDecl::Connect(_) => "connect".into(),
+            MemberDecl::Chain(_) => "chain".into(),
         }).collect();
         assert_eq!(names, vec![
             "param:width", "param:height", "param:thickness",
@@ -1580,6 +1582,8 @@ mod tests {
                 MemberDecl::GuardedGroup(g) => g.span,
                 MemberDecl::AssociatedType(a) => a.span,
                 MemberDecl::Port(p) => p.span,
+                MemberDecl::Connect(c) => c.span,
+                MemberDecl::Chain(c) => c.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
             assert!((span.end as usize) <= source.len(), "member {} span overflows", i);
@@ -1617,6 +1621,12 @@ mod tests {
                 MemberDecl::Port(p) => {
                     assert!(text.starts_with("port"), "port member {} text: {:?}", i, text);
                     assert!(text.contains(&p.name), "port {} name in text", i);
+                }
+                MemberDecl::Connect(_) => {
+                    assert!(text.starts_with("connect"), "connect member {} text: {:?}", i, text);
+                }
+                MemberDecl::Chain(_) => {
+                    assert!(text.starts_with("chain"), "chain member {} text: {:?}", i, text);
                 }
             }
         }
@@ -1661,6 +1671,8 @@ mod tests {
                 MemberDecl::GuardedGroup(g) => (g.span, g.content_hash),
                 MemberDecl::AssociatedType(a) => (a.span, a.content_hash),
                 MemberDecl::Port(p) => (p.span, p.content_hash),
+                MemberDecl::Connect(c) => (c.span, c.content_hash),
+                MemberDecl::Chain(c) => (c.span, c.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
             assert_eq!(hash, ContentHash::of_str(text), "member {} hash from source text", i);
@@ -1745,6 +1757,8 @@ mod tests {
                 MemberDecl::GuardedGroup(g) => (g.content_hash, g.span),
                 MemberDecl::AssociatedType(a) => (a.content_hash, a.span),
                 MemberDecl::Port(p) => (p.content_hash, p.span),
+                MemberDecl::Connect(c) => (c.content_hash, c.span),
+                MemberDecl::Chain(c) => (c.content_hash, c.span),
             };
             let (hash_b, span_b) = match m_b {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
@@ -1756,6 +1770,8 @@ mod tests {
                 MemberDecl::GuardedGroup(g) => (g.content_hash, g.span),
                 MemberDecl::AssociatedType(a) => (a.content_hash, a.span),
                 MemberDecl::Port(p) => (p.content_hash, p.span),
+                MemberDecl::Connect(c) => (c.content_hash, c.span),
+                MemberDecl::Chain(c) => (c.content_hash, c.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
             assert_eq!(span_a, span_b, "member {} span determinism", i);

@@ -59,6 +59,8 @@ pub enum MemberDecl {
     GuardedGroup(GuardedGroupDecl),
     AssociatedType(AssociatedTypeDecl),
     Port(PortDecl),
+    Connect(ConnectDecl),
+    Chain(ChainDecl),
 }
 
 /// `where condition { ...members... } else { ...members... }`
@@ -148,6 +150,44 @@ pub struct PortDecl {
     pub type_name: String,
     pub members: Vec<MemberDecl>,
     pub frame_expr: Option<Expr>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// `connect a -> b : BoltSet { grade = 8.8  shaft -> input_bore }`
+#[derive(Debug, Clone)]
+pub struct ConnectDecl {
+    pub left: PortRef,
+    pub operator: ConnectOp,
+    pub right: PortRef,
+    pub connector_type: Option<String>,
+    pub params: Vec<(String, Expr)>,
+    pub port_mappings: Vec<(String, String)>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// A reference to a port, possibly via member access (e.g., `motor.shaft`).
+#[derive(Debug, Clone)]
+pub struct PortRef {
+    pub expr: Expr,
+}
+
+/// Direction of a connect statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConnectOp {
+    /// `->`
+    Forward,
+    /// `<-`
+    Reverse,
+    /// `<->`
+    Bidirectional,
+}
+
+/// `chain a -> b -> c`
+#[derive(Debug, Clone)]
+pub struct ChainDecl {
+    pub elements: Vec<Expr>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
