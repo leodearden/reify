@@ -1375,6 +1375,34 @@ mod tests {
         }
     }
 
+    fn make_fn_with_let() -> CompiledFunction {
+        // fn f(x: Real) -> Real { let y = x + 1; y * 2 }
+        CompiledFunction {
+            name: "f".to_string(),
+            is_pub: false,
+            params: vec![("x".to_string(), Type::Real)],
+            return_type: Type::Real,
+            body: CompiledFnBody {
+                let_bindings: vec![(
+                    "y".to_string(),
+                    CompiledExpr::binop(
+                        BinOp::Add,
+                        vref("f", "x", Type::Real),
+                        lit(Value::Int(1), Type::Int),
+                        Type::Real,
+                    ),
+                )],
+                result_expr: CompiledExpr::binop(
+                    BinOp::Mul,
+                    vref("f", "y", Type::Real),
+                    lit(Value::Int(2), Type::Int),
+                    Type::Real,
+                ),
+            },
+            content_hash: ContentHash::of(b"f_with_let"),
+        }
+    }
+
     #[test]
     fn eval_user_fn_double() {
         let double_fn = make_double_fn();
@@ -1388,6 +1416,29 @@ mod tests {
         };
         let values = ValueMap::new();
         let functions = [double_fn];
+        let ctx = EvalContext::new(&values, &functions);
+        let result = eval_expr(&call_expr, &ctx);
+        match result {
+            Value::Real(v) => assert!((v - 10.0).abs() < 1e-12, "expected 10.0, got {}", v),
+            other => panic!("expected Real(10.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_user_fn_with_let_bindings() {
+        // fn f(x: Real) -> Real { let y = x + 1; y * 2 }
+        // f(4) => y = 4 + 1 = 5; result = 5 * 2 = 10
+        let f = make_fn_with_let();
+        let call_expr = CompiledExpr {
+            content_hash: ContentHash::of(b"call_f"),
+            result_type: Type::Real,
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "f".to_string(),
+                args: vec![lit(Value::Real(4.0), Type::Real)],
+            },
+        };
+        let values = ValueMap::new();
+        let functions = [f];
         let ctx = EvalContext::new(&values, &functions);
         let result = eval_expr(&call_expr, &ctx);
         match result {
