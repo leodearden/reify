@@ -119,9 +119,21 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             Value::Undef
         }
 
-        CompiledExprKind::Lambda { .. } => {
-            // Lambda evaluation will be implemented in step-14.
-            Value::Undef
+        CompiledExprKind::Lambda {
+            params,
+            body,
+            captures,
+        } => {
+            // Snapshot captured values from the current ValueMap
+            let mut capture_map = ValueMap::new();
+            for cap_id in captures {
+                capture_map.insert(cap_id.clone(), values.get_or_undef(cap_id));
+            }
+            Value::Lambda {
+                params: params.iter().map(|(name, _)| name.clone()).collect(),
+                body: body.clone(),
+                captures: capture_map,
+            }
         }
     }
 }
