@@ -29,6 +29,11 @@ pub fn eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value {
             reify_stdlib::eval_builtin(&function.name, &evaluated_args)
         }
 
+        CompiledExprKind::Match { .. } => {
+            // Placeholder — real evaluation implemented in step-14
+            Value::Undef
+        }
+
         CompiledExprKind::Conditional {
             condition,
             then_branch,

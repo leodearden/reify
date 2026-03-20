@@ -595,6 +595,14 @@ fn compile_expr(
                 CompiledExpr::literal(Value::Undef, Type::Real)
             }
         }
+        reify_syntax::ExprKind::Match { .. } => {
+            // Placeholder — real compilation implemented in step-8
+            diagnostics.push(
+                Diagnostic::error("match expressions not yet compiled")
+                    .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
+            );
+            CompiledExpr::literal(Value::Undef, Type::Real)
+        }
         reify_syntax::ExprKind::Auto => {
             // Auto expressions should not appear inside compile_expr — they are
             // handled at the param compilation level. If we reach here, emit an

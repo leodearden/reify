@@ -81,6 +81,15 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
             assert_no_unresolved(then_branch);
             assert_no_unresolved(else_branch);
         }
+        CompiledExprKind::Match {
+            discriminant,
+            arms,
+        } => {
+            assert_no_unresolved(discriminant);
+            for arm in arms {
+                assert_no_unresolved(&arm.body);
+            }
+        }
     }
 }
 

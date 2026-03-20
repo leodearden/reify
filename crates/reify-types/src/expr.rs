@@ -41,6 +41,18 @@ pub enum CompiledExprKind {
         then_branch: Box<CompiledExpr>,
         else_branch: Box<CompiledExpr>,
     },
+    /// Match expression: match discriminant { pattern => body, ... }
+    Match {
+        discriminant: Box<CompiledExpr>,
+        arms: Vec<CompiledMatchArm>,
+    },
+}
+
+/// A compiled match arm.
+#[derive(Debug, Clone)]
+pub struct CompiledMatchArm {
+    pub patterns: Vec<String>,
+    pub body: CompiledExpr,
 }
 
 /// Binary operators.

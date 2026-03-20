@@ -44,6 +44,15 @@ pub fn collect_value_refs(expr: &CompiledExpr, out: &mut Vec<ValueCellId>) {
             collect_value_refs(then_branch, out);
             collect_value_refs(else_branch, out);
         }
+        CompiledExprKind::Match {
+            discriminant,
+            arms,
+        } => {
+            collect_value_refs(discriminant, out);
+            for arm in arms {
+                collect_value_refs(&arm.body, out);
+            }
+        }
     }
 }
 
