@@ -1,11 +1,11 @@
 # Fused Memory MCP Server Configuration for Reify project
-# Project-specific overrides only — uses env vars for portability.
-# Requires PROJECT_ROOT and TASKMASTER_DIR set in .mcp.json env.
+# NOTE: Reify now uses the shared fused-memory HTTP server on port 8002.
+# This config is retained for orchestrator reference but no longer spawns a server.
 
 server:
   transport: "http"
   host: "0.0.0.0"
-  port: 8000
+  port: 8002
 
 llm:
   provider: "openai"
