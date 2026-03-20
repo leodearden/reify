@@ -1,20 +1,43 @@
 {
-  "task_id": "66",
-  "title": "Trait conformance + compilation",
+  "task_id": "70",
+  "title": "Port declarations",
   "files": [
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/port_tests.rs",
     "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/trait_conformance_tests.rs"
+    "crates/reify-compiler/tests/port_compile_tests.rs",
+    "crates/reify-types/src/traits.rs"
   ],
   "modules": [
-    "crates/reify-compiler"
+    "tree-sitter-reify",
+    "crates/reify-syntax",
+    "crates/reify-compiler",
+    "crates/reify-types"
   ],
-  "analysis": "Task 65 (grammar + parser for traits) is done. The parser already produces Declaration::Trait(TraitDecl) with name, is_pub, type_params, refinements, members (Vec<MemberDecl>), and structures have trait_bounds: Vec<String>. The compiler currently skips trait declarations with a comment 'Trait compilation deferred to a later milestone' at line 961. This task implements:\n\n1. **CompiledTrait data structures** — new types: CompiledTrait, TraitRequirement, RequirementKind, TraitDefault, DefaultKind.\n2. **Trait compilation** — a pre-pass that compiles TraitDecl into CompiledTrait, builds a trait registry (HashMap<String, CompiledTrait>).\n3. **Conformance checking** — when compiling a structure with non-empty trait_bounds, resolve each trait, recursively collect all requirements (including from refinement chains), and verify the structure satisfies them.\n4. **Default merging** — if a trait provides defaults and structure doesn't override, inject the defaults into the TopologyTemplate.\n5. **Composition conflict detection** — same name + different types across traits → error.\n\nKey observations from code reading:\n- resolve_type_name (line 333) currently only handles Scalar, Bool, Int, Real, String. For trait conformance with type names like 'Length' and 'Mass' in tests, we extend it to map Length → Scalar{LENGTH}, Mass → Scalar{MASS}.\n- Trait members use the same MemberDecl enum as structures, so we reuse compile_expr and type resolution.\n- The trait registry is module-local (matches existing pattern where cross-module import resolution is noted but not fully wired).\n- The compile() function (line 889) handles pre-passes for enums and functions. We add a similar pre-pass for traits.\n- compile_structure() (line 1038) is the main function to modify for conformance checking.",
+  "analysis": "This task adds port declaration support across the full pipeline: grammar -> parser -> compiler. Ports are typed interface points on structures (like mechanical mounting points) with direction (in/out/bidi), a trait type reference, and optional body containing params, lets, constraints, direction setting, and frame expressions.\n\nExisting patterns to follow:\n- Grammar: follows the same pattern as sub_declaration and other _member choices. String literal keywords like 'param', 'let', 'constraint' already work alongside the identifier regex without explicit `word` declaration.\n- Parser: PortDecl follows the same struct pattern as SubDecl/ParamDecl with name, type, span, content_hash fields. MemberDecl gets a new Port variant. Lowering follows the same pattern as lower_sub, lower_param.\n- Compiler: CompiledPort follows the pattern of SubComponentDecl. Port members become ValueCells with composite member names (port_name.member_name) for scope resolution. TopologyTemplate gets a ports field.\n- Port member access via dot notation requires updating the MemberAccess case in compile_expr_guarded to resolve port-qualified names.\n\nKey concern: Using 'in' as a keyword (for port direction) while 'in' is also used as a unit suffix (80in). This works because unit suffixes use token.immediate() which is a separate token type requiring no whitespace. Standalone 'in' with whitespace will match the keyword in port contexts. The trade-off is that 'in', 'out', 'bidi' become reserved words (can't be used as variable/type names), which is acceptable.\n\nDependency on task 65 (trait grammar/parser) is satisfied. PortDirection enum already exists in reify-types (added in task 53). The trait registry built in task 66 (trait conformance) is available for port type verification.\n\nCompilationScope currently uses HashMap<String, (ValueCellId, Type, Option<ValueCellId>)>. Port members will be registered with composite keys like 'port_name.member_name'. MemberAccess compilation currently emits 'not yet supported' error (line 772-781); this needs updating to recognize port member access patterns.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Extend resolve_type_name() (lib.rs:333) to recognize 'Length' as Type::Scalar{dimension: DimensionVector::LENGTH} and 'Mass' as Type::Scalar{dimension: DimensionVector::MASS}. These are dimensional scalar aliases needed for trait conformance tests.",
+      "description": "Add port grammar rules to tree-sitter-reify/grammar.js: (1) port_direction_keyword rule as choice('in','out','bidi'), (2) port_declaration rule with fields: name (identifier), optional direction (port_direction_keyword), type (identifier), optional body (port_body), (3) port_body rule with repeat(choice(param_declaration, let_declaration, constraint_declaration, port_direction_setting, port_frame_setting)), (4) port_direction_setting rule: seq('direction','=',field('value',port_direction_keyword)), (5) port_frame_setting rule: seq('frame','=',field('value',_expression)). Add port_declaration to _member choices. Add [$.port_declaration] to conflicts list. Run `npx tree-sitter generate` in tree-sitter-reify/ to regenerate src/parser.c.",
       "status": "done",
-      "commit": "58cb0ac",
+      "commit": "6c0b6db",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add PortDecl struct and MemberDecl::Port(PortDecl) variant to crates/reify-syntax/src/lib.rs. PortDecl fields: name (String), direction (Option<reify_types::PortDirection>), type_name (String), members (Vec<MemberDecl>), frame_expr (Option<Expr>), span (SourceSpan), content_hash (ContentHash). Add use reify_types::PortDirection import.",
+      "status": "done",
+      "commit": "6c0b6db",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add stub lower_port method to ts_parser.rs Lowering impl that returns None, and add 'port_declaration' case to lower_member that calls lower_port and maps to MemberDecl::Port. This allows the code to compile and existing tests to pass before port lowering is implemented.",
+      "status": "done",
+      "commit": "6c0b6db",
       "tests": []
     }
   ],
@@ -22,282 +45,223 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: compile a trait declaration produces CompiledTrait in CompiledModule.trait_defs. Parse `trait Fastener { param thread_pitch : Length }`, verify module.trait_defs has 1 entry with correct name 'Fastener' and 1 required member named 'thread_pitch' with RequirementKind::Param(Scalar{LENGTH}).",
+      "description": "Write failing test in crates/reify-syntax/tests/port_tests.rs: parse_minimal_port - parses `structure S { port mount : MechanicalPort }` and asserts: 1 declaration, 1 member of type MemberDecl::Port, name='mount', type_name='MechanicalPort', direction=None, empty members vec, frame_expr=None. Uses same parse_decls helper pattern as trait_tests.rs.",
       "status": "done",
-      "commit": "a3bb156"
+      "commit": "564e7f4"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add CompiledTrait, TraitRequirement, RequirementKind, TraitDefault, DefaultKind structs to lib.rs. Add trait_defs: Vec<CompiledTrait> field to CompiledModule. Implement compile_trait() function that converts TraitDecl into CompiledTrait by iterating members: Param without default → RequirementKind::Param(Type), Param with default → TraitDefault, Let without value → RequirementKind::Let(Type), Constraint → RequirementKind::Constraint, Sub → RequirementKind::Sub(structure_name). Wire into compile() pre-pass replacing the no-op Trait(_) => {} arm. Include trait_defs content hashes in module content_hash.",
+      "description": "Implement lower_port in ts_parser.rs: extract 'name' field (identifier), extract 'type' field (identifier -> type_name), handle optional 'direction' field (port_direction_keyword -> match text to PortDirection variant), handle optional 'body' field (stub returning empty members/None for now). Return Some(PortDecl {...}). Test parse_minimal_port passes.",
       "status": "done",
-      "commit": "06f7f0a"
+      "commit": "e503067"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: simple conformance — `trait Fastener { param thread_pitch : Length }` and `structure def Bolt : Fastener { param thread_pitch : Length = 20mm }` — compiles with no error-severity diagnostics.",
+      "description": "Write failing test: parse_port_with_direction - parses `structure S { port shaft : in RotaryPort }` and asserts direction=Some(PortDirection::In), type_name='RotaryPort'. Also write parse_port_direction_out testing `port b : out T` -> direction=Some(Out) and parse_port_direction_bidi testing `port c : bidi T` -> direction=Some(Bidi).",
       "status": "done",
-      "commit": "238d31f"
+      "commit": "917b196"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement trait registry (HashMap<String, &CompiledTrait>) built in compile() after trait pre-pass. Add trait_registry parameter to compile_structure(). Implement check_trait_conformance() that: resolves trait by name in registry, iterates required_members, checks each against structure members by name and type. Pass diagnostics for unresolvable trait names. For satisfied requirements, no diagnostic.",
+      "description": "Ensure direction parsing works in lower_port. The 'direction' field in the CST is a port_direction_keyword node. Map its text content: 'in' -> PortDirection::In, 'out' -> PortDirection::Out, 'bidi' -> PortDirection::Bidi. Tests parse_port_with_direction, parse_port_direction_out, parse_port_direction_bidi pass.",
       "status": "done",
-      "commit": "3fb1b5a"
+      "commit": "917b196"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: missing member — `trait Fastener { param thread_pitch : Length }`, `structure def Bolt : Fastener { param length : Length = 10mm }` → error diagnostic containing 'missing required member' and 'thread_pitch'.",
+      "description": "Write failing test: parse_port_with_body - parses `structure S { port x : MechPort { direction = out  param d : Length = 10mm  constraint d > 0mm } }` and asserts: direction from body = Some(PortDirection::Out), members contains 1 Param('d') and 1 Constraint, frame_expr=None.",
       "status": "done",
-      "commit": "6944627"
+      "commit": "9d5501d"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Ensure check_trait_conformance produces an error diagnostic when a required member name is not found among structure members. Error message includes trait name, missing member name, and expected type.",
+      "description": "Implement lower_port_body in ts_parser.rs: iterate named children of port_body node. For param_declaration/let_declaration/constraint_declaration -> delegate to existing lower_param/lower_let/lower_constraint and collect into members vec. For port_direction_setting -> extract 'value' field text and map to PortDirection. For port_frame_setting -> lower 'value' field via lower_expr. Integrate into lower_port: when body is present, call lower_port_body to get (members, body_direction, frame_expr). Body direction overrides inline direction. Test parse_port_with_body passes.",
       "status": "done",
-      "commit": "3fb1b5a"
+      "commit": "9d5501d"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test: type mismatch — `trait Weighted { param mass : Mass }`, `structure def S : Weighted { param mass : Length = 5mm }` → error diagnostic about type mismatch (expected Mass, got Length).",
+      "description": "Write failing test: parse_port_with_frame - parses `structure S { port x : MechPort { frame = origin } }` and asserts frame_expr is Some with ExprKind::Ident('origin'). Also test with function call: `frame = frame3(origin)` asserts FunctionCall expression.",
       "status": "done",
-      "commit": "fcbe483"
+      "commit": "9d5501d"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add type compatibility checking in conformance: when a structure has the required member by name but the type doesn't match exactly, emit an error diagnostic with expected vs actual type. Use Type equality (==) for conformance checking.",
+      "description": "Ensure frame expression lowering works in lower_port_body. The port_frame_setting node has a 'value' field containing an expression. Lower it via self.lower_expr(). Store in PortDecl.frame_expr. Test parse_port_with_frame passes.",
       "status": "done",
-      "commit": "3fb1b5a"
+      "commit": "9d5501d"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test: default merging — `trait HasSize { param size : Length = 10mm }`, `structure def S : HasSize { }` → S should compile without errors, and the TopologyTemplate should contain a value cell for 'size' with the trait's default expression (10mm).",
+      "description": "Write failing test: parse_port_direction_override - parses `structure S { port x : in T { direction = out } }` and asserts direction=Some(PortDirection::Out), confirming body direction overrides inline direction.",
       "status": "done",
-      "commit": "c17565b"
+      "commit": "9d5501d"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement default member injection: after conformance checking identifies defaults not overridden by the structure, inject them as additional value cells (for param/let defaults) or constraints (for constraint defaults) into the TopologyTemplate. Compile default expressions using a temporary CompilationScope with the structure's existing members.",
+      "description": "Ensure direction override logic is correct in lower_port: body direction takes precedence over inline direction when both are present. The implementation from step-6 should handle this (body_direction.or(inline_direction)). Verify test parse_port_direction_override passes.",
       "status": "done",
-      "commit": "3fb1b5a"
+      "commit": "9d5501d"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test: default override — `trait HasSize { param size : Length = 10mm }`, `structure def S : HasSize { param size : Length = 20mm }` → structure's value (20mm) is used, no error, only one 'size' value cell exists.",
-      "status": "done",
-      "commit": "fe298d5"
+      "description": "Write failing test in crates/reify-compiler/tests/port_compile_tests.rs: compile_port_creates_value_cells - compiles a structure with a port that has body params: `trait MechPort { param diameter : Length } structure def S { port mount : MechPort { param diameter : Length = 5mm } }`. Asserts: TopologyTemplate.ports has 1 CompiledPort with name='mount', direction=Bidi (default), type_name='MechPort'. Port members list has 1 ValueCellDecl with id.member containing 'mount.diameter'.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Ensure conformance logic correctly detects that a structure-provided member satisfies the requirement even when a default exists. The member's presence prevents default injection. Verify with test from step-11.",
-      "status": "done",
-      "commit": "3fb1b5a"
+      "description": "Add CompiledPort struct to reify-compiler/src/lib.rs (name: String, direction: PortDirection, type_name: String, members: Vec<ValueCellDecl>, frame_expr: Option<CompiledExpr>). Add ports: Vec<CompiledPort> field to TopologyTemplate (initialize empty in compile_structure). Handle MemberDecl::Port in compile_structure's first pass (register port member names in scope as 'port_name.member_name') and second pass (compile port params/lets as ValueCells with composite ValueCellId entity.port_name.member_name, compile constraints, build CompiledPort). Default direction to Bidi if not specified. Push CompiledPort to ports vec. Update TopologyTemplate construction. Update content_hash computation to include port hashes.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test: multiple trait bounds — `trait A { param a : Length }`, `trait B { param b : Length }`, `structure def X : A + B { param a : Length = 1mm  param b : Length = 2mm }` → no errors, both requirements satisfied.",
-      "status": "done",
-      "commit": "092b719"
+      "description": "Write failing test: compile_port_type_check_known - compiles structure with port referencing a known trait type (defined in same module). No error diagnostics. Also write compile_port_type_check_unknown: port references non-existent trait type -> warning diagnostic about unknown port type.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Ensure conformance checking iterates over all entries in structure.trait_bounds, resolving and checking each trait independently. All requirement violations collected before returning.",
-      "status": "done",
-      "commit": "3fb1b5a"
+      "description": "In port compilation within compile_structure, verify port type_name against the trait_registry HashMap. If type_name not found in trait_registry, emit a warning diagnostic (not error, since trait may be in another module not yet resolved). Test compile_port_type_check_known and compile_port_type_check_unknown pass.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test: diamond inheritance — `trait C { param x : Length }`, `trait A : C { }`, `trait B : C { }`, `structure def X : A + B { param x : Length = 5mm }` → no errors. The requirement from C, reachable via both A and B, is checked once.",
-      "status": "done",
-      "commit": "730ccc3"
+      "description": "Write failing test: compile_port_member_access - compiles structure with a port and a let binding that references port.member via dot notation: `structure S { port mount : MechPort { param diameter : Length = 5mm }  let d = mount.diameter }`. Asserts the let 'd' compiles without error and its expression is a ValueRef to the correct composite ValueCellId.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement collect_all_requirements(trait_name, registry) that recursively walks refinement chains, collecting requirements from parent traits. Deduplicate by member name: if the same name appears from multiple paths with the same type, keep one. If same name with different types, it's a conflict (handled in step-18). Use a HashSet<String> to track visited traits to handle diamonds.",
-      "status": "done",
-      "commit": "3fb1b5a"
+      "description": "Update MemberAccess case in compile_expr_guarded (currently emits error at line 772-781). When object is Ident(name): check if 'name' is a known port name (add port_names: HashSet<String> to CompilationScope, populated during port registration). If so, construct composite key 'name.member' and resolve via scope.resolve(). Return ValueRef with the composite ValueCellId. If name is not a port, fall through to existing error diagnostic. Test compile_port_member_access passes.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write failing test: composition conflict — `trait A { param size : Length }`, `trait B { param size : Mass }`, `structure def X : A + B { param size : Length = 5mm }` → error diagnostic about conflicting requirements for 'size' (Length vs Mass).",
-      "status": "done",
-      "commit": "b70ef23"
+      "description": "Write test: compile_multiple_ports - compiles structure with two ports `port mount : MechPort { param d : Length = 5mm }  port shaft : RotaryPort { param rpm : Length = 100mm }`. Asserts TopologyTemplate.ports has 2 CompiledPorts with distinct names. Port members have unique ValueCellIds (S.mount.d vs S.shaft.rpm).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Implement conflict detection: when collecting requirements from multiple traits (including via refinement chains), if two requirements share a member name but have different types, emit a compile error about the conflict. This check happens during requirement collection before per-member checking.",
-      "status": "done",
-      "commit": "3fb1b5a"
+      "description": "Verify multiple ports compile correctly. Fix any issues with duplicate name registration, port_names tracking, or ValueCellId conflicts. Test compile_multiple_ports passes.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write failing test: deep trait chain — `trait A { param x : Length }`, `trait B : A { param y : Length }`, `trait C : B { param z : Length }`, `structure def S : C { param x : Length = 1mm  param y : Length = 2mm  param z : Length = 3mm }` → S must satisfy requirements from A (x), B (y), and C (z). No errors.",
-      "status": "done",
-      "commit": "3fe8942"
+      "description": "Write test: compile_port_direction_preserved - compiles structure with `port x : in MechPort { param d : Length = 5mm }`. Asserts CompiledPort.direction == PortDirection::In. Also test out and bidi directions are preserved through compilation.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-20",
       "type": "impl",
-      "description": "Verify transitive requirement collection handles deep chains (C→B→A). The collect_all_requirements function should walk the entire chain. Fix if needed.",
-      "status": "done",
-      "commit": "3fb1b5a"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing test: constraint from trait — `trait Safe { constraint x > 0 }`, structure conforms without having a matching constraint → default constraint is injected. Also test: two traits require a labeled constraint 'min_size'. A structure with a single 'min_size' constraint satisfies both.",
-      "status": "done",
-      "commit": "2c1445b"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Implement constraint requirement and default handling: Constraint members in traits become requirements (matched by label if labeled, or injected as defaults if they have an expression). For labeled constraints, a single constraint in the structure with matching label satisfies requirements from multiple traits.",
-      "status": "done",
-      "commit": "2c1445b"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write failing test for duplicate default injection (review issue: data_integrity / missing_test_for_correctness_bug). Two distinct traits `trait A { param size : Length = 10mm }` and `trait B { param size : Length = 5mm }`, `structure def X : A + B { }` (no override). Currently `collect_all_requirements` pushes defaults from every trait unconditionally, producing TWO ValueCellDecl entries with the same ValueCellId {entity: 'X', member: 'size'}, corrupting the TopologyTemplate. Test asserts: exactly one 'size' value cell exists after compilation.",
-      "status": "done",
-      "commit": "bae9e7c"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Fix duplicate default injection by adding `seen_defaults: HashMap<String, Type>` parameter to `collect_all_requirements`. Before pushing a named default (non-empty name), extract its type (cell_type for Param, Type::Real for Let, skip type check for Constraint) and check `seen_defaults`. If same name + same type: skip silently (dedup). If same name + different type: emit a conflict diagnostic for the default and skip. If not seen: insert name→type and push the default. For unnamed defaults (empty name, e.g. unlabeled constraints), always push without dedup. Thread the new `seen_defaults` parameter through from `check_trait_conformance` where it is initialized as an empty HashMap.",
-      "status": "done",
-      "commit": "eb3a807"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Write test for default conflict detection across traits with different types. `trait A { param size : Length = 10mm }`, `trait B { param size : Mass = 5kg }` (same name, DIFFERENT types in defaults), `structure def X : A + B { }`. Expect a conflict diagnostic mentioning 'size' and 'conflicting'. Also test the resolution: `structure def Y : A + B { param size : Length = 7mm }` should compile without conflict because the structure overrides the default, making the conflict moot (both defaults are skipped).",
-      "status": "done",
-      "commit": "1723cae"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "Verify step-25 test passes with the implementation from step-24. The seen_defaults HashMap<String, Type> comparison already handles type mismatch → conflict diagnostic. For the resolution case where the structure provides its own member, the `!structure_members.contains_key` guard at injection time already prevents injection, so the conflict diagnostic from collection is still emitted but the duplicate injection is avoided. If the test expects NO diagnostic when the structure overrides, suppress default conflict diagnostics when the structure provides the member — check `structure_members` before emitting. Fix accordingly.",
-      "status": "done",
-      "commit": "eb3a807"
-    },
-    {
-      "id": "step-27",
-      "type": "test",
-      "description": "Write tests for labeled constraint default dedup and RequirementKind::Constraint dead code cleanup (review issues: dead_code_untested_path, behavioral_incorrectness). (a) Two traits with same labeled constraint default: `trait A { param x : Length  constraint min_size : x > 0mm }`, `trait B { param x : Length  constraint min_size : x > 0mm }`, `structure def X : A + B { param x : Length = 5mm }` → no errors, exactly ONE 'min_size' constraint injected (not two). (b) Same two traits but structure provides its own `constraint min_size : x > 1mm` → structure's constraint used, zero additional 'min_size' constraints injected from defaults. These cover the step-21 dual-trait/labeled-constraint scenario that was described but untested.",
-      "status": "done",
-      "commit": "780d945"
-    },
-    {
-      "id": "step-28",
-      "type": "impl",
-      "description": "Remove the dead `RequirementKind::Constraint(Option<String>)` variant from the enum and its unreachable match arm in `check_trait_conformance` (lines 2232-2246). In the current AST, `ConstraintDecl` always has `expr: Expr` (non-optional), so there is no way to express a bodyless constraint requirement — all constraints in traits are necessarily defaults. Fix the misleading comment at lines 1031-1033 in `compile_trait` to accurately say 'Labeled constraint with expression in trait → default (override detection uses label matching)'. Keep the `structure_constraint_labels` collection since it is still used for constraint default dedup at the injection site (line 2337). Verify all existing tests still pass after the enum change.",
-      "status": "done",
-      "commit": "ba3c209"
+      "description": "Ensure port direction from PortDecl is correctly propagated to CompiledPort. Default to Bidi when direction is None. Test compile_port_direction_preserved passes.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Extend resolve_type_name to support 'Length' → Scalar{LENGTH} and 'Mass' → Scalar{MASS}",
-      "rationale": "The language spec and existing trait parser tests use type names like 'Length' and 'Mass'. These need to resolve to dimensioned scalar types for conformance type checking to work. This is a small, safe addition to an existing function."
+      "decision": "Use 'in', 'out', 'bidi' as keywords in the grammar via port_direction_keyword rule",
+      "rationale": "These become reserved words (can't be used as variable/type names). This is acceptable for a CAD language. The 'in' keyword doesn't conflict with inch unit suffix (80in) because unit suffixes use token.immediate() which is a separate token type. Tree-sitter's context-aware lexer correctly handles keywords vs identifiers based on parser state. Existing keywords like 'param', 'let', 'constraint' already work this way."
     },
     {
-      "decision": "Build trait registry as module-local HashMap<String, CompiledTrait>",
-      "rationale": "Follows existing pattern where cross-module resolution is noted but not implemented. Import resolution for traits can be added when multi-module compilation is fully wired up."
+      "decision": "Port members use composite ValueCellIds with dotted member names (entity.port_name.member_name)",
+      "rationale": "Reuses the existing ValueCellId structure (entity + member fields) without requiring structural changes. The member field contains 'port_name.member_name' as a single string, e.g., ValueCellId { entity: 'Motor', member: 'shaft.diameter' }. This enables scope lookup via 'port_name.member_name' keys and preserves the existing scope resolution machinery."
     },
     {
-      "decision": "Requirements vs defaults determined by presence of default expression",
-      "rationale": "A trait member with no default is a requirement (must be provided by the structure). A trait member with a default (e.g., param size : Length = 10mm) provides a fallback. For params, the default is ParamDecl.default. For lets, the LetDecl always has a value so all lets are either requirements (value references undefined names) or defaults."
+      "decision": "Create named grammar rules for port_direction_keyword, port_direction_setting, port_frame_setting",
+      "rationale": "Named rules produce named CST nodes that are easy to identify during lowering. Anonymous sequences would require fragile positional child matching. Named rules follow the project's existing pattern (e.g., where_clause, named_argument)."
     },
     {
-      "decision": "Conformance checking happens inside compile_structure, after first-pass name registration but before reference safety pass",
-      "rationale": "Default members need to be injected into the structure's value_cells/constraints before the reference safety analysis runs, so conformance checking and default injection must happen during structure compilation."
+      "decision": "Port type checking emits warning, not error, for unknown type_name",
+      "rationale": "The port's type_name references a trait that may be defined in another module. Since cross-module resolution isn't implemented yet, we can't definitively say a type is missing. A warning alerts developers while not blocking compilation."
     },
     {
-      "decision": "Deduplication of requirements by name for diamond patterns",
-      "rationale": "When A : C and B : C, and X : A + B, the requirement from C appears via both paths. Deduplication by member name ensures it's only checked once and prevents false 'conflict' errors when types agree."
+      "decision": "Body direction overrides inline direction when both specified",
+      "rationale": "If both `port x : in T { direction = out }` are specified, the body direction takes precedence. The body's explicit setting is more intentional and specific."
     },
     {
-      "decision": "Type matching for conformance uses exact type equality (==), not type_compatible()",
-      "rationale": "For trait conformance, the structure member must have exactly the same type as the trait requirement. The existing type_compatible() allows Int→Real widening which would be too permissive for trait contracts where dimensional precision matters."
+      "decision": "Port member access limited to same-structure ports (not cross-structure)",
+      "rationale": "Cross-structure port access (e.g., sub.port.member) requires sub-component type resolution which isn't implemented. This task only enables port member access within the declaring structure via scope-registered dotted names. Cross-structure access is deferred to a future task."
     },
     {
-      "decision": "Trait members that are lets with expressions are treated as defaults (not requirements)",
-      "rationale": "In the TraitDecl AST, LetDecl always has a value expression. A let binding with an expression provides a computed default. If the structure provides its own let with the same name, the structure's version takes precedence."
+      "decision": "Default direction is Bidi when not specified",
+      "rationale": "When no direction is given (inline or in body), the port defaults to bidirectional. This is the most permissive default and matches the PortDirection enum semantics from reify-types."
     },
     {
-      "decision": "Params without defaults in traits are strict requirements",
-      "rationale": "A param declared in a trait without a default (no = expr) means the conforming structure MUST provide it. This is the fundamental contract of trait conformance."
-    },
-    {
-      "decision": "Remove RequirementKind::Constraint as dead code rather than implementing bodyless constraint requirements",
-      "rationale": "The ConstraintDecl AST node always has `expr: Expr` (non-optional), so there is no way to express a constraint requirement without a body in the current grammar. Rather than changing the grammar/AST (which is out of scope for this task), we remove the dead variant. All constraints in traits are defaults — they are injected unless the structure provides its own constraint with the same label. This can be revisited if the grammar later adds optional constraint bodies."
-    },
-    {
-      "decision": "Deduplicate defaults across distinct traits using seen_defaults HashMap<String, Type>",
-      "rationale": "The existing `visited_traits` set prevents revisiting the same trait (diamond pattern), but does NOT prevent two distinct traits from contributing defaults with the same member name. Without dedup, two ValueCellDecl entries with the same ValueCellId are injected, corrupting the TopologyTemplate. The fix mirrors the existing `seen_names` pattern used for requirement dedup: same name + same type → skip silently, same name + different type → conflict diagnostic."
+      "decision": "Add port_names HashSet to CompilationScope for member access disambiguation",
+      "rationale": "The compiler needs to know which identifiers refer to ports (vs regular variables) when compiling MemberAccess expressions. A simple HashSet<String> of port names allows O(1) lookup. When the expression compiler sees `mount.diameter`, it checks if 'mount' is in port_names, and if so, resolves 'mount.diameter' as a composite scope key."
     }
   ],
   "reuse": [
     {
-      "what": "resolve_type_name() function",
-      "where": "crates/reify-compiler/src/lib.rs:333",
-      "how": "Extend with 'Length' and 'Mass' cases. Reuse for resolving types in trait member compilation."
+      "what": "PortDirection enum",
+      "where": "crates/reify-types/src/traits.rs (already defined with In/Out/Bidi variants, re-exported from lib.rs)",
+      "how": "Import via reify_types::PortDirection in both parser (for PortDecl.direction) and compiler (for CompiledPort.direction). No changes needed to the enum."
     },
     {
-      "what": "compile_expr() and compile_expr_guarded()",
-      "where": "crates/reify-compiler/src/lib.rs:469-884",
-      "how": "Reuse for compiling default expressions in trait members when injecting defaults."
+      "what": "lower_param, lower_let, lower_constraint methods in Lowering impl",
+      "where": "crates/reify-syntax/src/ts_parser.rs",
+      "how": "Port body members (param_declaration, let_declaration, constraint_declaration) reuse the exact same lowering methods as structure members. Called from lower_port_body."
     },
     {
-      "what": "CompilationScope",
-      "where": "crates/reify-compiler/src/lib.rs:437-464",
-      "how": "Create a temporary scope when compiling trait default expressions during injection."
+      "what": "compile_expr, compile_expr_guarded functions",
+      "where": "crates/reify-compiler/src/lib.rs (lines 531-945)",
+      "how": "Port body expressions (param defaults, frame expression, constraint expressions) use the same expression compiler as structure members."
     },
     {
-      "what": "Test helper pattern: compile_first_template()",
-      "where": "crates/reify-compiler/tests/guard_compilation.rs:10-16",
-      "how": "Create similar helper for trait conformance tests that returns (CompiledModule) or (TopologyTemplate, Vec<Diagnostic>)."
+      "what": "CompilationScope register/resolve pattern",
+      "where": "crates/reify-compiler/src/lib.rs (lines 499-526)",
+      "how": "Port members registered in scope with dotted names (port_name.member_name) using the existing register() method with composite string keys. Port member access resolved via the existing scope.resolve() method."
     },
     {
-      "what": "ContentHash combining pattern",
-      "where": "crates/reify-compiler/src/lib.rs:996-1024",
-      "how": "Follow same pattern for CompiledTrait content hashing and including trait_defs in module hash."
+      "what": "ValueCellDecl, ValueCellKind, CompiledConstraint structs",
+      "where": "crates/reify-compiler/src/lib.rs (lines 155-190)",
+      "how": "Port members produce standard ValueCellDecl entries with composite ValueCellIds. Port constraints produce standard CompiledConstraint entries. No new types needed for the members themselves."
     },
     {
-      "what": "Existing MemberDecl enum and member processing logic",
-      "where": "reify_syntax::MemberDecl (crates/reify-syntax/src/lib.rs:38-47)",
-      "how": "Trait members use the same MemberDecl variants (Param, Let, Constraint, Sub). Reuse the same match arms when categorizing trait members into requirements and defaults."
+      "what": "parse_decls / compile_module / compile_first_template helper patterns",
+      "where": "crates/reify-syntax/tests/trait_tests.rs and crates/reify-compiler/tests/trait_conformance_tests.rs",
+      "how": "Same helper function pattern for parsing and compiling test sources. Copy pattern into port_tests.rs and port_compile_tests.rs."
+    },
+    {
+      "what": "ContentHash, SourceSpan, node_text, span, content_hash utilities in Lowering",
+      "where": "crates/reify-syntax/src/ts_parser.rs (lines 53-65)",
+      "how": "Standard CST-to-AST lowering utilities reused for port declaration and body lowering."
+    },
+    {
+      "what": "Trait registry (HashMap<String, &CompiledTrait>)",
+      "where": "crates/reify-compiler/src/lib.rs (lines 1131-1134, built in compile())",
+      "how": "Reuse the trait registry already built in the compile() function for port type verification. Pass trait_registry to compile_structure (already passed) and use it to check port type_name."
     },
     {
       "what": "Diagnostic construction patterns",
       "where": "crates/reify-compiler/src/lib.rs throughout",
-      "how": "Follow existing patterns: Diagnostic::error(msg).with_label(DiagnosticLabel::new(span, hint)). Push to diagnostics vec."
-    },
-    {
-      "what": "seen_names HashMap pattern for requirement dedup in collect_all_requirements",
-      "where": "crates/reify-compiler/src/lib.rs:2184 (seen_requirement_names) and collect_all_requirements lines 2406-2430",
-      "how": "Mirror this exact pattern for default deduplication: HashMap<String, Type> tracking seen default names, with type comparison for conflict detection vs silent dedup."
+      "how": "Follow existing patterns: Diagnostic::error(msg).with_label(DiagnosticLabel::new(span, hint)) or Diagnostic::warning(...). Push to diagnostics vec."
     }
   ]
 }
