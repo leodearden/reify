@@ -169,3 +169,23 @@ fn parse_pub_trait() {
     assert_eq!(trait_decl.name, "Visible");
     assert_eq!(trait_decl.members.len(), 1);
 }
+
+// ── Step 13: structure with trait bounds ───────────────────────────
+
+#[test]
+fn parse_structure_with_trait_bounds() {
+    let (decls, errors) = parse_decls("structure def Bolt : Fastener + Rigid { param length : Length = 20mm }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    assert_eq!(structure.name, "Bolt");
+    assert_eq!(structure.trait_bounds, vec!["Fastener", "Rigid"]);
+    assert!(!structure.is_pub);
+    assert!(structure.type_params.is_empty());
+    assert_eq!(structure.members.len(), 1);
+}

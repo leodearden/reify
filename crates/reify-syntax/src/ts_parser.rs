@@ -356,15 +356,28 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        // Detect 'pub' keyword
+        let is_pub = {
+            let mut cursor = node.walk();
+            node.children(&mut cursor)
+                .any(|c| !c.is_named() && self.node_text(c) == "pub")
+        };
+
+        // Extract optional trait bounds
+        let trait_bounds = self.find_trait_bound_list(node);
+
+        // Extract optional type parameters (placeholder, implemented in step-16)
+        let type_params = vec![];
+
         let members = self.lower_members(node);
 
         let content_hash = self.content_hash(node);
 
         Some(StructureDef {
             name,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
+            is_pub,
+            type_params,
+            trait_bounds,
             members,
             span: self.span(node),
             content_hash,
