@@ -86,106 +86,106 @@
       "id": "step-6",
       "type": "impl",
       "description": "Implement count constraint recognition in the compiler. When compiling constraints in compile_entity(), detect pattern `<collection_name>.count == <expr>` where the LHS is a MemberAccess with member='count' and object matching a collection sub-component name. Create a synthetic Let ValueCell `{entity}.__count_{name}` (Int type, expr = constraint RHS), add it to structure_controlling. Store the count cell ID in SubComponentDecl.count_cell. The constraint itself is still compiled normally.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "e006fe4"
     },
     {
       "id": "step-7",
       "type": "test",
       "description": "Write failing test in crates/reify-eval/tests/collection_sub_eval.rs: Build module with Parent (param n : Int = 4, count_cell __count_bolts with expr=ValueRef(n), collection sub bolts: List<Bolt>) and Child (Bolt with param diameter). Use TopologyTemplateBuilder with new collection_sub_component() method. After EvaluationGraph::from_templates(), assert 4 scoped ValueCellNodes exist: Parent.bolts[0].diameter through Parent.bolts[3].diameter.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "c93fc6c"
     },
     {
       "id": "step-8",
       "type": "impl",
       "description": "Add collection_sub_component() method to TopologyTemplateBuilder that creates SubComponentDecl with is_collection=true and count_cell. Add a structure_controlling_cell() method to add arbitrary IDs to structure_controlling. Implement collection elaboration in EvaluationGraph::from_templates(): when sub.is_collection and sub.count_cell is Some, check if the count cell's value can be statically determined (look up the count cell in the graph); for builder-based tests, create N instances based on the count cell's default_expr literal value. Each instance has scoped IDs `Parent.name[i]` with child template value cells.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "cd40524"
     },
     {
       "id": "step-9",
       "type": "test",
       "description": "Write failing test: Engine.eval() with collection count=4 produces 4 Bolt instances with their own values. Build module with Parent (n=4, collection sub bolts) and Bolt (param diameter=10mm). After eval(), assert Parent.bolts[0].diameter through Parent.bolts[3].diameter have correct values in snapshot. Also assert the count cell __count_bolts has value Int(4).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "36ae413"
     },
     {
       "id": "step-10",
       "type": "impl",
       "description": "Implement collection sub-component evaluation in Engine.eval(). In the sub-component elaboration phase (around line 830), handle is_collection subs: (1) evaluate the count cell to determine N, (2) if count is Int(N), elaborate N instances of the child template with scoped entity prefix `Parent.name[i]`, (3) evaluate each instance's params with arg defaults from the child template, (4) evaluate each instance's let bindings. Skip elaboration if count is Undef.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f8b8176"
     },
     {
       "id": "step-11",
       "type": "test",
       "description": "Write failing test: count Undef means no instances. Build module where count cell has no default (or depends on an Undef param). After eval(), assert no scoped value cells exist for bolts[i] instances.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "ca5ff78"
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "Handle Undef count in collection elaboration. In both from_templates() and Engine.eval(), when count cell evaluates to Undef or non-Int, skip instance creation. The count cell itself remains in the snapshot with its Undef value.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f8b8176"
     },
     {
       "id": "step-13",
       "type": "test",
       "description": "Write failing test: count change 4->6 triggers re-elaboration. Build module with Parent (param n=4, collection sub bolts, count cell __count_bolts = n). Initial eval with n=4 produces 4 instances. edit_param(n, Int(6)). Assert: (1) topology_fingerprint changes, (2) 6 instances now exist (bolts[0] through bolts[5]), (3) new instances bolts[4] and bolts[5] have correct value cells.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "7649e25"
     },
     {
       "id": "step-14",
       "type": "impl",
       "description": "Implement count-based re-elaboration in Engine's incremental eval. In the guard re-elaboration phase (around line 1276), extend to also handle collection count cells. When a structure_controlling cell is a count cell and its value changed: (1) determine old vs new count, (2) remove old scoped instances from graph and values, (3) create new instances based on new count, (4) evaluate new instances, (5) recompute topology fingerprint. Also handle in the parallel incremental_eval path (around line 1508).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "3f20328"
     },
     {
       "id": "step-15",
       "type": "test",
       "description": "Write failing test: bolts[0].diameter access via compiled expression. Parse and compile `structure Bolt { param diameter : Scalar = 10mm } structure S { sub bolts : List<Bolt>  constraint bolts.count == 4  let d = bolts[0].diameter }`. Assert: the let binding 'd' compiles to a ValueRef or IndexAccess expression that can resolve to Parent.bolts[0].diameter.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "2fb4b45"
     },
     {
       "id": "step-16",
       "type": "impl",
       "description": "Implement indexed collection member access in the compiler. When compiling expression `name[i].member` where `name` is a collection sub: if `i` is a literal integer, resolve to ValueRef with scoped ID `Parent.name[i].member`. If `i` is a non-literal expression, compile as IndexAccess+MemberAccess chain (dynamic indexing). Register collection sub names in CompilationScope so the compiler can distinguish collection access from regular index access.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "435b6fe"
     },
     {
       "id": "step-17",
       "type": "test",
       "description": "Write failing test: `let n = bolts.count` compiles and evaluates to the count value. Parse and compile a structure with collection sub and `let n = bolts.count`. Eval and assert n == Int(4). This should compile bolts.count as a ValueRef to the __count_bolts cell.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "203100b"
     },
     {
       "id": "step-18",
       "type": "impl",
       "description": "Implement bolts.count expression compilation. When the compiler sees MemberAccess with object being a collection sub name and member being 'count', compile it as a ValueRef to the count cell `__count_{name}`. This is simpler than a MethodCall since the count cell already exists as a Let binding.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "435b6fe"
     },
     {
       "id": "step-19",
       "type": "test",
       "description": "Write integration test: collection operations on sub-structure instances. Build module using builders: Parent with collection sub bolts (count=3), Bolt with param grade (default=8.8). Create a let binding that gathers bolt grades into a list and calls .all(). Verify eval produces correct results. Note: this tests that collection method dispatch works on sub-structure instance lists, using the existing .all() method on List values.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "2660c4a"
     },
     {
       "id": "step-20",
       "type": "impl",
       "description": "Implement collection value aggregation. When a collection sub name is referenced in an expression context (not as .count or [i].member), create a synthetic List value by gathering instance values. Add logic in Engine.eval() (or as a Let binding in from_templates()) that for each collection sub with determined count, creates a List<StructureRef> value from instance references. This enables .map(), .all(), .any() etc. to work on the collection.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "2660c4a"
     }
   ],
   "design_decisions": [
