@@ -179,6 +179,10 @@ pub struct SubComponentDecl {
     /// Resolved type arguments for parameterized structures
     /// (e.g., `Box<Bolt>()` → `[StructureRef("Bolt")]`; `Box<U>()` → `[TypeParam("U")]`).
     pub type_args: Vec<Type>,
+    /// True if this sub uses collection form: `sub name : List<T>`
+    pub is_collection: bool,
+    /// For collection subs, the synthetic count ValueCell (e.g. `__count_bolts`)
+    pub count_cell: Option<ValueCellId>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -2027,6 +2031,8 @@ fn compile_entity(
                     visibility: Visibility::Public,
                     args: compiled_args,
                     type_args: resolved_type_args,
+                    is_collection: false,
+                    count_cell: None,
                     span: sub.span,
                     content_hash: sub.content_hash,
                 });
@@ -2913,6 +2919,8 @@ fn compile_connection(
             visibility: Visibility::Private,
             args: compiled_args,
             type_args: vec![],
+            is_collection: false,
+            count_cell: None,
             span,
             content_hash: conn_hash,
         });

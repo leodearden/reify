@@ -281,6 +281,8 @@ impl TopologyTemplateBuilder {
             visibility: reify_compiler::Visibility::Public,
             args,
             type_args: Vec::new(),
+            is_collection: false,
+            count_cell: None,
             span: SourceSpan::new(0, 0),
         });
         self
