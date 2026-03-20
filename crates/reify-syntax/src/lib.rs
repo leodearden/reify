@@ -306,6 +306,11 @@ pub enum ExprKind {
     },
     /// Auto keyword: solver-determined parameter value
     Auto,
+    /// Lambda expression: `|x, y| x + y`
+    Lambda {
+        params: Vec<LambdaParam>,
+        body: Box<Expr>,
+    },
 }
 
 /// A match arm: `Pattern1 | Pattern2 => body`
@@ -313,6 +318,14 @@ pub enum ExprKind {
 pub struct MatchArm {
     pub patterns: Vec<String>,
     pub body: Expr,
+    pub span: SourceSpan,
+}
+
+/// A lambda parameter: `x` or `x: Real`
+#[derive(Debug, Clone)]
+pub struct LambdaParam {
+    pub name: String,
+    pub type_expr: Option<TypeExpr>,
     pub span: SourceSpan,
 }
 

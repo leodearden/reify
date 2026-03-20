@@ -969,6 +969,10 @@ fn compile_expr_guarded(
                 content_hash,
             }
         }
+        reify_syntax::ExprKind::Lambda { .. } => {
+            // Lambda compilation will be implemented in step-8.
+            CompiledExpr::literal(Value::Undef, Type::Real)
+        }
     }
 }
 
@@ -2005,11 +2009,8 @@ fn collect_value_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
                 collect_value_refs_inner(arg, refs);
             }
         }
-        CompiledExprKind::Lambda { body, captures, .. } => {
+        CompiledExprKind::Lambda { body, .. } => {
             collect_value_refs_inner(body, refs);
-            for cap in captures {
-                refs.push(cap.clone());
-            }
         }
         CompiledExprKind::Literal(_) => {}
     }

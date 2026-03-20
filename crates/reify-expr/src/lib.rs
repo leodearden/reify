@@ -118,6 +118,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             // by apply_lambda (task-58). Return Undef as placeholder.
             Value::Undef
         }
+
+        CompiledExprKind::Lambda { .. } => {
+            // Lambda evaluation will be implemented in step-14.
+            Value::Undef
+        }
     }
 }
 
