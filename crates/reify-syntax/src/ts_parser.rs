@@ -1376,4 +1376,30 @@ mod tests {
             other => panic!("expected SetLiteral, got {:?}", other),
         }
     }
+
+    #[test]
+    fn parse_map_literal_two_entries() {
+        let kind = parse_let_expr(r#"structure S { let x = map{"a" => 1, "b" => 2} }"#);
+        match kind {
+            ExprKind::MapLiteral(entries) => {
+                assert_eq!(entries.len(), 2);
+                assert!(matches!(&entries[0].0.kind, ExprKind::StringLiteral(s) if s == "a"));
+                assert!(matches!(&entries[0].1.kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
+                assert!(matches!(&entries[1].0.kind, ExprKind::StringLiteral(s) if s == "b"));
+                assert!(matches!(&entries[1].1.kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
+            }
+            other => panic!("expected MapLiteral, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_map_literal_empty() {
+        let kind = parse_let_expr("structure S { let x = map{} }");
+        match kind {
+            ExprKind::MapLiteral(entries) => {
+                assert_eq!(entries.len(), 0);
+            }
+            other => panic!("expected MapLiteral, got {:?}", other),
+        }
+    }
 }
