@@ -12,14 +12,15 @@
     "crates/reify-constraints/tests/registry_tests.rs",
     "crates/reify-constraints/tests/decompose_tests.rs",
     "crates/reify-constraints/tests/solver_integration.rs",
-    "crates/reify-compiler/src/lib.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-types/src/expr.rs"
   ],
   "modules": [
     "crates/reify-constraints",
     "crates/reify-compiler",
     "crates/reify-types"
   ],
-  "analysis": "This task has been FULLY IMPLEMENTED. All code, tests, and integration points are in place. The implementation consists of three interlocking pieces:\n\n1. **ConstraintClassifier** (classifier.rs): Walks CompiledExpr trees and determines ConstraintDomain by collecting DomainFlags from leaf value types (Scalar/Real/Int \u2192 numeric, Bool \u2192 logical) and function calls (std::geo::* \u2192 geometric). Classification: numeric-only \u2192 Dimensional, logical-only \u2192 Logical, geometric present \u2192 Geometric, mixed \u2192 CrossDomain.\n\n2. **Connected-component decomposition** (decompose.rs): Uses union-find to build bipartite graph of constraints \u2194 auto params. Each connected component becomes an independent SubProblem with its own auto_params, constraints, and domain classification. Constraints referencing no auto params are excluded.\n\n3. **SolverRegistry** (registry.rs): Implements ConstraintSolver trait as a drop-in replacement for DimensionalSolver. Holds domain-specific solvers (dimensional required, geometric/logical/fallback optional). solve() decomposes the problem, dispatches sub-problems to appropriate solvers, and merges results.\n\n4. **Compiler integration** (reify-compiler/src/lib.rs): CompiledConstraint has `domain: Option<ConstraintDomain>` field (default None), allowing optional pre-classification at compile time.\n\nAll 50+ tests pass. The existing DimensionalSolver is used as both the dimensional and fallback solver, maintaining full backward compatibility.\n\n**POST-REVIEW FIXES (3 blocking issues):**\n\n1. **unnecessary_unsafe** (registry.rs:177-180) \u2014 FIXED in steps 13-14: Removed `unsafe impl Send/Sync for SolverRegistry` blocks.\n\n2. **type_system_inconsistency** (classifier.rs:82-84) \u2014 FIXED in steps 15-16: `Type::String` was incorrectly included in the numeric arm.\n\n3. **silent_correctness_failure** (registry.rs:104-122) \u2014 Steps 17-18: The objective assignment iterates components and assigns the objective to the first component whose auto_params intersect the objective's value refs, then stops. If the objective expression references auto params spread across multiple independent components, only the first matching component gets the objective. The design decision explicitly says params co-referenced by the objective must be merged, but this merge is never performed. Fix: modify `decompose_into_components` to accept an optional objective expression, and union all auto params referenced by the objective in the union-find structure before grouping into components. This ensures all objective-referenced params land in the same component. Then update `registry.rs` to pass the objective expression to `decompose_into_components`, and simplify the objective assignment logic (the objective always goes to the single component containing all its params).",
+  "analysis": "This task has been FULLY IMPLEMENTED. All code, tests, and integration points are in place. The implementation consists of three interlocking pieces:\n\n1. **ConstraintClassifier** (classifier.rs): Walks CompiledExpr trees and determines ConstraintDomain by collecting DomainFlags from leaf value types (Scalar/Real/Int → numeric, Bool → logical) and function calls (std::geo::* → geometric). Classification: numeric-only → Dimensional, logical-only → Logical, geometric present → Geometric, mixed → CrossDomain.\n\n2. **Connected-component decomposition** (decompose.rs): Uses union-find to build bipartite graph of constraints ↔ auto params. Each connected component becomes an independent SubProblem with its own auto_params, constraints, and domain classification. Constraints referencing no auto params are excluded.\n\n3. **SolverRegistry** (registry.rs): Implements ConstraintSolver trait as a drop-in replacement for DimensionalSolver. Holds domain-specific solvers (dimensional required, geometric/logical/fallback optional). solve() decomposes the problem, dispatches sub-problems to appropriate solvers, and merges results.\n\n4. **Compiler integration** (reify-compiler/src/lib.rs): CompiledConstraint has `domain: Option<ConstraintDomain>` field (default None), allowing optional pre-classification at compile time.\n\nAll 50+ tests pass. The existing DimensionalSolver is used as both the dimensional and fallback solver, maintaining full backward compatibility.\n\n**POST-REVIEW FIXES (Round 1 — 3 blocking issues, ALL FIXED):**\n\n1. **unnecessary_unsafe** (registry.rs:177-180) — FIXED in steps 13-14: Removed `unsafe impl Send/Sync for SolverRegistry` blocks.\n\n2. **type_system_inconsistency** (classifier.rs:82-84) — FIXED in steps 15-16: `Type::String` was incorrectly included in the numeric arm.\n\n3. **silent_correctness_failure** (registry.rs:104-122) — FIXED in steps 17-18: Objective-aware decomposition now unions all objective-referenced params in the union-find.\n\n**POST-REVIEW FIXES (Round 2 — 2 blocking issues from reviewer_reuse_auditor):**\n\nBoth issues claim `CompiledExprKind` has 9 variants (Literal, ValueRef, BinOp, UnOp, FunctionCall, Conditional, Match, UserFunctionCall, Lambda) and that `collect_value_refs` (decompose.rs) and `collect_flags` (classifier.rs) only handle 6 of 9. **This premise is factually incorrect.** `CompiledExprKind` (reify-types/src/expr.rs:17-44) has exactly 6 variants. There are no Match, UserFunctionCall, or Lambda variants in the codebase. Both match statements are exhaustive — Rust's compiler enforces this and would produce a compile error if any arm were missing. The reviewer's claim that 'M5 Language Breadth tasks are complete' and that these variants exist is wrong — the task tree may have planned them, but the variants have not been added to `CompiledExprKind`.\n\nHowever, the reviewer's **underlying concern about code duplication** is valid and actionable. Three independent copies of the expression tree traversal exist:\n- `decompose.rs:72-99` — `collect_value_refs` (manual match, 6 arms)\n- `classifier.rs:67-116` — `collect_flags` (manual match, 6 arms)\n- `reify-eval/src/deps.rs:20-47` — `collect_value_refs` (manual match, 6 arms)\n\nAll three handle exactly the same 6 variants with identical recursive structure. When new variants ARE eventually added (Match, UserFunctionCall, Lambda), all three must be updated independently. This violates DRY and creates a real future divergence risk.\n\nThe fix (aligned with the reviewer's long-term suggestion): extract a canonical `CompiledExpr::walk()` traversal method into `reify-types/src/expr.rs`. This gives a single match statement that all callers delegate child traversal to. When new `CompiledExprKind` variants are added, only `walk()` needs updating. Steps 19-24 implement this. Note: `reify-eval/src/deps.rs` has the same duplication but is out of scope for this task.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -40,49 +41,49 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for ConstraintClassifier: classify `thickness > 2mm` (Scalar comparisons) \u2192 Dimensional, classify `x == true` (Bool literal eq) \u2192 Logical, classify `x > 2mm && y == true` (mixed) \u2192 CrossDomain, classify pure arithmetic on dimensionless Reals \u2192 Dimensional, classify expression with geometry function call \u2192 Geometric. Tests in crates/reify-constraints/tests/classifier_tests.rs",
+      "description": "Write failing tests for ConstraintClassifier: classify `thickness > 2mm` (Scalar comparisons) → Dimensional, classify `x == true` (Bool literal eq) → Logical, classify `x > 2mm && y == true` (mixed) → CrossDomain, classify pure arithmetic on dimensionless Reals → Dimensional, classify expression with geometry function call → Geometric. Tests in crates/reify-constraints/tests/classifier_tests.rs",
       "status": "done",
       "commit": "037def6"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement ConstraintClassifier in crates/reify-constraints/src/classifier.rs. Walk CompiledExpr tree, track leaf value types and operator types. Classification rules: (1) collect all leaf types via recursive traversal, (2) if any FunctionCall with geometry-related qualified_name \u2192 Geometric flag, (3) if all numeric Scalar leaves \u2192 Dimensional, (4) if all Bool/Int leaves with only logical ops \u2192 Logical, (5) if mixed flags \u2192 CrossDomain. Expose pub fn classify(expr: &CompiledExpr) -> ConstraintDomain",
+      "description": "Implement ConstraintClassifier in crates/reify-constraints/src/classifier.rs. Walk CompiledExpr tree, track leaf value types and operator types. Classification rules: (1) collect all leaf types via recursive traversal, (2) if any FunctionCall with geometry-related qualified_name → Geometric flag, (3) if all numeric Scalar leaves → Dimensional, (4) if all Bool/Int leaves with only logical ops → Logical, (5) if mixed flags → CrossDomain. Expose pub fn classify(expr: &CompiledExpr) -> ConstraintDomain",
       "status": "done",
       "commit": "e27f569"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for connected-component decomposition: (1) 3 constraints each referencing a unique auto param \u2192 3 components, (2) 2 constraints sharing one auto param \u2192 1 component, (3) chain: C1 refs {a,b}, C2 refs {b,c} \u2192 1 component with all 3 params, (4) empty constraints \u2192 0 components, (5) constraint referencing no auto params \u2192 excluded from components. Tests in crates/reify-constraints/tests/decompose_tests.rs",
+      "description": "Write failing tests for connected-component decomposition: (1) 3 constraints each referencing a unique auto param → 3 components, (2) 2 constraints sharing one auto param → 1 component, (3) chain: C1 refs {a,b}, C2 refs {b,c} → 1 component with all 3 params, (4) empty constraints → 0 components, (5) constraint referencing no auto params → excluded from components. Tests in crates/reify-constraints/tests/decompose_tests.rs",
       "status": "done",
       "commit": "add08d5"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement connected-component decomposition in crates/reify-constraints/src/decompose.rs. Define SubProblem struct {auto_params, constraints, domain: ConstraintDomain}. Use union-find: assign each auto param an index. For each constraint, collect ValueCellIds via expression tree walk (reuse collect_value_refs pattern), filter to auto param set, union all referenced params. Group constraints by component root. Determine per-component domain from individual constraint classifications (unanimous \u2192 that domain, mixed \u2192 CrossDomain). Return Vec<SubProblem>.",
+      "description": "Implement connected-component decomposition in crates/reify-constraints/src/decompose.rs. Define SubProblem struct {auto_params, constraints, domain: ConstraintDomain}. Use union-find: assign each auto param an index. For each constraint, collect ValueCellIds via expression tree walk (reuse collect_value_refs pattern), filter to auto param set, union all referenced params. Group constraints by component root. Determine per-component domain from individual constraint classifications (unanimous → that domain, mixed → CrossDomain). Return Vec<SubProblem>.",
       "status": "done",
       "commit": "637106a"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for SolverRegistry: (1) construct with DimensionalSolver as dimensional + fallback, no geometric/logical \u2192 dispatches to dimensional solver and gets same results as DimensionalSolver alone for a simple feasibility problem, (2) problem with no geometric solver registered \u2192 fallback used for geometric-classified constraints, (3) problem decomposed into 2 independent sub-problems \u2192 both solved, merged result contains all param values, (4) backward compat: existing auto resolution test cases (from solver_integration.rs) pass through SolverRegistry. Tests in crates/reify-constraints/tests/registry_tests.rs",
+      "description": "Write failing tests for SolverRegistry: (1) construct with DimensionalSolver as dimensional + fallback, no geometric/logical → dispatches to dimensional solver and gets same results as DimensionalSolver alone for a simple feasibility problem, (2) problem with no geometric solver registered → fallback used for geometric-classified constraints, (3) problem decomposed into 2 independent sub-problems → both solved, merged result contains all param values, (4) backward compat: existing auto resolution test cases (from solver_integration.rs) pass through SolverRegistry. Tests in crates/reify-constraints/tests/registry_tests.rs",
       "status": "done",
       "commit": "6a1cbb9"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement SolverRegistry in crates/reify-constraints/src/registry.rs. Struct holds dimensional: Box<dyn ConstraintSolver>, geometric: Option<Box<dyn ConstraintSolver>>, logical: Option<Box<dyn ConstraintSolver>>, fallback: Option<Box<dyn ConstraintSolver>>. Implement ConstraintSolver trait: (1) classify each constraint, (2) decompose into sub-problems, (3) for each sub-problem select solver by domain (geometric \u2192 geometric.unwrap_or(dimensional), etc.), (4) construct ResolutionProblem per sub-problem with filtered auto_params and constraints, (5) solve each, (6) merge SolveResult values into single HashMap, (7) if any sub-problem is Infeasible \u2192 whole is Infeasible, (8) handle objective by keeping it on the component that references the objective's expression vars.",
+      "description": "Implement SolverRegistry in crates/reify-constraints/src/registry.rs. Struct holds dimensional: Box<dyn ConstraintSolver>, geometric: Option<Box<dyn ConstraintSolver>>, logical: Option<Box<dyn ConstraintSolver>>, fallback: Option<Box<dyn ConstraintSolver>>. Implement ConstraintSolver trait: (1) classify each constraint, (2) decompose into sub-problems, (3) for each sub-problem select solver by domain (geometric → geometric.unwrap_or(dimensional), etc.), (4) construct ResolutionProblem per sub-problem with filtered auto_params and constraints, (5) solve each, (6) merge SolveResult values into single HashMap, (7) if any sub-problem is Infeasible → whole is Infeasible, (8) handle objective by keeping it on the component that references the objective's expression vars.",
       "status": "done",
       "commit": "d16a0ef"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test for cross-domain iteration: create a problem with 2 constraints \u2014 one Dimensional referencing params {a, b}, one that would be classified differently but shares param b. Verify SolverRegistry merges them into a single component (since they share b) and solves correctly via fallback.",
+      "description": "Write test for cross-domain iteration: create a problem with 2 constraints — one Dimensional referencing params {a, b}, one that would be classified differently but shares param b. Verify SolverRegistry merges them into a single component (since they share b) and solves correctly via fallback.",
       "status": "done",
       "commit": "d990ef9"
     },
@@ -103,14 +104,14 @@
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Add domain: Option<ConstraintDomain> field to CompiledConstraint in reify-compiler/src/lib.rs. Initialize to None in compile_structure(). Update all existing construction sites. This is a pure addition \u2014 no existing behavior changes.",
+      "description": "Add domain: Option<ConstraintDomain> field to CompiledConstraint in reify-compiler/src/lib.rs. Initialize to None in compile_structure(). Update all existing construction sites. This is a pure addition — no existing behavior changes.",
       "status": "done",
       "commit": "d140236"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write backward-compatibility integration test: run the full set of existing auto-resolution test scenarios (from solver_integration.rs) through a SolverRegistry wrapping DimensionalSolver. Verify identical results \u2014 Solved with same values, Infeasible for same infeasible problems.",
+      "description": "Write backward-compatibility integration test: run the full set of existing auto-resolution test scenarios (from solver_integration.rs) through a SolverRegistry wrapping DimensionalSolver. Verify identical results — Solved with same values, Infeasible for same infeasible problems.",
       "status": "done",
       "commit": "4fac5d2"
     },
@@ -145,7 +146,7 @@
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Fix the type_system_inconsistency in crates/reify-constraints/src/classifier.rs (reviewer: architect_reviewer). In the `CompiledExprKind::ValueRef` arm of `collect_flags` (lines 80-87), replace the manual type match with the type system's canonical `is_numeric()` method. Change from:\n```rust\nmatch &expr.result_type {\n    Type::Bool => flags.has_logical = true,\n    Type::Int | Type::Real | Type::Scalar { .. } | Type::String => {\n        flags.has_numeric = true;\n    }\n}\n```\nTo:\n```rust\nif expr.result_type.is_numeric() {\n    flags.has_numeric = true;\n} else if expr.result_type == Type::Bool {\n    flags.has_logical = true;\n}\n// Type::String is a no-op \u2014 no domain flag set, consistent with Type::is_numeric()\n```\nThis aligns with the canonical `Type::is_numeric()` definition in reify-types/src/ty.rs:42 which returns `matches!(self, Type::Int | Type::Real | Type::Scalar { .. })`, explicitly excluding String. Verify all existing classifier tests plus the new step-15 regression tests pass.",
+      "description": "Fix the type_system_inconsistency in crates/reify-constraints/src/classifier.rs (reviewer: architect_reviewer). In the `CompiledExprKind::ValueRef` arm of `collect_flags` (lines 80-87), replace the manual type match with the type system's canonical `is_numeric()` method. Change from:\n```rust\nmatch &expr.result_type {\n    Type::Bool => flags.has_logical = true,\n    Type::Int | Type::Real | Type::Scalar { .. } | Type::String => {\n        flags.has_numeric = true;\n    }\n}\n```\nTo:\n```rust\nif expr.result_type.is_numeric() {\n    flags.has_numeric = true;\n} else if expr.result_type == Type::Bool {\n    flags.has_logical = true;\n}\n// Type::String is a no-op — no domain flag set, consistent with Type::is_numeric()\n```\nThis aligns with the canonical `Type::is_numeric()` definition in reify-types/src/ty.rs:42 which returns `matches!(self, Type::Int | Type::Real | Type::Scalar { .. })`, explicitly excluding String. Verify all existing classifier tests plus the new step-15 regression tests pass.",
       "status": "done",
       "commit": "4222aa3"
     },
@@ -162,16 +163,58 @@
       "description": "Fix the silent_correctness_failure in decompose.rs and registry.rs (reviewer: reviewer_robustness).\n\n**decompose.rs changes:**\n1. Change `decompose_into_components` signature from `(auto_params, constraints)` to `(auto_params, constraints, objective: Option<&CompiledExpr>)`. Add a new parameter for the optional objective expression.\n2. After the constraint-based union-find loop (line 166) and before grouping by component root (line 173), add: if `objective` is `Some(obj_expr)`, collect its value refs via `collect_value_refs`, filter to auto param indices, and union all those indices together. This forces all objective-referenced auto params into the same component.\n3. Update existing callers: the `decompose_tests.rs` tests that call `decompose_into_components` with 2 args must be updated to pass `None` as the third argument.\n\n**registry.rs changes:**\n1. Extract the objective expression from `problem.objective` before calling `decompose_into_components`, and pass it as the third argument.\n2. Simplify the `objective_component` logic: since the objective's params are now guaranteed to be in one component (thanks to the union-find merge), the existing first-match iteration is correct — but we can simplify by noting it will always find exactly one matching component. No behavioral change needed in this section, only the `decompose_into_components` call site.\n\nVerify all existing tests plus new step-17 tests pass.",
       "status": "done",
       "commit": "18946bb"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write unit tests for `CompiledExpr::walk` in `crates/reify-types/src/expr.rs` `#[cfg(test)]` module (reviewer: reviewer_reuse_auditor — addressing code duplication concern).\n\nTests:\n1. `walk_visits_literal`: Walk a Literal node, collect visited nodes in a counter → exactly 1 visit.\n2. `walk_collects_value_ref`: Walk a ValueRef node, collect ValueCellIds from walk → contains the ref.\n3. `walk_traverses_binop_children`: Walk `a > b` (BinOp with two ValueRef children) → visits 3 nodes (the BinOp + 2 children), collects both ValueCellIds.\n4. `walk_traverses_function_call_args`: Walk a FunctionCall with 2 args → visits 3 nodes (call + 2 args).\n5. `walk_traverses_conditional_branches`: Walk a Conditional with condition/then/else → visits 4 nodes.\n6. `walk_traverses_deeply_nested`: Walk a complex expression (Conditional containing BinOp containing ValueRefs) → collects all ValueCellIds from all levels.\n\nThese tests will fail because `CompiledExpr::walk` does not exist yet.",
+      "status": "done",
+      "commit": "3b30fd4"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Implement `CompiledExpr::walk` method in `crates/reify-types/src/expr.rs` (reviewer: reviewer_reuse_auditor — addressing code duplication concern).\n\nAdd to the `impl CompiledExpr` block:\n```rust\n/// Recursively walk the expression tree, calling `f` on each node (pre-order).\n///\n/// This is the canonical traversal for `CompiledExprKind`. All callers\n/// that need to visit expression nodes should use this method rather than\n/// implementing their own match on `CompiledExprKind`. This ensures that\n/// when new variants are added, only this single method needs updating.\npub fn walk(&self, f: &mut impl FnMut(&CompiledExpr)) {\n    f(self);\n    match &self.kind {\n        CompiledExprKind::Literal(_) => {}\n        CompiledExprKind::ValueRef(_) => {}\n        CompiledExprKind::BinOp { left, right, .. } => {\n            left.walk(f);\n            right.walk(f);\n        }\n        CompiledExprKind::UnOp { operand, .. } => {\n            operand.walk(f);\n        }\n        CompiledExprKind::FunctionCall { args, .. } => {\n            for arg in args {\n                arg.walk(f);\n            }\n        }\n        CompiledExprKind::Conditional { condition, then_branch, else_branch } => {\n            condition.walk(f);\n            then_branch.walk(f);\n            else_branch.walk(f);\n        }\n    }\n}\n```\n\nVerify all step-19 tests pass.",
+      "status": "done",
+      "commit": "c7ade50"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write regression test in `crates/reify-constraints/tests/decompose_tests.rs` to lock in behavior before refactoring `collect_value_refs` to use `walk`.\n\nAdd `collect_value_refs_handles_nested_conditional`: Build a Conditional expression where condition is `a > b`, then_branch is `c > literal(1mm)`, else_branch is `d > literal(2mm)`. Create auto_params for {a, b, c, d} with independent constraints using this expression. Call `decompose_into_components` and verify that all 4 params are collected into one component (because the single constraint references all 4). This exercises the Conditional, BinOp, ValueRef, and Literal arms together and locks the behavior before the refactoring in step-22.",
+      "status": "done",
+      "commit": "e13ab89"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Refactor `collect_value_refs` in `crates/reify-constraints/src/decompose.rs` to use `CompiledExpr::walk`, eliminating the duplicated match on `CompiledExprKind` (reviewer: reviewer_reuse_auditor).\n\nReplace the manual 6-arm match in `collect_value_refs` (lines 72-99) with:\n```rust\nfn collect_value_refs(expr: &CompiledExpr, out: &mut HashSet<ValueCellId>) {\n    expr.walk(&mut |node| {\n        if let CompiledExprKind::ValueRef(id) = &node.kind {\n            out.insert(id.clone());\n        }\n    });\n}\n```\n\nThis delegates all child traversal to `CompiledExpr::walk`. When new variants are added to `CompiledExprKind`, only `walk()` needs updating — `collect_value_refs` automatically handles them.\n\nVerify all existing decompose tests (including step-21) pass. The `collect_value_refs_pub` wrapper needs no change — it delegates to the same function.",
+      "status": "done",
+      "commit": "0d0aa6e"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write regression test in `crates/reify-constraints/tests/classifier_tests.rs` to lock in behavior before refactoring `collect_flags` to use `walk`.\n\nAdd `classify_conditional_with_mixed_branches`: Build a Conditional expression where condition is `ratio > 0.5` (numeric/Dimensional), then_branch is a geometry function call `std::geo::distance(...)` (Geometric), else_branch is `flag == true` (Logical). Classify → should be CrossDomain (has all three domain flags: numeric from condition, geometric from then_branch, logical from else_branch). This exercises all arms of `collect_flags` (Conditional, BinOp, ValueRef, Literal, FunctionCall) in a single expression and locks behavior before the refactoring in step-24.",
+      "status": "done",
+      "commit": "0c94e08"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Refactor `collect_flags` in `crates/reify-constraints/src/classifier.rs` to use `CompiledExpr::walk`, eliminating the duplicated match on `CompiledExprKind` (reviewer: reviewer_reuse_auditor).\n\nReplace the manual 6-arm match in `collect_flags` (lines 67-116) with:\n```rust\nfn collect_flags(expr: &CompiledExpr, flags: &mut DomainFlags) {\n    expr.walk(&mut |node| {\n        match &node.kind {\n            CompiledExprKind::Literal(value) => {\n                match value {\n                    Value::Bool(_) => flags.has_logical = true,\n                    Value::Int(_) | Value::Real(_) | Value::Scalar { .. } => {\n                        flags.has_numeric = true;\n                    }\n                    Value::String(_) | Value::Undef => {}\n                }\n            }\n            CompiledExprKind::ValueRef(_) => {\n                if node.result_type.is_numeric() {\n                    flags.has_numeric = true;\n                } else if node.result_type == Type::Bool {\n                    flags.has_logical = true;\n                }\n            }\n            CompiledExprKind::FunctionCall { function, .. } => {\n                if is_geometry_qualified_name(&function.qualified_name) {\n                    flags.has_geometric = true;\n                }\n            }\n            // Child traversal handled by walk — no manual recursion needed\n            _ => {}\n        }\n    });\n}\n```\n\nThis delegates all child traversal to `CompiledExpr::walk`. The classifier only inspects domain-relevant node kinds (Literal, ValueRef, FunctionCall) and ignores structural nodes (BinOp, UnOp, Conditional) since their domain contribution comes from their children.\n\nVerify all existing classifier tests (including step-23) pass.",
+      "status": "done",
+      "commit": "5b9e38a"
     }
   ],
   "design_decisions": [
     {
       "decision": "SolverRegistry implements ConstraintSolver trait",
-      "rationale": "This makes SolverRegistry a drop-in replacement for DimensionalSolver in the Engine. The Engine holds Option<Box<dyn ConstraintSolver>> and calls .solve() \u2014 no changes needed in reify-eval. Users can pass either DimensionalSolver or SolverRegistry."
+      "rationale": "This makes SolverRegistry a drop-in replacement for DimensionalSolver in the Engine. The Engine holds Option<Box<dyn ConstraintSolver>> and calls .solve() — no changes needed in reify-eval. Users can pass either DimensionalSolver or SolverRegistry."
     },
     {
       "decision": "Union-find for connected components instead of BFS/DFS on adjacency list",
-      "rationale": "Union-find is O(\u03b1(n)) per operation, simpler to implement correctly for bipartite constraint\u2194param graphs, and avoids building explicit adjacency lists. Well-suited for the merge-by-shared-param pattern."
+      "rationale": "Union-find is O(α(n)) per operation, simpler to implement correctly for bipartite constraint↔param graphs, and avoids building explicit adjacency lists. Well-suited for the merge-by-shared-param pattern."
     },
     {
       "decision": "Classification walks the expression tree rather than relying on compiler-assigned domain tags",
@@ -179,7 +222,7 @@
     },
     {
       "decision": "CrossDomain components use the fallback (dimensional) solver",
-      "rationale": "The dimensional solver (Nelder-Mead penalty method) is the most general solver \u2014 it handles arbitrary numeric constraints. When constraints span domains, falling back to it is safe. Future work can add cross-domain iteration strategies."
+      "rationale": "The dimensional solver (Nelder-Mead penalty method) is the most general solver — it handles arbitrary numeric constraints. When constraints span domains, falling back to it is safe. Future work can add cross-domain iteration strategies."
     },
     {
       "decision": "Objective stays with the component containing its referenced variables",
@@ -194,10 +237,6 @@
       "rationale": "The collect_value_refs function in reify-eval/src/deps.rs does exactly what we need, but reify-constraints cannot depend on reify-eval (that would create a circular dependency). We implement a local version of the same walk in decompose.rs."
     },
     {
-      "decision": "No changes to reify-types for this task",
-      "rationale": "ConstraintDomain and all needed types already exist in reify-types. The SolverRegistry and classifier are implementation concerns that belong in reify-constraints. The only structural change is adding the optional domain field to CompiledConstraint in reify-compiler."
-    },
-    {
       "decision": "Remove unnecessary unsafe impl Send/Sync for SolverRegistry",
       "rationale": "ConstraintSolver trait has Send + Sync supertraits (reify-types/src/constraint.rs:108), so Box<dyn ConstraintSolver> is automatically Send + Sync. Since all SolverRegistry fields are Box<dyn ConstraintSolver> or Option<Box<dyn ConstraintSolver>>, the compiler auto-derives Send + Sync. The manual unsafe impls bypass future compiler safety checks: if a non-Send field is ever added, the compiler would silently accept it instead of emitting an error. A static assertion test is added first to prove auto-derivation works before removing the unsafe blocks."
     },
@@ -208,6 +247,10 @@
     {
       "decision": "Objective-aware decomposition: union objective-referenced params in the union-find rather than post-hoc component merging",
       "rationale": "The objective expression acts as an additional linkage between auto params, identical to how constraints link params. Unioning objective-referenced params in the existing union-find structure (before grouping into components) is the simplest and most correct approach: it reuses the existing infrastructure, requires no post-hoc component merging logic, and guarantees all objective-referenced params end up in a single component. The alternative (detect multi-component objectives after decomposition and merge components) would require rebuilding component data structures and is more error-prone."
+    },
+    {
+      "decision": "Extract CompiledExpr::walk() into reify-types rather than keeping per-crate manual traversals",
+      "rationale": "The reviewer flagged duplicated expression tree traversals in decompose.rs and classifier.rs. While the specific claim about missing variants (Match, UserFunctionCall, Lambda) is incorrect — CompiledExprKind has exactly 6 variants and all matches are exhaustive — the underlying DRY concern is valid. Three independent copies of the same 6-arm match exist (decompose.rs, classifier.rs, reify-eval/deps.rs). Adding CompiledExpr::walk() to reify-types gives a single canonical traversal point: when new variants are eventually added, only walk() needs updating, and Rust's exhaustive match check ensures it MUST be updated. Downstream callers (collect_value_refs, collect_flags) use walk() with a closure and never need to know about variant structure. This prevents future divergence. reify-types is the bottom-of-stack crate with no downstream dependencies, making it the natural home."
     }
   ],
   "reuse": [
@@ -249,7 +292,7 @@
     {
       "what": "Engine::with_solver() builder pattern",
       "where": "crates/reify-eval/src/lib.rs",
-      "how": "No changes needed \u2014 Engine already accepts Box<dyn ConstraintSolver>. SolverRegistry can be boxed and passed directly."
+      "how": "No changes needed — Engine already accepts Box<dyn ConstraintSolver>. SolverRegistry can be boxed and passed directly."
     },
     {
       "what": "Type::is_numeric() method",
@@ -265,6 +308,11 @@
       "what": "binop() test helper with BinOp::Add",
       "where": "crates/reify-test-support/src/builders.rs:39-41",
       "how": "Used to construct `a + b` objective expressions in step-17 tests. The `binop(BinOp::Add, ...)` helper infers result type (same dimension as left operand for Add)."
+    },
+    {
+      "what": "CompiledExpr::walk() (new, from step-20)",
+      "where": "crates/reify-types/src/expr.rs",
+      "how": "Canonical expression tree traversal. Used by refactored collect_value_refs (decompose.rs, step-22) and refactored collect_flags (classifier.rs, step-24) to eliminate duplicated match arms. Single point of update when new CompiledExprKind variants are added."
     }
   ],
   "_schema_version": 1
