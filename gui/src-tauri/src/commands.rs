@@ -5,12 +5,15 @@ use std::sync::{Arc, Mutex};
 
 use crate::engine::EngineSession;
 use crate::types::{FileData, GuiState, SourceLocation};
+use crate::watcher::FileWatcher;
 
 /// Application state shared across all Tauri commands.
 pub struct AppState {
     pub engine: Arc<Mutex<EngineSession>>,
     /// Last emitted state for computing minimal diffs.
     pub last_state: Mutex<Option<GuiState>>,
+    /// File watcher for the currently loaded .ri file (re-targeted on open_file_engine).
+    pub watcher: Mutex<Option<FileWatcher>>,
 }
 
 // --- Helper functions for testability ---

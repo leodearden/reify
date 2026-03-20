@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tauri::{Emitter, Manager};
@@ -38,6 +39,48 @@ fn emit_status(app: &tauri::AppHandle, phase: &str) {
         },
     )
     .ok();
+}
+
+/// Create a FileWatcher for the given file, wired to update the engine and emit events.
+fn create_watcher(app_handle: &tauri::AppHandle, file_path: &std::path::Path) -> Option<FileWatcher> {
+    let parent = file_path.parent()?;
+    let target = Some(PathBuf::from(file_path.file_name()?));
+    let handle = app_handle.clone();
+
+    match FileWatcher::new(parent, target, move |changed_path| {
+        if let Ok(content) = std::fs::read_to_string(&changed_path) {
+            let state: tauri::State<'_, AppState> = handle.state();
+            let path_str = changed_path.to_string_lossy().to_string();
+
+            emit_status(&handle, "evaluating");
+            if let Ok(gui_state) =
+                reify_gui::commands::update_source_impl(&state.engine, &path_str, &content)
+            {
+                let delta = compute_delta(&state.last_state, &gui_state);
+                emit_delta(&handle, &delta);
+            }
+            emit_status(&handle, "idle");
+
+            handle
+                .emit(
+                    "file-changed",
+                    reify_gui::types::FileData {
+                        path: changed_path.to_string_lossy().to_string(),
+                        content,
+                    },
+                )
+                .ok();
+        }
+    }) {
+        Ok(watcher) => {
+            eprintln!("Watching {} for changes", file_path.display());
+            Some(watcher)
+        }
+        Err(e) => {
+            eprintln!("Warning: failed to start file watcher: {}", e);
+            None
+        }
+    }
 }
 
 // --- Tauri command wrappers ---
@@ -115,6 +158,12 @@ fn open_file_engine(
     if let Ok(ref gui_state) = result {
         let delta = compute_delta(&state.last_state, gui_state);
         emit_delta(&app, &delta);
+
+        // Re-target the file watcher to the newly opened file
+        let new_watcher = create_watcher(&app, std::path::Path::new(&path));
+        if let Ok(mut watcher_guard) = state.watcher.lock() {
+            *watcher_guard = new_watcher;
+        }
     }
     emit_status(&app, "idle");
     result
@@ -175,6 +224,7 @@ fn main() {
     let app_state = AppState {
         engine: Arc::new(Mutex::new(session)),
         last_state: std::sync::Mutex::new(None),
+        watcher: Mutex::new(None),
     };
 
     tauri::Builder::default()
@@ -182,53 +232,10 @@ fn main() {
         .setup(move |app| {
             // If an initial file was loaded, start watching its parent directory
             if let Some(ref file_path) = initial_file {
-                if let Some(parent) = file_path.parent() {
-                    let app_handle = app.handle().clone();
-                    let target = Some(std::path::PathBuf::from(file_path.file_name().unwrap()));
-
-                    match FileWatcher::new(parent, target, move |changed_path| {
-                        // Read the changed file and update the engine
-                        if let Ok(content) = std::fs::read_to_string(&changed_path) {
-                            let state: tauri::State<'_, AppState> = app_handle.state();
-                            let path_str = changed_path.to_string_lossy().to_string();
-
-                            emit_status(&app_handle, "evaluating");
-                            if let Ok(gui_state) =
-                                reify_gui::commands::update_source_impl(
-                                    &state.engine,
-                                    &path_str,
-                                    &content,
-                                )
-                            {
-                                let delta = compute_delta(&state.last_state, &gui_state);
-                                emit_delta(&app_handle, &delta);
-                            }
-                            emit_status(&app_handle, "idle");
-
-                            // Also emit file-changed event
-                            app_handle
-                                .emit(
-                                    "file-changed",
-                                    reify_gui::types::FileData {
-                                        path: changed_path.to_string_lossy().to_string(),
-                                        content,
-                                    },
-                                )
-                                .ok();
-                        }
-                    }) {
-                        Ok(watcher) => {
-                            // Store watcher in managed state to keep it alive
-                            app.manage(watcher);
-                            eprintln!(
-                                "Watching {} for changes",
-                                file_path.display()
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("Warning: failed to start file watcher: {}", e);
-                        }
-                    }
+                let watcher = create_watcher(app.handle(), file_path);
+                let state: tauri::State<'_, AppState> = app.state();
+                if let Ok(mut watcher_guard) = state.watcher.lock() {
+                    *watcher_guard = watcher;
                 }
             }
             Ok(())
