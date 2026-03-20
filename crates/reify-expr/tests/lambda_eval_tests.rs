@@ -93,3 +93,48 @@ fn eval_lambda_with_captures() {
         other => panic!("expected Value::Lambda, got {:?}", other),
     }
 }
+
+/// step-17: Evaluate a lambda with Undef capture — one captured variable is
+/// Undef. Verify the lambda is still created but the capture contains Undef.
+#[test]
+fn eval_lambda_with_undef_capture() {
+    let x_id = ValueCellId::new("$lambda", "x");
+    let missing_id = ValueCellId::new("S", "missing");
+
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(missing_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda_expr = CompiledExpr::lambda(
+        vec![("x".to_string(), None)],
+        body,
+        vec![missing_id.clone()], // captures a variable not in ValueMap
+        Type::Function {
+            params: vec![Type::Real],
+            return_type: Box::new(Type::Real),
+        },
+    );
+
+    // ValueMap does NOT contain 'missing' — so capture should be Undef
+    let values = ValueMap::new();
+    let result = eval_expr(&lambda_expr, &values);
+
+    match &result {
+        Value::Lambda {
+            params,
+            body: _,
+            captures,
+        } => {
+            assert_eq!(params, &["x".to_string()]);
+            assert_eq!(captures.len(), 1);
+            assert_eq!(
+                captures.get(&missing_id),
+                Some(&Value::Undef),
+                "missing captured variable should be Undef"
+            );
+        }
+        other => panic!("expected Value::Lambda, got {:?}", other),
+    }
+}
