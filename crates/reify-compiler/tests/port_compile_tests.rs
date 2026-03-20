@@ -312,3 +312,68 @@ structure def S1 {
         "changing port type_name must change content_hash"
     );
 }
+
+// ── Step 23: content hash includes frame_expr ───────────────────────
+
+#[test]
+fn compile_port_content_hash_includes_frame_expr() {
+    // Two structures: one port has frame = origin, the other has frame = offset
+    let source_origin = r#"
+trait MechPort { param d : Length }
+structure def S1 {
+    let origin = 0mm
+    let offset = 1mm
+    port x : MechPort {
+        param d : Length = 5mm
+        frame = origin
+    }
+}
+"#;
+    let source_offset = r#"
+trait MechPort { param d : Length }
+structure def S1 {
+    let origin = 0mm
+    let offset = 1mm
+    port x : MechPort {
+        param d : Length = 5mm
+        frame = offset
+    }
+}
+"#;
+    let (tmpl_origin, _) = compile_first_template(source_origin);
+    let (tmpl_offset, _) = compile_first_template(source_offset);
+    assert_ne!(
+        tmpl_origin.content_hash, tmpl_offset.content_hash,
+        "changing port frame_expr must change content_hash"
+    );
+}
+
+#[test]
+fn compile_port_content_hash_frame_vs_no_frame() {
+    // One port has a frame expression, the other doesn't
+    let source_with_frame = r#"
+trait MechPort { param d : Length }
+structure def S1 {
+    let origin = 0mm
+    port x : MechPort {
+        param d : Length = 5mm
+        frame = origin
+    }
+}
+"#;
+    let source_no_frame = r#"
+trait MechPort { param d : Length }
+structure def S1 {
+    let origin = 0mm
+    port x : MechPort {
+        param d : Length = 5mm
+    }
+}
+"#;
+    let (tmpl_with, _) = compile_first_template(source_with_frame);
+    let (tmpl_without, _) = compile_first_template(source_no_frame);
+    assert_ne!(
+        tmpl_with.content_hash, tmpl_without.content_hash,
+        "adding/removing frame_expr must change content_hash"
+    );
+}
