@@ -304,6 +304,22 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
             }
             _ => Value::Undef,
         },
+        "map" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            let lambda = &args[0];
+            match obj {
+                Value::List(items) => {
+                    let results: Vec<Value> = items
+                        .iter()
+                        .map(|item| apply_lambda(lambda, &[item.clone()]))
+                        .collect();
+                    Value::List(results)
+                }
+                _ => Value::Undef,
+            }
+        },
         _ => Value::Undef,
     }
 }
