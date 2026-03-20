@@ -61,3 +61,51 @@ fn parse_trait_with_refinement() {
         other => panic!("expected Param, got {:?}", other),
     }
 }
+
+// ── Step 5: multiple refinements ──────────────────────────────────
+
+#[test]
+fn parse_trait_multiple_refinements() {
+    let (decls, errors) = parse_decls("trait A : B + C { }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let trait_decl = match &decls[0] {
+        Declaration::Trait(t) => t,
+        other => panic!("expected Trait, got {:?}", other),
+    };
+
+    assert_eq!(trait_decl.name, "A");
+    assert_eq!(trait_decl.refinements, vec!["B", "C"]);
+    assert!(trait_decl.members.is_empty());
+}
+
+// ── Step 7: various members ───────────────────────────────────────
+
+#[test]
+fn parse_trait_various_members() {
+    let source = "trait Full {\n  param mass : Mass\n  let density = mass / volume\n  constraint mass > 0\n  sub inner = Component()\n}";
+    let (decls, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let trait_decl = match &decls[0] {
+        Declaration::Trait(t) => t,
+        other => panic!("expected Trait, got {:?}", other),
+    };
+
+    assert_eq!(trait_decl.members.len(), 4);
+
+    match &trait_decl.members[0] {
+        MemberDecl::Param(p) => assert_eq!(p.name, "mass"),
+        other => panic!("expected Param, got {:?}", other),
+    }
+    match &trait_decl.members[1] {
+        MemberDecl::Let(l) => assert_eq!(l.name, "density"),
+        other => panic!("expected Let, got {:?}", other),
+    }
+    assert!(matches!(&trait_decl.members[2], MemberDecl::Constraint(_)));
+    match &trait_decl.members[3] {
+        MemberDecl::Sub(s) => assert_eq!(s.name, "inner"),
+        other => panic!("expected Sub, got {:?}", other),
+    }
+}
