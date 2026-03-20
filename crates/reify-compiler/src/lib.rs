@@ -1764,6 +1764,10 @@ fn compile_structure(
                     .unwrap_or(ContentHash(0))
             }))
             .chain(p.constraints.iter().map(|c| c.expr.content_hash))
+            // Frame expression hash
+            .chain(std::iter::once(
+                p.frame_expr.as_ref().map(|e| e.content_hash).unwrap_or(ContentHash(0))
+            ))
         });
 
         let all_hashes = std::iter::once(name_hash)
