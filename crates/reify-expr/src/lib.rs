@@ -382,6 +382,38 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 _ => Value::Undef,
             }
         },
+        "concat" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            match (obj, &args[0]) {
+                (Value::List(a), Value::List(b)) => {
+                    let mut result = a.clone();
+                    result.extend(b.iter().cloned());
+                    Value::List(result)
+                }
+                _ => Value::Undef,
+            }
+        },
+        "generate" => {
+            if args.len() != 2 {
+                return Value::Undef;
+            }
+            let count = match &args[0] {
+                Value::Int(n) => *n,
+                _ => return Value::Undef,
+            };
+            let lambda = &args[1];
+            match obj {
+                Value::List(_) => {
+                    let results: Vec<Value> = (0..count)
+                        .map(|i| apply_lambda(lambda, &[Value::Int(i)]))
+                        .collect();
+                    Value::List(results)
+                }
+                _ => Value::Undef,
+            }
+        },
         "filter" => {
             if args.len() != 1 {
                 return Value::Undef;
