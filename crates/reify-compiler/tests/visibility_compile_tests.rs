@@ -74,3 +74,25 @@ structure Internal {
     assert_eq!(internal.name, "Internal");
     assert_eq!(internal.visibility, reify_compiler::Visibility::Private);
 }
+
+// ── Step 13: sub component visibility ────────────────────────────
+
+#[test]
+fn compile_sub_visibility_public() {
+    let source = r#"structure Child {
+    param h: Scalar = 10mm
+}
+structure Parent {
+    param w: Scalar = 80mm
+    sub rib = Child(h: w)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("vis_test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile(&parsed);
+
+    let parent = compiled.templates.iter().find(|t| t.name == "Parent").unwrap();
+    assert_eq!(parent.sub_components.len(), 1);
+    let rib = &parent.sub_components[0];
+    assert_eq!(rib.name, "rib");
+    assert_eq!(rib.visibility, reify_compiler::Visibility::Public);
+}
