@@ -51,3 +51,26 @@ trait Fastener {
         other => panic!("expected RequirementKind::Param, got {:?}", other),
     }
 }
+
+/// Step 3: Simple conformance — structure satisfies trait requirement.
+#[test]
+fn simple_conformance_no_errors() {
+    let source = r#"
+trait Fastener {
+    param thread_pitch : Length
+}
+
+structure def Bolt : Fastener {
+    param thread_pitch : Length = 20mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    // No error-severity diagnostics expected
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
