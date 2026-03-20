@@ -51,6 +51,12 @@ pub enum CompiledExprKind {
         function_name: String,
         args: Vec<CompiledExpr>,
     },
+    /// Lambda expression: |params| body with captured outer-scope references.
+    Lambda {
+        params: Vec<(String, Option<Type>)>,
+        body: Box<CompiledExpr>,
+        captures: Vec<ValueCellId>,
+    },
 }
 
 /// A compiled match arm.
@@ -140,6 +146,34 @@ impl CompiledExpr {
             kind: CompiledExprKind::UnOp {
                 op,
                 operand: Box::new(operand),
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a lambda expression.
+    pub fn lambda(
+        params: Vec<(String, Option<Type>)>,
+        body: CompiledExpr,
+        captures: Vec<ValueCellId>,
+        result_type: Type,
+    ) -> Self {
+        let mut content_hash = ContentHash::of(&[7]).combine(body.content_hash);
+        for (name, ty) in &params {
+            content_hash = content_hash.combine(ContentHash::of_str(name));
+            if let Some(t) = ty {
+                content_hash = content_hash.combine(ContentHash::of_str(&format!("{:?}", t)));
+            }
+        }
+        for cap in &captures {
+            content_hash = content_hash.combine(ContentHash::of_str(&format!("{}", cap)));
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::Lambda {
+                params,
+                body: Box::new(body),
+                captures,
             },
             result_type,
             content_hash,

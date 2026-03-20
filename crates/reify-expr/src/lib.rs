@@ -68,6 +68,12 @@ pub fn eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value {
             // Return Undef for now.
             Value::Undef
         }
+
+        CompiledExprKind::Lambda { .. } => {
+            // Lambda values are returned as closures; evaluation is handled
+            // by apply_lambda (task-58). Return Undef as placeholder.
+            Value::Undef
+        }
     }
 }
 

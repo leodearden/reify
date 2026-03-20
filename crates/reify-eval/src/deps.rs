@@ -58,6 +58,12 @@ pub fn collect_value_refs(expr: &CompiledExpr, out: &mut Vec<ValueCellId>) {
                 collect_value_refs(arg, out);
             }
         }
+        CompiledExprKind::Lambda { body, captures, .. } => {
+            collect_value_refs(body, out);
+            for cap in captures {
+                out.push(cap.clone());
+            }
+        }
     }
 }
 

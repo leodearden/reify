@@ -95,6 +95,9 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
                 assert_no_unresolved(arg);
             }
         }
+        CompiledExprKind::Lambda { body, .. } => {
+            assert_no_unresolved(body);
+        }
     }
 }
 
