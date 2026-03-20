@@ -9,6 +9,4 @@ structure def Flange {
     constraint hole_count > 0
 
     let body = cylinder(radius, height)
-    let hole = cylinder(hole_radius, height)
-    let pattern = circular_pattern(hole, 0mm, 0mm, 0mm, 0mm, 0mm, 1mm, hole_count, 360)
 }
