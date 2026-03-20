@@ -200,3 +200,179 @@ fn topological_order_diamond() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ── Step 25: Name resolution with entity import ──────────────────
+
+#[test]
+fn entity_import_resolves_structure_name() {
+    let dir = test_dir("entity_resolve");
+
+    // Module a defines a pub structure Bolt
+    fs::write(
+        dir.join("a.ri"),
+        "pub structure Bolt {\n    param d: Scalar = 6mm\n}",
+    )
+    .unwrap();
+
+    // Module b imports Bolt from a and uses it in a sub declaration
+    fs::write(
+        dir.join("b.ri"),
+        "import a.Bolt\nstructure Assembly {\n    param size: Scalar = 10mm\n    sub b = Bolt(d: 8mm)\n}",
+    )
+    .unwrap();
+
+    // Compile through the DAG
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project(
+        &dir.join("b.ri"),
+        &resolver,
+    );
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+
+    let modules = result.unwrap();
+    // Should have 2 modules: a (dependency) and b (entry)
+    assert_eq!(modules.len(), 2);
+
+    // b should have a sub_component referencing Bolt
+    let b_module = &modules[1]; // entry module is last (topo order)
+    let template = &b_module.templates[0];
+    assert_eq!(template.name, "Assembly");
+    assert_eq!(template.sub_components.len(), 1);
+    assert_eq!(template.sub_components[0].name, "b");
+    assert_eq!(template.sub_components[0].structure_name, "Bolt");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ── Step 27: Shadowing warning ───────────────────────────────────
+
+#[test]
+fn local_definition_shadows_import_with_warning() {
+    let dir = test_dir("shadowing");
+
+    // Module a defines Bolt
+    fs::write(
+        dir.join("a.ri"),
+        "pub structure Bolt {\n    param d: Scalar = 6mm\n}",
+    )
+    .unwrap();
+
+    // Module b imports Bolt but also defines its own Bolt
+    fs::write(
+        dir.join("b.ri"),
+        "import a.Bolt\nstructure Bolt {\n    param d: Scalar = 10mm\n}",
+    )
+    .unwrap();
+
+    // Should compile without errors (local takes precedence)
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project(
+        &dir.join("b.ri"),
+        &resolver,
+    );
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+
+    let modules = result.unwrap();
+    // The entry module (b) should have its own Bolt definition
+    let b_module = modules.last().unwrap();
+    let template = &b_module.templates[0];
+    assert_eq!(template.name, "Bolt");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ── Step 29: Re-export ───────────────────────────────────────────
+
+#[test]
+fn pub_import_re_exports_entity() {
+    let dir = test_dir("reexport");
+
+    // Module a defines Helper
+    fs::write(
+        dir.join("a.ri"),
+        "pub structure Helper {\n    param v: Scalar = 1mm\n}",
+    )
+    .unwrap();
+
+    // Module b re-exports Helper from a
+    fs::write(
+        dir.join("b.ri"),
+        "pub import a.Helper\nstructure Wrapper {\n    param w: Scalar = 2mm\n}",
+    )
+    .unwrap();
+
+    // Module c imports Helper through b
+    fs::write(
+        dir.join("c.ri"),
+        "import b.Helper\nstructure User {\n    param u: Scalar = 3mm\n    sub h = Helper(v: u)\n}",
+    )
+    .unwrap();
+
+    // Compile through the DAG
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project(
+        &dir.join("c.ri"),
+        &resolver,
+    );
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+
+    let modules = result.unwrap();
+    // Should have 3 modules: a, b, c
+    assert_eq!(modules.len(), 3);
+
+    // c should have a sub_component referencing Helper
+    let c_module = modules.last().unwrap();
+    let template = c_module.templates.iter().find(|t| t.name == "User").unwrap();
+    assert_eq!(template.sub_components.len(), 1);
+    assert_eq!(template.sub_components[0].structure_name, "Helper");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ── Step 31: Backward compatibility ──────────────────────────────
+
+#[test]
+fn backward_compatible_single_module_no_imports() {
+    // The canonical bracket source (no imports) should compile
+    // through both the existing compile() function and the DAG
+    let source = r#"structure Bracket {
+    param width: Scalar = 80mm
+    param height: Scalar = 100mm
+    let volume = width * height
+    constraint width > 0mm
+}"#;
+
+    // Via existing compile() — should work unchanged
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
+    let compiled_single = reify_compiler::compile(&parsed);
+    assert_eq!(compiled_single.templates.len(), 1);
+    assert_eq!(compiled_single.templates[0].name, "Bracket");
+
+    // Via compile_project() — write source to temp file and compile
+    let dir = test_dir("backward_compat");
+    fs::write(dir.join("bracket.ri"), source).unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project(
+        &dir.join("bracket.ri"),
+        &resolver,
+    );
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+
+    let modules = result.unwrap();
+    assert_eq!(modules.len(), 1);
+    assert_eq!(modules[0].templates.len(), 1);
+    assert_eq!(modules[0].templates[0].name, "Bracket");
+
+    // Output should be identical
+    assert_eq!(
+        compiled_single.templates[0].name,
+        modules[0].templates[0].name,
+    );
+    assert_eq!(
+        compiled_single.templates[0].value_cells.len(),
+        modules[0].templates[0].value_cells.len(),
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
