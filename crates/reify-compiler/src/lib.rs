@@ -1416,9 +1416,11 @@ fn compile_entity(
     let mut duplicate_port_names: HashSet<String> = HashSet::new();
     let mut guarded_groups: Vec<CompiledGuardedGroup> = Vec::new();
     let mut structure_controlling: HashSet<ValueCellId> = HashSet::new();
+    let mut connections: Vec<CompiledConnection> = Vec::new();
     let mut objective: Option<OptimizationObjective> = None;
     let mut constraint_index: u32 = 0;
     let mut guard_index: u32 = 0;
+    let mut connector_index: u32 = 0;
 
     // First pass: register all param and let names into the scope so they can
     // reference each other (forward references within the structure).
@@ -1838,8 +1840,52 @@ fn compile_entity(
                     frame_expr,
                 });
             }
-            reify_syntax::MemberDecl::Connect(_) | reify_syntax::MemberDecl::Chain(_) => {
-                // Connect/chain compilation handled in a later pass.
+            reify_syntax::MemberDecl::Connect(connect_decl) => {
+                compile_connection(
+                    entity_name,
+                    &connect_decl.left.expr,
+                    connect_decl.operator,
+                    &connect_decl.right.expr,
+                    connect_decl.connector_type.as_deref(),
+                    &connect_decl.params,
+                    &connect_decl.port_mappings,
+                    connect_decl.span,
+                    &ports,
+                    &scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                    &mut constraints,
+                    &mut constraint_index,
+                    &mut connections,
+                    &mut sub_components,
+                    &mut connector_index,
+                );
+            }
+            reify_syntax::MemberDecl::Chain(chain_decl) => {
+                // Desugar chain into pairwise Forward connections
+                for pair in chain_decl.elements.windows(2) {
+                    compile_connection(
+                        entity_name,
+                        &pair[0],
+                        reify_syntax::ConnectOp::Forward,
+                        &pair[1],
+                        None,
+                        &[],
+                        &[],
+                        chain_decl.span,
+                        &ports,
+                        &scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        &mut constraints,
+                        &mut constraint_index,
+                        &mut connections,
+                        &mut sub_components,
+                        &mut connector_index,
+                    );
+                }
             }
         }
     }
@@ -2118,7 +2164,7 @@ fn compile_entity(
         realizations,
         sub_components,
         ports,
-        connections: Vec::new(),
+        connections,
         guarded_groups,
         structure_controlling,
         objective,
