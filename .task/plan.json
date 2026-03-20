@@ -10,7 +10,7 @@
     "crates/reify-types/tests/exports.rs"
   ],
   "modules": ["crates/reify-types"],
-  "analysis": "This task is FULLY IMPLEMENTED. All Value variants (Enum, List, Set, Map, Option), Type variants (Enum, List, Set, Map, Option, Function), trait definition types (EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam, PortDirection), Ord for Value, Display impls, content_hash impls, and exhaustive match arms are already in place. All 171 tests pass (150 unit + 2 export integration + 19 M5 type integration). External crates use wildcard/matches! patterns on Value and Type, so they are not affected by the new variants. No code changes are needed — this plan serves as verification-only.",
+  "analysis": "This task is FULLY IMPLEMENTED for the M5 type extensions. However, code review identified a blocking bug: content_hash for Value::Real and Value::Scalar normalizes -0.0 to 0.0 before hashing (lines 84, 95), but PartialEq uses to_bits() comparison (lines 150, 153), making -0.0 != 0.0. This violates the cache invariant: values that are not equal MUST have different content hashes (with high probability), otherwise the incremental caching system will suppress recomputation producing silently stale results. The fix (Option A from review) is to remove -0.0 normalization from content_hash and use to_bits() directly, keeping NaN canonicalization intact. The existing test `neg_zero_normalized` (line 417) asserts the broken behavior and must be updated. Steps 1-11 are the original verification-only steps (all done). Steps 12-15 address the blocking review feedback.",
   "prerequisites": [],
   "steps": [
     {
@@ -89,6 +89,34 @@
       "description": "Verify no cross-domain hash collisions between Value and Satisfaction content hashes — tests in value.rs (value_option_none_hash_not_equal_satisfaction_satisfied, value_option_some_hash_not_equal_satisfaction_violated, value_and_satisfaction_content_hash_tags_no_cross_domain_collisions)",
       "status": "done",
       "commit": "0201008"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Write failing tests for hash-equality invariant on Real and Scalar -0.0: (1) `real_neg_zero_hash_differs_from_pos_zero` — asserts Value::Real(-0.0).content_hash() != Value::Real(0.0).content_hash(), since PartialEq considers them different (to_bits). (2) `scalar_neg_zero_hash_differs_from_pos_zero` — same for Value::Scalar with si_value -0.0 vs 0.0. (3) `hash_equality_invariant_real` — asserts that for any two Value::Real(a), Value::Real(b), if a != b then a.content_hash() != b.content_hash() (spot-check with -0.0/0.0 pair). Also update existing `neg_zero_normalized` test to assert_ne instead of assert_eq (rename to `real_neg_zero_not_normalized_in_hash`). These tests will FAIL against the current implementation which normalizes -0.0 to 0.0 in content_hash.",
+      "status": "done",
+      "commit": "7ae369a"
+    },
+    {
+      "id": "step-13",
+      "type": "impl",
+      "description": "Fix content_hash for Value::Real: remove -0.0 normalization, use to_bits() directly. Change line 84 from `let normalized = if *r == 0.0 { 0.0f64 } else { *r };` to just use `*r` directly (keeping NaN canonicalization). The resulting code: `let bits = if r.is_nan() { f64::NAN.to_bits() } else { r.to_bits() };`. This makes content_hash consistent with PartialEq (both use to_bits). All step-12 tests should now pass.",
+      "status": "done",
+      "commit": "e46ca1d"
+    },
+    {
+      "id": "step-14",
+      "type": "test",
+      "description": "Write failing test for Scalar hash-equality invariant: `scalar_neg_zero_hash_consistency` — asserts Value::Scalar { si_value: -0.0, dimension: LENGTH }.content_hash() != Value::Scalar { si_value: 0.0, dimension: LENGTH }.content_hash(). This test will FAIL because the Scalar content_hash (line 95) still normalizes -0.0.",
+      "status": "done",
+      "commit": "ab5761b"
+    },
+    {
+      "id": "step-15",
+      "type": "impl",
+      "description": "Fix content_hash for Value::Scalar: remove -0.0 normalization from si_value hashing. Change line 95 from `let normalized = if *si_value == 0.0 { 0.0f64 } else { *si_value };` to use `*si_value` directly (keeping NaN canonicalization). The resulting code: `let bits = if si_value.is_nan() { f64::NAN.to_bits() } else { si_value.to_bits() };`. Run full test suite to confirm all 171+ tests pass with the fix.",
+      "status": "done",
+      "commit": "d7c2eaf"
     }
   ],
   "design_decisions": [
@@ -115,6 +143,10 @@
     {
       "decision": "TraitMember::Port includes PortDirection field",
       "rationale": "Ports need direction information (In, Out, Bidi) for connection checking in M5. Including it in the Port variant keeps port metadata colocated."
+    },
+    {
+      "decision": "Fix hash-equality invariant using Option A: remove -0.0 normalization from content_hash, use to_bits() directly",
+      "rationale": "Review identified that content_hash normalizes -0.0→0.0 but PartialEq uses to_bits() (making -0.0 != 0.0). This breaks the cache invariant: unequal values must hash differently. Option A (use to_bits() in hash) is lower risk than Option B (normalize in Eq) because it requires no change to Ord/Eq contracts already relied upon by BTreeSet/BTreeMap. NaN canonicalization is retained since it's consistent (NaN == NaN via to_bits(), and canonical NaN bits are stable)."
     }
   ],
   "reuse": [
