@@ -262,5 +262,38 @@ structure def X : A + B {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert!(errors.is_empty(), "unexpected errors for multi-trait: {:?}", errors);
+}
+
+/// Step 17: Composition conflict — same name, different types across traits.
+#[test]
+fn composition_conflict_error() {
+    let source = r#"
+trait A {
+    param size : Length
+}
+
+trait B {
+    param size : Mass
+}
+
+structure def X : A + B {
+    param size : Length = 5mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected error for conflicting requirements");
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("conflicting"),
+        "error should mention 'conflicting', got: {}",
+        error_msg
+    );
 }
