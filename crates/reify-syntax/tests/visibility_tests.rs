@@ -88,3 +88,34 @@ fn parse_let_default_not_pub() {
     assert_eq!(let_decl.name, "y");
     assert!(!let_decl.is_pub, "expected is_pub == false for non-pub let");
 }
+
+// ── Step 5: pub enum ──────────────────────────────────────────────
+
+#[test]
+fn parse_pub_enum() {
+    let source = "pub enum Direction { In, Out }";
+    let (decl, errors) = parse_first_decl(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    match decl {
+        Declaration::Enum(e) => {
+            assert_eq!(e.name, "Direction");
+            assert!(e.is_pub, "expected is_pub == true for pub enum");
+            assert_eq!(e.variants, vec!["In", "Out"]);
+        }
+        other => panic!("expected Enum, got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_enum_default_not_pub() {
+    let source = "enum Direction { In, Out }";
+    let (decl, errors) = parse_first_decl(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    match decl {
+        Declaration::Enum(e) => {
+            assert_eq!(e.name, "Direction");
+            assert!(!e.is_pub, "expected is_pub == false for non-pub enum");
+        }
+        other => panic!("expected Enum, got {:?}", other),
+    }
+}
