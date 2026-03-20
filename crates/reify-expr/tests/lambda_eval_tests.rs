@@ -192,3 +192,56 @@ fn apply_lambda_with_captures() {
     let result = apply_lambda(&lambda, &[Value::Int(5)]);
     assert_eq!(result, Value::Int(15));
 }
+
+/// step-23: Apply a lambda with wrong arity (2-param lambda applied with 1 arg)
+/// returns Undef. Also test 0-param lambda application.
+#[test]
+fn apply_lambda_arity_mismatch_returns_undef() {
+    use reify_expr::apply_lambda;
+
+    let x_id = ValueCellId::new("$lambda", "x");
+    let y_id = ValueCellId::new("$lambda", "y");
+
+    // 2-param lambda: |x, y| x + y
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+
+    let lambda = Value::Lambda {
+        params: vec!["x".to_string(), "y".to_string()],
+        body: Box::new(body),
+        captures: ValueMap::new(),
+    };
+
+    // Wrong arity: 1 arg for 2-param lambda
+    let result = apply_lambda(&lambda, &[Value::Int(5)]);
+    assert!(result.is_undef(), "arity mismatch should return Undef");
+
+    // Wrong arity: 3 args for 2-param lambda
+    let result = apply_lambda(&lambda, &[Value::Int(1), Value::Int(2), Value::Int(3)]);
+    assert!(result.is_undef(), "too many args should return Undef");
+}
+
+#[test]
+fn apply_lambda_zero_params() {
+    use reify_expr::apply_lambda;
+
+    // 0-param lambda: || true
+    let body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let lambda = Value::Lambda {
+        params: vec![],
+        body: Box::new(body),
+        captures: ValueMap::new(),
+    };
+
+    // Apply with 0 args
+    let result = apply_lambda(&lambda, &[]);
+    assert_eq!(result, Value::Bool(true));
+
+    // Apply with args to 0-param lambda — arity mismatch
+    let result = apply_lambda(&lambda, &[Value::Int(1)]);
+    assert!(result.is_undef(), "0-param lambda with args should return Undef");
+}
