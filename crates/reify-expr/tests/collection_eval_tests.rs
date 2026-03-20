@@ -467,7 +467,7 @@ fn lambda_literal(
     })
 }
 
-// ─── step-13: MethodCall .map ───
+// ─── step-13/14: MethodCall .map ───
 
 #[test]
 fn eval_method_map_list() {
@@ -498,4 +498,69 @@ fn eval_method_map_list() {
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::List(vec![Value::Int(2), Value::Int(4), Value::Int(6)]));
+}
+
+// ─── step-15/16: MethodCall .filter ───
+
+#[test]
+fn eval_method_filter_list() {
+    // [1, 2, 3, 4].filter(|x| x > 2) -> [3, 4]
+    let x_id = ValueCellId::new("$lambda_filter.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Bool,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+            CompiledExpr::literal(Value::Int(4), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "filter".to_string(),
+        vec![lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::List(vec![Value::Int(3), Value::Int(4)]));
+}
+
+#[test]
+fn eval_method_filter_empty_result() {
+    // [1, 2, 3].filter(|x| x > 10) -> []
+    let x_id = ValueCellId::new("$lambda_filter2.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(10), Type::Int),
+        Type::Bool,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "filter".to_string(),
+        vec![lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::List(vec![]));
 }
