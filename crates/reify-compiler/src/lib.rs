@@ -616,38 +616,38 @@ fn compile_expr(
 
             // Exhaustiveness check: if discriminant is a known enum type,
             // verify all variants are covered by arm patterns or a wildcard.
-            if let Type::Enum(ref enum_name) = compiled_discriminant.result_type {
-                if let Some(enum_def) = enum_defs.iter().find(|e| e.name == *enum_name) {
-                    let has_wildcard = compiled_arms
+            if let Type::Enum(ref enum_name) = compiled_discriminant.result_type
+                && let Some(enum_def) = enum_defs.iter().find(|e| e.name == *enum_name)
+            {
+                let has_wildcard = compiled_arms
+                    .iter()
+                    .any(|arm| arm.patterns.iter().any(|p| p == "_"));
+
+                if !has_wildcard {
+                    let covered: std::collections::HashSet<&str> = compiled_arms
                         .iter()
-                        .any(|arm| arm.patterns.iter().any(|p| p == "_"));
+                        .flat_map(|arm| arm.patterns.iter().map(|p| p.as_str()))
+                        .collect();
 
-                    if !has_wildcard {
-                        let covered: std::collections::HashSet<&str> = compiled_arms
-                            .iter()
-                            .flat_map(|arm| arm.patterns.iter().map(|p| p.as_str()))
-                            .collect();
+                    let missing: Vec<&str> = enum_def
+                        .variants
+                        .iter()
+                        .filter(|v| !covered.contains(v.as_str()))
+                        .map(|v| v.as_str())
+                        .collect();
 
-                        let missing: Vec<&str> = enum_def
-                            .variants
-                            .iter()
-                            .filter(|v| !covered.contains(v.as_str()))
-                            .map(|v| v.as_str())
-                            .collect();
-
-                        if !missing.is_empty() {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "non-exhaustive match on '{}': missing variant(s) {}",
-                                    enum_name,
-                                    missing.join(", ")
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "missing variants",
-                                )),
-                            );
-                        }
+                    if !missing.is_empty() {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "non-exhaustive match on '{}': missing variant(s) {}",
+                                enum_name,
+                                missing.join(", ")
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "missing variants",
+                            )),
+                        );
                     }
                 }
             }

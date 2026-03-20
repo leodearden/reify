@@ -582,10 +582,10 @@ impl<'a> Lowering<'a> {
         let mut arms = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "match_arm" {
-                if let Some(arm) = self.lower_match_arm(child) {
-                    arms.push(arm);
-                }
+            if child.kind() == "match_arm"
+                && let Some(arm) = self.lower_match_arm(child)
+            {
+                arms.push(arm);
             }
         }
 
