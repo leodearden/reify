@@ -1,34 +1,36 @@
 {
-  "task_id": "62",
-  "title": "Collection compilation + operations",
+  "task_id": "89",
+  "title": "Three.js viewport \u2014 scene + mesh rendering",
   "files": [
-    "crates/reify-types/src/expr.rs",
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-stdlib/src/lib.rs",
-    "crates/reify-expr/tests/collection_eval_tests.rs",
-    "crates/reify-compiler/tests/collection_compile_tests.rs"
+    "gui/package.json",
+    "gui/src/viewport/scene.ts",
+    "gui/src/viewport/controls.ts",
+    "gui/src/viewport/meshManager.ts",
+    "gui/src/viewport/Viewport.tsx",
+    "gui/src/viewport/index.ts",
+    "gui/src/__tests__/viewport/scene.test.ts",
+    "gui/src/__tests__/viewport/meshManager.test.ts",
+    "gui/src/__tests__/viewport/controls.test.ts",
+    "gui/src/__tests__/viewport/Viewport.test.tsx"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-compiler",
-    "crates/reify-expr",
-    "crates/reify-stdlib"
+    "gui/src/viewport",
+    "gui/src/__tests__/viewport"
   ],
-  "analysis": "This task implements collection compilation and operations across the Reify pipeline. The codebase already has: (1) Value::List/Set/Map variants in reify-types, (2) Type::List/Set/Map types, (3) syntax parsing for list/set/map literals and index access in reify-syntax, (4) stub error handlers in the compiler for collection syntax nodes, (5) apply_lambda in reify-expr for calling lambda closures.\n\nThe work involves: (A) Adding 5 new CompiledExprKind variants to reify-types (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall), (B) Implementing their evaluation in reify-expr including all collection methods (count, sum, map, filter, fold, all, any, contains, concat, generate for List; count, contains, union, intersection, difference for Set; count, keys, values, contains_key for Map), (C) Implementing compilation in reify-compiler replacing the current stubs, (D) Adding dimension-aware sum to reify-stdlib.\n\nKey constraint: The current grammar supports MemberAccess (obj.member) but not method_call with args (obj.method(args)). Property-style methods (.count, .sum, .keys, .values) compile from MemberAccess. Methods with args (.map, .filter, .fold, .contains, .union, etc.) will be tested at the CompiledExpr level directly. Full end-to-end parsing of method calls with arguments requires a grammar change (tree-sitter-reify) which is out of scope for this task's modules.\n\nUndef propagation follows the spec: undef collection -> undef result, known-structure-unknown-elements -> count works but sum propagates, Kleene 3-valued logic for .all/.any.\n\nReview feedback identified three blocking issues: (1) Missing Kleene tests for .any — the implementation is correct but untested for [undef, false].any -> Undef and [true, undef].any -> Bool(true). (2) Missing .filter Undef propagation test — the implementation already returns Undef when predicate returns Undef (line 484) but no test covers it. (3) apply_lambda() uses EvalContext::simple() which drops the function registry, so UserFunctionCall nodes inside lambda bodies silently return Undef. The fix requires threading EvalContext through apply_lambda and eval_method_call.",
+  "analysis": "This task creates the Three.js 3D viewport for the Reify GUI. The gui/ directory already has a well-structured SolidJS app with Tauri bridge, engineStore (which holds meshes as Record<string, MeshData>), theme tokens (viewportBg: '#181825'), and comprehensive test patterns using vitest + @solidjs/testing-library + jsdom.\n\nKey observations:\n1. MeshData uses typed arrays (Float32Array for vertices/normals, Uint32Array for indices) \u2014 maps directly to Three.js BufferGeometry attributes.\n2. engineStore.state.meshes is a Record<string, MeshData> keyed by entity_path \u2014 meshManager needs to diff this to create/update/remove Three.js Mesh objects.\n3. jsdom doesn't support WebGL, so all Three.js classes must be mocked in tests. We test logic/wiring, not actual rendering.\n4. The app uses pnpm (pnpm-lock.yaml exists), so we use pnpm for dependency installation.\n5. Theme provides viewportBg (#181825) for the renderer background.\n6. The task description mentions 'distinct colors per entity_path' \u2014 we'll use a deterministic color palette (hash entity_path to pick from a set of Catppuccin-style accent colors).\n\nArchitecture:\n- scene.ts: Factory function returning {scene, camera, renderer, lights}. Sets up PerspectiveCamera, ambient+directional lights, GridHelper, AxesHelper, and configures renderer with dark background.\n- controls.ts: Thin wrapper around OrbitControls, exposing orbit/pan/zoom with sensible defaults and a dispose method.\n- meshManager.ts: Pure logic class that maintains a Map<string, THREE.Mesh> and provides a sync(meshes: Record<string, MeshData>) method that diffs the current Three.js meshes against incoming data.\n- Viewport.tsx: SolidJS component with a canvas ref, initializes scene/renderer/controls onMount, uses createEffect to subscribe to engineStore.meshes, handles resize, runs requestAnimationFrame loop, cleans up onCleanup.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add CompiledExprKind variants (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall) to reify-types/src/expr.rs. Update walk(), collect_value_refs_inner(), and add constructor helpers. ListLiteral(Vec<CompiledExpr>), SetLiteral(Vec<CompiledExpr>), MapLiteral(Vec<(CompiledExpr, CompiledExpr)>), IndexAccess { object: Box<CompiledExpr>, index: Box<CompiledExpr> }, MethodCall { object: Box<CompiledExpr>, method: String, args: Vec<CompiledExpr> }.",
+      "description": "Add three.js dependency to gui/package.json: 'three' in dependencies, '@types/three' in devDependencies. Run pnpm install to update lockfile.",
       "status": "done",
-      "commit": "5345877",
+      "commit": "6cc91ec",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Update collect_body_refs_inner() in reify-compiler/src/lib.rs to handle the 5 new CompiledExprKind variants (recurse into sub-expressions for dependency tracking).",
+      "description": "Create gui/src/viewport/ and gui/src/__tests__/viewport/ directory structure.",
       "status": "done",
-      "commit": "5345877",
+      "commit": "6cc91ec",
       "tests": []
     }
   ],
@@ -36,368 +38,126 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests in crates/reify-expr/tests/collection_eval_tests.rs for list literal evaluation: eval ListLiteral([Int(1), Int(2), Int(3)]) -> Value::List([Int(1), Int(2), Int(3)]), empty list, and list with nested expressions.",
+      "description": "Write failing tests for scene.ts in gui/src/__tests__/viewport/scene.test.ts: (1) createScene returns object with scene, camera, renderer properties, (2) scene contains AmbientLight and DirectionalLight children, (3) camera is PerspectiveCamera with reasonable FOV/near/far defaults, (4) renderer setClearColor was called with theme viewportBg color, (5) scene contains GridHelper, (6) scene contains AxesHelper, (7) resize() updates camera aspect and renderer size. Mock THREE.WebGLRenderer (construct mock, track setClearColor/setSize/setPixelRatio calls) since jsdom lacks WebGL context. Create minimal mock factory for THREE classes.",
       "status": "done",
-      "commit": "f0c939f"
+      "commit": "fdb1f60"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::ListLiteral in reify-expr/src/lib.rs -- evaluate each element expression and collect into Value::List. Add SetLiteral and MapLiteral eval simultaneously since they follow the same pattern.",
+      "description": "Implement scene.ts: createScene(canvas: HTMLCanvasElement, width: number, height: number) factory that creates PerspectiveCamera (fov 60, near 0.1, far 10000), AmbientLight (0.4 intensity), DirectionalLight (0.8 intensity, positioned at [5,10,7]), WebGLRenderer (antialias, canvas, devicePixelRatio, clear color from THEME_TOKENS.viewportBg), GridHelper (size 20, divisions 20, subtle grid colors), AxesHelper (size 2). Returns { scene, camera, renderer, resize(w,h) }.",
       "status": "done",
-      "commit": "4b100a0"
+      "commit": "fdb1f60"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for set literal evaluation (SetLiteral -> Value::Set with dedup) and map literal evaluation (MapLiteral -> Value::Map).",
+      "description": "Write failing tests for controls.ts in gui/src/__tests__/viewport/controls.test.ts: (1) createControls returns object with update and dispose methods, (2) constructor is called with camera and domElement, (3) enableDamping is set to true, (4) dispose calls controls.dispose(). Mock OrbitControls from three/addons/controls/OrbitControls.js.",
       "status": "done",
-      "commit": "fdff49c"
+      "commit": "348923c"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify set/map literal eval passes (already implemented in step-2). If not, fix.",
+      "description": "Implement controls.ts: createControls(camera, domElement) wrapper that instantiates OrbitControls with enableDamping=true, dampingFactor=0.1, reasonable min/maxDistance. Returns { controls, update(), dispose() }.",
       "status": "done",
-      "commit": "fdff49c"
+      "commit": "0dcec44"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for IndexAccess evaluation: list[1] -> element, list[out-of-bounds] -> Undef, map[key] -> value, map[missing-key] -> Undef, list[undef] -> Undef, undef[0] -> Undef.",
+      "description": "Write failing tests for meshManager.ts in gui/src/__tests__/viewport/meshManager.test.ts: (1) createMeshManager returns object with sync/dispose/getSceneMeshes methods, (2) sync({entityPath: meshData}) creates a THREE.Mesh and adds it to scene (scene.add called), (3) the created Mesh's geometry has position attribute set from MeshData.vertices (Float32Array), index set from MeshData.indices, and normal attribute set from MeshData.normals, (4) sync with updated vertices calls setAttribute on existing geometry rather than creating new Mesh, (5) sync with a removed entity_path calls geometry.dispose(), material.dispose(), scene.remove() for that mesh, (6) each entity_path gets a deterministic color (same path = same color, different paths can get different colors), (7) dispose() removes and disposes all meshes from scene, (8) sync with MeshData where normals is null creates geometry without normal attribute. Mock THREE.BufferGeometry, THREE.Mesh, THREE.MeshStandardMaterial, THREE.BufferAttribute, THREE.Scene.",
       "status": "done",
-      "commit": "efdcbc0"
+      "commit": "c72ec61"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::IndexAccess in reify-expr/src/lib.rs -- evaluate object and index, dispatch based on Value::List (Int index) and Value::Map (key lookup). Out of bounds / missing -> Undef.",
+      "description": "Implement meshManager.ts: createMeshManager(scene: THREE.Scene) maintains Map<string, THREE.Mesh>. sync(meshes: Record<string, MeshData>) diffs current map vs incoming: creates new Mesh objects (BufferGeometry with Float32BufferAttribute for position/normal, index from Uint32Array, MeshStandardMaterial with deterministic color), updates existing ones (geometry.setAttribute), removes stale ones (geometry.dispose(), material.dispose(), scene.remove()). Color palette uses Catppuccin accent colors [blue #89b4fa, mauve #cba6f7, green #a6e3a1, peach #fab387, red #f38ba8, teal #94e2d5, yellow #f9e2af, pink #f5c2e7] cycled by simple string hash of entity_path. getSceneMeshes() returns current Map for inspection. dispose() cleans up everything.",
       "status": "done",
-      "commit": "bdb0466"
+      "commit": "9403f5e"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for MethodCall .count on lists, sets, and maps: [1,2,3].count -> Int(3), set{1,2,3}.count -> Int(3), map{'a'=>1}.count -> Int(1), [].count -> Int(0).",
+      "description": "Write failing tests for Viewport.tsx in gui/src/__tests__/viewport/Viewport.test.tsx: (1) Viewport renders a <canvas> element with data-testid='viewport-canvas', (2) canvas is wrapped in a container div with data-testid='viewport-container' that has width/height 100% styling. Mock all three.js imports (scene, controls, meshManager modules) since we're testing the SolidJS component lifecycle/DOM, not WebGL. Use @solidjs/testing-library render + screen.getByTestId.",
       "status": "done",
-      "commit": "4d10692"
+      "commit": "cc0e117"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::MethodCall in reify-expr/src/lib.rs -- start with .count method dispatching on Value::List/Set/Map to return their length as Value::Int.",
+      "description": "Implement Viewport.tsx: SolidJS component that creates a container div (100% width/height) with a <canvas> ref inside. onMount: initialize createScene(canvas, w, h), createControls(camera, renderer.domElement), createMeshManager(scene). Use createEffect watching a meshes prop (Record<string, MeshData>) to call meshManager.sync(). Set up ResizeObserver on the container div to call scene resize + renderer.setSize. Start requestAnimationFrame render loop (controls.update + renderer.render(scene, camera)). onCleanup: cancel RAF, dispose controls, dispose meshManager, dispose renderer, disconnect ResizeObserver. Implement index.ts to export Viewport component, and re-export createScene, createControls, createMeshManager for testability.",
       "status": "done",
-      "commit": "5bc7369"
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .sum: [1,2,3].sum -> Int(6), [1.0,2.0].sum -> Real(3.0), [1mm,2mm].sum -> Scalar(0.003, LENGTH), [].sum -> Int(0), [1,undef,3].sum -> Undef.",
-      "status": "done",
-      "commit": "ca6f9b9"
-    },
-    {
-      "id": "step-10",
-      "type": "impl",
-      "description": "Implement .sum method in eval_method_call -- iterate list elements, accumulate using add logic (reuse eval_add pattern from reify-expr), handle dimension-aware scalar addition. Add dimension-aware collection sum helper to reify-stdlib if needed.",
-      "status": "done",
-      "commit": "8f16e83"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .contains: [1,2,3].contains(2) -> Bool(true), [1,2,3].contains(5) -> Bool(false), set{1,2,3}.contains(2) -> Bool(true), set{1,2,3}.contains(5) -> Bool(false).",
-      "status": "done",
-      "commit": "adad14c"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Implement .contains method for List and Set -- check if the argument value is present in the collection.",
-      "status": "done",
-      "commit": "e45b383"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .map: [1,2,3].map(|x| x*2) -> List([2,4,6]). Construct the MethodCall with a lambda arg CompiledExpr.",
-      "status": "done",
-      "commit": "76616ca"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Implement .map method -- evaluate the lambda arg to get Value::Lambda, then apply_lambda to each element, collect results into new Value::List.",
-      "status": "done",
-      "commit": "277ad8a"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .filter: [1,2,3,4].filter(|x| x > 2) -> List([3,4]), empty result case.",
-      "status": "done",
-      "commit": "ce250d7"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Implement .filter method -- apply_lambda to each element, keep elements where result is Bool(true), discard where Bool(false), propagate Undef.",
-      "status": "done",
-      "commit": "984c541"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .fold: [1,2,3].fold(0, |acc,x| acc+x) -> Int(6), fold with initial value.",
-      "status": "done",
-      "commit": "b772290"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Implement .fold method -- evaluate init, then for each element apply 2-arg lambda with (accumulator, element), thread result through.",
-      "status": "done",
-      "commit": "a45a565"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .all and .any: [1,2,3].all(|x| x>0) -> Bool(true), [1,2,3].any(|x| x>2) -> Bool(true), [1,2,3].all(|x| x>2) -> Bool(false), [1,2,3].any(|x| x>5) -> Bool(false). Kleene: [1,undef,3].all(|x| x>0) -> Undef, [false,undef].all(|x| x) -> Bool(false).",
-      "status": "done",
-      "commit": "aa25e42"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Implement .all and .any methods with Kleene 3-valued logic: .all returns false if any false, undef if any undef and none false, true otherwise. .any returns true if any true, undef if any undef and none true, false otherwise.",
-      "status": "done",
-      "commit": "11193fc"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .concat and .generate on lists: [1,2].concat([3,4]) -> List([1,2,3,4]), [].generate(3, |i| i*2) -> List([0,2,4]).",
-      "status": "done",
-      "commit": "cdb4e22"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Implement .concat (merge two lists) and .generate (create list from count + lambda, applying lambda to indices 0..count) methods.",
-      "status": "done",
-      "commit": "c028a19"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write failing tests for set operations: set{1,2,3}.union(set{3,4}) -> Set({1,2,3,4}), set{1,2,3}.intersection(set{2,3,4}) -> Set({2,3}), set{1,2,3}.difference(set{2,3,4}) -> Set({1}).",
-      "status": "done",
-      "commit": "24e6082"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Implement set .union, .intersection, .difference methods using BTreeSet operations.",
-      "status": "done",
-      "commit": "a735a38"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Write failing tests for map methods: map{'a'=>1}.keys -> List(['a']), map{'a'=>1}.values -> List([1]), map{'a'=>1}.contains_key('a') -> Bool(true), map{'a'=>1}.contains_key('b') -> Bool(false).",
-      "status": "done",
-      "commit": "ddf1d72"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "Implement map .keys, .values (return as Value::List), .contains_key methods.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-27",
-      "type": "test",
-      "description": "Write failing tests for undef propagation edge cases: undef.count -> Undef, [1,undef,3].count -> Int(3), [1,undef,3].sum -> Undef, undef[0] -> Undef, [1,2,3][undef] -> Undef, undef.map(lambda) -> Undef.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-28",
-      "type": "impl",
-      "description": "Verify undef propagation passes -- most cases should already work from the MethodCall dispatch checking for Undef object. Fix any gaps.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-29",
-      "type": "test",
-      "description": "Write failing compiler tests in crates/reify-compiler/tests/collection_compile_tests.rs: compile 'let x = [1, 2, 3]' -> CompiledExprKind::ListLiteral, compile 'let x = set{1, 2}' -> SetLiteral, compile 'let x = map{\"a\" => 1}' -> MapLiteral, compile 'let x = items[0]' -> IndexAccess.",
-      "status": "done",
-      "commit": "4048d2f"
-    },
-    {
-      "id": "step-30",
-      "type": "impl",
-      "description": "Implement compilation of ListLiteral, SetLiteral, MapLiteral, IndexAccess in reify-compiler -- replace the current stub error handlers with actual compilation that recursively compiles element expressions and produces the new CompiledExprKind variants.",
-      "status": "done",
-      "commit": "89320f7"
-    },
-    {
-      "id": "step-31",
-      "type": "test",
-      "description": "Write failing compiler test: compile 'let n = items.count' where items is a known let binding -> CompiledExprKind::MethodCall { method: 'count', args: [] }. Test property-style method compilation from MemberAccess syntax.",
-      "status": "done",
-      "commit": "802d2be"
-    },
-    {
-      "id": "step-32",
-      "type": "impl",
-      "description": "Implement compilation of MemberAccess -> MethodCall in reify-compiler. When the member is a known collection method name (count, sum, keys, values) and it's NOT a port access, compile it as MethodCall with empty args. Keep port access logic intact.",
-      "status": "done",
-      "commit": "5e96a5b"
-    },
-    {
-      "id": "step-33",
-      "type": "test",
-      "description": "Write integration test: parse + compile + eval 'structure S { let x = [1, 2, 3] }' -> verify x evaluates to Value::List([Int(1), Int(2), Int(3)]). Test parse + compile + eval for set and map literals too.",
-      "status": "done",
-      "commit": "59ab3b6"
-    },
-    {
-      "id": "step-34",
-      "type": "impl",
-      "description": "Verify integration tests pass end-to-end. Fix any issues in the parse -> compile -> eval pipeline for collection literals.",
-      "status": "done",
-      "commit": "59ab3b6"
-    },
-    {
-      "id": "step-35",
-      "type": "test",
-      "description": "Write integration test: parse + compile + eval 'structure S { let items = [1, 2, 3]  let n = items.count }' -> verify n evaluates to Int(3). Also test list index access integration.",
-      "status": "done",
-      "commit": "4469cc0"
-    },
-    {
-      "id": "step-36",
-      "type": "impl",
-      "description": "Verify property method and index access integration tests pass. Fix any issues.",
-      "status": "done",
-      "commit": "4469cc0"
-    },
-    {
-      "id": "step-37",
-      "type": "test",
-      "description": "Add Kleene 3-valued logic tests for .any in collection_eval_tests.rs: (1) eval_method_any_kleene_undef: [undef, false].any(|x| x) -> Undef (no true present, but undef present means result is indeterminate). (2) eval_method_any_kleene_true_wins: [true, undef].any(|x| x) -> Bool(true) (true dominates undef in Kleene OR). These mirror the existing eval_method_all_kleene_undef and eval_method_all_kleene_false_wins tests.",
-      "status": "done",
-      "commit": "ffbc589"
-    },
-    {
-      "id": "step-38",
-      "type": "impl",
-      "description": "Verify .any Kleene tests pass. The implementation already has the correct Kleene logic (lines 398-417: true short-circuits, false skips, undef flags has_undef, final check returns Undef if has_undef else Bool(false)). Fix if any test unexpectedly fails.",
-      "status": "done",
-      "commit": "ffbc589"
-    },
-    {
-      "id": "step-39",
-      "type": "test",
-      "description": "Add .filter Undef propagation test in collection_eval_tests.rs: eval_method_filter_undef_propagation: [1, undef, 3].filter(|x| x > 0) -> Undef. The predicate (x > 0) returns Undef when x is Undef (because Gt with Undef operand propagates Undef). The filter spec says 'propagate Undef' — if any element's predicate returns Undef, the entire filter result is Undef. Use an undef ValueCellId in the list to produce an Undef element that causes the predicate to return Undef.",
-      "status": "done",
-      "commit": "17de3f1"
-    },
-    {
-      "id": "step-40",
-      "type": "impl",
-      "description": "Verify .filter Undef propagation test passes. The implementation already handles this at line 484 (Value::Undef => return Value::Undef). Fix if the test unexpectedly fails.",
-      "status": "done",
-      "commit": "17de3f1"
-    },
-    {
-      "id": "step-41",
-      "type": "test",
-      "description": "Add test for UserFunctionCall inside lambda body used in a collection method. In collection_eval_tests.rs, add eval_method_map_with_user_function: create a CompiledFunction 'double' that returns x*2, create a list [1,2,3], call .map(|x| double(x)) where the lambda body is a UserFunctionCall node. Evaluate with EvalContext::new(&values, &[double_fn]). Assert result is List([2,4,6]). This test will FAIL because apply_lambda() currently uses EvalContext::simple() which drops the functions registry, so UserFunctionCall inside the lambda body returns Undef for every element, producing List([Undef, Undef, Undef]).",
-      "status": "done",
-      "commit": "a47f47d"
-    },
-    {
-      "id": "step-42",
-      "type": "impl",
-      "description": "Fix apply_lambda() context propagation. Change signature from pub fn apply_lambda(lambda: &Value, args: &[Value]) -> Value to pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value. Inside, replace EvalContext::simple(&eval_map) with ctx.with_scope(&eval_map) so functions and recursion_depth are preserved. Change eval_method_call signature from fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value to fn eval_method_call(obj: &Value, method: &str, args: &[Value], ctx: &EvalContext) -> Value. Update all apply_lambda call sites inside eval_method_call (.map, .filter, .fold, .all, .any, .generate) to pass ctx. Update the MethodCall arm in eval_expr (line 180) to pass ctx to eval_method_call. Existing tests using EvalContext::simple() will continue to work since simple() sets functions to &[] which is still valid.",
-      "status": "done",
-      "commit": "39f0f66"
+      "commit": "cc0e117"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add all 5 CompiledExprKind variants (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall) rather than reusing existing FunctionCall for methods",
-      "rationale": "MethodCall has a fundamentally different semantic: it dispatches on the receiver object's runtime type (List, Set, Map), not on a function name. Separate variants give clean pattern matching in the evaluator and accurate dependency tracking in collect_value_refs."
+      "decision": "Mock all Three.js classes in tests rather than using a WebGL stub/headless renderer",
+      "rationale": "jsdom doesn't support WebGL at all. Using gl/headless-gl adds heavy native dependencies. Mocking lets us test logic and wiring while keeping the test environment lightweight and consistent with the existing vitest+jsdom setup."
     },
     {
-      "decision": "Implement method call evaluation directly in reify-expr rather than routing through reify-stdlib",
-      "rationale": "Collection methods need access to apply_lambda (for .map, .filter, .fold) and eval_expr (for sub-expression evaluation), which are in reify-expr. Only dimension-aware sum may delegate to stdlib for consistency with existing numeric stdlib functions."
+      "decision": "Use a deterministic hash of entity_path for mesh color assignment rather than random colors",
+      "rationale": "Ensures the same entity always gets the same color across re-renders and sessions, improving visual consistency. Uses a small palette of Catppuccin accent colors cycled by a simple string hash."
     },
     {
-      "decision": "Test methods with arguments (.map, .filter, .fold, etc.) by constructing CompiledExpr trees directly rather than requiring end-to-end parsing",
-      "rationale": "The current tree-sitter grammar only has MemberAccess (obj.member) with no support for method calls with arguments (obj.method(args)). A grammar change to add method_call syntax is needed but out of scope for this task's stated modules. Property-style methods (.count, .sum, .keys, .values) work through MemberAccess already."
+      "decision": "meshManager uses a sync(record) pattern instead of individual add/remove methods",
+      "rationale": "The engineStore provides meshes as a Record<string, MeshData>. A single sync call that diffs the full record simplifies the reactive wiring \u2014 just call sync(state.meshes) in a createEffect. This mirrors the SolidJS store pattern where the whole record is the reactive granule."
     },
     {
-      "decision": "Compile MemberAccess to MethodCall only for known collection method names, not all member accesses",
-      "rationale": "Port member access (port.member) must continue to compile to ValueRef as it does today. The compiler should check if the member is a known collection method name (count, sum, keys, values) and only then produce MethodCall when it's NOT a port access. Unknown members remain diagnostic errors. This preserves backward compatibility."
+      "decision": "Scene setup separated into its own module (scene.ts) rather than inline in Viewport.tsx",
+      "rationale": "Keeps the SolidJS component thin (lifecycle management only) and makes the Three.js scene configuration independently testable and reusable."
     },
     {
-      "decision": "Use Kleene 3-valued logic for .all and .any, consistent with existing And/Or evaluation",
-      "rationale": "The spec requires: .all with undef element returns false if any false, undef if any undef and none false. This matches the Kleene AND/OR already implemented for BinOp::And and BinOp::Or in reify-expr."
+      "decision": "Use ResizeObserver on the canvas container rather than window resize event",
+      "rationale": "The viewport panel can resize independently of the window (e.g., when panels are resized). ResizeObserver accurately tracks the actual container dimensions."
     },
     {
-      "decision": ".sum on empty list returns Int(0) rather than Undef",
-      "rationale": "Zero is the additive identity and the conventional sum of an empty sequence. This matches standard library behavior in most languages."
+      "decision": "AxesHelper in main scene rather than a separate overlay scene/camera for axis gizmo",
+      "rationale": "A corner-pinned axis gizmo via secondary scene adds significant complexity. For v0.1, an AxesHelper in the main scene provides orientation reference with minimal code. Can be upgraded to a corner overlay later."
     },
     {
-      "decision": "Thread EvalContext through apply_lambda and eval_method_call rather than storing functions in Value::Lambda",
-      "rationale": "Storing the function registry inside Value::Lambda would require cloning the entire &[CompiledFunction] slice at lambda creation time, adding allocation overhead and coupling Value to CompiledFunction ownership. Threading the context is cheaper (just a reference), follows the existing pattern used by eval_user_function_call (which uses ctx.with_scope()), and keeps Value as a pure data type. The with_scope() method already exists and correctly propagates functions and increments recursion_depth."
+      "decision": "three added to dependencies (not devDependencies), @types/three to devDependencies",
+      "rationale": "Three.js is needed at runtime for the 3D viewport. @types/three is only needed for TypeScript compilation."
+    },
+    {
+      "decision": "Viewport accepts meshes as a prop rather than directly importing engineStore",
+      "rationale": "Keeps the Viewport component decoupled from the specific store implementation, making it easier to test (pass mock data) and reuse. The parent component (App.tsx or a layout component) is responsible for wiring engineStore.state.meshes to the Viewport prop."
     }
   ],
   "reuse": [
     {
-      "what": "apply_lambda() function",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for .map, .filter, .fold, .all, .any, .generate -- each applies a lambda to collection elements"
+      "what": "MeshData / RawMeshData types with typed arrays (Float32Array, Uint32Array)",
+      "where": "gui/src/types.ts",
+      "how": "Import MeshData interface directly \u2014 its Float32Array/Uint32Array fields map perfectly to Three.js BufferAttribute. No conversion needed."
     },
     {
-      "what": "eval_add() function (addition logic with dimension awareness)",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for .sum implementation -- iterate and accumulate using the same add semantics that handle Int+Int, Real+Real, Scalar+Scalar with dimension checking"
+      "what": "engineStore with Record<string, MeshData> meshes state",
+      "where": "gui/src/stores/engineStore.ts",
+      "how": "Viewport.tsx will accept meshes: Record<string, MeshData> as a prop. The parent wires engineStore.state.meshes to this prop. meshManager.sync() consumes the full record."
     },
     {
-      "what": "Value::List/Set/Map variants and BTreeSet/BTreeMap",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Already implemented with PartialEq, Eq, Ord, content_hash, Display -- collection operations produce these existing Value variants"
+      "what": "THEME_TOKENS.viewportBg color (#181825)",
+      "where": "gui/src/theme.ts",
+      "how": "Import THEME_TOKENS to set Three.js renderer clear color, ensuring visual consistency with the CSS theme."
     },
     {
-      "what": "CompiledExpr::literal() constructor",
-      "where": "crates/reify-types/src/expr.rs",
-      "how": "Reuse for constructing literal sub-expressions within collection compilation"
+      "what": "Existing test patterns (vitest + vi.mock + describe/it/expect)",
+      "where": "gui/src/__tests__/engineStore.test.ts, gui/src/__tests__/App.test.tsx",
+      "how": "Follow the same mocking pattern for dependencies. Use vi.mock for Three.js modules. Use render() + screen.getByTestId() from @solidjs/testing-library for component tests."
     },
     {
-      "what": "Existing compiler pattern: compile_expr_guarded recursion",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "Collection literal compilation follows the same pattern -- recursively compile element expressions, then wrap in the collection CompiledExprKind variant"
+      "what": "vitest.config.ts with jsdom + solid plugin",
+      "where": "gui/vitest.config.ts",
+      "how": "No changes needed \u2014 existing config supports TSX transforms and jsdom environment which is sufficient for mocked Three.js tests."
     },
     {
-      "what": "EvalContext and ValueMap",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for method call evaluation context -- same pattern as function calls, pass context through for sub-expression evaluation"
-    },
-    {
-      "what": "Test patterns from lambda_eval_tests.rs",
-      "where": "crates/reify-expr/tests/lambda_eval_tests.rs",
-      "how": "Follow same pattern of constructing CompiledExpr trees and evaluating them with EvalContext::simple(). The lambda test helpers (make_value_lambda) can be adapted for collection tests."
-    },
-    {
-      "what": "EvalContext::with_scope() method",
-      "where": "crates/reify-expr/src/lib.rs:36",
-      "how": "Reuse for apply_lambda context propagation fix — with_scope creates a child context preserving functions and incrementing recursion_depth, exactly what apply_lambda needs instead of EvalContext::simple()"
+      "what": "Catppuccin accent colors from theme tokens",
+      "where": "gui/src/theme.ts",
+      "how": "Use THEME_TOKENS accent colors as the base palette for mesh material colors, extending with additional Catppuccin accent colors for variety."
     }
-  ]
+  ],
+  "_session_id": "89-9cfafe99",
+  "_created_at": "2026-03-20T22:29:02.868588+00:00"
 }
