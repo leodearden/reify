@@ -133,6 +133,15 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 captures: capture_map,
             }
         }
+
+        CompiledExprKind::ListLiteral(_)
+        | CompiledExprKind::SetLiteral(_)
+        | CompiledExprKind::MapLiteral(_)
+        | CompiledExprKind::IndexAccess { .. }
+        | CompiledExprKind::MethodCall { .. } => {
+            // Placeholder — implemented in collection steps
+            Value::Undef
+        }
     }
 }
 

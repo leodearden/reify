@@ -98,6 +98,32 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
         CompiledExprKind::Lambda { body, .. } => {
             assert_no_unresolved(body);
         }
+        CompiledExprKind::ListLiteral(elements) => {
+            for elem in elements {
+                assert_no_unresolved(elem);
+            }
+        }
+        CompiledExprKind::SetLiteral(elements) => {
+            for elem in elements {
+                assert_no_unresolved(elem);
+            }
+        }
+        CompiledExprKind::MapLiteral(entries) => {
+            for (key, val) in entries {
+                assert_no_unresolved(key);
+                assert_no_unresolved(val);
+            }
+        }
+        CompiledExprKind::IndexAccess { object, index } => {
+            assert_no_unresolved(object);
+            assert_no_unresolved(index);
+        }
+        CompiledExprKind::MethodCall { object, args, .. } => {
+            assert_no_unresolved(object);
+            for arg in args {
+                assert_no_unresolved(arg);
+            }
+        }
     }
 }
 

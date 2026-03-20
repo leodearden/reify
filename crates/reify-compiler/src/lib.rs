@@ -2487,6 +2487,32 @@ fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
             collect_body_refs_inner(body, refs);
         }
         CompiledExprKind::Literal(_) => {}
+        CompiledExprKind::ListLiteral(elements) => {
+            for elem in elements {
+                collect_body_refs_inner(elem, refs);
+            }
+        }
+        CompiledExprKind::SetLiteral(elements) => {
+            for elem in elements {
+                collect_body_refs_inner(elem, refs);
+            }
+        }
+        CompiledExprKind::MapLiteral(entries) => {
+            for (key, val) in entries {
+                collect_body_refs_inner(key, refs);
+                collect_body_refs_inner(val, refs);
+            }
+        }
+        CompiledExprKind::IndexAccess { object, index } => {
+            collect_body_refs_inner(object, refs);
+            collect_body_refs_inner(index, refs);
+        }
+        CompiledExprKind::MethodCall { object, args, .. } => {
+            collect_body_refs_inner(object, refs);
+            for arg in args {
+                collect_body_refs_inner(arg, refs);
+            }
+        }
     }
 }
 
