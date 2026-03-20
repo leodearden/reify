@@ -4,6 +4,7 @@
 // minimal deltas for targeted event emission. No tauri dependency.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -134,4 +135,18 @@ pub fn diff_gui_state(old: &GuiState, new: &GuiState) -> StateDelta {
         removed_value_ids,
         removed_constraint_ids,
     }
+}
+
+/// Compute a delta against the last known state, then store the new state.
+///
+/// If `last_state` is `None` (first call), returns a full delta.
+/// Otherwise diffs against the previous state and returns the minimal delta.
+pub fn compute_delta(last_state: &Mutex<Option<GuiState>>, new_state: &GuiState) -> StateDelta {
+    let mut guard = last_state.lock().expect("last_state lock poisoned");
+    let delta = match guard.as_ref() {
+        Some(old) => diff_gui_state(old, new_state),
+        None => StateDelta::full(new_state),
+    };
+    *guard = Some(new_state.clone());
+    delta
 }

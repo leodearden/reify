@@ -9,6 +9,8 @@ use crate::types::{FileData, GuiState, SourceLocation};
 /// Application state shared across all Tauri commands.
 pub struct AppState {
     pub engine: Arc<Mutex<EngineSession>>,
+    /// Last emitted state for computing minimal diffs.
+    pub last_state: Mutex<Option<GuiState>>,
 }
 
 // --- Helper functions for testability ---

@@ -111,6 +111,7 @@ fn main() {
 
     let app_state = AppState {
         engine: Arc::new(Mutex::new(session)),
+        last_state: std::sync::Mutex::new(None),
     };
 
     tauri::Builder::default()

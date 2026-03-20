@@ -21,6 +21,7 @@ fn app_state_constructible() {
     let session = make_loaded_session();
     let _state = AppState {
         engine: Arc::new(Mutex::new(session)),
+        last_state: Mutex::new(None),
     };
 }
 
