@@ -152,3 +152,50 @@ structure def S {
         other => panic!("expected ValueRef, got {:?}", other),
     }
 }
+
+// ── Step 17: multiple ports ─────────────────────────────────────────
+
+#[test]
+fn compile_multiple_ports() {
+    let source = r#"
+trait MechPort {
+    param d : Length
+}
+trait RotaryPort {
+    param rpm : Length
+}
+
+structure def S {
+    port mount : MechPort {
+        param d : Length = 5mm
+    }
+    port shaft : RotaryPort {
+        param rpm : Length = 100mm
+    }
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Should have 2 ports
+    assert_eq!(template.ports.len(), 2, "expected 2 ports");
+
+    let mount = &template.ports[0];
+    assert_eq!(mount.name, "mount");
+    assert_eq!(mount.members.len(), 1);
+    assert!(mount.members[0].id.member.contains("mount.d"));
+
+    let shaft = &template.ports[1];
+    assert_eq!(shaft.name, "shaft");
+    assert_eq!(shaft.members.len(), 1);
+    assert!(shaft.members[0].id.member.contains("shaft.rpm"));
+
+    // ValueCellIds should be distinct
+    assert_ne!(mount.members[0].id, shaft.members[0].id);
+}
