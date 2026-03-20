@@ -595,6 +595,81 @@ fn compile_expr(
                 CompiledExpr::literal(Value::Undef, Type::Real)
             }
         }
+        reify_syntax::ExprKind::Match { discriminant, arms } => {
+            let compiled_discriminant = compile_expr(discriminant, scope, enum_defs, diagnostics);
+            let compiled_arms: Vec<reify_types::CompiledMatchArm> = arms
+                .iter()
+                .map(|arm| {
+                    let body = compile_expr(&arm.body, scope, enum_defs, diagnostics);
+                    reify_types::CompiledMatchArm {
+                        patterns: arm.patterns.clone(),
+                        body,
+                    }
+                })
+                .collect();
+
+            // Result type from the first arm's body
+            let result_type = compiled_arms
+                .first()
+                .map(|a| a.body.result_type.clone())
+                .unwrap_or(Type::Real);
+
+            // Exhaustiveness check: if discriminant is a known enum type,
+            // verify all variants are covered by arm patterns or a wildcard.
+            if let Type::Enum(ref enum_name) = compiled_discriminant.result_type
+                && let Some(enum_def) = enum_defs.iter().find(|e| e.name == *enum_name)
+            {
+                let has_wildcard = compiled_arms
+                    .iter()
+                    .any(|arm| arm.patterns.iter().any(|p| p == "_"));
+
+                if !has_wildcard {
+                    let covered: std::collections::HashSet<&str> = compiled_arms
+                        .iter()
+                        .flat_map(|arm| arm.patterns.iter().map(|p| p.as_str()))
+                        .collect();
+
+                    let missing: Vec<&str> = enum_def
+                        .variants
+                        .iter()
+                        .filter(|v| !covered.contains(v.as_str()))
+                        .map(|v| v.as_str())
+                        .collect();
+
+                    if !missing.is_empty() {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "non-exhaustive match on '{}': missing variant(s) {}",
+                                enum_name,
+                                missing.join(", ")
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "missing variants",
+                            )),
+                        );
+                    }
+                }
+            }
+
+            // Content hash: tag [6] + discriminant + all arms
+            let mut content_hash = ContentHash::of(&[6]).combine(compiled_discriminant.content_hash);
+            for arm in &compiled_arms {
+                for pattern in &arm.patterns {
+                    content_hash = content_hash.combine(ContentHash::of_str(pattern));
+                }
+                content_hash = content_hash.combine(arm.body.content_hash);
+            }
+
+            CompiledExpr {
+                kind: CompiledExprKind::Match {
+                    discriminant: Box::new(compiled_discriminant),
+                    arms: compiled_arms,
+                },
+                result_type,
+                content_hash,
+            }
+        }
         reify_syntax::ExprKind::Auto => {
             // Auto expressions should not appear inside compile_expr — they are
             // handled at the param compilation level. If we reach here, emit an

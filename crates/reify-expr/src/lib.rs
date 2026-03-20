@@ -29,6 +29,26 @@ pub fn eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value {
             reify_stdlib::eval_builtin(&function.name, &evaluated_args)
         }
 
+        CompiledExprKind::Match {
+            discriminant,
+            arms,
+        } => {
+            let disc_val = eval_expr(discriminant, values);
+            if disc_val.is_undef() {
+                return Value::Undef;
+            }
+            // Extract variant from enum value
+            if let Value::Enum { variant, .. } = &disc_val {
+                for arm in arms {
+                    if arm.patterns.iter().any(|p| p == variant || p == "_") {
+                        return eval_expr(&arm.body, values);
+                    }
+                }
+            }
+            // No matching arm or non-enum discriminant
+            Value::Undef
+        }
+
         CompiledExprKind::Conditional {
             condition,
             then_branch,
@@ -1092,6 +1112,120 @@ mod tests {
             eval_expr(&expr, &values).is_undef(),
             "comparison on enums should return Undef"
         );
+    }
+
+    // ── Match eval tests ──────────────────────────────────
+
+    #[test]
+    fn eval_match_basic() {
+        // match Direction.In { [In] => 1, [Out] => 2, [Bidi] => 3 }
+        let discriminant = enum_lit("Direction", "In");
+        let arms = vec![
+            reify_types::CompiledMatchArm {
+                patterns: vec!["In".to_string()],
+                body: lit(Value::Int(1), Type::Int),
+            },
+            reify_types::CompiledMatchArm {
+                patterns: vec!["Out".to_string()],
+                body: lit(Value::Int(2), Type::Int),
+            },
+            reify_types::CompiledMatchArm {
+                patterns: vec!["Bidi".to_string()],
+                body: lit(Value::Int(3), Type::Int),
+            },
+        ];
+        let expr = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[100]),
+            result_type: Type::Int,
+            kind: CompiledExprKind::Match {
+                discriminant: Box::new(discriminant),
+                arms,
+            },
+        };
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_match_undef_discriminant() {
+        let discriminant = lit(Value::Undef, Type::Int);
+        let arms = vec![
+            reify_types::CompiledMatchArm {
+                patterns: vec!["In".to_string()],
+                body: lit(Value::Int(1), Type::Int),
+            },
+        ];
+        let expr = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[101]),
+            result_type: Type::Int,
+            kind: CompiledExprKind::Match {
+                discriminant: Box::new(discriminant),
+                arms,
+            },
+        };
+        let values = ValueMap::new();
+        assert!(eval_expr(&expr, &values).is_undef());
+    }
+
+    #[test]
+    fn eval_match_wildcard() {
+        // match Direction.Bidi { [In] => 1, [_] => 99 }
+        let discriminant = enum_lit("Direction", "Bidi");
+        let arms = vec![
+            reify_types::CompiledMatchArm {
+                patterns: vec!["In".to_string()],
+                body: lit(Value::Int(1), Type::Int),
+            },
+            reify_types::CompiledMatchArm {
+                patterns: vec!["_".to_string()],
+                body: lit(Value::Int(99), Type::Int),
+            },
+        ];
+        let expr = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[102]),
+            result_type: Type::Int,
+            kind: CompiledExprKind::Match {
+                discriminant: Box::new(discriminant),
+                arms,
+            },
+        };
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::Int(99) => {}
+            other => panic!("expected Int(99), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_match_multi_variant_pattern() {
+        // match Control.Button { [Socket, Button] => "recessed", [Slider] => "raised" }
+        let discriminant = enum_lit("Control", "Button");
+        let arms = vec![
+            reify_types::CompiledMatchArm {
+                patterns: vec!["Socket".to_string(), "Button".to_string()],
+                body: lit(Value::String("recessed".to_string()), Type::String),
+            },
+            reify_types::CompiledMatchArm {
+                patterns: vec!["Slider".to_string()],
+                body: lit(Value::String("raised".to_string()), Type::String),
+            },
+        ];
+        let expr = CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[103]),
+            result_type: Type::String,
+            kind: CompiledExprKind::Match {
+                discriminant: Box::new(discriminant),
+                arms,
+            },
+        };
+        let values = ValueMap::new();
+        match eval_expr(&expr, &values) {
+            Value::String(s) => assert_eq!(s, "recessed"),
+            other => panic!("expected String(\"recessed\"), got {:?}", other),
+        }
     }
 
     #[test]

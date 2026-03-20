@@ -487,6 +487,7 @@ impl<'a> Lowering<'a> {
             "binary_expression" => self.lower_binary_expr(node),
             "unary_expression" => self.lower_unary_expr(node),
             "conditional_expression" => self.lower_conditional(node),
+            "match_expression" => self.lower_match_expr(node),
             "quantity_literal" => self.lower_quantity_literal(node),
             "number_literal" => self.lower_number_literal(node),
             "string_literal" => self.lower_string_literal(node),
@@ -570,6 +571,63 @@ impl<'a> Lowering<'a> {
                 then_branch: Box::new(then_branch),
                 else_branch: Box::new(else_branch),
             },
+            span: self.span(node),
+        })
+    }
+
+    fn lower_match_expr(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let discriminant_node = node.child_by_field_name("discriminant")?;
+        let discriminant = self.lower_expr(discriminant_node)?;
+
+        let mut arms = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "match_arm"
+                && let Some(arm) = self.lower_match_arm(child)
+            {
+                arms.push(arm);
+            }
+        }
+
+        Some(Expr {
+            kind: ExprKind::Match {
+                discriminant: Box::new(discriminant),
+                arms,
+            },
+            span: self.span(node),
+        })
+    }
+
+    fn lower_match_arm(&self, node: tree_sitter::Node) -> Option<MatchArm> {
+        let pattern_node = node.child_by_field_name("pattern")?;
+        let body_node = node.child_by_field_name("body")?;
+
+        let body = self.lower_expr(body_node)?;
+
+        // Collect patterns from the match_pattern node.
+        // Pattern is either '_' (wildcard) or one or more identifiers separated by '|'.
+        let mut patterns = Vec::new();
+        let pattern_text = self.node_text(pattern_node).trim();
+
+        if pattern_text == "_" {
+            patterns.push("_".to_string());
+        } else {
+            // Iterate named children (identifiers) of the match_pattern node
+            let mut cursor = pattern_node.walk();
+            for child in pattern_node.children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    patterns.push(self.node_text(child).to_string());
+                }
+            }
+        }
+
+        if patterns.is_empty() {
+            return None;
+        }
+
+        Some(MatchArm {
+            patterns,
+            body,
             span: self.span(node),
         })
     }
