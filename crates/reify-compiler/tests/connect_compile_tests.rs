@@ -206,3 +206,82 @@ structure def S2 {
         s1_connector.content_hash
     );
 }
+
+// ── Step 25: template_content_hash_includes_connections ──────────────
+
+#[test]
+fn template_content_hash_includes_connections() {
+    // Same structure name "S", same ports, only the connect target differs.
+    // Compiled as separate modules so the name_hash is identical.
+    let source1 = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    port c : in T { param d : Length = 5mm }
+    connect a -> b
+}
+"#;
+    let source2 = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    port c : in T { param d : Length = 5mm }
+    connect a -> c
+}
+"#;
+
+    let (t1, diag1) = compile_first_template(source1);
+    let (t2, diag2) = compile_first_template(source2);
+
+    let errors1: Vec<_> = diag1.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors2: Vec<_> = diag2.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors1.is_empty(), "unexpected errors: {:?}", errors1);
+    assert!(errors2.is_empty(), "unexpected errors: {:?}", errors2);
+
+    // Different connect targets must produce different template content hashes
+    assert_ne!(
+        t1.content_hash, t2.content_hash,
+        "template hashes should differ when connect targets differ \
+        (a->b vs a->c), but both are {:?}",
+        t1.content_hash
+    );
+}
+
+#[test]
+fn template_content_hash_changes_with_operator() {
+    // Same structure name "S", same bidi ports, only the operator differs.
+    let source1 = r#"
+trait T { param d : Length }
+structure def S {
+    port a : bidi T { param d : Length = 5mm }
+    port b : bidi T { param d : Length = 5mm }
+    connect a -> b
+}
+"#;
+    let source2 = r#"
+trait T { param d : Length }
+structure def S {
+    port a : bidi T { param d : Length = 5mm }
+    port b : bidi T { param d : Length = 5mm }
+    connect a <-> b
+}
+"#;
+
+    let (t1, diag1) = compile_first_template(source1);
+    let (t2, diag2) = compile_first_template(source2);
+
+    let errors1: Vec<_> = diag1.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors2: Vec<_> = diag2.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors1.is_empty(), "unexpected errors: {:?}", errors1);
+    assert!(errors2.is_empty(), "unexpected errors: {:?}", errors2);
+
+    // Different operators must produce different template content hashes
+    assert_ne!(
+        t1.content_hash, t2.content_hash,
+        "template hashes should differ when connect operators differ \
+        (-> vs <->), but both are {:?}",
+        t1.content_hash
+    );
+}
