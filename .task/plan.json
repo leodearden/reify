@@ -128,162 +128,162 @@
       "id": "step-14",
       "type": "impl",
       "description": "Implement .map method -- evaluate the lambda arg to get Value::Lambda, then apply_lambda to each element, collect results into new Value::List.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "277ad8a"
     },
     {
       "id": "step-15",
       "type": "test",
       "description": "Write failing tests for MethodCall .filter: [1,2,3,4].filter(|x| x > 2) -> List([3,4]), empty result case.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "ce250d7"
     },
     {
       "id": "step-16",
       "type": "impl",
       "description": "Implement .filter method -- apply_lambda to each element, keep elements where result is Bool(true), discard where Bool(false), propagate Undef.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "984c541"
     },
     {
       "id": "step-17",
       "type": "test",
       "description": "Write failing tests for MethodCall .fold: [1,2,3].fold(0, |acc,x| acc+x) -> Int(6), fold with initial value.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "b772290"
     },
     {
       "id": "step-18",
       "type": "impl",
       "description": "Implement .fold method -- evaluate init, then for each element apply 2-arg lambda with (accumulator, element), thread result through.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "a45a565"
     },
     {
       "id": "step-19",
       "type": "test",
       "description": "Write failing tests for MethodCall .all and .any: [1,2,3].all(|x| x>0) -> Bool(true), [1,2,3].any(|x| x>2) -> Bool(true), [1,2,3].all(|x| x>2) -> Bool(false), [1,2,3].any(|x| x>5) -> Bool(false). Kleene: [1,undef,3].all(|x| x>0) -> Undef, [false,undef].all(|x| x) -> Bool(false).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "aa25e42"
     },
     {
       "id": "step-20",
       "type": "impl",
       "description": "Implement .all and .any methods with Kleene 3-valued logic: .all returns false if any false, undef if any undef and none false, true otherwise. .any returns true if any true, undef if any undef and none true, false otherwise.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "11193fc"
     },
     {
       "id": "step-21",
       "type": "test",
       "description": "Write failing tests for MethodCall .concat and .generate on lists: [1,2].concat([3,4]) -> List([1,2,3,4]), [].generate(3, |i| i*2) -> List([0,2,4]).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "cdb4e22"
     },
     {
       "id": "step-22",
       "type": "impl",
       "description": "Implement .concat (merge two lists) and .generate (create list from count + lambda, applying lambda to indices 0..count) methods.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "c028a19"
     },
     {
       "id": "step-23",
       "type": "test",
       "description": "Write failing tests for set operations: set{1,2,3}.union(set{3,4}) -> Set({1,2,3,4}), set{1,2,3}.intersection(set{2,3,4}) -> Set({2,3}), set{1,2,3}.difference(set{2,3,4}) -> Set({1}).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "24e6082"
     },
     {
       "id": "step-24",
       "type": "impl",
       "description": "Implement set .union, .intersection, .difference methods using BTreeSet operations.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "a735a38"
     },
     {
       "id": "step-25",
       "type": "test",
       "description": "Write failing tests for map methods: map{'a'=>1}.keys -> List(['a']), map{'a'=>1}.values -> List([1]), map{'a'=>1}.contains_key('a') -> Bool(true), map{'a'=>1}.contains_key('b') -> Bool(false).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "ddf1d72"
     },
     {
       "id": "step-26",
       "type": "impl",
       "description": "Implement map .keys, .values (return as Value::List), .contains_key methods.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "40d29ab"
     },
     {
       "id": "step-27",
       "type": "test",
       "description": "Write failing tests for undef propagation edge cases: undef.count -> Undef, [1,undef,3].count -> Int(3), [1,undef,3].sum -> Undef, undef[0] -> Undef, [1,2,3][undef] -> Undef, undef.map(lambda) -> Undef.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "40d29ab"
     },
     {
       "id": "step-28",
       "type": "impl",
       "description": "Verify undef propagation passes -- most cases should already work from the MethodCall dispatch checking for Undef object. Fix any gaps.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "40d29ab"
     },
     {
       "id": "step-29",
       "type": "test",
       "description": "Write failing compiler tests in crates/reify-compiler/tests/collection_compile_tests.rs: compile 'let x = [1, 2, 3]' -> CompiledExprKind::ListLiteral, compile 'let x = set{1, 2}' -> SetLiteral, compile 'let x = map{\"a\" => 1}' -> MapLiteral, compile 'let x = items[0]' -> IndexAccess.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "4048d2f"
     },
     {
       "id": "step-30",
       "type": "impl",
       "description": "Implement compilation of ListLiteral, SetLiteral, MapLiteral, IndexAccess in reify-compiler -- replace the current stub error handlers with actual compilation that recursively compiles element expressions and produces the new CompiledExprKind variants.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "89320f7"
     },
     {
       "id": "step-31",
       "type": "test",
       "description": "Write failing compiler test: compile 'let n = items.count' where items is a known let binding -> CompiledExprKind::MethodCall { method: 'count', args: [] }. Test property-style method compilation from MemberAccess syntax.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "802d2be"
     },
     {
       "id": "step-32",
       "type": "impl",
       "description": "Implement compilation of MemberAccess -> MethodCall in reify-compiler. When the member is a known collection method name (count, sum, keys, values) and it's NOT a port access, compile it as MethodCall with empty args. Keep port access logic intact.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5e96a5b"
     },
     {
       "id": "step-33",
       "type": "test",
       "description": "Write integration test: parse + compile + eval 'structure S { let x = [1, 2, 3] }' -> verify x evaluates to Value::List([Int(1), Int(2), Int(3)]). Test parse + compile + eval for set and map literals too.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "59ab3b6"
     },
     {
       "id": "step-34",
       "type": "impl",
       "description": "Verify integration tests pass end-to-end. Fix any issues in the parse -> compile -> eval pipeline for collection literals.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "59ab3b6"
     },
     {
       "id": "step-35",
       "type": "test",
       "description": "Write integration test: parse + compile + eval 'structure S { let items = [1, 2, 3]  let n = items.count }' -> verify n evaluates to Int(3). Also test list index access integration.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "4469cc0"
     },
     {
       "id": "step-36",
       "type": "impl",
       "description": "Verify property method and index access integration tests pass. Fix any issues.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "4469cc0"
     }
   ],
   "design_decisions": [
