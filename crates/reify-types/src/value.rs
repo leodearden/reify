@@ -80,12 +80,11 @@ impl Value {
             Value::Real(r) => {
                 let mut buf = [0u8; 9];
                 buf[0] = 2;
-                // Normalize -0.0 to 0.0 and NaN to a canonical form
-                let normalized = if *r == 0.0 { 0.0f64 } else { *r };
-                let bits = if normalized.is_nan() {
+                // Canonicalize NaN but preserve -0.0 (PartialEq uses to_bits)
+                let bits = if r.is_nan() {
                     f64::NAN.to_bits() // canonical NaN
                 } else {
-                    normalized.to_bits()
+                    r.to_bits()
                 };
                 buf[1..].copy_from_slice(&bits.to_le_bytes());
                 ContentHash::of(&buf)
