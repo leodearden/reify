@@ -321,3 +321,79 @@ fn lambda_content_hash_deterministic_and_distinct() {
         "different param names should produce different hash"
     );
 }
+
+/// step-27: Integration test — full pipeline parse → compile → eval for a structure
+/// with a lambda that captures a value from the same structure.
+#[test]
+fn integration_parse_compile_eval_lambda() {
+    use reify_expr::apply_lambda;
+
+    let source = r#"
+structure S {
+    let factor: Real = 3.0
+    let f = |x| x * factor
+}
+"#;
+    // Parse
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_integration"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    // Compile
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let template = &compiled.templates[0];
+
+    // Find value cells
+    let factor_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "factor")
+        .expect("should have 'factor'");
+    let f_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "f")
+        .expect("should have 'f'");
+
+    // Set up ValueMap with factor = 3.0
+    let mut values = ValueMap::new();
+    let factor_expr = factor_cell
+        .default_expr
+        .as_ref()
+        .expect("factor should have expr");
+    let factor_val = eval_expr(factor_expr, &values);
+    values.insert(factor_cell.id.clone(), factor_val);
+
+    // Evaluate the lambda expression
+    let f_expr = f_cell.default_expr.as_ref().expect("f should have expr");
+    let f_val = eval_expr(f_expr, &values);
+
+    // Verify we got a lambda
+    match &f_val {
+        Value::Lambda { params, .. } => {
+            assert_eq!(params, &["x".to_string()]);
+        }
+        other => panic!("expected Value::Lambda, got {:?}", other),
+    }
+
+    // Apply the lambda: f(5.0) should return 15.0
+    let result = apply_lambda(&f_val, &[Value::Real(5.0)]);
+    match result {
+        Value::Real(v) => assert!(
+            (v - 15.0).abs() < 1e-12,
+            "expected 15.0, got {}",
+            v
+        ),
+        other => panic!("expected Real(15.0), got {:?}", other),
+    }
+}
