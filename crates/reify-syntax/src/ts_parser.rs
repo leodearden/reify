@@ -496,6 +496,7 @@ impl<'a> Lowering<'a> {
             "list_literal" => self.lower_list_literal(node),
             "set_literal" => self.lower_set_literal(node),
             "map_literal" => self.lower_map_literal(node),
+            "index_access" => self.lower_index_access(node),
             "member_access" => self.lower_member_access(node),
             "parenthesized_expression" => {
                 // Unwrap parenthesized expression — find the inner expression
@@ -703,6 +704,20 @@ impl<'a> Lowering<'a> {
         let key = self.lower_expr(key_node)?;
         let value = self.lower_expr(value_node)?;
         Some((key, value))
+    }
+
+    fn lower_index_access(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let object_node = node.child_by_field_name("object")?;
+        let index_node = node.child_by_field_name("index")?;
+        let object = self.lower_expr(object_node)?;
+        let index = self.lower_expr(index_node)?;
+        Some(Expr {
+            kind: ExprKind::IndexAccess {
+                object: Box::new(object),
+                index: Box::new(index),
+            },
+            span: self.span(node),
+        })
     }
 
     fn lower_member_access(&self, node: tree_sitter::Node) -> Option<Expr> {
