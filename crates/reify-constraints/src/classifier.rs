@@ -78,13 +78,15 @@ impl ConstraintClassifier {
                 }
             }
             CompiledExprKind::ValueRef(_) => {
-                // Classify based on the result type of the reference
-                match &expr.result_type {
-                    Type::Bool => flags.has_logical = true,
-                    Type::Int | Type::Real | Type::Scalar { .. } | Type::String => {
-                        flags.has_numeric = true;
-                    }
+                // Classify based on the result type of the reference,
+                // using the canonical Type::is_numeric() to stay consistent
+                // with the type system (excludes String).
+                if expr.result_type.is_numeric() {
+                    flags.has_numeric = true;
+                } else if expr.result_type == Type::Bool {
+                    flags.has_logical = true;
                 }
+                // Type::String is a no-op — no domain flag set, consistent with Type::is_numeric()
             }
             CompiledExprKind::BinOp { left, right, .. } => {
                 Self::collect_flags(left, flags);

@@ -19,7 +19,7 @@
     "crates/reify-compiler",
     "crates/reify-types"
   ],
-  "analysis": "This task has been FULLY IMPLEMENTED. All code, tests, and integration points are in place. The implementation consists of three interlocking pieces:\n\n1. **ConstraintClassifier** (classifier.rs): Walks CompiledExpr trees and determines ConstraintDomain by collecting DomainFlags from leaf value types (Scalar/Real/Int \u2192 numeric, Bool \u2192 logical) and function calls (std::geo::* \u2192 geometric). Classification: numeric-only \u2192 Dimensional, logical-only \u2192 Logical, geometric present \u2192 Geometric, mixed \u2192 CrossDomain.\n\n2. **Connected-component decomposition** (decompose.rs): Uses union-find to build bipartite graph of constraints \u2194 auto params. Each connected component becomes an independent SubProblem with its own auto_params, constraints, and domain classification. Constraints referencing no auto params are excluded.\n\n3. **SolverRegistry** (registry.rs): Implements ConstraintSolver trait as a drop-in replacement for DimensionalSolver. Holds domain-specific solvers (dimensional required, geometric/logical/fallback optional). solve() decomposes the problem, dispatches sub-problems to appropriate solvers, and merges results.\n\n4. **Compiler integration** (reify-compiler/src/lib.rs): CompiledConstraint has `domain: Option<ConstraintDomain>` field (default None), allowing optional pre-classification at compile time.\n\nAll 50+ tests pass. The existing DimensionalSolver is used as both the dimensional and fallback solver, maintaining full backward compatibility.\n\n**POST-REVIEW FIX:** registry.rs contains unnecessary `unsafe impl Send for SolverRegistry` and `unsafe impl Sync for SolverRegistry` blocks. Since `ConstraintSolver: Send + Sync` (reify-types/src/constraint.rs:108), all `Box<dyn ConstraintSolver>` fields are automatically Send + Sync, and Rust auto-derives Send + Sync for the struct. The unsafe impls must be removed to restore compiler safety checking.",
+  "analysis": "This task has been FULLY IMPLEMENTED. All code, tests, and integration points are in place. The implementation consists of three interlocking pieces:\n\n1. **ConstraintClassifier** (classifier.rs): Walks CompiledExpr trees and determines ConstraintDomain by collecting DomainFlags from leaf value types (Scalar/Real/Int \u2192 numeric, Bool \u2192 logical) and function calls (std::geo::* \u2192 geometric). Classification: numeric-only \u2192 Dimensional, logical-only \u2192 Logical, geometric present \u2192 Geometric, mixed \u2192 CrossDomain.\n\n2. **Connected-component decomposition** (decompose.rs): Uses union-find to build bipartite graph of constraints \u2194 auto params. Each connected component becomes an independent SubProblem with its own auto_params, constraints, and domain classification. Constraints referencing no auto params are excluded.\n\n3. **SolverRegistry** (registry.rs): Implements ConstraintSolver trait as a drop-in replacement for DimensionalSolver. Holds domain-specific solvers (dimensional required, geometric/logical/fallback optional). solve() decomposes the problem, dispatches sub-problems to appropriate solvers, and merges results.\n\n4. **Compiler integration** (reify-compiler/src/lib.rs): CompiledConstraint has `domain: Option<ConstraintDomain>` field (default None), allowing optional pre-classification at compile time.\n\nAll 50+ tests pass. The existing DimensionalSolver is used as both the dimensional and fallback solver, maintaining full backward compatibility.\n\n**POST-REVIEW FIXES (2 blocking issues):**\n\n1. **unnecessary_unsafe** (registry.rs:177-180) \u2014 FIXED in steps 13-14: Removed `unsafe impl Send/Sync for SolverRegistry` blocks. The compiler auto-derives Send + Sync from `ConstraintSolver: Send + Sync` supertrait bounds.\n\n2. **type_system_inconsistency** (classifier.rs:82-84) \u2014 Steps 15-16: `Type::String` is incorrectly included in the numeric arm of the `ValueRef` match in `collect_flags`, setting `has_numeric = true` for String-typed value references. The type system's own `Type::is_numeric()` (reify-types/src/ty.rs:42) explicitly excludes String: `matches!(self, Type::Int | Type::Real | Type::Scalar { .. })`. This causes String-typed ValueRefs to be misclassified as Dimensional. Fix: replace the manual match with `expr.result_type.is_numeric()` and handle `Type::String` as a no-op (no domain flag set).",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -134,6 +134,20 @@
       "description": "Remove the unnecessary `unsafe impl Send for SolverRegistry {}` and `unsafe impl Sync for SolverRegistry {}` blocks (lines 177-180) and the associated safety comment (line 177) from crates/reify-constraints/src/registry.rs. The compiler auto-derives Send + Sync because all fields are Box<dyn ConstraintSolver> where ConstraintSolver: Send + Sync. Removing these restores the compiler's ability to catch future violations if a non-Send/Sync field is ever added. Verify all tests pass including the new static assertion from step-13.",
       "status": "done",
       "commit": "1932c6d"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing regression tests in crates/reify-constraints/tests/classifier_tests.rs for the type_system_inconsistency bug (reviewer: architect_reviewer). Two tests:\n\n1. `classify_string_valueref_is_not_numeric`: Create a constraint with only a `Type::String`-typed ValueRef using `value_ref_typed(\"Part\", \"name\", Type::String)` compared via `eq()` to another String-typed ValueRef. Since String is neither numeric (per `Type::is_numeric()`) nor Bool, the expression should have no domain flags set. Assert the result is NOT `ConstraintDomain::Dimensional`. The current code incorrectly classifies this as Dimensional because classifier.rs line 84 includes `Type::String` in the numeric match arm.\n\n2. `classify_string_does_not_contribute_numeric_flag`: Create an expression that combines a String-typed ValueRef with a Bool-typed ValueRef via `and()`. The String ref must NOT contribute `has_numeric`, so the result should be `ConstraintDomain::Logical` (only the Bool contributes). The current buggy code would set both `has_numeric` (from String) and `has_logical` (from Bool), producing `CrossDomain` instead.\n\nBoth tests will FAIL against the current classifier.rs code, proving the bug exists.",
+      "status": "done",
+      "commit": "d2d6431"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Fix the type_system_inconsistency in crates/reify-constraints/src/classifier.rs (reviewer: architect_reviewer). In the `CompiledExprKind::ValueRef` arm of `collect_flags` (lines 80-87), replace the manual type match with the type system's canonical `is_numeric()` method. Change from:\n```rust\nmatch &expr.result_type {\n    Type::Bool => flags.has_logical = true,\n    Type::Int | Type::Real | Type::Scalar { .. } | Type::String => {\n        flags.has_numeric = true;\n    }\n}\n```\nTo:\n```rust\nif expr.result_type.is_numeric() {\n    flags.has_numeric = true;\n} else if expr.result_type == Type::Bool {\n    flags.has_logical = true;\n}\n// Type::String is a no-op \u2014 no domain flag set, consistent with Type::is_numeric()\n```\nThis aligns with the canonical `Type::is_numeric()` definition in reify-types/src/ty.rs:42 which returns `matches!(self, Type::Int | Type::Real | Type::Scalar { .. })`, explicitly excluding String. Verify all existing classifier tests plus the new step-15 regression tests pass.",
+      "status": "done",
+      "commit": null
     }
   ],
   "design_decisions": [
@@ -172,6 +186,10 @@
     {
       "decision": "Remove unnecessary unsafe impl Send/Sync for SolverRegistry",
       "rationale": "ConstraintSolver trait has Send + Sync supertraits (reify-types/src/constraint.rs:108), so Box<dyn ConstraintSolver> is automatically Send + Sync. Since all SolverRegistry fields are Box<dyn ConstraintSolver> or Option<Box<dyn ConstraintSolver>>, the compiler auto-derives Send + Sync. The manual unsafe impls bypass future compiler safety checks: if a non-Send field is ever added, the compiler would silently accept it instead of emitting an error. A static assertion test is added first to prove auto-derivation works before removing the unsafe blocks."
+    },
+    {
+      "decision": "Use Type::is_numeric() for ValueRef classification instead of manual match",
+      "rationale": "The type system already has a canonical is_numeric() method (reify-types/src/ty.rs:42) that correctly defines numeric types as Int | Real | Scalar { .. }, explicitly excluding String. The classifier's ValueRef arm had a manual match that incorrectly included Type::String as numeric. Using the canonical method ensures the classifier stays consistent with the type system as new types are added, and prevents future divergence bugs. The Literal arm already uses Value variant matching which is inherently correct (Value::String doesn't exist as a numeric variant), so only the ValueRef arm needed fixing."
     }
   ],
   "reuse": [
@@ -214,6 +232,12 @@
       "what": "Engine::with_solver() builder pattern",
       "where": "crates/reify-eval/src/lib.rs",
       "how": "No changes needed \u2014 Engine already accepts Box<dyn ConstraintSolver>. SolverRegistry can be boxed and passed directly."
+    },
+    {
+      "what": "Type::is_numeric() method",
+      "where": "crates/reify-types/src/ty.rs:41-43",
+      "how": "Canonical definition of which types are numeric: `matches!(self, Type::Int | Type::Real | Type::Scalar { .. })`. Used in step-16 to fix the classifier's ValueRef arm to be consistent with the type system, replacing the manual match that incorrectly included Type::String."
     }
-  ]
+  ],
+  "_schema_version": 1
 }
