@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::dimension::DimensionVector;
+use crate::expr::CompiledExpr;
 use crate::hash::ContentHash;
 use crate::identity::ValueCellId;
 use crate::persistent::PersistentMap;
@@ -24,6 +25,12 @@ pub enum Value {
     Map(BTreeMap<Value, Value>),
     /// Optional value: Some(value) or None.
     Option(Option<Box<Value>>),
+    /// Lambda closure: captures environment values and body expression.
+    Lambda {
+        params: Vec<String>,
+        body: Box<CompiledExpr>,
+        captures: ValueMap,
+    },
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -136,6 +143,19 @@ impl Value {
                 None => ContentHash::of(&[11, 0]),
                 Some(v) => ContentHash::of(&[11, 1]).combine(v.content_hash()),
             },
+            Value::Lambda { params, body, captures } => {
+                let mut h = ContentHash::of(&[12]);
+                h = h.combine(ContentHash::of(&(params.len() as u64).to_le_bytes()));
+                for p in params {
+                    h = h.combine(ContentHash::of_str(p));
+                }
+                h = h.combine(body.content_hash);
+                for (id, val) in captures.iter() {
+                    h = h.combine(ContentHash::of_str(&format!("{}", id)));
+                    h = h.combine(val.content_hash());
+                }
+                h
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -158,6 +178,22 @@ impl PartialEq for Value {
             (Value::Set(a), Value::Set(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => a == b,
             (Value::Option(a), Value::Option(b)) => a == b,
+            (
+                Value::Lambda { params: ap, body: ab, captures: ac },
+                Value::Lambda { params: bp, body: bb, captures: bc },
+            ) => {
+                ap == bp && ab.content_hash == bb.content_hash && {
+                    // Compare captures by iterating sorted
+                    let mut a_caps: Vec<_> = ac.iter().collect();
+                    let mut b_caps: Vec<_> = bc.iter().collect();
+                    a_caps.sort_by_key(|(id, _)| format!("{}", id));
+                    b_caps.sort_by_key(|(id, _)| format!("{}", id));
+                    a_caps.len() == b_caps.len()
+                        && a_caps.iter().zip(b_caps.iter()).all(|((aid, av), (bid, bv))| {
+                            format!("{}", aid) == format!("{}", bid) && av == bv
+                        })
+                }
+            }
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -177,7 +213,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Lambda=11
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -191,6 +227,7 @@ impl Ord for Value {
                 Value::Set(_) => 8,
                 Value::Map(_) => 9,
                 Value::Option(_) => 10,
+                Value::Lambda { .. } => 11,
             }
         }
 
@@ -225,6 +262,15 @@ impl Ord for Value {
                 a.iter().cmp(b.iter())
             }
             (Value::Option(a), Value::Option(b)) => a.cmp(b),
+            (
+                Value::Lambda { params: ap, body: ab, .. },
+                Value::Lambda { params: bp, body: bb, .. },
+            ) => {
+                // Compare by params then by body content_hash bits
+                ap.cmp(bp).then_with(|| {
+                    ab.content_hash.0.cmp(&bb.content_hash.0)
+                })
+            }
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -282,6 +328,16 @@ impl std::fmt::Display for Value {
             }
             Value::Option(None) => write!(f, "None"),
             Value::Option(Some(v)) => write!(f, "Some({})", v),
+            Value::Lambda { params, .. } => {
+                write!(f, "|")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", p)?;
+                }
+                write!(f, "| <lambda>")
+            }
             Value::Undef => write!(f, "undef"),
         }
     }

@@ -25,6 +25,7 @@ module.exports = grammar({
     [$.minimize_declaration],
     [$.maximize_declaration],
     [$.sub_declaration],
+    [$.port_declaration],
   ],
 
   rules: {
@@ -183,6 +184,7 @@ module.exports = grammar({
       $.minimize_declaration,
       $.maximize_declaration,
       $.guarded_block,
+      $.port_declaration,
     ),
 
     // ── Where clause (guard) ────────────────────────────────
@@ -257,6 +259,43 @@ module.exports = grammar({
       optional($.named_argument_list),
       ')',
       optional(field('guard', $.where_clause)),
+    ),
+
+    // ── Port ─────────────────────────────────────────────────
+    port_declaration: $ => seq(
+      'port',
+      field('name', $.identifier),
+      ':',
+      optional(field('direction', $.port_direction_keyword)),
+      field('type', $.identifier),
+      optional(field('body', $.port_body)),
+      optional(field('guard', $.where_clause)),
+    ),
+
+    port_direction_keyword: $ => choice('in', 'out', 'bidi'),
+
+    port_body: $ => seq(
+      '{',
+      repeat(choice(
+        $.param_declaration,
+        $.let_declaration,
+        $.constraint_declaration,
+        $.port_direction_setting,
+        $.port_frame_setting,
+      )),
+      '}',
+    ),
+
+    port_direction_setting: $ => seq(
+      'direction',
+      '=',
+      field('value', $.port_direction_keyword),
+    ),
+
+    port_frame_setting: $ => seq(
+      'frame',
+      '=',
+      field('value', $._expression),
     ),
 
     named_argument_list: $ => seq(

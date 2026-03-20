@@ -14,7 +14,7 @@ pub fn literal(v: Value) -> CompiledExpr {
         Value::Scalar { dimension, .. } => Type::Scalar {
             dimension: *dimension,
         },
-        Value::Enum { .. } | Value::List(_) | Value::Set(_) | Value::Map(_) | Value::Option(_) => {
+        Value::Enum { .. } | Value::List(_) | Value::Set(_) | Value::Map(_) | Value::Option(_) | Value::Lambda { .. } => {
             panic!("literal() not yet implemented for M5 type: {:?}. Use CompiledExpr::literal(value, type) directly.", v)
         }
         Value::Undef => Type::Bool, // arbitrary for undef
@@ -354,6 +354,7 @@ impl TopologyTemplateBuilder {
             constraints: self.constraints,
             realizations: self.realizations,
             sub_components: self.sub_components,
+            ports: Vec::new(),
             guarded_groups: self.guarded_groups,
             structure_controlling: self.structure_controlling,
             objective: self.objective,

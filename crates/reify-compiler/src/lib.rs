@@ -113,11 +113,23 @@ pub struct TopologyTemplate {
     pub constraints: Vec<CompiledConstraint>,
     pub realizations: Vec<RealizationDecl>,
     pub sub_components: Vec<SubComponentDecl>,
+    pub ports: Vec<CompiledPort>,
     pub guarded_groups: Vec<CompiledGuardedGroup>,
     /// ValueCellIds whose boolean value controls topology (guard cells).
     pub structure_controlling: HashSet<ValueCellId>,
     pub objective: Option<OptimizationObjective>,
     pub content_hash: ContentHash,
+}
+
+/// A compiled port declaration — compiled from a PortDecl.
+#[derive(Debug, Clone)]
+pub struct CompiledPort {
+    pub name: String,
+    pub direction: reify_types::PortDirection,
+    pub type_name: String,
+    pub members: Vec<ValueCellDecl>,
+    pub constraints: Vec<CompiledConstraint>,
+    pub frame_expr: Option<CompiledExpr>,
 }
 
 /// A sub-component declaration — compiled from a SubDecl.
@@ -499,6 +511,8 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 struct CompilationScope {
     entity_name: String,
     names: HashMap<String, (ValueCellId, Type, Option<ValueCellId>)>,
+    /// Names of ports declared in this structure, for member access disambiguation.
+    port_names: HashSet<String>,
 }
 
 impl CompilationScope {
@@ -506,6 +520,7 @@ impl CompilationScope {
         CompilationScope {
             entity_name: entity_name.to_string(),
             names: HashMap::new(),
+            port_names: HashSet::new(),
         }
     }
 
@@ -770,12 +785,37 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::MemberAccess { object, member } => {
-            // For M1, compile the object expression but emit a diagnostic
+            // Check if this is a port member access (port_name.member_name)
+            if let reify_syntax::ExprKind::Ident(name) = &object.kind
+                && scope.port_names.contains(name.as_str()) {
+                    let composite_key = format!("{}.{}", name, member);
+                    if let Some((id, ty)) = scope.resolve(&composite_key) {
+                        let id = id.clone();
+                        let ty = ty.clone();
+                        let content_hash = ContentHash::of_str(&format!("ref:{}", composite_key));
+                        return CompiledExpr {
+                            kind: CompiledExprKind::ValueRef(id),
+                            result_type: ty,
+                            content_hash,
+                        };
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "port '{}' has no member '{}'",
+                                name, member
+                            ))
+                            .with_label(DiagnosticLabel::new(expr.span, "unknown port member")),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Real);
+                    }
+                }
+
+            // For non-port member access, compile the object expression but emit a diagnostic
             // since we don't yet support member access fully.
             let _compiled_obj = compile_expr_guarded(object, scope, enum_defs, functions, diagnostics, current_guard);
             diagnostics.push(
                 Diagnostic::error(format!("member access not yet supported: .{}", member))
-                    .with_label(DiagnosticLabel::new(expr.span, "unsupported in M1")),
+                    .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
             );
             CompiledExpr::literal(Value::Undef, Type::Real)
         }
@@ -1254,6 +1294,9 @@ fn compile_structure(
     let mut value_cells = Vec::new();
     let mut constraints = Vec::new();
     let mut sub_components = Vec::new();
+    let mut ports: Vec<CompiledPort> = Vec::new();
+    let mut port_names: HashMap<String, SourceSpan> = HashMap::new();
+    let mut duplicate_port_names: HashSet<String> = HashSet::new();
     let mut guarded_groups: Vec<CompiledGuardedGroup> = Vec::new();
     let mut structure_controlling: HashSet<ValueCellId> = HashSet::new();
     let mut objective: Option<OptimizationObjective> = None;
@@ -1303,6 +1346,50 @@ fn compile_structure(
             reify_syntax::MemberDecl::GuardedGroup(g) => {
                 register_guarded_names(&g.members, &mut scope, diagnostics);
                 register_guarded_names(&g.else_members, &mut scope, diagnostics);
+            }
+            reify_syntax::MemberDecl::Port(port_decl) => {
+                if let Some(first_span) = port_names.get(&port_decl.name) {
+                    // Duplicate port name — emit error and skip registration
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate port name '{}'",
+                            port_decl.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            port_decl.span,
+                            "duplicate defined here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            *first_span,
+                            "first defined here",
+                        )),
+                    );
+                    duplicate_port_names.insert(port_decl.name.clone());
+                    continue;
+                }
+                port_names.insert(port_decl.name.clone(), port_decl.span);
+                scope.port_names.insert(port_decl.name.clone());
+                // Register port body members with composite names: port_name.member_name
+                for port_member in &port_decl.members {
+                    match port_member {
+                        reify_syntax::MemberDecl::Param(param) => {
+                            let composite_name = format!("{}.{}", port_decl.name, param.name);
+                            let ty = if let Some(type_expr) = &param.type_expr {
+                                resolve_type_name(&type_expr.name).unwrap_or(Type::Real)
+                            } else {
+                                Type::Real
+                            };
+                            let id = ValueCellId::new(entity_name, &composite_name);
+                            scope.names.insert(composite_name, (id, ty, None));
+                        }
+                        reify_syntax::MemberDecl::Let(let_decl) => {
+                            let composite_name = format!("{}.{}", port_decl.name, let_decl.name);
+                            let id = ValueCellId::new(entity_name, &composite_name);
+                            scope.names.insert(composite_name, (id, Type::Real, None));
+                        }
+                        _ => {}
+                    }
+                }
             }
             _ => {}
         }
@@ -1513,6 +1600,125 @@ fn compile_structure(
             reify_syntax::MemberDecl::AssociatedType(_) => {
                 // Associated type compilation deferred to a later milestone.
             }
+            reify_syntax::MemberDecl::Port(port_decl) => {
+                // Skip duplicate port names (already reported in first pass).
+                // The first occurrence is compiled; subsequent duplicates are skipped.
+                if duplicate_port_names.contains(&port_decl.name)
+                    && !port_names.get(&port_decl.name).is_some_and(|&span| span == port_decl.span)
+                {
+                    continue;
+                }
+                let direction = port_decl.direction.unwrap_or(reify_types::PortDirection::Bidi);
+
+                // Verify port type_name exists in the trait registry
+                if !trait_registry.contains_key(&port_decl.type_name) {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "unknown port type '{}' — no trait with this name found in current module",
+                            port_decl.type_name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            port_decl.span,
+                            "unknown port type",
+                        )),
+                    );
+                }
+
+                let mut port_members = Vec::new();
+                let mut port_constraints = Vec::new();
+
+                for port_member in &port_decl.members {
+                    match port_member {
+                        reify_syntax::MemberDecl::Param(param) => {
+                            let composite_name = format!("{}.{}", port_decl.name, param.name);
+                            let id = ValueCellId::new(entity_name, &composite_name);
+                            let cell_type = scope
+                                .resolve(&composite_name)
+                                .map(|(_, ty)| ty.clone())
+                                .unwrap_or(Type::Real);
+
+                            let is_auto = matches!(
+                                param.default.as_ref(),
+                                Some(reify_syntax::Expr { kind: reify_syntax::ExprKind::Auto, .. })
+                            );
+
+                            let decl = if is_auto {
+                                ValueCellDecl {
+                                    id,
+                                    kind: ValueCellKind::Auto,
+                                    visibility: Visibility::Public,
+                                    cell_type,
+                                    default_expr: None,
+                                    span: param.span,
+                                }
+                            } else {
+                                let default_expr = param
+                                    .default
+                                    .as_ref()
+                                    .map(|expr| compile_expr(expr, &scope, enum_defs, functions, diagnostics));
+
+                                ValueCellDecl {
+                                    id,
+                                    kind: ValueCellKind::Param,
+                                    visibility: Visibility::Public,
+                                    cell_type,
+                                    default_expr,
+                                    span: param.span,
+                                }
+                            };
+                            port_members.push(decl);
+                        }
+                        reify_syntax::MemberDecl::Let(let_decl) => {
+                            let composite_name = format!("{}.{}", port_decl.name, let_decl.name);
+                            let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
+                            let cell_type = compiled_expr.result_type.clone();
+                            let id = ValueCellId::new(entity_name, &composite_name);
+
+                            scope.names.insert(composite_name, (id.clone(), cell_type.clone(), None));
+
+                            let visibility = if let_decl.is_pub {
+                                Visibility::Public
+                            } else {
+                                Visibility::Private
+                            };
+
+                            port_members.push(ValueCellDecl {
+                                id,
+                                kind: ValueCellKind::Let,
+                                visibility,
+                                cell_type,
+                                default_expr: Some(compiled_expr),
+                                span: let_decl.span,
+                            });
+                        }
+                        reify_syntax::MemberDecl::Constraint(constraint) => {
+                            let compiled_expr = compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
+                            let id = ConstraintNodeId::new(entity_name, constraint_index);
+                            port_constraints.push(CompiledConstraint {
+                                id,
+                                label: constraint.label.clone(),
+                                expr: compiled_expr,
+                                span: constraint.span,
+                            });
+                            constraint_index += 1;
+                        }
+                        _ => {}
+                    }
+                }
+
+                let frame_expr = port_decl.frame_expr.as_ref().map(|expr| {
+                    compile_expr(expr, &scope, enum_defs, functions, diagnostics)
+                });
+
+                ports.push(CompiledPort {
+                    name: port_decl.name.clone(),
+                    direction,
+                    type_name: port_decl.type_name.clone(),
+                    members: port_members,
+                    constraints: port_constraints,
+                    frame_expr,
+                });
+            }
         }
     }
 
@@ -1571,11 +1777,32 @@ fn compile_structure(
                 .chain(g.else_constraints.iter().map(|c| c.expr.content_hash))
         });
 
+        // Port member hashes (including identity fields for incremental invalidation)
+        let port_hashes = ports.iter().flat_map(|p| {
+            // Port identity fields: name, direction, type_name
+            std::iter::once(ContentHash::of_str(&p.name))
+            .chain(std::iter::once(ContentHash::of(&[p.direction as u8])))
+            .chain(std::iter::once(ContentHash::of_str(&p.type_name)))
+            // Port member default_expr hashes
+            .chain(p.members.iter().map(|m| {
+                m.default_expr
+                    .as_ref()
+                    .map(|e| e.content_hash)
+                    .unwrap_or(ContentHash(0))
+            }))
+            .chain(p.constraints.iter().map(|c| c.expr.content_hash))
+            // Frame expression hash
+            .chain(std::iter::once(
+                p.frame_expr.as_ref().map(|e| e.content_hash).unwrap_or(ContentHash(0))
+            ))
+        });
+
         let all_hashes = std::iter::once(name_hash)
             .chain(vc_hashes)
             .chain(constraint_hashes)
             .chain(sub_hashes)
-            .chain(guard_hashes);
+            .chain(guard_hashes)
+            .chain(port_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -1743,6 +1970,7 @@ fn compile_structure(
         constraints,
         realizations,
         sub_components,
+        ports,
         guarded_groups,
         structure_controlling,
         objective,
@@ -1786,6 +2014,12 @@ fn collect_value_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
         CompiledExprKind::UserFunctionCall { args, .. } => {
             for arg in args {
                 collect_value_refs_inner(arg, refs);
+            }
+        }
+        CompiledExprKind::Lambda { body, captures, .. } => {
+            collect_value_refs_inner(body, refs);
+            for cap in captures {
+                refs.push(cap.clone());
             }
         }
         CompiledExprKind::Literal(_) => {}

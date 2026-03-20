@@ -1,6 +1,6 @@
 mod ts_parser;
 
-use reify_types::{ContentHash, SourceSpan};
+use reify_types::{ContentHash, PortDirection, SourceSpan};
 
 /// A parsed module — the output of the parser.
 #[derive(Debug, Clone)]
@@ -44,6 +44,7 @@ pub enum MemberDecl {
     Maximize(MaximizeDecl),
     GuardedGroup(GuardedGroupDecl),
     AssociatedType(AssociatedTypeDecl),
+    Port(PortDecl),
 }
 
 /// `where condition { ...members... } else { ...members... }`
@@ -121,6 +122,18 @@ pub struct MinimizeDecl {
 pub struct MaximizeDecl {
     pub expr: Expr,
     pub where_clause: Option<WhereClause>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// `port mount : in MechanicalPort { direction = out  param d : Length = 5mm }`
+#[derive(Debug, Clone)]
+pub struct PortDecl {
+    pub name: String,
+    pub direction: Option<PortDirection>,
+    pub type_name: String,
+    pub members: Vec<MemberDecl>,
+    pub frame_expr: Option<Expr>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
