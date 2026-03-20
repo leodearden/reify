@@ -216,6 +216,31 @@ impl<'a> Lowering<'a> {
         members
     }
 
+    fn lower_associated_type(&self, node: tree_sitter::Node) -> Option<AssociatedTypeDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let default_type = node.child_by_field_name("default").map(|t| {
+            // default is a type_expr which wraps an identifier
+            let ident = if t.kind() == "type_expr" {
+                t.child(0).unwrap_or(t)
+            } else {
+                t
+            };
+            TypeExpr {
+                name: self.node_text(ident).to_string(),
+                span: self.span(ident),
+            }
+        });
+
+        Some(AssociatedTypeDecl {
+            name,
+            default_type,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
     /// Lower a single member node (used by both lower_structure and lower_guarded_block).
     fn lower_member(&mut self, child: tree_sitter::Node) -> Option<MemberDecl> {
         match child.kind() {
@@ -297,8 +322,7 @@ impl<'a> Lowering<'a> {
                 }
             }
             "associated_type" => {
-                // Stub: associated type lowering not yet implemented
-                None
+                self.lower_associated_type(child).map(MemberDecl::AssociatedType)
             }
             "ERROR" => {
                 self.errors.push(ParseError {
