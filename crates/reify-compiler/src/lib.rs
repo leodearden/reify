@@ -2368,7 +2368,7 @@ fn compile_entity(
     }
 
     // Convert parsed type parameters to compiled TypeParam structs
-    let type_params = convert_type_params(&structure.type_params);
+    let type_params = convert_type_params(structure.type_params);
 
     let trait_bounds: Vec<String> = structure
         .trait_bounds
