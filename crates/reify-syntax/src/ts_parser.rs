@@ -152,7 +152,7 @@ impl<'a> Lowering<'a> {
             let alias_name = self.node_text(alias).to_string();
             // Check if the last segment looks like an entity (starts with uppercase)
             if segments.len() >= 2
-                && segments.last().map_or(false, |s| {
+                && segments.last().is_some_and(|s| {
                     s.starts_with(|c: char| c.is_uppercase())
                 })
             {
@@ -174,7 +174,7 @@ impl<'a> Lowering<'a> {
         } else {
             // No items, no alias — check if last segment is an entity (uppercase)
             if segments.len() >= 2
-                && segments.last().map_or(false, |s| {
+                && segments.last().is_some_and(|s| {
                     s.starts_with(|c: char| c.is_uppercase())
                 })
             {
