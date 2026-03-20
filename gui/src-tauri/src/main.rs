@@ -184,9 +184,9 @@ fn main() {
             if let Some(ref file_path) = initial_file {
                 if let Some(parent) = file_path.parent() {
                     let app_handle = app.handle().clone();
-                    let watched_file = file_path.clone();
+                    let target = Some(std::path::PathBuf::from(file_path.file_name().unwrap()));
 
-                    match FileWatcher::new(parent, None, move |changed_path| {
+                    match FileWatcher::new(parent, target, move |changed_path| {
                         // Read the changed file and update the engine
                         if let Ok(content) = std::fs::read_to_string(&changed_path) {
                             let state: tauri::State<'_, AppState> = app_handle.state();
@@ -222,7 +222,7 @@ fn main() {
                             app.manage(watcher);
                             eprintln!(
                                 "Watching {} for changes",
-                                watched_file.display()
+                                file_path.display()
                             );
                         }
                         Err(e) => {
