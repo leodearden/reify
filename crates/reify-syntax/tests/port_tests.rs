@@ -35,3 +35,61 @@ fn parse_minimal_port() {
     assert!(port.members.is_empty());
     assert!(port.frame_expr.is_none());
 }
+
+// ── Step 3: port with direction ────────────────────────────────────
+
+#[test]
+fn parse_port_with_direction() {
+    let (decls, errors) = parse_decls("structure S { port shaft : in RotaryPort }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let port = match &structure.members[0] {
+        MemberDecl::Port(p) => p,
+        other => panic!("expected Port, got {:?}", other),
+    };
+
+    assert_eq!(port.name, "shaft");
+    assert_eq!(port.type_name, "RotaryPort");
+    assert_eq!(port.direction, Some(reify_types::PortDirection::In));
+}
+
+#[test]
+fn parse_port_direction_out() {
+    let (decls, errors) = parse_decls("structure S { port b : out T }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let port = match &structure.members[0] {
+        MemberDecl::Port(p) => p,
+        other => panic!("expected Port, got {:?}", other),
+    };
+
+    assert_eq!(port.direction, Some(reify_types::PortDirection::Out));
+}
+
+#[test]
+fn parse_port_direction_bidi() {
+    let (decls, errors) = parse_decls("structure S { port c : bidi T }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let port = match &structure.members[0] {
+        MemberDecl::Port(p) => p,
+        other => panic!("expected Port, got {:?}", other),
+    };
+
+    assert_eq!(port.direction, Some(reify_types::PortDirection::Bidi));
+}
