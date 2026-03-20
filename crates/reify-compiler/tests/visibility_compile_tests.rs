@@ -49,3 +49,28 @@ fn compile_pub_let_visibility_public() {
     let vol_cell = template.value_cells.iter().find(|vc| vc.id.member == "volume").unwrap();
     assert_eq!(vol_cell.visibility, reify_compiler::Visibility::Public);
 }
+
+// ── Step 11: template visibility ─────────────────────────────────
+
+#[test]
+fn compile_template_visibility() {
+    let source = r#"pub structure Bracket {
+    param w: Scalar = 80mm
+}
+structure Internal {
+    param x: Scalar = 1mm
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("vis_test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile(&parsed);
+
+    assert_eq!(compiled.templates.len(), 2);
+
+    let bracket = &compiled.templates[0];
+    assert_eq!(bracket.name, "Bracket");
+    assert_eq!(bracket.visibility, reify_compiler::Visibility::Public);
+
+    let internal = &compiled.templates[1];
+    assert_eq!(internal.name, "Internal");
+    assert_eq!(internal.visibility, reify_compiler::Visibility::Private);
+}
