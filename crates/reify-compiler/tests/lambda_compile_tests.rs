@@ -1,5 +1,7 @@
 //! Lambda compilation tests.
 
+use reify_types::ValueCellId;
+
 /// step-7: Compile `|x| x * 2` in a let binding — produces CompiledExprKind::Lambda
 /// with 1 param, no captures, and correct body.
 #[test]
@@ -51,6 +53,49 @@ structure S {
                 }
                 other => panic!("expected BinOp(Mul), got {:?}", other),
             }
+        }
+        other => panic!("expected Lambda, got {:?}", other),
+    }
+}
+
+/// step-9: Compile lambda with capture — `let factor = 3; |x| x * factor`
+/// Verify that the lambda's captures vec contains the ValueCellId for 'factor'.
+#[test]
+fn compile_lambda_with_capture() {
+    let source = r#"
+structure S {
+    let factor = 3
+    let f = |x| x * factor
+}
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_capture"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let template = &compiled.templates[0];
+    let f_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "f")
+        .expect("should have 'f' value cell");
+
+    let f_expr = f_cell.default_expr.as_ref().expect("let should have expr");
+    match &f_expr.kind {
+        reify_types::CompiledExprKind::Lambda { captures, .. } => {
+            let factor_id = ValueCellId::new("S", "factor");
+            assert!(
+                captures.contains(&factor_id),
+                "captures should contain 'factor', got: {:?}",
+                captures
+            );
         }
         other => panic!("expected Lambda, got {:?}", other),
     }
