@@ -3,7 +3,7 @@
 use reify_constraints::{DimensionalSolver, SolverRegistry};
 use reify_test_support::*;
 use reify_types::{
-    AutoParam, ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem,
+    AutoParam, BinOp, ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem,
     SolveResult, Type, Value, ValueMap,
 };
 
@@ -385,4 +385,73 @@ fn registry_compat_empty_problem() {
 fn solver_registry_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<SolverRegistry>();
+}
+
+/// Objective spanning independent components must merge them.
+///
+/// Without objective-aware decomposition, params `a` and `b` end up in
+/// separate components because their constraints are independent. The
+/// objective `Minimize(a + b)` references both, so the components must
+/// be merged. With the bug, only the first matching component gets the
+/// objective and the other param is solved purely for feasibility — it
+/// won't be minimized toward its lower bound.
+#[test]
+fn objective_spanning_independent_components_merges_them() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    let a_id = vcid("Part", "a");
+    let b_id = vcid("Part", "b");
+
+    // Independent constraints: a > 5mm, b > 5mm
+    let c1 = gt(value_ref("Part", "a"), literal(mm(5.0)));
+    let c2 = gt(value_ref("Part", "b"), literal(mm(5.0)));
+
+    // Objective: Minimize(a + b) — references BOTH params
+    let obj_expr = binop(
+        BinOp::Add,
+        value_ref("Part", "a"),
+        value_ref("Part", "b"),
+    );
+    let objective = OptimizationObjective::Minimize(obj_expr);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: a_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            },
+            AutoParam {
+                id: b_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            },
+        ],
+        constraints: vec![
+            (cnid("Part", 0), c1),
+            (cnid("Part", 1), c2),
+        ],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+    };
+
+    let result = registry.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let a_val = values.get(&a_id).unwrap().as_f64().unwrap();
+            let b_val = values.get(&b_id).unwrap().as_f64().unwrap();
+            // Both should be minimized toward 5mm (lower feasible bound)
+            assert!(
+                a_val < 0.010,
+                "a should be near 5mm when minimized, got {} m",
+                a_val
+            );
+            assert!(
+                b_val < 0.010,
+                "b should be near 5mm when minimized, got {} m",
+                b_val
+            );
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
 }

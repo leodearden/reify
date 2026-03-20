@@ -2,7 +2,7 @@
 
 use reify_constraints::decompose_into_components;
 use reify_test_support::*;
-use reify_types::{AutoParam, Type};
+use reify_types::{AutoParam, BinOp, Type};
 
 /// 3 constraints each referencing a unique auto param → 3 components.
 #[test]
@@ -134,4 +134,43 @@ fn constraint_without_auto_params_excluded() {
     assert_eq!(components[0].constraints.len(), 1);
     assert_eq!(components[0].auto_params.len(), 1);
     assert!(components[0].auto_params.contains(&a));
+}
+
+/// Objective expression merges independent params into one component.
+///
+/// When the objective references params from multiple independent components,
+/// those components must be merged via the union-find. This test calls
+/// `decompose_into_components` with the new third argument (objective expression).
+///
+/// NOTE: This test is gated behind `cfg(feature = "objective_decompose")` during
+/// step-17 because the function signature doesn't support the third argument yet.
+/// The compilation failure proves the API gap. Step-18 will add the parameter
+/// and remove this gate.
+#[cfg(feature = "objective_decompose")]
+#[test]
+fn objective_merges_independent_params_into_one_component() {
+    let a = vcid("Part", "a");
+    let b = vcid("Part", "b");
+
+    let auto_params = vec![
+        AutoParam { id: a.clone(), param_type: Type::length(), bounds: None },
+        AutoParam { id: b.clone(), param_type: Type::length(), bounds: None },
+    ];
+
+    // Independent constraints (different params)
+    let c1 = gt(value_ref("Part", "a"), literal(mm(1.0)));
+    let c2 = gt(value_ref("Part", "b"), literal(mm(1.0)));
+
+    let constraints = vec![
+        (cnid("Part", 0), c1),
+        (cnid("Part", 1), c2),
+    ];
+
+    // Objective: a + b (references both params)
+    let objective_expr = binop(BinOp::Add, value_ref("Part", "a"), value_ref("Part", "b"));
+
+    // decompose_into_components with objective should merge both into 1 component
+    let components = decompose_into_components(&auto_params, &constraints, Some(&objective_expr));
+    assert_eq!(components.len(), 1, "objective referencing both params should merge into 1 component");
+    assert_eq!(components[0].auto_params.len(), 2);
 }
