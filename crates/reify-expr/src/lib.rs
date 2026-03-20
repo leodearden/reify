@@ -177,7 +177,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 return Value::Undef;
             }
             let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
-            eval_method_call(&obj, method, &evaluated_args)
+            eval_method_call(&obj, method, &evaluated_args, ctx)
         }
     }
 }
@@ -240,7 +240,7 @@ fn eval_user_function_call(
 /// Returns Undef if:
 /// - The value is not a Lambda
 /// - Argument count doesn't match param count
-pub fn apply_lambda(lambda: &Value, args: &[Value]) -> Value {
+pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value {
     match lambda {
         Value::Lambda {
             params,
@@ -256,14 +256,14 @@ pub fn apply_lambda(lambda: &Value, args: &[Value]) -> Value {
                 eval_map.insert(id.clone(), arg.clone());
             }
 
-            eval_expr(body, &EvalContext::simple(&eval_map))
+            eval_expr(body, &ctx.with_scope(&eval_map))
         }
         _ => Value::Undef,
     }
 }
 
 /// Evaluate a method call on a collection value.
-fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
+fn eval_method_call(obj: &Value, method: &str, args: &[Value], ctx: &EvalContext) -> Value {
     match method {
         "count" => match obj {
             Value::List(items) => Value::Int(items.len() as i64),
@@ -367,7 +367,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 Value::List(items) => {
                     let results: Vec<Value> = items
                         .iter()
-                        .map(|item| apply_lambda(lambda, std::slice::from_ref(item)))
+                        .map(|item| apply_lambda(lambda, std::slice::from_ref(item), ctx))
                         .collect();
                     Value::List(results)
                 }
@@ -383,7 +383,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 Value::List(items) => {
                     let mut has_undef = false;
                     for item in items {
-                        match apply_lambda(lambda, std::slice::from_ref(item)) {
+                        match apply_lambda(lambda, std::slice::from_ref(item), ctx) {
                             Value::Bool(false) => return Value::Bool(false),
                             Value::Bool(true) => {}
                             Value::Undef => has_undef = true,
@@ -404,7 +404,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 Value::List(items) => {
                     let mut has_undef = false;
                     for item in items {
-                        match apply_lambda(lambda, std::slice::from_ref(item)) {
+                        match apply_lambda(lambda, std::slice::from_ref(item), ctx) {
                             Value::Bool(true) => return Value::Bool(true),
                             Value::Bool(false) => {}
                             Value::Undef => has_undef = true,
@@ -426,7 +426,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 Value::List(items) => {
                     let mut acc = init.clone();
                     for item in items {
-                        acc = apply_lambda(lambda, &[acc, item.clone()]);
+                        acc = apply_lambda(lambda, &[acc, item.clone()], ctx);
                         if acc.is_undef() {
                             return Value::Undef;
                         }
@@ -461,7 +461,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
             match obj {
                 Value::List(_) => {
                     let results: Vec<Value> = (0..count)
-                        .map(|i| apply_lambda(lambda, &[Value::Int(i)]))
+                        .map(|i| apply_lambda(lambda, &[Value::Int(i)], ctx))
                         .collect();
                     Value::List(results)
                 }
@@ -477,7 +477,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 Value::List(items) => {
                     let mut results = Vec::new();
                     for item in items {
-                        let pred = apply_lambda(lambda, std::slice::from_ref(item));
+                        let pred = apply_lambda(lambda, std::slice::from_ref(item), ctx);
                         match pred {
                             Value::Bool(true) => results.push(item.clone()),
                             Value::Bool(false) => {} // skip

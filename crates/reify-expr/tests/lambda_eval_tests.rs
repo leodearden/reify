@@ -168,7 +168,8 @@ fn apply_lambda_simple() {
 
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let result = apply_lambda(&lambda, &[Value::Int(5)]);
+    let empty = ValueMap::new();
+    let result = apply_lambda(&lambda, &[Value::Int(5)], &EvalContext::simple(&empty));
     assert_eq!(result, Value::Int(10));
 }
 
@@ -193,7 +194,8 @@ fn apply_lambda_with_captures() {
 
     let lambda = make_value_lambda(vec![("x", x_id)], body, captures);
 
-    let result = apply_lambda(&lambda, &[Value::Int(5)]);
+    let empty = ValueMap::new();
+    let result = apply_lambda(&lambda, &[Value::Int(5)], &EvalContext::simple(&empty));
     assert_eq!(result, Value::Int(15));
 }
 
@@ -219,10 +221,11 @@ fn apply_lambda_arity_mismatch_returns_undef() {
         ValueMap::new(),
     );
 
-    let result = apply_lambda(&lambda, &[Value::Int(5)]);
+    let empty = ValueMap::new();
+    let result = apply_lambda(&lambda, &[Value::Int(5)], &EvalContext::simple(&empty));
     assert!(result.is_undef(), "arity mismatch should return Undef");
 
-    let result = apply_lambda(&lambda, &[Value::Int(1), Value::Int(2), Value::Int(3)]);
+    let result = apply_lambda(&lambda, &[Value::Int(1), Value::Int(2), Value::Int(3)], &EvalContext::simple(&empty));
     assert!(result.is_undef(), "too many args should return Undef");
 }
 
@@ -233,10 +236,11 @@ fn apply_lambda_zero_params() {
     let body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
     let lambda = make_value_lambda(vec![], body, ValueMap::new());
 
-    let result = apply_lambda(&lambda, &[]);
+    let empty = ValueMap::new();
+    let result = apply_lambda(&lambda, &[], &EvalContext::simple(&empty));
     assert_eq!(result, Value::Bool(true));
 
-    let result = apply_lambda(&lambda, &[Value::Int(1)]);
+    let result = apply_lambda(&lambda, &[Value::Int(1)], &EvalContext::simple(&empty));
     assert!(result.is_undef(), "0-param lambda with args should return Undef");
 }
 
@@ -376,7 +380,8 @@ structure S {
         other => panic!("expected Value::Lambda, got {:?}", other),
     }
 
-    let result = apply_lambda(&f_val, &[Value::Real(5.0)]);
+    let empty = ValueMap::new();
+    let result = apply_lambda(&f_val, &[Value::Real(5.0)], &EvalContext::simple(&empty));
     match result {
         Value::Real(v) => assert!(
             (v - 15.0).abs() < 1e-12,
@@ -393,7 +398,8 @@ structure S {
 #[test]
 fn apply_non_lambda_returns_undef() {
     use reify_expr::apply_lambda;
-    assert!(apply_lambda(&Value::Int(5), &[]).is_undef());
+    let empty = ValueMap::new();
+    assert!(apply_lambda(&Value::Int(5), &[], &EvalContext::simple(&empty)).is_undef());
 }
 
 /// Nested lambda: eval and apply `|x| |y| x + y`.
@@ -441,7 +447,8 @@ fn nested_lambda_eval_and_apply() {
     let outer_val = eval_expr(&outer_lambda, &EvalContext::simple(&values));
 
     // Apply outer with x=3 → should yield Lambda with x captured as 3
-    let inner_val = apply_lambda(&outer_val, &[Value::Int(3)]);
+    let empty = ValueMap::new();
+    let inner_val = apply_lambda(&outer_val, &[Value::Int(3)], &EvalContext::simple(&empty));
     match &inner_val {
         Value::Lambda { captures, .. } => {
             assert_eq!(captures.get(&x_id), Some(&Value::Int(3)));
@@ -450,6 +457,6 @@ fn nested_lambda_eval_and_apply() {
     }
 
     // Apply inner with y=4 → should return 7
-    let result = apply_lambda(&inner_val, &[Value::Int(4)]);
+    let result = apply_lambda(&inner_val, &[Value::Int(4)], &EvalContext::simple(&empty));
     assert_eq!(result, Value::Int(7));
 }
