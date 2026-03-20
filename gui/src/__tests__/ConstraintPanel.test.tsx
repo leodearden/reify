@@ -1,0 +1,89 @@
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@solidjs/testing-library';
+import { ConstraintPanel } from '../panels/ConstraintPanel';
+import type { ConstraintData, ValueData } from '../types';
+
+function makeConstraint(overrides: Partial<ConstraintData> & { node_id: string }): ConstraintData {
+  return {
+    node_id: overrides.node_id,
+    expression: overrides.expression ?? 'x > 0',
+    status: overrides.status ?? 'satisfied',
+    details: overrides.details ?? null,
+    parameter_ids: overrides.parameter_ids ?? [],
+  };
+}
+
+function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueData {
+  return {
+    cell_id: overrides.cell_id,
+    name: overrides.name ?? 'param',
+    value: overrides.value ?? '10',
+    unit: overrides.unit ?? 'mm',
+    determinacy: overrides.determinacy ?? 'determined',
+    entity_path: overrides.entity_path ?? 'Bracket.param',
+  };
+}
+
+describe('ConstraintPanel basic rendering', () => {
+  it('renders with data-testid="constraint-panel"', () => {
+    render(() => <ConstraintPanel constraints={{}} values={{}} />);
+    expect(screen.getByTestId('constraint-panel')).toBeTruthy();
+  });
+
+  it('renders flat list of constraints', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', expression: 'width > 10' }),
+      n2: makeConstraint({ node_id: 'n2', expression: 'height < 100' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    expect(screen.getByText('width > 10')).toBeTruthy();
+    expect(screen.getByText('height < 100')).toBeTruthy();
+  });
+
+  it('each constraint row shows expression text and status badge', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', expression: 'x > 0', status: 'satisfied' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    expect(screen.getByText('x > 0')).toBeTruthy();
+    const container = screen.getByTestId('constraint-panel');
+    const badge = container.querySelector('[data-status="satisfied"]');
+    expect(badge).toBeTruthy();
+  });
+
+  it('status badges have correct data-status attributes', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', status: 'satisfied', expression: 'a > 0' }),
+      n2: makeConstraint({ node_id: 'n2', status: 'violated', expression: 'b > 0' }),
+      n3: makeConstraint({ node_id: 'n3', status: 'indeterminate', expression: 'c > 0' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const container = screen.getByTestId('constraint-panel');
+    const badges = container.querySelectorAll('[data-status]');
+    const statuses = Array.from(badges).map((b) => b.getAttribute('data-status'));
+    expect(statuses).toContain('satisfied');
+    expect(statuses).toContain('violated');
+    expect(statuses).toContain('indeterminate');
+  });
+
+  it('constraints are sorted: violated first, then indeterminate, then satisfied', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', status: 'satisfied', expression: 'sat-expr' }),
+      n2: makeConstraint({ node_id: 'n2', status: 'violated', expression: 'viol-expr' }),
+      n3: makeConstraint({ node_id: 'n3', status: 'indeterminate', expression: 'indet-expr' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const container = screen.getByTestId('constraint-panel');
+    const rows = container.querySelectorAll('[data-testid^="constraint-row-"]');
+    const expressions = Array.from(rows).map((r) => r.textContent);
+    // violated first, then indeterminate, then satisfied
+    expect(expressions[0]).toContain('viol-expr');
+    expect(expressions[1]).toContain('indet-expr');
+    expect(expressions[2]).toContain('sat-expr');
+  });
+
+  it('shows empty state message when no constraints', () => {
+    render(() => <ConstraintPanel constraints={{}} values={{}} />);
+    expect(screen.getByText('No constraints')).toBeTruthy();
+  });
+});
