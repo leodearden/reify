@@ -1,5 +1,20 @@
 import type { Component } from 'solid-js';
+import styles from './Toolbar.module.css';
 
-export const Toolbar: Component = () => {
-  return <div data-testid="toolbar">Toolbar</div>;
+export interface ToolbarProps {
+  onExport: () => void;
+  onFitToView: () => void;
+}
+
+export const Toolbar: Component<ToolbarProps> = (props) => {
+  return (
+    <div data-testid="toolbar" class={styles.container}>
+      <button class={styles.button} onClick={() => props.onExport()}>
+        Export
+      </button>
+      <button class={styles.button} onClick={() => props.onFitToView()}>
+        Fit to View
+      </button>
+    </div>
+  );
 };
