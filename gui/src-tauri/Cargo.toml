@@ -29,6 +29,7 @@ reify-stdlib.workspace = true
 tauri = { workspace = true, optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
+notify.workspace = true
 
 [dev-dependencies]
 reify-test-support.workspace = true
