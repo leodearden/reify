@@ -1046,6 +1046,7 @@ impl<'a> Lowering<'a> {
         Some(PortRef { expr })
     }
 
+    #[allow(clippy::type_complexity)]
     fn lower_connect_body(&mut self, node: tree_sitter::Node) -> (Vec<(String, Expr)>, Vec<(String, String)>) {
         let mut params = Vec::new();
         let mut port_mappings = Vec::new();
@@ -1056,10 +1057,10 @@ impl<'a> Lowering<'a> {
                 "connect_param_assignment" => {
                     if let Some(name_node) = child.child_by_field_name("name") {
                         let name = self.node_text(name_node).to_string();
-                        if let Some(value_node) = child.child_by_field_name("value") {
-                            if let Some(value) = self.lower_expr(value_node) {
-                                params.push((name, value));
-                            }
+                        if let Some(value_node) = child.child_by_field_name("value")
+                            && let Some(value) = self.lower_expr(value_node)
+                        {
+                            params.push((name, value));
                         }
                     }
                 }
@@ -1084,10 +1085,10 @@ impl<'a> Lowering<'a> {
         let mut elements = Vec::new();
 
         // First element
-        if let Some(first_node) = node.child_by_field_name("first") {
-            if let Some(expr) = self.lower_expr(first_node) {
-                elements.push(expr);
-            }
+        if let Some(first_node) = node.child_by_field_name("first")
+            && let Some(expr) = self.lower_expr(first_node)
+        {
+            elements.push(expr);
         }
 
         // Remaining elements: each expression child after '->'
