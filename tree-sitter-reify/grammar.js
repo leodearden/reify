@@ -34,6 +34,7 @@ module.exports = grammar({
       $.structure_definition,
       $.import_declaration,
       $.enum_declaration,
+      $.function_definition,
     ),
 
     // ── Enum ──────────────────────────────────────────────────
@@ -44,6 +45,65 @@ module.exports = grammar({
       '{',
       optional(seq($.identifier, repeat(seq(',', $.identifier)), optional(','))),
       '}',
+    ),
+
+    // ── Function ─────────────────────────────────────────────
+    function_definition: $ => seq(
+      optional('pub'),
+      'fn',
+      field('name', $.identifier),
+      optional($.type_parameters),
+      '(',
+      optional($.fn_param_list),
+      ')',
+      optional(seq('->', field('return_type', $.type_expr))),
+      $.fn_body,
+    ),
+
+    type_parameters: $ => seq(
+      '<',
+      $.type_param_bound,
+      repeat(seq(',', $.type_param_bound)),
+      optional(','),
+      '>',
+    ),
+
+    type_param_bound: $ => seq(
+      field('name', $.identifier),
+      optional(seq(':', $.trait_bound_list)),
+    ),
+
+    trait_bound_list: $ => seq(
+      $.identifier,
+      repeat(seq('+', $.identifier)),
+    ),
+
+    fn_param_list: $ => seq(
+      $.fn_param,
+      repeat(seq(',', $.fn_param)),
+      optional(','),
+    ),
+
+    fn_param: $ => seq(
+      field('name', $.identifier),
+      ':',
+      field('type', $.type_expr),
+    ),
+
+    fn_body: $ => seq(
+      '{',
+      repeat($.fn_let_binding),
+      field('result', $._expression),
+      '}',
+    ),
+
+    fn_let_binding: $ => seq(
+      'let',
+      field('name', $.identifier),
+      optional(seq(':', field('type', $.type_expr))),
+      '=',
+      field('value', $._expression),
+      ';',
     ),
 
     // ── Imports ──────────────────────────────────────────────

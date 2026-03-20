@@ -17,12 +17,31 @@ pub struct CompiledImport {
     pub span: SourceSpan,
 }
 
+/// A compiled user-defined function.
+#[derive(Debug, Clone)]
+pub struct CompiledFunction {
+    pub name: String,
+    pub is_pub: bool,
+    pub params: Vec<(String, Type)>,
+    pub return_type: Type,
+    pub body: CompiledFnBody,
+    pub content_hash: ContentHash,
+}
+
+/// A compiled function body: let bindings followed by a result expression.
+#[derive(Debug, Clone)]
+pub struct CompiledFnBody {
+    pub let_bindings: Vec<(String, CompiledExpr)>,
+    pub result_expr: CompiledExpr,
+}
+
 /// A compiled module — the output of the compiler.
 #[derive(Debug, Clone)]
 pub struct CompiledModule {
     pub path: reify_types::ModulePath,
     pub imports: Vec<CompiledImport>,
     pub enum_defs: Vec<reify_types::EnumDef>,
+    pub functions: Vec<CompiledFunction>,
     pub templates: Vec<TopologyTemplate>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
@@ -282,6 +301,16 @@ fn resolve_type_name(name: &str) -> Option<Type> {
     }
 }
 
+/// Check if an argument type is compatible with a parameter type.
+/// Exact match always works. Int→Real widening is allowed.
+fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
+    if param_ty == arg_ty {
+        return true;
+    }
+    // Allow Int→Real widening coercion
+    matches!((param_ty, arg_ty), (Type::Real, Type::Int))
+}
+
 // --- BinOp resolution ---
 
 /// Parse a string operator into a `BinOp`.
@@ -401,9 +430,10 @@ fn compile_expr(
     expr: &reify_syntax::Expr,
     scope: &CompilationScope,
     enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledExpr {
-    compile_expr_guarded(expr, scope, enum_defs, diagnostics, None)
+    compile_expr_guarded(expr, scope, enum_defs, functions, diagnostics, None)
 }
 
 /// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
@@ -415,6 +445,7 @@ fn compile_expr_guarded(
     expr: &reify_syntax::Expr,
     scope: &CompilationScope,
     enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     current_guard: Option<&ValueCellId>,
 ) -> CompiledExpr {
@@ -464,8 +495,8 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::BinOp { op, left, right } => {
-            let compiled_left = compile_expr_guarded(left, scope, enum_defs, diagnostics, current_guard);
-            let compiled_right = compile_expr_guarded(right, scope, enum_defs, diagnostics, current_guard);
+            let compiled_left = compile_expr_guarded(left, scope, enum_defs, functions, diagnostics, current_guard);
+            let compiled_right = compile_expr_guarded(right, scope, enum_defs, functions, diagnostics, current_guard);
             match resolve_binop(op) {
                 Some(bin_op) => {
                     let result_type = infer_binop_type(
@@ -528,7 +559,7 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::UnOp { op, operand } => {
-            let compiled_operand = compile_expr_guarded(operand, scope, enum_defs, diagnostics, current_guard);
+            let compiled_operand = compile_expr_guarded(operand, scope, enum_defs, functions, diagnostics, current_guard);
             match resolve_unop(op) {
                 Some(un_op) => {
                     let result_type = match un_op {
@@ -549,49 +580,97 @@ fn compile_expr_guarded(
         reify_syntax::ExprKind::FunctionCall { name, args } => {
             let compiled_args: Vec<CompiledExpr> = args
                 .iter()
-                .map(|arg| compile_expr_guarded(arg, scope, enum_defs, diagnostics, current_guard))
+                .map(|arg| compile_expr_guarded(arg, scope, enum_defs, functions, diagnostics, current_guard))
                 .collect();
 
-            let resolved = ResolvedFunction {
-                name: name.clone(),
-                qualified_name: format!("std::{}", name),
-            };
+            // Check user-defined functions first: match on name, arg count, and arg types
+            let candidates: Vec<&CompiledFunction> = functions
+                .iter()
+                .filter(|f| {
+                    f.name == *name
+                        && f.params.len() == compiled_args.len()
+                        && f.params.iter().zip(compiled_args.iter()).all(
+                            |((_, param_ty), arg)| type_compatible(param_ty, &arg.result_type),
+                        )
+                })
+                .collect();
 
-            // Infer a result type — for geometry functions, use a placeholder
-            let result_type = if is_geometry_function(name) {
-                // Geometry functions produce geometry, not a scalar value.
-                // We use a dimensionless scalar as placeholder.
-                Type::dimensionless_scalar()
-            } else {
-                // For math functions, use the type of the first argument as a heuristic
-                compiled_args
-                    .first()
-                    .map(|a| a.result_type.clone())
-                    .unwrap_or(Type::Real)
-            };
-
-            let content_hash = {
-                let mut h = ContentHash::of(&[4])
-                    .combine(ContentHash::of_str(&resolved.qualified_name));
-                for arg in &compiled_args {
-                    h = h.combine(arg.content_hash);
+            if candidates.len() == 1 {
+                // Exactly one user fn matches — emit UserFunctionCall
+                let matched_fn = candidates[0];
+                let result_type = matched_fn.return_type.clone();
+                let content_hash = {
+                    let mut h = ContentHash::of(&[6])
+                        .combine(ContentHash::of_str(name));
+                    for arg in &compiled_args {
+                        h = h.combine(arg.content_hash);
+                    }
+                    h
+                };
+                CompiledExpr {
+                    kind: CompiledExprKind::UserFunctionCall {
+                        function_name: name.clone(),
+                        args: compiled_args,
+                    },
+                    result_type,
+                    content_hash,
                 }
-                h
-            };
+            } else if candidates.len() > 1 {
+                // Ambiguous overload
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "ambiguous function call: {} candidates match {}({})",
+                        candidates.len(),
+                        name,
+                        compiled_args
+                            .iter()
+                            .map(|a| format!("{}", a.result_type))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "ambiguous call")),
+                );
+                CompiledExpr::literal(Value::Undef, Type::Real)
+            } else {
+                // No user fn matches — fall through to stdlib FunctionCall
+                let resolved = ResolvedFunction {
+                    name: name.clone(),
+                    qualified_name: format!("std::{}", name),
+                };
 
-            CompiledExpr {
-                kind: CompiledExprKind::FunctionCall {
-                    function: resolved,
-                    args: compiled_args,
-                },
-                result_type,
-                content_hash,
+                // Infer a result type — for geometry functions, use a placeholder
+                let result_type = if is_geometry_function(name) {
+                    Type::dimensionless_scalar()
+                } else {
+                    compiled_args
+                        .first()
+                        .map(|a| a.result_type.clone())
+                        .unwrap_or(Type::Real)
+                };
+
+                let content_hash = {
+                    let mut h = ContentHash::of(&[4])
+                        .combine(ContentHash::of_str(&resolved.qualified_name));
+                    for arg in &compiled_args {
+                        h = h.combine(arg.content_hash);
+                    }
+                    h
+                };
+
+                CompiledExpr {
+                    kind: CompiledExprKind::FunctionCall {
+                        function: resolved,
+                        args: compiled_args,
+                    },
+                    result_type,
+                    content_hash,
+                }
             }
         }
         reify_syntax::ExprKind::MemberAccess { object, member } => {
             // For M1, compile the object expression but emit a diagnostic
             // since we don't yet support member access fully.
-            let _compiled_obj = compile_expr_guarded(object, scope, enum_defs, diagnostics, current_guard);
+            let _compiled_obj = compile_expr_guarded(object, scope, enum_defs, functions, diagnostics, current_guard);
             diagnostics.push(
                 Diagnostic::error(format!("member access not yet supported: .{}", member))
                     .with_label(DiagnosticLabel::new(expr.span, "unsupported in M1")),
@@ -656,11 +735,11 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::Match { discriminant, arms } => {
-            let compiled_discriminant = compile_expr_guarded(discriminant, scope, enum_defs, diagnostics, current_guard);
+            let compiled_discriminant = compile_expr_guarded(discriminant, scope, enum_defs, functions, diagnostics, current_guard);
             let compiled_arms: Vec<reify_types::CompiledMatchArm> = arms
                 .iter()
                 .map(|arm| {
-                    let body = compile_expr_guarded(&arm.body, scope, enum_defs, diagnostics, current_guard);
+                    let body = compile_expr_guarded(&arm.body, scope, enum_defs, functions, diagnostics, current_guard);
                     reify_types::CompiledMatchArm {
                         patterns: arm.patterns.clone(),
                         body,
@@ -741,9 +820,9 @@ fn compile_expr_guarded(
             then_branch,
             else_branch,
         } => {
-            let compiled_cond = compile_expr_guarded(condition, scope, enum_defs, diagnostics, current_guard);
-            let compiled_then = compile_expr_guarded(then_branch, scope, enum_defs, diagnostics, current_guard);
-            let compiled_else = compile_expr_guarded(else_branch, scope, enum_defs, diagnostics, current_guard);
+            let compiled_cond = compile_expr_guarded(condition, scope, enum_defs, functions, diagnostics, current_guard);
+            let compiled_then = compile_expr_guarded(then_branch, scope, enum_defs, functions, diagnostics, current_guard);
+            let compiled_else = compile_expr_guarded(else_branch, scope, enum_defs, functions, diagnostics, current_guard);
             let result_type = compiled_then.result_type.clone();
 
             let content_hash = ContentHash::of(&[5])
@@ -771,6 +850,7 @@ pub fn compile(
     parsed: &reify_syntax::ParsedModule,
 ) -> CompiledModule {
     let mut imports = Vec::new();
+    let mut functions = Vec::new();
     let mut templates = Vec::new();
     let mut diagnostics = Vec::new();
 
@@ -800,10 +880,21 @@ pub fn compile(
         );
     }
 
+    // Pre-pass: compile ALL function definitions before processing structures.
+    // This ensures order-independent declarations — a structure declared
+    // before a function can still call that function.
+    for decl in &parsed.declarations {
+        if let reify_syntax::Declaration::Function(fn_def) = decl
+            && let Some(compiled_fn) = compile_function(fn_def, &enum_defs, &functions, &mut diagnostics)
+        {
+            functions.push(compiled_fn);
+        }
+    }
+
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
-                let template = compile_structure(structure, &enum_defs, &mut diagnostics);
+                let template = compile_structure(structure, &enum_defs, &functions, &mut diagnostics);
                 templates.push(template);
             }
             reify_syntax::Declaration::Enum(_) => {
@@ -823,6 +914,37 @@ pub fn compile(
                     ))
                     .with_label(DiagnosticLabel::new(import.span, "import")),
                 );
+            }
+            reify_syntax::Declaration::Function(_) => {
+                // Already compiled in pre-pass above.
+            }
+        }
+    }
+
+    // Check for duplicate function signatures: same name + same param types
+    {
+        let mut seen: HashMap<(String, Vec<Type>), usize> = HashMap::new();
+        for (idx, f) in functions.iter().enumerate() {
+            let key = (
+                f.name.clone(),
+                f.params.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>(),
+            );
+            if let Some(prev_idx) = seen.get(&key) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "duplicate function signature: {}({})",
+                        f.name,
+                        f.params
+                            .iter()
+                            .map(|(_, t)| format!("{}", t))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )),
+                );
+                let _ = prev_idx;
+                let _ = idx;
+            } else {
+                seen.insert(key, idx);
             }
         }
     }
@@ -846,10 +968,14 @@ pub fn compile(
             h
         });
 
+        // Function content hashes
+        let function_hashes = functions.iter().map(|f: &CompiledFunction| f.content_hash);
+
         let all_hashes = std::iter::once(path_hash)
             .chain(template_hashes)
             .chain(import_hashes)
-            .chain(enum_hashes);
+            .chain(enum_hashes)
+            .chain(function_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -858,6 +984,7 @@ pub fn compile(
         path: parsed.path.clone(),
         imports,
         enum_defs,
+        functions,
         templates,
         diagnostics,
         content_hash,
@@ -868,6 +995,7 @@ pub fn compile(
 fn compile_structure(
     structure: &reify_syntax::StructureDef,
     enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> TopologyTemplate {
     let entity_name = &structure.name;
@@ -958,7 +1086,7 @@ fn compile_structure(
                     let default_expr = param
                         .default
                         .as_ref()
-                        .map(|expr| compile_expr(expr, &scope, enum_defs, diagnostics));
+                        .map(|expr| compile_expr(expr, &scope, enum_defs, functions, diagnostics));
 
                     ValueCellDecl {
                         id,
@@ -977,6 +1105,7 @@ fn compile_structure(
                         decl,
                         &mut scope,
                         enum_defs,
+                        functions,
                         diagnostics,
                         &mut guarded_groups,
                         &mut structure_controlling,
@@ -992,7 +1121,7 @@ fn compile_structure(
                     continue;
                 }
 
-                let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, diagnostics);
+                let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 
@@ -1021,6 +1150,7 @@ fn compile_structure(
                         decl,
                         &mut scope,
                         enum_defs,
+                        functions,
                         diagnostics,
                         &mut guarded_groups,
                         &mut structure_controlling,
@@ -1031,7 +1161,7 @@ fn compile_structure(
                 }
             }
             reify_syntax::MemberDecl::Constraint(constraint) => {
-                let compiled_expr = compile_expr(&constraint.expr, &scope, enum_defs, diagnostics);
+                let compiled_expr = compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
 
                 // Check that the constraint expression produces Bool
                 if compiled_expr.result_type != Type::Bool {
@@ -1063,6 +1193,7 @@ fn compile_structure(
                         cc,
                         &mut scope,
                         enum_defs,
+                        functions,
                         diagnostics,
                         &mut guarded_groups,
                         &mut structure_controlling,
@@ -1077,7 +1208,7 @@ fn compile_structure(
                     .args
                     .iter()
                     .map(|(name, expr)| {
-                        (name.clone(), compile_expr(expr, &scope, enum_defs, diagnostics))
+                        (name.clone(), compile_expr(expr, &scope, enum_defs, functions, diagnostics))
                     })
                     .collect();
 
@@ -1091,11 +1222,11 @@ fn compile_structure(
                 });
             }
             reify_syntax::MemberDecl::Minimize(min_decl) => {
-                let compiled_expr = compile_expr(&min_decl.expr, &scope, enum_defs, diagnostics);
+                let compiled_expr = compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
                 objective = Some(OptimizationObjective::Minimize(compiled_expr));
             }
             reify_syntax::MemberDecl::Maximize(max_decl) => {
-                let compiled_expr = compile_expr(&max_decl.expr, &scope, enum_defs, diagnostics);
+                let compiled_expr = compile_expr(&max_decl.expr, &scope, enum_defs, functions, diagnostics);
                 objective = Some(OptimizationObjective::Maximize(compiled_expr));
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
@@ -1105,6 +1236,7 @@ fn compile_structure(
                     None, // no outer guard
                     &mut scope,
                     enum_defs,
+                    functions,
                     diagnostics,
                     &mut guarded_groups,
                     &mut structure_controlling,
@@ -1122,7 +1254,7 @@ fn compile_structure(
     for member in &structure.members {
         if let reify_syntax::MemberDecl::Let(let_decl) = member
             && is_geometry_let(&let_decl.value)
-            && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, enum_defs, diagnostics)
+            && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, enum_defs, functions, diagnostics)
         {
             realizations.push(RealizationDecl {
                 id: RealizationNodeId::new(entity_name, realization_index),
@@ -1382,6 +1514,11 @@ fn collect_value_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
                 collect_value_refs_inner(&arm.body, refs);
             }
         }
+        CompiledExprKind::UserFunctionCall { args, .. } => {
+            for arg in args {
+                collect_value_refs_inner(arg, refs);
+            }
+        }
         CompiledExprKind::Literal(_) => {}
     }
 }
@@ -1434,13 +1571,14 @@ fn compile_block_guard(
     outer_guard: Option<&ValueCellId>,
     scope: &mut CompilationScope,
     enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     guarded_groups: &mut Vec<CompiledGuardedGroup>,
     structure_controlling: &mut HashSet<ValueCellId>,
     guard_index: &mut u32,
     constraint_index: &mut u32,
 ) {
-    let inner_condition = compile_expr(&g.condition, scope, enum_defs, diagnostics);
+    let inner_condition = compile_expr(&g.condition, scope, enum_defs, functions, diagnostics);
 
     // If there's an outer guard, conjoin: guard = outer && inner
     let guard_expr = if let Some(outer_id) = outer_guard {
@@ -1464,6 +1602,7 @@ fn compile_block_guard(
         &guard_cell_id,
         scope,
         enum_defs,
+        functions,
         diagnostics,
         &mut members,
         &mut group_constraints,
@@ -1484,6 +1623,7 @@ fn compile_block_guard(
             &guard_cell_id,
             scope,
             enum_defs,
+            functions,
             diagnostics,
             &mut else_members,
             &mut else_constraints,
@@ -1522,6 +1662,7 @@ fn compile_guarded_members(
     current_guard: &ValueCellId,
     scope: &mut CompilationScope,
     enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     members: &mut Vec<ValueCellDecl>,
     group_constraints: &mut Vec<CompiledConstraint>,
@@ -1558,7 +1699,7 @@ fn compile_guarded_members(
                     let default_expr = param
                         .default
                         .as_ref()
-                        .map(|expr| compile_expr_guarded(expr, scope, enum_defs, diagnostics, guard_ctx));
+                        .map(|expr| compile_expr_guarded(expr, scope, enum_defs, functions, diagnostics, guard_ctx));
                     ValueCellDecl {
                         id,
                         kind: ValueCellKind::Param,
@@ -1574,7 +1715,7 @@ fn compile_guarded_members(
                 if is_geometry_let(&let_decl.value) {
                     continue;
                 }
-                let compiled_expr = compile_expr_guarded(&let_decl.value, scope, enum_defs, diagnostics, guard_ctx);
+                let compiled_expr = compile_expr_guarded(&let_decl.value, scope, enum_defs, functions, diagnostics, guard_ctx);
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 
@@ -1594,7 +1735,7 @@ fn compile_guarded_members(
                 });
             }
             reify_syntax::MemberDecl::Constraint(constraint) => {
-                let compiled_expr = compile_expr_guarded(&constraint.expr, scope, enum_defs, diagnostics, guard_ctx);
+                let compiled_expr = compile_expr_guarded(&constraint.expr, scope, enum_defs, functions, diagnostics, guard_ctx);
                 if compiled_expr.result_type != Type::Bool {
                     diagnostics.push(
                         Diagnostic::warning(format!(
@@ -1624,6 +1765,7 @@ fn compile_guarded_members(
                     Some(current_guard),
                     scope,
                     enum_defs,
+                    functions,
                     diagnostics,
                     guarded_groups,
                     structure_controlling,
@@ -1649,12 +1791,13 @@ fn compile_per_decl_guard(
     member_decl: ValueCellDecl,
     scope: &mut CompilationScope,
     enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     guarded_groups: &mut Vec<CompiledGuardedGroup>,
     structure_controlling: &mut HashSet<ValueCellId>,
     guard_index: &mut u32,
 ) {
-    let guard_expr = compile_expr(&wc.condition, scope, enum_defs, diagnostics);
+    let guard_expr = compile_expr(&wc.condition, scope, enum_defs, functions, diagnostics);
     let guard_cell_id = ValueCellId::new(entity_name, format!("__guard_{}", guard_index));
     *guard_index += 1;
 
@@ -1685,12 +1828,13 @@ fn compile_per_decl_constraint_guard(
     constraint: CompiledConstraint,
     scope: &mut CompilationScope,
     enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     guarded_groups: &mut Vec<CompiledGuardedGroup>,
     structure_controlling: &mut HashSet<ValueCellId>,
     guard_index: &mut u32,
 ) {
-    let guard_expr = compile_expr(&wc.condition, scope, enum_defs, diagnostics);
+    let guard_expr = compile_expr(&wc.condition, scope, enum_defs, functions, diagnostics);
     let guard_cell_id = ValueCellId::new(entity_name, format!("__guard_{}", guard_index));
     *guard_index += 1;
 
@@ -1704,6 +1848,93 @@ fn compile_per_decl_constraint_guard(
         else_constraints: vec![],
         parent_guard: None,
     });
+}
+
+/// Compile a function definition into a CompiledFunction.
+fn compile_function(
+    fn_def: &reify_syntax::FnDef,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledFunction> {
+    // Resolve parameter types
+    let mut params = Vec::new();
+    for p in &fn_def.params {
+        let ty = match resolve_type_name(&p.type_expr.name) {
+            Some(t) => t,
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(format!("unresolved type: {}", p.type_expr.name))
+                        .with_label(DiagnosticLabel::new(p.type_expr.span, "unknown type name")),
+                );
+                Type::Real // fallback
+            }
+        };
+        params.push((p.name.clone(), ty));
+    }
+
+    // Resolve return type
+    let return_type = match &fn_def.return_type {
+        Some(te) => match resolve_type_name(&te.name) {
+            Some(t) => t,
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(format!("unresolved return type: {}", te.name))
+                        .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                );
+                Type::Real
+            }
+        },
+        None => Type::Real, // default return type
+    };
+
+    // Create a scope with function params registered
+    let mut scope = CompilationScope::new(&fn_def.name);
+    for (name, ty) in &params {
+        scope.register(name, ty.clone());
+    }
+
+    // Compile body let bindings
+    let mut compiled_lets = Vec::new();
+    for let_decl in &fn_def.body.let_bindings {
+        let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
+        let let_type = compiled_expr.result_type.clone();
+        // Register the let binding in scope for subsequent bindings
+        scope.register(&let_decl.name, let_type);
+        compiled_lets.push((let_decl.name.clone(), compiled_expr));
+    }
+
+    // Compile result expression
+    let result_expr = compile_expr(&fn_def.body.result_expr, &scope, enum_defs, functions, diagnostics);
+
+    // Compute content hash
+    let content_hash = {
+        let name_hash = ContentHash::of_str(&fn_def.name);
+        let param_hashes = params.iter().map(|(n, t)| {
+            ContentHash::of_str(n).combine(ContentHash::of_str(&format!("{}", t)))
+        });
+        let body_hash = result_expr.content_hash;
+        let let_hashes = compiled_lets.iter().map(|(_, e)| e.content_hash);
+
+        let all_hashes = std::iter::once(name_hash)
+            .chain(param_hashes)
+            .chain(std::iter::once(body_hash))
+            .chain(let_hashes);
+
+        ContentHash::combine_all(all_hashes)
+    };
+
+    Some(CompiledFunction {
+        name: fn_def.name.clone(),
+        is_pub: fn_def.is_pub,
+        params,
+        return_type,
+        body: CompiledFnBody {
+            let_bindings: compiled_lets,
+            result_expr,
+        },
+        content_hash,
+    })
 }
 
 /// Check if a let declaration's value is a geometry-producing function call.
@@ -1724,6 +1955,7 @@ fn compile_geometry_call(
     expr: &reify_syntax::Expr,
     scope: &CompilationScope,
     enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Vec<CompiledGeometryOp>> {
     let (name, args) = match &expr.kind {
@@ -1733,7 +1965,7 @@ fn compile_geometry_call(
 
     let compiled_args: Vec<CompiledExpr> = args
         .iter()
-        .map(|arg| compile_expr(arg, scope, enum_defs, diagnostics))
+        .map(|arg| compile_expr(arg, scope, enum_defs, functions, diagnostics))
         .collect();
 
     let named_args = match name {

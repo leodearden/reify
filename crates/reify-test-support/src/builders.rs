@@ -488,6 +488,7 @@ impl CompiledModuleBuilder {
             path: self.path,
             imports: self.imports,
             enum_defs: Vec::new(),
+            functions: Vec::new(),
             templates: self.templates,
             diagnostics: self.diagnostics,
             content_hash,

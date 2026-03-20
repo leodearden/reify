@@ -53,6 +53,11 @@ pub fn collect_value_refs(expr: &CompiledExpr, out: &mut Vec<ValueCellId>) {
                 collect_value_refs(&arm.body, out);
             }
         }
+        CompiledExprKind::UserFunctionCall { args, .. } => {
+            for arg in args {
+                collect_value_refs(arg, out);
+            }
+        }
     }
 }
 

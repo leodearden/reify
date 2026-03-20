@@ -109,6 +109,11 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Enum(decl));
                     }
                 }
+                "function_definition" => {
+                    if let Some(decl) = self.lower_function(child) {
+                        self.declarations.push(Declaration::Function(decl));
+                    }
+                }
                 "ERROR" => {
                     self.errors.push(ParseError {
                         message: format!("syntax error: {}", self.node_text(child)),
@@ -221,6 +226,199 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
+    }
+
+    // ── Function lowering ─────────────────────────────────────
+
+    fn lower_function(&self, node: tree_sitter::Node) -> Option<FnDef> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        // Check for 'pub' keyword
+        let mut is_pub = false;
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if !child.is_named() && self.node_text(child) == "pub" {
+                is_pub = true;
+                break;
+            }
+        }
+
+        // Extract optional type parameters
+        let type_params = {
+            let mut cursor = node.walk();
+            let mut params = Vec::new();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "type_parameters" {
+                    params = self.lower_type_parameters(child);
+                    break;
+                }
+            }
+            params
+        };
+
+        // Extract function params from fn_param_list
+        let params = {
+            let mut cursor = node.walk();
+            let mut params = Vec::new();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "fn_param_list" {
+                    let mut param_cursor = child.walk();
+                    for param_child in child.children(&mut param_cursor) {
+                        if param_child.kind() == "fn_param"
+                            && let Some(p) = self.lower_fn_param(param_child)
+                        {
+                            params.push(p);
+                        }
+                    }
+                    break;
+                }
+            }
+            params
+        };
+
+        // Extract optional return type
+        let return_type = node.child_by_field_name("return_type").map(|t| {
+            let ident = if t.kind() == "type_expr" {
+                t.child(0).unwrap_or(t)
+            } else {
+                t
+            };
+            TypeExpr {
+                name: self.node_text(ident).to_string(),
+                span: self.span(ident),
+            }
+        });
+
+        // Extract fn_body
+        let body = {
+            let mut cursor = node.walk();
+            let mut body = None;
+            for child in node.children(&mut cursor) {
+                if child.kind() == "fn_body" {
+                    body = self.lower_fn_body(child);
+                    break;
+                }
+            }
+            body?
+        };
+
+        Some(FnDef {
+            name,
+            is_pub,
+            type_params,
+            params,
+            return_type,
+            body,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_fn_param(&self, node: tree_sitter::Node) -> Option<FnParam> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let type_node = node.child_by_field_name("type")?;
+        let ident = if type_node.kind() == "type_expr" {
+            type_node.child(0).unwrap_or(type_node)
+        } else {
+            type_node
+        };
+        let type_expr = TypeExpr {
+            name: self.node_text(ident).to_string(),
+            span: self.span(ident),
+        };
+
+        Some(FnParam {
+            name,
+            type_expr,
+            span: self.span(node),
+        })
+    }
+
+    fn lower_fn_body(&self, node: tree_sitter::Node) -> Option<FnBody> {
+        let mut let_bindings = Vec::new();
+
+        // Collect fn_let_binding children
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "fn_let_binding"
+                && let Some(let_decl) = self.lower_fn_let_binding(child)
+            {
+                let_bindings.push(let_decl);
+            }
+        }
+
+        // The result expression is the 'result' field
+        let result_node = node.child_by_field_name("result")?;
+        let result_expr = self.lower_expr(result_node)?;
+
+        Some(FnBody {
+            let_bindings,
+            result_expr,
+        })
+    }
+
+    fn lower_fn_let_binding(&self, node: tree_sitter::Node) -> Option<LetDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let type_expr = node.child_by_field_name("type").map(|t| {
+            let ident = if t.kind() == "type_expr" {
+                t.child(0).unwrap_or(t)
+            } else {
+                t
+            };
+            TypeExpr {
+                name: self.node_text(ident).to_string(),
+                span: self.span(ident),
+            }
+        });
+
+        let value_node = node.child_by_field_name("value")?;
+        let value = self.lower_expr(value_node)?;
+
+        Some(LetDecl {
+            name,
+            type_expr,
+            is_pub: false,
+            value,
+            where_clause: None, // fn let bindings have no where clause
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_type_parameters(&self, node: tree_sitter::Node) -> Vec<TypeParamDecl> {
+        let mut type_params = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "type_param_bound" {
+                let name_node = match child.child_by_field_name("name") {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let name = self.node_text(name_node).to_string();
+
+                // Collect bounds from trait_bound_list
+                let mut bounds = Vec::new();
+                let mut bound_cursor = child.walk();
+                for bound_child in child.children(&mut bound_cursor) {
+                    if bound_child.kind() == "trait_bound_list" {
+                        let mut trait_cursor = bound_child.walk();
+                        for trait_child in bound_child.children(&mut trait_cursor) {
+                            if trait_child.kind() == "identifier" {
+                                bounds.push(self.node_text(trait_child).to_string());
+                            }
+                        }
+                    }
+                }
+
+                type_params.push(TypeParamDecl { name, bounds });
+            }
+        }
+        type_params
     }
 
     /// Lower a single member node (used by both lower_structure and lower_guarded_block).
@@ -1671,5 +1869,100 @@ mod tests {
         assert_eq!(params, 5, "expected 5 params");
         assert_eq!(lets, 2, "expected 2 lets");
         assert_eq!(constraints, 3, "expected 3 constraints");
+    }
+
+    // ── Function definition tests ─────────────────────────────────
+
+    #[test]
+    fn parse_simple_function_definition() {
+        let source = "fn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
+        let module = parse(source, reify_types::ModulePath::single("test_fn"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert_eq!(module.declarations.len(), 1);
+
+        let f = match &module.declarations[0] {
+            Declaration::Function(f) => f,
+            other => panic!("expected Function, got {:?}", other),
+        };
+        assert_eq!(f.name, "area");
+        assert!(!f.is_pub);
+        assert_eq!(f.params.len(), 2);
+        assert_eq!(f.params[0].name, "w");
+        assert_eq!(f.params[0].type_expr.name, "Scalar");
+        assert_eq!(f.params[1].name, "h");
+        assert_eq!(f.params[1].type_expr.name, "Scalar");
+        assert!(f.return_type.is_some());
+        assert_eq!(f.return_type.as_ref().unwrap().name, "Scalar");
+        assert!(f.body.let_bindings.is_empty());
+        assert!(matches!(&f.body.result_expr.kind, ExprKind::BinOp { op, .. } if op == "*"));
+    }
+
+    #[test]
+    fn parse_pub_function_with_conditional() {
+        let source = "pub fn clamp(x: Real, lo: Real, hi: Real) -> Real { if x < lo then lo else if x > hi then hi else x }";
+        let module = parse(source, reify_types::ModulePath::single("test_pub_fn"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert_eq!(module.declarations.len(), 1);
+
+        let f = match &module.declarations[0] {
+            Declaration::Function(f) => f,
+            other => panic!("expected Function, got {:?}", other),
+        };
+        assert!(f.is_pub);
+        assert_eq!(f.name, "clamp");
+        assert_eq!(f.params.len(), 3);
+        assert_eq!(f.params[0].name, "x");
+        assert_eq!(f.params[0].type_expr.name, "Real");
+        assert_eq!(f.params[1].name, "lo");
+        assert_eq!(f.params[2].name, "hi");
+        assert!(f.return_type.is_some());
+        assert_eq!(f.return_type.as_ref().unwrap().name, "Real");
+        assert!(matches!(&f.body.result_expr.kind, ExprKind::Conditional { .. }));
+    }
+
+    #[test]
+    fn parse_function_with_let_bindings() {
+        let source = "fn f(x: Real) -> Real { let y = x * 2; y + 1 }";
+        let module = parse(source, reify_types::ModulePath::single("test_fn_let"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert_eq!(module.declarations.len(), 1);
+
+        let f = match &module.declarations[0] {
+            Declaration::Function(f) => f,
+            other => panic!("expected Function, got {:?}", other),
+        };
+        assert_eq!(f.params.len(), 1);
+        assert_eq!(f.body.let_bindings.len(), 1);
+        assert_eq!(f.body.let_bindings[0].name, "y");
+        assert!(matches!(&f.body.let_bindings[0].value.kind, ExprKind::BinOp { op, .. } if op == "*"));
+        assert!(matches!(&f.body.result_expr.kind, ExprKind::BinOp { op, .. } if op == "+"));
+    }
+
+    #[test]
+    fn parse_function_with_type_parameters() {
+        let source = "fn identity<T>(x: T) -> T { x }";
+        let module = parse(source, reify_types::ModulePath::single("test_fn_tp"));
+        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+        let f = match &module.declarations[0] {
+            Declaration::Function(f) => f,
+            other => panic!("expected Function, got {:?}", other),
+        };
+        assert_eq!(f.type_params.len(), 1);
+        assert_eq!(f.type_params[0].name, "T");
+        assert!(f.type_params[0].bounds.is_empty());
+
+        // Also test with bounds
+        let source2 = "fn add<T: Numeric>(a: T, b: T) -> T { a + b }";
+        let module2 = parse(source2, reify_types::ModulePath::single("test_fn_tp2"));
+        assert!(module2.errors.is_empty(), "parse errors: {:?}", module2.errors);
+
+        let f2 = match &module2.declarations[0] {
+            Declaration::Function(f) => f,
+            other => panic!("expected Function, got {:?}", other),
+        };
+        assert_eq!(f2.type_params.len(), 1);
+        assert_eq!(f2.type_params[0].name, "T");
+        assert_eq!(f2.type_params[0].bounds, vec!["Numeric"]);
     }
 }

@@ -46,6 +46,11 @@ pub enum CompiledExprKind {
         discriminant: Box<CompiledExpr>,
         arms: Vec<CompiledMatchArm>,
     },
+    /// Call to a user-defined function.
+    UserFunctionCall {
+        function_name: String,
+        args: Vec<CompiledExpr>,
+    },
 }
 
 /// A compiled match arm.

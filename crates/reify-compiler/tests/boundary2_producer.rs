@@ -90,6 +90,11 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
                 assert_no_unresolved(&arm.body);
             }
         }
+        CompiledExprKind::UserFunctionCall { args, .. } => {
+            for arg in args {
+                assert_no_unresolved(arg);
+            }
+        }
     }
 }
 
@@ -1170,6 +1175,97 @@ structure S { constraint Direction.In == Direction.In }"#;
     }
 }
 
+// ── User-defined function tests ────────────────────────────
+
+/// Compile a simple function definition.
+#[test]
+fn compile_simple_function() {
+    let source = "fn double(x: Real) -> Real { x + x }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    assert_eq!(compiled.functions.len(), 1, "expected 1 function");
+    let f = &compiled.functions[0];
+    assert_eq!(f.name, "double");
+    assert!(!f.is_pub);
+    assert_eq!(f.params, vec![("x".to_string(), reify_types::Type::Real)]);
+    assert_eq!(f.return_type, reify_types::Type::Real);
+    assert!(f.body.let_bindings.is_empty());
+    assert_eq!(f.body.result_expr.result_type, reify_types::Type::Real);
+}
+
+/// Compile a function with let bindings in body.
+#[test]
+fn compile_function_with_let_bindings() {
+    let source = "fn f(x: Real) -> Real { let y = x + x; let z = y * y; z + 1 }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_lets"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let f = &compiled.functions[0];
+    assert_eq!(f.body.let_bindings.len(), 2);
+    assert_eq!(f.body.let_bindings[0].0, "y");
+    assert_eq!(f.body.let_bindings[1].0, "z");
+    // result_expr should compile without unresolved name errors
+    assert_eq!(f.body.result_expr.result_type, reify_types::Type::Real);
+}
+
+/// Two overloaded functions with the same name but different param types.
+#[test]
+fn compile_overloaded_functions() {
+    let source = "fn convert(x: Real) -> Real { x }\nfn convert(x: Int) -> Int { x }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_overload"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    assert_eq!(compiled.functions.len(), 2);
+    assert_eq!(compiled.functions[0].name, "convert");
+    assert_eq!(compiled.functions[1].name, "convert");
+    assert_eq!(compiled.functions[0].params, vec![("x".to_string(), reify_types::Type::Real)]);
+    assert_eq!(compiled.functions[1].params, vec![("x".to_string(), reify_types::Type::Int)]);
+}
+
+/// Two functions with identical name AND param types should produce a diagnostic.
+#[test]
+fn compile_duplicate_function_signature_error() {
+    let source = "fn f(x: Real) -> Real { x }\nfn f(x: Real) -> Int { x }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_dup"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        !compiled.diagnostics.is_empty(),
+        "expected diagnostics for duplicate function signature"
+    );
+    assert!(
+        compiled.diagnostics.iter().any(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("duplicate") || msg.contains("conflict")
+        }),
+        "diagnostics should mention duplicate, got: {:?}",
+        compiled.diagnostics
+    );
+}
+
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
@@ -1371,4 +1467,219 @@ enum Color { Red, Green, Blue }"#;
         }
         other => panic!("B.z: expected Literal(Enum(Color, Red)), got {:?}", other),
     }
+}
+
+/// Calling a user-defined function from a structure should compile to UserFunctionCall.
+#[test]
+fn compile_user_function_call() {
+    let source = "fn double(x: Real) -> Real { x + x }\nstructure S { let v = double(3) }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_call"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    let v_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "v")
+        .expect("should have 'v' value cell");
+    let v_expr = v_cell.default_expr.as_ref().expect("let should have expr");
+
+    // Should be UserFunctionCall, not stdlib FunctionCall
+    match &v_expr.kind {
+        reify_types::CompiledExprKind::UserFunctionCall { function_name, args } => {
+            assert_eq!(function_name, "double");
+            assert_eq!(args.len(), 1);
+        }
+        other => panic!("expected UserFunctionCall, got {:?}", other),
+    }
+    assert_eq!(v_expr.result_type, reify_types::Type::Real);
+}
+
+/// Overload resolution should pick the correct overload based on argument types.
+#[test]
+fn compile_overload_resolution_picks_correct() {
+    let source = "fn process(x: Real) -> Real { x + 1 }\nfn process(x: Int) -> Int { x }\nstructure S { let a = process(3.14) }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_overload_resolve"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    let a_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "a")
+        .expect("should have 'a' value cell");
+    let a_expr = a_cell.default_expr.as_ref().expect("let should have expr");
+
+    match &a_expr.kind {
+        reify_types::CompiledExprKind::UserFunctionCall { function_name, .. } => {
+            assert_eq!(function_name, "process");
+        }
+        other => panic!("expected UserFunctionCall, got {:?}", other),
+    }
+    // 3.14 is Real, so it matches the Real overload
+    assert_eq!(a_expr.result_type, reify_types::Type::Real);
+}
+
+/// Forward reference: structure calls a function declared AFTER it.
+#[test]
+fn compile_function_forward_reference() {
+    let source = "structure S { let v = double(3) }\nfn double(x: Real) -> Real { x + x }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_fwd"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    let v_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "v")
+        .expect("should have 'v' value cell");
+    let v_expr = v_cell.default_expr.as_ref().expect("let should have expr");
+
+    match &v_expr.kind {
+        reify_types::CompiledExprKind::UserFunctionCall { function_name, .. } => {
+            assert_eq!(function_name, "double");
+        }
+        other => panic!("expected UserFunctionCall, got {:?}", other),
+    }
+}
+
+/// Fn body calling another user-defined function should produce UserFunctionCall.
+#[test]
+fn compile_fn_body_calls_other_user_fn() {
+    let source = "fn double(x: Real) -> Real { x + x }\nfn quadruple(x: Real) -> Real { double(double(x)) }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let compiled = reify_compiler::compile(&parsed);
+
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "no diagnostics expected: {:?}",
+        compiled.diagnostics
+    );
+    assert_eq!(compiled.functions.len(), 2);
+    assert_eq!(compiled.functions[0].name, "double");
+    assert_eq!(compiled.functions[1].name, "quadruple");
+
+    // quadruple's result_expr should be UserFunctionCall { function_name: "double", .. }
+    let q_body = &compiled.functions[1].body;
+    assert!(q_body.let_bindings.is_empty());
+
+    // Outer call: double(double(x))
+    match &q_body.result_expr.kind {
+        reify_types::CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => {
+            assert_eq!(function_name, "double", "outer call should be double");
+            assert_eq!(args.len(), 1);
+            assert_eq!(q_body.result_expr.result_type, reify_types::Type::Real);
+
+            // Inner call: double(x)
+            match &args[0].kind {
+                reify_types::CompiledExprKind::UserFunctionCall {
+                    function_name: inner_name,
+                    args: inner_args,
+                } => {
+                    assert_eq!(inner_name, "double", "inner call should be double");
+                    assert_eq!(inner_args.len(), 1);
+                    assert_eq!(args[0].result_type, reify_types::Type::Real);
+                }
+                other => panic!("expected inner UserFunctionCall, got {:?}", other),
+            }
+        }
+        other => panic!("expected outer UserFunctionCall, got {:?}", other),
+    }
+}
+
+/// Fn body let bindings can call other user-defined functions.
+#[test]
+fn compile_fn_body_calls_user_fn_in_let_binding() {
+    let source =
+        "fn double(x: Real) -> Real { x + x }\nfn calc(x: Real) -> Real { let y = double(x); y + 1 }";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let compiled = reify_compiler::compile(&parsed);
+
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "no diagnostics expected: {:?}",
+        compiled.diagnostics
+    );
+    assert_eq!(compiled.functions.len(), 2);
+    assert_eq!(compiled.functions[1].name, "calc");
+
+    let calc_body = &compiled.functions[1].body;
+    assert_eq!(calc_body.let_bindings.len(), 1);
+
+    // let y = double(x); — should be UserFunctionCall
+    match &calc_body.let_bindings[0].1.kind {
+        reify_types::CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => {
+            assert_eq!(function_name, "double");
+            assert_eq!(args.len(), 1);
+            assert_eq!(
+                calc_body.let_bindings[0].1.result_type,
+                reify_types::Type::Real
+            );
+        }
+        other => panic!(
+            "expected UserFunctionCall in let binding, got {:?}",
+            other
+        ),
+    }
+
+    // result expr: y + 1 — should be BinOp with result_type Real
+    assert_eq!(calc_body.result_expr.result_type, reify_types::Type::Real);
+    match &calc_body.result_expr.kind {
+        reify_types::CompiledExprKind::BinOp { op, .. } => {
+            assert_eq!(*op, reify_types::BinOp::Add);
+        }
+        other => panic!("expected BinOp(+) for result expr, got {:?}", other),
+    }
+}
+
+/// E2E regression: bracket source (no fn declarations) compiles unchanged.
+#[test]
+fn e2e_function_with_structure_unchanged() {
+    let parsed = bracket_parsed_module();
+    let compiled = reify_compiler::compile(&parsed);
+
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "bracket should compile cleanly: {:?}",
+        compiled.diagnostics
+    );
+
+    // Bracket has no function declarations
+    assert!(
+        compiled.functions.is_empty(),
+        "bracket has no fn declarations, functions should be empty"
+    );
+
+    // Existing structure should be unaffected
+    let template = &compiled.templates[0];
+    assert_eq!(template.value_cells.len(), 6, "expected 6 value cells");
+    assert_eq!(template.constraints.len(), 3, "expected 3 constraints");
+    assert_eq!(template.realizations.len(), 1, "expected 1 realization");
 }
