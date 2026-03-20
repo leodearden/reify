@@ -255,3 +255,93 @@ fn build_with_no_realizations_still_exports() {
         "modules with no realizations should still produce geometry output"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Loft end-to-end through compile_geometry_op and Engine::build
+// ---------------------------------------------------------------------------
+
+/// Exercises the full compile -> eval path for Loft.
+/// Creates a module with 3 ops: Sphere(0), Sphere(1), Loft([Step(0), Step(1)]).
+/// Verifies that the Loft operation receives distinct profile handle IDs
+/// (handle from op 0 and handle from op 1), not duplicates.
+#[test]
+fn loft_through_full_eval_pipeline() {
+    use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
+    use reify_types::Type;
+
+    let e = "TestLoft";
+    let mm_literal =
+        |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Sphere (produces handle at step index 0)
+    let sphere_op_0 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(10.0))],
+    };
+
+    // Op 1: Sphere (produces handle at step index 1)
+    let sphere_op_1 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+
+    // Op 2: Loft referencing Step(0) and Step(1) as profiles
+    let loft_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Loft,
+        profiles: vec![GeomRef::Step(0), GeomRef::Step(1)],
+        args: vec![],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op_0, sphere_op_1, loft_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_loft"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine =
+        reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let _result = engine.build(&module, ExportFormat::Step);
+
+    // Inspect the recorded operations
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(ops.len(), 3, "expected 3 geometry operations, got {}", ops.len());
+
+    // Op 0: Sphere → handle 1
+    // Op 1: Sphere → handle 2
+    // Op 2: Loft → should have profiles [handle_1, handle_2]
+    let handle_0 = ops[0].result_handle;
+    let handle_1 = ops[1].result_handle;
+
+    match &ops[2].op {
+        GeometryOp::Loft { profiles } => {
+            assert_eq!(
+                profiles.len(), 2,
+                "Loft should have 2 profiles, got {}",
+                profiles.len()
+            );
+            assert_eq!(
+                profiles[0], handle_0,
+                "Loft profiles[0] should be handle from op 0 ({:?}), got {:?}",
+                handle_0, profiles[0]
+            );
+            assert_eq!(
+                profiles[1], handle_1,
+                "Loft profiles[1] should be handle from op 1 ({:?}), got {:?}",
+                handle_1, profiles[1]
+            );
+            // Verify they're distinct
+            assert_ne!(
+                profiles[0], profiles[1],
+                "Loft profiles should be distinct handles, but both are {:?}",
+                profiles[0]
+            );
+        }
+        other => panic!("expected GeometryOp::Loft at op index 2, got {:?}", other),
+    }
+}
