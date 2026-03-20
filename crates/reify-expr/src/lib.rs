@@ -1424,6 +1424,75 @@ mod tests {
         }
     }
 
+    fn make_factorial_fn() -> CompiledFunction {
+        // fn factorial(n: Int) -> Int {
+        //   if n <= 1 then 1 else n * factorial(n - 1)
+        // }
+        CompiledFunction {
+            name: "factorial".to_string(),
+            is_pub: false,
+            params: vec![("n".to_string(), Type::Int)],
+            return_type: Type::Int,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: CompiledExpr {
+                    content_hash: ContentHash::of(b"factorial_body"),
+                    result_type: Type::Int,
+                    kind: CompiledExprKind::Conditional {
+                        condition: Box::new(CompiledExpr::binop(
+                            BinOp::Le,
+                            vref("factorial", "n", Type::Int),
+                            lit(Value::Int(1), Type::Int),
+                            Type::Bool,
+                        )),
+                        then_branch: Box::new(lit(Value::Int(1), Type::Int)),
+                        else_branch: Box::new(CompiledExpr::binop(
+                            BinOp::Mul,
+                            vref("factorial", "n", Type::Int),
+                            CompiledExpr {
+                                content_hash: ContentHash::of(b"recursive_call"),
+                                result_type: Type::Int,
+                                kind: CompiledExprKind::UserFunctionCall {
+                                    function_name: "factorial".to_string(),
+                                    args: vec![CompiledExpr::binop(
+                                        BinOp::Sub,
+                                        vref("factorial", "n", Type::Int),
+                                        lit(Value::Int(1), Type::Int),
+                                        Type::Int,
+                                    )],
+                                },
+                            },
+                            Type::Int,
+                        )),
+                    },
+                },
+            },
+            content_hash: ContentHash::of(b"factorial"),
+        }
+    }
+
+    fn make_infinite_fn() -> CompiledFunction {
+        // fn infinite(x: Int) -> Int { infinite(x) }
+        CompiledFunction {
+            name: "infinite".to_string(),
+            is_pub: false,
+            params: vec![("x".to_string(), Type::Int)],
+            return_type: Type::Int,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: CompiledExpr {
+                    content_hash: ContentHash::of(b"infinite_body"),
+                    result_type: Type::Int,
+                    kind: CompiledExprKind::UserFunctionCall {
+                        function_name: "infinite".to_string(),
+                        args: vec![vref("infinite", "x", Type::Int)],
+                    },
+                },
+            },
+            content_hash: ContentHash::of(b"infinite"),
+        }
+    }
+
     #[test]
     fn eval_user_fn_with_let_bindings() {
         // fn f(x: Real) -> Real { let y = x + 1; y * 2 }
@@ -1444,6 +1513,210 @@ mod tests {
         match result {
             Value::Real(v) => assert!((v - 10.0).abs() < 1e-12, "expected 10.0, got {}", v),
             other => panic!("expected Real(10.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_user_fn_recursive_factorial() {
+        // factorial(5) = 5 * 4 * 3 * 2 * 1 = 120
+        let factorial_fn = make_factorial_fn();
+        let call_expr = CompiledExpr {
+            content_hash: ContentHash::of(b"call_factorial"),
+            result_type: Type::Int,
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "factorial".to_string(),
+                args: vec![lit(Value::Int(5), Type::Int)],
+            },
+        };
+        let values = ValueMap::new();
+        let functions = [factorial_fn];
+        let ctx = EvalContext::new(&values, &functions);
+        let result = eval_expr(&call_expr, &ctx);
+        match result {
+            Value::Int(120) => {}
+            other => panic!("expected Int(120), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_user_fn_recursion_depth_exceeded() {
+        // infinite(1) should return Undef (hit depth limit), not stack-overflow
+        let infinite_fn = make_infinite_fn();
+        let call_expr = CompiledExpr {
+            content_hash: ContentHash::of(b"call_infinite"),
+            result_type: Type::Int,
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "infinite".to_string(),
+                args: vec![lit(Value::Int(1), Type::Int)],
+            },
+        };
+        let values = ValueMap::new();
+        let functions = [infinite_fn];
+        let ctx = EvalContext::new(&values, &functions);
+        let result = eval_expr(&call_expr, &ctx);
+        assert!(result.is_undef(), "expected Undef for infinite recursion, got {:?}", result);
+    }
+
+    #[test]
+    fn eval_user_fn_undef_arg_propagation() {
+        // double(Undef) should return Undef
+        let double_fn = make_double_fn();
+        let call_expr = CompiledExpr {
+            content_hash: ContentHash::of(b"call_double_undef"),
+            result_type: Type::Real,
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "double".to_string(),
+                args: vec![lit(Value::Undef, Type::Real)],
+            },
+        };
+        let values = ValueMap::new();
+        let functions = [double_fn];
+        let ctx = EvalContext::new(&values, &functions);
+        let result = eval_expr(&call_expr, &ctx);
+        assert!(result.is_undef(), "expected Undef for undef arg, got {:?}", result);
+    }
+
+    #[test]
+    fn eval_user_fn_dimension_args() {
+        // fn area(w: Length, h: Length) -> Area { w * h }
+        let area_fn = CompiledFunction {
+            name: "area".to_string(),
+            is_pub: false,
+            params: vec![
+                ("w".to_string(), Type::length()),
+                ("h".to_string(), Type::length()),
+            ],
+            return_type: Type::Scalar {
+                dimension: DimensionVector::AREA,
+            },
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: CompiledExpr::binop(
+                    BinOp::Mul,
+                    vref("area", "w", Type::length()),
+                    vref("area", "h", Type::length()),
+                    Type::Scalar {
+                        dimension: DimensionVector::AREA,
+                    },
+                ),
+            },
+            content_hash: ContentHash::of(b"area"),
+        };
+        let call_expr = CompiledExpr {
+            content_hash: ContentHash::of(b"call_area"),
+            result_type: Type::Scalar {
+                dimension: DimensionVector::AREA,
+            },
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "area".to_string(),
+                args: vec![
+                    lit(
+                        Value::Scalar {
+                            si_value: 0.08,
+                            dimension: DimensionVector::LENGTH,
+                        },
+                        Type::length(),
+                    ),
+                    lit(
+                        Value::Scalar {
+                            si_value: 0.1,
+                            dimension: DimensionVector::LENGTH,
+                        },
+                        Type::length(),
+                    ),
+                ],
+            },
+        };
+        let values = ValueMap::new();
+        let functions = [area_fn];
+        let ctx = EvalContext::new(&values, &functions);
+        let result = eval_expr(&call_expr, &ctx);
+        match &result {
+            Value::Scalar { si_value, dimension } => {
+                assert!(
+                    (si_value - 0.008).abs() < 1e-12,
+                    "expected 0.008, got {}",
+                    si_value
+                );
+                assert_eq!(*dimension, DimensionVector::AREA);
+            }
+            other => panic!("expected Scalar AREA, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_user_fn_overload_by_arity() {
+        // fn process(x: Real) -> Real { x * 2 }
+        let process1 = CompiledFunction {
+            name: "process".to_string(),
+            is_pub: false,
+            params: vec![("x".to_string(), Type::Real)],
+            return_type: Type::Real,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: CompiledExpr::binop(
+                    BinOp::Mul,
+                    vref("process", "x", Type::Real),
+                    lit(Value::Int(2), Type::Int),
+                    Type::Real,
+                ),
+            },
+            content_hash: ContentHash::of(b"process1"),
+        };
+        // fn process(x: Real, y: Real) -> Real { x + y }
+        let process2 = CompiledFunction {
+            name: "process".to_string(),
+            is_pub: false,
+            params: vec![
+                ("x".to_string(), Type::Real),
+                ("y".to_string(), Type::Real),
+            ],
+            return_type: Type::Real,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: CompiledExpr::binop(
+                    BinOp::Add,
+                    vref("process", "x", Type::Real),
+                    vref("process", "y", Type::Real),
+                    Type::Real,
+                ),
+            },
+            content_hash: ContentHash::of(b"process2"),
+        };
+
+        let functions = [process1, process2];
+        let values = ValueMap::new();
+
+        // Call with 1 arg: process(3.0) → 6.0
+        let call1 = CompiledExpr {
+            content_hash: ContentHash::of(b"call_process1"),
+            result_type: Type::Real,
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "process".to_string(),
+                args: vec![lit(Value::Real(3.0), Type::Real)],
+            },
+        };
+        let ctx = EvalContext::new(&values, &functions);
+        match eval_expr(&call1, &ctx) {
+            Value::Real(v) => assert!((v - 6.0).abs() < 1e-12, "expected 6.0, got {}", v),
+            other => panic!("expected Real(6.0), got {:?}", other),
+        }
+
+        // Call with 2 args: process(3.0, 4.0) → 7.0
+        let call2 = CompiledExpr {
+            content_hash: ContentHash::of(b"call_process2"),
+            result_type: Type::Real,
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "process".to_string(),
+                args: vec![
+                    lit(Value::Real(3.0), Type::Real),
+                    lit(Value::Real(4.0), Type::Real),
+                ],
+            },
+        };
+        match eval_expr(&call2, &ctx) {
+            Value::Real(v) => assert!((v - 7.0).abs() < 1e-12, "expected 7.0, got {}", v),
+            other => panic!("expected Real(7.0), got {:?}", other),
         }
     }
 }
