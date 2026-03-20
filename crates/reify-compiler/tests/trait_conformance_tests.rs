@@ -103,3 +103,32 @@ structure def Bolt : Fastener {
         error_msg
     );
 }
+
+/// Step 7: Type mismatch — member has wrong type.
+#[test]
+fn type_mismatch_error() {
+    let source = r#"
+trait Weighted {
+    param mass : Mass
+}
+
+structure def S : Weighted {
+    param mass : Length = 5mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected error diagnostic for type mismatch");
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("type mismatch"),
+        "error should mention 'type mismatch', got: {}",
+        error_msg
+    );
+}
