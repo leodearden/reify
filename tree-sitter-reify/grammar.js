@@ -331,16 +331,30 @@ module.exports = grammar({
     ),
 
     // ── Sub ─────────────────────────────────────────────────
-    sub_declaration: $ => seq(
-      'sub',
-      field('name', $.identifier),
-      '=',
-      field('structure_name', $.identifier),
-      optional(field('type_args', seq('<', $.type_arg_list, '>'))),
-      '(',
-      optional($.named_argument_list),
-      ')',
-      optional(field('guard', $.where_clause)),
+    sub_declaration: $ => choice(
+      // Instantiation form: sub name = StructName<TypeArgs>(args)
+      seq(
+        'sub',
+        field('name', $.identifier),
+        '=',
+        field('structure_name', $.identifier),
+        optional(field('type_args', seq('<', $.type_arg_list, '>'))),
+        '(',
+        optional($.named_argument_list),
+        ')',
+        optional(field('guard', $.where_clause)),
+      ),
+      // Collection form: sub name : List<StructName>
+      seq(
+        'sub',
+        field('name', $.identifier),
+        ':',
+        'List',
+        '<',
+        field('structure_name', $.identifier),
+        '>',
+        optional(field('guard', $.where_clause)),
+      ),
     ),
 
     // ── Port ─────────────────────────────────────────────────
