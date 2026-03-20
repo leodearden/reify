@@ -61,6 +61,14 @@ pub struct FileData {
     pub content: String,
 }
 
+/// Current phase of the evaluation engine (mirrors frontend EvaluationStatus interface).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvaluationStatus {
+    pub phase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f64>,
+}
+
 /// Format a Value for GUI display, returning (formatted_value, unit_string).
 ///
 /// Examples:
