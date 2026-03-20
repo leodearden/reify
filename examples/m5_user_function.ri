@@ -1,0 +1,8 @@
+fn area(w: Real, h: Real) -> Real { w * h }
+
+structure def Panel {
+    param width : Real = 200
+    param height : Real = 100
+    let surface_area = area(width, height)
+    constraint surface_area > 10000
+}
