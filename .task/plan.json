@@ -22,7 +22,7 @@
     "crates/reify-compiler",
     "crates/reify-expr"
   ],
-  "analysis": "This task adds forall/exists quantifier expressions across the full pipeline: grammar -> parser -> compiler -> evaluator. The pattern closely follows the lambda expression implementation, which already binds a variable in scope and evaluates a body. The quantifier is simpler than lambda because it doesn't produce a closure value — it iterates a collection and evaluates a predicate with the bound variable. The key changes are: (1) grammar.js: add `quantifier_expression` rule with `forall`/`exists` keyword, identifier, `in`, collection expression, `:`, predicate expression; (2) reify-syntax: add `ExprKind::Quantifier` with `QuantifierKind` enum and lowering in ts_parser.rs; (3) reify-types/expr.rs: add `CompiledExprKind::Quantifier` variant with collection and predicate compiled exprs, plus update `walk()`, `collect_value_refs()`, and add a constructor; (4) reify-compiler: compile the quantifier by creating a new scope for the bound variable (like lambda), compiling collection and predicate, and capturing the variable binding; (5) reify-expr: evaluate by iterating the collection, binding each element, evaluating the predicate, with Kleene 3-valued logic and short-circuit behavior. The existing method `all`/`any` on lists already implements the Kleene logic pattern, and `apply_lambda` shows how to bind variables in scope for evaluation — the quantifier eval will follow this same pattern but more directly.",
+  "analysis": "This task adds forall/exists quantifier expressions across the full pipeline: grammar -> parser -> compiler -> evaluator. The pattern closely follows the lambda expression implementation, which already binds a variable in scope and evaluates a body. The quantifier is simpler than lambda because it doesn't produce a closure value \u2014 it iterates a collection and evaluates a predicate with the bound variable. The key changes are: (1) grammar.js: add `quantifier_expression` rule with `forall`/`exists` keyword, identifier, `in`, collection expression, `:`, predicate expression; (2) reify-syntax: add `ExprKind::Quantifier` with `QuantifierKind` enum and lowering in ts_parser.rs; (3) reify-types/expr.rs: add `CompiledExprKind::Quantifier` variant with collection and predicate compiled exprs, plus update `walk()`, `collect_value_refs()`, and add a constructor; (4) reify-compiler: compile the quantifier by creating a new scope for the bound variable (like lambda), compiling collection and predicate, and capturing the variable binding; (5) reify-expr: evaluate by iterating the collection, binding each element, evaluating the predicate, with Kleene 3-valued logic and short-circuit behavior. The existing method `all`/`any` on lists already implements the Kleene logic pattern, and `apply_lambda` shows how to bind variables in scope for evaluation \u2014 the quantifier eval will follow this same pattern but more directly.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -116,6 +116,20 @@
       "description": "Ensure quantifier works end-to-end in constraint context. Fix any issues with the collection type being resolved correctly, member access on bound variable within predicate, and update collect_body_refs in the compiler for the new Quantifier variant.",
       "status": "done",
       "commit": "eda4604"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test `lambda_containing_forall_has_correct_captures` in crates/reify-compiler/tests/quantifier_compile_tests.rs: compile a lambda that wraps a quantifier, e.g. `|items| forall x in items: x > 0`, and assert the lambda's `captures` vec contains only `items`'s ValueCellId and does NOT contain the quantifier's bound `x` variable ID (the `$quant0.S:x` synthetic cell). This exposes the bug in `collect_body_refs_inner` where the Quantifier arm blindly recurses into the predicate without filtering out `variable_id`, causing the quantifier's bound variable to leak into the lambda's capture list.",
+      "status": "done",
+      "commit": "eab39ba"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Fix `collect_body_refs_inner` in crates/reify-compiler/src/lib.rs for the `CompiledExprKind::Quantifier` arm (lines 2561-2564). Instead of blindly recursing into both `collection` and `predicate`, mirror the filtering logic already present in `collect_value_refs_inner` (reify-types/src/expr.rs lines 362-372): recurse into `collection` normally, but collect `predicate` refs into a temporary vec and filter out the bound `variable_id` before appending to `refs`. This prevents the quantifier's bound variable from leaking into lambda capture lists.",
+      "status": "done",
+      "commit": "aace6a7"
     }
   ],
   "design_decisions": [
@@ -146,6 +160,10 @@
     {
       "decision": "Grammar conflict: 'in' keyword clashes with port_direction_keyword",
       "rationale": "The port_direction_keyword already uses 'in' as a keyword. The quantifier uses 'in' in a different syntactic position (after identifier in quantifier context). Tree-sitter can disambiguate these positionally since quantifier_expression starts with 'forall'/'exists' keyword. May need to add quantifier_expression to the conflicts list or use token precedence if conflicts arise."
+    },
+    {
+      "decision": "collect_body_refs_inner must filter quantifier bound variable from predicate refs (same as collect_value_refs_inner)",
+      "rationale": "The compiler has two ref-collection functions: collect_value_refs_inner (in reify-types) and collect_body_refs_inner (in reify-compiler). The former correctly filters out the quantifier's variable_id from predicate refs, but the latter was missing this filter. When a lambda body contains a quantifier, collect_body_refs is used for capture analysis, and the unfiltered bound variable leaks into the captures vec. Both functions must apply the same filtering logic for correctness."
     }
   ],
   "reuse": [
@@ -183,6 +201,14 @@
       "what": "parse_members test helper",
       "where": "crates/reify-syntax/tests/lambda_tests.rs",
       "how": "Reuse the same helper to parse source with a structure wrapper and extract members for assertion."
+    },
+    {
+      "what": "collect_value_refs_inner Quantifier filtering pattern",
+      "where": "crates/reify-types/src/expr.rs lines 362-372",
+      "how": "The fix for collect_body_refs_inner directly mirrors this existing pattern: collect predicate refs into a temp vec, filter out variable_id, then extend the main refs vec. The code structure is identical."
     }
-  ]
+  ],
+  "_schema_version": 1,
+  "_session_id": "63-657c0023",
+  "_created_at": "2026-03-20T22:32:28.564425+00:00"
 }
