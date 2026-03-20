@@ -142,6 +142,20 @@
       "description": "Finalize panels/index.ts barrel export with all four named exports. Run full test suite with 'vitest run' to verify all tests pass.",
       "status": "done",
       "commit": "b105638"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing tests in gui/src/__tests__/PropertyEditor.test.tsx for the prefix-matching boundary bug (review issue: reviewer_robustness/incorrect_boundary_check). Add a new describe block 'PropertyEditor group selection boundary checks' with three tests: (1) 'does not false-positive select group with shared prefix': create groups 'Bracket' (entity_path: 'Bracket.width') and 'BracketMount' (entity_path: 'BracketMount.height'), set selectedEntity='BracketMount.height', assert only the 'BracketMount' group has data-selected attribute and 'Bracket' group does NOT have data-selected. (2) 'does not false-positive force-expand group with shared prefix': same groups, selectedEntity='BracketMount.height', manually collapse 'Bracket' group by clicking its header, assert 'Bracket' group rows are hidden (collapsed) while 'BracketMount' rows remain visible. (3) 'empty-string group name does not match everything': create a value with entity_path='' (no dot, empty group name) and a value with entity_path='Bracket.width', set selectedEntity='', assert only the empty-name group has data-selected, not the 'Bracket' group.",
+      "status": "done",
+      "commit": "4ebbd02"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Fix the prefix-matching boundary bug in PropertyEditor.tsx. In both isGroupCollapsed (line 63) and isGroupSelected (line 70), replace `props.selectedEntity.startsWith(name)` with the exact segment comparison: `props.selectedEntity === name || props.selectedEntity.startsWith(name + '.')`. This ensures 'BracketMount.height'.startsWith('Bracket') no longer falsely matches the 'Bracket' group, and empty-string group names no longer match everything. Run the full test suite to verify all tests pass including the new boundary-check tests.",
+      "status": "done",
+      "commit": "13e5677"
     }
   ],
   "design_decisions": [
@@ -176,6 +190,10 @@
     {
       "decision": "Use data-testid and data-* attributes for test selectors and state assertions",
       "rationale": "The existing test suite uses data-testid for component identification (App.test.tsx). Using data-determinacy and data-status attributes enables both CSS styling and test assertions without coupling to CSS class names."
+    },
+    {
+      "decision": "Use exact segment comparison for group selection matching instead of bare startsWith",
+      "rationale": "Review feedback identified that `selectedEntity.startsWith(name)` is a prefix check, not a segment-boundary check. Groups 'Bracket' and 'BracketMount' share a prefix, causing false positives. The fix uses `selectedEntity === name || selectedEntity.startsWith(name + '.')` to ensure only exact group-name segment matches. This also prevents empty-string group names from matching everything (since ''.startsWith('') is always true)."
     }
   ],
   "reuse": [
@@ -221,5 +239,5 @@
     }
   ],
   "_session_id": "91-6e4256aa",
-  "_created_at": "2026-03-20T22:28:42.007620+00:00"
+  "_created_at": "2026-03-20T22:49:20.683991+00:00"
 }
