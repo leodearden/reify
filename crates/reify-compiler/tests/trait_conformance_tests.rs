@@ -132,3 +132,44 @@ structure def S : Weighted {
         error_msg
     );
 }
+
+/// Step 9: Default merging — trait provides default, structure doesn't override.
+#[test]
+fn default_merging_injects_value_cell() {
+    let source = r#"
+trait HasSize {
+    param size : Length = 10mm
+}
+
+structure def S : HasSize {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    // No error-severity diagnostics expected
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // The template should contain a value cell for 'size' injected from the trait default.
+    let size_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "size");
+    assert!(
+        size_cell.is_some(),
+        "expected 'size' value cell from trait default, got cells: {:?}",
+        template.value_cells.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+    );
+
+    let size_cell = size_cell.unwrap();
+    assert_eq!(size_cell.kind, ValueCellKind::Param);
+    assert_eq!(
+        size_cell.cell_type,
+        Type::Scalar { dimension: DimensionVector::LENGTH }
+    );
+    assert!(size_cell.default_expr.is_some(), "expected default expression for 'size'");
+}
