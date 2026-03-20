@@ -55,7 +55,7 @@ pub fn diff_gui_state(old: &GuiState, new: &GuiState) -> StateDelta {
         .filter(|v| {
             old_values
                 .get(v.cell_id.as_str())
-                .map_or(true, |old_v| *old_v != *v)
+                .is_none_or(|old_v| *old_v != *v)
         })
         .cloned()
         .collect();
@@ -85,7 +85,7 @@ pub fn diff_gui_state(old: &GuiState, new: &GuiState) -> StateDelta {
         .filter(|c| {
             old_constraints
                 .get(c.node_id.as_str())
-                .map_or(true, |old_c| *old_c != *c)
+                .is_none_or(|old_c| *old_c != *c)
         })
         .cloned()
         .collect();
@@ -115,7 +115,7 @@ pub fn diff_gui_state(old: &GuiState, new: &GuiState) -> StateDelta {
         .filter(|m| {
             old_meshes
                 .get(m.entity_path.as_str())
-                .map_or(true, |old_m| *old_m != *m)
+                .is_none_or(|old_m| *old_m != *m)
         })
         .cloned()
         .collect();
