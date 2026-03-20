@@ -245,3 +245,79 @@ fn apply_lambda_zero_params() {
     let result = apply_lambda(&lambda, &[Value::Int(1)]);
     assert!(result.is_undef(), "0-param lambda with args should return Undef");
 }
+
+/// step-25: Value::Lambda content_hash is deterministic and distinct from other variants.
+/// Two identical lambdas produce the same hash; different lambdas produce different hashes.
+#[test]
+fn lambda_content_hash_deterministic_and_distinct() {
+    let body1 = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(ValueCellId::new("$lambda", "x"), Type::Real),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Real,
+    );
+    let body2 = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(ValueCellId::new("$lambda", "x"), Type::Real),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Real,
+    );
+    let body3 = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(ValueCellId::new("$lambda", "x"), Type::Real),
+        CompiledExpr::literal(Value::Int(1), Type::Int),
+        Type::Real,
+    );
+
+    let lambda1 = Value::Lambda {
+        params: vec!["x".to_string()],
+        body: Box::new(body1),
+        captures: ValueMap::new(),
+    };
+    let lambda2 = Value::Lambda {
+        params: vec!["x".to_string()],
+        body: Box::new(body2),
+        captures: ValueMap::new(),
+    };
+    let lambda3 = Value::Lambda {
+        params: vec!["x".to_string()],
+        body: Box::new(body3),
+        captures: ValueMap::new(),
+    };
+
+    // Same lambdas produce same hash
+    assert_eq!(
+        lambda1.content_hash(),
+        lambda2.content_hash(),
+        "identical lambdas should have same hash"
+    );
+
+    // Different lambdas produce different hash
+    assert_ne!(
+        lambda1.content_hash(),
+        lambda3.content_hash(),
+        "different lambdas should have different hash"
+    );
+
+    // Lambda hash differs from other Value variants
+    assert_ne!(lambda1.content_hash(), Value::Undef.content_hash());
+    assert_ne!(lambda1.content_hash(), Value::Int(0).content_hash());
+    assert_ne!(lambda1.content_hash(), Value::Bool(false).content_hash());
+
+    // Different param names produce different hash
+    let lambda_y = Value::Lambda {
+        params: vec!["y".to_string()],
+        body: Box::new(CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(ValueCellId::new("$lambda", "x"), Type::Real),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            Type::Real,
+        )),
+        captures: ValueMap::new(),
+    };
+    assert_ne!(
+        lambda1.content_hash(),
+        lambda_y.content_hash(),
+        "different param names should produce different hash"
+    );
+}
