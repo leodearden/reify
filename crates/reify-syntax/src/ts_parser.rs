@@ -1512,4 +1512,23 @@ mod tests {
         assert_eq!(let_decl.name, "x");
         assert!(matches!(&let_decl.value.kind, ExprKind::ListLiteral(elems) if elems.len() == 3));
     }
+
+    #[test]
+    fn parse_collections_no_regression_on_bracket() {
+        let module = parse_bracket();
+        assert!(module.errors.is_empty(), "expected no errors: {:?}", module.errors);
+        assert_eq!(module.declarations.len(), 1);
+        let structure = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+        assert_eq!(structure.name, "Bracket");
+        assert_eq!(structure.members.len(), 10, "expected 10 members (5 params, 2 lets, 3 constraints)");
+        let params = structure.members.iter().filter(|m| matches!(m, MemberDecl::Param(_))).count();
+        let lets = structure.members.iter().filter(|m| matches!(m, MemberDecl::Let(_))).count();
+        let constraints = structure.members.iter().filter(|m| matches!(m, MemberDecl::Constraint(_))).count();
+        assert_eq!(params, 5, "expected 5 params");
+        assert_eq!(lets, 2, "expected 2 lets");
+        assert_eq!(constraints, 3, "expected 3 constraints");
+    }
 }
