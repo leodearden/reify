@@ -349,3 +349,89 @@ fn eval_method_sum_with_undef_element() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert!(result.is_undef(), ".sum with Undef element should be Undef");
 }
+
+// ─── step-11: MethodCall .contains ───
+
+#[test]
+fn eval_method_contains_list_found() {
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "contains".to_string(),
+        vec![CompiledExpr::literal(Value::Int(2), Type::Int)],
+        Type::Bool,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(true));
+}
+
+#[test]
+fn eval_method_contains_list_not_found() {
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "contains".to_string(),
+        vec![CompiledExpr::literal(Value::Int(5), Type::Int)],
+        Type::Bool,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(false));
+}
+
+#[test]
+fn eval_method_contains_set_found() {
+    let set = CompiledExpr::set_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::Set(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        set,
+        "contains".to_string(),
+        vec![CompiledExpr::literal(Value::Int(2), Type::Int)],
+        Type::Bool,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(true));
+}
+
+#[test]
+fn eval_method_contains_set_not_found() {
+    let set = CompiledExpr::set_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::Set(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        set,
+        "contains".to_string(),
+        vec![CompiledExpr::literal(Value::Int(5), Type::Int)],
+        Type::Bool,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(false));
+}
