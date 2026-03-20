@@ -33,6 +33,7 @@ module.exports = grammar({
 
     _declaration: $ => choice(
       $.structure_definition,
+      $.occurrence_definition,
       $.import_declaration,
       $.enum_declaration,
       $.function_definition,
@@ -167,6 +168,19 @@ module.exports = grammar({
     structure_definition: $ => seq(
       optional('pub'),
       'structure',
+      optional('def'),
+      field('name', $.identifier),
+      optional($.type_parameters),
+      optional(seq(':', $.trait_bound_list)),
+      '{',
+      repeat($._member),
+      '}',
+    ),
+
+    // ── Occurrence ────────────────────────────────────────────
+    occurrence_definition: $ => seq(
+      optional('pub'),
+      'occurrence',
       optional('def'),
       field('name', $.identifier),
       optional($.type_parameters),
