@@ -2126,6 +2126,7 @@ fn compile_per_decl_constraint_guard(
 /// Resolves each trait bound, collects all requirements (including from
 /// refinement chains), and verifies the structure satisfies them.
 /// Injects trait defaults for members not overridden by the structure.
+#[allow(clippy::too_many_arguments)]
 fn check_trait_conformance(
     structure: &reify_syntax::StructureDef,
     trait_registry: &HashMap<String, &CompiledTrait>,
@@ -2229,19 +2230,19 @@ fn check_trait_conformance(
                 }
             }
             RequirementKind::Constraint(label) => {
-                if let Some(label) = label {
-                    if !structure_constraint_labels.contains(label) {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "missing required constraint '{}'",
-                                label
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                structure.span,
-                                "required by trait",
-                            )),
-                        );
-                    }
+                if let Some(label) = label
+                    && !structure_constraint_labels.contains(label)
+                {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "missing required constraint '{}'",
+                            label
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            structure.span,
+                            "required by trait",
+                        )),
+                    );
                 }
             }
             RequirementKind::Sub(structure_name) => {
@@ -2362,6 +2363,7 @@ fn check_trait_conformance(
 }
 
 /// Recursively collect all requirements and defaults from a trait and its refinements.
+#[allow(clippy::too_many_arguments)]
 fn collect_all_requirements(
     trait_name: &str,
     trait_registry: &HashMap<String, &CompiledTrait>,
