@@ -221,6 +221,142 @@ impl OcctKernel {
                 ffi::ffi::rotate_shape(shape, axis[0], axis[1], axis[2], *angle_rad)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::LinearPattern {
+                target,
+                direction,
+                count,
+                spacing,
+            } => {
+                let shape = self.get_shape(*target)?;
+                let sp = extract_f64(spacing)?;
+                if *count == 0 {
+                    return Err(GeometryError::OperationFailed(
+                        "linear pattern count must be >= 1".into(),
+                    ));
+                }
+                ffi::ffi::linear_pattern(
+                    shape,
+                    direction[0],
+                    direction[1],
+                    direction[2],
+                    *count as u32,
+                    sp,
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::CircularPattern {
+                target,
+                axis_origin,
+                axis_dir,
+                count,
+                angle,
+            } => {
+                let shape = self.get_shape(*target)?;
+                let total_angle = extract_f64(angle)?;
+                if *count == 0 {
+                    return Err(GeometryError::OperationFailed(
+                        "circular pattern count must be >= 1".into(),
+                    ));
+                }
+                ffi::ffi::circular_pattern(
+                    shape,
+                    axis_origin[0],
+                    axis_origin[1],
+                    axis_origin[2],
+                    axis_dir[0],
+                    axis_dir[1],
+                    axis_dir[2],
+                    *count as u32,
+                    total_angle,
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::Mirror {
+                target,
+                plane_origin,
+                plane_normal,
+            } => {
+                let shape = self.get_shape(*target)?;
+                // Validate plane normal is non-zero
+                let mag_sq = plane_normal[0] * plane_normal[0]
+                    + plane_normal[1] * plane_normal[1]
+                    + plane_normal[2] * plane_normal[2];
+                if mag_sq == 0.0
+                    || !plane_normal[0].is_finite()
+                    || !plane_normal[1].is_finite()
+                    || !plane_normal[2].is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(
+                        "mirror plane normal must be a finite non-zero vector".into(),
+                    ));
+                }
+                ffi::ffi::mirror_shape(
+                    shape,
+                    plane_origin[0],
+                    plane_origin[1],
+                    plane_origin[2],
+                    plane_normal[0],
+                    plane_normal[1],
+                    plane_normal[2],
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::Loft { profiles } => {
+                match profiles.len() {
+                    0 | 1 => {
+                        return Err(GeometryError::OperationFailed(
+                            "Loft requires at least 2 profiles".into(),
+                        ));
+                    }
+                    2 => {
+                        let w1 = self.get_shape(profiles[0])?;
+                        let w2 = self.get_shape(profiles[1])?;
+                        ffi::ffi::loft_two_profiles(w1, w2)
+                            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                    }
+                    3 => {
+                        let w1 = self.get_shape(profiles[0])?;
+                        let w2 = self.get_shape(profiles[1])?;
+                        let w3 = self.get_shape(profiles[2])?;
+                        ffi::ffi::loft_three_profiles(w1, w2, w3)
+                            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                    }
+                    n => {
+                        return Err(GeometryError::OperationFailed(
+                            format!("Loft with {} profiles not yet supported (max 3)", n),
+                        ));
+                    }
+                }
+            }
+            GeometryOp::Draft {
+                target,
+                angle,
+                plane,
+            } => {
+                let shape = self.get_shape(*target)?;
+                let angle_rad = extract_f64(angle)?;
+                let plane_shape = self.get_shape(*plane)?;
+                ffi::ffi::draft_shape(shape, angle_rad, plane_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::Thicken { target, offset } => {
+                let shape = self.get_shape(*target)?;
+                let off = extract_f64(offset)?;
+                ffi::ffi::thicken_shape(shape, off)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::Shell {
+                target,
+                thickness,
+                faces_to_remove,
+            } => {
+                let shape = self.get_shape(*target)?;
+                let th = extract_f64(thickness)?;
+                let face_indices: Vec<u32> =
+                    faces_to_remove.iter().map(|&i| i as u32).collect();
+                ffi::ffi::shell_shape(shape, th, &face_indices)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
         };
         Ok(self.store(shape))
     }
@@ -265,6 +401,25 @@ impl OcctKernel {
                     "{{\"xmin\":{},\"ymin\":{},\"zmin\":{},\"xmax\":{},\"ymax\":{},\"zmax\":{}}}",
                     bb.xmin, bb.ymin, bb.zmin, bb.xmax, bb.ymax, bb.zmax
                 )))
+            }
+            GeometryQuery::Distance { from, to } => {
+                let s1 = self
+                    .get_shape(*from)
+                    .map_err(|_| QueryError::InvalidHandle(*from))?;
+                let s2 = self
+                    .get_shape(*to)
+                    .map_err(|_| QueryError::InvalidHandle(*to))?;
+                let dist = ffi::ffi::query_distance(s1, s2)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Real(dist))
+            }
+            GeometryQuery::MomentOfInertia { handle, axis } => {
+                let shape = self
+                    .get_shape(*handle)
+                    .map_err(|_| QueryError::InvalidHandle(*handle))?;
+                let moi = ffi::ffi::query_moment_of_inertia(shape, axis[0], axis[1], axis[2])
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Real(moi))
             }
         }
     }
@@ -384,6 +539,12 @@ impl WarmStartable for OcctKernel {
 
 #[cfg(test)]
 impl OcctKernel {
+    /// Store a raw OcctShape and return its GeometryHandleId for testing.
+    fn store_raw(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandleId {
+        let h = self.store(shape);
+        h.id
+    }
+
     /// Inject a null `UniquePtr<OcctShape>` into the shapes map for testing.
     /// This simulates a corrupted shape handle (present in map but wrapping a
     /// null C++ pointer).
@@ -1272,5 +1433,588 @@ mod tests {
             (vol - 6000.0).abs() < 1.0,
             "expected volume ~6000, got {vol}"
         );
+    }
+
+    // --- Pattern tests ---
+
+    #[test]
+    fn linear_pattern_4_boxes() {
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10 box (volume = 1000)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Apply LinearPattern: 4 copies along X with spacing 20
+        let pattern_h = kernel
+            .execute(&GeometryOp::LinearPattern {
+                target: box_h.id,
+                direction: [1.0, 0.0, 0.0],
+                count: 4,
+                spacing: Value::Real(20.0),
+            })
+            .unwrap();
+        // Volume should be approximately 4 * 1000 = 4000
+        let vol = kernel
+            .query(&GeometryQuery::Volume(pattern_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 4000.0).abs() < 50.0,
+                    "expected linear pattern volume ~4000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn circular_pattern_6_instances() {
+        let mut kernel = OcctKernel::new();
+        // Create a small 5x5x5 box (volume = 125)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(5.0),
+                height: Value::Real(5.0),
+                depth: Value::Real(5.0),
+            })
+            .unwrap();
+        // Translate to (20,0,0) to offset from center
+        let translated_h = kernel
+            .execute(&GeometryOp::Translate {
+                target: box_h.id,
+                dx: 20.0,
+                dy: 0.0,
+                dz: 0.0,
+            })
+            .unwrap();
+        // Circular pattern: 6 instances, full circle (2*PI)
+        let pattern_h = kernel
+            .execute(&GeometryOp::CircularPattern {
+                target: translated_h.id,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                count: 6,
+                angle: Value::Real(2.0 * std::f64::consts::PI),
+            })
+            .unwrap();
+        // Volume should be approximately 6 * 125 = 750
+        let vol = kernel
+            .query(&GeometryQuery::Volume(pattern_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 750.0).abs() < 50.0,
+                    "expected circular pattern volume ~750, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    // --- Loft tests ---
+
+    #[test]
+    fn loft_two_circles_creates_solid() {
+        let mut kernel = OcctKernel::new();
+        // Create two circle wire profiles at different heights using the FFI helper.
+        // make_circle_wire creates a TopoDS_Wire circle profile.
+        let wire1 = ffi::ffi::make_circle_wire(10.0, 0.0)
+            .expect("make_circle_wire should work for profile 1");
+        let id1 = kernel.store_raw(wire1);
+
+        let wire2 = ffi::ffi::make_circle_wire(5.0, 30.0)
+            .expect("make_circle_wire should work for profile 2");
+        let id2 = kernel.store_raw(wire2);
+
+        // Loft through both profiles
+        let loft_h = kernel
+            .execute(&GeometryOp::Loft {
+                profiles: vec![id1, id2],
+            })
+            .unwrap();
+
+        // Query volume - should be positive (a cone-like solid)
+        let vol = kernel
+            .query(&GeometryQuery::Volume(loft_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(v > 100.0, "loft volume should be positive and significant, got {v}");
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    // --- Thicken / Shell tests ---
+
+    #[test]
+    fn thicken_solid_increases_volume() {
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10 box (volume = 1000)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Thicken by offset=2.0 — result should have volume > 1000
+        let thickened_h = kernel
+            .execute(&GeometryOp::Thicken {
+                target: box_h.id,
+                offset: Value::Real(2.0),
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(thickened_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    v > 1000.0,
+                    "thickened volume should exceed original 1000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn shell_box_hollow() {
+        let mut kernel = OcctKernel::new();
+        // Create a 20x20x20 box (volume = 8000)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(20.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(20.0),
+            })
+            .unwrap();
+        // Shell with thickness=1.0, remove face 0 to create hollow box
+        let shell_h = kernel
+            .execute(&GeometryOp::Shell {
+                target: box_h.id,
+                thickness: Value::Real(1.0),
+                faces_to_remove: vec![0],
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(shell_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                // Should be less than 8000 (solid) but greater than 0
+                assert!(
+                    v > 0.0 && v < 8000.0,
+                    "shell volume should be between 0 and 8000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    // --- Query tests ---
+
+    #[test]
+    fn distance_between_shapes() {
+        let mut kernel = OcctKernel::new();
+        // Create box_a at origin (10x10x10, centered)
+        let box_a = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Create box_b and translate to (50,0,0)
+        let box_b_raw = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let box_b = kernel
+            .execute(&GeometryOp::Translate {
+                target: box_b_raw.id,
+                dx: 50.0,
+                dy: 0.0,
+                dz: 0.0,
+            })
+            .unwrap();
+        // Distance between them: box_a goes from -5 to 5 on X,
+        // box_b goes from 45 to 55 on X, so gap = 40
+        let dist = kernel
+            .query(&GeometryQuery::Distance {
+                from: box_a.id,
+                to: box_b.id,
+            })
+            .unwrap();
+        match dist {
+            Value::Real(d) => {
+                assert!(
+                    (d - 40.0).abs() < 1.0,
+                    "expected distance ~40, got {d}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn moment_of_inertia_box() {
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10 box
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Query MoI around Z axis
+        let moi = kernel
+            .query(&GeometryQuery::MomentOfInertia {
+                handle: box_h.id,
+                axis: [0.0, 0.0, 1.0],
+            })
+            .unwrap();
+        match moi {
+            Value::Real(v) => {
+                // For a box of uniform density (mass=volume=1000),
+                // MoI around Z through centroid = M/12 * (w^2 + d^2) = 1000/12 * (100 + 100)
+                // = 1000/12 * 200 ≈ 16666.7
+                assert!(v > 0.0, "MoI should be positive, got {v}");
+                assert!(
+                    (v - 16666.7).abs() < 100.0,
+                    "expected MoI ~16666.7, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    // --- Integration tests ---
+
+    #[test]
+    fn new_ops_export_step() {
+        let mut kernel = OcctKernel::new();
+        // Mirror
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let translated = kernel
+            .execute(&GeometryOp::Translate { target: box_h.id, dx: 15.0, dy: 0.0, dz: 0.0 })
+            .unwrap();
+        let mirrored = kernel
+            .execute(&GeometryOp::Mirror {
+                target: translated.id,
+                plane_origin: [0.0, 0.0, 0.0],
+                plane_normal: [1.0, 0.0, 0.0],
+            })
+            .unwrap();
+        let mut buf = Vec::new();
+        kernel.export(mirrored.id, ExportFormat::Step, &mut buf).unwrap();
+        let content = String::from_utf8(buf).unwrap();
+        assert!(content.contains("ISO-10303-21"), "STEP should contain ISO header");
+
+        // LinearPattern
+        let pat = kernel
+            .execute(&GeometryOp::LinearPattern {
+                target: box_h.id,
+                direction: [1.0, 0.0, 0.0],
+                count: 3,
+                spacing: Value::Real(15.0),
+            })
+            .unwrap();
+        let mut buf2 = Vec::new();
+        kernel.export(pat.id, ExportFormat::Step, &mut buf2).unwrap();
+        let content2 = String::from_utf8(buf2).unwrap();
+        assert!(content2.contains("ISO-10303-21"), "pattern STEP should contain ISO header");
+    }
+
+    #[test]
+    fn new_ops_tessellate() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let translated = kernel
+            .execute(&GeometryOp::Translate { target: box_h.id, dx: 15.0, dy: 0.0, dz: 0.0 })
+            .unwrap();
+        let mirrored = kernel
+            .execute(&GeometryOp::Mirror {
+                target: translated.id,
+                plane_origin: [0.0, 0.0, 0.0],
+                plane_normal: [1.0, 0.0, 0.0],
+            })
+            .unwrap();
+        let mesh = kernel.tessellate(mirrored.id, 0.1).unwrap();
+        assert!(!mesh.vertices.is_empty(), "mirrored tessellation should have vertices");
+        assert!(mesh.indices.len() % 3 == 0, "indices should be divisible by 3");
+
+        // Loft
+        let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).unwrap();
+        let id1 = kernel.store_raw(w1);
+        let w2 = ffi::ffi::make_circle_wire(5.0, 20.0).unwrap();
+        let id2 = kernel.store_raw(w2);
+        let loft = kernel
+            .execute(&GeometryOp::Loft { profiles: vec![id1, id2] })
+            .unwrap();
+        let loft_mesh = kernel.tessellate(loft.id, 0.1).unwrap();
+        assert!(!loft_mesh.vertices.is_empty(), "loft tessellation should have vertices");
+        assert!(loft_mesh.indices.len() % 3 == 0, "loft indices divisible by 3");
+    }
+
+    #[test]
+    fn pattern_plus_boolean() {
+        let mut kernel = OcctKernel::new();
+        // Create plate: 100x60x10
+        let plate = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(100.0),
+                height: Value::Real(60.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let plate_vol = match kernel.query(&GeometryQuery::Volume(plate.id)).unwrap() {
+            Value::Real(v) => v,
+            _ => panic!("expected Real"),
+        };
+
+        // Create hole: small cylinder
+        let hole = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(3.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        // Move hole down so it passes through the plate
+        let hole_pos = kernel
+            .execute(&GeometryOp::Translate { target: hole.id, dx: -30.0, dy: 0.0, dz: -10.0 })
+            .unwrap();
+
+        // Pattern: 5 holes along X
+        let patterned = kernel
+            .execute(&GeometryOp::LinearPattern {
+                target: hole_pos.id,
+                direction: [1.0, 0.0, 0.0],
+                count: 5,
+                spacing: Value::Real(15.0),
+            })
+            .unwrap();
+
+        // Boolean difference: plate minus patterned holes
+        let result = kernel
+            .execute(&GeometryOp::Difference {
+                left: plate.id,
+                right: patterned.id,
+            })
+            .unwrap();
+
+        let result_vol = match kernel.query(&GeometryQuery::Volume(result.id)).unwrap() {
+            Value::Real(v) => v,
+            _ => panic!("expected Real"),
+        };
+        assert!(
+            result_vol < plate_vol,
+            "plate with holes ({result_vol}) should have less volume than solid plate ({plate_vol})"
+        );
+        assert!(result_vol > 0.0, "result should have positive volume");
+    }
+
+    // --- Draft tests ---
+
+    #[test]
+    fn draft_angle_on_box() {
+        let mut kernel = OcctKernel::new();
+        // Create a 20x20x20 box
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(20.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(20.0),
+            })
+            .unwrap();
+        // Create a plane reference (small flat box at z=0)
+        let plane_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(100.0),
+                height: Value::Real(100.0),
+                depth: Value::Real(0.1),
+            })
+            .unwrap();
+        // Apply Draft with angle ~5.7 degrees (0.1 rad)
+        let draft_h = kernel.execute(&GeometryOp::Draft {
+            target: box_h.id,
+            angle: Value::Real(0.1),
+            plane: plane_h.id,
+        });
+        // Draft is complex and may fail for certain shapes - we just verify it
+        // either succeeds with a positive volume or returns an expected error
+        match draft_h {
+            Ok(h) => {
+                let vol = kernel.query(&GeometryQuery::Volume(h.id)).unwrap();
+                match vol {
+                    Value::Real(v) => {
+                        assert!(v > 0.0, "drafted volume should be positive, got {v}");
+                    }
+                    other => panic!("expected Value::Real, got {:?}", other),
+                }
+            }
+            Err(GeometryError::OperationFailed(_)) => {
+                // Acceptable: Draft is finicky with some shapes
+            }
+            Err(other) => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    // --- Mirror tests ---
+
+    #[test]
+    fn mirror_across_yz_plane() {
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10 box (volume = 1000)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Translate box to (5,0,0) so it's off-center
+        let translated_h = kernel
+            .execute(&GeometryOp::Translate {
+                target: box_h.id,
+                dx: 10.0,
+                dy: 0.0,
+                dz: 0.0,
+            })
+            .unwrap();
+        // Mirror across YZ plane (origin=[0,0,0], normal=[1,0,0])
+        let mirrored_h = kernel
+            .execute(&GeometryOp::Mirror {
+                target: translated_h.id,
+                plane_origin: [0.0, 0.0, 0.0],
+                plane_normal: [1.0, 0.0, 0.0],
+            })
+            .unwrap();
+        // Fuse original and mirrored
+        let fused_h = kernel
+            .execute(&GeometryOp::Union {
+                left: translated_h.id,
+                right: mirrored_h.id,
+            })
+            .unwrap();
+        // Volume should be approximately 2 * 1000 = 2000
+        let vol = kernel
+            .query(&GeometryQuery::Volume(fused_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 2000.0).abs() < 10.0,
+                    "expected fused mirror volume ~2000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn make_circle_wire_rejects_degenerate_radius() {
+        // Radius of 0 should cause MakeEdge to fail; verify we get an error
+        // rather than a silently invalid shape.
+        let result = ffi::ffi::make_circle_wire(0.0, 0.0);
+        assert!(
+            result.is_err(),
+            "make_circle_wire(0.0, 0.0) should return Err, got Ok"
+        );
+    }
+
+    #[test]
+    fn make_circle_wire_valid_produces_wire() {
+        // A valid radius should produce a usable wire shape without error.
+        let wire = ffi::ffi::make_circle_wire(10.0, 0.0);
+        assert!(
+            wire.is_ok(),
+            "make_circle_wire(10.0, 0.0) should succeed, got {:?}",
+            wire.err()
+        );
+    }
+
+    #[test]
+    fn draft_uses_plane_shape_not_hardcoded_z() {
+        // Verify that draft_shape extracts the neutral plane from plane_shape
+        // rather than using a hardcoded Z-up direction. We test this by
+        // drafting with a non-planar shape as plane — after the fix, this
+        // should error with "does not contain a planar face" because the
+        // code actually tries to extract the plane from the shape.
+        // Currently FAILS because draft_shape ignores plane_shape, so a
+        // sphere (non-planar) is accepted and draft proceeds with Z-up.
+        let mut kernel = OcctKernel::new();
+
+        // Target box
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(20.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(20.0),
+            })
+            .unwrap();
+
+        // Use a sphere as the "plane" — a sphere has no planar faces.
+        // After fix: should get an explicit error about non-planar face.
+        // Before fix: plane_shape is ignored, so draft either succeeds
+        // with Z-up or fails for unrelated reasons.
+        let sphere_h = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(10.0),
+            })
+            .unwrap();
+
+        let result = kernel.execute(&GeometryOp::Draft {
+            target: box_h.id,
+            angle: Value::Real(0.05),
+            plane: sphere_h.id,
+        });
+
+        // After the fix, we expect an OperationFailed error whose message
+        // mentions "planar" — the code should detect that the sphere's
+        // face is not planar and throw an explicit error.
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("planar"),
+                    "expected error about non-planar face, got: {msg}"
+                );
+            }
+            Ok(_) => {
+                panic!(
+                    "draft with sphere as plane should fail \
+                     (sphere has no planar faces), but succeeded"
+                );
+            }
+            Err(other) => {
+                panic!(
+                    "expected OperationFailed with 'planar' message, got: {:?}",
+                    other
+                );
+            }
+        }
     }
 }

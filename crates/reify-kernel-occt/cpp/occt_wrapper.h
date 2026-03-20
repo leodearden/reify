@@ -41,12 +41,53 @@ std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radiu
 std::unique_ptr<OcctShape> translate_shape(const OcctShape& shape, double dx, double dy, double dz);
 std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, double ay, double az, double angle_rad);
 
+// --- Mirror / Pattern ---
+
+std::unique_ptr<OcctShape> mirror_shape(const OcctShape& shape,
+    double ox, double oy, double oz,
+    double nx, double ny, double nz);
+
+std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
+    double dx, double dy, double dz,
+    uint32_t count, double spacing);
+
+std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
+    double ox, double oy, double oz,
+    double ax, double ay, double az,
+    uint32_t count, double total_angle);
+
+// --- Thicken / Shell ---
+
+std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset);
+
+std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
+    const rust::Vec<uint32_t>& face_indices);
+
+// --- Draft ---
+
+std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
+    const OcctShape& plane_shape);
+
+// --- Wire helpers / Loft ---
+
+/// Create a circular wire profile at a given Z height (for loft profiles).
+std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
+
+/// Loft through two wire profiles to create a solid.
+std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2);
+
+/// Loft through three wire profiles to create a solid.
+std::unique_ptr<OcctShape> loft_three_profiles(const OcctShape& wire1, const OcctShape& wire2, const OcctShape& wire3);
+
 // --- Queries ---
 
 double query_volume(const OcctShape& shape);
 double query_area(const OcctShape& shape);
 Point3 query_centroid(const OcctShape& shape);
 BBox query_bbox(const OcctShape& shape);
+
+double query_distance(const OcctShape& shape1, const OcctShape& shape2);
+double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
 
 // --- Export ---
 

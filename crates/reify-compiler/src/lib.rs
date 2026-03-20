@@ -167,6 +167,18 @@ pub enum CompiledGeometryOp {
         target: GeomRef,
         args: Vec<(String, CompiledExpr)>,
     },
+    /// Pattern a shape (linear, circular, mirror).
+    Pattern {
+        kind: PatternKind,
+        target: GeomRef,
+        args: Vec<(String, CompiledExpr)>,
+    },
+    /// Sweep operation (loft).
+    Sweep {
+        kind: SweepKind,
+        profiles: Vec<GeomRef>,
+        args: Vec<(String, CompiledExpr)>,
+    },
 }
 
 /// Primitive geometry kinds.
@@ -190,6 +202,9 @@ pub enum BooleanOp {
 pub enum ModifyKind {
     Fillet,
     Chamfer,
+    Shell,
+    Draft,
+    Thicken,
 }
 
 /// Transform operations.
@@ -197,6 +212,20 @@ pub enum ModifyKind {
 pub enum TransformKind {
     Translate,
     Rotate,
+}
+
+/// Pattern operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PatternKind {
+    Linear,
+    Circular,
+    Mirror,
+}
+
+/// Sweep operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SweepKind {
+    Loft,
 }
 
 /// Reference to a geometry result within a realization.
@@ -211,7 +240,18 @@ pub enum GeomRef {
 // --- Known geometry-producing functions (M1) ---
 /// Returns true if the function name refers to a geometry primitive.
 fn is_geometry_function(name: &str) -> bool {
-    matches!(name, "box" | "cylinder" | "sphere")
+    matches!(
+        name,
+        "box" | "cylinder"
+            | "sphere"
+            | "linear_pattern"
+            | "circular_pattern"
+            | "mirror"
+            | "loft"
+            | "shell"
+            | "thicken"
+            | "draft"
+    )
 }
 
 // --- Unit conversion ---
@@ -1968,7 +2008,8 @@ fn compile_geometry_call(
         .map(|arg| compile_expr(arg, scope, enum_defs, functions, diagnostics))
         .collect();
 
-    let named_args = match name {
+    match name {
+        // --- Primitives ---
         "box" => {
             if compiled_args.len() != 3 {
                 diagnostics.push(Diagnostic::error(format!(
@@ -1978,11 +2019,14 @@ fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            vec![
-                ("width".to_string(), it.next().unwrap()),
-                ("height".to_string(), it.next().unwrap()),
-                ("depth".to_string(), it.next().unwrap()),
-            ]
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".to_string(), it.next().unwrap()),
+                    ("height".to_string(), it.next().unwrap()),
+                    ("depth".to_string(), it.next().unwrap()),
+                ],
+            }])
         }
         "cylinder" => {
             if compiled_args.len() != 2 {
@@ -1993,10 +2037,13 @@ fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            vec![
-                ("radius".to_string(), it.next().unwrap()),
-                ("height".to_string(), it.next().unwrap()),
-            ]
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Cylinder,
+                args: vec![
+                    ("radius".to_string(), it.next().unwrap()),
+                    ("height".to_string(), it.next().unwrap()),
+                ],
+            }])
         }
         "sphere" => {
             if compiled_args.len() != 1 {
@@ -2006,20 +2053,387 @@ fn compile_geometry_call(
                 )));
                 return None;
             }
-            vec![("radius".to_string(), compiled_args.into_iter().next().unwrap())]
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Sphere,
+                args: vec![("radius".to_string(), compiled_args.into_iter().next().unwrap())],
+            }])
         }
-        _ => return None,
-    };
+        // --- Patterns ---
+        // linear_pattern(target, dx, dy, dz, count, spacing)
+        "linear_pattern" => {
+            if compiled_args.len() != 6 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "linear_pattern() expects 6 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Pattern {
+                kind: PatternKind::Linear,
+                target: GeomRef::Step(0), // target is first arg (evaluated at runtime)
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("dx".to_string(), it.next().unwrap()),
+                    ("dy".to_string(), it.next().unwrap()),
+                    ("dz".to_string(), it.next().unwrap()),
+                    ("count".to_string(), it.next().unwrap()),
+                    ("spacing".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)
+        "circular_pattern" => {
+            if compiled_args.len() != 9 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "circular_pattern() expects 9 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Pattern {
+                kind: PatternKind::Circular,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("ox".to_string(), it.next().unwrap()),
+                    ("oy".to_string(), it.next().unwrap()),
+                    ("oz".to_string(), it.next().unwrap()),
+                    ("ax".to_string(), it.next().unwrap()),
+                    ("ay".to_string(), it.next().unwrap()),
+                    ("az".to_string(), it.next().unwrap()),
+                    ("count".to_string(), it.next().unwrap()),
+                    ("angle".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // mirror(target, ox, oy, oz, nx, ny, nz)
+        "mirror" => {
+            if compiled_args.len() != 7 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "mirror() expects 7 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Pattern {
+                kind: PatternKind::Mirror,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("ox".to_string(), it.next().unwrap()),
+                    ("oy".to_string(), it.next().unwrap()),
+                    ("oz".to_string(), it.next().unwrap()),
+                    ("nx".to_string(), it.next().unwrap()),
+                    ("ny".to_string(), it.next().unwrap()),
+                    ("nz".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // --- Sweeps ---
+        // loft(profile1, profile2, ...)
+        "loft" => {
+            if compiled_args.len() < 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "loft() expects at least 2 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let profiles: Vec<GeomRef> = (0..compiled_args.len())
+                .map(GeomRef::Step)
+                .collect();
+            let args: Vec<(String, CompiledExpr)> = compiled_args
+                .into_iter()
+                .enumerate()
+                .map(|(i, expr)| (format!("profile_{}", i), expr))
+                .collect();
+            Some(vec![CompiledGeometryOp::Sweep {
+                kind: SweepKind::Loft,
+                profiles,
+                args,
+            }])
+        }
+        // --- Modify extensions ---
+        // shell(target, thickness, ...)
+        "shell" => {
+            if compiled_args.len() < 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "shell() expects at least 2 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let mut args = vec![
+                ("target".to_string(), it.next().unwrap()),
+                ("thickness".to_string(), it.next().unwrap()),
+            ];
+            // Remaining args are face indices to remove
+            for (i, expr) in it.enumerate() {
+                args.push((format!("face_{}", i), expr));
+            }
+            Some(vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Shell,
+                target: GeomRef::Step(0),
+                args,
+            }])
+        }
+        // thicken(target, offset)
+        "thicken" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "thicken() expects 2 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Thicken,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("offset".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // draft(target, angle, plane)
+        "draft" => {
+            if compiled_args.len() != 3 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "draft() expects 3 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Draft,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("angle".to_string(), it.next().unwrap()),
+                    ("plane".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        _ => None,
+    }
+}
 
-    let kind = match name {
-        "box" => PrimitiveKind::Box,
-        "cylinder" => PrimitiveKind::Cylinder,
-        "sphere" => PrimitiveKind::Sphere,
-        _ => return None,
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    Some(vec![CompiledGeometryOp::Primitive {
-        kind,
-        args: named_args,
-    }])
+    // --- Step 21: Verify new geometry function names are recognized ---
+
+    #[test]
+    fn compile_geometry_linear_pattern_recognized() {
+        assert!(is_geometry_function("linear_pattern"));
+    }
+
+    #[test]
+    fn compile_geometry_circular_pattern_recognized() {
+        assert!(is_geometry_function("circular_pattern"));
+    }
+
+    #[test]
+    fn compile_geometry_mirror_recognized() {
+        assert!(is_geometry_function("mirror"));
+    }
+
+    #[test]
+    fn compile_geometry_loft_recognized() {
+        assert!(is_geometry_function("loft"));
+    }
+
+    #[test]
+    fn compile_geometry_shell_recognized() {
+        assert!(is_geometry_function("shell"));
+    }
+
+    #[test]
+    fn compile_geometry_thicken_recognized() {
+        assert!(is_geometry_function("thicken"));
+    }
+
+    #[test]
+    fn compile_geometry_draft_recognized() {
+        assert!(is_geometry_function("draft"));
+    }
+
+    // --- Verify new geometry function calls compile into realizations ---
+
+    #[test]
+    fn compile_linear_pattern_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let pattern = linear_pattern(w, 1, 0, 0, 4, 20)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_linpat"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        // linear_pattern is a geometry function, so should produce a realization
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for linear_pattern call, got {}",
+            template.realizations.len()
+        );
+        // Verify it's a Pattern op with Linear kind
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Pattern { kind: PatternKind::Linear, .. }),
+            "expected Pattern(Linear), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_mirror_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let mirrored = mirror(w, 0, 0, 0, 1, 0, 0)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_mirror"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for mirror call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Pattern { kind: PatternKind::Mirror, .. }),
+            "expected Pattern(Mirror), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_loft_produces_realization() {
+        let source = r#"structure S {
+    param r: Scalar = 10mm
+    let swept = loft(r, r)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_loft"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for loft call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Sweep { kind: SweepKind::Loft, .. }),
+            "expected Sweep(Loft), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_shell_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let hollowed = shell(w, 1)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_shell"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for shell call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Modify { kind: ModifyKind::Shell, .. }),
+            "expected Modify(Shell), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_thicken_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let thickened = thicken(w, 2)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_thicken"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for thicken call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Modify { kind: ModifyKind::Thicken, .. }),
+            "expected Modify(Thicken), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_draft_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let drafted = draft(w, 0.1, w)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_draft"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for draft call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Modify { kind: ModifyKind::Draft, .. }),
+            "expected Modify(Draft), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_circular_pattern_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let pattern = circular_pattern(w, 0, 0, 0, 0, 0, 1, 6, 360)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_circpat"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for circular_pattern call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Pattern { kind: PatternKind::Circular, .. }),
+            "expected Pattern(Circular), got {:?}",
+            op
+        );
+    }
 }

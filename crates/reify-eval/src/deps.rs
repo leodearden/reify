@@ -227,6 +227,16 @@ pub fn extract_realization_dependencies(
                     collect_value_refs(expr, &mut reads);
                 }
             }
+            reify_compiler::CompiledGeometryOp::Pattern { args, .. } => {
+                for (_, expr) in args {
+                    collect_value_refs(expr, &mut reads);
+                }
+            }
+            reify_compiler::CompiledGeometryOp::Sweep { args, .. } => {
+                for (_, expr) in args {
+                    collect_value_refs(expr, &mut reads);
+                }
+            }
         }
     }
     DependencyTrace { reads }

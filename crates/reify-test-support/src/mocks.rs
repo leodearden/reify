@@ -193,6 +193,8 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::SurfaceArea(id) => id,
             GeometryQuery::Centroid(id) => id,
             GeometryQuery::BoundingBox(id) => id,
+            GeometryQuery::Distance { from, .. } => from,
+            GeometryQuery::MomentOfInertia { handle, .. } => handle,
         };
 
         self.queries

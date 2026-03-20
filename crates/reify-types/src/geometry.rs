@@ -90,6 +90,48 @@ pub enum GeometryOp {
         axis: [f64; 3],
         angle_rad: f64,
     },
+    /// Create a linear pattern of copies along a direction.
+    LinearPattern {
+        target: GeometryHandleId,
+        direction: [f64; 3],
+        count: usize,
+        spacing: Value,
+    },
+    /// Create a circular pattern of copies around an axis.
+    CircularPattern {
+        target: GeometryHandleId,
+        axis_origin: [f64; 3],
+        axis_dir: [f64; 3],
+        count: usize,
+        angle: Value,
+    },
+    /// Mirror a shape across a plane.
+    Mirror {
+        target: GeometryHandleId,
+        plane_origin: [f64; 3],
+        plane_normal: [f64; 3],
+    },
+    /// Loft through a sequence of profiles.
+    Loft {
+        profiles: Vec<GeometryHandleId>,
+    },
+    /// Apply draft angle to faces.
+    Draft {
+        target: GeometryHandleId,
+        angle: Value,
+        plane: GeometryHandleId,
+    },
+    /// Thicken a shape by offset.
+    Thicken {
+        target: GeometryHandleId,
+        offset: Value,
+    },
+    /// Shell a solid (hollow it out, removing specified faces).
+    Shell {
+        target: GeometryHandleId,
+        thickness: Value,
+        faces_to_remove: Vec<usize>,
+    },
 }
 
 /// Queries against geometry handles.
@@ -103,6 +145,16 @@ pub enum GeometryQuery {
     Centroid(GeometryHandleId),
     /// Compute bounding box.
     BoundingBox(GeometryHandleId),
+    /// Compute minimum distance between two shapes.
+    Distance {
+        from: GeometryHandleId,
+        to: GeometryHandleId,
+    },
+    /// Compute moment of inertia around an axis.
+    MomentOfInertia {
+        handle: GeometryHandleId,
+        axis: [f64; 3],
+    },
 }
 
 /// Export formats for geometry.

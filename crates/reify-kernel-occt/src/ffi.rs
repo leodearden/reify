@@ -1,6 +1,6 @@
 //! CXX bridge to the OCCT C++ wrapper.
 
-#[allow(clippy::module_inception)]
+#[allow(clippy::module_inception, clippy::too_many_arguments)]
 #[cxx::bridge(namespace = "occt")]
 pub mod ffi {
     /// 3D point returned from queries.
@@ -61,11 +61,81 @@ pub mod ffi {
             angle_rad: f64,
         ) -> Result<UniquePtr<OcctShape>>;
 
+        // --- Mirror / Pattern / Circular pattern ---
+        fn mirror_shape(
+            shape: &OcctShape,
+            ox: f64,
+            oy: f64,
+            oz: f64,
+            nx: f64,
+            ny: f64,
+            nz: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+
+        fn linear_pattern(
+            shape: &OcctShape,
+            dx: f64,
+            dy: f64,
+            dz: f64,
+            count: u32,
+            spacing: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+
+        fn circular_pattern(
+            shape: &OcctShape,
+            ox: f64,
+            oy: f64,
+            oz: f64,
+            ax: f64,
+            ay: f64,
+            az: f64,
+            count: u32,
+            total_angle: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+
+        // --- Draft ---
+        fn draft_shape(
+            shape: &OcctShape,
+            angle_rad: f64,
+            plane_shape: &OcctShape,
+        ) -> Result<UniquePtr<OcctShape>>;
+
+        // --- Thicken / Shell ---
+        fn thicken_shape(
+            shape: &OcctShape,
+            offset: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn shell_shape(
+            shape: &OcctShape,
+            thickness: f64,
+            face_indices: &Vec<u32>,
+        ) -> Result<UniquePtr<OcctShape>>;
+
+        // --- Wire helpers / Loft ---
+        fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
+        fn loft_two_profiles(
+            wire1: &OcctShape,
+            wire2: &OcctShape,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn loft_three_profiles(
+            wire1: &OcctShape,
+            wire2: &OcctShape,
+            wire3: &OcctShape,
+        ) -> Result<UniquePtr<OcctShape>>;
+
         // --- Queries ---
         fn query_volume(shape: &OcctShape) -> Result<f64>;
         fn query_area(shape: &OcctShape) -> Result<f64>;
         fn query_centroid(shape: &OcctShape) -> Result<Point3>;
         fn query_bbox(shape: &OcctShape) -> Result<BBox>;
+
+        fn query_distance(shape1: &OcctShape, shape2: &OcctShape) -> Result<f64>;
+        fn query_moment_of_inertia(
+            shape: &OcctShape,
+            ax: f64,
+            ay: f64,
+            az: f64,
+        ) -> Result<f64>;
 
         // --- Export ---
         fn export_step(shape: &OcctShape) -> Result<String>;
