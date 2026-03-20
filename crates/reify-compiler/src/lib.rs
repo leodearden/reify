@@ -1554,6 +1554,20 @@ fn compile_structure(
             reify_syntax::MemberDecl::Port(port_decl) => {
                 let direction = port_decl.direction.unwrap_or(reify_types::PortDirection::Bidi);
 
+                // Verify port type_name exists in the trait registry
+                if !trait_registry.contains_key(&port_decl.type_name) {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "unknown port type '{}' — no trait with this name found in current module",
+                            port_decl.type_name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            port_decl.span,
+                            "unknown port type",
+                        )),
+                    );
+                }
+
                 let mut port_members = Vec::new();
                 let mut port_constraints = Vec::new();
 
