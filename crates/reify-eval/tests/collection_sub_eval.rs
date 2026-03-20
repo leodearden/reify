@@ -189,3 +189,90 @@ fn eval_collection_sub_undef_count_no_instances() {
         );
     }
 }
+
+// ─── step-13: count change 4->6 triggers re-elaboration ───
+
+#[test]
+fn edit_param_count_change_re_elaborates_collection() {
+    // Bolt template: param diameter : Scalar = 10mm
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .build();
+
+    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
+    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let n_id = ValueCellId::new("Parent", "n");
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
+        )
+        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component(
+            "bolts",
+            "Bolt",
+            ValueCellId::new("Parent", "__count_bolts"),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Initial eval with n=4
+    let initial_result = engine.eval(&module);
+    let initial_fingerprint = engine.snapshot().unwrap().topology_fingerprint;
+
+    // Verify 4 instances exist initially
+    for i in 0..4 {
+        let scoped_id = ValueCellId::new(&format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            initial_result.values.get(&scoped_id).is_some(),
+            "initially bolts[{}] should exist",
+            i
+        );
+    }
+
+    // Edit n from 4 to 6
+    let edit_result = engine
+        .edit_param(n_id, Value::Int(6))
+        .expect("edit_param should succeed");
+
+    // (1) topology_fingerprint should change
+    let new_fingerprint = engine.snapshot().unwrap().topology_fingerprint;
+    assert_ne!(
+        initial_fingerprint, new_fingerprint,
+        "topology_fingerprint should change when count changes"
+    );
+
+    // (2) 6 instances should now exist
+    for i in 0..6 {
+        let scoped_id = ValueCellId::new(&format!("Parent.bolts[{}]", i), "diameter");
+        let val = edit_result.values.get(&scoped_id);
+        assert_eq!(
+            val,
+            Some(&Value::length(0.01)),
+            "bolts[{}].diameter should be 10mm after count change to 6",
+            i
+        );
+    }
+
+    // (3) No bolts[6] should exist
+    let no_instance = ValueCellId::new("Parent.bolts[6]", "diameter");
+    assert!(
+        edit_result.values.get(&no_instance).is_none(),
+        "should not have bolts[6]"
+    );
+}
