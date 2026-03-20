@@ -1053,10 +1053,10 @@ impl<'a> Lowering<'a> {
         let mut params = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "lambda_param" {
-                if let Some(param) = self.lower_lambda_param(child) {
-                    params.push(param);
-                }
+            if child.kind() == "lambda_param"
+                && let Some(param) = self.lower_lambda_param(child)
+            {
+                params.push(param);
             }
         }
 
