@@ -183,7 +183,7 @@ module.exports = grammar({
       'match',
       field('discriminant', $._expression),
       '{',
-      repeat1($.match_arm),
+      seq($.match_arm, repeat(seq(',', $.match_arm)), optional(',')),
       '}',
     )),
 
