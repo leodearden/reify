@@ -420,6 +420,7 @@ mod tests {
 pub struct CompiledModuleBuilder {
     path: reify_types::ModulePath,
     imports: Vec<CompiledImport>,
+    functions: Vec<reify_types::CompiledFunction>,
     templates: Vec<TopologyTemplate>,
     diagnostics: Vec<reify_types::Diagnostic>,
 }
@@ -429,9 +430,15 @@ impl CompiledModuleBuilder {
         Self {
             path,
             imports: Vec::new(),
+            functions: Vec::new(),
             templates: Vec::new(),
             diagnostics: Vec::new(),
         }
+    }
+
+    pub fn function(mut self, f: reify_types::CompiledFunction) -> Self {
+        self.functions.push(f);
+        self
     }
 
     pub fn import(mut self, path: impl Into<String>) -> Self {
@@ -478,9 +485,12 @@ impl CompiledModuleBuilder {
 
             let import_hashes = self.imports.iter().map(|i| ContentHash::of_str(&i.path));
 
+            let function_hashes = self.functions.iter().map(|f| f.content_hash);
+
             let all_hashes = std::iter::once(path_hash)
                 .chain(template_hashes)
-                .chain(import_hashes);
+                .chain(import_hashes)
+                .chain(function_hashes);
 
             ContentHash::combine_all(all_hashes)
         };
@@ -489,7 +499,7 @@ impl CompiledModuleBuilder {
             path: self.path,
             imports: self.imports,
             enum_defs: Vec::new(),
-            functions: Vec::new(),
+            functions: self.functions,
             trait_defs: Vec::new(),
             templates: self.templates,
             diagnostics: self.diagnostics,
