@@ -35,6 +35,63 @@ pub struct CompiledFnBody {
     pub result_expr: CompiledExpr,
 }
 
+/// A compiled trait definition.
+#[derive(Debug, Clone)]
+pub struct CompiledTrait {
+    pub name: String,
+    pub is_pub: bool,
+    /// Names of traits this trait refines (parent traits).
+    pub refinements: Vec<String>,
+    /// Members that conforming structures must provide (no default).
+    pub required_members: Vec<TraitRequirement>,
+    /// Members with defaults that are injected if the structure doesn't override.
+    pub defaults: Vec<TraitDefault>,
+    pub content_hash: ContentHash,
+}
+
+/// A required member in a trait — conforming structures must provide this.
+#[derive(Debug, Clone)]
+pub struct TraitRequirement {
+    pub name: String,
+    pub kind: RequirementKind,
+    pub span: SourceSpan,
+}
+
+/// The kind of requirement a trait imposes.
+#[derive(Debug, Clone)]
+pub enum RequirementKind {
+    /// A param with a specific type: `param x : Length`
+    Param(Type),
+    /// A let with a specific type: `let x : Length`
+    Let(Type),
+    /// A constraint (labeled): `constraint min_size : x > 0`
+    Constraint(Option<String>),
+    /// A sub-component: `sub hole = Hole`
+    Sub(String),
+}
+
+/// A default member provided by a trait — injected if not overridden.
+#[derive(Debug, Clone)]
+pub struct TraitDefault {
+    pub name: String,
+    pub kind: DefaultKind,
+    pub span: SourceSpan,
+}
+
+/// The kind of default a trait provides.
+#[derive(Debug, Clone)]
+pub enum DefaultKind {
+    /// A param with a default expression: `param x : Length = 10mm`
+    Param {
+        cell_type: Type,
+        default_decl: reify_syntax::ParamDecl,
+    },
+    /// A let with a value expression: `let x = expr`
+    Let(reify_syntax::LetDecl),
+    /// A constraint with an expression: `constraint label : expr`
+    Constraint(reify_syntax::ConstraintDecl),
+}
+
 /// A compiled module — the output of the compiler.
 #[derive(Debug, Clone)]
 pub struct CompiledModule {
@@ -42,6 +99,7 @@ pub struct CompiledModule {
     pub imports: Vec<CompiledImport>,
     pub enum_defs: Vec<reify_types::EnumDef>,
     pub functions: Vec<CompiledFunction>,
+    pub trait_defs: Vec<CompiledTrait>,
     pub templates: Vec<TopologyTemplate>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
@@ -889,6 +947,129 @@ fn compile_expr_guarded(
     }
 }
 
+/// Compile a single trait declaration into a CompiledTrait.
+fn compile_trait(
+    trait_decl: &reify_syntax::TraitDecl,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledTrait {
+    let mut required_members = Vec::new();
+    let mut defaults = Vec::new();
+
+    for member in &trait_decl.members {
+        match member {
+            reify_syntax::MemberDecl::Param(param) => {
+                let ty = if let Some(type_expr) = &param.type_expr {
+                    match resolve_type_name(&type_expr.name) {
+                        Some(t) => t,
+                        None => {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unresolved type in trait '{}': {}",
+                                    trait_decl.name, type_expr.name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    type_expr.span,
+                                    "unknown type name",
+                                )),
+                            );
+                            Type::Real // fallback
+                        }
+                    }
+                } else {
+                    Type::Real
+                };
+
+                if param.default.is_some() {
+                    // Param with default → trait default
+                    defaults.push(TraitDefault {
+                        name: param.name.clone(),
+                        kind: DefaultKind::Param {
+                            cell_type: ty,
+                            default_decl: param.clone(),
+                        },
+                        span: param.span,
+                    });
+                } else {
+                    // Param without default → requirement
+                    required_members.push(TraitRequirement {
+                        name: param.name.clone(),
+                        kind: RequirementKind::Param(ty),
+                        span: param.span,
+                    });
+                }
+            }
+            reify_syntax::MemberDecl::Let(let_decl) => {
+                // Let bindings always have a value expression → default
+                let ty = if let Some(type_expr) = &let_decl.type_expr {
+                    match resolve_type_name(&type_expr.name) {
+                        Some(t) => t,
+                        None => {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unresolved type in trait '{}': {}",
+                                    trait_decl.name, type_expr.name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    type_expr.span,
+                                    "unknown type name",
+                                )),
+                            );
+                            Type::Real
+                        }
+                    }
+                } else {
+                    Type::Real
+                };
+                let _ = ty; // type used for future type checking
+                defaults.push(TraitDefault {
+                    name: let_decl.name.clone(),
+                    kind: DefaultKind::Let(let_decl.clone()),
+                    span: let_decl.span,
+                });
+            }
+            reify_syntax::MemberDecl::Constraint(constraint_decl) => {
+                if let Some(label) = &constraint_decl.label {
+                    // Labeled constraint without expression in struct → requirement
+                    // Constraint with expression → default
+                    defaults.push(TraitDefault {
+                        name: label.clone(),
+                        kind: DefaultKind::Constraint(constraint_decl.clone()),
+                        span: constraint_decl.span,
+                    });
+                } else {
+                    // Unlabeled constraint → always injected as default
+                    defaults.push(TraitDefault {
+                        name: String::new(),
+                        kind: DefaultKind::Constraint(constraint_decl.clone()),
+                        span: constraint_decl.span,
+                    });
+                }
+            }
+            reify_syntax::MemberDecl::Sub(sub_decl) => {
+                required_members.push(TraitRequirement {
+                    name: sub_decl.name.clone(),
+                    kind: RequirementKind::Sub(sub_decl.structure_name.clone()),
+                    span: sub_decl.span,
+                });
+            }
+            _ => {
+                // Minimize, Maximize, GuardedGroup, AssociatedType — skip for now
+            }
+        }
+    }
+
+    let content_hash = trait_decl.content_hash;
+
+    CompiledTrait {
+        name: trait_decl.name.clone(),
+        is_pub: trait_decl.is_pub,
+        refinements: trait_decl.refinements.clone(),
+        required_members,
+        defaults,
+        content_hash,
+    }
+}
+
 /// Compile a parsed module into a compiled module.
 ///
 /// Performs name resolution, type checking, and expression compilation.
@@ -937,6 +1118,23 @@ pub fn compile(
         }
     }
 
+    // Pre-pass: compile ALL trait definitions before processing structures.
+    // This ensures traits can be referenced as bounds on structures declared
+    // in any order.
+    let mut trait_defs = Vec::new();
+    for decl in &parsed.declarations {
+        if let reify_syntax::Declaration::Trait(trait_decl) = decl {
+            let compiled_trait = compile_trait(trait_decl, &mut diagnostics);
+            trait_defs.push(compiled_trait);
+        }
+    }
+
+    // Build trait registry for conformance checking.
+    let trait_registry: HashMap<String, &CompiledTrait> = trait_defs
+        .iter()
+        .map(|t| (t.name.clone(), t))
+        .collect();
+
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
@@ -965,7 +1163,7 @@ pub fn compile(
                 // Already compiled in pre-pass above.
             }
             reify_syntax::Declaration::Trait(_) => {
-                // Trait compilation deferred to a later milestone.
+                // Already compiled in trait pre-pass above.
             }
         }
     }
@@ -1020,11 +1218,15 @@ pub fn compile(
         // Function content hashes
         let function_hashes = functions.iter().map(|f: &CompiledFunction| f.content_hash);
 
+        // Trait content hashes
+        let trait_hashes = trait_defs.iter().map(|t| t.content_hash);
+
         let all_hashes = std::iter::once(path_hash)
             .chain(template_hashes)
             .chain(import_hashes)
             .chain(enum_hashes)
-            .chain(function_hashes);
+            .chain(function_hashes)
+            .chain(trait_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -1034,6 +1236,7 @@ pub fn compile(
         imports,
         enum_defs,
         functions,
+        trait_defs,
         templates,
         diagnostics,
         content_hash,
