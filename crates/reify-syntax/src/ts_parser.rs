@@ -1427,4 +1427,28 @@ mod tests {
             other => panic!("expected MapLiteral, got {:?}", other),
         }
     }
+
+    #[test]
+    fn parse_index_access_number() {
+        let kind = parse_let_expr("structure S { let x = items[0] }");
+        match kind {
+            ExprKind::IndexAccess { object, index } => {
+                assert!(matches!(&object.kind, ExprKind::Ident(n) if n == "items"));
+                assert!(matches!(&index.kind, ExprKind::NumberLiteral(v) if (*v - 0.0).abs() < f64::EPSILON));
+            }
+            other => panic!("expected IndexAccess, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_index_access_string_key() {
+        let kind = parse_let_expr(r#"structure S { let x = m["key"] }"#);
+        match kind {
+            ExprKind::IndexAccess { object, index } => {
+                assert!(matches!(&object.kind, ExprKind::Ident(n) if n == "m"));
+                assert!(matches!(&index.kind, ExprKind::StringLiteral(s) if s == "key"));
+            }
+            other => panic!("expected IndexAccess, got {:?}", other),
+        }
+    }
 }
