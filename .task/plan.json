@@ -1,34 +1,34 @@
 {
-  "task_id": "62",
-  "title": "Collection compilation + operations",
+  "task_id": "63",
+  "title": "Quantifier expressions (forall/exists)",
   "files": [
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "tree-sitter-reify/src/grammar.json",
+    "tree-sitter-reify/src/node-types.json",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/quantifier_tests.rs",
     "crates/reify-types/src/expr.rs",
     "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/quantifier_compile_tests.rs",
     "crates/reify-expr/src/lib.rs",
-    "crates/reify-stdlib/src/lib.rs",
-    "crates/reify-expr/tests/collection_eval_tests.rs",
-    "crates/reify-compiler/tests/collection_compile_tests.rs"
+    "crates/reify-expr/tests/quantifier_eval_tests.rs"
   ],
   "modules": [
+    "tree-sitter-reify",
+    "crates/reify-syntax",
     "crates/reify-types",
     "crates/reify-compiler",
-    "crates/reify-expr",
-    "crates/reify-stdlib"
+    "crates/reify-expr"
   ],
-  "analysis": "This task implements collection compilation and operations across the Reify pipeline. The codebase already has: (1) Value::List/Set/Map variants in reify-types, (2) Type::List/Set/Map types, (3) syntax parsing for list/set/map literals and index access in reify-syntax, (4) stub error handlers in the compiler for collection syntax nodes, (5) apply_lambda in reify-expr for calling lambda closures.\n\nThe work involves: (A) Adding 5 new CompiledExprKind variants to reify-types (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall), (B) Implementing their evaluation in reify-expr including all collection methods (count, sum, map, filter, fold, all, any, contains, concat, generate for List; count, contains, union, intersection, difference for Set; count, keys, values, contains_key for Map), (C) Implementing compilation in reify-compiler replacing the current stubs, (D) Adding dimension-aware sum to reify-stdlib.\n\nKey constraint: The current grammar supports MemberAccess (obj.member) but not method_call with args (obj.method(args)). Property-style methods (.count, .sum, .keys, .values) compile from MemberAccess. Methods with args (.map, .filter, .fold, .contains, .union, etc.) will be tested at the CompiledExpr level directly. Full end-to-end parsing of method calls with arguments requires a grammar change (tree-sitter-reify) which is out of scope for this task's modules.\n\nUndef propagation follows the spec: undef collection -> undef result, known-structure-unknown-elements -> count works but sum propagates, Kleene 3-valued logic for .all/.any.\n\nReview feedback identified three blocking issues: (1) Missing Kleene tests for .any — the implementation is correct but untested for [undef, false].any -> Undef and [true, undef].any -> Bool(true). (2) Missing .filter Undef propagation test — the implementation already returns Undef when predicate returns Undef (line 484) but no test covers it. (3) apply_lambda() uses EvalContext::simple() which drops the function registry, so UserFunctionCall nodes inside lambda bodies silently return Undef. The fix requires threading EvalContext through apply_lambda and eval_method_call.",
+  "analysis": "This task adds forall/exists quantifier expressions across the full pipeline: grammar -> parser -> compiler -> evaluator. The pattern closely follows the lambda expression implementation, which already binds a variable in scope and evaluates a body. The quantifier is simpler than lambda because it doesn't produce a closure value — it iterates a collection and evaluates a predicate with the bound variable. The key changes are: (1) grammar.js: add `quantifier_expression` rule with `forall`/`exists` keyword, identifier, `in`, collection expression, `:`, predicate expression; (2) reify-syntax: add `ExprKind::Quantifier` with `QuantifierKind` enum and lowering in ts_parser.rs; (3) reify-types/expr.rs: add `CompiledExprKind::Quantifier` variant with collection and predicate compiled exprs, plus update `walk()`, `collect_value_refs()`, and add a constructor; (4) reify-compiler: compile the quantifier by creating a new scope for the bound variable (like lambda), compiling collection and predicate, and capturing the variable binding; (5) reify-expr: evaluate by iterating the collection, binding each element, evaluating the predicate, with Kleene 3-valued logic and short-circuit behavior. The existing method `all`/`any` on lists already implements the Kleene logic pattern, and `apply_lambda` shows how to bind variables in scope for evaluation — the quantifier eval will follow this same pattern but more directly.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add CompiledExprKind variants (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall) to reify-types/src/expr.rs. Update walk(), collect_value_refs_inner(), and add constructor helpers. ListLiteral(Vec<CompiledExpr>), SetLiteral(Vec<CompiledExpr>), MapLiteral(Vec<(CompiledExpr, CompiledExpr)>), IndexAccess { object: Box<CompiledExpr>, index: Box<CompiledExpr> }, MethodCall { object: Box<CompiledExpr>, method: String, args: Vec<CompiledExpr> }.",
+      "description": "Add quantifier_expression rule to tree-sitter grammar.js, regenerate parser.c with `tree-sitter generate`",
       "status": "done",
-      "commit": "5345877",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Update collect_body_refs_inner() in reify-compiler/src/lib.rs to handle the 5 new CompiledExprKind variants (recurse into sub-expressions for dependency tracking).",
-      "status": "done",
-      "commit": "5345877",
+      "commit": "f2271e1c2eb677a0ae51ed33bacb434a880290e5",
       "tests": []
     }
   ],
@@ -36,368 +36,153 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests in crates/reify-expr/tests/collection_eval_tests.rs for list literal evaluation: eval ListLiteral([Int(1), Int(2), Int(3)]) -> Value::List([Int(1), Int(2), Int(3)]), empty list, and list with nested expressions.",
+      "description": "Write failing parse tests in crates/reify-syntax/tests/quantifier_tests.rs: parse `forall x in list: x > 0` -> Quantifier(ForAll), parse `exists x in set: x == target` -> Quantifier(Exists)",
       "status": "done",
-      "commit": "f0c939f"
+      "commit": "f67a340"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::ListLiteral in reify-expr/src/lib.rs -- evaluate each element expression and collect into Value::List. Add SetLiteral and MapLiteral eval simultaneously since they follow the same pattern.",
+      "description": "Add QuantifierKind enum (ForAll/Exists) and ExprKind::Quantifier variant to reify-syntax/src/lib.rs. Add 'quantifier_expression' lowering to ts_parser.rs lower_expr() match. Add the new node kind to the lower_expr dispatch.",
       "status": "done",
-      "commit": "4b100a0"
+      "commit": "77c13ba"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for set literal evaluation (SetLiteral -> Value::Set with dedup) and map literal evaluation (MapLiteral -> Value::Map).",
+      "description": "Write failing compile tests in crates/reify-compiler/tests/quantifier_compile_tests.rs: compile `forall x in [1,2,3]: x > 0` -> CompiledExprKind::Quantifier with ForAll kind, verify collection and predicate sub-expressions are compiled",
       "status": "done",
-      "commit": "fdff49c"
+      "commit": "e3c6e36"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify set/map literal eval passes (already implemented in step-2). If not, fix.",
+      "description": "Add CompiledExprKind::Quantifier variant to reify-types/src/expr.rs with QuantifierKind, variable: String, variable_id: ValueCellId, collection: Box<CompiledExpr>, predicate: Box<CompiledExpr>. Add QuantifierKind enum (ForAll/Exists) to reify-types. Add constructor, update walk(), collect_value_refs_inner(). Add ExprKind::Quantifier compilation in reify-compiler: create nested scope with bound variable, compile collection and predicate.",
       "status": "done",
-      "commit": "fdff49c"
+      "commit": "a8c4f86"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for IndexAccess evaluation: list[1] -> element, list[out-of-bounds] -> Undef, map[key] -> value, map[missing-key] -> Undef, list[undef] -> Undef, undef[0] -> Undef.",
+      "description": "Write failing eval tests in crates/reify-expr/tests/quantifier_eval_tests.rs: forall over [1,2,3] with x>0 -> true; forall over [1,-1,3] with x>0 -> false; exists over [1,2,3] with x>2 -> true; exists over [1,2,3] with x>5 -> false",
       "status": "done",
-      "commit": "efdcbc0"
+      "commit": "054f7aa"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::IndexAccess in reify-expr/src/lib.rs -- evaluate object and index, dispatch based on Value::List (Int index) and Value::Map (key lookup). Out of bounds / missing -> Undef.",
+      "description": "Add CompiledExprKind::Quantifier evaluation in reify-expr/src/lib.rs eval_expr(): evaluate collection, iterate elements, bind variable in scope, evaluate predicate. ForAll: conjunction (all true -> true, any false -> false). Exists: disjunction (any true -> true, all false -> false).",
       "status": "done",
-      "commit": "bdb0466"
+      "commit": "8ee5550"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for MethodCall .count on lists, sets, and maps: [1,2,3].count -> Int(3), set{1,2,3}.count -> Int(3), map{'a'=>1}.count -> Int(1), [].count -> Int(0).",
+      "description": "Write failing eval tests for edge cases: forall over empty list -> true (vacuous truth); exists over empty list -> false (vacuous falsity)",
       "status": "done",
-      "commit": "4d10692"
+      "commit": "eb46d3e"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement eval of CompiledExprKind::MethodCall in reify-expr/src/lib.rs -- start with .count method dispatching on Value::List/Set/Map to return their length as Value::Int.",
+      "description": "Ensure empty collection handling is correct in quantifier eval (likely already works from step-6 implementation if using proper fold semantics)",
       "status": "done",
-      "commit": "5bc7369"
+      "commit": "eb46d3e"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for MethodCall .sum: [1,2,3].sum -> Int(6), [1.0,2.0].sum -> Real(3.0), [1mm,2mm].sum -> Scalar(0.003, LENGTH), [].sum -> Int(0), [1,undef,3].sum -> Undef.",
+      "description": "Write failing eval tests for Kleene 3-valued logic: forall over [1, Undef, 3] with x>0 -> Undef (no false, but undef present); exists over [1, Undef, 3] with x>2 -> true (short-circuit on 3>2=true); exists over [Undef, -1] with x>0 -> Undef (no true, undef present)",
       "status": "done",
-      "commit": "ca6f9b9"
+      "commit": "1e81957"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement .sum method in eval_method_call -- iterate list elements, accumulate using add logic (reuse eval_add pattern from reify-expr), handle dimension-aware scalar addition. Add dimension-aware collection sum helper to reify-stdlib if needed.",
+      "description": "Ensure Kleene 3-valued logic in quantifier eval: forall short-circuits on false, tracks undef; exists short-circuits on true, tracks undef. Mirror the pattern from eval_and/eval_or and the existing .all()/.any() method implementations.",
       "status": "done",
-      "commit": "8f16e83"
+      "commit": "1e81957"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing tests for MethodCall .contains: [1,2,3].contains(2) -> Bool(true), [1,2,3].contains(5) -> Bool(false), set{1,2,3}.contains(2) -> Bool(true), set{1,2,3}.contains(5) -> Bool(false).",
+      "description": "Write failing integration test: quantifier in constraint context - parse+compile+eval `constraint forall b in bolts: b.grade >= 8.8` inside a structure with a list-typed let binding",
       "status": "done",
-      "commit": "adad14c"
+      "commit": "eda4604"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement .contains method for List and Set -- check if the argument value is present in the collection.",
+      "description": "Ensure quantifier works end-to-end in constraint context. Fix any issues with the collection type being resolved correctly, member access on bound variable within predicate, and update collect_body_refs in the compiler for the new Quantifier variant.",
       "status": "done",
-      "commit": "e45b383"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .map: [1,2,3].map(|x| x*2) -> List([2,4,6]). Construct the MethodCall with a lambda arg CompiledExpr.",
-      "status": "done",
-      "commit": "76616ca"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Implement .map method -- evaluate the lambda arg to get Value::Lambda, then apply_lambda to each element, collect results into new Value::List.",
-      "status": "done",
-      "commit": "277ad8a"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .filter: [1,2,3,4].filter(|x| x > 2) -> List([3,4]), empty result case.",
-      "status": "done",
-      "commit": "ce250d7"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Implement .filter method -- apply_lambda to each element, keep elements where result is Bool(true), discard where Bool(false), propagate Undef.",
-      "status": "done",
-      "commit": "984c541"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .fold: [1,2,3].fold(0, |acc,x| acc+x) -> Int(6), fold with initial value.",
-      "status": "done",
-      "commit": "b772290"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Implement .fold method -- evaluate init, then for each element apply 2-arg lambda with (accumulator, element), thread result through.",
-      "status": "done",
-      "commit": "a45a565"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .all and .any: [1,2,3].all(|x| x>0) -> Bool(true), [1,2,3].any(|x| x>2) -> Bool(true), [1,2,3].all(|x| x>2) -> Bool(false), [1,2,3].any(|x| x>5) -> Bool(false). Kleene: [1,undef,3].all(|x| x>0) -> Undef, [false,undef].all(|x| x) -> Bool(false).",
-      "status": "done",
-      "commit": "aa25e42"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Implement .all and .any methods with Kleene 3-valued logic: .all returns false if any false, undef if any undef and none false, true otherwise. .any returns true if any true, undef if any undef and none true, false otherwise.",
-      "status": "done",
-      "commit": "11193fc"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing tests for MethodCall .concat and .generate on lists: [1,2].concat([3,4]) -> List([1,2,3,4]), [].generate(3, |i| i*2) -> List([0,2,4]).",
-      "status": "done",
-      "commit": "cdb4e22"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Implement .concat (merge two lists) and .generate (create list from count + lambda, applying lambda to indices 0..count) methods.",
-      "status": "done",
-      "commit": "c028a19"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write failing tests for set operations: set{1,2,3}.union(set{3,4}) -> Set({1,2,3,4}), set{1,2,3}.intersection(set{2,3,4}) -> Set({2,3}), set{1,2,3}.difference(set{2,3,4}) -> Set({1}).",
-      "status": "done",
-      "commit": "24e6082"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Implement set .union, .intersection, .difference methods using BTreeSet operations.",
-      "status": "done",
-      "commit": "a735a38"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Write failing tests for map methods: map{'a'=>1}.keys -> List(['a']), map{'a'=>1}.values -> List([1]), map{'a'=>1}.contains_key('a') -> Bool(true), map{'a'=>1}.contains_key('b') -> Bool(false).",
-      "status": "done",
-      "commit": "ddf1d72"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "Implement map .keys, .values (return as Value::List), .contains_key methods.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-27",
-      "type": "test",
-      "description": "Write failing tests for undef propagation edge cases: undef.count -> Undef, [1,undef,3].count -> Int(3), [1,undef,3].sum -> Undef, undef[0] -> Undef, [1,2,3][undef] -> Undef, undef.map(lambda) -> Undef.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-28",
-      "type": "impl",
-      "description": "Verify undef propagation passes -- most cases should already work from the MethodCall dispatch checking for Undef object. Fix any gaps.",
-      "status": "done",
-      "commit": "40d29ab"
-    },
-    {
-      "id": "step-29",
-      "type": "test",
-      "description": "Write failing compiler tests in crates/reify-compiler/tests/collection_compile_tests.rs: compile 'let x = [1, 2, 3]' -> CompiledExprKind::ListLiteral, compile 'let x = set{1, 2}' -> SetLiteral, compile 'let x = map{\"a\" => 1}' -> MapLiteral, compile 'let x = items[0]' -> IndexAccess.",
-      "status": "done",
-      "commit": "4048d2f"
-    },
-    {
-      "id": "step-30",
-      "type": "impl",
-      "description": "Implement compilation of ListLiteral, SetLiteral, MapLiteral, IndexAccess in reify-compiler -- replace the current stub error handlers with actual compilation that recursively compiles element expressions and produces the new CompiledExprKind variants.",
-      "status": "done",
-      "commit": "89320f7"
-    },
-    {
-      "id": "step-31",
-      "type": "test",
-      "description": "Write failing compiler test: compile 'let n = items.count' where items is a known let binding -> CompiledExprKind::MethodCall { method: 'count', args: [] }. Test property-style method compilation from MemberAccess syntax.",
-      "status": "done",
-      "commit": "802d2be"
-    },
-    {
-      "id": "step-32",
-      "type": "impl",
-      "description": "Implement compilation of MemberAccess -> MethodCall in reify-compiler. When the member is a known collection method name (count, sum, keys, values) and it's NOT a port access, compile it as MethodCall with empty args. Keep port access logic intact.",
-      "status": "done",
-      "commit": "5e96a5b"
-    },
-    {
-      "id": "step-33",
-      "type": "test",
-      "description": "Write integration test: parse + compile + eval 'structure S { let x = [1, 2, 3] }' -> verify x evaluates to Value::List([Int(1), Int(2), Int(3)]). Test parse + compile + eval for set and map literals too.",
-      "status": "done",
-      "commit": "59ab3b6"
-    },
-    {
-      "id": "step-34",
-      "type": "impl",
-      "description": "Verify integration tests pass end-to-end. Fix any issues in the parse -> compile -> eval pipeline for collection literals.",
-      "status": "done",
-      "commit": "59ab3b6"
-    },
-    {
-      "id": "step-35",
-      "type": "test",
-      "description": "Write integration test: parse + compile + eval 'structure S { let items = [1, 2, 3]  let n = items.count }' -> verify n evaluates to Int(3). Also test list index access integration.",
-      "status": "done",
-      "commit": "4469cc0"
-    },
-    {
-      "id": "step-36",
-      "type": "impl",
-      "description": "Verify property method and index access integration tests pass. Fix any issues.",
-      "status": "done",
-      "commit": "4469cc0"
-    },
-    {
-      "id": "step-37",
-      "type": "test",
-      "description": "Add Kleene 3-valued logic tests for .any in collection_eval_tests.rs: (1) eval_method_any_kleene_undef: [undef, false].any(|x| x) -> Undef (no true present, but undef present means result is indeterminate). (2) eval_method_any_kleene_true_wins: [true, undef].any(|x| x) -> Bool(true) (true dominates undef in Kleene OR). These mirror the existing eval_method_all_kleene_undef and eval_method_all_kleene_false_wins tests.",
-      "status": "done",
-      "commit": "ffbc589"
-    },
-    {
-      "id": "step-38",
-      "type": "impl",
-      "description": "Verify .any Kleene tests pass. The implementation already has the correct Kleene logic (lines 398-417: true short-circuits, false skips, undef flags has_undef, final check returns Undef if has_undef else Bool(false)). Fix if any test unexpectedly fails.",
-      "status": "done",
-      "commit": "ffbc589"
-    },
-    {
-      "id": "step-39",
-      "type": "test",
-      "description": "Add .filter Undef propagation test in collection_eval_tests.rs: eval_method_filter_undef_propagation: [1, undef, 3].filter(|x| x > 0) -> Undef. The predicate (x > 0) returns Undef when x is Undef (because Gt with Undef operand propagates Undef). The filter spec says 'propagate Undef' — if any element's predicate returns Undef, the entire filter result is Undef. Use an undef ValueCellId in the list to produce an Undef element that causes the predicate to return Undef.",
-      "status": "done",
-      "commit": "17de3f1"
-    },
-    {
-      "id": "step-40",
-      "type": "impl",
-      "description": "Verify .filter Undef propagation test passes. The implementation already handles this at line 484 (Value::Undef => return Value::Undef). Fix if the test unexpectedly fails.",
-      "status": "done",
-      "commit": "17de3f1"
-    },
-    {
-      "id": "step-41",
-      "type": "test",
-      "description": "Add test for UserFunctionCall inside lambda body used in a collection method. In collection_eval_tests.rs, add eval_method_map_with_user_function: create a CompiledFunction 'double' that returns x*2, create a list [1,2,3], call .map(|x| double(x)) where the lambda body is a UserFunctionCall node. Evaluate with EvalContext::new(&values, &[double_fn]). Assert result is List([2,4,6]). This test will FAIL because apply_lambda() currently uses EvalContext::simple() which drops the functions registry, so UserFunctionCall inside the lambda body returns Undef for every element, producing List([Undef, Undef, Undef]).",
-      "status": "done",
-      "commit": "a47f47d"
-    },
-    {
-      "id": "step-42",
-      "type": "impl",
-      "description": "Fix apply_lambda() context propagation. Change signature from pub fn apply_lambda(lambda: &Value, args: &[Value]) -> Value to pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value. Inside, replace EvalContext::simple(&eval_map) with ctx.with_scope(&eval_map) so functions and recursion_depth are preserved. Change eval_method_call signature from fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value to fn eval_method_call(obj: &Value, method: &str, args: &[Value], ctx: &EvalContext) -> Value. Update all apply_lambda call sites inside eval_method_call (.map, .filter, .fold, .all, .any, .generate) to pass ctx. Update the MethodCall arm in eval_expr (line 180) to pass ctx to eval_method_call. Existing tests using EvalContext::simple() will continue to work since simple() sets functions to &[] which is still valid.",
-      "status": "done",
-      "commit": "39f0f66"
+      "commit": "eda4604"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add all 5 CompiledExprKind variants (ListLiteral, SetLiteral, MapLiteral, IndexAccess, MethodCall) rather than reusing existing FunctionCall for methods",
-      "rationale": "MethodCall has a fundamentally different semantic: it dispatches on the receiver object's runtime type (List, Set, Map), not on a function name. Separate variants give clean pattern matching in the evaluator and accurate dependency tracking in collect_value_refs."
+      "decision": "QuantifierKind enum lives in reify-types alongside other compiled expression types",
+      "rationale": "reify-types is the shared types crate used by both reify-compiler and reify-expr. The QuantifierKind enum is needed in CompiledExprKind (reify-types/expr.rs) and in ExprKind (reify-syntax). We need it in both places. For the AST side it lives in reify-syntax, for the compiled side in reify-types."
     },
     {
-      "decision": "Implement method call evaluation directly in reify-expr rather than routing through reify-stdlib",
-      "rationale": "Collection methods need access to apply_lambda (for .map, .filter, .fold) and eval_expr (for sub-expression evaluation), which are in reify-expr. Only dimension-aware sum may delegate to stdlib for consistency with existing numeric stdlib functions."
+      "decision": "Quantifier bound variable uses ValueCellId with a synthetic entity name (like lambda params)",
+      "rationale": "The lambda implementation uses `$lambda{N}.{entity}` as the entity name for lambda parameters. Quantifiers will use `$quant{N}.{entity}` for the bound variable. This ensures unique ValueCellIds that don't clash with structure members or other variables."
     },
     {
-      "decision": "Test methods with arguments (.map, .filter, .fold, etc.) by constructing CompiledExpr trees directly rather than requiring end-to-end parsing",
-      "rationale": "The current tree-sitter grammar only has MemberAccess (obj.member) with no support for method calls with arguments (obj.method(args)). A grammar change to add method_call syntax is needed but out of scope for this task's stated modules. Property-style methods (.count, .sum, .keys, .values) work through MemberAccess already."
+      "decision": "Quantifier evaluation directly binds the variable in a ValueMap scope rather than creating a Lambda closure",
+      "rationale": "While quantifiers could theoretically desugar to collection.all(|x| predicate) or collection.any(|x| predicate), a direct implementation is cleaner, avoids the overhead of closure creation per element, and gives better error messages. The .all()/.any() methods already exist for lambda-based usage."
     },
     {
-      "decision": "Compile MemberAccess to MethodCall only for known collection method names, not all member accesses",
-      "rationale": "Port member access (port.member) must continue to compile to ValueRef as it does today. The compiler should check if the member is a known collection method name (count, sum, keys, values) and only then produce MethodCall when it's NOT a port access. Unknown members remain diagnostic errors. This preserves backward compatibility."
+      "decision": "Quantifier works on both List and Set types",
+      "rationale": "The task spec says collection must be List/Set type. For Set, we iterate the BTreeSet. This aligns with the language semantics where quantifiers make sense over any iterable collection."
     },
     {
-      "decision": "Use Kleene 3-valued logic for .all and .any, consistent with existing And/Or evaluation",
-      "rationale": "The spec requires: .all with undef element returns false if any false, undef if any undef and none false. This matches the Kleene AND/OR already implemented for BinOp::And and BinOp::Or in reify-expr."
+      "decision": "Grammar uses colon separator between collection and predicate: `forall x in coll: pred`",
+      "rationale": "The task spec uses this syntax. The colon is unambiguous here since it follows an expression (the collection) and precedes another expression (the predicate). No conflict with existing colon uses (type annotations always follow identifiers/params, not expressions)."
     },
     {
-      "decision": ".sum on empty list returns Int(0) rather than Undef",
-      "rationale": "Zero is the additive identity and the conventional sum of an empty sequence. This matches standard library behavior in most languages."
+      "decision": "Content hash tag byte 13 for Quantifier CompiledExpr constructor",
+      "rationale": "Existing constructors use tag bytes 0-12. The next available is 13 for the Quantifier variant, maintaining the convention of unique tag bytes per expression kind."
     },
     {
-      "decision": "Thread EvalContext through apply_lambda and eval_method_call rather than storing functions in Value::Lambda",
-      "rationale": "Storing the function registry inside Value::Lambda would require cloning the entire &[CompiledFunction] slice at lambda creation time, adding allocation overhead and coupling Value to CompiledFunction ownership. Threading the context is cheaper (just a reference), follows the existing pattern used by eval_user_function_call (which uses ctx.with_scope()), and keeps Value as a pure data type. The with_scope() method already exists and correctly propagates functions and increments recursion_depth."
+      "decision": "Grammar conflict: 'in' keyword clashes with port_direction_keyword",
+      "rationale": "The port_direction_keyword already uses 'in' as a keyword. The quantifier uses 'in' in a different syntactic position (after identifier in quantifier context). Tree-sitter can disambiguate these positionally since quantifier_expression starts with 'forall'/'exists' keyword. May need to add quantifier_expression to the conflicts list or use token precedence if conflicts arise."
     }
   ],
   "reuse": [
     {
-      "what": "apply_lambda() function",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for .map, .filter, .fold, .all, .any, .generate -- each applies a lambda to collection elements"
+      "what": "Lambda compilation pattern (nested scope with bound variable)",
+      "where": "crates/reify-compiler/src/lib.rs lines 1034-1091",
+      "how": "Follow the same pattern: create a new entity name for the quantifier scope, register the bound variable with a ValueCellId, compile the predicate in the extended scope. Reuse CompilationScope.clone() + names.insert() for variable binding."
     },
     {
-      "what": "eval_add() function (addition logic with dimension awareness)",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for .sum implementation -- iterate and accumulate using the same add semantics that handle Int+Int, Real+Real, Scalar+Scalar with dimension checking"
+      "what": "Kleene 3-valued logic from .all()/.any() method implementations",
+      "where": "crates/reify-expr/src/lib.rs lines 377-418",
+      "how": "The existing .all() and .any() method implementations on lists already implement the exact Kleene logic needed for forall/exists. Mirror the same short-circuit + undef tracking pattern."
     },
     {
-      "what": "Value::List/Set/Map variants and BTreeSet/BTreeMap",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Already implemented with PartialEq, Eq, Ord, content_hash, Display -- collection operations produce these existing Value variants"
+      "what": "Collection eval tests pattern",
+      "where": "crates/reify-expr/tests/collection_eval_tests.rs",
+      "how": "Follow the same test structure: construct CompiledExpr trees directly, eval with EvalContext::simple, assert Value results."
     },
     {
-      "what": "CompiledExpr::literal() constructor",
-      "where": "crates/reify-types/src/expr.rs",
-      "how": "Reuse for constructing literal sub-expressions within collection compilation"
+      "what": "Lambda expression grammar pattern",
+      "where": "tree-sitter-reify/grammar.js lines 397-407",
+      "how": "The quantifier_expression follows a similar pattern of keyword + params + body. Add it to _expression choices alongside lambda_expression."
     },
     {
-      "what": "Existing compiler pattern: compile_expr_guarded recursion",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "Collection literal compilation follows the same pattern -- recursively compile element expressions, then wrap in the collection CompiledExprKind variant"
+      "what": "walk() and collect_value_refs() traversal pattern",
+      "where": "crates/reify-types/src/expr.rs walk() and collect_value_refs_inner()",
+      "how": "Add Quantifier variant to both methods: walk collection and predicate, collect refs from collection and predicate (excluding the bound variable_id from predicate refs, similar to lambda captures)."
     },
     {
-      "what": "EvalContext and ValueMap",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Reuse for method call evaluation context -- same pattern as function calls, pass context through for sub-expression evaluation"
+      "what": "compile_no_errors and get_cell_expr test helpers",
+      "where": "crates/reify-compiler/tests/collection_compile_tests.rs",
+      "how": "Reuse the same helper pattern for quantifier compile tests: parse source, compile, assert no errors, inspect compiled expression kind."
     },
     {
-      "what": "Test patterns from lambda_eval_tests.rs",
-      "where": "crates/reify-expr/tests/lambda_eval_tests.rs",
-      "how": "Follow same pattern of constructing CompiledExpr trees and evaluating them with EvalContext::simple(). The lambda test helpers (make_value_lambda) can be adapted for collection tests."
-    },
-    {
-      "what": "EvalContext::with_scope() method",
-      "where": "crates/reify-expr/src/lib.rs:36",
-      "how": "Reuse for apply_lambda context propagation fix — with_scope creates a child context preserving functions and incrementing recursion_depth, exactly what apply_lambda needs instead of EvalContext::simple()"
+      "what": "parse_members test helper",
+      "where": "crates/reify-syntax/tests/lambda_tests.rs",
+      "how": "Reuse the same helper to parse source with a structure wrapper and extract members for assertion."
     }
   ]
 }
