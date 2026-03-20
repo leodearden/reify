@@ -383,6 +383,9 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        // Detect 'pub' keyword by checking anonymous children
+        let is_pub = self.has_pub_keyword(node);
+
         let type_expr = node.child_by_field_name("type").map(|t| {
             let ident = if t.kind() == "type_expr" {
                 t.child(0).unwrap_or(t)
@@ -402,6 +405,7 @@ impl<'a> Lowering<'a> {
 
         Some(LetDecl {
             name,
+            is_pub,
             type_expr,
             value,
             where_clause,
