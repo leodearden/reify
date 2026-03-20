@@ -922,10 +922,16 @@ fn compile_structure(
                 // Update the scope with the inferred type
                 scope.register(&let_decl.name, cell_type.clone());
 
+                let visibility = if let_decl.is_pub {
+                    Visibility::Public
+                } else {
+                    Visibility::Private
+                };
+
                 value_cells.push(ValueCellDecl {
                     id,
                     kind: ValueCellKind::Let,
-                    visibility: Visibility::Private,
+                    visibility,
                     cell_type,
                     default_expr: Some(compiled_expr),
                     span: let_decl.span,
