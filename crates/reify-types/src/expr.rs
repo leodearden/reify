@@ -129,3 +129,158 @@ impl CompiledExpr {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hash::ContentHash;
+    use crate::identity::ValueCellId;
+
+    // Helper to make a simple Conditional expression manually.
+    fn make_conditional(
+        condition: CompiledExpr,
+        then_branch: CompiledExpr,
+        else_branch: CompiledExpr,
+        result_type: Type,
+    ) -> CompiledExpr {
+        let hash = ContentHash::of(&[5])
+            .combine(condition.content_hash)
+            .combine(then_branch.content_hash)
+            .combine(else_branch.content_hash);
+        CompiledExpr {
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(condition),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+            result_type,
+            content_hash: hash,
+        }
+    }
+
+    // Helper to make a FunctionCall expression.
+    fn make_function_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExpr {
+        let hash = ContentHash::of(name.as_bytes());
+        CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: name.to_string(),
+                    qualified_name: format!("std::{}", name),
+                },
+                args,
+            },
+            result_type,
+            content_hash: hash,
+        }
+    }
+
+    #[test]
+    fn walk_visits_literal() {
+        let expr = CompiledExpr::literal(Value::Int(42), Type::Int);
+        let mut count = 0;
+        expr.walk(&mut |_| count += 1);
+        assert_eq!(count, 1, "walk on Literal should visit exactly 1 node");
+    }
+
+    #[test]
+    fn walk_collects_value_ref() {
+        let id = ValueCellId::new("Part", "x");
+        let expr = CompiledExpr::value_ref(id.clone(), Type::length());
+        let mut refs = Vec::new();
+        expr.walk(&mut |node| {
+            if let CompiledExprKind::ValueRef(vid) = &node.kind {
+                refs.push(vid.clone());
+            }
+        });
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0], id);
+    }
+
+    #[test]
+    fn walk_traverses_binop_children() {
+        let a = CompiledExpr::value_ref(ValueCellId::new("P", "a"), Type::length());
+        let b = CompiledExpr::value_ref(ValueCellId::new("P", "b"), Type::length());
+        let expr = CompiledExpr::binop(BinOp::Gt, a, b, Type::Bool);
+
+        let mut count = 0;
+        let mut refs = Vec::new();
+        expr.walk(&mut |node| {
+            count += 1;
+            if let CompiledExprKind::ValueRef(vid) = &node.kind {
+                refs.push(vid.clone());
+            }
+        });
+        assert_eq!(count, 3, "BinOp + 2 children = 3 nodes");
+        assert_eq!(refs.len(), 2, "should collect both ValueCellIds");
+    }
+
+    #[test]
+    fn walk_traverses_function_call_args() {
+        let arg1 = CompiledExpr::literal(Value::Int(1), Type::Int);
+        let arg2 = CompiledExpr::literal(Value::Int(2), Type::Int);
+        let expr = make_function_call("foo", vec![arg1, arg2], Type::Int);
+
+        let mut count = 0;
+        expr.walk(&mut |_| count += 1);
+        assert_eq!(count, 3, "FunctionCall + 2 args = 3 nodes");
+    }
+
+    #[test]
+    fn walk_traverses_conditional_branches() {
+        let cond = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let then_br = CompiledExpr::literal(Value::Int(1), Type::Int);
+        let else_br = CompiledExpr::literal(Value::Int(2), Type::Int);
+        let expr = make_conditional(cond, then_br, else_br, Type::Int);
+
+        let mut count = 0;
+        expr.walk(&mut |_| count += 1);
+        assert_eq!(count, 4, "Conditional + condition + then + else = 4 nodes");
+    }
+
+    #[test]
+    fn walk_traverses_deeply_nested() {
+        // Conditional containing BinOp containing ValueRefs
+        let a = CompiledExpr::value_ref(ValueCellId::new("P", "a"), Type::length());
+        let b = CompiledExpr::value_ref(ValueCellId::new("P", "b"), Type::length());
+        let condition = CompiledExpr::binop(BinOp::Gt, a, b, Type::Bool);
+
+        let c = CompiledExpr::value_ref(ValueCellId::new("P", "c"), Type::length());
+        let one_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.001,
+                dimension: crate::DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let then_br = CompiledExpr::binop(BinOp::Gt, c, one_mm, Type::Bool);
+
+        let d = CompiledExpr::value_ref(ValueCellId::new("P", "d"), Type::length());
+        let two_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.002,
+                dimension: crate::DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let else_br = CompiledExpr::binop(BinOp::Gt, d, two_mm, Type::Bool);
+
+        let expr = make_conditional(condition, then_br, else_br, Type::Bool);
+
+        let mut refs = Vec::new();
+        expr.walk(&mut |node| {
+            if let CompiledExprKind::ValueRef(vid) = &node.kind {
+                refs.push(vid.clone());
+            }
+        });
+        assert_eq!(refs.len(), 4, "should collect all 4 ValueCellIds from all levels");
+        let expected = vec![
+            ValueCellId::new("P", "a"),
+            ValueCellId::new("P", "b"),
+            ValueCellId::new("P", "c"),
+            ValueCellId::new("P", "d"),
+        ];
+        for id in &expected {
+            assert!(refs.contains(id), "missing {:?}", id);
+        }
+    }
+}
