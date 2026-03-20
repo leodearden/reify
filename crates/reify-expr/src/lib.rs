@@ -304,6 +304,27 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
                 _ => Value::Undef,
             }
         },
+        "keys" => match obj {
+            Value::Map(entries) => {
+                Value::List(entries.keys().cloned().collect())
+            }
+            _ => Value::Undef,
+        },
+        "values" => match obj {
+            Value::Map(entries) => {
+                Value::List(entries.values().cloned().collect())
+            }
+            _ => Value::Undef,
+        },
+        "contains_key" => {
+            if args.len() != 1 {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Map(entries) => Value::Bool(entries.contains_key(&args[0])),
+                _ => Value::Undef,
+            }
+        },
         "difference" => {
             if args.len() != 1 {
                 return Value::Undef;
