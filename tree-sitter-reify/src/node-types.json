@@ -1030,6 +1030,10 @@
           "named": true
         },
         {
+          "type": "port_declaration",
+          "named": true
+        },
+        {
           "type": "sub_declaration",
           "named": true
         }
@@ -2322,6 +2326,190 @@
     }
   },
   {
+    "type": "port_body",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "constraint_declaration",
+          "named": true
+        },
+        {
+          "type": "let_declaration",
+          "named": true
+        },
+        {
+          "type": "param_declaration",
+          "named": true
+        },
+        {
+          "type": "port_direction_setting",
+          "named": true
+        },
+        {
+          "type": "port_frame_setting",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "port_declaration",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "port_body",
+            "named": true
+          }
+        ]
+      },
+      "direction": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "port_direction_keyword",
+            "named": true
+          }
+        ]
+      },
+      "guard": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "where_clause",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "port_direction_keyword",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "port_direction_setting",
+    "named": true,
+    "fields": {
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "port_direction_keyword",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "port_frame_setting",
+    "named": true,
+    "fields": {
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "bool_literal",
+            "named": true
+          },
+          {
+            "type": "conditional_expression",
+            "named": true
+          },
+          {
+            "type": "function_call",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
+            "type": "match_expression",
+            "named": true
+          },
+          {
+            "type": "member_access",
+            "named": true
+          },
+          {
+            "type": "number_literal",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
+            "named": true
+          },
+          {
+            "type": "string_literal",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "quantity_literal",
     "named": true,
     "fields": {
@@ -2495,6 +2683,10 @@
         },
         {
           "type": "param_declaration",
+          "named": true
+        },
+        {
+          "type": "port_declaration",
           "named": true
         },
         {
@@ -2965,6 +3157,10 @@
     "named": true
   },
   {
+    "type": "bidi",
+    "named": false
+  },
+  {
     "type": "block_comment",
     "named": true,
     "extra": true
@@ -2975,6 +3171,10 @@
   },
   {
     "type": "def",
+    "named": false
+  },
+  {
+    "type": "direction",
     "named": false
   },
   {
@@ -2994,6 +3194,10 @@
     "named": false
   },
   {
+    "type": "frame",
+    "named": false
+  },
+  {
     "type": "identifier",
     "named": true
   },
@@ -3003,6 +3207,10 @@
   },
   {
     "type": "import",
+    "named": false
+  },
+  {
+    "type": "in",
     "named": false
   },
   {
@@ -3035,7 +3243,15 @@
     "named": true
   },
   {
+    "type": "out",
+    "named": false
+  },
+  {
     "type": "param",
+    "named": false
+  },
+  {
+    "type": "port",
     "named": false
   },
   {

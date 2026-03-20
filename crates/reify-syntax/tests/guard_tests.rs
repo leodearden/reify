@@ -348,6 +348,7 @@ fn bracket_backward_compat_no_guards() {
             MemberDecl::Maximize(m) => m.content_hash,
             MemberDecl::GuardedGroup(g) => g.content_hash,
             MemberDecl::AssociatedType(a) => a.content_hash,
+            MemberDecl::Port(p) => p.content_hash,
         };
         let h2 = match m2 {
             MemberDecl::Param(p) => p.content_hash,
@@ -358,6 +359,7 @@ fn bracket_backward_compat_no_guards() {
             MemberDecl::Maximize(m) => m.content_hash,
             MemberDecl::GuardedGroup(g) => g.content_hash,
             MemberDecl::AssociatedType(a) => a.content_hash,
+            MemberDecl::Port(p) => p.content_hash,
         };
         assert_eq!(h1, h2);
     }

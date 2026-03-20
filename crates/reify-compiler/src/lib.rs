@@ -1513,6 +1513,9 @@ fn compile_structure(
             reify_syntax::MemberDecl::AssociatedType(_) => {
                 // Associated type compilation deferred to a later milestone.
             }
+            reify_syntax::MemberDecl::Port(_) => {
+                // Port compilation will be implemented in a later step.
+            }
         }
     }
 

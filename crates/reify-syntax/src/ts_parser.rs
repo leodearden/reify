@@ -584,6 +584,17 @@ impl<'a> Lowering<'a> {
             "associated_type" => {
                 self.lower_associated_type(child).map(MemberDecl::AssociatedType)
             }
+            "port_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid port: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_port(child).map(MemberDecl::Port)
+                }
+            }
             "ERROR" => {
                 self.errors.push(ParseError {
                     message: format!("syntax error: {}", self.node_text(child)),
@@ -842,6 +853,11 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
+    }
+
+    fn lower_port(&mut self, _node: tree_sitter::Node) -> Option<PortDecl> {
+        // Stub: will be implemented in step-2.
+        None
     }
 
     fn lower_named_arg(&self, node: tree_sitter::Node) -> Option<(String, Expr)> {
@@ -1240,6 +1256,7 @@ mod tests {
             MemberDecl::Maximize(_) => "maximize".into(),
             MemberDecl::GuardedGroup(_) => "guarded_group".into(),
             MemberDecl::AssociatedType(a) => format!("type:{}", a.name),
+            MemberDecl::Port(p) => format!("port:{}", p.name),
         }).collect();
         assert_eq!(names, vec![
             "param:width", "param:height", "param:thickness",
@@ -1404,6 +1421,7 @@ mod tests {
                 MemberDecl::Maximize(m) => m.span,
                 MemberDecl::GuardedGroup(g) => g.span,
                 MemberDecl::AssociatedType(a) => a.span,
+                MemberDecl::Port(p) => p.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
             assert!((span.end as usize) <= source.len(), "member {} span overflows", i);
@@ -1437,6 +1455,10 @@ mod tests {
                 MemberDecl::AssociatedType(a) => {
                     assert!(text.starts_with("type"), "associated_type member {} text: {:?}", i, text);
                     assert!(text.contains(&a.name), "associated_type {} name in text", i);
+                }
+                MemberDecl::Port(p) => {
+                    assert!(text.starts_with("port"), "port member {} text: {:?}", i, text);
+                    assert!(text.contains(&p.name), "port {} name in text", i);
                 }
             }
         }
@@ -1480,6 +1502,7 @@ mod tests {
                 MemberDecl::Maximize(m) => (m.span, m.content_hash),
                 MemberDecl::GuardedGroup(g) => (g.span, g.content_hash),
                 MemberDecl::AssociatedType(a) => (a.span, a.content_hash),
+                MemberDecl::Port(p) => (p.span, p.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
             assert_eq!(hash, ContentHash::of_str(text), "member {} hash from source text", i);
@@ -1563,6 +1586,7 @@ mod tests {
                 MemberDecl::Maximize(m) => (m.content_hash, m.span),
                 MemberDecl::GuardedGroup(g) => (g.content_hash, g.span),
                 MemberDecl::AssociatedType(a) => (a.content_hash, a.span),
+                MemberDecl::Port(p) => (p.content_hash, p.span),
             };
             let (hash_b, span_b) = match m_b {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
@@ -1573,6 +1597,7 @@ mod tests {
                 MemberDecl::Maximize(m) => (m.content_hash, m.span),
                 MemberDecl::GuardedGroup(g) => (g.content_hash, g.span),
                 MemberDecl::AssociatedType(a) => (a.content_hash, a.span),
+                MemberDecl::Port(p) => (p.content_hash, p.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
             assert_eq!(span_a, span_b, "member {} span determinism", i);
