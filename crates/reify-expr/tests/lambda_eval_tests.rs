@@ -138,3 +138,28 @@ fn eval_lambda_with_undef_capture() {
         other => panic!("expected Value::Lambda, got {:?}", other),
     }
 }
+
+/// step-19: Apply a Value::Lambda — `(|x| x * 2)` applied to `[Int(5)]`
+/// should return `Int(10)`.
+#[test]
+fn apply_lambda_simple() {
+    use reify_expr::apply_lambda;
+
+    // Build a Value::Lambda for |x| x * 2
+    let x_id = ValueCellId::new("$lambda", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Real,
+    );
+
+    let lambda = Value::Lambda {
+        params: vec!["x".to_string()],
+        body: Box::new(body),
+        captures: ValueMap::new(),
+    };
+
+    let result = apply_lambda(&lambda, &[Value::Int(5)]);
+    assert_eq!(result, Value::Int(10));
+}
