@@ -20,6 +20,14 @@ vi.mock('three', () => {
       this.attributes[name] = attr;
     }
 
+    getAttribute(name: string): any {
+      return this.attributes[name];
+    }
+
+    deleteAttribute(name: string) {
+      delete this.attributes[name];
+    }
+
     setIndex(index: any) {
       this.index = index;
     }
@@ -28,9 +36,12 @@ vi.mock('three', () => {
   class MockBufferAttribute {
     array: any;
     itemSize: number;
+    needsUpdate: boolean = false;
+    count: number;
     constructor(array: any, itemSize: number) {
       this.array = array;
       this.itemSize = itemSize;
+      this.count = array.length / itemSize;
     }
   }
 
@@ -196,16 +207,17 @@ describe('meshManager', () => {
   it('each entity_path gets a deterministic color (same path = same color)', () => {
     const { manager } = setup();
     manager.sync({ A: makeMeshData('A') });
-    const colorA1 = (manager.getSceneMeshes().get('A')!.material as MeshStandardMaterial).color;
+    const colorA1 = (manager.getSceneMeshes().get('A')!.material as MeshStandardMaterial).color as any;
 
     // Recreate and sync again
     manager.sync({});
     manager.sync({ A: makeMeshData('A') });
-    const colorA2 = (manager.getSceneMeshes().get('A')!.material as MeshStandardMaterial).color;
+    const colorA2 = (manager.getSceneMeshes().get('A')!.material as MeshStandardMaterial).color as any;
 
-    // Color for same path should be deterministic
-    expect(colorA1).toBeDefined();
-    expect(colorA2).toBeDefined();
+    // Color for same path should be deterministic — same object value
+    expect(colorA2.value).toBe(colorA1.value);
+    // djb2 hash of 'A' = charCode 65, abs(65) % 8 = 1, palette[1] = '#cba6f7'
+    expect(colorA1.value).toBe('#cba6f7');
   });
 
   it('different entity paths can get different colors', () => {
@@ -249,5 +261,50 @@ describe('meshManager', () => {
     const mesh = manager.getSceneMeshes().get('A')!;
     expect(mesh.geometry.attributes.position).toBeDefined();
     expect(mesh.geometry.attributes.normal).toBeUndefined();
+  });
+
+  it('update reuses existing BufferAttribute objects and sets needsUpdate', () => {
+    const { manager } = setup();
+    const verts1 = new Float32Array([0, 1, 2, 3, 4, 5]);
+    const indices1 = new Uint32Array([0, 1, 2]);
+    manager.sync({ A: makeMeshData('A', verts1, indices1) });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+    const geom = mesh.geometry as any;
+    const posAttrBefore = geom.attributes.position;
+    const indexBefore = geom.index;
+
+    // Sync with new data
+    const verts2 = new Float32Array([9, 8, 7, 6, 5, 4]);
+    const indices2 = new Uint32Array([2, 1, 0]);
+    manager.sync({ A: makeMeshData('A', verts2, indices2) });
+
+    // Same BufferAttribute object should be reused (identity check)
+    expect(geom.attributes.position).toBe(posAttrBefore);
+    expect(geom.index).toBe(indexBefore);
+
+    // Data should be updated
+    expect(posAttrBefore.array).toBe(verts2);
+    expect(indexBefore.array).toBe(indices2);
+
+    // needsUpdate should be flagged
+    expect(posAttrBefore.needsUpdate).toBe(true);
+    expect(indexBefore.needsUpdate).toBe(true);
+  });
+
+  it('update with normals becoming null removes stale normal attribute', () => {
+    const { manager } = setup();
+    const normals = new Float32Array([0, 0, 1, 0, 0, 1]);
+    manager.sync({ A: makeMeshData('A', undefined, undefined, normals) });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+    const geom = mesh.geometry as any;
+    expect(geom.attributes.normal).toBeDefined();
+
+    // Sync the same entity with normals = null
+    manager.sync({ A: makeMeshData('A', undefined, undefined, null) });
+
+    // Normal attribute should be removed
+    expect(geom.attributes.normal).toBeUndefined();
   });
 });
