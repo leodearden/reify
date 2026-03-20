@@ -1,7 +1,7 @@
 enum Shape { Round, Square, Hex }
 
 structure def Fitting {
-    param shape : Shape = Shape.Round
+    let shape = Shape.Round
     param size : Length = 10mm
 
     where shape == Shape.Round {
