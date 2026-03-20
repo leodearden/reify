@@ -787,3 +787,66 @@ fn eval_method_all_kleene_false_wins() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Bool(false));
 }
+
+// ─── step-21/22: MethodCall .concat and .generate ───
+
+#[test]
+fn eval_method_concat_lists() {
+    // [1, 2].concat([3, 4]) -> [1, 2, 3, 4]
+    let list1 = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let list2_arg = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+            CompiledExpr::literal(Value::Int(4), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    // concat takes 1 arg (the other list), but the arg is a CompiledExpr
+    // that is evaluated to Value::List by the MethodCall dispatch.
+    let expr = CompiledExpr::method_call(
+        list1,
+        "concat".to_string(),
+        vec![list2_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)])
+    );
+}
+
+#[test]
+fn eval_method_generate_list() {
+    // [].generate(3, |i| i * 2) -> [0, 2, 4]
+    let i_id = ValueCellId::new("$lambda_gen.S", "i");
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(i_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Int,
+    );
+    let lambda_arg = lambda_literal(vec![("i", i_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let count_arg = CompiledExpr::literal(Value::Int(3), Type::Int);
+    let expr = CompiledExpr::method_call(
+        list,
+        "generate".to_string(),
+        vec![count_arg, lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(0), Value::Int(2), Value::Int(4)])
+    );
+}
