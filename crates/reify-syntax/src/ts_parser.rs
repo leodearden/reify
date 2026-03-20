@@ -165,6 +165,40 @@ impl<'a> Lowering<'a> {
         bounds
     }
 
+    /// Extract type parameters from a node's optional type_parameters child.
+    fn lower_type_parameters(&self, node: tree_sitter::Node) -> Vec<TypeParamDecl> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "type_parameters" {
+                return self.lower_type_params_inner(child);
+            }
+        }
+        vec![]
+    }
+
+    /// Lower the contents of a type_parameters node.
+    fn lower_type_params_inner(&self, node: tree_sitter::Node) -> Vec<TypeParamDecl> {
+        let mut params = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "type_parameter" {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = self.node_text(name_node).to_string();
+                    let bounds = child
+                        .child_by_field_name("bounds")
+                        .map(|b| self.lower_trait_bound_list(b))
+                        .unwrap_or_default();
+                    params.push(TypeParamDecl {
+                        name,
+                        bounds,
+                        span: self.span(child),
+                    });
+                }
+            }
+        }
+        params
+    }
+
     /// Find a trait_bound_list child within a node and extract its bounds.
     fn find_trait_bound_list(&self, node: tree_sitter::Node) -> Vec<String> {
         let mut cursor = node.walk();
@@ -186,7 +220,7 @@ impl<'a> Lowering<'a> {
             node.children(&mut cursor)
                 .any(|c| !c.is_named() && self.node_text(c) == "pub")
         };
-        let type_params = vec![];
+        let type_params = self.lower_type_parameters(node);
 
         // Extract refinements from optional trait_bound_list child
         let refinements = self.find_trait_bound_list(node);
@@ -366,8 +400,8 @@ impl<'a> Lowering<'a> {
         // Extract optional trait bounds
         let trait_bounds = self.find_trait_bound_list(node);
 
-        // Extract optional type parameters (placeholder, implemented in step-16)
-        let type_params = vec![];
+        // Extract optional type parameters
+        let type_params = self.lower_type_parameters(node);
 
         let members = self.lower_members(node);
 

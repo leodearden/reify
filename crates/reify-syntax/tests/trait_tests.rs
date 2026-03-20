@@ -189,3 +189,38 @@ fn parse_structure_with_trait_bounds() {
     assert!(structure.type_params.is_empty());
     assert_eq!(structure.members.len(), 1);
 }
+
+// ── Step 15: type parameters ──────────────────────────────────────
+
+#[test]
+fn parse_trait_with_type_params() {
+    let (decls, errors) = parse_decls("trait Container<T: Rigid> { param capacity : Scalar }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let trait_decl = match &decls[0] {
+        Declaration::Trait(t) => t,
+        other => panic!("expected Trait, got {:?}", other),
+    };
+
+    assert_eq!(trait_decl.name, "Container");
+    assert_eq!(trait_decl.type_params.len(), 1);
+    assert_eq!(trait_decl.type_params[0].name, "T");
+    assert_eq!(trait_decl.type_params[0].bounds, vec!["Rigid"]);
+}
+
+#[test]
+fn parse_trait_with_multi_type_params() {
+    let (decls, errors) = parse_decls("trait Pair<A: Rigid, B> { }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let trait_decl = match &decls[0] {
+        Declaration::Trait(t) => t,
+        other => panic!("expected Trait, got {:?}", other),
+    };
+
+    assert_eq!(trait_decl.type_params.len(), 2);
+    assert_eq!(trait_decl.type_params[0].name, "A");
+    assert_eq!(trait_decl.type_params[0].bounds, vec!["Rigid"]);
+    assert_eq!(trait_decl.type_params[1].name, "B");
+    assert!(trait_decl.type_params[1].bounds.is_empty());
+}
