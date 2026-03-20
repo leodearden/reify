@@ -354,6 +354,7 @@ impl TopologyTemplateBuilder {
             constraints: self.constraints,
             realizations: self.realizations,
             sub_components: self.sub_components,
+            ports: Vec::new(),
             guarded_groups: self.guarded_groups,
             structure_controlling: self.structure_controlling,
             objective: self.objective,
