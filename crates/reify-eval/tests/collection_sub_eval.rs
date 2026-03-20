@@ -132,3 +132,60 @@ fn eval_collection_sub_produces_instances() {
         "should not have bolts[4]"
     );
 }
+
+// ─── step-11: count Undef means no instances ───
+
+#[test]
+fn eval_collection_sub_undef_count_no_instances() {
+    // Bolt template: param diameter : Scalar = 10mm
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .build();
+
+    // Parent template: count cell depends on an Undef param (no default)
+    // __count_bolts = ValueRef(Parent.n), but n has no default -> Undef
+    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param("Parent", "n", Type::Int, None) // no default -> Undef
+        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component(
+            "bolts",
+            "Bolt",
+            ValueCellId::new("Parent", "__count_bolts"),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Count cell should be Undef
+    let count_id = ValueCellId::new("Parent", "__count_bolts");
+    let count_val = result.values.get(&count_id);
+    assert_eq!(
+        count_val,
+        Some(&Value::Undef),
+        "count cell should be Undef when param n has no default"
+    );
+
+    // No instances should exist
+    for i in 0..4 {
+        let scoped_id = ValueCellId::new(&format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            result.values.get(&scoped_id).is_none(),
+            "bolts[{}] should not exist when count is Undef",
+            i
+        );
+    }
+}
