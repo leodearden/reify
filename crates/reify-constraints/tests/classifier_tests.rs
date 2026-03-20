@@ -86,6 +86,49 @@ fn classify_geometry_function_as_geometric() {
     assert_eq!(domain, ConstraintDomain::Geometric);
 }
 
+/// Conditional with mixed branches exercises all arms of collect_flags.
+///
+/// condition: ratio > 0.5 (numeric/Dimensional)
+/// then_branch: std::geo::distance(...) (Geometric)
+/// else_branch: flag == true (Logical)
+///
+/// Expected: CrossDomain (has all three domain flags).
+/// This locks in behavior before refactoring collect_flags to use walk().
+#[test]
+fn classify_conditional_with_mixed_branches() {
+    // Condition: ratio > 0.5 (numeric → Dimensional)
+    let ratio = value_ref_typed("Part", "ratio", Type::Real);
+    let half = literal(Value::Real(0.5));
+    let condition = gt(ratio, half);
+
+    // Then branch: geometry function call → Geometric
+    let then_branch = geometry_function_call("distance");
+
+    // Else branch: flag == true → Logical
+    let flag = value_ref_typed("Part", "flag", Type::Bool);
+    let t = literal(Value::Bool(true));
+    let else_branch = eq(flag, t);
+
+    let expr = CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(condition),
+            then_branch: Box::new(then_branch),
+            else_branch: Box::new(else_branch),
+        },
+        result_type: Type::Bool,
+        content_hash: ContentHash::of(b"test_cond"),
+    };
+
+    let domain = ConstraintClassifier::classify(&expr);
+    // Has numeric (from ratio > 0.5), geometric (from geo::distance), and logical (from flag == true)
+    // → CrossDomain
+    assert_eq!(
+        domain,
+        ConstraintDomain::CrossDomain,
+        "Conditional with numeric condition, geometric then, and logical else should be CrossDomain"
+    );
+}
+
 // --- Regression tests for type_system_inconsistency (String misclassification) ---
 
 /// String-typed ValueRefs must NOT set the numeric domain flag.
