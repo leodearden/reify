@@ -38,3 +38,26 @@ fn parse_basic_trait() {
         other => panic!("expected Param, got {:?}", other),
     }
 }
+
+// ── Step 3: trait with refinement ──────────────────────────────────
+
+#[test]
+fn parse_trait_with_refinement() {
+    let (decls, errors) = parse_decls("trait Fastener : Rigid { param thread_pitch : Length }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let trait_decl = match &decls[0] {
+        Declaration::Trait(t) => t,
+        other => panic!("expected Trait, got {:?}", other),
+    };
+
+    assert_eq!(trait_decl.name, "Fastener");
+    assert_eq!(trait_decl.refinements, vec!["Rigid"]);
+    assert_eq!(trait_decl.members.len(), 1);
+
+    match &trait_decl.members[0] {
+        MemberDecl::Param(p) => assert_eq!(p.name, "thread_pitch"),
+        other => panic!("expected Param, got {:?}", other),
+    }
+}
