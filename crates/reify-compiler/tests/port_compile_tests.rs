@@ -377,3 +377,44 @@ structure def S1 {
         "adding/removing frame_expr must change content_hash"
     );
 }
+
+// ── Step 25: duplicate port name error ──────────────────────────────
+
+#[test]
+fn compile_duplicate_port_name_error() {
+    let source = r#"
+trait MechPort { param d : Length }
+trait RotaryPort { param r : Length }
+
+structure def S {
+    port mount : MechPort {
+        param d : Length = 5mm
+    }
+    port mount : RotaryPort {
+        param r : Length = 3mm
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    // Should have at least one error diagnostic about duplicate port name
+    let dup_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("duplicate port"))
+        .collect();
+    assert!(
+        !dup_errors.is_empty(),
+        "expected error about duplicate port name, got diagnostics: {:?}",
+        diagnostics
+    );
+
+    // Should only have 1 CompiledPort (the first one), not 2
+    assert_eq!(
+        template.ports.len(),
+        1,
+        "expected only 1 port (first occurrence), got {}",
+        template.ports.len()
+    );
+    assert_eq!(template.ports[0].name, "mount");
+    assert_eq!(template.ports[0].type_name, "MechPort");
+}
