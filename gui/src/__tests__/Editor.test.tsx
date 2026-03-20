@@ -180,3 +180,48 @@ describe('Editor cursor tracking', () => {
     expect(store.state.cursorPosition!.column).toBe(5);
   });
 });
+
+describe('Editor active file switching', () => {
+  it('changing activeFile updates editor document content', () => {
+    // Open both files, explicitly set activeFile to file1
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Initially shows file1 content
+    expect(view.state.doc.toString()).toContain('structure Bracket');
+
+    // Switch to file2
+    store.setActiveFile(file2.path);
+
+    // Editor should now show file2 content
+    const updatedView = getEditorView(container);
+    expect(updatedView.state.doc.toString()).toContain('structure Mount');
+    expect(updatedView.state.doc.toString()).not.toContain('structure Bracket');
+  });
+
+  it('switching back restores original content', () => {
+    // Open both files, explicitly set activeFile to file1
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+
+    // Initially shows file1 content
+    let view = getEditorView(container);
+    expect(view.state.doc.toString()).toContain('structure Bracket');
+
+    // Switch to file2
+    store.setActiveFile(file2.path);
+    view = getEditorView(container);
+    expect(view.state.doc.toString()).toContain('structure Mount');
+
+    // Switch back to file1
+    store.setActiveFile(file1.path);
+    view = getEditorView(container);
+    expect(view.state.doc.toString()).toContain('structure Bracket');
+    expect(view.state.doc.toString()).not.toContain('structure Mount');
+  });
+});
