@@ -1207,3 +1207,66 @@ fn eval_undef_map_method() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert!(result.is_undef(), "undef.map(lambda) should be Undef");
 }
+
+// ─── step-41: UserFunctionCall inside lambda body in collection method ───
+
+#[test]
+fn eval_method_map_with_user_function() {
+    // Create a CompiledFunction 'double' that returns x * 2
+    // Then create [1, 2, 3].map(|x| double(x)) and verify it produces [2, 4, 6]
+    use reify_types::{CompiledFunction, CompiledFnBody, ContentHash, CompiledExprKind};
+
+    let double_fn = CompiledFunction {
+        name: "double".to_string(),
+        is_pub: false,
+        params: vec![("x".to_string(), Type::Int)],
+        return_type: Type::Int,
+        body: CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(ValueCellId::new("double", "x"), Type::Int),
+                CompiledExpr::literal(Value::Int(2), Type::Int),
+                Type::Int,
+            ),
+        },
+        content_hash: ContentHash::of(b"double_int"),
+    };
+
+    // Lambda body: double(x) — a UserFunctionCall node
+    let x_id = ValueCellId::new("$lambda_uf.S", "x");
+    let lambda_body = CompiledExpr {
+        kind: CompiledExprKind::UserFunctionCall {
+            function_name: "double".to_string(),
+            args: vec![CompiledExpr::value_ref(x_id.clone(), Type::Int)],
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of(b"double_call"),
+    };
+    let lambda_arg = lambda_literal(vec![("x", x_id)], lambda_body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "map".to_string(),
+        vec![lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+
+    let values = ValueMap::new();
+    let functions = vec![double_fn];
+    let ctx = EvalContext::new(&values, &functions);
+    let result = eval_expr(&expr, &ctx);
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(2), Value::Int(4), Value::Int(6)]),
+        "Lambda body with UserFunctionCall should have access to the function registry"
+    );
+}
