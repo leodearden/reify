@@ -1089,6 +1089,10 @@ fn compile_expr_guarded(
 
             CompiledExpr::lambda(compiled_params, param_ids, compiled_body, captures, result_type)
         }
+        reify_syntax::ExprKind::Quantifier { .. } => {
+            // TODO: implement quantifier compilation in step-4
+            CompiledExpr::literal(Value::Undef, Type::Bool)
+        }
     }
 }
 

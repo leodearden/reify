@@ -371,6 +371,13 @@ pub enum ExprKind {
         params: Vec<LambdaParam>,
         body: Box<Expr>,
     },
+    /// Quantifier expression: `forall x in coll: pred` or `exists x in coll: pred`
+    Quantifier {
+        kind: QuantifierKind,
+        variable: String,
+        collection: Box<Expr>,
+        predicate: Box<Expr>,
+    },
 }
 
 /// A match arm: `Pattern1 | Pattern2 => body`
@@ -387,6 +394,13 @@ pub struct LambdaParam {
     pub name: String,
     pub type_expr: Option<TypeExpr>,
     pub span: SourceSpan,
+}
+
+/// The kind of quantifier: universal (forall) or existential (exists).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuantifierKind {
+    ForAll,
+    Exists,
 }
 
 /// A type expression in the AST (e.g., `Scalar`, `Bool`).
