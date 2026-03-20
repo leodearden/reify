@@ -912,13 +912,34 @@ impl Engine {
                             elaborate_child_instance(
                                 &mut values,
                                 &mut snapshot,
-                                &functions,
+                                functions,
                                 &mut self.journal,
                                 &mut self.cache,
                                 version_id,
                                 child_template,
                                 &scoped_entity,
                                 &sub.args,
+                            );
+                        }
+
+                        // Create synthetic __list_{name} cell: gather first param value from each instance
+                        let first_param = child_template.value_cells.iter().find(|c| c.kind == ValueCellKind::Param);
+                        if let Some(param_cell) = first_param {
+                            let list_items: Vec<Value> = (0..n)
+                                .map(|idx| {
+                                    let scoped_id = ValueCellId::new(
+                                        format!("{}.{}[{}]", template.name, sub.name, idx),
+                                        &param_cell.id.member,
+                                    );
+                                    values.get(&scoped_id).cloned().unwrap_or(Value::Undef)
+                                })
+                                .collect();
+                            let list_cell_id = ValueCellId::new(&template.name, format!("__list_{}", sub.name));
+                            let list_val = Value::List(list_items);
+                            values.insert(list_cell_id.clone(), list_val.clone());
+                            snapshot.values.insert(
+                                list_cell_id,
+                                (list_val, DeterminacyState::Determined),
                             );
                         }
                     }
@@ -932,7 +953,7 @@ impl Engine {
                 elaborate_child_instance(
                     &mut values,
                     &mut snapshot,
-                    &functions,
+                    functions,
                     &mut self.journal,
                     &mut self.cache,
                     version_id,
@@ -940,6 +961,13 @@ impl Engine {
                     &scoped_entity,
                     &sub.args,
                 );
+            }
+
+            // Re-evaluate let bindings that may depend on __list_* cells
+            // (created during collection sub-component elaboration above)
+            let has_collection_subs = template.sub_components.iter().any(|s| s.is_collection);
+            if has_collection_subs {
+                self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id, functions);
             }
         }
 
@@ -1623,6 +1651,26 @@ impl Engine {
                             (val, DeterminacyState::Determined),
                         );
                     }
+                }
+
+                // Update synthetic __list_{name} cell with new instance values
+                if let Some(first_member) = col_sub.child_value_cells.first() {
+                    let list_items: Vec<Value> = (0..new_count)
+                        .map(|idx| {
+                            let scoped_id = ValueCellId::new(
+                                format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, idx),
+                                &first_member.0,
+                            );
+                            values.get(&scoped_id).cloned().unwrap_or(Value::Undef)
+                        })
+                        .collect();
+                    let list_cell_id = ValueCellId::new(&col_sub.parent_entity, format!("__list_{}", col_sub.sub_name));
+                    let list_val = Value::List(list_items);
+                    values.insert(list_cell_id.clone(), list_val.clone());
+                    new_snapshot.values.insert(
+                        list_cell_id,
+                        (list_val, DeterminacyState::Determined),
+                    );
                 }
 
                 // Rebuild values map from snapshot to remove stale entries
@@ -2679,6 +2727,7 @@ fn compile_geometry_op(
 ///
 /// This handles both non-collection subs (single instance) and individual
 /// collection sub instances (called in a loop for each index).
+#[allow(clippy::too_many_arguments)]
 fn elaborate_child_instance(
     values: &mut ValueMap,
     snapshot: &mut Snapshot,
