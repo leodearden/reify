@@ -1334,4 +1334,29 @@ mod tests {
             other => panic!("expected ListLiteral, got {:?}", other),
         }
     }
+
+    #[test]
+    fn parse_set_literal_three_elements() {
+        let kind = parse_let_expr("structure S { let x = set{1, 2, 3} }");
+        match kind {
+            ExprKind::SetLiteral(elems) => {
+                assert_eq!(elems.len(), 3);
+                assert!(matches!(&elems[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
+                assert!(matches!(&elems[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
+                assert!(matches!(&elems[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON));
+            }
+            other => panic!("expected SetLiteral, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_set_literal_empty() {
+        let kind = parse_let_expr("structure S { let x = set{} }");
+        match kind {
+            ExprKind::SetLiteral(elems) => {
+                assert_eq!(elems.len(), 0);
+            }
+            other => panic!("expected SetLiteral, got {:?}", other),
+        }
+    }
 }
