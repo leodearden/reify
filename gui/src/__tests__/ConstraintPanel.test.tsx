@@ -87,3 +87,87 @@ describe('ConstraintPanel basic rendering', () => {
     expect(screen.getByText('No constraints')).toBeTruthy();
   });
 });
+
+describe('ConstraintPanel expansion', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50' }),
+    c2: makeValue({ cell_id: 'c2', name: 'height', value: '30' }),
+  };
+
+  it('clicking a violated constraint expands it to show contributing parameters', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({
+        node_id: 'n1',
+        status: 'violated',
+        expression: 'width > 100',
+        parameter_ids: ['c1', 'c2'],
+      }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={values} />);
+
+    // Initially no param details visible
+    expect(screen.queryByText('width = 50')).toBeNull();
+
+    // Click to expand
+    const row = screen.getByTestId('constraint-row-n1');
+    fireEvent.click(row);
+
+    // Now contributing params should be visible
+    expect(screen.getByText('width = 50')).toBeTruthy();
+    expect(screen.getByText('height = 30')).toBeTruthy();
+  });
+
+  it('clicking again collapses it', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({
+        node_id: 'n1',
+        status: 'violated',
+        expression: 'width > 100',
+        parameter_ids: ['c1'],
+      }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={values} />);
+    const row = screen.getByTestId('constraint-row-n1');
+
+    // Expand
+    fireEvent.click(row);
+    expect(screen.getByText('width = 50')).toBeTruthy();
+
+    // Collapse
+    fireEvent.click(row);
+    expect(screen.queryByText('width = 50')).toBeNull();
+  });
+
+  it('satisfied constraints are not expandable (no expand indicator)', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({
+        node_id: 'n1',
+        status: 'satisfied',
+        expression: 'width > 0',
+        parameter_ids: ['c1'],
+      }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={values} />);
+    const row = screen.getByTestId('constraint-row-n1');
+
+    // Click should not expand
+    fireEvent.click(row);
+    expect(screen.queryByText('width = 50')).toBeNull();
+  });
+
+  it('expanded violated constraint shows each contributing parameter as "name = value"', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({
+        node_id: 'n1',
+        status: 'violated',
+        expression: 'width + height > 200',
+        parameter_ids: ['c1', 'c2'],
+      }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={values} />);
+
+    fireEvent.click(screen.getByTestId('constraint-row-n1'));
+    expect(screen.getByText('width = 50')).toBeTruthy();
+    expect(screen.getByText('height = 30')).toBeTruthy();
+  });
+});
