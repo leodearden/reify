@@ -116,71 +116,71 @@
       "id": "step-11",
       "type": "test",
       "description": "Write failing test in crates/reify-compiler/tests/port_compile_tests.rs: compile_port_creates_value_cells - compiles a structure with a port that has body params: `trait MechPort { param diameter : Length } structure def S { port mount : MechPort { param diameter : Length = 5mm } }`. Asserts: TopologyTemplate.ports has 1 CompiledPort with name='mount', direction=Bidi (default), type_name='MechPort'. Port members list has 1 ValueCellDecl with id.member containing 'mount.diameter'.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "6dac58d"
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "Add CompiledPort struct to reify-compiler/src/lib.rs (name: String, direction: PortDirection, type_name: String, members: Vec<ValueCellDecl>, frame_expr: Option<CompiledExpr>). Add ports: Vec<CompiledPort> field to TopologyTemplate (initialize empty in compile_structure). Handle MemberDecl::Port in compile_structure's first pass (register port member names in scope as 'port_name.member_name') and second pass (compile port params/lets as ValueCells with composite ValueCellId entity.port_name.member_name, compile constraints, build CompiledPort). Default direction to Bidi if not specified. Push CompiledPort to ports vec. Update TopologyTemplate construction. Update content_hash computation to include port hashes.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5bd41b1"
     },
     {
       "id": "step-13",
       "type": "test",
       "description": "Write failing test: compile_port_type_check_known - compiles structure with port referencing a known trait type (defined in same module). No error diagnostics. Also write compile_port_type_check_unknown: port references non-existent trait type -> warning diagnostic about unknown port type.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "8b17ac6"
     },
     {
       "id": "step-14",
       "type": "impl",
       "description": "In port compilation within compile_structure, verify port type_name against the trait_registry HashMap. If type_name not found in trait_registry, emit a warning diagnostic (not error, since trait may be in another module not yet resolved). Test compile_port_type_check_known and compile_port_type_check_unknown pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "3c47a8f"
     },
     {
       "id": "step-15",
       "type": "test",
       "description": "Write failing test: compile_port_member_access - compiles structure with a port and a let binding that references port.member via dot notation: `structure S { port mount : MechPort { param diameter : Length = 5mm }  let d = mount.diameter }`. Asserts the let 'd' compiles without error and its expression is a ValueRef to the correct composite ValueCellId.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "6304835"
     },
     {
       "id": "step-16",
       "type": "impl",
       "description": "Update MemberAccess case in compile_expr_guarded (currently emits error at line 772-781). When object is Ident(name): check if 'name' is a known port name (add port_names: HashSet<String> to CompilationScope, populated during port registration). If so, construct composite key 'name.member' and resolve via scope.resolve(). Return ValueRef with the composite ValueCellId. If name is not a port, fall through to existing error diagnostic. Test compile_port_member_access passes.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "b161530"
     },
     {
       "id": "step-17",
       "type": "test",
       "description": "Write test: compile_multiple_ports - compiles structure with two ports `port mount : MechPort { param d : Length = 5mm }  port shaft : RotaryPort { param rpm : Length = 100mm }`. Asserts TopologyTemplate.ports has 2 CompiledPorts with distinct names. Port members have unique ValueCellIds (S.mount.d vs S.shaft.rpm).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "e6492d3"
     },
     {
       "id": "step-18",
       "type": "impl",
       "description": "Verify multiple ports compile correctly. Fix any issues with duplicate name registration, port_names tracking, or ValueCellId conflicts. Test compile_multiple_ports passes.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "e6492d3"
     },
     {
       "id": "step-19",
       "type": "test",
       "description": "Write test: compile_port_direction_preserved - compiles structure with `port x : in MechPort { param d : Length = 5mm }`. Asserts CompiledPort.direction == PortDirection::In. Also test out and bidi directions are preserved through compilation.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "ec24ba4"
     },
     {
       "id": "step-20",
       "type": "impl",
       "description": "Ensure port direction from PortDecl is correctly propagated to CompiledPort. Default to Bidi when direction is None. Test compile_port_direction_preserved passes.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "ec24ba4"
     }
   ],
   "design_decisions": [
@@ -263,5 +263,6 @@
       "where": "crates/reify-compiler/src/lib.rs throughout",
       "how": "Follow existing patterns: Diagnostic::error(msg).with_label(DiagnosticLabel::new(span, hint)) or Diagnostic::warning(...). Push to diagnostics vec."
     }
-  ]
+  ],
+  "_schema_version": 1
 }
