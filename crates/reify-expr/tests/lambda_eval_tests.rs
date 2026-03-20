@@ -1,6 +1,6 @@
 //! Lambda evaluation tests.
 
-use reify_expr::eval_expr;
+use reify_expr::{eval_expr, EvalContext};
 use reify_types::{BinOp, CompiledExpr, Type, Value, ValueCellId, ValueMap};
 
 /// Helper to build a Value::Lambda with (name, id) param pairs.
@@ -42,7 +42,7 @@ fn eval_lambda_simple_no_captures() {
     );
 
     let values = ValueMap::new();
-    let result = eval_expr(&lambda_expr, &values);
+    let result = eval_expr(&lambda_expr, &EvalContext::simple(&values));
 
     match &result {
         Value::Lambda {
@@ -87,7 +87,7 @@ fn eval_lambda_with_captures() {
     let mut values = ValueMap::new();
     values.insert(factor_id.clone(), Value::Int(3));
 
-    let result = eval_expr(&lambda_expr, &values);
+    let result = eval_expr(&lambda_expr, &EvalContext::simple(&values));
 
     match &result {
         Value::Lambda {
@@ -132,7 +132,7 @@ fn eval_lambda_with_undef_capture() {
     );
 
     let values = ValueMap::new();
-    let result = eval_expr(&lambda_expr, &values);
+    let result = eval_expr(&lambda_expr, &EvalContext::simple(&values));
 
     match &result {
         Value::Lambda {
@@ -363,11 +363,11 @@ structure S {
 
     let mut values = ValueMap::new();
     let factor_expr = factor_cell.default_expr.as_ref().expect("factor should have expr");
-    let factor_val = eval_expr(factor_expr, &values);
+    let factor_val = eval_expr(factor_expr, &EvalContext::simple(&values));
     values.insert(factor_cell.id.clone(), factor_val);
 
     let f_expr = f_cell.default_expr.as_ref().expect("f should have expr");
-    let f_val = eval_expr(f_expr, &values);
+    let f_val = eval_expr(f_expr, &EvalContext::simple(&values));
 
     match &f_val {
         Value::Lambda { params, .. } => {
@@ -438,7 +438,7 @@ fn nested_lambda_eval_and_apply() {
     );
 
     let values = ValueMap::new();
-    let outer_val = eval_expr(&outer_lambda, &values);
+    let outer_val = eval_expr(&outer_lambda, &EvalContext::simple(&values));
 
     // Apply outer with x=3 → should yield Lambda with x captured as 3
     let inner_val = apply_lambda(&outer_val, &[Value::Int(3)]);
