@@ -193,3 +193,82 @@ describe('PropertyEditor interactive features', () => {
     expect(selectedGroup!.textContent).toContain('Bracket');
   });
 });
+
+describe('PropertyEditor group selection boundary checks', () => {
+  it('does not false-positive select group with shared prefix', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width' }),
+      c2: makeValue({ cell_id: 'c2', name: 'height', entity_path: 'BracketMount.height' }),
+    };
+
+    render(() => (
+      <PropertyEditor
+        values={values}
+        selectedEntity="BracketMount.height"
+        onSetParameter={vi.fn()}
+      />
+    ));
+
+    const container = screen.getByTestId('property-editor');
+    const selectedGroups = container.querySelectorAll('[data-selected]');
+
+    // Only BracketMount group should be selected, not Bracket
+    expect(selectedGroups.length).toBe(1);
+    expect(selectedGroups[0].textContent).toContain('BracketMount');
+    // Bracket group should NOT have data-selected
+    const allGroups = container.querySelectorAll('[class*="group"]');
+    const bracketGroup = Array.from(allGroups).find(
+      (g) => g.querySelector('button')?.textContent?.includes('Bracket') &&
+             !g.querySelector('button')?.textContent?.includes('BracketMount')
+    );
+    expect(bracketGroup?.hasAttribute('data-selected')).toBe(false);
+  });
+
+  it('does not false-positive force-expand group with shared prefix', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width' }),
+      c2: makeValue({ cell_id: 'c2', name: 'height', entity_path: 'BracketMount.height' }),
+    };
+
+    render(() => (
+      <PropertyEditor
+        values={values}
+        selectedEntity="BracketMount.height"
+        onSetParameter={vi.fn()}
+      />
+    ));
+
+    // Collapse the Bracket group by clicking its header
+    const bracketHeader = screen.getByText('Bracket');
+    fireEvent.click(bracketHeader);
+
+    // Bracket's rows should be hidden (collapsed) since it's not the selected group
+    expect(screen.queryByText('width')).toBeNull();
+
+    // BracketMount's rows should still be visible (selected group stays expanded)
+    expect(screen.getByText('height')).toBeTruthy();
+  });
+
+  it('empty-string group name does not match everything', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'unnamed', entity_path: '' }),
+      c2: makeValue({ cell_id: 'c2', name: 'width', entity_path: 'Bracket.width' }),
+    };
+
+    render(() => (
+      <PropertyEditor
+        values={values}
+        selectedEntity="Bracket.width"
+        onSetParameter={vi.fn()}
+      />
+    ));
+
+    const container = screen.getByTestId('property-editor');
+    const selectedGroups = container.querySelectorAll('[data-selected]');
+
+    // Only the 'Bracket' group should be selected, not the empty-name group
+    // With the startsWith bug, ''.startsWith('') is always true for any selectedEntity
+    expect(selectedGroups.length).toBe(1);
+    expect(selectedGroups[0].textContent).toContain('Bracket');
+  });
+});
