@@ -181,19 +181,19 @@ impl<'a> Lowering<'a> {
         let mut params = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if child.kind() == "type_parameter" {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    let name = self.node_text(name_node).to_string();
-                    let bounds = child
-                        .child_by_field_name("bounds")
-                        .map(|b| self.lower_trait_bound_list(b))
-                        .unwrap_or_default();
-                    params.push(TypeParamDecl {
-                        name,
-                        bounds,
-                        span: self.span(child),
-                    });
-                }
+            if child.kind() == "type_parameter"
+                && let Some(name_node) = child.child_by_field_name("name")
+            {
+                let name = self.node_text(name_node).to_string();
+                let bounds = child
+                    .child_by_field_name("bounds")
+                    .map(|b| self.lower_trait_bound_list(b))
+                    .unwrap_or_default();
+                params.push(TypeParamDecl {
+                    name,
+                    bounds,
+                    span: self.span(child),
+                });
             }
         }
         params
@@ -245,10 +245,10 @@ impl<'a> Lowering<'a> {
         for child in node.children(&mut cursor) {
             if child.kind() == "trait_member" {
                 // trait_member is a choice node wrapping the actual member
-                if let Some(inner) = child.named_child(0) {
-                    if let Some(member) = self.lower_member(inner) {
-                        members.push(member);
-                    }
+                if let Some(inner) = child.named_child(0)
+                    && let Some(member) = self.lower_member(inner)
+                {
+                    members.push(member);
                 }
             }
         }
