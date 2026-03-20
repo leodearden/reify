@@ -467,10 +467,21 @@ std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
 
 std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height) {
     try {
+        if (!(std::isfinite(radius) && radius > 0.0)) {
+            throw std::runtime_error("make_circle_wire: radius must be finite and positive");
+        }
         gp_Ax2 axes(gp_Pnt(0, 0, z_height), gp_Dir(0, 0, 1));
         Handle(Geom_Circle) circle = new Geom_Circle(axes, radius);
-        TopoDS_Edge edge = BRepBuilderAPI_MakeEdge(circle);
-        TopoDS_Wire wire = BRepBuilderAPI_MakeWire(edge);
+        BRepBuilderAPI_MakeEdge edgeBuilder(circle);
+        if (!edgeBuilder.IsDone()) {
+            throw std::runtime_error("make_circle_wire: MakeEdge failed");
+        }
+        TopoDS_Edge edge = edgeBuilder.Edge();
+        BRepBuilderAPI_MakeWire wireBuilder(edge);
+        if (!wireBuilder.IsDone()) {
+            throw std::runtime_error("make_circle_wire: MakeWire failed");
+        }
+        TopoDS_Wire wire = wireBuilder.Wire();
         auto result = std::make_unique<OcctShape>();
         result->shape = wire;
         return result;
