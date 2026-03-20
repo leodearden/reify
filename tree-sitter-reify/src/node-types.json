@@ -350,6 +350,10 @@
             "named": true
           },
           {
+            "type": "lambda_expression",
+            "named": true
+          },
+          {
             "type": "list_literal",
             "named": true
           },
@@ -418,6 +422,10 @@
         },
         {
           "type": "index_access",
+          "named": true
+        },
+        {
+          "type": "lambda_expression",
           "named": true
         },
         {
@@ -755,6 +763,10 @@
           },
           {
             "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "lambda_expression",
             "named": true
           },
           {
@@ -2684,6 +2696,14 @@
       "required": false,
       "types": [
         {
+          "type": "chain_statement",
+          "named": true
+        },
+        {
+          "type": "connect_statement",
+          "named": true
+        },
+        {
           "type": "constraint_declaration",
           "named": true
         },
@@ -3163,6 +3183,10 @@
         },
         {
           "type": "index_access",
+          "named": true
+        },
+        {
+          "type": "lambda_expression",
           "named": true
         },
         {

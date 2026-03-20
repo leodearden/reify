@@ -2392,6 +2392,7 @@ fn compile_connection(
         id: compat_id.clone(),
         label: Some(format!("connect_compat_{}_{}", left_port, right_port)),
         expr: compat_expr,
+        domain: None,
         span,
     });
     *acc.constraint_index += 1;
