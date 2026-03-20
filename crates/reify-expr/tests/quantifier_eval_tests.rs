@@ -225,3 +225,121 @@ fn exists_with_undef_no_true() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Undef);
 }
+
+// ─── step-11: Integration test: parse + compile + eval quantifier in constraint context ───
+
+/// step-11: End-to-end integration test — parse a structure with a list-typed
+/// let binding and a `forall` constraint, compile it, then evaluate the compiled
+/// constraint expression with concrete values. Verifies the full pipeline:
+/// grammar -> parser -> compiler -> evaluator.
+#[test]
+fn integration_forall_constraint_parse_compile_eval() {
+    // Parse source with a list and a forall constraint
+    let source = r#"
+structure S {
+    let grades = [9.0, 8.8, 9.5]
+    constraint forall g in grades: g >= 8.8
+}
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("integ_test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    // Compile
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let template = &compiled.templates[0];
+    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+
+    // Find the grades value cell and the constraint
+    let grades_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "grades")
+        .expect("should have 'grades' value cell");
+    let constraint_expr = &template.constraints[0].expr;
+
+    // Verify the constraint compiled to a Quantifier
+    assert!(
+        matches!(&constraint_expr.kind, CompiledExprKind::Quantifier { .. }),
+        "expected Quantifier, got {:?}",
+        constraint_expr.kind,
+    );
+
+    // Evaluate the grades default expression to get the list value
+    let empty_values = ValueMap::new();
+    let grades_value = eval_expr(
+        grades_cell.default_expr.as_ref().unwrap(),
+        &EvalContext::simple(&empty_values),
+    );
+    assert!(
+        matches!(&grades_value, Value::List(_)),
+        "grades should eval to a list, got {:?}",
+        grades_value,
+    );
+
+    // Now evaluate the constraint with grades in scope
+    let mut values = ValueMap::new();
+    values.insert(grades_cell.id.clone(), grades_value);
+    let result = eval_expr(constraint_expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(true), "all grades >= 8.8 should be true");
+}
+
+/// step-11: Integration test for exists — parse + compile + eval with a false result
+#[test]
+fn integration_exists_constraint_parse_compile_eval() {
+    let source = r#"
+structure S {
+    let scores = [1, 2, 3, 4, 5]
+    let found = exists s in scores: s > 10
+}
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("integ_test2"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let template = &compiled.templates[0];
+    let found_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "found")
+        .expect("should have 'found' value cell");
+    let found_expr = found_cell.default_expr.as_ref().unwrap();
+
+    // Verify the expression compiled to a Quantifier
+    assert!(
+        matches!(&found_expr.kind, CompiledExprKind::Quantifier { .. }),
+        "expected Quantifier, got {:?}",
+        found_expr.kind,
+    );
+
+    // Evaluate the scores list first
+    let scores_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "scores")
+        .expect("should have 'scores' value cell");
+    let empty_values = ValueMap::new();
+    let scores_value = eval_expr(
+        scores_cell.default_expr.as_ref().unwrap(),
+        &EvalContext::simple(&empty_values),
+    );
+
+    // Now evaluate the exists expression with scores in scope
+    let mut values = ValueMap::new();
+    values.insert(scores_cell.id.clone(), scores_value);
+    let result = eval_expr(found_expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(false), "no score > 10, should be false");
+}
