@@ -2182,6 +2182,7 @@ fn check_trait_conformance(
     let mut all_defaults: Vec<TraitDefault> = Vec::new();
     let mut visited_traits: HashSet<String> = HashSet::new();
     let mut seen_requirement_names: HashMap<String, Type> = HashMap::new();
+    let mut seen_default_names: HashMap<String, Type> = HashMap::new();
 
     for trait_name in &structure.trait_bounds {
         collect_all_requirements(
@@ -2191,6 +2192,8 @@ fn check_trait_conformance(
             &mut all_defaults,
             &mut visited_traits,
             &mut seen_requirement_names,
+            &mut seen_default_names,
+            &structure_members,
             structure.span,
             diagnostics,
         );
@@ -2371,6 +2374,8 @@ fn collect_all_requirements(
     defaults: &mut Vec<TraitDefault>,
     visited: &mut HashSet<String>,
     seen_names: &mut HashMap<String, Type>,
+    seen_defaults: &mut HashMap<String, Type>,
+    structure_members: &HashMap<String, Type>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -2398,6 +2403,8 @@ fn collect_all_requirements(
             defaults,
             visited,
             seen_names,
+            seen_defaults,
+            structure_members,
             span,
             diagnostics,
         );
@@ -2429,9 +2436,38 @@ fn collect_all_requirements(
         requirements.push(req.clone());
     }
 
-    // Collect defaults from this trait.
+    // Collect defaults from this trait, deduplicating by name.
     for default in &compiled_trait.defaults {
-        defaults.push(default.clone());
+        if default.name.is_empty() {
+            // Unnamed defaults (e.g., unlabeled constraints) — always push.
+            defaults.push(default.clone());
+        } else {
+            // Extract type for dedup comparison.
+            let default_type = match &default.kind {
+                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
+                DefaultKind::Let(_) => Type::Real,
+                DefaultKind::Constraint(_) => Type::Bool, // sentinel for constraint label dedup
+            };
+
+            if let Some(existing_type) = seen_defaults.get(&default.name) {
+                if existing_type != &default_type
+                    && !structure_members.contains_key(&default.name)
+                {
+                    // Same name + different type + not overridden → conflict
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "conflicting trait defaults for '{}': {} vs {}",
+                            default.name, existing_type, default_type
+                        ))
+                        .with_label(DiagnosticLabel::new(span, "conflicting trait defaults")),
+                    );
+                }
+                // Same name already seen → skip (deduplicate).
+                continue;
+            }
+            seen_defaults.insert(default.name.clone(), default_type);
+            defaults.push(default.clone());
+        }
     }
 }
 
