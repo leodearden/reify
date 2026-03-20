@@ -1,10 +1,11 @@
 //! Tests for SolverRegistry — multi-domain constraint dispatch.
 
-use reify_constraints::{DimensionalSolver, SolverRegistry};
+use reify_constraints::{DimensionalSolver, SolveSpaceSolver, SolverRegistry};
 use reify_test_support::*;
 use reify_types::{
-    AutoParam, BinOp, ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem,
-    SolveResult, Type, Value, ValueMap,
+    AutoParam, BinOp, CompiledExpr, CompiledExprKind, ContentHash, ConstraintSolver,
+    DimensionVector, OptimizationObjective, ResolutionProblem, ResolvedFunction, SolveResult, Type,
+    Value, ValueMap,
 };
 
 /// Basic dispatch: SolverRegistry with DimensionalSolver as fallback
@@ -476,5 +477,210 @@ fn objective_spanning_independent_components_merges_them() {
             // (same tolerance as registry_compat_maximize_objective)
         }
         other => panic!("expected Solved or Infeasible, got {:?}", other),
+    }
+}
+
+// === SolveSpace geometric solver integration via registry ===
+
+/// Build a geometry function call expression (e.g., std::geo::pt_pt_distance).
+fn geo_fn(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExpr {
+    CompiledExpr {
+        kind: CompiledExprKind::FunctionCall {
+            function: ResolvedFunction {
+                name: name.to_string(),
+                qualified_name: format!("std::geo::{}", name),
+            },
+            args,
+        },
+        result_type,
+        content_hash: ContentHash::of(format!("geo_{}", name).as_bytes()),
+    }
+}
+
+/// SolverRegistry dispatches geometric constraints to SolveSpaceSolver.
+///
+/// Creates a registry with DimensionalSolver + SolveSpaceSolver, then sends
+/// a geometric constraint (pt_pt_distance via std::geo::*). The classifier
+/// identifies it as Geometric, and the registry dispatches to SolveSpaceSolver.
+#[test]
+fn registry_dispatches_geometric_to_solvespace() {
+    let registry = SolverRegistry::with_solvers(
+        Box::new(DimensionalSolver),
+        Some(Box::new(SolveSpaceSolver)),
+        None,
+        None,
+    );
+
+    let x_id = vcid("Point", "x");
+    let y_id = vcid("Point", "y");
+
+    let zero = literal(Value::Scalar {
+        si_value: 0.0,
+        dimension: DimensionVector::LENGTH,
+    });
+
+    // point3d(x, y, 0) — auto params for x, y
+    let pt = geo_fn(
+        "point3d",
+        vec![
+            value_ref_typed("Point", "x", Type::length()),
+            value_ref_typed("Point", "y", Type::length()),
+            zero.clone(),
+        ],
+        Type::dimensionless_scalar(),
+    );
+
+    // origin at (0, 0, 0)
+    let origin = geo_fn(
+        "point3d",
+        vec![zero.clone(), zero.clone(), zero],
+        Type::dimensionless_scalar(),
+    );
+
+    // distance(pt, origin) == 10mm
+    let dist_call = geo_fn("pt_pt_distance", vec![pt, origin], Type::length());
+    let constraint_expr = eq(dist_call, literal(mm(10.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
+        ],
+        constraints: vec![(cnid("Point", 0), constraint_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = registry.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let x_val = values.get(&x_id).unwrap().as_f64().unwrap();
+            let y_val = values.get(&y_id).unwrap().as_f64().unwrap();
+            let actual_dist = (x_val * x_val + y_val * y_val).sqrt();
+            assert!(
+                (actual_dist - 0.01).abs() < 1e-6,
+                "registry should dispatch to SolveSpaceSolver: distance should be ~10mm (0.01m), got {} m",
+                actual_dist,
+            );
+        }
+        other => panic!(
+            "expected Solved via SolveSpaceSolver dispatch, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Mixed dimensional + geometric constraints solved through SolverRegistry.
+///
+/// Two independent sub-problems:
+/// 1. Dimensional: thickness > 2mm AND thickness < 20mm (handled by DimensionalSolver)
+/// 2. Geometric: distance(point, origin) == 10mm (handled by SolveSpaceSolver)
+///
+/// The registry decomposes them, dispatches each to the appropriate solver,
+/// and merges the results.
+#[test]
+fn registry_mixed_dimensional_and_geometric() {
+    let registry = SolverRegistry::with_solvers(
+        Box::new(DimensionalSolver),
+        Some(Box::new(SolveSpaceSolver)),
+        None,
+        None,
+    );
+
+    // --- Dimensional sub-problem ---
+    let thickness_id = vcid("Bracket", "thickness");
+    let gt_expr = gt(value_ref("Bracket", "thickness"), literal(mm(2.0)));
+    let lt_expr = lt(value_ref("Bracket", "thickness"), literal(mm(20.0)));
+
+    // --- Geometric sub-problem ---
+    let x_id = vcid("Point", "x");
+    let y_id = vcid("Point", "y");
+
+    let zero = literal(Value::Scalar {
+        si_value: 0.0,
+        dimension: DimensionVector::LENGTH,
+    });
+
+    let pt = geo_fn(
+        "point3d",
+        vec![
+            value_ref_typed("Point", "x", Type::length()),
+            value_ref_typed("Point", "y", Type::length()),
+            zero.clone(),
+        ],
+        Type::dimensionless_scalar(),
+    );
+
+    let origin = geo_fn(
+        "point3d",
+        vec![zero.clone(), zero.clone(), zero],
+        Type::dimensionless_scalar(),
+    );
+
+    let dist_call = geo_fn("pt_pt_distance", vec![pt, origin], Type::length());
+    let geo_expr = eq(dist_call, literal(mm(15.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: thickness_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            },
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
+        ],
+        constraints: vec![
+            (cnid("Bracket", 0), gt_expr),
+            (cnid("Bracket", 1), lt_expr),
+            (cnid("Point", 0), geo_expr),
+        ],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = registry.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            // Dimensional: thickness in [2mm, 20mm]
+            let thickness = values.get(&thickness_id).unwrap().as_f64().unwrap();
+            assert!(
+                thickness > 0.002 && thickness < 0.020,
+                "thickness should be in [2mm, 20mm], got {} m",
+                thickness,
+            );
+
+            // Geometric: distance ~15mm from origin
+            let x_val = values.get(&x_id).unwrap().as_f64().unwrap();
+            let y_val = values.get(&y_id).unwrap().as_f64().unwrap();
+            let actual_dist = (x_val * x_val + y_val * y_val).sqrt();
+            assert!(
+                (actual_dist - 0.015).abs() < 1e-6,
+                "point distance should be ~15mm (0.015m), got {} m",
+                actual_dist,
+            );
+        }
+        other => panic!(
+            "expected Solved for mixed dimensional+geometric, got {:?}",
+            other
+        ),
     }
 }
