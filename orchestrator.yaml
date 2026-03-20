@@ -1,5 +1,5 @@
-# Reify M4 orchestrator configuration
-# Rust project — overrides dark-factory defaults
+# Reify orchestrator configuration
+# Rust + Tauri/TypeScript (GUI) project
 
 # Concurrency
 max_concurrent_tasks: 12
@@ -7,6 +7,7 @@ max_per_module: 1
 lock_depth: 2
 module_overrides:
   tests: 2
+  "gui/src": 4    # frontend tasks create separate subdirs (viewport/, editor/, panels/) — safe to parallelize
 
 # Iteration limits
 max_execute_iterations: 10
@@ -37,9 +38,10 @@ max_turns:
   reviewer: 30
   merger: 50
 
-# Verification commands (Rust — uses `. ~/.cargo/env` for /bin/sh compat)
-test_command: ". ~/.cargo/env && cargo test --workspace -- --test-threads=1"
-lint_command: ". ~/.cargo/env && cargo clippy --workspace -- -D warnings"
+# Verification commands (Rust + GUI frontend)
+# npm ci is fast when node_modules exists; --prefer-offline avoids network hits
+test_command: ". ~/.cargo/env && cargo test --workspace -- --test-threads=1 && (cd gui && npm ci --prefer-offline && npm test)"
+lint_command: ". ~/.cargo/env && cargo clippy --workspace -- -D warnings && (cd gui && npm ci --prefer-offline && npx tsc --noEmit)"
 type_check_command: ". ~/.cargo/env && cargo check --workspace"
 
 # Fused memory HTTP server
