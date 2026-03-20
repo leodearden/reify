@@ -1934,4 +1934,26 @@ mod tests {
             other => panic!("expected Value::Real, got {:?}", other),
         }
     }
+
+    #[test]
+    fn make_circle_wire_rejects_degenerate_radius() {
+        // Radius of 0 should cause MakeEdge to fail; verify we get an error
+        // rather than a silently invalid shape.
+        let result = ffi::ffi::make_circle_wire(0.0, 0.0);
+        assert!(
+            result.is_err(),
+            "make_circle_wire(0.0, 0.0) should return Err, got Ok"
+        );
+    }
+
+    #[test]
+    fn make_circle_wire_valid_produces_wire() {
+        // A valid radius should produce a usable wire shape without error.
+        let wire = ffi::ffi::make_circle_wire(10.0, 0.0);
+        assert!(
+            wire.is_ok(),
+            "make_circle_wire(10.0, 0.0) should succeed, got {:?}",
+            wire.err()
+        );
+    }
 }
