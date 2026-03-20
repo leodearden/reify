@@ -600,6 +600,28 @@ impl<'a> Lowering<'a> {
                     self.lower_port(child).map(MemberDecl::Port)
                 }
             }
+            "connect_statement" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid connect: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_connect(child).map(MemberDecl::Connect)
+                }
+            }
+            "chain_statement" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid chain: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_chain(child).map(MemberDecl::Chain)
+                }
+            }
             "ERROR" => {
                 self.errors.push(ParseError {
                     message: format!("syntax error: {}", self.node_text(child)),
@@ -968,6 +990,140 @@ impl<'a> Lowering<'a> {
         }
 
         (members, body_direction, frame_expr)
+    }
+
+    fn lower_connect(&mut self, node: tree_sitter::Node) -> Option<ConnectDecl> {
+        let left_node = node.child_by_field_name("left")?;
+        let left = self.lower_port_ref(left_node)?;
+
+        let op_node = node.child_by_field_name("operator")?;
+        let operator = match self.node_text(op_node) {
+            "->" => ConnectOp::Forward,
+            "<-" => ConnectOp::Reverse,
+            "<->" => ConnectOp::Bidirectional,
+            other => {
+                self.errors.push(ParseError {
+                    message: format!("unknown connect operator: {}", other),
+                    span: self.span(op_node),
+                });
+                ConnectOp::Forward
+            }
+        };
+
+        let right_node = node.child_by_field_name("right")?;
+        let right = self.lower_port_ref(right_node)?;
+
+        let connector_type = node
+            .child_by_field_name("connector_type")
+            .map(|n| self.node_text(n).to_string());
+
+        let (params, port_mappings) = if let Some(body_node) = node.child_by_field_name("body") {
+            self.lower_connect_body(body_node)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+        Some(ConnectDecl {
+            left,
+            operator,
+            right,
+            connector_type,
+            params,
+            port_mappings,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_port_ref(&self, node: tree_sitter::Node) -> Option<PortRef> {
+        // port_ref wraps an _expression, so unwrap to get the actual expression child
+        let expr_node = if node.kind() == "port_ref" {
+            node.child(0)?
+        } else {
+            node
+        };
+        let expr = self.lower_expr(expr_node)?;
+        Some(PortRef { expr })
+    }
+
+    fn lower_connect_body(&mut self, node: tree_sitter::Node) -> (Vec<(String, Expr)>, Vec<(String, String)>) {
+        let mut params = Vec::new();
+        let mut port_mappings = Vec::new();
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "connect_param_assignment" => {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        let name = self.node_text(name_node).to_string();
+                        if let Some(value_node) = child.child_by_field_name("value") {
+                            if let Some(value) = self.lower_expr(value_node) {
+                                params.push((name, value));
+                            }
+                        }
+                    }
+                }
+                "port_mapping" => {
+                    if let (Some(from_node), Some(to_node)) = (
+                        child.child_by_field_name("from"),
+                        child.child_by_field_name("to"),
+                    ) {
+                        let from = self.node_text(from_node).to_string();
+                        let to = self.node_text(to_node).to_string();
+                        port_mappings.push((from, to));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        (params, port_mappings)
+    }
+
+    fn lower_chain(&mut self, node: tree_sitter::Node) -> Option<ChainDecl> {
+        let mut elements = Vec::new();
+
+        // First element
+        if let Some(first_node) = node.child_by_field_name("first") {
+            if let Some(expr) = self.lower_expr(first_node) {
+                elements.push(expr);
+            }
+        }
+
+        // Remaining elements: each expression child after '->'
+        let mut cursor = node.walk();
+        let mut after_arrow = false;
+        for child in node.children(&mut cursor) {
+            if child.kind() == "->" {
+                after_arrow = true;
+                continue;
+            }
+            if after_arrow {
+                // Skip if it's the first element (already handled)
+                if Some(child.id()) == node.child_by_field_name("first").map(|n| n.id()) {
+                    after_arrow = false;
+                    continue;
+                }
+                if let Some(expr) = self.lower_expr(child) {
+                    elements.push(expr);
+                }
+                after_arrow = false;
+            }
+        }
+
+        if elements.len() < 2 {
+            self.errors.push(ParseError {
+                message: "chain requires at least 2 elements".to_string(),
+                span: self.span(node),
+            });
+            return None;
+        }
+
+        Some(ChainDecl {
+            elements,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
     }
 
     fn lower_named_arg(&self, node: tree_sitter::Node) -> Option<(String, Expr)> {
