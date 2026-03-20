@@ -2031,7 +2031,7 @@ fn compile_entity(
                     visibility: Visibility::Public,
                     args: compiled_args,
                     type_args: resolved_type_args,
-                    is_collection: false,
+                    is_collection: sub.is_collection,
                     count_cell: None,
                     span: sub.span,
                     content_hash: sub.content_hash,
