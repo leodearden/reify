@@ -400,6 +400,75 @@ structure def X : A + B {
     );
 }
 
+/// Step 25a: Default conflict across traits with different types.
+/// Two traits provide defaults for 'size' with different types → conflict diagnostic.
+#[test]
+fn default_conflict_different_types() {
+    let source = r#"
+trait A {
+    param size : Length = 10mm
+}
+
+trait B {
+    param size : Mass = 5kg
+}
+
+structure def X : A + B {
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected conflict diagnostic");
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("conflicting") && error_msg.contains("size"),
+        "error should mention 'conflicting' and 'size', got: {}",
+        error_msg
+    );
+}
+
+/// Step 25b: Default conflict resolution — structure overrides the conflicting default.
+/// When the structure provides its own member, the conflict is moot — no diagnostic.
+#[test]
+fn default_conflict_resolved_by_override() {
+    let source = r#"
+trait A {
+    param size : Length = 10mm
+}
+
+trait B {
+    param size : Mass = 5kg
+}
+
+structure def Y : A + B {
+    param size : Length = 7mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    // No error diagnostics — the structure provides 'size', resolving the conflict.
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors when structure overrides: {:?}", errors);
+
+    // Only one 'size' value cell.
+    let size_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "size")
+        .collect();
+    assert_eq!(size_cells.len(), 1, "expected exactly 1 'size' value cell");
+}
+
 /// Step 21b: Trait with constraint and param — both injected correctly.
 #[test]
 fn trait_constraint_and_param_both_injected() {
