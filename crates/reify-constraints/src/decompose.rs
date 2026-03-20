@@ -69,34 +69,15 @@ pub(crate) fn collect_value_refs_pub(expr: &CompiledExpr, out: &mut HashSet<Valu
 }
 
 /// Collect all ValueCellIds referenced in an expression tree.
+///
+/// Delegates child traversal to `CompiledExpr::walk` — when new
+/// `CompiledExprKind` variants are added, only `walk()` needs updating.
 fn collect_value_refs(expr: &CompiledExpr, out: &mut HashSet<ValueCellId>) {
-    match &expr.kind {
-        CompiledExprKind::Literal(_) => {}
-        CompiledExprKind::ValueRef(id) => {
+    expr.walk(&mut |node| {
+        if let CompiledExprKind::ValueRef(id) = &node.kind {
             out.insert(id.clone());
         }
-        CompiledExprKind::BinOp { left, right, .. } => {
-            collect_value_refs(left, out);
-            collect_value_refs(right, out);
-        }
-        CompiledExprKind::UnOp { operand, .. } => {
-            collect_value_refs(operand, out);
-        }
-        CompiledExprKind::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_value_refs(arg, out);
-            }
-        }
-        CompiledExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            collect_value_refs(condition, out);
-            collect_value_refs(then_branch, out);
-            collect_value_refs(else_branch, out);
-        }
-    }
+    });
 }
 
 /// Decompose a constraint problem into independent connected components.
