@@ -80,23 +80,22 @@ impl Value {
             Value::Real(r) => {
                 let mut buf = [0u8; 9];
                 buf[0] = 2;
-                // Normalize -0.0 to 0.0 and NaN to a canonical form
-                let normalized = if *r == 0.0 { 0.0f64 } else { *r };
-                let bits = if normalized.is_nan() {
+                // Canonicalize NaN but preserve -0.0 (PartialEq uses to_bits)
+                let bits = if r.is_nan() {
                     f64::NAN.to_bits() // canonical NaN
                 } else {
-                    normalized.to_bits()
+                    r.to_bits()
                 };
                 buf[1..].copy_from_slice(&bits.to_le_bytes());
                 ContentHash::of(&buf)
             }
             Value::String(s) => ContentHash::of(&[3]).combine(ContentHash::of_str(s)),
             Value::Scalar { si_value, dimension } => {
-                let normalized = if *si_value == 0.0 { 0.0f64 } else { *si_value };
-                let bits = if normalized.is_nan() {
+                // Canonicalize NaN but preserve -0.0 (PartialEq uses to_bits)
+                let bits = if si_value.is_nan() {
                     f64::NAN.to_bits()
                 } else {
-                    normalized.to_bits()
+                    si_value.to_bits()
                 };
                 let mut buf = [0u8; 9];
                 buf[0] = 4;
@@ -414,10 +413,45 @@ mod tests {
     }
 
     #[test]
-    fn neg_zero_normalized() {
+    fn real_neg_zero_not_normalized_in_hash() {
+        // -0.0 and 0.0 are different via PartialEq (to_bits), so content_hash must differ
         let pos = Value::Real(0.0);
         let neg = Value::Real(-0.0);
-        assert_eq!(pos.content_hash(), neg.content_hash());
+        assert_ne!(pos.content_hash(), neg.content_hash());
+    }
+
+    #[test]
+    fn real_neg_zero_hash_differs_from_pos_zero() {
+        let pos = Value::Real(0.0);
+        let neg = Value::Real(-0.0);
+        // PartialEq uses to_bits(), so -0.0 != 0.0
+        assert_ne!(pos, neg);
+        // Therefore content_hash must also differ (cache invariant)
+        assert_ne!(pos.content_hash(), neg.content_hash());
+    }
+
+    #[test]
+    fn scalar_neg_zero_hash_differs_from_pos_zero() {
+        let pos = Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH };
+        let neg = Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH };
+        // PartialEq uses to_bits(), so -0.0 != 0.0
+        assert_ne!(pos, neg);
+        // Therefore content_hash must also differ (cache invariant)
+        assert_ne!(pos.content_hash(), neg.content_hash());
+    }
+
+    #[test]
+    fn hash_equality_invariant_real() {
+        // Spot-check: for -0.0 and 0.0, if a != b then a.content_hash() != b.content_hash()
+        let a = Value::Real(-0.0);
+        let b = Value::Real(0.0);
+        if a != b {
+            assert_ne!(
+                a.content_hash(),
+                b.content_hash(),
+                "hash-equality invariant violated: unequal values must have different hashes"
+            );
+        }
     }
 
     #[test]
@@ -1138,6 +1172,15 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn scalar_neg_zero_hash_consistency() {
+        // si_value -0.0 and 0.0 are different via PartialEq (to_bits), so content_hash must differ
+        let pos = Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH };
+        let neg = Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH };
+        assert_ne!(pos, neg);
+        assert_ne!(pos.content_hash(), neg.content_hash());
     }
 
     #[test]
