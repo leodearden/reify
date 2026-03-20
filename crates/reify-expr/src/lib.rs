@@ -153,8 +153,25 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             Value::Map(map)
         }
 
-        CompiledExprKind::IndexAccess { .. }
-        | CompiledExprKind::MethodCall { .. } => {
+        CompiledExprKind::IndexAccess { object, index } => {
+            let obj = eval_expr(object, ctx);
+            let idx = eval_expr(index, ctx);
+            if obj.is_undef() || idx.is_undef() {
+                return Value::Undef;
+            }
+            match (&obj, &idx) {
+                (Value::List(items), Value::Int(i)) => {
+                    let i = *i as usize;
+                    items.get(i).cloned().unwrap_or(Value::Undef)
+                }
+                (Value::Map(entries), key) => {
+                    entries.get(key).cloned().unwrap_or(Value::Undef)
+                }
+                _ => Value::Undef,
+            }
+        }
+
+        CompiledExprKind::MethodCall { .. } => {
             // Placeholder — implemented in later collection steps
             Value::Undef
         }
