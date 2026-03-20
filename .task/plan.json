@@ -1,51 +1,23 @@
 {
-  "task_id": "57",
-  "title": "User-defined fn — evaluation",
+  "task_id": "76",
+  "title": "SolveSpace libslvs FFI integration",
   "files": [
-    "crates/reify-types/src/expr.rs",
-    "crates/reify-types/src/lib.rs",
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-eval/src/lib.rs",
-    "crates/reify-eval/tests/boundary2_consumer.rs",
-    "crates/reify-eval/tests/fn_eval.rs",
+    "crates/reify-constraints/Cargo.toml",
     "crates/reify-constraints/src/lib.rs",
-    "crates/reify-constraints/src/solver.rs",
-    "crates/reify-runtime/src/concurrent_eval.rs",
-    "crates/reify-test-support/src/builders.rs",
-    "crates/reify-compiler/tests/boundary2_producer.rs",
-    "crates/reify-types/src/constraint.rs"
+    "crates/reify-constraints/src/solvespace.rs",
+    "crates/reify-constraints/tests/solvespace_tests.rs",
+    "crates/reify-constraints/tests/registry_tests.rs"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-compiler",
-    "crates/reify-expr",
-    "crates/reify-eval",
-    "crates/reify-constraints",
-    "crates/reify-runtime",
-    "crates/reify-test-support"
+    "crates/reify-constraints"
   ],
-  "analysis": "Currently `eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value` in reify-expr handles all CompiledExprKind variants except UserFunctionCall, which returns Value::Undef as a stub. Task 56 (dependency) added the compiler support: UserFunctionCall { function_name, args } nodes are emitted when a user function call is resolved, and CompiledFunction/CompiledFnBody store the function's param list, let bindings, and result expression in CompiledModule.functions.\n\nThe compiler's CompilationScope creates ValueCellId(fn_name, param_name) for function parameters, so function body expressions use ValueRef(ValueCellId('double', 'x')) to reference param 'x' of function 'double'. This convention must be matched at evaluation time when building the function scope.\n\nApproach:\n1. Move CompiledFunction and CompiledFnBody from reify-compiler to reify-types (they're pure data types using only reify-types primitives: String, Type, CompiledExpr, ContentHash). Re-export from reify-compiler for backward compat.\n2. Create EvalContext struct in reify-expr with { values: &ValueMap, functions: &[CompiledFunction], recursion_depth: u32 }. Provides constructors: new(values, functions) and simple(values) (empty functions, depth 0).\n3. Change eval_expr signature to take &EvalContext. Update all ~40 call sites across reify-eval (20+), reify-constraints (11), reify-runtime (1), and test files (4). Most callers use EvalContext::simple(values); Engine callers use EvalContext::new(values, &module.functions).\n4. Implement UserFunctionCall evaluation: look up function by name+arity in ctx.functions, evaluate args, check Undef propagation, create fresh ValueMap scope with params bound, evaluate body let-bindings and result_expr.\n5. Add recursion depth limit (1000) returning Undef on exceeded.\n6. Wire functions through Engine evaluation paths.\n\nThe constraint subsystem (ConstraintInput, solver) also calls eval_expr. To support user functions in constraint expressions, add an optional functions field to ConstraintInput, or pass functions when constructing EvalContext in the solver. The practical approach: add `functions: &'a [CompiledFunction]` to ConstraintInput with a default of &[].",
+  "analysis": "This task integrates the SolveSpace libslvs geometric constraint solver into reify-constraints via the existing `slvs` crate (v0.6.0), which provides safe Rust bindings around the libslvs C API with phantom-typed handles. The crate compiles SolveSpace from source via the `cc` crate — no system dependency needed.\n\nThe existing infrastructure already supports this integration:\n- `SolverRegistry` has an `Option<Box<dyn ConstraintSolver>>` geometric slot\n- `ConstraintClassifier` classifies expressions with `std::geo::*` / `std::geometry::*` / `std::distance` / `std::angle_between` / `std::parallel` function calls as `ConstraintDomain::Geometric`\n- `decompose_into_components` groups constraints by domain and routes to the correct solver\n\nThe implementation needs:\n1. Add `slvs` crate dependency to reify-constraints\n2. Create `SolveSpaceSolver` struct implementing `ConstraintSolver` trait\n3. Map Reify's `ResolutionProblem` (auto params + compiled constraint expressions) to slvs entities and constraints\n4. Pattern-match on `CompiledExpr` trees to identify geometric constraint patterns (distance, angle, parallel, perpendicular, coincident, etc.)\n5. Extract solved parameter values from slvs back to Reify's `Value` type\n6. Export `SolveSpaceSolver` from the crate and wire into `SolverRegistry`\n\nKey challenge: The constraint expressions in `ResolutionProblem` are generic `CompiledExpr` trees. The SolveSpace solver needs to pattern-match these to identify which libslvs constraint type to create. For example, `eq(distance_call(a, b), literal(10mm))` must be recognized as a point-to-point distance constraint. This requires a constraint pattern recognition layer.\n\nThe `slvs` crate API works with `System`, groups, entities (Point, LineSegment, etc.), and constraints (PtPtDistance, Angle, Parallel, Perpendicular, PointsCoincident, etc.). Auto params map to slvs parameters, and after solving, we read back the resolved values.\n\nSince `ConstraintSolver: Send + Sync`, the `SolveSpaceSolver` must be Send + Sync. The solver creates a fresh `slvs::System` per solve call (stateless), so this is naturally satisfied — no persistent mutable state.\n\nThe `slvs` crate requires a C compiler and libclang (for bindgen). These should already be available since the project already compiles C++ code via the OCCT kernel.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Move CompiledFunction and CompiledFnBody structs from crates/reify-compiler/src/lib.rs to crates/reify-types/src/expr.rs. These use only reify-types primitives (String, bool, Vec<(String,Type)>, Type, CompiledExpr, ContentHash). Add `pub use expr::{CompiledFunction, CompiledFnBody};` to reify-types/src/lib.rs. In reify-compiler/src/lib.rs, replace the struct definitions with `pub use reify_types::{CompiledFunction, CompiledFnBody};`. Verify: `cargo check -p reify-types -p reify-compiler -p reify-eval -p reify-constraints -p reify-runtime`.",
-      "status": "done",
-      "commit": "b568da5",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Update CompiledModuleBuilder in reify-test-support/src/builders.rs to support functions. Add `functions: Vec<reify_types::CompiledFunction>` field (initialized to Vec::new()), a `.function(f: CompiledFunction) -> Self` builder method, and include functions in the build() output. Also include function content_hashes in the module's content_hash computation. This enables building test modules with user-defined functions for E2E tests.",
-      "status": "done",
-      "commit": "76abd50",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Add `functions: &'a [CompiledFunction]` field to ConstraintInput in reify-types/src/constraint.rs. Default to &[] in all existing call sites that construct ConstraintInput (in reify-eval Engine check/build methods). This prepares the constraint subsystem to receive the function registry.",
-      "status": "done",
-      "commit": "be178f2",
+      "description": "Add `slvs = \"0.6.0\"` dependency to crates/reify-constraints/Cargo.toml under [dependencies]. Run `cargo check -p reify-constraints` to verify it compiles. The slvs crate bundles SolveSpace source and compiles it via cc/bindgen — no system library needed.",
+      "status": "pending",
+      "commit": null,
       "tests": []
     }
   ],
@@ -53,176 +25,207 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in reify-expr/src/lib.rs tests: `eval_user_fn_double`. Construct a CompiledFunction for `fn double(x: Real) -> Real { x + x }`: name='double', params=[('x', Type::Real)], return_type=Type::Real, body=CompiledFnBody { let_bindings: vec![], result_expr: BinOp(Add, ValueRef(ValueCellId('double','x')), ValueRef(ValueCellId('double','x'))) }. Build a UserFunctionCall expr: function_name='double', args=[Literal(Real(5.0))]. Currently this returns Undef. Write the test expecting Real(10.0) — it will fail, proving the feature is needed.",
-      "status": "done",
-      "commit": "2c33326"
+      "description": "Write failing test in crates/reify-constraints/tests/solvespace_tests.rs: `solvespace_solver_is_send_sync`. Import SolveSpaceSolver (which doesn't exist yet) and assert it implements Send + Sync via `fn assert_send_sync<T: Send + Sync>() {}; assert_send_sync::<SolveSpaceSolver>();`. Also test it can be boxed as `Box<dyn ConstraintSolver>`. This test will fail to compile because SolveSpaceSolver doesn't exist yet.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Create EvalContext struct and implement UserFunctionCall evaluation. This is the largest step:\n\n1. In reify-expr/src/lib.rs, define:\n   ```\n   pub struct EvalContext<'a> {\n       pub values: &'a ValueMap,\n       pub functions: &'a [CompiledFunction],\n       recursion_depth: u32,\n   }\n   ```\n   With constructors: `new(values, functions)` (depth=0), `simple(values)` (functions=&[], depth=0).\n   Private helper: `with_scope(values)` returns new EvalContext with same functions, depth+1.\n\n2. Change `eval_expr` signature to `eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value`.\n\n3. Thread ctx through all internal functions: eval_binop, eval_unop, eval_and, eval_or now take `ctx: &EvalContext` instead of `values: &ValueMap`, reading values from `ctx.values`.\n\n4. Implement UserFunctionCall arm:\n   - Find function by name in ctx.functions (first match)\n   - Evaluate arg expressions against ctx\n   - If any arg is Undef, return Undef (strict propagation)\n   - Check recursion_depth < MAX_RECURSION_DEPTH (1000), return Undef if exceeded\n   - Create fresh ValueMap, bind params: ValueCellId(fn_name, param_name) -> arg_value\n   - Evaluate let_bindings in order, inserting into scope\n   - Evaluate result_expr with new scope\n\n5. Update ALL callers:\n   - reify-eval/src/lib.rs: ~20 sites → EvalContext::simple(&values) initially (Engine integration in step-16)\n   - reify-constraints/src/lib.rs: 1 site → EvalContext::simple(input.values)\n   - reify-constraints/src/solver.rs: ~10 sites → EvalContext::simple(values)\n   - reify-runtime/src/concurrent_eval.rs: 1 site → EvalContext::simple(&current_values)\n   - reify-eval/tests/boundary2_consumer.rs: 1 site → EvalContext::simple(&values)\n   - reify-compiler/tests/boundary2_producer.rs: 3 sites → EvalContext::simple(&values)\n   - Internal tests in reify-expr: all sites → EvalContext::simple(&values)\n\n6. Verify all existing tests pass (only API change, no behavior change for non-UserFunctionCall exprs).",
-      "status": "done",
-      "commit": "76ef687"
+      "description": "Create crates/reify-constraints/src/solvespace.rs with a minimal `SolveSpaceSolver` struct. Implement `ConstraintSolver` for it with a stub that returns `SolveResult::NoProgress { reason: \"not yet implemented\" }`. Add `mod solvespace;` to lib.rs and `pub use solvespace::SolveSpaceSolver;`. Verify the Send+Sync test passes.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test: `eval_user_fn_with_let_bindings`. Construct `fn f(x: Real) -> Real { let y = x + 1; y * 2 }` — CompiledFunction with body.let_bindings = [('y', BinOp(Add, ValueRef('f','x'), Literal(Int(1))))] and body.result_expr = BinOp(Mul, ValueRef('f','y'), Literal(Int(2))). Create EvalContext with functions=[f]. Call f(4) via UserFunctionCall, expect Real(10.0). Tests that let bindings in function bodies evaluate correctly and are available to the result expression.",
-      "status": "done",
-      "commit": "0d30a2b"
+      "description": "Write failing test: `solve_simple_point_distance_constraint`. Create a ResolutionProblem with two auto params (point x and y coordinates), and a constraint expression representing `distance(point, origin) == 10mm` using a FunctionCall(std::geo::pt_pt_distance) expression compared via Eq to a literal Scalar. Expect SolveResult::Solved with values where the resulting distance is approximately 10mm (within tolerance). Currently returns NoProgress.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix let binding evaluation in function body if step-3 fails. Ensure each let binding's expression is evaluated against the current scope (which grows as bindings are added), and the binding result is inserted as ValueCellId(fn_name, binding_name). The step-2 implementation should already handle this — if the test passes, this is a no-op confirmation step.",
-      "status": "done",
-      "commit": "0d30a2b"
+      "description": "Implement the constraint pattern recognition layer in solvespace.rs. Create an enum `GeometricConstraintPattern` with variants: PtPtDistance { pt_a_params, pt_b_params, distance_si }, Angle { line_a_params, line_b_params, angle_rad }, Parallel { line_a_params, line_b_params }, Perpendicular { line_a_params, line_b_params }, Coincident { pt_a_params, pt_b_params }. Implement `fn recognize_pattern(expr: &CompiledExpr, auto_params: &[AutoParam], current_values: &ValueMap) -> Option<GeometricConstraintPattern>` that pattern-matches the expression tree. Start with PtPtDistance: match `BinOp(Eq, FunctionCall{qualified_name containing 'distance', args=[point_a_expr, point_b_expr]}, literal_scalar)` and extract the auto param IDs from the point expressions.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
-      "type": "test",
-      "description": "Write test: `eval_user_fn_recursive_factorial`. Construct `fn factorial(n: Int) -> Int { if n <= 1 then 1 else n * factorial(n - 1) }`. Body result_expr is Conditional { condition: BinOp(Le, ValueRef('factorial','n'), Literal(Int(1))), then_branch: Literal(Int(1)), else_branch: BinOp(Mul, ValueRef('factorial','n'), UserFunctionCall('factorial', [BinOp(Sub, ValueRef('factorial','n'), Literal(Int(1)))])) }. Call factorial(5), expect Int(120). Tests that recursion works: function re-enters eval with a new scope frame preserving the function registry.",
-      "status": "done",
-      "commit": "0d30a2b"
+      "type": "impl",
+      "description": "Implement the core solve method for SolveSpaceSolver. For each constraint in the ResolutionProblem: (1) recognize the geometric pattern, (2) create slvs entities (3D points from auto params, lines from point pairs), (3) add the corresponding slvs constraint (PtPtDistance, Angle, Parallel, etc.), (4) call sys.solve(), (5) read back solved point coordinates and map to ValueCellId→Value entries. Handle the mapping between Reify's ValueCellId-based auto params and slvs's entity/parameter system. Use a fresh slvs::System per solve call. Make the simple distance test pass.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Ensure recursion works. The UserFunctionCall evaluator uses ctx.with_scope(&new_values) which preserves the functions slice and increments depth. The recursive UserFunctionCall in the body re-enters the same code path with new param bindings. If factorial test passes, this is a no-op confirmation. If not, debug scope construction or depth threading.",
-      "status": "done",
-      "commit": "0d30a2b"
+      "type": "test",
+      "description": "Write failing test: `solve_angle_constraint`. Create a problem with auto params for two line endpoints, and a constraint `angle(line1, line2) == 90deg` (perpendicular). Expect Solved with line endpoints that form a 90-degree angle.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
-      "type": "test",
-      "description": "Write test: `eval_user_fn_recursion_depth_exceeded`. Construct `fn infinite(x: Int) -> Int { infinite(x) }` — unconditionally recursive. Call infinite(1), assert result is Value::Undef (should not stack-overflow, should hit the 1000-depth limit and return Undef gracefully).",
-      "status": "done",
-      "commit": "0d30a2b"
+      "type": "impl",
+      "description": "Add angle constraint pattern recognition: match `BinOp(Eq, FunctionCall{qualified_name containing 'angle', args=[line1_expr, line2_expr]}, literal_angle_scalar)`. Map to slvs Angle constraint. Extract line endpoint auto params from the expressions. Implement the slvs entity creation for LineSegments from point pairs.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Ensure depth limit works. The step-2 implementation checks `ctx.recursion_depth >= MAX_RECURSION_DEPTH` at the top of UserFunctionCall handling and returns Undef. If the test passes, no-op. If it stack-overflows, the depth check is missing or not incrementing — fix accordingly.",
-      "status": "done",
-      "commit": "0d30a2b"
+      "type": "test",
+      "description": "Write failing test: `solve_parallel_constraint`. Create a problem with auto params for two line segments, and a constraint `parallel(line1, line2)`. Expect Solved with line endpoints where the two lines are parallel (direction vectors proportional).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-9",
-      "type": "test",
-      "description": "Write test: `eval_user_fn_undef_arg_propagation`. Call double(Undef) where double is the fn from step-1. Assert result is Value::Undef. Tests strict Undef propagation: if any argument evaluates to Undef, the function call short-circuits without evaluating the body.",
-      "status": "done",
-      "commit": "0d30a2b"
+      "type": "impl",
+      "description": "Add parallel constraint pattern recognition: match FunctionCall with qualified_name containing 'parallel'. Map to slvs Parallel constraint (no value parameter needed — it's a boolean geometric relationship). Make the parallel test pass.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-10",
-      "type": "impl",
-      "description": "Ensure Undef arg propagation works. Step-2 implementation checks `if evaluated_args.iter().any(|v| v.is_undef()) { return Value::Undef; }` before entering the function body. If test passes, no-op.",
-      "status": "done",
-      "commit": "0d30a2b"
+      "type": "test",
+      "description": "Write failing test: `solve_coincident_constraint`. Create a problem with two pairs of auto params (x1,y1) and (x2,y2) representing two points, and a coincident constraint. Expect Solved with both points at the same location.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-11",
-      "type": "test",
-      "description": "Write test: `eval_user_fn_dimension_args`. Construct `fn area(w: Length, h: Length) -> Area { w * h }` with Scalar-typed params. Call area(80mm, 100mm) with args Scalar{si_value:0.08, dim:LENGTH}, Scalar{si_value:0.1, dim:LENGTH}. Assert result is Scalar{si_value:0.008, dim:AREA}. Tests that dimensional Scalar values flow correctly through function evaluation.",
-      "status": "done",
-      "commit": "0d30a2b"
+      "type": "impl",
+      "description": "Add coincident point pattern recognition: match FunctionCall with qualified_name containing 'coincident' or a distance == 0 pattern. Map to slvs PointsCoincident constraint. Make the coincident test pass.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-12",
-      "type": "impl",
-      "description": "Dimension handling should work automatically since the function body's BinOp(Mul) is evaluated by the existing eval_mul which combines dimension vectors. If the test passes, no-op. If not, debug the scope binding for Scalar values.",
-      "status": "done",
-      "commit": "0d30a2b"
+      "type": "test",
+      "description": "Write failing test: `solve_overconstrained_returns_infeasible`. Create a problem with contradictory constraints: point-to-point distance == 10mm AND point-to-point distance == 20mm for the same point pair. Expect SolveResult::Infeasible with diagnostics.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-13",
-      "type": "test",
-      "description": "Write test: `eval_user_fn_overload_by_arity`. Create two functions: `fn process(x: Real) -> Real { x * 2 }` and `fn process(x: Real, y: Real) -> Real { x + y }`. Call process(3.0) with 1 arg → expect Real(6.0). Call process(3.0, 4.0) with 2 args → expect Real(7.0). Tests that runtime lookup matches by name AND argument count.",
-      "status": "done",
-      "commit": "0d30a2b"
+      "type": "impl",
+      "description": "Handle slvs solve failures. When sys.solve() returns SolveResult::Fail, map the FailReason (Inconsistent → Infeasible with diagnostic listing failed constraints, Nonconvergent → NoProgress). Make the overconstrained test pass.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-14",
-      "type": "impl",
-      "description": "Implement arity-based overload resolution. In the UserFunctionCall handler, when looking up by name, filter candidates by `fn.params.len() == args.len()`. If exactly one matches, use it. If zero or multiple match, return Undef. Update the lookup from simple name match to name+arity match.",
-      "status": "done",
-      "commit": "0d30a2b"
+      "type": "test",
+      "description": "Write failing test: `solve_underconstrained_solves_with_dof`. Create a problem with a single point and only one distance constraint (underconstrained — point can be anywhere on a sphere). Expect SolveResult::Solved (solver finds a valid position) with remaining degrees of freedom.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-15",
-      "type": "test",
-      "description": "Write E2E integration test in new file crates/reify-eval/tests/fn_eval.rs. Parse and compile source text: `fn double(x: Real) -> Real { x + x }\\nstructure S { let v = double(3) }`. Use reify_syntax::parse() and reify_compiler::compile(). Create Engine with mock constraint checker, call engine.eval(&module). Assert the value for ValueCellId('S','v') == Real(6.0). This validates the complete pipeline from source text through compilation to evaluation, including the engine threading functions to eval_expr.",
-      "status": "done",
-      "commit": "5650ad2"
+      "type": "impl",
+      "description": "Ensure underconstrained systems are handled: slvs reports dof > 0 but still returns Ok with a solution. Map this to SolveResult::Solved with the solved values. The test should pass if the solver finds any valid position satisfying the constraint.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-16",
+      "type": "test",
+      "description": "Write failing test: `solve_unrecognized_pattern_falls_through`. Create a ResolutionProblem with a constraint expression that uses a geometric function but doesn't match any known pattern (e.g., a complex nested expression). Expect SolveResult::NoProgress with a descriptive reason, not a panic.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-17",
       "type": "impl",
-      "description": "Wire functions through Engine evaluation. Update reify-eval/src/lib.rs:\n1. In Engine::eval(), change all eval_expr calls from EvalContext::simple(&values) to EvalContext::new(&values, &module.functions).\n2. In Engine::eval_cached(), same change — module is available as parameter.\n3. In evaluate_let_bindings(), add a `functions: &[CompiledFunction]` parameter, pass to EvalContext::new.\n4. In Engine::check() and Engine::build(), pass module.functions to constraint input and eval contexts.\n5. In the concurrent eval path (reify-runtime/src/concurrent_eval.rs), add a functions field to ConcurrentEvalAdapter (populated from the module). Use it when constructing EvalContext.\n6. In reify-constraints callers, use input.functions from ConstraintInput.\n7. Run full test suite to verify everything works end-to-end.",
-      "status": "done",
-      "commit": "19fb353"
+      "description": "Add graceful fallback for unrecognized constraint patterns. If recognize_pattern returns None for any constraint, return SolveResult::NoProgress with a message like 'unrecognized geometric constraint pattern'. This ensures the solver never panics on unexpected input.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-18",
+      "type": "test",
+      "description": "Write integration test in registry_tests.rs: `registry_dispatches_geometric_to_solvespace`. Create a SolverRegistry with DimensionalSolver for dimensional and SolveSpaceSolver for geometric. Create a problem with a geometric constraint (distance via std::geo::distance function call, classified as Geometric by ConstraintClassifier). Verify the registry dispatches to SolveSpaceSolver and returns Solved.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-19",
+      "type": "impl",
+      "description": "Ensure SolveSpaceSolver is properly exported and can be wired into SolverRegistry. Update lib.rs exports if needed. The test should pass with the existing SolverRegistry infrastructure — it already has the geometric slot and solver_for() dispatch logic. Verify the full integration test passes.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-20",
+      "type": "test",
+      "description": "Write integration test in registry_tests.rs: `registry_mixed_dimensional_and_geometric`. Create a problem with two independent subproblems: one dimensional (thickness > 2mm, handled by DimensionalSolver) and one geometric (distance constraint, handled by SolveSpaceSolver). Verify both are solved correctly and merged.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-21",
+      "type": "impl",
+      "description": "Verify the mixed-domain decomposition and dispatch works end-to-end. The decompose_into_components function already handles multi-domain decomposition, and SolverRegistry merges results. Fix any issues that arise. Run the full test suite to ensure no regressions.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Move CompiledFunction and CompiledFnBody from reify-compiler to reify-types",
-      "rationale": "These are pure data types composed entirely of reify-types primitives (String, bool, Type, CompiledExpr, ContentHash). Moving them follows the existing pattern where CompiledExpr, CompiledExprKind, CompiledMatchArm already live in reify-types. This avoids adding reify-compiler as a dependency of reify-expr, which would be architecturally backwards. Re-exporting from reify-compiler maintains backward compatibility."
+      "decision": "Use the `slvs` crate (v0.6.0) instead of raw FFI bindings",
+      "rationale": "The slvs crate provides safe Rust wrappers with phantom-typed handles around the libslvs C API. It bundles the SolveSpace source and compiles from source via cc/bindgen — no system dependency needed. This follows the principle of using well-maintained community crates over hand-rolled FFI, similar to how argmin is used for the DimensionalSolver."
     },
     {
-      "decision": "Change eval_expr signature to take &EvalContext (breaking change), update all callers",
-      "rationale": "The task explicitly requires this approach (Option 2). While a backward-compatible wrapper would minimize churn, the breaking change ensures all evaluation paths can support user functions uniformly. The migration is mechanical: most callers change `reify_expr::eval_expr(expr, &values)` to `reify_expr::eval_expr(expr, &EvalContext::simple(&values))`. This is a one-time cost that results in a cleaner API."
+      "decision": "Create a fresh slvs::System per solve() call (stateless solver)",
+      "rationale": "This makes SolveSpaceSolver trivially Send + Sync (no mutable interior state). The ConstraintSolver trait requires Send + Sync. Creating a fresh system per call is cheap compared to the solve computation itself, and avoids issues with stale entity handles or group management across calls."
     },
     {
-      "decision": "EvalContext recursion_depth field is private with no public setter",
-      "rationale": "Callers should never set recursion depth — it's internal bookkeeping for preventing stack overflow. Only the UserFunctionCall evaluator increments it via the private with_scope() helper. This prevents misuse while keeping the public API clean."
+      "decision": "Pattern recognition layer to map CompiledExpr to geometric constraint types",
+      "rationale": "Reify's constraint expressions are generic CompiledExpr trees, but libslvs needs specific constraint types (PtPtDistance, Angle, Parallel, etc.). A pattern recognition function matches known expression shapes (e.g., eq(distance_call(...), literal)) to specific GeometricConstraintPattern variants. This is extensible — new patterns can be added without changing the solve logic."
     },
     {
-      "decision": "Function scope is fully isolated (fresh ValueMap, no access to caller's values)",
-      "rationale": "User-defined functions in Reify are pure. The compiler's CompilationScope creates ValueCellId(fn_name, param_name) for parameters, meaning function body expressions only reference these IDs. A fresh ValueMap with only param and let-binding entries naturally enforces this isolation. The function registry (ctx.functions) is carried through for nested calls."
+      "decision": "Map auto params to 3D points in slvs, even for 2D problems",
+      "rationale": "SolveSpace supports both 2D (workplane) and 3D point types. Starting with 3D points is simpler and more general. If performance or accuracy issues arise with 2D problems, we can add workplane-based solving later. The z-coordinate can be fixed to 0 for nominally 2D problems."
     },
     {
-      "decision": "Runtime overload resolution by name + argument count",
-      "rationale": "The compiler already performs full type-based overload resolution at compile time. At runtime, name + arity is sufficient to distinguish overloads. This avoids threading type information through the evaluator and keeps the lookup simple."
+      "decision": "Return NoProgress for unrecognized geometric patterns instead of panicking",
+      "rationale": "The SolverRegistry falls back to the dimensional solver when the geometric solver returns NoProgress, so unrecognized patterns degrade gracefully to the Nelder-Mead solver. This is safer than panicking and allows incremental expansion of supported geometric constraint types."
     },
     {
-      "decision": "Recursion depth limit of 1000 returning Value::Undef",
-      "rationale": "1000 allows deep legitimate recursion while preventing stack overflow. Returning Undef follows Reify's philosophy where failed/impossible computations produce Undef, which propagates upward cleanly. A diagnostic message would be ideal but Undef is sufficient for v0.1."
-    },
-    {
-      "decision": "Add functions field to ConstraintInput struct",
-      "rationale": "Constraint expressions can contain UserFunctionCall nodes. The solver evaluates these expressions repeatedly during optimization. Adding functions to ConstraintInput is the least-invasive way to provide the function registry to the constraint subsystem. Defaults to &[] for backward compatibility."
+      "decision": "Point-based entity model: auto params map to point coordinates",
+      "rationale": "Reify's auto params are scalar ValueCellIds (e.g., 'Point.x', 'Point.y', 'Point.z'). These naturally map to slvs 3D point coordinates. Lines are derived from point pairs referenced in constraint expressions. This mapping is straightforward and matches how CAD constraint solvers typically work."
     }
   ],
   "reuse": [
     {
-      "what": "Existing eval infrastructure (eval_binop, eval_unop, eval_add, eval_mul, Undef propagation, dimensional arithmetic)",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Function body expressions are standard CompiledExpr trees. Once the scope ValueMap is set up with param bindings, the entire evaluation infrastructure handles body evaluation without modification. Only the top-level threading changes from ValueMap to EvalContext."
+      "what": "SolverRegistry with geometric slot",
+      "where": "crates/reify-constraints/src/registry.rs",
+      "how": "SolverRegistry already has `geometric: Option<Box<dyn ConstraintSolver>>` slot and solver_for() dispatch. SolveSpaceSolver plugs directly into this via `SolverRegistry::with_solvers(dimensional, Some(Box::new(SolveSpaceSolver)), None, None)`."
     },
     {
-      "what": "CompilationScope ValueCellId convention: ValueCellId(entity_name, member_name)",
-      "where": "crates/reify-compiler/src/lib.rs CompilationScope::register()",
-      "how": "The compiler creates ValueCellId(fn_name, param_name) for function parameters. The evaluator mirrors this convention when binding arguments: ValueCellId('double', 'x') → arg_value. This ensures ValueRef nodes in the compiled body resolve correctly."
+      "what": "ConstraintClassifier for geometric domain detection",
+      "where": "crates/reify-constraints/src/classifier.rs",
+      "how": "Already classifies expressions containing std::geo::* / std::geometry::* / std::distance / std::angle_between / std::parallel function calls as ConstraintDomain::Geometric. No changes needed to the classifier."
     },
     {
-      "what": "ValueMap with PersistentMap (im::HashMap) for O(1) structural-sharing clones",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Each function call creates a new fresh ValueMap for its scope. The pattern of creating isolated child ValueMaps already exists in the engine's sub-component evaluation (child_values). PersistentMap makes this cheap."
+      "what": "decompose_into_components for multi-domain decomposition",
+      "where": "crates/reify-constraints/src/decompose.rs",
+      "how": "Already groups constraints by domain and creates SubProblem instances with domain tags. The SolverRegistry uses these to dispatch geometric sub-problems to SolveSpaceSolver."
     },
     {
-      "what": "Test expression builders (literal, value_ref_typed, binop, etc.)",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Use these to construct function body expressions and call argument expressions in unit tests, avoiding manual CompiledExpr construction."
+      "what": "Test helpers from reify-test-support",
+      "where": "crates/reify-test-support/src/{builders,values}.rs",
+      "how": "Use literal(), value_ref(), gt(), eq(), mm(), deg(), vcid(), cnid() helpers for constructing test expressions. Use geometry_function_call pattern from classifier_tests.rs to build std::geo::* function calls."
     },
     {
-      "what": "E2E test pattern: parse → compile → Engine.eval() → assert values",
-      "where": "crates/reify-eval/tests/e2e_bracket.rs, boundary2_consumer.rs",
-      "how": "Follow the established E2E testing pattern for the integration test. Use reify_syntax::parse(), reify_compiler::compile(), Engine::new(), engine.eval(&module), then check result values."
+      "what": "ConstraintSolver trait and ResolutionProblem types",
+      "where": "crates/reify-types/src/constraint.rs",
+      "how": "SolveSpaceSolver implements the existing ConstraintSolver trait. Input is ResolutionProblem with auto_params, constraints (CompiledExpr), and current_values. Output is SolveResult (Solved/Infeasible/NoProgress)."
     },
     {
-      "what": "CompiledModuleBuilder for constructing test modules",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "After adding .function() support, use the builder to construct modules with both functions and structures for programmatic E2E tests."
+      "what": "Existing test patterns from solver_integration.rs and registry_tests.rs",
+      "where": "crates/reify-constraints/tests/",
+      "how": "Follow the established test patterns: construct ResolutionProblem, call solver.solve(), match on SolveResult, assert values are within expected ranges. Use the same helpers (vcid, cnid, mm, etc.)."
     }
   ]
 }

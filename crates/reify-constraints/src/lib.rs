@@ -1,6 +1,7 @@
 mod classifier;
 mod decompose;
 mod registry;
+mod slvs_sys;
 mod solver;
 
 pub use classifier::ConstraintClassifier;
