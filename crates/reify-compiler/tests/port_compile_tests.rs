@@ -105,3 +105,50 @@ structure def S {
         .collect();
     assert_eq!(type_warnings.len(), 1, "expected 1 unknown port type warning, got: {:?}", diagnostics);
 }
+
+// ── Step 15: port member access via dot notation ────────────────────
+
+#[test]
+fn compile_port_member_access() {
+    let source = r#"
+trait MechPort {
+    param diameter : Length
+}
+
+structure def S {
+    port mount : MechPort {
+        param diameter : Length = 5mm
+    }
+    let d = mount.diameter
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    // No error diagnostics expected
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Should have a let 'd' in value_cells that references the port member
+    let d_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d")
+        .expect("expected value cell 'd'");
+
+    assert_eq!(d_cell.kind, ValueCellKind::Let);
+    // The expression should be a ValueRef to the composite ValueCellId
+    match &d_cell.default_expr.as_ref().unwrap().kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert!(
+                id.member.contains("mount.diameter"),
+                "expected ValueRef to 'mount.diameter', got '{}'",
+                id.member
+            );
+        }
+        other => panic!("expected ValueRef, got {:?}", other),
+    }
+}
