@@ -54,6 +54,7 @@ pub enum CompiledExprKind {
     /// Lambda expression: |params| body with captured outer-scope references.
     Lambda {
         params: Vec<(String, Option<Type>)>,
+        param_ids: Vec<ValueCellId>,
         body: Box<CompiledExpr>,
         captures: Vec<ValueCellId>,
     },
@@ -222,9 +223,61 @@ impl CompiledExpr {
         }
     }
 
+    /// Collect all ValueRef ValueCellIds from this expression tree.
+    ///
+    /// For Lambda nodes, emits `captures` only — does NOT recurse into body.
+    /// This is the correct behavior for dependency tracking: a lambda's
+    /// dependencies are its captures, not the refs inside its body.
+    pub fn collect_value_refs(&self) -> Vec<ValueCellId> {
+        let mut refs = Vec::new();
+        self.collect_value_refs_inner(&mut refs);
+        refs
+    }
+
+    fn collect_value_refs_inner(&self, refs: &mut Vec<ValueCellId>) {
+        match &self.kind {
+            CompiledExprKind::ValueRef(id) => refs.push(id.clone()),
+            CompiledExprKind::Literal(_) => {}
+            CompiledExprKind::BinOp { left, right, .. } => {
+                left.collect_value_refs_inner(refs);
+                right.collect_value_refs_inner(refs);
+            }
+            CompiledExprKind::UnOp { operand, .. } => {
+                operand.collect_value_refs_inner(refs);
+            }
+            CompiledExprKind::FunctionCall { args, .. } => {
+                for arg in args {
+                    arg.collect_value_refs_inner(refs);
+                }
+            }
+            CompiledExprKind::Conditional { condition, then_branch, else_branch } => {
+                condition.collect_value_refs_inner(refs);
+                then_branch.collect_value_refs_inner(refs);
+                else_branch.collect_value_refs_inner(refs);
+            }
+            CompiledExprKind::Match { discriminant, arms } => {
+                discriminant.collect_value_refs_inner(refs);
+                for arm in arms {
+                    arm.body.collect_value_refs_inner(refs);
+                }
+            }
+            CompiledExprKind::UserFunctionCall { args, .. } => {
+                for arg in args {
+                    arg.collect_value_refs_inner(refs);
+                }
+            }
+            CompiledExprKind::Lambda { captures, .. } => {
+                for cap in captures {
+                    refs.push(cap.clone());
+                }
+            }
+        }
+    }
+
     /// Create a lambda expression.
     pub fn lambda(
         params: Vec<(String, Option<Type>)>,
+        param_ids: Vec<ValueCellId>,
         body: CompiledExpr,
         captures: Vec<ValueCellId>,
         result_type: Type,
@@ -236,12 +289,16 @@ impl CompiledExpr {
                 content_hash = content_hash.combine(ContentHash::of_str(&format!("{:?}", t)));
             }
         }
+        for id in &param_ids {
+            content_hash = content_hash.combine(ContentHash::of_str(&format!("{}", id)));
+        }
         for cap in &captures {
             content_hash = content_hash.combine(ContentHash::of_str(&format!("{}", cap)));
         }
         CompiledExpr {
             kind: CompiledExprKind::Lambda {
                 params,
+                param_ids,
                 body: Box::new(body),
                 captures,
             },

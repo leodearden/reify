@@ -494,58 +494,14 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
 
 /// Collect all ValueCellId references from a compiled expression.
 fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
-    let mut refs = Vec::new();
-    collect_value_refs_inner(expr, &mut refs);
+    let mut refs: Vec<String> = expr
+        .collect_value_refs()
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
     refs.sort();
     refs.dedup();
     refs
-}
-
-fn collect_value_refs_inner(expr: &reify_types::CompiledExpr, refs: &mut Vec<String>) {
-    use reify_types::CompiledExprKind;
-
-    match &expr.kind {
-        CompiledExprKind::ValueRef(id) => refs.push(id.to_string()),
-        CompiledExprKind::BinOp { left, right, .. } => {
-            collect_value_refs_inner(left, refs);
-            collect_value_refs_inner(right, refs);
-        }
-        CompiledExprKind::UnOp { operand, .. } => {
-            collect_value_refs_inner(operand, refs);
-        }
-        CompiledExprKind::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_value_refs_inner(arg, refs);
-            }
-        }
-        CompiledExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            collect_value_refs_inner(condition, refs);
-            collect_value_refs_inner(then_branch, refs);
-            collect_value_refs_inner(else_branch, refs);
-        }
-        CompiledExprKind::Match { discriminant, arms } => {
-            collect_value_refs_inner(discriminant, refs);
-            for arm in arms {
-                collect_value_refs_inner(&arm.body, refs);
-            }
-        }
-        CompiledExprKind::UserFunctionCall { args, .. } => {
-            for arg in args {
-                collect_value_refs_inner(arg, refs);
-            }
-        }
-        CompiledExprKind::Lambda { body, captures, .. } => {
-            collect_value_refs_inner(body, refs);
-            for cap in captures {
-                refs.push(cap.to_string());
-            }
-        }
-        CompiledExprKind::Literal(_) => {}
-    }
 }
 
 /// Convert a byte offset in source text to (line, column), both 1-based.
