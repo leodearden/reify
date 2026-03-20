@@ -659,6 +659,9 @@ pub fn compile(
                     .with_label(DiagnosticLabel::new(import.span, "import")),
                 );
             }
+            reify_syntax::Declaration::Trait(_) => {
+                // Trait compilation deferred to a later milestone.
+            }
         }
     }
 
@@ -871,6 +874,9 @@ fn compile_structure(
             reify_syntax::MemberDecl::GuardedGroup(_) => {
                 // Guard evaluation semantics are not yet implemented in the compiler.
                 // Guarded groups will be handled in a future task.
+            }
+            reify_syntax::MemberDecl::AssociatedType(_) => {
+                // Associated type compilation deferred to a later milestone.
             }
         }
     }

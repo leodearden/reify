@@ -25,6 +25,9 @@ fn reject_unresolved_type_names() {
         path: ModulePath::single("bad"),
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Bad".into(),
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
             members: vec![MemberDecl::Param(ParamDecl {
                 name: "x".into(),
                 type_expr: Some(TypeExpr {
@@ -209,6 +212,9 @@ fn handle_parse_errors_gracefully() {
         path: ModulePath::single("partial"),
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Partial".into(),
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
             members: vec![MemberDecl::Param(ParamDecl {
                 name: "width".into(),
                 type_expr: Some(TypeExpr {

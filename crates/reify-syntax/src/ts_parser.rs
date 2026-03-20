@@ -261,6 +261,9 @@ impl<'a> Lowering<'a> {
 
         Some(StructureDef {
             name,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
             members,
             span: self.span(node),
             content_hash,
@@ -735,6 +738,7 @@ mod tests {
             MemberDecl::Minimize(_) => "minimize".into(),
             MemberDecl::Maximize(_) => "maximize".into(),
             MemberDecl::GuardedGroup(_) => "guarded_group".into(),
+            MemberDecl::AssociatedType(a) => format!("type:{}", a.name),
         }).collect();
         assert_eq!(names, vec![
             "param:width", "param:height", "param:thickness",
@@ -898,6 +902,7 @@ mod tests {
                 MemberDecl::Minimize(m) => m.span,
                 MemberDecl::Maximize(m) => m.span,
                 MemberDecl::GuardedGroup(g) => g.span,
+                MemberDecl::AssociatedType(a) => a.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
             assert!((span.end as usize) <= source.len(), "member {} span overflows", i);
@@ -927,6 +932,10 @@ mod tests {
                 }
                 MemberDecl::GuardedGroup(_) => {
                     assert!(text.starts_with("where"), "guarded_group member {} text: {:?}", i, text);
+                }
+                MemberDecl::AssociatedType(a) => {
+                    assert!(text.starts_with("type"), "associated_type member {} text: {:?}", i, text);
+                    assert!(text.contains(&a.name), "associated_type {} name in text", i);
                 }
             }
         }
@@ -969,6 +978,7 @@ mod tests {
                 MemberDecl::Minimize(m) => (m.span, m.content_hash),
                 MemberDecl::Maximize(m) => (m.span, m.content_hash),
                 MemberDecl::GuardedGroup(g) => (g.span, g.content_hash),
+                MemberDecl::AssociatedType(a) => (a.span, a.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
             assert_eq!(hash, ContentHash::of_str(text), "member {} hash from source text", i);
@@ -1051,6 +1061,7 @@ mod tests {
                 MemberDecl::Minimize(m) => (m.content_hash, m.span),
                 MemberDecl::Maximize(m) => (m.content_hash, m.span),
                 MemberDecl::GuardedGroup(g) => (g.content_hash, g.span),
+                MemberDecl::AssociatedType(a) => (a.content_hash, a.span),
             };
             let (hash_b, span_b) = match m_b {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
@@ -1060,6 +1071,7 @@ mod tests {
                 MemberDecl::Minimize(m) => (m.content_hash, m.span),
                 MemberDecl::Maximize(m) => (m.content_hash, m.span),
                 MemberDecl::GuardedGroup(g) => (g.content_hash, g.span),
+                MemberDecl::AssociatedType(a) => (a.content_hash, a.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
             assert_eq!(span_a, span_b, "member {} span determinism", i);
