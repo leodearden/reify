@@ -145,6 +145,8 @@ fn type_error_dimension_mismatch() {
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Bad".into(),
             is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
             members: vec![
                 MemberDecl::Param(ParamDecl {
                     name: "thickness".into(),
@@ -224,6 +226,8 @@ fn constraint_non_bool_produces_warning() {
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Bad".into(),
             is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
             members: vec![
                 MemberDecl::Param(ParamDecl {
                     name: "width".into(),
@@ -400,6 +404,8 @@ fn mul_div_different_dimensions_no_diagnostic() {
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Good".into(),
             is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
             members: vec![
                 MemberDecl::Param(ParamDecl {
                     name: "width".into(),
@@ -1277,6 +1283,8 @@ fn scalar_plus_int_type_error() {
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Bad".into(),
             is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
             members: vec![
                 MemberDecl::Param(ParamDecl {
                     name: "width".into(),

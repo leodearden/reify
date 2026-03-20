@@ -958,6 +958,9 @@ pub fn compile(
             reify_syntax::Declaration::Function(_) => {
                 // Already compiled in pre-pass above.
             }
+            reify_syntax::Declaration::Trait(_) => {
+                // Trait compilation deferred to a later milestone.
+            }
         }
     }
 
@@ -1283,6 +1286,9 @@ fn compile_structure(
                     &mut guard_index,
                     &mut constraint_index,
                 );
+            }
+            reify_syntax::MemberDecl::AssociatedType(_) => {
+                // Associated type compilation deferred to a later milestone.
             }
         }
     }

@@ -49,6 +49,8 @@ pub fn bracket_parsed_module() -> ParsedModule {
     let structure = StructureDef {
         name: "Bracket".into(),
         is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
         members: vec![
             MemberDecl::Param(ParamDecl {
                 name: "width".into(),

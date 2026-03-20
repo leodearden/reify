@@ -18,6 +18,7 @@ pub enum Declaration {
     Import(ImportDecl),
     Enum(EnumDecl),
     Function(FnDef),
+    Trait(TraitDecl),
 }
 
 /// A structure definition (the primary entity type in Reify).
@@ -25,12 +26,14 @@ pub enum Declaration {
 pub struct StructureDef {
     pub name: String,
     pub is_pub: bool,
+    pub type_params: Vec<TypeParamDecl>,
+    pub trait_bounds: Vec<String>,
     pub members: Vec<MemberDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
 
-/// A member declaration within a structure.
+/// A member declaration within a structure or trait.
 #[derive(Debug, Clone)]
 pub enum MemberDecl {
     Param(ParamDecl),
@@ -40,6 +43,7 @@ pub enum MemberDecl {
     Minimize(MinimizeDecl),
     Maximize(MaximizeDecl),
     GuardedGroup(GuardedGroupDecl),
+    AssociatedType(AssociatedTypeDecl),
 }
 
 /// `where condition { ...members... } else { ...members... }`
@@ -172,11 +176,24 @@ pub struct FnDef {
     pub content_hash: ContentHash,
 }
 
+/// `trait Rigid { param mass : Mass }`
+#[derive(Debug, Clone)]
+pub struct TraitDecl {
+    pub name: String,
+    pub is_pub: bool,
+    pub type_params: Vec<TypeParamDecl>,
+    pub refinements: Vec<String>,
+    pub members: Vec<MemberDecl>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
 /// A type parameter declaration: `T` or `T: Numeric`
 #[derive(Debug, Clone)]
 pub struct TypeParamDecl {
     pub name: String,
     pub bounds: Vec<String>,
+    pub span: SourceSpan,
 }
 
 /// A function parameter: `w: Scalar`
@@ -192,6 +209,15 @@ pub struct FnParam {
 pub struct FnBody {
     pub let_bindings: Vec<LetDecl>,
     pub result_expr: Expr,
+}
+
+/// An associated type declaration: `type Material = Steel`
+#[derive(Debug, Clone)]
+pub struct AssociatedTypeDecl {
+    pub name: String,
+    pub default_type: Option<TypeExpr>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
 }
 
 /// An expression in the AST (pre-compilation).

@@ -114,6 +114,11 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Function(decl));
                     }
                 }
+                "trait_declaration" => {
+                    if let Some(decl) = self.lower_trait(child) {
+                        self.declarations.push(Declaration::Trait(decl));
+                    }
+                }
                 "ERROR" => {
                     self.errors.push(ParseError {
                         message: format!("syntax error: {}", self.node_text(child)),
@@ -228,34 +233,73 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Extract identifiers from a trait_bound_list node (e.g., `Rigid + Printable`).
+    fn lower_trait_bound_list(&self, node: tree_sitter::Node) -> Vec<String> {
+        let mut bounds = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "identifier" {
+                bounds.push(self.node_text(child).to_string());
+            }
+        }
+        bounds
+    }
+
+    /// Extract type parameters from a node's optional type_parameters child.
+    fn lower_type_parameters(&self, node: tree_sitter::Node) -> Vec<TypeParamDecl> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "type_parameters" {
+                return self.lower_type_params_inner(child);
+            }
+        }
+        vec![]
+    }
+
+    /// Lower the contents of a type_parameters node.
+    fn lower_type_params_inner(&self, node: tree_sitter::Node) -> Vec<TypeParamDecl> {
+        let mut params = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "type_parameter"
+                && let Some(name_node) = child.child_by_field_name("name")
+            {
+                let name = self.node_text(name_node).to_string();
+                let bounds = child
+                    .child_by_field_name("bounds")
+                    .map(|b| self.lower_trait_bound_list(b))
+                    .unwrap_or_default();
+                params.push(TypeParamDecl {
+                    name,
+                    bounds,
+                    span: self.span(child),
+                });
+            }
+        }
+        params
+    }
+
+    /// Find a trait_bound_list child within a node and extract its bounds.
+    fn find_trait_bound_list(&self, node: tree_sitter::Node) -> Vec<String> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "trait_bound_list" {
+                return self.lower_trait_bound_list(child);
+            }
+        }
+        vec![]
+    }
+
     // ── Function lowering ─────────────────────────────────────
 
     fn lower_function(&self, node: tree_sitter::Node) -> Option<FnDef> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
-        // Check for 'pub' keyword
-        let mut is_pub = false;
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if !child.is_named() && self.node_text(child) == "pub" {
-                is_pub = true;
-                break;
-            }
-        }
+        let is_pub = self.has_pub_keyword(node);
 
         // Extract optional type parameters
-        let type_params = {
-            let mut cursor = node.walk();
-            let mut params = Vec::new();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "type_parameters" {
-                    params = self.lower_type_parameters(child);
-                    break;
-                }
-            }
-            params
-        };
+        let type_params = self.lower_type_parameters(node);
 
         // Extract function params from fn_param_list
         let params = {
@@ -310,6 +354,31 @@ impl<'a> Lowering<'a> {
             params,
             return_type,
             body,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    // ── Trait lowering ────────────────────────────────────────
+
+    fn lower_trait(&mut self, node: tree_sitter::Node) -> Option<TraitDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let is_pub = self.has_pub_keyword(node);
+        let type_params = self.lower_type_parameters(node);
+
+        // Extract refinements from optional trait_bound_list child
+        let refinements = self.find_trait_bound_list(node);
+
+        let members = self.lower_trait_members(node);
+
+        Some(TraitDecl {
+            name,
+            is_pub,
+            type_params,
+            refinements,
+            members,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -390,35 +459,46 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    fn lower_type_parameters(&self, node: tree_sitter::Node) -> Vec<TypeParamDecl> {
-        let mut type_params = Vec::new();
+    /// Collect members from trait_member children of a trait_declaration node.
+    fn lower_trait_members(&mut self, node: tree_sitter::Node) -> Vec<MemberDecl> {
+        let mut members = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "type_param_bound" {
-                let name_node = match child.child_by_field_name("name") {
-                    Some(n) => n,
-                    None => continue,
-                };
-                let name = self.node_text(name_node).to_string();
-
-                // Collect bounds from trait_bound_list
-                let mut bounds = Vec::new();
-                let mut bound_cursor = child.walk();
-                for bound_child in child.children(&mut bound_cursor) {
-                    if bound_child.kind() == "trait_bound_list" {
-                        let mut trait_cursor = bound_child.walk();
-                        for trait_child in bound_child.children(&mut trait_cursor) {
-                            if trait_child.kind() == "identifier" {
-                                bounds.push(self.node_text(trait_child).to_string());
-                            }
-                        }
-                    }
+            if child.kind() == "trait_member" {
+                // trait_member is a choice node wrapping the actual member
+                if let Some(inner) = child.named_child(0)
+                    && let Some(member) = self.lower_member(inner)
+                {
+                    members.push(member);
                 }
-
-                type_params.push(TypeParamDecl { name, bounds });
             }
         }
-        type_params
+        members
+    }
+
+    fn lower_associated_type(&self, node: tree_sitter::Node) -> Option<AssociatedTypeDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let default_type = node.child_by_field_name("default").map(|t| {
+            // default is a type_expr which wraps an identifier
+            let ident = if t.kind() == "type_expr" {
+                t.child(0).unwrap_or(t)
+            } else {
+                t
+            };
+            TypeExpr {
+                name: self.node_text(ident).to_string(),
+                span: self.span(ident),
+            }
+        });
+
+        Some(AssociatedTypeDecl {
+            name,
+            default_type,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
     }
 
     /// Lower a single member node (used by both lower_structure and lower_guarded_block).
@@ -501,6 +581,9 @@ impl<'a> Lowering<'a> {
                     self.lower_guarded_block(child)
                 }
             }
+            "associated_type" => {
+                self.lower_associated_type(child).map(MemberDecl::AssociatedType)
+            }
             "ERROR" => {
                 self.errors.push(ParseError {
                     message: format!("syntax error: {}", self.node_text(child)),
@@ -531,6 +614,12 @@ impl<'a> Lowering<'a> {
         // Detect 'pub' keyword by checking anonymous children
         let is_pub = self.has_pub_keyword(node);
 
+        // Extract optional type parameters
+        let type_params = self.lower_type_parameters(node);
+
+        // Extract optional trait bounds
+        let trait_bounds = self.find_trait_bound_list(node);
+
         let members = self.lower_members(node);
 
         let content_hash = self.content_hash(node);
@@ -538,6 +627,8 @@ impl<'a> Lowering<'a> {
         Some(StructureDef {
             name,
             is_pub,
+            type_params,
+            trait_bounds,
             members,
             span: self.span(node),
             content_hash,
@@ -1148,6 +1239,7 @@ mod tests {
             MemberDecl::Minimize(_) => "minimize".into(),
             MemberDecl::Maximize(_) => "maximize".into(),
             MemberDecl::GuardedGroup(_) => "guarded_group".into(),
+            MemberDecl::AssociatedType(a) => format!("type:{}", a.name),
         }).collect();
         assert_eq!(names, vec![
             "param:width", "param:height", "param:thickness",
@@ -1311,6 +1403,7 @@ mod tests {
                 MemberDecl::Minimize(m) => m.span,
                 MemberDecl::Maximize(m) => m.span,
                 MemberDecl::GuardedGroup(g) => g.span,
+                MemberDecl::AssociatedType(a) => a.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
             assert!((span.end as usize) <= source.len(), "member {} span overflows", i);
@@ -1340,6 +1433,10 @@ mod tests {
                 }
                 MemberDecl::GuardedGroup(_) => {
                     assert!(text.starts_with("where"), "guarded_group member {} text: {:?}", i, text);
+                }
+                MemberDecl::AssociatedType(a) => {
+                    assert!(text.starts_with("type"), "associated_type member {} text: {:?}", i, text);
+                    assert!(text.contains(&a.name), "associated_type {} name in text", i);
                 }
             }
         }
@@ -1382,6 +1479,7 @@ mod tests {
                 MemberDecl::Minimize(m) => (m.span, m.content_hash),
                 MemberDecl::Maximize(m) => (m.span, m.content_hash),
                 MemberDecl::GuardedGroup(g) => (g.span, g.content_hash),
+                MemberDecl::AssociatedType(a) => (a.span, a.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
             assert_eq!(hash, ContentHash::of_str(text), "member {} hash from source text", i);
@@ -1464,6 +1562,7 @@ mod tests {
                 MemberDecl::Minimize(m) => (m.content_hash, m.span),
                 MemberDecl::Maximize(m) => (m.content_hash, m.span),
                 MemberDecl::GuardedGroup(g) => (g.content_hash, g.span),
+                MemberDecl::AssociatedType(a) => (a.content_hash, a.span),
             };
             let (hash_b, span_b) = match m_b {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
@@ -1473,6 +1572,7 @@ mod tests {
                 MemberDecl::Minimize(m) => (m.content_hash, m.span),
                 MemberDecl::Maximize(m) => (m.content_hash, m.span),
                 MemberDecl::GuardedGroup(g) => (g.content_hash, g.span),
+                MemberDecl::AssociatedType(a) => (a.content_hash, a.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
             assert_eq!(span_a, span_b, "member {} span determinism", i);
