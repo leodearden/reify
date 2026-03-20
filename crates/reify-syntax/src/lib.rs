@@ -200,8 +200,21 @@ pub enum ExprKind {
         object: Box<Expr>,
         index: Box<Expr>,
     },
+    /// Match expression: `match d { In => 1, Out => 2 }`
+    Match {
+        discriminant: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
     /// Auto keyword: solver-determined parameter value
     Auto,
+}
+
+/// A match arm: `Pattern1 | Pattern2 => body`
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub patterns: Vec<String>,
+    pub body: Expr,
+    pub span: SourceSpan,
 }
 
 /// A type expression in the AST (e.g., `Scalar`, `Bool`).
