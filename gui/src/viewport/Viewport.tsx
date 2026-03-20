@@ -37,17 +37,20 @@ export function Viewport(props: ViewportProps) {
     });
     resizeObserver.observe(containerRef);
 
-    // Animation loop
-    let animationFrameId: number;
+    // Animation loop with disposed guard to prevent race condition
+    let disposed = false;
+    let animationFrameId = 0;
     function animate() {
+      if (disposed) return;
       animationFrameId = requestAnimationFrame(animate);
       controls.update();
       renderer.render(scene, camera);
     }
     animate();
 
-    // Cleanup
+    // Cleanup — set disposed first to guard any in-flight RAF callback
     onCleanup(() => {
+      disposed = true;
       cancelAnimationFrame(animationFrameId);
       resizeObserver.disconnect();
       controls.dispose();
