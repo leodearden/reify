@@ -203,6 +203,7 @@ impl Slvs_Entity {
 }
 
 impl Slvs_Constraint {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         h: Slvs_hConstraint,
         group: Slvs_hGroup,

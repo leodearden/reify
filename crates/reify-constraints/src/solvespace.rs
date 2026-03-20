@@ -154,21 +154,19 @@ fn try_distance_eq(
 ) -> Option<GeometricPattern> {
     if let CompiledExprKind::FunctionCall { function, args } = &fn_expr.kind {
         let qn = &function.qualified_name;
-        if qn.contains("distance") || qn.contains("pt_pt_distance") {
-            if args.len() == 2 {
-                let pt_a = extract_point_ref(&args[0], auto_params)?;
-                let pt_b = extract_point_ref(&args[1], auto_params)?;
-                let distance_si = extract_scalar_si(val_expr)?;
-                // distance == 0 is a coincident constraint
-                if distance_si.abs() < 1e-15 {
-                    return Some(GeometricPattern::Coincident { pt_a, pt_b });
-                }
-                return Some(GeometricPattern::PtPtDistance {
-                    pt_a,
-                    pt_b,
-                    distance_si,
-                });
+        if (qn.contains("distance") || qn.contains("pt_pt_distance")) && args.len() == 2 {
+            let pt_a = extract_point_ref(&args[0], auto_params)?;
+            let pt_b = extract_point_ref(&args[1], auto_params)?;
+            let distance_si = extract_scalar_si(val_expr)?;
+            // distance == 0 is a coincident constraint
+            if distance_si.abs() < 1e-15 {
+                return Some(GeometricPattern::Coincident { pt_a, pt_b });
             }
+            return Some(GeometricPattern::PtPtDistance {
+                pt_a,
+                pt_b,
+                distance_si,
+            });
         }
     }
     None
@@ -182,18 +180,16 @@ fn try_angle_eq(
 ) -> Option<GeometricPattern> {
     if let CompiledExprKind::FunctionCall { function, args } = &fn_expr.kind {
         let qn = &function.qualified_name;
-        if qn.contains("angle") {
-            if args.len() == 2 {
-                let line_a = extract_line_ref(&args[0], auto_params)?;
-                let line_b = extract_line_ref(&args[1], auto_params)?;
-                let angle_rad = extract_scalar_si(val_expr)?;
-                let angle_deg = angle_rad.to_degrees();
-                return Some(GeometricPattern::Angle {
-                    line_a,
-                    line_b,
-                    angle_deg,
-                });
-            }
+        if qn.contains("angle") && args.len() == 2 {
+            let line_a = extract_line_ref(&args[0], auto_params)?;
+            let line_b = extract_line_ref(&args[1], auto_params)?;
+            let angle_rad = extract_scalar_si(val_expr)?;
+            let angle_deg = angle_rad.to_degrees();
+            return Some(GeometricPattern::Angle {
+                line_a,
+                line_b,
+                angle_deg,
+            });
         }
     }
     None
@@ -225,17 +221,15 @@ fn extract_point_ref(
     match &expr.kind {
         CompiledExprKind::FunctionCall { function, args } => {
             let qn = &function.qualified_name;
-            if qn.contains("point3d") || qn.contains("point") {
-                if args.len() >= 2 {
-                    let x = extract_coord(&args[0], auto_params);
-                    let y = extract_coord(&args[1], auto_params);
-                    let z = if args.len() >= 3 {
-                        extract_coord(&args[2], auto_params)
-                    } else {
-                        CoordRef::Fixed(0.0)
-                    };
-                    return Some(make_point_ref(x, y, z));
-                }
+            if (qn.contains("point3d") || qn.contains("point")) && args.len() >= 2 {
+                let x = extract_coord(&args[0], auto_params);
+                let y = extract_coord(&args[1], auto_params);
+                let z = if args.len() >= 3 {
+                    extract_coord(&args[2], auto_params)
+                } else {
+                    CoordRef::Fixed(0.0)
+                };
+                return Some(make_point_ref(x, y, z));
             }
             None
         }
@@ -263,21 +257,19 @@ fn extract_line_ref(
     match &expr.kind {
         CompiledExprKind::FunctionCall { function, args } => {
             let qn = &function.qualified_name;
-            if qn.contains("line") || qn.contains("line_segment") {
-                if args.len() == 2 {
-                    let start = extract_point_ref(&args[0], auto_params)?;
-                    let end = extract_point_ref(&args[1], auto_params)?;
-                    return Some(LineRef { start, end });
-                }
+            if (qn.contains("line") || qn.contains("line_segment")) && args.len() == 2 {
+                let start = extract_point_ref(&args[0], auto_params)?;
+                let end = extract_point_ref(&args[1], auto_params)?;
+                return Some(LineRef { start, end });
             }
             // Also handle direct point pair for angle constraints
-            if args.len() == 2 {
-                if let (Some(start), Some(end)) = (
+            if args.len() == 2
+                && let (Some(start), Some(end)) = (
                     extract_point_ref(&args[0], auto_params),
                     extract_point_ref(&args[1], auto_params),
-                ) {
-                    return Some(LineRef { start, end });
-                }
+                )
+            {
+                return Some(LineRef { start, end });
             }
             None
         }
@@ -603,6 +595,7 @@ impl SystemBuilder {
     }
 
     /// Add a constraint on a specific workplane.
+    #[allow(clippy::too_many_arguments)]
     fn add_constraint_wrkpl(
         &mut self,
         type_: std::os::raw::c_int,
@@ -687,6 +680,7 @@ enum SlvsSolveResult {
     Ok {
         params: Vec<Slvs_Param>,
         mapping: ParamMapping,
+        #[allow(dead_code)]
         dof: i32,
     },
     Inconsistent {
