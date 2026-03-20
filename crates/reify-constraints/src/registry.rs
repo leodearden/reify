@@ -82,8 +82,15 @@ impl ConstraintSolver for SolverRegistry {
             };
         }
 
-        // Decompose into connected components
-        let components = decompose_into_components(&problem.auto_params, &problem.constraints);
+        // Extract the objective expression (if any) for objective-aware decomposition
+        let obj_expr = problem.objective.as_ref().map(|obj| match obj {
+            OptimizationObjective::Minimize(e) | OptimizationObjective::Maximize(e) => e,
+        });
+
+        // Decompose into connected components, merging any components
+        // whose auto params are co-referenced by the objective expression
+        let components =
+            decompose_into_components(&problem.auto_params, &problem.constraints, obj_expr);
 
         // If no components (all constraints reference non-auto params),
         // the auto params are unconstrained. Return current values or defaults.
@@ -100,23 +107,20 @@ impl ConstraintSolver for SolverRegistry {
             .map(|ap| (&ap.id, ap))
             .collect();
 
-        // Determine which component gets the objective (if any)
-        let objective_component = problem.objective.as_ref().map(|obj| {
-            let obj_expr = match obj {
-                OptimizationObjective::Minimize(e) | OptimizationObjective::Maximize(e) => e,
-            };
-            // Find which component contains params referenced by the objective
+        // Determine which component gets the objective (if any).
+        // Because decompose_into_components unions all objective-referenced
+        // params, they are guaranteed to be in a single component. The
+        // first-match iteration always finds the correct one.
+        let objective_component = obj_expr.map(|oe| {
             let mut obj_refs = std::collections::HashSet::new();
-            crate::decompose::collect_value_refs_pub(obj_expr, &mut obj_refs);
-            let auto_param_set: std::collections::HashSet<&ValueCellId> =
-                problem.auto_params.iter().map(|ap| &ap.id).collect();
+            crate::decompose::collect_value_refs_pub(oe, &mut obj_refs);
 
             for (ci, comp) in components.iter().enumerate() {
-                if obj_refs.iter().any(|r| comp.auto_params.contains(r) && auto_param_set.contains(r)) {
+                if obj_refs.iter().any(|r| comp.auto_params.contains(r)) {
                     return ci;
                 }
             }
-            // If objective references no auto params in any component,
+            // Objective references no auto params in any component →
             // give it to the first component
             0
         });

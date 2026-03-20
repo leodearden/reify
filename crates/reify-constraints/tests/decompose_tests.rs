@@ -28,7 +28,7 @@ fn three_independent_constraints_three_components() {
         (cnid("Part", 2), c3),
     ];
 
-    let components = decompose_into_components(&auto_params, &constraints);
+    let components = decompose_into_components(&auto_params, &constraints, None);
     assert_eq!(components.len(), 3, "3 independent constraints should yield 3 components");
 
     // Each component should have exactly 1 auto param and 1 constraint
@@ -56,7 +56,7 @@ fn shared_param_merges_into_one_component() {
         (cnid("Part", 1), c2),
     ];
 
-    let components = decompose_into_components(&auto_params, &constraints);
+    let components = decompose_into_components(&auto_params, &constraints, None);
     assert_eq!(components.len(), 1, "2 constraints on same param should yield 1 component");
     assert_eq!(components[0].auto_params.len(), 1);
     assert_eq!(components[0].constraints.len(), 2);
@@ -85,7 +85,7 @@ fn chain_constraints_single_component() {
         (cnid("Part", 1), c2),
     ];
 
-    let components = decompose_into_components(&auto_params, &constraints);
+    let components = decompose_into_components(&auto_params, &constraints, None);
     assert_eq!(components.len(), 1, "chained constraints should merge into 1 component");
     assert_eq!(components[0].auto_params.len(), 3, "all 3 params should be in the component");
     assert_eq!(components[0].constraints.len(), 2);
@@ -103,7 +103,7 @@ fn empty_constraints_zero_components() {
     ];
 
     let constraints: Vec<(_, _)> = vec![];
-    let components = decompose_into_components(&auto_params, &constraints);
+    let components = decompose_into_components(&auto_params, &constraints, None);
     assert_eq!(components.len(), 0, "no constraints should yield 0 components");
 }
 
@@ -126,7 +126,7 @@ fn constraint_without_auto_params_excluded() {
         (cnid("Part", 1), c2),
     ];
 
-    let components = decompose_into_components(&auto_params, &constraints);
+    let components = decompose_into_components(&auto_params, &constraints, None);
 
     // C2 references no auto params, so it should be excluded
     // Only C1 should appear in a component
@@ -142,11 +142,6 @@ fn constraint_without_auto_params_excluded() {
 /// those components must be merged via the union-find. This test calls
 /// `decompose_into_components` with the new third argument (objective expression).
 ///
-/// NOTE: This test is gated behind `cfg(feature = "objective_decompose")` during
-/// step-17 because the function signature doesn't support the third argument yet.
-/// The compilation failure proves the API gap. Step-18 will add the parameter
-/// and remove this gate.
-#[cfg(feature = "objective_decompose")]
 #[test]
 fn objective_merges_independent_params_into_one_component() {
     let a = vcid("Part", "a");

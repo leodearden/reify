@@ -110,6 +110,7 @@ fn collect_value_refs(expr: &CompiledExpr, out: &mut HashSet<ValueCellId>) {
 pub fn decompose_into_components(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
+    objective: Option<&CompiledExpr>,
 ) -> Vec<SubProblem> {
     if constraints.is_empty() {
         return vec![];
@@ -163,6 +164,23 @@ pub fn decompose_into_components(
             referenced_params: referenced,
             domain,
         });
+    }
+
+    // If an objective expression is provided, union all auto params it
+    // references. This ensures all objective-referenced params land in the
+    // same component, even if the constraints alone don't connect them.
+    if let Some(obj_expr) = objective {
+        let mut obj_refs = HashSet::new();
+        collect_value_refs(obj_expr, &mut obj_refs);
+
+        let obj_param_indices: Vec<usize> = obj_refs
+            .iter()
+            .filter_map(|id| param_index.get(id).copied())
+            .collect();
+
+        for i in 1..obj_param_indices.len() {
+            uf.union(obj_param_indices[0], obj_param_indices[i]);
+        }
     }
 
     if constraint_infos.is_empty() {
