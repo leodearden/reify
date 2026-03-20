@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use reify_types::{DeterminacyState, DimensionVector, Value};
 
 /// Full GUI state snapshot sent to the frontend after each operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GuiState {
     pub meshes: Vec<MeshData>,
     pub values: Vec<ValueData>,
@@ -14,7 +14,7 @@ pub struct GuiState {
 }
 
 /// Tessellated mesh for 3D display.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MeshData {
     pub entity_path: String,
     pub vertices: Vec<f32>,
@@ -23,7 +23,7 @@ pub struct MeshData {
 }
 
 /// A value cell (param, let, or auto) for the property editor.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ValueData {
     pub cell_id: String,
     pub name: String,
@@ -35,7 +35,7 @@ pub struct ValueData {
 }
 
 /// A constraint with its check status.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConstraintData {
     pub node_id: String,
     pub expression: String,
@@ -55,7 +55,7 @@ pub struct SourceLocation {
 }
 
 /// A source file in the project.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileData {
     pub path: String,
     pub content: String,
