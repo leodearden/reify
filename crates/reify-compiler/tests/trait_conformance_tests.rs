@@ -75,6 +75,34 @@ structure def Bolt : Fastener {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 }
 
+/// Step 15: Diamond inheritance — requirement from C reachable via both A and B.
+#[test]
+fn diamond_inheritance_deduplication() {
+    let source = r#"
+trait C {
+    param x : Length
+}
+
+trait A : C {
+}
+
+trait B : C {
+}
+
+structure def X : A + B {
+    param x : Length = 5mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
 /// Step 5: Missing member — error diagnostic about missing required member.
 #[test]
 fn missing_member_error() {
