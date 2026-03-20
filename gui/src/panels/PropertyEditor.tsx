@@ -58,16 +58,20 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     });
   }
 
+  function entityMatchesGroup(entity: string, groupName: string): boolean {
+    return entity === groupName || entity.startsWith(groupName + '.');
+  }
+
   function isGroupCollapsed(name: string): boolean {
     // If this group matches selectedEntity, force-expand it
-    if (props.selectedEntity && props.selectedEntity.startsWith(name)) {
+    if (props.selectedEntity && entityMatchesGroup(props.selectedEntity, name)) {
       return false;
     }
     return collapsedGroups().has(name);
   }
 
   function isGroupSelected(name: string): boolean {
-    return props.selectedEntity !== null && props.selectedEntity.startsWith(name);
+    return props.selectedEntity !== null && entityMatchesGroup(props.selectedEntity, name);
   }
 
   function handleKeyDown(cellId: string, e: KeyboardEvent) {
