@@ -1,3 +1,5 @@
+pub mod module_dag;
+
 use std::collections::HashMap;
 
 use reify_types::{
