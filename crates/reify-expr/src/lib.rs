@@ -171,9 +171,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             }
         }
 
-        CompiledExprKind::MethodCall { .. } => {
-            // Placeholder — implemented in later collection steps
-            Value::Undef
+        CompiledExprKind::MethodCall { object, method, args } => {
+            let obj = eval_expr(object, ctx);
+            if obj.is_undef() {
+                return Value::Undef;
+            }
+            let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
+            eval_method_call(&obj, method, &evaluated_args)
         }
     }
 }
@@ -254,6 +258,19 @@ pub fn apply_lambda(lambda: &Value, args: &[Value]) -> Value {
 
             eval_expr(body, &EvalContext::simple(&eval_map))
         }
+        _ => Value::Undef,
+    }
+}
+
+/// Evaluate a method call on a collection value.
+fn eval_method_call(obj: &Value, method: &str, args: &[Value]) -> Value {
+    match method {
+        "count" => match obj {
+            Value::List(items) => Value::Int(items.len() as i64),
+            Value::Set(items) => Value::Int(items.len() as i64),
+            Value::Map(entries) => Value::Int(entries.len() as i64),
+            _ => Value::Undef,
+        },
         _ => Value::Undef,
     }
 }
