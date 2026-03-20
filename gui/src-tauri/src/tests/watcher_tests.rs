@@ -81,3 +81,54 @@ fn watcher_ignores_non_ri_file_changes() {
     let _ = std::fs::remove_file(&txt_file);
     let _ = std::fs::remove_dir(&dir);
 }
+
+#[test]
+fn watcher_with_target_file_only_fires_for_that_file() {
+    let dir = std::env::temp_dir().join("reify-watcher-test-3");
+    std::fs::create_dir_all(&dir).ok();
+    let project_file = dir.join("project.ri");
+    let other_file = dir.join("other.ri");
+    std::fs::write(&project_file, "structure Project {}").unwrap();
+    std::fs::write(&other_file, "structure Other {}").unwrap();
+
+    let changed_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
+    let changed_clone = changed_paths.clone();
+
+    let _watcher = FileWatcher::new(
+        &dir,
+        Some(PathBuf::from("project.ri")),
+        move |path| {
+            changed_clone.lock().unwrap().push(path);
+        },
+    )
+    .expect("should create watcher");
+
+    // Give the watcher time to register
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Modify the other .ri file (should be ignored due to target_file filter)
+    std::fs::write(&other_file, "structure Other { param x = 10mm }").unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Modify the target file (should trigger)
+    std::fs::write(&project_file, "structure Project { param y = 20mm }").unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+
+    let paths = changed_paths.lock().unwrap();
+    // Should have fired for project.ri only
+    assert!(
+        paths.iter().any(|p| p.ends_with("project.ri")),
+        "should have detected project.ri change, got: {:?}",
+        *paths
+    );
+    assert!(
+        !paths.iter().any(|p| p.ends_with("other.ri")),
+        "should NOT have detected other.ri change, got: {:?}",
+        *paths
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_file(&project_file);
+    let _ = std::fs::remove_file(&other_file);
+    let _ = std::fs::remove_dir(&dir);
+}
