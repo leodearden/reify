@@ -2538,6 +2538,10 @@
     "named": false
   },
   {
+    "type": "pub",
+    "named": false
+  },
+  {
     "type": "set",
     "named": false
   },

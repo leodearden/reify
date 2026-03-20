@@ -38,6 +38,7 @@ module.exports = grammar({
 
     // ── Enum ──────────────────────────────────────────────────
     enum_declaration: $ => seq(
+      optional('pub'),
       'enum',
       field('name', $.identifier),
       '{',
@@ -53,6 +54,7 @@ module.exports = grammar({
 
     // ── Structure ───────────────────────────────────────────
     structure_definition: $ => seq(
+      optional('pub'),
       'structure',
       field('name', $.identifier),
       '{',
@@ -100,6 +102,7 @@ module.exports = grammar({
 
     // ── Let ─────────────────────────────────────────────────
     let_declaration: $ => seq(
+      optional('pub'),
       'let',
       field('name', $.identifier),
       optional(seq(':', field('type', $.type_expr))),
