@@ -4,7 +4,7 @@ import { EditorView, keymap } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { bracketMatching, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
 import { reifyLanguage } from './reifyLanguage';
-import { updateSource } from '../bridge';
+import { updateSource, saveFile } from '../bridge';
 import type { createEditorStore } from '../stores/editorStore';
 import styles from './Editor.module.css';
 
@@ -29,7 +29,22 @@ export function Editor(props: EditorProps) {
         bracketMatching(),
         syntaxHighlighting(defaultHighlightStyle),
         history(),
-        keymap.of([...defaultKeymap, ...historyKeymap]),
+        keymap.of([
+          {
+            key: 'Mod-s',
+            run: () => {
+              const path = props.store.state.activeFile;
+              if (path) {
+                saveFile(path);
+                props.store.markClean(path);
+              }
+              return true;
+            },
+            preventDefault: true,
+          },
+          ...defaultKeymap,
+          ...historyKeymap,
+        ]),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             const path = props.store.state.activeFile;
