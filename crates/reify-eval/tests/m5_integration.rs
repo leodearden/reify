@@ -557,3 +557,147 @@ fn geometry_cylinder_pattern() {
         "STEP output should contain ISO-10303-21 header"
     );
 }
+
+// ── Step 15: combined_m5_features ───────────────────────────────────
+
+/// A larger test combining multiple M5 features:
+/// - Trait definition (Sizable with a required `size` param + constraint)
+/// - Enum declaration (Kind with variants)
+/// - User-defined function (scale)
+/// - Structure implementing trait, with guarded declarations on enum, using function
+/// - Collection (list literal) with .count
+///
+/// Exercises feature interaction paths that individual tests may miss.
+#[test]
+fn combined_m5_features() {
+    let source = r#"
+trait Sizable {
+    param size : Real
+    constraint size > 0
+}
+
+enum Kind { Small, Medium, Large }
+
+fn scale(x: Real, factor: Real) -> Real { x * factor }
+
+structure def Widget : Sizable {
+    let kind = Kind.Medium
+    param size : Real = 50
+
+    let scaled = scale(size, 2)
+
+    where kind == Kind.Small {
+        let label = 1
+    } else {
+        let label = 2
+    }
+
+    let label_copy = match kind {
+        Small => 10,
+        Medium => 20,
+        Large => 30
+    }
+
+    let items = [1, 2, 3, 4, 5]
+    let n = items.count
+
+    constraint scaled > size
+}
+"#;
+
+    let compiled = parse_and_compile(source);
+
+    // Should have a Widget template
+    let widget = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget")
+        .expect("should have a Widget template");
+    assert_eq!(widget.name, "Widget");
+
+    // Eval
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // Check kind = Kind.Medium
+    let kind_id = ValueCellId::new("Widget", "kind");
+    let kind_val = result
+        .values
+        .get(&kind_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", kind_id));
+    match kind_val {
+        reify_types::Value::Enum { variant, .. } => {
+            assert_eq!(variant, "Medium", "kind should be Medium");
+        }
+        other => panic!("expected Enum for kind, got {:?}", other),
+    }
+
+    // Check size = 50
+    let size_id = ValueCellId::new("Widget", "size");
+    let size_val = result
+        .values
+        .get(&size_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", size_id));
+    match size_val {
+        reify_types::Value::Real(v) => {
+            assert!((v - 50.0).abs() < 1e-12, "expected 50.0, got {}", v);
+        }
+        reify_types::Value::Int(v) => {
+            assert_eq!(*v, 50, "expected 50, got {}", v);
+        }
+        other => panic!("expected Real(50) or Int(50), got {:?}", other),
+    }
+
+    // Check scaled = scale(50, 2) = 100
+    let scaled_id = ValueCellId::new("Widget", "scaled");
+    let scaled_val = result
+        .values
+        .get(&scaled_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", scaled_id));
+    match scaled_val {
+        reify_types::Value::Real(v) => {
+            assert!((v - 100.0).abs() < 1e-9, "expected 100.0, got {}", v);
+        }
+        reify_types::Value::Int(v) => {
+            assert_eq!(*v, 100, "expected 100, got {}", v);
+        }
+        other => panic!("expected Real(100) or Int(100), got {:?}", other),
+    }
+
+    // Check label_copy = match Medium => 20
+    let lc_id = ValueCellId::new("Widget", "label_copy");
+    let lc_val = result
+        .values
+        .get(&lc_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", lc_id));
+    match lc_val {
+        reify_types::Value::Int(v) => {
+            assert_eq!(*v, 20, "label_copy should be 20 for Medium");
+        }
+        other => panic!("expected Int for label_copy, got {:?}", other),
+    }
+
+    // Check items.count = 5
+    let n_id = ValueCellId::new("Widget", "n");
+    let n_val = result
+        .values
+        .get(&n_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", n_id));
+    assert_eq!(*n_val, reify_types::Value::Int(5), "items.count should be 5");
+
+    // Check constraints
+    let result = engine.check(&compiled);
+    assert!(
+        !result.constraint_results.is_empty(),
+        "expected constraints from trait + structure"
+    );
+    for entry in &result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be satisfied",
+            entry.id
+        );
+    }
+}
