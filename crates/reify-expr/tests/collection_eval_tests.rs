@@ -946,3 +946,85 @@ fn eval_method_set_difference() {
     let expected: BTreeSet<Value> = [Value::Int(1)].into_iter().collect();
     assert_eq!(result, Value::Set(expected));
 }
+
+// ─── step-25/26: Map methods (.keys, .values, .contains_key) ───
+
+fn make_ab_map() -> CompiledExpr {
+    CompiledExpr::map_literal(
+        vec![
+            (
+                CompiledExpr::literal(Value::String("a".to_string()), Type::String),
+                CompiledExpr::literal(Value::Int(1), Type::Int),
+            ),
+            (
+                CompiledExpr::literal(Value::String("b".to_string()), Type::String),
+                CompiledExpr::literal(Value::Int(2), Type::Int),
+            ),
+        ],
+        Type::Map(Box::new(Type::String), Box::new(Type::Int)),
+    )
+}
+
+#[test]
+fn eval_method_map_keys() {
+    let map = make_ab_map();
+    let expr = CompiledExpr::method_call(
+        map,
+        "keys".to_string(),
+        vec![],
+        Type::List(Box::new(Type::String)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    // BTreeMap keys are sorted, so "a" < "b"
+    assert_eq!(
+        result,
+        Value::List(vec![
+            Value::String("a".to_string()),
+            Value::String("b".to_string()),
+        ])
+    );
+}
+
+#[test]
+fn eval_method_map_values() {
+    let map = make_ab_map();
+    let expr = CompiledExpr::method_call(
+        map,
+        "values".to_string(),
+        vec![],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    // BTreeMap values ordered by key, so a=>1 before b=>2
+    assert_eq!(result, Value::List(vec![Value::Int(1), Value::Int(2)]));
+}
+
+#[test]
+fn eval_method_map_contains_key_found() {
+    let map = make_ab_map();
+    let expr = CompiledExpr::method_call(
+        map,
+        "contains_key".to_string(),
+        vec![CompiledExpr::literal(Value::String("a".to_string()), Type::String)],
+        Type::Bool,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(true));
+}
+
+#[test]
+fn eval_method_map_contains_key_not_found() {
+    let map = make_ab_map();
+    let expr = CompiledExpr::method_call(
+        map,
+        "contains_key".to_string(),
+        vec![CompiledExpr::literal(Value::String("z".to_string()), Type::String)],
+        Type::Bool,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Bool(false));
+}
