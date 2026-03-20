@@ -1295,7 +1295,8 @@ fn compile_structure(
     let mut constraints = Vec::new();
     let mut sub_components = Vec::new();
     let mut ports: Vec<CompiledPort> = Vec::new();
-    let mut port_names: HashSet<String> = HashSet::new();
+    let mut port_names: HashMap<String, SourceSpan> = HashMap::new();
+    let mut duplicate_port_names: HashSet<String> = HashSet::new();
     let mut guarded_groups: Vec<CompiledGuardedGroup> = Vec::new();
     let mut structure_controlling: HashSet<ValueCellId> = HashSet::new();
     let mut objective: Option<OptimizationObjective> = None;
@@ -1347,7 +1348,26 @@ fn compile_structure(
                 register_guarded_names(&g.else_members, &mut scope, diagnostics);
             }
             reify_syntax::MemberDecl::Port(port_decl) => {
-                port_names.insert(port_decl.name.clone());
+                if let Some(first_span) = port_names.get(&port_decl.name) {
+                    // Duplicate port name — emit error and skip registration
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate port name '{}'",
+                            port_decl.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            port_decl.span,
+                            "duplicate defined here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            *first_span,
+                            "first defined here",
+                        )),
+                    );
+                    duplicate_port_names.insert(port_decl.name.clone());
+                    continue;
+                }
+                port_names.insert(port_decl.name.clone(), port_decl.span);
                 scope.port_names.insert(port_decl.name.clone());
                 // Register port body members with composite names: port_name.member_name
                 for port_member in &port_decl.members {
@@ -1581,6 +1601,13 @@ fn compile_structure(
                 // Associated type compilation deferred to a later milestone.
             }
             reify_syntax::MemberDecl::Port(port_decl) => {
+                // Skip duplicate port names (already reported in first pass).
+                // The first occurrence is compiled; subsequent duplicates are skipped.
+                if duplicate_port_names.contains(&port_decl.name)
+                    && !port_names.get(&port_decl.name).is_some_and(|&span| span == port_decl.span)
+                {
+                    continue;
+                }
                 let direction = port_decl.direction.unwrap_or(reify_types::PortDirection::Bidi);
 
                 // Verify port type_name exists in the trait registry
