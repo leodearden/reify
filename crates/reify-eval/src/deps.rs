@@ -1,4 +1,4 @@
-use reify_types::{CompiledExpr, CompiledExprKind, ValueCellId};
+use reify_types::{CompiledExpr, ValueCellId};
 
 /// Tracks which value cells a node read during evaluation.
 ///
@@ -11,60 +11,7 @@ pub struct DependencyTrace {
 
 /// Extract a dependency trace from a compiled expression by collecting all ValueRef ids.
 pub fn extract_dependency_trace(expr: &CompiledExpr) -> DependencyTrace {
-    let mut reads = Vec::new();
-    collect_value_refs(expr, &mut reads);
-    DependencyTrace { reads }
-}
-
-/// Recursively collect all ValueRef ids from a compiled expression tree.
-pub fn collect_value_refs(expr: &CompiledExpr, out: &mut Vec<ValueCellId>) {
-    match &expr.kind {
-        CompiledExprKind::Literal(_) => {}
-        CompiledExprKind::ValueRef(id) => {
-            out.push(id.clone());
-        }
-        CompiledExprKind::BinOp { left, right, .. } => {
-            collect_value_refs(left, out);
-            collect_value_refs(right, out);
-        }
-        CompiledExprKind::UnOp { operand, .. } => {
-            collect_value_refs(operand, out);
-        }
-        CompiledExprKind::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_value_refs(arg, out);
-            }
-        }
-        CompiledExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            collect_value_refs(condition, out);
-            collect_value_refs(then_branch, out);
-            collect_value_refs(else_branch, out);
-        }
-        CompiledExprKind::Match {
-            discriminant,
-            arms,
-        } => {
-            collect_value_refs(discriminant, out);
-            for arm in arms {
-                collect_value_refs(&arm.body, out);
-            }
-        }
-        CompiledExprKind::UserFunctionCall { args, .. } => {
-            for arg in args {
-                collect_value_refs(arg, out);
-            }
-        }
-        CompiledExprKind::Lambda { body, captures, .. } => {
-            collect_value_refs(body, out);
-            for cap in captures {
-                out.push(cap.clone());
-            }
-        }
-    }
+    DependencyTrace { reads: expr.collect_value_refs() }
 }
 
 use std::collections::{HashMap, HashSet};
@@ -214,35 +161,16 @@ pub fn extract_realization_dependencies(
 ) -> DependencyTrace {
     let mut reads = Vec::new();
     for op in ops {
-        match op {
-            reify_compiler::CompiledGeometryOp::Primitive { args, .. } => {
-                for (_, expr) in args {
-                    collect_value_refs(expr, &mut reads);
-                }
-            }
-            reify_compiler::CompiledGeometryOp::Boolean { .. } => {
-                // Boolean ops reference geometry handles, not value cells
-            }
-            reify_compiler::CompiledGeometryOp::Modify { args, .. } => {
-                for (_, expr) in args {
-                    collect_value_refs(expr, &mut reads);
-                }
-            }
-            reify_compiler::CompiledGeometryOp::Transform { args, .. } => {
-                for (_, expr) in args {
-                    collect_value_refs(expr, &mut reads);
-                }
-            }
-            reify_compiler::CompiledGeometryOp::Pattern { args, .. } => {
-                for (_, expr) in args {
-                    collect_value_refs(expr, &mut reads);
-                }
-            }
-            reify_compiler::CompiledGeometryOp::Sweep { args, .. } => {
-                for (_, expr) in args {
-                    collect_value_refs(expr, &mut reads);
-                }
-            }
+        let args = match op {
+            reify_compiler::CompiledGeometryOp::Primitive { args, .. }
+            | reify_compiler::CompiledGeometryOp::Modify { args, .. }
+            | reify_compiler::CompiledGeometryOp::Transform { args, .. }
+            | reify_compiler::CompiledGeometryOp::Pattern { args, .. }
+            | reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
+            reify_compiler::CompiledGeometryOp::Boolean { .. } => continue,
+        };
+        for (_, expr) in args {
+            reads.extend(expr.collect_value_refs());
         }
     }
     DependencyTrace { reads }

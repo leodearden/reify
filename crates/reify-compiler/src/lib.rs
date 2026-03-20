@@ -495,6 +495,7 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 
 /// Name scope: maps identifier names to (ValueCellId, Type, Option<guard_cell_id>)
 /// within a structure. The guard cell ID tracks which guard (if any) protects this name.
+#[derive(Clone)]
 struct CompilationScope {
     entity_name: String,
     names: HashMap<String, (ValueCellId, Type, Option<ValueCellId>)>,
@@ -537,7 +538,8 @@ fn compile_expr(
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledExpr {
-    compile_expr_guarded(expr, scope, enum_defs, functions, diagnostics, None)
+    let mut lambda_counter = 0u32;
+    compile_expr_guarded(expr, scope, enum_defs, functions, diagnostics, None, &mut lambda_counter)
 }
 
 /// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
@@ -552,6 +554,7 @@ fn compile_expr_guarded(
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     current_guard: Option<&ValueCellId>,
+    lambda_counter: &mut u32,
 ) -> CompiledExpr {
     match &expr.kind {
         reify_syntax::ExprKind::NumberLiteral(v) => {
@@ -599,8 +602,8 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::BinOp { op, left, right } => {
-            let compiled_left = compile_expr_guarded(left, scope, enum_defs, functions, diagnostics, current_guard);
-            let compiled_right = compile_expr_guarded(right, scope, enum_defs, functions, diagnostics, current_guard);
+            let compiled_left = compile_expr_guarded(left, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let compiled_right = compile_expr_guarded(right, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
             match resolve_binop(op) {
                 Some(bin_op) => {
                     let result_type = infer_binop_type(
@@ -663,7 +666,7 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::UnOp { op, operand } => {
-            let compiled_operand = compile_expr_guarded(operand, scope, enum_defs, functions, diagnostics, current_guard);
+            let compiled_operand = compile_expr_guarded(operand, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
             match resolve_unop(op) {
                 Some(un_op) => {
                     let result_type = match un_op {
@@ -684,7 +687,7 @@ fn compile_expr_guarded(
         reify_syntax::ExprKind::FunctionCall { name, args } => {
             let compiled_args: Vec<CompiledExpr> = args
                 .iter()
-                .map(|arg| compile_expr_guarded(arg, scope, enum_defs, functions, diagnostics, current_guard))
+                .map(|arg| compile_expr_guarded(arg, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter))
                 .collect();
 
             // Check user-defined functions first: match on name, arg count, and arg types
@@ -799,7 +802,7 @@ fn compile_expr_guarded(
 
             // For non-port member access, compile the object expression but emit a diagnostic
             // since we don't yet support member access fully.
-            let _compiled_obj = compile_expr_guarded(object, scope, enum_defs, functions, diagnostics, current_guard);
+            let _compiled_obj = compile_expr_guarded(object, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
             diagnostics.push(
                 Diagnostic::error(format!("member access not yet supported: .{}", member))
                     .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
@@ -864,11 +867,11 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::Match { discriminant, arms } => {
-            let compiled_discriminant = compile_expr_guarded(discriminant, scope, enum_defs, functions, diagnostics, current_guard);
+            let compiled_discriminant = compile_expr_guarded(discriminant, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
             let compiled_arms: Vec<reify_types::CompiledMatchArm> = arms
                 .iter()
                 .map(|arm| {
-                    let body = compile_expr_guarded(&arm.body, scope, enum_defs, functions, diagnostics, current_guard);
+                    let body = compile_expr_guarded(&arm.body, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
                     reify_types::CompiledMatchArm {
                         patterns: arm.patterns.clone(),
                         body,
@@ -949,9 +952,9 @@ fn compile_expr_guarded(
             then_branch,
             else_branch,
         } => {
-            let compiled_cond = compile_expr_guarded(condition, scope, enum_defs, functions, diagnostics, current_guard);
-            let compiled_then = compile_expr_guarded(then_branch, scope, enum_defs, functions, diagnostics, current_guard);
-            let compiled_else = compile_expr_guarded(else_branch, scope, enum_defs, functions, diagnostics, current_guard);
+            let compiled_cond = compile_expr_guarded(condition, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let compiled_then = compile_expr_guarded(then_branch, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let compiled_else = compile_expr_guarded(else_branch, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
             let result_type = compiled_then.result_type.clone();
 
             let content_hash = ContentHash::of(&[5])
@@ -968,6 +971,64 @@ fn compile_expr_guarded(
                 result_type,
                 content_hash,
             }
+        }
+        reify_syntax::ExprKind::Lambda { params, body } => {
+            let lambda_entity = format!("$lambda{}.{}", lambda_counter, scope.entity_name);
+            *lambda_counter += 1;
+
+            let mut lambda_scope = scope.clone();
+            let mut compiled_params: Vec<(String, Option<Type>)> = Vec::new();
+            let mut param_types: Vec<Type> = Vec::new();
+            let mut param_ids: Vec<ValueCellId> = Vec::new();
+
+            for param in params {
+                let ty = if let Some(type_expr) = &param.type_expr {
+                    match resolve_type_name(&type_expr.name) {
+                        Some(t) => t,
+                        None => {
+                            diagnostics.push(Diagnostic::error(format!(
+                                "unresolved type in lambda param '{}': {}",
+                                param.name, type_expr.name
+                            )));
+                            Type::Real // fallback
+                        }
+                    }
+                } else {
+                    Type::Real // default untyped params to Real
+                };
+
+                let param_id = ValueCellId::new(&lambda_entity, &param.name);
+                lambda_scope
+                    .names
+                    .insert(param.name.clone(), (param_id.clone(), ty.clone(), None));
+
+                param_ids.push(param_id);
+                param_types.push(ty.clone());
+                compiled_params.push((param.name.clone(), param.type_expr.as_ref().map(|_| ty)));
+            }
+
+            // Compile body in the nested scope
+            let compiled_body =
+                compile_expr_guarded(body, &lambda_scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+
+            // Capture analysis: collect ValueRefs in body, filter out lambda params
+            let lambda_param_set: HashSet<ValueCellId> = param_ids.iter().cloned().collect();
+            let all_refs = collect_body_refs(&compiled_body);
+            let mut seen = HashSet::new();
+            let mut captures: Vec<ValueCellId> = Vec::new();
+            for id in all_refs {
+                if !lambda_param_set.contains(&id) && seen.insert(id.clone()) {
+                    captures.push(id);
+                }
+            }
+
+            let return_type = compiled_body.result_type.clone();
+            let result_type = Type::Function {
+                params: param_types,
+                return_type: Box::new(return_type),
+            };
+
+            CompiledExpr::lambda(compiled_params, param_ids, compiled_body, captures, result_type)
         }
     }
 }
@@ -1840,7 +1901,7 @@ fn compile_structure(
 
         for vc in &value_cells {
             if let Some(expr) = &vc.default_expr {
-                for ref_id in collect_value_refs(expr) {
+                for ref_id in expr.collect_value_refs() {
                     if guarded_cell_map.contains_key(&ref_id) {
                         diagnostics.push(
                             Diagnostic::warning(format!(
@@ -1857,7 +1918,7 @@ fn compile_structure(
             }
         }
         for c in &constraints {
-            for ref_id in collect_value_refs(&c.expr) {
+            for ref_id in c.expr.collect_value_refs() {
                 if guarded_cell_map.contains_key(&ref_id) {
                     diagnostics.push(
                         Diagnostic::warning(format!(
@@ -1875,7 +1936,7 @@ fn compile_structure(
         for group in &guarded_groups {
             for m in &group.members {
                 if let Some(expr) = &m.default_expr {
-                    for ref_id in collect_value_refs(expr) {
+                    for ref_id in expr.collect_value_refs() {
                         if let Some(ref_guard) = guarded_cell_map.get(&ref_id)
                             && !is_ancestor_guard(ref_guard, &group.guard_value_cell)
                         {
@@ -1895,7 +1956,7 @@ fn compile_structure(
             }
             for m in &group.else_members {
                 if let Some(expr) = &m.default_expr {
-                    for ref_id in collect_value_refs(expr) {
+                    for ref_id in expr.collect_value_refs() {
                         if let Some(ref_guard) = guarded_cell_map.get(&ref_id)
                             && !is_ancestor_guard(ref_guard, &group.guard_value_cell)
                         {
@@ -1914,7 +1975,7 @@ fn compile_structure(
                 }
             }
             for c in &group.constraints {
-                for ref_id in collect_value_refs(&c.expr) {
+                for ref_id in c.expr.collect_value_refs() {
                     if let Some(ref_guard) = guarded_cell_map.get(&ref_id)
                         && !is_ancestor_guard(ref_guard, &group.guard_value_cell)
                     {
@@ -1932,7 +1993,7 @@ fn compile_structure(
                 }
             }
             for c in &group.else_constraints {
-                for ref_id in collect_value_refs(&c.expr) {
+                for ref_id in c.expr.collect_value_refs() {
                     if let Some(ref_guard) = guarded_cell_map.get(&ref_id)
                         && !is_ancestor_guard(ref_guard, &group.guard_value_cell)
                     {
@@ -1967,49 +2028,48 @@ fn compile_structure(
     }
 }
 
-/// Collect all ValueCellId references from a compiled expression tree.
-fn collect_value_refs(expr: &CompiledExpr) -> Vec<ValueCellId> {
+/// Collect all ValueCellId references from a compiled expression tree,
+/// recursing into lambda bodies. Used during capture analysis before
+/// captures are populated.
+fn collect_body_refs(expr: &CompiledExpr) -> Vec<ValueCellId> {
     let mut refs = Vec::new();
-    collect_value_refs_inner(expr, &mut refs);
+    collect_body_refs_inner(expr, &mut refs);
     refs
 }
 
-fn collect_value_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
+fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => refs.push(id.clone()),
         CompiledExprKind::BinOp { left, right, .. } => {
-            collect_value_refs_inner(left, refs);
-            collect_value_refs_inner(right, refs);
+            collect_body_refs_inner(left, refs);
+            collect_body_refs_inner(right, refs);
         }
         CompiledExprKind::UnOp { operand, .. } => {
-            collect_value_refs_inner(operand, refs);
+            collect_body_refs_inner(operand, refs);
         }
         CompiledExprKind::FunctionCall { args, .. } => {
             for arg in args {
-                collect_value_refs_inner(arg, refs);
+                collect_body_refs_inner(arg, refs);
             }
         }
         CompiledExprKind::Conditional { condition, then_branch, else_branch } => {
-            collect_value_refs_inner(condition, refs);
-            collect_value_refs_inner(then_branch, refs);
-            collect_value_refs_inner(else_branch, refs);
+            collect_body_refs_inner(condition, refs);
+            collect_body_refs_inner(then_branch, refs);
+            collect_body_refs_inner(else_branch, refs);
         }
         CompiledExprKind::Match { discriminant, arms } => {
-            collect_value_refs_inner(discriminant, refs);
+            collect_body_refs_inner(discriminant, refs);
             for arm in arms {
-                collect_value_refs_inner(&arm.body, refs);
+                collect_body_refs_inner(&arm.body, refs);
             }
         }
         CompiledExprKind::UserFunctionCall { args, .. } => {
             for arg in args {
-                collect_value_refs_inner(arg, refs);
+                collect_body_refs_inner(arg, refs);
             }
         }
-        CompiledExprKind::Lambda { body, captures, .. } => {
-            collect_value_refs_inner(body, refs);
-            for cap in captures {
-                refs.push(cap.clone());
-            }
+        CompiledExprKind::Lambda { body, .. } => {
+            collect_body_refs_inner(body, refs);
         }
         CompiledExprKind::Literal(_) => {}
     }
@@ -2191,7 +2251,7 @@ fn compile_guarded_members(
                     let default_expr = param
                         .default
                         .as_ref()
-                        .map(|expr| compile_expr_guarded(expr, scope, enum_defs, functions, diagnostics, guard_ctx));
+                        .map(|expr| { let mut lc = 0u32; compile_expr_guarded(expr, scope, enum_defs, functions, diagnostics, guard_ctx, &mut lc) });
                     ValueCellDecl {
                         id,
                         kind: ValueCellKind::Param,
@@ -2207,7 +2267,7 @@ fn compile_guarded_members(
                 if is_geometry_let(&let_decl.value) {
                     continue;
                 }
-                let compiled_expr = compile_expr_guarded(&let_decl.value, scope, enum_defs, functions, diagnostics, guard_ctx);
+                let compiled_expr = { let mut lc = 0u32; compile_expr_guarded(&let_decl.value, scope, enum_defs, functions, diagnostics, guard_ctx, &mut lc) };
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 
@@ -2227,7 +2287,7 @@ fn compile_guarded_members(
                 });
             }
             reify_syntax::MemberDecl::Constraint(constraint) => {
-                let compiled_expr = compile_expr_guarded(&constraint.expr, scope, enum_defs, functions, diagnostics, guard_ctx);
+                let compiled_expr = { let mut lc = 0u32; compile_expr_guarded(&constraint.expr, scope, enum_defs, functions, diagnostics, guard_ctx, &mut lc) };
                 if compiled_expr.result_type != Type::Bool {
                     diagnostics.push(
                         Diagnostic::warning(format!(

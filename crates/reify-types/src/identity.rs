@@ -51,7 +51,7 @@ impl fmt::Display for MemberName {
 
 /// Identifies a value cell in the topology graph.
 /// A value cell corresponds to a single param, let binding, or computed property.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ValueCellId {
     pub entity: String,
     pub member: String,

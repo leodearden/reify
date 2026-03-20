@@ -329,8 +329,23 @@ module.exports = grammar({
       $.unary_expression,
       $.conditional_expression,
       $.match_expression,
+      $.lambda_expression,
       $.index_access,
       $._primary_expression,
+    ),
+
+    // ── Lambda expression ─────────────────────────────────
+    // |params| body — body extends as far right as possible (lowest precedence)
+    lambda_expression: $ => prec.right(0, seq(
+      '|',
+      commaSep($.lambda_param),
+      '|',
+      field('body', $._expression),
+    )),
+
+    lambda_param: $ => seq(
+      field('name', $.identifier),
+      optional(seq(':', field('type', $.type_expr))),
     ),
 
     // ── Match expression ────────────────────────────────────

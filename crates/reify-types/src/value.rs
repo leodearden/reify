@@ -27,7 +27,7 @@ pub enum Value {
     Option(Option<Box<Value>>),
     /// Lambda closure: captures environment values and body expression.
     Lambda {
-        params: Vec<String>,
+        params: Vec<(String, ValueCellId)>,
         body: Box<CompiledExpr>,
         captures: ValueMap,
     },
@@ -146,11 +146,12 @@ impl Value {
             Value::Lambda { params, body, captures } => {
                 let mut h = ContentHash::of(&[12]);
                 h = h.combine(ContentHash::of(&(params.len() as u64).to_le_bytes()));
-                for p in params {
-                    h = h.combine(ContentHash::of_str(p));
+                for (name, id) in params {
+                    h = h.combine(ContentHash::of_str(name));
+                    h = h.combine(ContentHash::of_str(&format!("{}", id)));
                 }
                 h = h.combine(body.content_hash);
-                for (id, val) in captures.iter() {
+                for (id, val) in sorted_captures(captures) {
                     h = h.combine(ContentHash::of_str(&format!("{}", id)));
                     h = h.combine(val.content_hash());
                 }
@@ -183,14 +184,11 @@ impl PartialEq for Value {
                 Value::Lambda { params: bp, body: bb, captures: bc },
             ) => {
                 ap == bp && ab.content_hash == bb.content_hash && {
-                    // Compare captures by iterating sorted
-                    let mut a_caps: Vec<_> = ac.iter().collect();
-                    let mut b_caps: Vec<_> = bc.iter().collect();
-                    a_caps.sort_by_key(|(id, _)| format!("{}", id));
-                    b_caps.sort_by_key(|(id, _)| format!("{}", id));
+                    let a_caps = sorted_captures(ac);
+                    let b_caps = sorted_captures(bc);
                     a_caps.len() == b_caps.len()
                         && a_caps.iter().zip(b_caps.iter()).all(|((aid, av), (bid, bv))| {
-                            format!("{}", aid) == format!("{}", bid) && av == bv
+                            aid == bid && av == bv
                         })
                 }
             }
@@ -263,13 +261,14 @@ impl Ord for Value {
             }
             (Value::Option(a), Value::Option(b)) => a.cmp(b),
             (
-                Value::Lambda { params: ap, body: ab, .. },
-                Value::Lambda { params: bp, body: bb, .. },
+                Value::Lambda { params: ap, body: ab, captures: ac },
+                Value::Lambda { params: bp, body: bb, captures: bc },
             ) => {
-                // Compare by params then by body content_hash bits
-                ap.cmp(bp).then_with(|| {
-                    ab.content_hash.0.cmp(&bb.content_hash.0)
-                })
+                ap.cmp(bp)
+                    .then_with(|| ab.content_hash.0.cmp(&bb.content_hash.0))
+                    .then_with(|| {
+                        sorted_captures(ac).cmp(&sorted_captures(bc))
+                    })
             }
             _ => unreachable!("same type tag but different variants"),
         }
@@ -330,11 +329,11 @@ impl std::fmt::Display for Value {
             Value::Option(Some(v)) => write!(f, "Some({})", v),
             Value::Lambda { params, .. } => {
                 write!(f, "|")?;
-                for (i, p) in params.iter().enumerate() {
+                for (i, (name, _)) in params.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", p)?;
+                    write!(f, "{}", name)?;
                 }
                 write!(f, "| <lambda>")
             }
@@ -407,6 +406,13 @@ pub enum Freshness {
     Pending { last_substantive: Option<ContentHash> },
     /// Evaluation failed with an error.
     Failed { error: EvalError },
+}
+
+/// Sort captures by ValueCellId for deterministic comparison/hashing.
+fn sorted_captures(captures: &ValueMap) -> Vec<(&ValueCellId, &Value)> {
+    let mut caps: Vec<_> = captures.iter().collect();
+    caps.sort_by_key(|(id, _)| *id);
+    caps
 }
 
 /// Map from ValueCellId to Value. Uses PersistentMap (im::HashMap) for

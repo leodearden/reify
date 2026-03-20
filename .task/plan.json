@@ -1,51 +1,57 @@
 {
-  "task_id": "57",
-  "title": "User-defined fn — evaluation",
+  "task_id": "58",
+  "title": "Lambda expressions",
   "files": [
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/lambda_tests.rs",
     "crates/reify-types/src/expr.rs",
+    "crates/reify-types/src/value.rs",
     "crates/reify-types/src/lib.rs",
     "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/lambda_compile_tests.rs",
     "crates/reify-expr/src/lib.rs",
-    "crates/reify-eval/src/lib.rs",
-    "crates/reify-eval/tests/boundary2_consumer.rs",
-    "crates/reify-eval/tests/fn_eval.rs",
-    "crates/reify-constraints/src/lib.rs",
-    "crates/reify-constraints/src/solver.rs",
-    "crates/reify-runtime/src/concurrent_eval.rs",
-    "crates/reify-test-support/src/builders.rs",
-    "crates/reify-compiler/tests/boundary2_producer.rs",
-    "crates/reify-types/src/constraint.rs"
+    "crates/reify-expr/tests/lambda_eval_tests.rs",
+    "crates/reify-test-support/src/builders.rs"
   ],
   "modules": [
+    "tree-sitter-reify",
+    "crates/reify-syntax",
     "crates/reify-types",
     "crates/reify-compiler",
     "crates/reify-expr",
-    "crates/reify-eval",
-    "crates/reify-constraints",
-    "crates/reify-runtime",
     "crates/reify-test-support"
   ],
-  "analysis": "Currently `eval_expr(expr: &CompiledExpr, values: &ValueMap) -> Value` in reify-expr handles all CompiledExprKind variants except UserFunctionCall, which returns Value::Undef as a stub. Task 56 (dependency) added the compiler support: UserFunctionCall { function_name, args } nodes are emitted when a user function call is resolved, and CompiledFunction/CompiledFnBody store the function's param list, let bindings, and result expression in CompiledModule.functions.\n\nThe compiler's CompilationScope creates ValueCellId(fn_name, param_name) for function parameters, so function body expressions use ValueRef(ValueCellId('double', 'x')) to reference param 'x' of function 'double'. This convention must be matched at evaluation time when building the function scope.\n\nApproach:\n1. Move CompiledFunction and CompiledFnBody from reify-compiler to reify-types (they're pure data types using only reify-types primitives: String, Type, CompiledExpr, ContentHash). Re-export from reify-compiler for backward compat.\n2. Create EvalContext struct in reify-expr with { values: &ValueMap, functions: &[CompiledFunction], recursion_depth: u32 }. Provides constructors: new(values, functions) and simple(values) (empty functions, depth 0).\n3. Change eval_expr signature to take &EvalContext. Update all ~40 call sites across reify-eval (20+), reify-constraints (11), reify-runtime (1), and test files (4). Most callers use EvalContext::simple(values); Engine callers use EvalContext::new(values, &module.functions).\n4. Implement UserFunctionCall evaluation: look up function by name+arity in ctx.functions, evaluate args, check Undef propagation, create fresh ValueMap scope with params bound, evaluate body let-bindings and result_expr.\n5. Add recursion depth limit (1000) returning Undef on exceeded.\n6. Wire functions through Engine evaluation paths.\n\nThe constraint subsystem (ConstraintInput, solver) also calls eval_expr. To support user functions in constraint expressions, add an optional functions field to ConstraintInput, or pass functions when constructing EvalContext in the solver. The practical approach: add `functions: &'a [CompiledFunction]` to ConstraintInput with a default of &[].",
+  "analysis": "This task adds lambda/closure expressions (`|x| x * 2`) to the Reify language pipeline. The implementation spans 4 layers: grammar (tree-sitter), syntax AST (reify-syntax), compiled IR (reify-types/expr.rs + reify-compiler), and evaluation (reify-expr). Key design considerations: (1) The `|` delimiter for lambda params must not conflict with `||` (logical OR) \u2014 tree-sitter handles via longest-match but we may need a `conflicts` entry. (2) Lambda params have optional type annotations (`|x: Real| ...`). (3) Closures capture free variables from the enclosing CompilationScope \u2014 during compilation we analyze the body for identifiers that resolve in the outer scope but aren't lambda params, recording their ValueCellIds as captures. (4) At eval time, a lambda creates a Value::Lambda closure that snapshots the captured ValueCellId\u2192Value mappings from the current ValueMap. (5) Type::Function already exists in reify-types. (6) Collection operations (map, filter, fold) are out of scope for this task \u2014 this task only adds lambda syntax, compilation, and evaluation. Lambda application will be tested via direct call or standalone eval. The compiler currently has placeholder stubs for collection literals (ListLiteral etc) that return Undef with diagnostics \u2014 lambda compilation follows a similar pattern but will be fully implemented. Content hashing needs a new tag byte (12) for Lambda values.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Move CompiledFunction and CompiledFnBody structs from crates/reify-compiler/src/lib.rs to crates/reify-types/src/expr.rs. These use only reify-types primitives (String, bool, Vec<(String,Type)>, Type, CompiledExpr, ContentHash). Add `pub use expr::{CompiledFunction, CompiledFnBody};` to reify-types/src/lib.rs. In reify-compiler/src/lib.rs, replace the struct definitions with `pub use reify_types::{CompiledFunction, CompiledFnBody};`. Verify: `cargo check -p reify-types -p reify-compiler -p reify-eval -p reify-constraints -p reify-runtime`.",
+      "description": "Add lambda_expression and lambda_param rules to tree-sitter-reify/grammar.js, then regenerate the parser with `tree-sitter generate`. Lambda syntax: `|params| body` where params are `identifier` or `identifier : type_expr`, comma-separated. Add lambda_expression to _expression choice (not _primary_expression) to give it proper precedence. Must handle `|` vs `||` \u2014 add to conflicts if needed.",
       "status": "done",
-      "commit": "b568da5",
+      "commit": "fbf8f83",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Update CompiledModuleBuilder in reify-test-support/src/builders.rs to support functions. Add `functions: Vec<reify_types::CompiledFunction>` field (initialized to Vec::new()), a `.function(f: CompiledFunction) -> Self` builder method, and include functions in the build() output. Also include function content_hashes in the module's content_hash computation. This enables building test modules with user-defined functions for E2E tests.",
+      "description": "Add ExprKind::Lambda { params: Vec<LambdaParam>, body: Box<Expr> } and LambdaParam { name: String, type_expr: Option<TypeExpr>, span: SourceSpan } to reify-syntax/src/lib.rs AST types.",
       "status": "done",
-      "commit": "76abd50",
+      "commit": "fbf8f83",
       "tests": []
     },
     {
       "id": "pre-3",
-      "description": "Add `functions: &'a [CompiledFunction]` field to ConstraintInput in reify-types/src/constraint.rs. Default to &[] in all existing call sites that construct ConstraintInput (in reify-eval Engine check/build methods). This prepares the constraint subsystem to receive the function registry.",
+      "description": "Add CompiledExprKind::Lambda { params: Vec<(String, Option<Type>)>, body: Box<CompiledExpr>, captures: Vec<ValueCellId> } to reify-types/src/expr.rs. Add a CompiledExpr::lambda() constructor with content_hash tag byte [7] (using a distinct tag). Also add Value::Lambda { params: Vec<String>, body: Box<CompiledExpr>, captures: ValueMap } to reify-types/src/value.rs with content_hash tag byte [12], Display, PartialEq, Eq, Ord implementations.",
       "status": "done",
-      "commit": "be178f2",
+      "commit": "fbf8f83",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Update reify-types/src/lib.rs to export the new types (if LambdaParam etc are placed there). Ensure CompiledExprKind::Lambda and Value::Lambda are visible to downstream crates.",
+      "status": "done",
+      "commit": "fbf8f83",
       "tests": []
     }
   ],
@@ -53,176 +59,304 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in reify-expr/src/lib.rs tests: `eval_user_fn_double`. Construct a CompiledFunction for `fn double(x: Real) -> Real { x + x }`: name='double', params=[('x', Type::Real)], return_type=Type::Real, body=CompiledFnBody { let_bindings: vec![], result_expr: BinOp(Add, ValueRef(ValueCellId('double','x')), ValueRef(ValueCellId('double','x'))) }. Build a UserFunctionCall expr: function_name='double', args=[Literal(Real(5.0))]. Currently this returns Undef. Write the test expecting Real(10.0) — it will fail, proving the feature is needed.",
+      "description": "Write failing parser test: parse `|x| x * 2` as a lambda_expression node in tree-sitter, verify no parse errors. Add test in crates/reify-syntax/tests/lambda_tests.rs.",
       "status": "done",
-      "commit": "2c33326"
+      "commit": "8f19a1a"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Create EvalContext struct and implement UserFunctionCall evaluation. This is the largest step:\n\n1. In reify-expr/src/lib.rs, define:\n   ```\n   pub struct EvalContext<'a> {\n       pub values: &'a ValueMap,\n       pub functions: &'a [CompiledFunction],\n       recursion_depth: u32,\n   }\n   ```\n   With constructors: `new(values, functions)` (depth=0), `simple(values)` (functions=&[], depth=0).\n   Private helper: `with_scope(values)` returns new EvalContext with same functions, depth+1.\n\n2. Change `eval_expr` signature to `eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value`.\n\n3. Thread ctx through all internal functions: eval_binop, eval_unop, eval_and, eval_or now take `ctx: &EvalContext` instead of `values: &ValueMap`, reading values from `ctx.values`.\n\n4. Implement UserFunctionCall arm:\n   - Find function by name in ctx.functions (first match)\n   - Evaluate arg expressions against ctx\n   - If any arg is Undef, return Undef (strict propagation)\n   - Check recursion_depth < MAX_RECURSION_DEPTH (1000), return Undef if exceeded\n   - Create fresh ValueMap, bind params: ValueCellId(fn_name, param_name) -> arg_value\n   - Evaluate let_bindings in order, inserting into scope\n   - Evaluate result_expr with new scope\n\n5. Update ALL callers:\n   - reify-eval/src/lib.rs: ~20 sites → EvalContext::simple(&values) initially (Engine integration in step-16)\n   - reify-constraints/src/lib.rs: 1 site → EvalContext::simple(input.values)\n   - reify-constraints/src/solver.rs: ~10 sites → EvalContext::simple(values)\n   - reify-runtime/src/concurrent_eval.rs: 1 site → EvalContext::simple(&current_values)\n   - reify-eval/tests/boundary2_consumer.rs: 1 site → EvalContext::simple(&values)\n   - reify-compiler/tests/boundary2_producer.rs: 3 sites → EvalContext::simple(&values)\n   - Internal tests in reify-expr: all sites → EvalContext::simple(&values)\n\n6. Verify all existing tests pass (only API change, no behavior change for non-UserFunctionCall exprs).",
+      "description": "Add lower_lambda_expression() to ts_parser.rs: handle 'lambda_expression' node kind by extracting lambda_param children (name + optional type_expr) and body expression. Wire it into lower_expr() dispatch. This should make step-1 pass.",
       "status": "done",
-      "commit": "76ef687"
+      "commit": "421c035"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test: `eval_user_fn_with_let_bindings`. Construct `fn f(x: Real) -> Real { let y = x + 1; y * 2 }` — CompiledFunction with body.let_bindings = [('y', BinOp(Add, ValueRef('f','x'), Literal(Int(1))))] and body.result_expr = BinOp(Mul, ValueRef('f','y'), Literal(Int(2))). Create EvalContext with functions=[f]. Call f(4) via UserFunctionCall, expect Real(10.0). Tests that let bindings in function bodies evaluate correctly and are available to the result expression.",
+      "description": "Write failing parser test: parse `|x: Real, y: Real| x + y` \u2192 Lambda with 2 typed params. Verify param names and type annotations are correctly extracted.",
       "status": "done",
-      "commit": "0d30a2b"
+      "commit": "accc018"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix let binding evaluation in function body if step-3 fails. Ensure each let binding's expression is evaluated against the current scope (which grows as bindings are added), and the binding result is inserted as ValueCellId(fn_name, binding_name). The step-2 implementation should already handle this — if the test passes, this is a no-op confirmation step.",
+      "description": "Ensure typed lambda params are correctly lowered \u2014 the optional `: type_expr` part in lambda_param should produce LambdaParam with type_expr: Some(TypeExpr). Make step-3 pass.",
       "status": "done",
-      "commit": "0d30a2b"
+      "commit": "accc018"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test: `eval_user_fn_recursive_factorial`. Construct `fn factorial(n: Int) -> Int { if n <= 1 then 1 else n * factorial(n - 1) }`. Body result_expr is Conditional { condition: BinOp(Le, ValueRef('factorial','n'), Literal(Int(1))), then_branch: Literal(Int(1)), else_branch: BinOp(Mul, ValueRef('factorial','n'), UserFunctionCall('factorial', [BinOp(Sub, ValueRef('factorial','n'), Literal(Int(1)))])) }. Call factorial(5), expect Int(120). Tests that recursion works: function re-enters eval with a new scope frame preserving the function registry.",
+      "description": "Write failing parser test: parse `|| true` (zero-param lambda) and `|x, y, z| x + y + z` (3-param untyped lambda). Verify edge cases.",
       "status": "done",
-      "commit": "0d30a2b"
+      "commit": "e928aad"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Ensure recursion works. The UserFunctionCall evaluator uses ctx.with_scope(&new_values) which preserves the functions slice and increments depth. The recursive UserFunctionCall in the body re-enters the same code path with new param bindings. If factorial test passes, this is a no-op confirmation. If not, debug scope construction or depth threading.",
+      "description": "Handle zero-param and multi-param lambda edge cases in the parser lowering. Make step-5 pass.",
       "status": "done",
-      "commit": "0d30a2b"
+      "commit": "e928aad"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test: `eval_user_fn_recursion_depth_exceeded`. Construct `fn infinite(x: Int) -> Int { infinite(x) }` — unconditionally recursive. Call infinite(1), assert result is Value::Undef (should not stack-overflow, should hit the 1000-depth limit and return Undef gracefully).",
+      "description": "Write failing compiler test: compile a lambda `|x| x * 2` in a let binding context. Verify it produces CompiledExprKind::Lambda with 1 param, no captures, and correct body.",
       "status": "done",
-      "commit": "0d30a2b"
+      "commit": "98bd551"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Ensure depth limit works. The step-2 implementation checks `ctx.recursion_depth >= MAX_RECURSION_DEPTH` at the top of UserFunctionCall handling and returns Undef. If the test passes, no-op. If it stack-overflows, the depth check is missing or not incrementing — fix accordingly.",
+      "description": "Add ExprKind::Lambda handling to compile_expr_guarded() in reify-compiler/src/lib.rs. Create a nested CompilationScope for the lambda body with lambda params registered. Compile the body expression in that nested scope. Initially, captures = empty vec. Result type is Type::Function. Make step-7 pass.",
       "status": "done",
-      "commit": "0d30a2b"
+      "commit": "84032c4"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test: `eval_user_fn_undef_arg_propagation`. Call double(Undef) where double is the fn from step-1. Assert result is Value::Undef. Tests strict Undef propagation: if any argument evaluates to Undef, the function call short-circuits without evaluating the body.",
+      "description": "Write failing compiler test: compile `let factor = 3; |x| x * factor` \u2014 verify that the lambda's captures vec contains the ValueCellId for 'factor'.",
       "status": "done",
-      "commit": "0d30a2b"
+      "commit": "a755233"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Ensure Undef arg propagation works. Step-2 implementation checks `if evaluated_args.iter().any(|v| v.is_undef()) { return Value::Undef; }` before entering the function body. If test passes, no-op.",
+      "description": "Implement capture analysis: after compiling the lambda body, walk the CompiledExpr tree collecting all ValueRef(id) references. Filter to only those ids that come from the outer scope (not lambda params). Store as captures in CompiledExprKind::Lambda. Make step-9 pass.",
       "status": "done",
-      "commit": "0d30a2b"
+      "commit": "c4f3476"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test: `eval_user_fn_dimension_args`. Construct `fn area(w: Length, h: Length) -> Area { w * h }` with Scalar-typed params. Call area(80mm, 100mm) with args Scalar{si_value:0.08, dim:LENGTH}, Scalar{si_value:0.1, dim:LENGTH}. Assert result is Scalar{si_value:0.008, dim:AREA}. Tests that dimensional Scalar values flow correctly through function evaluation.",
+      "description": "Write failing compiler test: compile lambda with typed params `|x: Real| x + 1.0` \u2014 verify param type is recorded as Some(Type::Real) in the compiled output.",
       "status": "done",
-      "commit": "0d30a2b"
+      "commit": "13f7d44"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Dimension handling should work automatically since the function body's BinOp(Mul) is evaluated by the existing eval_mul which combines dimension vectors. If the test passes, no-op. If not, debug the scope binding for Scalar values.",
+      "description": "Handle typed lambda params in the compiler: resolve type name to Type (using existing type resolution logic). Make step-11 pass.",
       "status": "done",
-      "commit": "0d30a2b"
+      "commit": "13f7d44"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write test: `eval_user_fn_overload_by_arity`. Create two functions: `fn process(x: Real) -> Real { x * 2 }` and `fn process(x: Real, y: Real) -> Real { x + y }`. Call process(3.0) with 1 arg → expect Real(6.0). Call process(3.0, 4.0) with 2 args → expect Real(7.0). Tests that runtime lookup matches by name AND argument count.",
+      "description": "Write failing eval test: evaluate a lambda expression `|x| x * 2` \u2014 verify it produces Value::Lambda with the correct params and captured values.",
       "status": "done",
-      "commit": "0d30a2b"
+      "commit": "ae02b2f"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement arity-based overload resolution. In the UserFunctionCall handler, when looking up by name, filter candidates by `fn.params.len() == args.len()`. If exactly one matches, use it. If zero or multiple match, return Undef. Update the lookup from simple name match to name+arity match.",
+      "description": "Add CompiledExprKind::Lambda handling to eval_expr() in reify-expr/src/lib.rs. When evaluating a lambda expression, snapshot the captured ValueCellId values from the current ValueMap into a new ValueMap, then return Value::Lambda { params, body, captures }. Make step-13 pass.",
       "status": "done",
-      "commit": "0d30a2b"
+      "commit": "d96687f"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write E2E integration test in new file crates/reify-eval/tests/fn_eval.rs. Parse and compile source text: `fn double(x: Real) -> Real { x + x }\\nstructure S { let v = double(3) }`. Use reify_syntax::parse() and reify_compiler::compile(). Create Engine with mock constraint checker, call engine.eval(&module). Assert the value for ValueCellId('S','v') == Real(6.0). This validates the complete pipeline from source text through compilation to evaluation, including the engine threading functions to eval_expr.",
+      "description": "Write failing eval test: evaluate a lambda with captures \u2014 `factor=3` in ValueMap, eval `|x| x * factor`. Verify the resulting Value::Lambda captures the factor value from the ValueMap.",
       "status": "done",
-      "commit": "5650ad2"
+      "commit": "9443308"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Wire functions through Engine evaluation. Update reify-eval/src/lib.rs:\n1. In Engine::eval(), change all eval_expr calls from EvalContext::simple(&values) to EvalContext::new(&values, &module.functions).\n2. In Engine::eval_cached(), same change — module is available as parameter.\n3. In evaluate_let_bindings(), add a `functions: &[CompiledFunction]` parameter, pass to EvalContext::new.\n4. In Engine::check() and Engine::build(), pass module.functions to constraint input and eval contexts.\n5. In the concurrent eval path (reify-runtime/src/concurrent_eval.rs), add a functions field to ConcurrentEvalAdapter (populated from the module). Use it when constructing EvalContext.\n6. In reify-constraints callers, use input.functions from ConstraintInput.\n7. Run full test suite to verify everything works end-to-end.",
+      "description": "Ensure capture evaluation correctly snapshots outer scope values. Make step-15 pass.",
       "status": "done",
-      "commit": "19fb353"
+      "commit": "9443308"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing eval test: evaluate a lambda with Undef capture \u2014 one captured variable is Undef. Verify the lambda is still created but the capture contains Undef.",
+      "status": "done",
+      "commit": "bf8dbaa"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Ensure Undef propagation in lambda capture: if a captured value is Undef, it's stored as Undef in the closure (lazy Undef propagation). Make step-17 pass.",
+      "status": "done",
+      "commit": "bf8dbaa"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing eval test: call/apply a Value::Lambda \u2014 create a helper function `apply_lambda(lambda: &Value, args: &[Value]) -> Value` and test `(|x| x * 2)` applied to `[Int(5)]` returns `Int(10)`.",
+      "status": "done",
+      "commit": "870a998"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Implement apply_lambda() in reify-expr: given a Value::Lambda and argument values, create a ValueMap with params bound to args plus captures, evaluate the body. Export the function. Make step-19 pass.",
+      "status": "done",
+      "commit": "7ed022d"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing eval test: apply a lambda with captures \u2014 `factor=3`, lambda `|x| x * factor`, apply to `[Int(5)]` returns `Int(15)`.",
+      "status": "done",
+      "commit": "218e5ed"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Ensure apply_lambda merges capture ValueMap with param bindings. Make step-21 pass.",
+      "status": "done",
+      "commit": "218e5ed"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write failing eval test: apply a lambda with wrong arity (2-param lambda applied with 1 arg) returns Undef. Also test 0-param lambda application.",
+      "status": "done",
+      "commit": "eada5d4"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Add arity check to apply_lambda \u2014 if args count != params count, return Undef. Make step-23 pass.",
+      "status": "done",
+      "commit": "eada5d4"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Write test: Value::Lambda content_hash is deterministic and distinct from other Value variants. Two identical lambdas produce the same hash; different lambdas produce different hashes.",
+      "status": "done",
+      "commit": "6d2f774"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Ensure Value::Lambda content_hash, Display, PartialEq, Eq, Ord are correct. Make step-25 pass.",
+      "status": "done",
+      "commit": "6d2f774"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Write integration test: full pipeline parse \u2192 compile \u2192 eval for `structure S { let factor: Real = 3; }` with lambda `|x| x * factor` compiled in that scope, then applied. (May be simplified to a compiler round-trip test.)",
+      "status": "done",
+      "commit": "955c195"
+    },
+    {
+      "id": "step-28",
+      "type": "impl",
+      "description": "Fix any integration issues found in step-27. Ensure all tests pass. Run full test suite to verify no regressions.",
+      "status": "done",
+      "commit": "00da7a9"
+    },
+    {
+      "id": "step-29",
+      "type": "test",
+      "description": "Write failing test in crates/reify-expr/tests/lambda_eval_tests.rs (or crates/reify-types/src/value.rs unit tests): create two Value::Lambda instances with identical params and body but with captures inserted into the ValueMap in different orders (e.g., lambda_a inserts capture 'x' then 'y', lambda_b inserts 'y' then 'x'). Assert that (1) lambda_a == lambda_b (PartialEq, which sorts — should pass), and (2) lambda_a.content_hash() == lambda_b.content_hash() (this MUST fail with the current code, demonstrating the hash invariant violation). This directly tests the invariant `a == b → a.content_hash() == b.content_hash()`.",
+      "status": "done",
+      "commit": "3694c53"
+    },
+    {
+      "id": "step-30",
+      "type": "impl",
+      "description": "Fix Value::Lambda content_hash() in crates/reify-types/src/value.rs: before hashing captures, collect the (id, val) pairs from captures.iter() into a Vec, sort by key using sort_by_key(|(id, _)| format!(\"{}\", id)) (matching the PartialEq approach), then iterate the sorted vec to build the hash. This ensures hash iteration order is deterministic regardless of im::HashMap internal ordering, restoring the invariant `a == b → a.content_hash() == b.content_hash()`. Make step-29 pass. Run the full test suite to verify no regressions.",
+      "status": "done",
+      "commit": "4c8ca4c"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Move CompiledFunction and CompiledFnBody from reify-compiler to reify-types",
-      "rationale": "These are pure data types composed entirely of reify-types primitives (String, bool, Type, CompiledExpr, ContentHash). Moving them follows the existing pattern where CompiledExpr, CompiledExprKind, CompiledMatchArm already live in reify-types. This avoids adding reify-compiler as a dependency of reify-expr, which would be architecturally backwards. Re-exporting from reify-compiler maintains backward compatibility."
+      "decision": "Lambda as an _expression choice, not _primary_expression",
+      "rationale": "Lambda has its own precedence behavior \u2014 the body extends as far right as possible (lowest precedence on the right). Placing it in _expression ensures `|x| x * 2 + 3` parses as `|x| ((x * 2) + 3)` not `(|x| x * 2) + 3`. Using prec.right(0) allows the body to capture the full right-hand expression."
     },
     {
-      "decision": "Change eval_expr signature to take &EvalContext (breaking change), update all callers",
-      "rationale": "The task explicitly requires this approach (Option 2). While a backward-compatible wrapper would minimize churn, the breaking change ensures all evaluation paths can support user functions uniformly. The migration is mechanical: most callers change `reify_expr::eval_expr(expr, &values)` to `reify_expr::eval_expr(expr, &EvalContext::simple(&values))`. This is a one-time cost that results in a cleaner API."
+      "decision": "Value::Lambda stores a Box<CompiledExpr> body and a ValueMap of captures, not raw closures",
+      "rationale": "The evaluator is a pure recursive tree walker. Storing the compiled expression body + captured values allows re-evaluation of the lambda body in apply_lambda(). This is consistent with the existing evaluation model where everything is data (no Rust closures in Values)."
     },
     {
-      "decision": "EvalContext recursion_depth field is private with no public setter",
-      "rationale": "Callers should never set recursion depth — it's internal bookkeeping for preventing stack overflow. Only the UserFunctionCall evaluator increments it via the private with_scope() helper. This prevents misuse while keeping the public API clean."
+      "decision": "Capture analysis happens at compile time by walking the compiled body's ValueRef nodes",
+      "rationale": "The compiler already resolves all identifiers to ValueCellIds. After compiling the lambda body in a nested scope (where lambda params are registered as fresh ValueCellIds), any ValueRef in the body that refers to an outer scope's ValueCellId is a capture. This is simpler and more reliable than AST-level free-variable analysis."
     },
     {
-      "decision": "Function scope is fully isolated (fresh ValueMap, no access to caller's values)",
-      "rationale": "User-defined functions in Reify are pure. The compiler's CompilationScope creates ValueCellId(fn_name, param_name) for parameters, meaning function body expressions only reference these IDs. A fresh ValueMap with only param and let-binding entries naturally enforces this isolation. The function registry (ctx.functions) is carried through for nested calls."
+      "decision": "apply_lambda is a standalone function in reify-expr, not a new CompiledExprKind variant",
+      "rationale": "Lambda application will be driven by collection operations (map, filter, fold \u2014 separate task) or future direct-call syntax. Adding a separate `apply_lambda` function keeps the core eval_expr clean and allows collection operations to call it without adding a new expression kind for 'lambda call'."
     },
     {
-      "decision": "Runtime overload resolution by name + argument count",
-      "rationale": "The compiler already performs full type-based overload resolution at compile time. At runtime, name + arity is sufficient to distinguish overloads. This avoids threading type information through the evaluator and keeps the lookup simple."
+      "decision": "Lambda params get synthetic ValueCellIds (e.g., '$lambda.x') during compilation",
+      "rationale": "The CompilationScope maps names to ValueCellIds. Lambda params need unique ValueCellIds that won't collide with the enclosing scope's names. Using a '$lambda' prefix (or similar) ensures uniqueness. At eval time, apply_lambda maps these synthetic ids to the actual argument values."
     },
     {
-      "decision": "Recursion depth limit of 1000 returning Value::Undef",
-      "rationale": "1000 allows deep legitimate recursion while preventing stack overflow. Returning Undef follows Reify's philosophy where failed/impossible computations produce Undef, which propagates upward cleanly. A diagnostic message would be ideal but Undef is sufficient for v0.1."
+      "decision": "Content hash tag [12] for Value::Lambda",
+      "rationale": "Value content hash tags use 0-11 currently (0=Bool through 11=Option, with 10 reserved for Satisfaction). Tag 12 is the next available and avoids collision with all existing tags."
     },
     {
-      "decision": "Add functions field to ConstraintInput struct",
-      "rationale": "Constraint expressions can contain UserFunctionCall nodes. The solver evaluates these expressions repeatedly during optimization. Adding functions to ConstraintInput is the least-invasive way to provide the function registry to the constraint subsystem. Defaults to &[] for backward compatibility."
+      "decision": "Type inference deferred \u2014 lambda result type is Type::Function with param types from annotations or Type::Real default",
+      "rationale": "Full type inference for lambda params from call-site context (e.g., `.map(|x| x + 1)` inferring x as the list element type) requires integration with collection operations, which is a separate task. For now, untyped lambda params default to Type::Real, which covers the most common CAD use case. This will be refined when collection operations are implemented."
+    },
+    {
+      "decision": "Sort captures by key before hashing in content_hash() to match PartialEq behavior",
+      "rationale": "ValueMap is backed by im::HashMap which has non-deterministic iteration order. PartialEq already sorts captures before comparing (lines 186-195), documenting awareness of the ordering issue. content_hash() must do the same sort to maintain the mandatory invariant `a == b → a.content_hash() == b.content_hash()`. Without this, the incremental evaluation cache can be corrupted by spurious hash mismatches for logically equal lambda values."
     }
   ],
   "reuse": [
     {
-      "what": "Existing eval infrastructure (eval_binop, eval_unop, eval_add, eval_mul, Undef propagation, dimensional arithmetic)",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Function body expressions are standard CompiledExpr trees. Once the scope ValueMap is set up with param bindings, the entire evaluation infrastructure handles body evaluation without modification. Only the top-level threading changes from ValueMap to EvalContext."
+      "what": "commaSep() helper in grammar.js",
+      "where": "tree-sitter-reify/grammar.js line 8-10",
+      "how": "Use for comma-separated lambda_param list: commaSep($.lambda_param)"
     },
     {
-      "what": "CompilationScope ValueCellId convention: ValueCellId(entity_name, member_name)",
-      "where": "crates/reify-compiler/src/lib.rs CompilationScope::register()",
-      "how": "The compiler creates ValueCellId(fn_name, param_name) for function parameters. The evaluator mirrors this convention when binding arguments: ValueCellId('double', 'x') → arg_value. This ensures ValueRef nodes in the compiled body resolve correctly."
+      "what": "CompilationScope for nested scoping",
+      "where": "crates/reify-compiler/src/lib.rs lines 497-526",
+      "how": "Clone the outer scope and register lambda params in the clone, then compile the body with the cloned scope. This mirrors how function body compilation works."
     },
     {
-      "what": "ValueMap with PersistentMap (im::HashMap) for O(1) structural-sharing clones",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Each function call creates a new fresh ValueMap for its scope. The pattern of creating isolated child ValueMaps already exists in the engine's sub-component evaluation (child_values). PersistentMap makes this cheap."
+      "what": "compile_expr_guarded() recursive pattern",
+      "where": "crates/reify-compiler/src/lib.rs line 546",
+      "how": "Add a new ExprKind::Lambda match arm following the same pattern as other expression kinds."
     },
     {
-      "what": "Test expression builders (literal, value_ref_typed, binop, etc.)",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Use these to construct function body expressions and call argument expressions in unit tests, avoiding manual CompiledExpr construction."
+      "what": "CompiledExpr builder constructors (literal, value_ref, binop, unop)",
+      "where": "crates/reify-types/src/expr.rs lines 97-148",
+      "how": "Add a CompiledExpr::lambda() constructor following the same pattern with content_hash computation."
     },
     {
-      "what": "E2E test pattern: parse → compile → Engine.eval() → assert values",
-      "where": "crates/reify-eval/tests/e2e_bracket.rs, boundary2_consumer.rs",
-      "how": "Follow the established E2E testing pattern for the integration test. Use reify_syntax::parse(), reify_compiler::compile(), Engine::new(), engine.eval(&module), then check result values."
+      "what": "Value content_hash domain-separated tag scheme",
+      "where": "crates/reify-types/src/value.rs lines 71-141",
+      "how": "Use tag [12] for Value::Lambda, following the same pattern as other variants."
     },
     {
-      "what": "CompiledModuleBuilder for constructing test modules",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "After adding .function() support, use the builder to construct modules with both functions and structures for programmatic E2E tests."
+      "what": "eval_expr() dispatch pattern",
+      "where": "crates/reify-expr/src/lib.rs lines 9-71",
+      "how": "Add CompiledExprKind::Lambda match arm to create a Value::Lambda with captured values from the ValueMap."
+    },
+    {
+      "what": "Type::Function already exists",
+      "where": "crates/reify-types/src/ty.rs line 27",
+      "how": "Use Type::Function { params, return_type } as the result_type for compiled lambda expressions."
+    },
+    {
+      "what": "ValueMap for closure capture storage",
+      "where": "crates/reify-types/src/value.rs lines 358-396",
+      "how": "ValueMap uses PersistentMap (im::HashMap) with O(1) clone \u2014 perfect for storing captured values in closures."
+    },
+    {
+      "what": "lower_expr() dispatch table in ts_parser.rs",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 857-894",
+      "how": "Add 'lambda_expression' => self.lower_lambda_expression(node) to the match."
+    },
+    {
+      "what": "Existing test patterns (parse_let_expr helper)",
+      "where": "crates/reify-syntax/src/ts_parser.rs line 1809+",
+      "how": "Follow the same parse-and-assert pattern for lambda parsing tests. Create a parse_expr helper that wraps the expression in a structure let binding."
+    },
+    {
+      "what": "PartialEq sort-before-compare pattern for captures",
+      "where": "crates/reify-types/src/value.rs lines 186-195",
+      "how": "Apply the same sort_by_key(|(id, _)| format!(\"{}\", id)) pattern in content_hash() before iterating captures for hashing."
     }
-  ]
+  ],
+  "_schema_version": 1
 }

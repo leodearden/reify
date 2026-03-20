@@ -1,0 +1,455 @@
+//! Lambda evaluation tests.
+
+use reify_expr::{eval_expr, EvalContext};
+use reify_types::{BinOp, CompiledExpr, Type, Value, ValueCellId, ValueMap};
+
+/// Helper to build a Value::Lambda with (name, id) param pairs.
+fn make_value_lambda(
+    params: Vec<(&str, ValueCellId)>,
+    body: CompiledExpr,
+    captures: ValueMap,
+) -> Value {
+    Value::Lambda {
+        params: params
+            .into_iter()
+            .map(|(n, id)| (n.to_string(), id))
+            .collect(),
+        body: Box::new(body),
+        captures,
+    }
+}
+
+/// step-13: Evaluate a lambda expression `|x| x * 2` — verify it produces
+/// Value::Lambda with the correct params and empty captures.
+#[test]
+fn eval_lambda_simple_no_captures() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Real,
+    );
+    let lambda_expr = CompiledExpr::lambda(
+        vec![("x".to_string(), None)],
+        vec![x_id.clone()],
+        body,
+        vec![],
+        Type::Function {
+            params: vec![Type::Real],
+            return_type: Box::new(Type::Real),
+        },
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&lambda_expr, &EvalContext::simple(&values));
+
+    match &result {
+        Value::Lambda {
+            params,
+            body: _,
+            captures,
+        } => {
+            assert_eq!(params.len(), 1);
+            assert_eq!(params[0].0, "x");
+            assert_eq!(params[0].1, x_id);
+            assert!(captures.is_empty(), "no captures expected");
+        }
+        other => panic!("expected Value::Lambda, got {:?}", other),
+    }
+}
+
+/// step-15: Evaluate a lambda with captures — `factor=3` in ValueMap,
+/// eval `|x| x * factor`. Verify the resulting Value::Lambda captures the
+/// factor value from the ValueMap.
+#[test]
+fn eval_lambda_with_captures() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let factor_id = ValueCellId::new("S", "factor");
+
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(factor_id.clone(), Type::Int),
+        Type::Real,
+    );
+    let lambda_expr = CompiledExpr::lambda(
+        vec![("x".to_string(), None)],
+        vec![x_id.clone()],
+        body,
+        vec![factor_id.clone()],
+        Type::Function {
+            params: vec![Type::Real],
+            return_type: Box::new(Type::Real),
+        },
+    );
+
+    let mut values = ValueMap::new();
+    values.insert(factor_id.clone(), Value::Int(3));
+
+    let result = eval_expr(&lambda_expr, &EvalContext::simple(&values));
+
+    match &result {
+        Value::Lambda {
+            params,
+            body: _,
+            captures,
+        } => {
+            assert_eq!(params[0].0, "x");
+            assert_eq!(captures.len(), 1, "should capture factor");
+            assert_eq!(
+                captures.get(&factor_id),
+                Some(&Value::Int(3)),
+                "captured factor should be Int(3)"
+            );
+        }
+        other => panic!("expected Value::Lambda, got {:?}", other),
+    }
+}
+
+/// step-17: Evaluate a lambda with Undef capture — one captured variable is
+/// Undef. Verify the lambda is still created but the capture contains Undef.
+#[test]
+fn eval_lambda_with_undef_capture() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let missing_id = ValueCellId::new("S", "missing");
+
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(missing_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda_expr = CompiledExpr::lambda(
+        vec![("x".to_string(), None)],
+        vec![x_id.clone()],
+        body,
+        vec![missing_id.clone()],
+        Type::Function {
+            params: vec![Type::Real],
+            return_type: Box::new(Type::Real),
+        },
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&lambda_expr, &EvalContext::simple(&values));
+
+    match &result {
+        Value::Lambda {
+            params,
+            body: _,
+            captures,
+        } => {
+            assert_eq!(params[0].0, "x");
+            assert_eq!(captures.len(), 1);
+            assert_eq!(
+                captures.get(&missing_id),
+                Some(&Value::Undef),
+                "missing captured variable should be Undef"
+            );
+        }
+        other => panic!("expected Value::Lambda, got {:?}", other),
+    }
+}
+
+/// step-19: Apply a Value::Lambda — `(|x| x * 2)` applied to `[Int(5)]`
+/// should return `Int(10)`.
+#[test]
+fn apply_lambda_simple() {
+    use reify_expr::apply_lambda;
+
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Real,
+    );
+
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let result = apply_lambda(&lambda, &[Value::Int(5)]);
+    assert_eq!(result, Value::Int(10));
+}
+
+/// step-21: Apply a lambda with captures — `factor=3`, lambda `|x| x * factor`,
+/// apply to `[Int(5)]` returns `Int(15)`.
+#[test]
+fn apply_lambda_with_captures() {
+    use reify_expr::apply_lambda;
+
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let factor_id = ValueCellId::new("S", "factor");
+
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(factor_id.clone(), Type::Int),
+        Type::Real,
+    );
+
+    let mut captures = ValueMap::new();
+    captures.insert(factor_id.clone(), Value::Int(3));
+
+    let lambda = make_value_lambda(vec![("x", x_id)], body, captures);
+
+    let result = apply_lambda(&lambda, &[Value::Int(5)]);
+    assert_eq!(result, Value::Int(15));
+}
+
+/// step-23: Apply a lambda with wrong arity (2-param lambda applied with 1 arg)
+/// returns Undef. Also test 0-param lambda application.
+#[test]
+fn apply_lambda_arity_mismatch_returns_undef() {
+    use reify_expr::apply_lambda;
+
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let result = apply_lambda(&lambda, &[Value::Int(5)]);
+    assert!(result.is_undef(), "arity mismatch should return Undef");
+
+    let result = apply_lambda(&lambda, &[Value::Int(1), Value::Int(2), Value::Int(3)]);
+    assert!(result.is_undef(), "too many args should return Undef");
+}
+
+#[test]
+fn apply_lambda_zero_params() {
+    use reify_expr::apply_lambda;
+
+    let body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let lambda = make_value_lambda(vec![], body, ValueMap::new());
+
+    let result = apply_lambda(&lambda, &[]);
+    assert_eq!(result, Value::Bool(true));
+
+    let result = apply_lambda(&lambda, &[Value::Int(1)]);
+    assert!(result.is_undef(), "0-param lambda with args should return Undef");
+}
+
+/// step-25: Value::Lambda content_hash is deterministic and distinct from other variants.
+#[test]
+fn lambda_content_hash_deterministic_and_distinct() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    let body1 = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Real,
+    );
+    let body2 = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Real,
+    );
+    let body3 = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::literal(Value::Int(1), Type::Int),
+        Type::Real,
+    );
+
+    let lambda1 = make_value_lambda(vec![("x", x_id.clone())], body1, ValueMap::new());
+    let lambda2 = make_value_lambda(vec![("x", x_id.clone())], body2, ValueMap::new());
+    let lambda3 = make_value_lambda(vec![("x", x_id.clone())], body3, ValueMap::new());
+
+    assert_eq!(lambda1.content_hash(), lambda2.content_hash(), "identical lambdas should have same hash");
+    assert_ne!(lambda1.content_hash(), lambda3.content_hash(), "different lambdas should have different hash");
+    assert_ne!(lambda1.content_hash(), Value::Undef.content_hash());
+    assert_ne!(lambda1.content_hash(), Value::Int(0).content_hash());
+    assert_ne!(lambda1.content_hash(), Value::Bool(false).content_hash());
+
+    // Different param names produce different hash
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let lambda_y = make_value_lambda(
+        vec![("y", y_id)],
+        CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            Type::Real,
+        ),
+        ValueMap::new(),
+    );
+    assert_ne!(lambda1.content_hash(), lambda_y.content_hash(), "different param names should produce different hash");
+}
+
+/// step-29: Two Value::Lambda instances with identical params and body but with
+/// captures inserted in different orders should have equal content_hash.
+#[test]
+fn lambda_content_hash_invariant_capture_insertion_order() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let cap_a_id = ValueCellId::new("S", "a_var");
+    let cap_b_id = ValueCellId::new("S", "b_var");
+
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(cap_a_id.clone(), Type::Int),
+            CompiledExpr::value_ref(cap_b_id.clone(), Type::Int),
+            Type::Int,
+        ),
+        Type::Real,
+    );
+
+    let mut captures_a = ValueMap::new();
+    captures_a.insert(cap_a_id.clone(), Value::Int(10));
+    captures_a.insert(cap_b_id.clone(), Value::Int(20));
+
+    let lambda_a = make_value_lambda(vec![("x", x_id.clone())], body.clone(), captures_a);
+
+    let mut captures_b = ValueMap::new();
+    captures_b.insert(cap_b_id.clone(), Value::Int(20));
+    captures_b.insert(cap_a_id.clone(), Value::Int(10));
+
+    let lambda_b = make_value_lambda(vec![("x", x_id)], body, captures_b);
+
+    assert_eq!(lambda_a, lambda_b, "lambdas with same captures in different insertion order should be equal");
+    assert_eq!(lambda_a.content_hash(), lambda_b.content_hash(), "content_hash invariant violated: equal lambdas must have equal hashes");
+}
+
+/// step-27: Integration test — full pipeline parse → compile → eval for a structure
+/// with a lambda that captures a value from the same structure.
+#[test]
+fn integration_parse_compile_eval_lambda() {
+    use reify_expr::apply_lambda;
+
+    let source = r#"
+structure S {
+    let factor: Real = 3.0
+    let f = |x| x * factor
+}
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_integration"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let template = &compiled.templates[0];
+
+    let factor_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "factor")
+        .expect("should have 'factor'");
+    let f_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "f")
+        .expect("should have 'f'");
+
+    let mut values = ValueMap::new();
+    let factor_expr = factor_cell.default_expr.as_ref().expect("factor should have expr");
+    let factor_val = eval_expr(factor_expr, &EvalContext::simple(&values));
+    values.insert(factor_cell.id.clone(), factor_val);
+
+    let f_expr = f_cell.default_expr.as_ref().expect("f should have expr");
+    let f_val = eval_expr(f_expr, &EvalContext::simple(&values));
+
+    match &f_val {
+        Value::Lambda { params, .. } => {
+            assert_eq!(params[0].0, "x");
+        }
+        other => panic!("expected Value::Lambda, got {:?}", other),
+    }
+
+    let result = apply_lambda(&f_val, &[Value::Real(5.0)]);
+    match result {
+        Value::Real(v) => assert!(
+            (v - 15.0).abs() < 1e-12,
+            "expected 15.0, got {}",
+            v
+        ),
+        other => panic!("expected Real(15.0), got {:?}", other),
+    }
+}
+
+// --- Phase 5: New tests ---
+
+/// Non-Lambda apply returns Undef.
+#[test]
+fn apply_non_lambda_returns_undef() {
+    use reify_expr::apply_lambda;
+    assert!(apply_lambda(&Value::Int(5), &[]).is_undef());
+}
+
+/// Nested lambda: eval and apply `|x| |y| x + y`.
+#[test]
+fn nested_lambda_eval_and_apply() {
+    use reify_expr::apply_lambda;
+
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda1.S", "y");
+
+    // Inner: |y| x + y  (x is captured)
+    let inner_body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::value_ref(y_id.clone(), Type::Int),
+        Type::Int,
+    );
+    let inner_lambda = CompiledExpr::lambda(
+        vec![("y".to_string(), None)],
+        vec![y_id.clone()],
+        inner_body,
+        vec![x_id.clone()], // captures x
+        Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::Int),
+        },
+    );
+
+    // Outer: |x| <inner_lambda>
+    let outer_lambda = CompiledExpr::lambda(
+        vec![("x".to_string(), None)],
+        vec![x_id.clone()],
+        inner_lambda,
+        vec![], // no outer captures
+        Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Int),
+            }),
+        },
+    );
+
+    let values = ValueMap::new();
+    let outer_val = eval_expr(&outer_lambda, &EvalContext::simple(&values));
+
+    // Apply outer with x=3 → should yield Lambda with x captured as 3
+    let inner_val = apply_lambda(&outer_val, &[Value::Int(3)]);
+    match &inner_val {
+        Value::Lambda { captures, .. } => {
+            assert_eq!(captures.get(&x_id), Some(&Value::Int(3)));
+        }
+        other => panic!("expected inner Lambda, got {:?}", other),
+    }
+
+    // Apply inner with y=4 → should return 7
+    let result = apply_lambda(&inner_val, &[Value::Int(4)]);
+    assert_eq!(result, Value::Int(7));
+}
