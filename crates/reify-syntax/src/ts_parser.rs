@@ -121,20 +121,80 @@ impl<'a> Lowering<'a> {
     }
 
     fn lower_import(&self, node: tree_sitter::Node) -> Option<ImportDecl> {
-        let mut cursor = node.walk();
-        let mut path = None;
+        let is_pub = self.has_pub_keyword(node);
 
-        for child in node.children(&mut cursor) {
-            if child.kind() == "string_literal" {
-                let text = self.node_text(child);
-                // Strip quotes
-                path = Some(text[1..text.len() - 1].to_string());
+        // Extract the dot-separated path segments from import_path node
+        let path_node = node.child_by_field_name("path")?;
+        let mut segments = Vec::new();
+        let mut cursor = path_node.walk();
+        for child in path_node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                segments.push(self.node_text(child).to_string());
             }
         }
 
+        // Determine the ImportKind based on optional suffix nodes
+        let items_node = node.child_by_field_name("items");
+        let alias_node = node.child_by_field_name("alias");
+
+        let (path, kind) = if let Some(items) = items_node {
+            // Destructured: `import a.b.{C, D}`
+            let path = segments.join(".");
+            let mut names = Vec::new();
+            let mut items_cursor = items.walk();
+            for child in items.children(&mut items_cursor) {
+                if child.kind() == "identifier" {
+                    names.push(self.node_text(child).to_string());
+                }
+            }
+            (path, ImportKind::Destructured(names))
+        } else if let Some(alias) = alias_node {
+            let alias_name = self.node_text(alias).to_string();
+            // Check if the last segment looks like an entity (starts with uppercase)
+            if segments.len() >= 2
+                && segments.last().is_some_and(|s| {
+                    s.starts_with(|c: char| c.is_uppercase())
+                })
+            {
+                // EntityAliased: `import a.b.Entity as Alias`
+                let entity = segments.pop().unwrap();
+                let path = segments.join(".");
+                (
+                    path,
+                    ImportKind::EntityAliased {
+                        entity,
+                        alias: alias_name,
+                    },
+                )
+            } else {
+                // Aliased: `import a.b as x`
+                let path = segments.join(".");
+                (path, ImportKind::Aliased { alias: alias_name })
+            }
+        } else {
+            // No items, no alias — check if last segment is an entity (uppercase)
+            if segments.len() >= 2
+                && segments.last().is_some_and(|s| {
+                    s.starts_with(|c: char| c.is_uppercase())
+                })
+            {
+                // Entity: `import a.b.Entity`
+                let entity = segments.pop().unwrap();
+                let path = segments.join(".");
+                (path, ImportKind::Entity(entity))
+            } else {
+                // Module: `import a.b`
+                let path = segments.join(".");
+                (path, ImportKind::Module)
+            }
+        };
+
         Some(ImportDecl {
-            path: path?,
+            path,
+            kind,
+            is_pub,
             span: self.span(node),
+            content_hash: self.content_hash(node),
         })
     }
 

@@ -120,11 +120,32 @@ pub struct MaximizeDecl {
     pub content_hash: ContentHash,
 }
 
-/// `import "fasteners/bolt"`
+/// The kind of import (determines how names are brought into scope).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportKind {
+    /// `import std.math` — import entire module
+    Module,
+    /// `import std.math.sqrt` — import a single entity
+    Entity(String),
+    /// `import std.mech.{Bolt, Nut}` — import multiple entities
+    Destructured(Vec<String>),
+    /// `import std.mech as m` — import module with alias
+    Aliased { alias: String },
+    /// `import std.mech.Bolt as StdBolt` — import entity with alias
+    EntityAliased { entity: String, alias: String },
+}
+
+/// `import std.mechanical.fasteners`
 #[derive(Debug, Clone)]
 pub struct ImportDecl {
+    /// Dot-separated module path (e.g., "std.math")
     pub path: String,
+    /// What form of import this is
+    pub kind: ImportKind,
+    /// Whether this is a re-export (`pub import ...`)
+    pub is_pub: bool,
     pub span: SourceSpan,
+    pub content_hash: ContentHash,
 }
 
 /// `enum Direction { In, Out, Bidi }`

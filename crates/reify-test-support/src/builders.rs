@@ -387,6 +387,23 @@ impl CompiledModuleBuilder {
     pub fn import(mut self, path: impl Into<String>) -> Self {
         self.imports.push(CompiledImport {
             path: path.into(),
+            kind: reify_syntax::ImportKind::Module,
+            is_pub: false,
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn import_with(
+        mut self,
+        path: impl Into<String>,
+        kind: reify_syntax::ImportKind,
+        is_pub: bool,
+    ) -> Self {
+        self.imports.push(CompiledImport {
+            path: path.into(),
+            kind,
+            is_pub,
             span: SourceSpan::new(0, 0),
         });
         self

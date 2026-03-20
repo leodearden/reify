@@ -543,7 +543,7 @@ fn engine_eval_with_import() {
 fn e2e_all_three_features_through_engine() {
     use reify_types::{ModulePath, ValueCellId};
 
-    let source = r#"import "std/math"
+    let source = r#"import std.math
 
 structure Child {
     param size: Scalar = 10mm
@@ -564,7 +564,7 @@ structure Parent {
 
     // (a) Module has 1 import
     assert_eq!(compiled.imports.len(), 1);
-    assert_eq!(compiled.imports[0].path, "std/math");
+    assert_eq!(compiled.imports[0].path, "std.math");
 
     // Evaluate
     let checker = reify_constraints::SimpleConstraintChecker;

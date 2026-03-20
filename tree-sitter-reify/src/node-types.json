@@ -746,13 +746,64 @@
   {
     "type": "import_declaration",
     "named": true,
+    "fields": {
+      "alias": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "items": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "import_items",
+            "named": true
+          }
+        ]
+      },
+      "path": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "import_path",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "import_items",
+    "named": true,
     "fields": {},
     "children": {
-      "multiple": false,
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "identifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "import_path",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
       "required": true,
       "types": [
         {
-          "type": "string_literal",
+          "type": "identifier",
           "named": true
         }
       ]
@@ -2465,6 +2516,10 @@
   },
   {
     "type": "_",
+    "named": false
+  },
+  {
+    "type": "as",
     "named": false
   },
   {

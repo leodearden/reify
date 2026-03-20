@@ -495,7 +495,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
 /// Import declarations should be compiled into CompiledModule.imports, not silently dropped.
 #[test]
 fn import_compiles_into_module_imports() {
-    let source = r#"import "std/math"
+    let source = r#"import std.math
 
 structure S {
     param w: Scalar = 80mm
@@ -510,14 +510,14 @@ structure S {
         "expected 1 import, got {}",
         compiled.imports.len()
     );
-    assert_eq!(compiled.imports[0].path, "std/math");
+    assert_eq!(compiled.imports[0].path, "std.math");
 }
 
 /// Import diagnostic: should produce exactly one warning mentioning the import path.
 /// Compilation should still succeed (structures after import compile correctly).
 #[test]
 fn import_produces_warning_diagnostic() {
-    let source = r#"import "fasteners/bolt"
+    let source = r#"import fasteners.bolt
 
 structure S {
     param w: Scalar = 80mm
@@ -544,7 +544,7 @@ structure S {
         "import diagnostic should be Warning, not Error"
     );
     assert!(
-        diag.message.contains("import") && diag.message.contains("fasteners/bolt"),
+        diag.message.contains("import") && diag.message.contains("fasteners.bolt"),
         "diagnostic should mention import and path, got: {}",
         diag.message
     );
@@ -693,7 +693,7 @@ fn e2e_stdlib_function_in_let_binding() {
 /// Comprehensive: import + sub-structure + stdlib function in one module.
 #[test]
 fn comprehensive_all_three_features() {
-    let source = r#"import "std/math"
+    let source = r#"import std.math
 
 structure Bracket {
     param w: Scalar = 80mm
@@ -709,7 +709,7 @@ structure Bracket {
 
     // Imports: should have 1 entry
     assert_eq!(compiled.imports.len(), 1);
-    assert_eq!(compiled.imports[0].path, "std/math");
+    assert_eq!(compiled.imports[0].path, "std.math");
 
     // Only the import warning diagnostic (no errors)
     let errors: Vec<_> = compiled
