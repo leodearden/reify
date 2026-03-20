@@ -3,13 +3,10 @@
 //! Tests for evaluating collection sub-components (`sub bolts : List<Bolt>`),
 //! count-based elaboration, and count re-elaboration.
 
-use reify_eval::{Engine, EvaluationGraph};
-use reify_test_support::builders::{literal, value_ref_typed};
-use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use reify_eval::graph::EvaluationGraph;
+use reify_test_support::builders::value_ref_typed;
+use reify_test_support::TopologyTemplateBuilder;
 use reify_types::*;
-
-use reify_compiler::{ValueCellKind, Visibility};
 
 // ─── step-7: collection sub elaboration in from_templates ───
 

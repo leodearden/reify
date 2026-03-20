@@ -139,22 +139,77 @@ impl EvaluationGraph {
                     None => continue, // skip unknown structures silently
                 };
 
-                let scoped_entity = format!("{}.{}", template.name, sub.name);
+                if sub.is_collection {
+                    // Collection sub: determine count from the count cell's default_expr literal
+                    let count = sub.count_cell.as_ref().and_then(|count_id| {
+                        // Look up the count cell in this template's value_cells
+                        template.value_cells.iter()
+                            .find(|vc| vc.id == *count_id)
+                            .and_then(|vc| vc.default_expr.as_ref())
+                            .and_then(|expr| {
+                                // If the count expr is a literal Int, use it directly
+                                if let reify_types::CompiledExprKind::Literal(Value::Int(n)) = &expr.kind {
+                                    Some(*n)
+                                } else {
+                                    // For ValueRef expressions, look up the referenced cell's default
+                                    if let reify_types::CompiledExprKind::ValueRef(ref_id) = &expr.kind {
+                                        template.value_cells.iter()
+                                            .find(|vc| vc.id == *ref_id)
+                                            .and_then(|vc| vc.default_expr.as_ref())
+                                            .and_then(|e| {
+                                                if let reify_types::CompiledExprKind::Literal(Value::Int(n)) = &e.kind {
+                                                    Some(*n)
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                    } else {
+                                        None
+                                    }
+                                }
+                            })
+                    });
 
-                for child_cell in &child_template.value_cells {
-                    let scoped_id = ValueCellId::new(&scoped_entity, &child_cell.id.member);
-                    let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
-                    let expr_hash = child_cell.default_expr.as_ref()
-                        .map(|e| e.content_hash)
-                        .unwrap_or(ContentHash(0));
-                    let node = ValueCellNode {
-                        id: scoped_id.clone(),
-                        kind: child_cell.kind,
-                        cell_type: child_cell.cell_type.clone(),
-                        default_expr: child_cell.default_expr.clone(),
-                        content_hash: id_hash.combine(expr_hash),
-                    };
-                    graph.value_cells.insert(scoped_id, node);
+                    if let Some(n) = count {
+                        for i in 0..n {
+                            let scoped_entity = format!("{}.{}[{}]", template.name, sub.name, i);
+                            for child_cell in &child_template.value_cells {
+                                let scoped_id = ValueCellId::new(&scoped_entity, &child_cell.id.member);
+                                let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
+                                let expr_hash = child_cell.default_expr.as_ref()
+                                    .map(|e| e.content_hash)
+                                    .unwrap_or(ContentHash(0));
+                                let node = ValueCellNode {
+                                    id: scoped_id.clone(),
+                                    kind: child_cell.kind,
+                                    cell_type: child_cell.cell_type.clone(),
+                                    default_expr: child_cell.default_expr.clone(),
+                                    content_hash: id_hash.combine(expr_hash),
+                                };
+                                graph.value_cells.insert(scoped_id, node);
+                            }
+                        }
+                    }
+                    // If count is None (Undef), no instances are created
+                } else {
+                    // Non-collection sub: single scoped entity
+                    let scoped_entity = format!("{}.{}", template.name, sub.name);
+
+                    for child_cell in &child_template.value_cells {
+                        let scoped_id = ValueCellId::new(&scoped_entity, &child_cell.id.member);
+                        let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
+                        let expr_hash = child_cell.default_expr.as_ref()
+                            .map(|e| e.content_hash)
+                            .unwrap_or(ContentHash(0));
+                        let node = ValueCellNode {
+                            id: scoped_id.clone(),
+                            kind: child_cell.kind,
+                            cell_type: child_cell.cell_type.clone(),
+                            default_expr: child_cell.default_expr.clone(),
+                            content_hash: id_hash.combine(expr_hash),
+                        };
+                        graph.value_cells.insert(scoped_id, node);
+                    }
                 }
             }
 

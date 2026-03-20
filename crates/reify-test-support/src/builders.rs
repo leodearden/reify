@@ -288,6 +288,35 @@ impl TopologyTemplateBuilder {
         self
     }
 
+    /// Add a collection sub-component (`sub name : List<T>`) with a count cell.
+    pub fn collection_sub_component(
+        mut self,
+        name: impl Into<String>,
+        structure_name: impl Into<String>,
+        count_cell: ValueCellId,
+    ) -> Self {
+        let name = name.into();
+        let structure_name = structure_name.into();
+        self.sub_components.push(SubComponentDecl {
+            content_hash: ContentHash::of_str(&format!("sub {} : List<{}>", name, structure_name)),
+            name,
+            structure_name,
+            visibility: reify_compiler::Visibility::Public,
+            args: Vec::new(),
+            type_args: Vec::new(),
+            is_collection: true,
+            count_cell: Some(count_cell),
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    /// Add a ValueCellId to the structure_controlling set.
+    pub fn structure_controlling_cell(mut self, id: ValueCellId) -> Self {
+        self.structure_controlling.insert(id);
+        self
+    }
+
     pub fn guarded_group(
         mut self,
         guard_expr: CompiledExpr,
