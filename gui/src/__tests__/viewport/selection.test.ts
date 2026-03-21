@@ -164,8 +164,16 @@ import {
   BufferGeometry,
 } from 'three';
 
+// rAF mock for throttle tests
+let rafCallbacks: Array<FrameRequestCallback> = [];
+let rafIdCounter = 1;
+const originalRAF = globalThis.requestAnimationFrame;
+const originalCAF = globalThis.cancelAnimationFrame;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  rafCallbacks = [];
+  rafIdCounter = 1;
 });
 
 function createMockDomElement() {
@@ -732,6 +740,116 @@ describe('createSelection', () => {
 
       // Still only one call total
       expect(spy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('rAF-throttled pointermove', () => {
+    function setupWithRaf(meshMap?: Map<string, any>) {
+      // Install mock rAF/cAF before creating selection
+      globalThis.requestAnimationFrame = vi.fn((cb: FrameRequestCallback) => {
+        rafCallbacks.push(cb);
+        return rafIdCounter++;
+      }) as unknown as typeof requestAnimationFrame;
+      globalThis.cancelAnimationFrame = vi.fn((_id: number) => {}) as unknown as typeof cancelAnimationFrame;
+
+      const result = setup(meshMap);
+      return result;
+    }
+
+    afterEach(() => {
+      // Restore original rAF/cAF
+      globalThis.requestAnimationFrame = originalRAF;
+      globalThis.cancelAnimationFrame = originalCAF;
+    });
+
+    it('pointermove does not raycast synchronously — stores pending event and schedules rAF', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement } = setupWithRaf(meshMap);
+
+      const ev = new MouseEvent('pointermove', { clientX: 400, clientY: 300 });
+      domElement.dispatchEvent(ev);
+
+      // Raycaster should NOT have been called synchronously
+      expect(mockRaycasterSetFromCamera).not.toHaveBeenCalled();
+      // requestAnimationFrame should have been called
+      expect(globalThis.requestAnimationFrame).toHaveBeenCalled();
+    });
+
+    it('rAF callback performs raycast with latest pending event', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onHover } = setupWithRaf(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      const ev = new MouseEvent('pointermove', { clientX: 400, clientY: 300 });
+      domElement.dispatchEvent(ev);
+
+      // Invoke the captured rAF callback
+      expect(rafCallbacks.length).toBe(1);
+      rafCallbacks[0](performance.now());
+
+      // Now raycast should have fired
+      expect(mockRaycasterSetFromCamera).toHaveBeenCalledTimes(1);
+      expect(onHover).toHaveBeenCalledWith('A');
+    });
+
+    it('multiple rapid pointermoves only schedule one rAF and raycast uses the last event', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement } = setupWithRaf(meshMap);
+
+      // Dispatch 3 pointermove events with different clientX
+      domElement.dispatchEvent(new MouseEvent('pointermove', { clientX: 100, clientY: 300 }));
+      domElement.dispatchEvent(new MouseEvent('pointermove', { clientX: 200, clientY: 300 }));
+      domElement.dispatchEvent(new MouseEvent('pointermove', { clientX: 600, clientY: 300 }));
+
+      // Only one rAF should have been scheduled
+      expect(globalThis.requestAnimationFrame).toHaveBeenCalledTimes(1);
+
+      // Invoke the callback
+      rafCallbacks[0](performance.now());
+
+      // Should have raycasted once, using NDC from last event (clientX=600 on 800-wide → NDC x = 0.5)
+      expect(mockRaycasterSetFromCamera).toHaveBeenCalledTimes(1);
+      const ndcArg = mockRaycasterSetFromCamera.mock.calls[0][0];
+      expect(ndcArg.x).toBeCloseTo(0.5, 1);
+    });
+
+    it('pointerdown still raycasts synchronously (not throttled)', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setupWithRaf(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      const ev = new MouseEvent('pointerdown', { clientX: 400, clientY: 300 });
+      domElement.dispatchEvent(ev);
+
+      // Pointerdown should raycast immediately without rAF
+      expect(mockRaycasterSetFromCamera).toHaveBeenCalledTimes(1);
+      expect(onSelect).toHaveBeenCalledWith('A');
+    });
+
+    it('dispose cancels outstanding rAF', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, selection } = setupWithRaf(meshMap);
+
+      // Dispatch a pointermove to schedule rAF
+      domElement.dispatchEvent(new MouseEvent('pointermove', { clientX: 400, clientY: 300 }));
+      expect(globalThis.requestAnimationFrame).toHaveBeenCalledTimes(1);
+      const rafId = (globalThis.requestAnimationFrame as any).mock.results[0].value;
+
+      selection.dispose();
+
+      // cancelAnimationFrame should have been called with the rAF id
+      expect(globalThis.cancelAnimationFrame).toHaveBeenCalledWith(rafId);
     });
   });
 });
