@@ -95,6 +95,17 @@ impl InProcessLsp {
                 serde_json::to_value(result)
                     .map_err(|e| format!("serialize error: {e}"))
             }
+            "textDocument/hover" => {
+                let p: HoverParams =
+                    serde_json::from_value(params)
+                        .map_err(|e| format!("hover params error: {e}"))?;
+                let result = server
+                    .hover(p)
+                    .await
+                    .map_err(|e| format!("hover error: {e}"))?;
+                serde_json::to_value(result)
+                    .map_err(|e| format!("serialize error: {e}"))
+            }
             "shutdown" => {
                 server
                     .shutdown()
