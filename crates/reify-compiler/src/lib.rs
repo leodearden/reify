@@ -1550,12 +1550,16 @@ pub fn compile(
         // Trait content hashes
         let trait_hashes = trait_defs.iter().map(|t| t.content_hash);
 
+        // Field content hashes
+        let field_hashes = fields.iter().map(|f| f.content_hash);
+
         let all_hashes = std::iter::once(path_hash)
             .chain(template_hashes)
             .chain(import_hashes)
             .chain(enum_hashes)
             .chain(function_hashes)
-            .chain(trait_hashes);
+            .chain(trait_hashes)
+            .chain(field_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -3717,9 +3721,21 @@ fn compile_function(
 }
 
 /// Resolve a type name in field context. Unlike resolve_type_name, unresolved
-/// names become StructureRef (geometric domain types like Point3, Vector3).
-fn resolve_field_type_name(name: &str) -> Type {
-    resolve_type_name(name).unwrap_or_else(|| Type::StructureRef(name.to_string()))
+/// names become StructureRef (geometric domain types like Point3, Vector3)
+/// but a diagnostic warning is emitted so the user knows the type was not
+/// resolved from the built-in set.
+fn resolve_field_type_name(
+    name: &str,
+    span: reify_types::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Type {
+    resolve_type_name(name).unwrap_or_else(|| {
+        diagnostics.push(
+            Diagnostic::warning(format!("unresolved field type '{}', treating as structure reference", name))
+                .with_label(DiagnosticLabel::new(span, "unknown type name")),
+        );
+        Type::StructureRef(name.to_string())
+    })
 }
 
 /// Compile a field declaration into a CompiledField.
@@ -3729,8 +3745,8 @@ fn compile_field(
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledField> {
-    let domain_type = resolve_field_type_name(&field_def.domain_type.name);
-    let codomain_type = resolve_field_type_name(&field_def.codomain_type.name);
+    let domain_type = resolve_field_type_name(&field_def.domain_type.name, field_def.domain_type.span, diagnostics);
+    let codomain_type = resolve_field_type_name(&field_def.codomain_type.name, field_def.codomain_type.span, diagnostics);
 
     // Create a scope for compiling field source expressions
     let scope = CompilationScope::new(&field_def.name);

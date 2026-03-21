@@ -9,6 +9,11 @@ fn compile_module(source: &str) -> reify_compiler::CompiledModule {
     reify_compiler::compile(&parsed)
 }
 
+/// Helper: return only error-severity diagnostics (ignoring warnings).
+fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
+    module.diagnostics.iter().filter(|d| d.severity == reify_types::Severity::Error).collect()
+}
+
 // ── Step 13: compile analytical field ──────────────────────────────────
 
 #[test]
@@ -16,7 +21,7 @@ fn compile_field_analytical() {
     let module = compile_module(
         "field def temp : Point3 -> Scalar { source = analytical { |p| p } }",
     );
-    assert!(module.diagnostics.is_empty(), "diagnostics: {:?}", module.diagnostics);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     assert_eq!(module.fields.len(), 1, "expected 1 compiled field");
 
     let field = &module.fields[0];
@@ -50,7 +55,7 @@ fn compile_field_sampled() {
     let module = compile_module(
         "field def pressure : Point3 -> Scalar { source = sampled { resolution = 100 interpolation = linear } }",
     );
-    assert!(module.diagnostics.is_empty(), "diagnostics: {:?}", module.diagnostics);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     assert_eq!(module.fields.len(), 1, "expected 1 compiled field");
 
     let field = &module.fields[0];
@@ -81,8 +86,8 @@ field def f2 : Scalar -> Scalar { source = analytical { |x| x } }
 field def composed : Point3 -> Scalar { source = composed { |p| f2(f1(p)) } }
 "#,
     );
-    // Should compile without type errors
-    assert!(module.diagnostics.is_empty(), "diagnostics: {:?}", module.diagnostics);
+    // Should compile without type errors (warnings for StructureRef types are OK)
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     assert_eq!(module.fields.len(), 3, "expected 3 compiled fields");
 
     let composed = &module.fields[2];
