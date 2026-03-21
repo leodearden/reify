@@ -102,7 +102,7 @@ const App: Component = () => {
         const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
         if (file) {
           bridgeUpdateSource(file.path, file.content).catch((err) =>
-            console.error('Re-evaluate failed:', err),
+            toast.showToast(`Re-evaluation failed: ${err instanceof Error ? err.message : String(err)}`, 'error'),
           );
         }
       }
