@@ -154,4 +154,26 @@ describe('ExportDialog', () => {
     expect(select).toBeTruthy();
     expect(select.tagName).toBe('SELECT');
   });
+
+  // ── Escape key closes dialog (E-2) ────────────────────────────────
+
+  it('pressing Escape calls onClose when not exporting', () => {
+    const onClose = vi.fn();
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={onClose} />
+    ));
+    const overlay = screen.getByTestId('export-dialog');
+    fireEvent.keyDown(overlay, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('pressing Escape does NOT call onClose when exporting', () => {
+    const onClose = vi.fn();
+    render(() => (
+      <ExportDialog open={true} exporting={true} onExport={vi.fn()} onClose={onClose} />
+    ));
+    const overlay = screen.getByTestId('export-dialog');
+    fireEvent.keyDown(overlay, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });
