@@ -4,7 +4,7 @@
 //! and applying field operations (sample, gradient, etc.).
 
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ModulePath, Severity, Value, ValueCellId};
+use reify_types::{ModulePath, Severity, Value, ValueCellId, FIELD_ENTITY_PREFIX};
 
 /// Helper: parse, compile, and eval source, return eval result.
 fn eval_source(source: &str) -> reify_eval::EvalResult {
@@ -60,4 +60,48 @@ fn eval_analytical_field_at_point() {
         }
         other => panic!("expected Value::Field, got: {:?}", other),
     }
+}
+
+// ── Step 23: eval sample(field, point) ─────────────────────────────
+
+#[test]
+fn eval_sample_field_point() {
+    // Define a field and a structure that uses sample() to query it at a point.
+    // The analytical field is `|p| p` (identity), so sample(field, 42) should return 42.
+    let result = eval_source(
+        r#"
+field def identity_field : Scalar -> Scalar { source = analytical { |p| p } }
+
+structure S {
+    let val = sample(identity_field, 42)
+}
+"#,
+    );
+
+    let val_id = ValueCellId::new("S", "val");
+    let val = result
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'val' not found in eval result"));
+
+    // sample(identity_field, 42) should evaluate the lambda |p| p with p=42, returning 42
+    match val {
+        Value::Int(n) => assert_eq!(*n, 42, "expected 42, got {}", n),
+        Value::Real(v) => assert!((v - 42.0).abs() < 1e-12, "expected 42.0, got {}", v),
+        other => panic!("expected Int(42) or Real(42.0), got: {:?}", other),
+    }
+}
+
+// ── Step 27: FIELD_ENTITY_PREFIX constant ──────────────────────────────
+
+#[test]
+fn field_entity_prefix_constant() {
+    // Verify the constant exists and has the expected value
+    assert_eq!(FIELD_ENTITY_PREFIX, "__field");
+
+    // Verify it can be used to construct a ValueCellId matching the field pattern
+    let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "temp");
+    assert_eq!(field_id.entity, "__field");
+    assert_eq!(field_id.member, "temp");
+    assert_eq!(format!("{}", field_id), "__field.temp");
 }
