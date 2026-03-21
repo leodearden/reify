@@ -1,197 +1,226 @@
 {
-  "task_id": "112",
-  "title": "Viewport rendering: normals fallback, double-sided materials, data validation, buffer updates",
+  "task_id": "105",
+  "title": "Surface errors to users: replace console.error with toast notifications + loading states",
   "files": [
-    "gui/src/viewport/meshManager.ts",
-    "gui/src/viewport/selection.ts",
-    "gui/src/viewport/scene.ts",
-    "gui/src/viewport/Viewport.tsx",
-    "gui/src/__tests__/viewport/meshManager.test.ts",
-    "gui/src/__tests__/viewport/selection.test.ts",
-    "gui/src/__tests__/viewport/scene.test.ts"
+    "gui/src/App.tsx",
+    "gui/src/App.module.css",
+    "gui/src/editor/Editor.tsx",
+    "gui/src/panels/ExportDialog.tsx",
+    "gui/src/bridge.ts",
+    "gui/src/hooks/useToast.ts",
+    "gui/src/__tests__/App.test.tsx",
+    "gui/src/__tests__/Editor.test.tsx",
+    "gui/src/__tests__/ExportDialog.test.tsx",
+    "gui/src/__tests__/useToast.test.ts"
   ],
   "modules": [
-    "gui/src/viewport",
-    "gui/src/__tests__/viewport"
+    "gui/src",
+    "gui/src/panels",
+    "gui/src/editor",
+    "gui/src/hooks",
+    "gui/src/__tests__"
   ],
-  "analysis": "This task fixes 8 viewport rendering issues across 3 source files (meshManager.ts, selection.ts, scene.ts) with coordination in Viewport.tsx. The codebase uses a factory-function pattern (createScene, createMeshManager, createSelection) with Three.js fully mocked via vi.mock in vitest tests (jsdom environment).\n\nCurrent bugs and fixes:\n1. V-04 (meshManager.ts:53-55): When data.normals is null, no computeVertexNormals() fallback — causes flat-black faces. Fix: call geometry.computeVertexNormals() when normals are null in both createMeshFromData and updateMeshGeometry.\n2. V-05 (meshManager.ts:57-59): MeshStandardMaterial lacks DoubleSide — invisible back-faces on thin CAD shells. Fix: add side: THREE.DoubleSide to material constructor.\n3. V-06 (meshManager.ts): No validation of mesh data before BufferGeometry creation. Fix: validate vertices.length % 3 === 0 and indices in bounds before creating/updating geometry.\n4. V-07 (meshManager.ts:66-105): updateMeshGeometry mutates BufferAttribute internals (array + count) unsafely — when array length changes, the WebGL buffer size is fixed, causing errors. Fix: create new BufferAttribute when array length differs.\n5. V-08 (selection.ts:139-153): Selection wireframe not synced after geometry updates. Fix: add refreshSelected() to SelectionContext and call it from Viewport.tsx after mesh sync.\n6. V-11 (scene.ts:34): Fixed camera clipping planes (0.1, 10000). Fix: add adjustClipping(sceneBounds) method to SceneContext that computes near/far from camera-to-scene distance.\n7. V-13 (scene.ts:44-49): Single directional light with no camera-following headlight. Fix: add a headlight as a child of the camera.\n8. V-15 (scene.ts:58-62): setPixelRatio not updated on display change/resize. Fix: call renderer.setPixelRatio(window.devicePixelRatio) in resize handler.\n\nThe existing test infrastructure provides extensive mock classes. The MockBufferGeometry needs computeVertexNormals added. The three mock in meshManager.test.ts needs DoubleSide and FrontSide constants. Scene tests need MockPerspectiveCamera.add method. The existing Viewport.tsx effect pattern (createEffect depending on props.meshes) provides the coordination point for calling refreshSelected and adjustClipping after mesh sync.",
-  "prerequisites": [],
+  "analysis": "The task requires replacing 8+ console.error calls with user-visible toast notifications, adding a loading/error state during app initialization, and integrating Tauri's native save dialog for export. Currently:\n\n1. **App.tsx** has 6 console.error sites: getInitialState failure (line 127), subscribeToEvents failure (line 140), file-change subscription failure (line 158), setParameter failure (line 170), re-evaluate failure (line 102), reload failure (line 207). No loading state during init.\n2. **Editor.tsx** has 4 console.error sites: save failure (line 82), updateSource failure (line 99), LSP didChange failure (line 109), LSP init failure (line 133). The Editor operates internally and doesn't have a toast mechanism.\n3. **ExportDialog.tsx** already handles errors with toasts via handleDoExport in App.tsx but uses a hardcoded path `export.${format}` instead of a native file picker.\n\n**Approach:**\n- Create a `useToast` hook (createToast factory following SolidJS conventions) that provides `showToast(message, type)` with auto-dismiss. This centralizes toast logic currently spread across App.tsx's manual signals.\n- Replace App.tsx console.error calls with toast notifications using `showToast`.\n- Add `initPhase` signal to App.tsx: 'loading' | 'ready' | 'error'. Show a loading spinner/skeleton during init, error state with retry on failure.\n- For Editor.tsx errors (save, LSP init): pass an `onError` callback prop from App.tsx so the Editor can surface errors as toasts without coupling to toast implementation. This follows the existing dependency-injection pattern (onSelect, onSetParameter, etc.).\n- For export: add a `pickSavePath` bridge function that invokes a backend command. Since the Tauri dialog plugin is NOT installed (no @tauri-apps/plugin-dialog in package.json or Cargo.toml), we add the bridge function with graceful fallback to hardcoded path when the backend command doesn't exist yet.\n- LSP didChange/fileSwitch errors stay as console.error since they're frequent recoverable internal operations that would flood the user with noise if toasted.\n\nExisting infrastructure to reuse: Toast component (gui/src/panels/Toast.tsx) is already fully built with data-type styling. App.module.css already has .toastContainer with fixed positioning. The Show component pattern from SolidJS is used throughout for conditional rendering.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Create useToast hook file skeleton at gui/src/hooks/useToast.ts (empty export to enable test-first development)",
+      "status": "done",
+      "commit": "068025e",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in meshManager.test.ts: when data.normals is null, createMeshFromData calls geometry.computeVertexNormals() (V-04). Add computeVertexNormals mock to MockBufferGeometry. Test: sync with null normals, assert computeVertexNormals was called. Also test: sync with provided normals, assert computeVertexNormals was NOT called.",
+      "description": "Write failing tests for useToast hook in gui/src/__tests__/useToast.test.ts: (1) showToast sets message and type signals, (2) dismissToast clears message to null, (3) auto-dismiss fires after 5000ms for success type, (4) auto-dismiss fires after 10000ms for error type, (5) calling showToast again resets the auto-dismiss timer, (6) dismissToast cancels pending auto-dismiss timer. Use createRoot from solid-js for reactive context, vi.useFakeTimers for timer assertions.",
       "status": "done",
-      "commit": "cd74b48"
+      "commit": "1ba7e1e"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement V-04 in meshManager.ts: In createMeshFromData, add else branch after the normals check — when data.normals is null, call geometry.computeVertexNormals(). In updateMeshGeometry, in the else-if branch where normals are removed (line 97-98), call geometry.computeVertexNormals() after deleteAttribute.",
+      "description": "Implement createToast() in gui/src/hooks/useToast.ts: createSignal<string|null>(null) for message, createSignal<'success'|'error'|'info'>('info') for type. showToast(msg, type) sets both signals and starts setTimeout (5000ms for success/info, 10000ms for error). dismissToast() clears message and cancels timer. Returns { toastMessage, toastType, showToast, dismissToast }.",
       "status": "done",
-      "commit": "7d8fbc6"
+      "commit": "2a4ecd3"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test in meshManager.test.ts: material is created with side: THREE.DoubleSide (V-05). Add DoubleSide constant to mock. Assert that the material's side property equals DoubleSide (2).",
+      "description": "Write failing tests for App.tsx loading state in gui/src/__tests__/App.test.tsx (new describe 'App initialization loading state'): (1) shows data-testid='app-loading' while getInitialState is pending (use deferred promise), (2) shows data-testid='app-error' with retry button when getInitialState rejects, (3) clicking retry button calls getInitialState again, (4) after successful getInitialState resolve, data-testid='app-layout' is shown and loading/error elements are gone.",
       "status": "done",
-      "commit": "0e7398b"
+      "commit": "e3d9b89"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement V-05 in meshManager.ts: Import DoubleSide from 'three'. Add side: DoubleSide to the MeshStandardMaterial constructor options.",
+      "description": "Add loading/error state to App.tsx: createSignal<'loading'|'ready'|'error'>('loading') for initPhase. Wrap onMount init logic in try/catch that sets 'ready' on success, 'error' on failure. Add conditional rendering with Show: when loading show spinner div (data-testid='app-loading'), when error show error div with Retry button (data-testid='app-error'), when ready show normal layout. Add retry handler. Add .loading and .errorState CSS classes to App.module.css.",
       "status": "done",
-      "commit": "e28a18b"
+      "commit": "76c2eee"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests in meshManager.test.ts for mesh data validation (V-06). Tests: (1) sync with vertices.length not divisible by 3 does not add mesh to scene, (2) sync with an index >= vertex count does not add mesh, (3) valid data still works normally. Also test update path: update with invalid data skips the update.",
+      "description": "Write failing tests for App.tsx toast on setParameter failure in gui/src/__tests__/App.test.tsx: modify/replace existing 'handleSetParameter error handling' test. When bridgeSetParameter rejects, a toast element (data-testid='toast' with data-type='error') appears in the DOM containing the error message. Verify console.error is NOT called (behavior replaced).",
       "status": "done",
-      "commit": "04f8b53"
+      "commit": "34fef7e"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement V-06 in meshManager.ts: Add validateMeshData(data: MeshData): boolean that checks vertices.length % 3 === 0 and max(indices) < vertices.length / 3. Guard createMeshFromData and updateMeshGeometry calls in sync() with this validation, logging a console.warn for invalid data.",
+      "description": "Wire createToast() hook into App.tsx, replacing manual toastMessage/toastType/setToastMessage/setToastType signals. Replace console.error in handleSetParameter (line 170) with showToast(`Parameter update failed: ${err.message}`, 'error'). Update Toast rendering in JSX to use toast.toastMessage()/toast.toastType()/toast.dismissToast().",
       "status": "done",
-      "commit": "5a4df9c"
+      "commit": "689b9d9"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests in meshManager.test.ts for safe buffer updates when array length changes (V-07). Tests: (1) update with same-length arrays reuses existing BufferAttribute (identity check — existing test), (2) update with different-length vertex array creates a new BufferAttribute (not same reference), (3) update with different-length index array creates new index BufferAttribute, (4) new BufferAttribute has correct array and count.",
+      "description": "Write failing test for App.tsx toast on re-evaluate failure in gui/src/__tests__/App.test.tsx (new describe 'App re-evaluate error toast'): mock bridgeUpdateSource to reject, simulate keyboard shortcut trigger (or directly call the handler via store interaction), verify error toast appears.",
       "status": "done",
-      "commit": "dafa7ec"
+      "commit": "11a7271"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement V-07 in meshManager.ts: In updateMeshGeometry, before reusing posAttr, check if posAttr.array.length !== data.vertices.length — if so, create new BufferAttribute via setAttribute instead of mutating. Same logic for index and normals.",
+      "description": "Replace console.error in onReEvaluate callback (App.tsx line 102) with showToast('Re-evaluation failed: ...', 'error').",
       "status": "done",
-      "commit": "8567bea"
+      "commit": "0cf5777"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test in scene.test.ts: resize handler calls renderer.setPixelRatio with window.devicePixelRatio (V-15). Call resize(), assert mockSetPixelRatio was called. Verify it uses the current devicePixelRatio value.",
+      "description": "Write failing test for App.tsx toast on reload failure in gui/src/__tests__/App.test.tsx (new describe 'App reload error toast'): set changedFile, mock bridgeOpenFile to reject, trigger handleReload via ReloadPrompt interaction, verify error toast appears.",
       "status": "done",
-      "commit": "d9c1848"
+      "commit": "87a58af"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement V-15 in scene.ts: In the resize() function, add renderer.setPixelRatio(window.devicePixelRatio ?? 1) before renderer.setSize().",
+      "description": "Replace console.error in handleReload (App.tsx line 207) with showToast('Reload failed: ...', 'error').",
       "status": "done",
-      "commit": "ed797d5"
+      "commit": "3b12d60"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test in scene.test.ts: scene has a camera-following headlight (V-13). Add camera.add mock to MockPerspectiveCamera. Assert that a DirectionalLight is added as a child of the camera (via camera.add), and that the camera itself is added to the scene (scene.add(camera)).",
+      "description": "Write failing test for App.tsx toast on event subscription failure in gui/src/__tests__/App.test.tsx (new describe 'App event subscription error toast'): mock engineStore.subscribeToEvents to reject, verify warning toast appears after mount ('Event subscription failed \u2014 some updates may not appear').",
       "status": "done",
-      "commit": "4c37494"
+      "commit": "b0f4d34"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement V-13 in scene.ts: Create a second DirectionalLight (headlight) at position (0, 0, 1) relative to camera with intensity ~0.6. Call camera.add(headlight) to make it follow the camera. Call scene.add(camera) so camera children are rendered in the scene graph.",
+      "description": "Replace console.error for subscribeToEvents failure (App.tsx line 140) and onFileChanged failure (App.tsx line 158) with showToast warning calls. These are non-fatal: show info/error toast but continue running.",
       "status": "done",
-      "commit": "b2bec91"
+      "commit": "f07f3f4"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test in scene.test.ts: SceneContext exposes adjustClipping method (V-11). Test that adjustClipping(bounds) updates camera.near and camera.far based on scene size and that updateProjectionMatrix is called.",
+      "description": "Write failing tests for Editor.tsx error surfacing via onError prop in gui/src/__tests__/Editor.test.tsx: (1) new describe 'Editor save error callback' \u2014 when saveFile rejects, onError callback is called with message string, (2) new describe 'Editor LSP init error callback' \u2014 when lspClient.initialize rejects, onError is called with LSP failure message.",
       "status": "done",
-      "commit": "8f5d6f3"
+      "commit": "9e99fce"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement V-11 in scene.ts: Add adjustClipping(sceneBounds: Box3) to SceneContext interface. Implementation computes camera-to-center distance, sets near = max(distance * 0.001, 0.01) and far = max(distance * 10, 100), calls camera.updateProjectionMatrix(). Export from createScene return. Update Viewport.tsx to call adjustClipping after mesh sync.",
+      "description": "Add optional onError?: (message: string) => void to EditorProps in Editor.tsx. Replace console.error in save handler (line 82) with props.onError?.('Failed to save file: ...') call. Replace console.error in LSP init chain (line 133) with props.onError?.('LSP initialization failed \u2014 completions and diagnostics may be unavailable'). Wire onError from App.tsx to Editor component, passing (msg) => showToast(msg, 'error').",
       "status": "done",
-      "commit": "7bd0fac"
+      "commit": "7261063"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test in selection.test.ts: SelectionContext exposes refreshSelected() that rebuilds wireframe for current selection (V-08). Tests: (1) refreshSelected with active selection removes old wireframe and creates new one, (2) refreshSelected with no selection is a no-op, (3) refreshSelected reflects updated geometry.",
+      "description": "Write failing tests for export with save dialog in gui/src/__tests__/App.test.tsx or gui/src/__tests__/ExportDialog.test.tsx: (1) handleDoExport calls bridge.pickSavePath before bridgeExportGeometry, (2) if pickSavePath returns null (user cancelled), bridgeExportGeometry is NOT called, (3) if pickSavePath throws (not available), falls back to default path and proceeds with export.",
       "status": "done",
-      "commit": "77b1c18"
+      "commit": "9b5b6cc"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement V-08 in selection.ts: Track currentSelectedPath in a closure variable. Add refreshSelected() method that calls setSelected(currentSelectedPath) to rebuild wireframe from current geometry. Export in SelectionContext. Update Viewport.tsx to call selection.refreshSelected() after meshManager.sync() in the mesh sync effect.",
+      "description": "Add pickSavePath to bridge.ts: invoke<string|null>('pick_save_path', { format, defaultName }). Update handleDoExport in App.tsx to call pickSavePath first wrapped in try/catch; if result is null, abort (user cancelled); if call throws, fall back to hardcoded 'export.{format}' path. This way the feature degrades gracefully when the backend command doesn't exist yet.",
       "status": "done",
-      "commit": "3acf530"
+      "commit": "3feab26"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write integration test in gui/src/__tests__/App.test.tsx verifying end-to-end flow: App renders, getInitialState succeeds (ready state), then setParameter fails, verify toast is visible with correct error message. Ensures the createToast hook is properly wired through the full component tree.",
+      "status": "done",
+      "commit": "b647cb0"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Final cleanup pass: verify all console.error calls in App.tsx are replaced with toast calls, ensure Editor.tsx LSP didChange/fileSwitch errors remain as console.error (intentional), run full vitest suite to confirm no regressions. Clean up any unused imports.",
+      "status": "done",
+      "commit": "bbd5bd7"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Camera headlight is added as a child of the camera object via camera.add() rather than updating position each frame",
-      "rationale": "Three.js automatically transforms child objects in the parent's local space, so a light added to camera follows it without manual position updates in the render loop. This is the standard Three.js pattern for headlights and avoids polluting the animation loop."
+      "decision": "Create a reusable createToast() hook rather than adding toast logic inline in App.tsx",
+      "rationale": "App.tsx already has manual toastMessage/toastType signals (lines 61-62). Extracting to a hook adds auto-dismiss, centralizes logic, and makes it testable in isolation. The factory-function pattern (createToast) follows the existing SolidJS convention used by createEditorStore, createEngineStore, createSelectionStore."
     },
     {
-      "decision": "Dynamic clipping is exposed as an adjustClipping(sceneBounds: Box3) method called after mesh sync, not computed every frame",
-      "rationale": "Computing scene bounds every frame via Box3 traversal is expensive. Clipping only needs adjustment when mesh data changes (during sync), which is the only time bounds change. This keeps the render loop lightweight."
+      "decision": "Surface Editor.tsx errors via an onError callback prop rather than importing toast hook directly",
+      "rationale": "The Editor component is a leaf component that shouldn't know about the toast system. Dependency injection via callback prop is consistent with the codebase pattern (onSelect, onSetParameter, onGroupDoubleClick, etc.) and keeps the Editor testable without mocking toast infrastructure."
     },
     {
-      "decision": "Mesh data validation logs console.warn and skips invalid data rather than throwing",
-      "rationale": "The viewport should be resilient to bad data from the engine. Throwing would crash the entire render pipeline. A console.warn is sufficient for debugging while keeping the UI responsive. This follows the existing project preference for noisy errors on logic bugs (feedback_silent_defaults_pattern.md) while still being resilient."
+      "decision": "Keep LSP didChange/fileSwitch errors as console.error (not toasted)",
+      "rationale": "These are frequent, recoverable internal operations that fire on every keystroke (debounced). Toasting every LSP sync error would flood the user with noise. Only LSP init failure (which means broken completions/diagnostics for the session) warrants a user-visible warning."
     },
     {
-      "decision": "New BufferAttribute is created when array length changes; existing attribute is mutated only when length matches",
-      "rationale": "WebGL buffers have a fixed size allocated on the GPU. Mutating .array and .count on an existing BufferAttribute when the size differs causes WebGL errors because the underlying GPU buffer cannot be resized. When sizes match, reusing the attribute avoids GPU buffer reallocation overhead — this is the intended Three.js pattern."
+      "decision": "Add pickSavePath to bridge.ts with graceful fallback to hardcoded path",
+      "rationale": "The Rust backend doesn't have a pick_save_path command yet \u2014 the Tauri dialog plugin is not in Cargo.toml dependencies. By adding the bridge call with try/catch fallback, we prepare the frontend for the native dialog while maintaining current behavior until the backend implements the command."
     },
     {
-      "decision": "refreshSelected() method added to SelectionContext rather than coupling meshManager directly to selection",
-      "rationale": "Keeps modules decoupled. Viewport.tsx already coordinates between meshManager and selection via reactive effects. Adding a refresh method is the minimal change that preserves this clean architecture. refreshSelected internally just calls setSelected(currentSelectedPath)."
+      "decision": "App init loading state uses a simple 'loading' | 'ready' | 'error' signal with conditional rendering via Show",
+      "rationale": "SolidJS's Show component + signal is the idiomatic pattern. No need for a separate store \u2014 init state is local to App.tsx lifecycle. The three-state enum is sufficient: loading (pending), ready (success), error (failed with retry)."
     },
     {
-      "decision": "computeVertexNormals() is called in both createMeshFromData and updateMeshGeometry when normals are null",
-      "rationale": "Both code paths can receive null normals. The fallback must be applied consistently in creation and update paths to prevent flat-black faces in any scenario."
-    },
-    {
-      "decision": "scene.add(camera) is called to support camera children (headlight)",
-      "rationale": "Three.js requires parent objects to be in the scene graph for their children to be rendered. Without scene.add(camera), the headlight attached via camera.add() would not be visible. The camera itself renders fine without being in the scene, but its children do not."
+      "decision": "Auto-dismiss timers: 5s for success/info, 10s for errors",
+      "rationale": "Success messages are brief acknowledgements; errors need more reading time and may contain diagnostic information. The timer resets when showToast is called again to prevent stale messages from lingering."
     }
   ],
   "reuse": [
     {
-      "what": "Existing vi.mock('three') patterns and MockXxx classes in all viewport test files",
-      "where": "gui/src/__tests__/viewport/meshManager.test.ts, scene.test.ts, selection.test.ts",
-      "how": "Extend existing mock blocks with additional methods/properties: computeVertexNormals on MockBufferGeometry, DoubleSide/FrontSide constants, camera.add method on MockPerspectiveCamera. Follow the exact same mock class patterns."
+      "what": "Existing Toast component (gui/src/panels/Toast.tsx)",
+      "where": "Already renders toast UI with message, type, and dismiss button",
+      "how": "Keep as-is. The new createToast hook manages state; Toast component remains a pure presentational component. No changes needed to Toast.tsx itself."
     },
     {
-      "what": "makeMeshData() test helper in meshManager.test.ts",
-      "where": "gui/src/__tests__/viewport/meshManager.test.ts:100-112",
-      "how": "Reuse for all new meshManager tests to create MeshData objects with optional vertices, indices, normals parameters."
+      "what": "Existing toast CSS and container (App.module.css .toastContainer)",
+      "where": "Already has fixed positioning, z-index, and width constraints for toast overlay",
+      "how": "Reuse directly. Only add .loading and .errorState CSS classes for the new init states."
     },
     {
-      "what": "setup() function pattern in each test file",
-      "where": "All viewport test files",
-      "how": "Follow the existing setup() function pattern that creates mocks and returns an object with all test dependencies. Extend as needed."
+      "what": "Existing App.test.tsx mock patterns for bridge functions",
+      "where": "vi.mock('../bridge') with all bridge functions mocked, waitFor pattern for async assertions",
+      "how": "Follow the same mock setup pattern for new tests. Add pickSavePath to the mock list."
     },
     {
-      "what": "SceneContext interface and return pattern",
-      "where": "gui/src/viewport/scene.ts:13-18, 64",
-      "how": "Extend SceneContext interface with adjustClipping method. Add to the return object from createScene, following the same pattern as resize()."
+      "what": "Existing bridge.ts invoke pattern",
+      "where": "All bridge functions follow invoke<T>('command', params) pattern",
+      "how": "Add pickSavePath following the same pattern: invoke<string|null>('pick_save_path', { format, defaultName })."
     },
     {
-      "what": "SelectionContext interface",
-      "where": "gui/src/viewport/selection.ts:24-31",
-      "how": "Extend with refreshSelected() method following the same interface pattern. Add to return object from createSelection."
+      "what": "Dependency injection callback pattern for component props",
+      "where": "Used throughout: EditorProps, PropertyEditor (onSetParameter), ConstraintPanel (onConstraintSelect), Viewport (onSelect)",
+      "how": "Add onError?: (message: string) => void to EditorProps following this established pattern."
     },
     {
-      "what": "Viewport.tsx createEffect for mesh sync",
-      "where": "gui/src/viewport/Viewport.tsx:48-50",
-      "how": "Add refreshSelected() and adjustClipping() calls within the existing mesh sync effect, after meshManager.sync(). This is the natural coordination point between mesh updates and dependent systems."
+      "what": "SolidJS Show component for conditional rendering",
+      "where": "Used in ExportDialog, App.tsx toast rendering, ReloadPrompt",
+      "how": "Use Show with when={} for loading/error/ready state conditional rendering in App.tsx."
+    },
+    {
+      "what": "SolidJS createStore/createSignal factory pattern",
+      "where": "createEditorStore, createEngineStore, createSelectionStore all use factory functions returning {state, ...methods}",
+      "how": "createToast follows the same convention: factory function returning reactive accessors + mutation methods."
     }
   ],
-  "_session_id": "112-bacae8cf",
-  "_created_at": "2026-03-21T17:33:37.820402+00:00"
+  "_session_id": "105-3a68578e",
+  "_created_at": "2026-03-21T19:48:33.677613+00:00"
 }

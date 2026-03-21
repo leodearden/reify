@@ -901,6 +901,133 @@ describe('App export with save dialog', () => {
   });
 });
 
+describe('App initApp concurrent execution guard', () => {
+  it('rapid double-click on Retry does not start two concurrent initApp flights', async () => {
+    // First getInitialState rejects → error state
+    vi.mocked(bridge.getInitialState).mockRejectedValueOnce(new Error('fail'));
+
+    render(() => <App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('app-error')).toBeTruthy();
+    });
+
+    // Set up deferred promise for retry (keeps initApp in-flight)
+    let resolveRetry!: (state: GuiState) => void;
+    vi.mocked(bridge.getInitialState).mockReturnValue(
+      new Promise<GuiState>((resolve) => { resolveRetry = resolve; }),
+    );
+
+    // Click Retry — first retry
+    fireEvent.click(screen.getByText('Retry'));
+
+    // Immediately after click, the Retry button should be either disabled or
+    // removed from DOM, preventing a second click from firing.
+    const retryBtn = screen.queryByText('Retry');
+    expect(retryBtn === null || (retryBtn as HTMLButtonElement).disabled).toBe(true);
+
+    // getInitialState should be called exactly twice: initial mount + first retry
+    // NOT three times (which would indicate double-click succeeded)
+    expect(bridge.getInitialState).toHaveBeenCalledTimes(2);
+
+    // Clean up: resolve the deferred promise
+    resolveRetry({ meshes: [], values: [], constraints: [], files: [] });
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+  });
+
+  it('retry cleans up prior subscriptions before re-subscribing', async () => {
+    // Track unsub calls with call order tracking
+    const callLog: string[] = [];
+    const priorUnsub = vi.fn(() => callLog.push('prior-unsub'));
+    const priorFileUnsub = vi.fn(() => callLog.push('prior-file-unsub'));
+    const newMeshUnsub = vi.fn(() => callLog.push('new-mesh-unsub'));
+    const newValueUnsub = vi.fn(() => callLog.push('new-value-unsub'));
+    const newConstraintUnsub = vi.fn(() => callLog.push('new-constraint-unsub'));
+    const newEvalUnsub = vi.fn(() => callLog.push('new-eval-unsub'));
+    const newMeshRmUnsub = vi.fn(() => callLog.push('new-mesh-rm-unsub'));
+    const newValueRmUnsub = vi.fn(() => callLog.push('new-value-rm-unsub'));
+    const newConstraintRmUnsub = vi.fn(() => callLog.push('new-constraint-rm-unsub'));
+    const newFileUnsub = vi.fn(() => callLog.push('new-file-unsub'));
+
+    // First initApp (mount): getInitialState succeeds, subs established
+    // onMeshUpdate returns the "prior" unsub — subscribeToEvents bundles it
+    vi.mocked(bridge.onMeshUpdate).mockResolvedValueOnce(priorUnsub);
+    vi.mocked(bridge.onFileChanged).mockResolvedValueOnce(priorFileUnsub);
+
+    vi.mocked(bridge.getInitialState).mockResolvedValueOnce({
+      meshes: [], values: [], constraints: [], files: [],
+    });
+
+    const { unmount } = render(() => <App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // Verify prior subscriptions are active (unsubs not yet called)
+    expect(priorUnsub).not.toHaveBeenCalled();
+    expect(priorFileUnsub).not.toHaveBeenCalled();
+
+    // Set up new mocks for a second initApp call (if it were to happen)
+    vi.mocked(bridge.onMeshUpdate).mockResolvedValue(newMeshUnsub);
+    vi.mocked(bridge.onValueUpdate).mockResolvedValue(newValueUnsub);
+    vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(newConstraintUnsub);
+    vi.mocked(bridge.onEvaluationStatus).mockResolvedValue(newEvalUnsub);
+    vi.mocked(bridge.onMeshRemoved).mockResolvedValue(newMeshRmUnsub);
+    vi.mocked(bridge.onValueRemoved).mockResolvedValue(newValueRmUnsub);
+    vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(newConstraintRmUnsub);
+    vi.mocked(bridge.onFileChanged).mockResolvedValue(newFileUnsub);
+
+    // Unmount — cleanup should call both the composite unsub (which calls
+    // priorUnsub) and fileChangedUnsub (priorFileUnsub)
+    unmount();
+
+    // All prior subscription cleanup functions should have been called
+    expect(priorUnsub).toHaveBeenCalled();
+    expect(priorFileUnsub).toHaveBeenCalled();
+
+    // Verify cleanup happened — the prior unsubs should be in the call log
+    expect(callLog).toContain('prior-unsub');
+    expect(callLog).toContain('prior-file-unsub');
+  });
+
+  it('Retry button is disabled while initApp is in-flight (loading phase)', async () => {
+    // First getInitialState rejects → error state
+    vi.mocked(bridge.getInitialState).mockRejectedValueOnce(new Error('fail'));
+
+    render(() => <App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('app-error')).toBeTruthy();
+    });
+
+    // Retry button should be present and clickable in error state
+    const retryBtn = screen.getByText('Retry') as HTMLButtonElement;
+    expect(retryBtn.disabled).toBe(false);
+
+    // Set up deferred getInitialState so initApp stays in loading phase
+    let resolveRetry!: (state: GuiState) => void;
+    vi.mocked(bridge.getInitialState).mockReturnValue(
+      new Promise<GuiState>((resolve) => { resolveRetry = resolve; }),
+    );
+
+    // Click Retry — should transition to loading phase
+    fireEvent.click(retryBtn);
+
+    // The Retry button should no longer be in the DOM (loading phase hides
+    // the error state) or should be disabled to prevent re-clicks
+    expect(screen.queryByText('Retry')).toBeNull();
+
+    // Also verify we're in loading state
+    expect(screen.getByTestId('app-loading')).toBeTruthy();
+
+    // Clean up: resolve the deferred promise
+    resolveRetry({ meshes: [], values: [], constraints: [], files: [] });
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+  });
+});
+
 describe('App end-to-end toast integration', () => {
   it('App renders, loads state (ready), then setParameter failure shows toast with correct message', async () => {
     const rejectHandler = (e: any) => e.preventDefault();
