@@ -1851,7 +1851,9 @@ pub fn compile(
                 f.name.clone(),
                 f.params.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>(),
             );
-            if seen.contains_key(&key) {
+            if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(key) {
+                e.insert(idx);
+            } else {
                 diagnostics.push(
                     Diagnostic::error(format!(
                         "duplicate function signature: {}({})",
@@ -1863,8 +1865,6 @@ pub fn compile(
                             .join(", ")
                     )),
                 );
-            } else {
-                seen.insert(key, idx);
             }
         }
     }
@@ -3908,15 +3908,15 @@ fn check_trait_conformance(
     // Pre-register default member names in scope so their expressions can
     // reference each other (e.g., constraint x > 0 references param x from same trait).
     for default in &all_defaults {
-        if let Some(name) = &default.name {
-            if !structure_members.contains_key(name) {
-                let ty = match &default.kind {
-                    DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                    DefaultKind::Let(_) => Type::Real,
-                    DefaultKind::Constraint(_) => continue,
-                };
-                scope.register(name, ty);
-            }
+        if let Some(name) = &default.name
+            && !structure_members.contains_key(name)
+        {
+            let ty = match &default.kind {
+                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
+                DefaultKind::Let(_) => Type::Real,
+                DefaultKind::Constraint(_) => continue,
+            };
+            scope.register(name, ty);
         }
     }
 
