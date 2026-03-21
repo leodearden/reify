@@ -3815,18 +3815,18 @@ fn check_field_composition_types(
             if let Some(outer_field) = field_registry.get(function.name.as_str()) {
                 // Check if any argument is also a field call
                 for arg in args {
-                    if let CompiledExprKind::FunctionCall { function: inner_fn, .. } = &arg.kind {
-                        if let Some(inner_field) = field_registry.get(inner_fn.name.as_str()) {
-                            // inner_field's codomain should match outer_field's domain
-                            if inner_field.codomain_type != outer_field.domain_type {
-                                errors.push(
-                                    Diagnostic::error(format!(
-                                        "field composition type mismatch: codomain of '{}' ({}) does not match domain of '{}' ({})",
-                                        inner_field.name, inner_field.codomain_type,
-                                        outer_field.name, outer_field.domain_type
-                                    )),
-                                );
-                            }
+                    if let CompiledExprKind::FunctionCall { function: inner_fn, .. } = &arg.kind
+                        && let Some(inner_field) = field_registry.get(inner_fn.name.as_str())
+                    {
+                        // inner_field's codomain should match outer_field's domain
+                        if inner_field.codomain_type != outer_field.domain_type {
+                            errors.push(
+                                Diagnostic::error(format!(
+                                    "field composition type mismatch: codomain of '{}' ({}) does not match domain of '{}' ({})",
+                                    inner_field.name, inner_field.codomain_type,
+                                    outer_field.name, outer_field.domain_type
+                                )),
+                            );
                         }
                     }
                 }
