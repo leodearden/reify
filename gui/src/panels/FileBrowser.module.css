@@ -1,0 +1,34 @@
+.browser {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--reify-text, #cdd6f4);
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  padding: 4px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item:hover {
+  background: var(--reify-surface0, #313244);
+}
+
+.item[data-active='true'] {
+  background: var(--reify-surface1, #45475a);
+  font-weight: 500;
+}
+
+.empty {
+  padding: 12px;
+  color: var(--reify-subtext, #a6adc8);
+  font-style: italic;
+  text-align: center;
+}
