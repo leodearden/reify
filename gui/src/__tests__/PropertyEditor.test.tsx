@@ -513,6 +513,20 @@ describe('PropertyEditor validation - valid number', () => {
   });
 });
 
+describe('PropertyEditor input tooltip', () => {
+  it('value input has title attribute showing the full value', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', value: '123.456', determinacy: 'determined', entity_path: 'Bracket.width' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.getAttribute('title')).toBe('123.456');
+  });
+});
+
 describe('PropertyEditor accessibility', () => {
   const values: Record<string, ValueData> = {
     c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width' }),
