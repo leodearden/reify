@@ -1,23 +1,26 @@
 {
-  "task_id": "102",
-  "title": "Fix viewport click-vs-drag and camera control bugs",
+  "task_id": "114",
+  "title": "Viewport performance: BVH raycasting, render-on-demand, wireframe optimization",
   "files": [
+    "gui/package.json",
     "gui/src/viewport/selection.ts",
     "gui/src/viewport/Viewport.tsx",
+    "gui/src/viewport/meshManager.ts",
     "gui/src/__tests__/viewport/selection.test.ts",
-    "gui/src/__tests__/viewport/Viewport.test.tsx"
+    "gui/src/__tests__/viewport/Viewport.test.tsx",
+    "gui/src/__tests__/viewport/meshManager.test.ts"
   ],
   "modules": [
     "gui/src/viewport",
     "gui/src/__tests__/viewport"
   ],
-  "analysis": "Three high-severity viewport interaction bugs need fixing:\n\n**V-10 (click-vs-drag):** In selection.ts line 97-100, `handlePointerDown` calls `raycast()` and `onSelect()` synchronously on every `pointerdown` event. This means every orbit-drag start fires an unwanted selection. Fix: track pointerdown position, add pointerup listener, only fire onSelect if pointer moved < 5px (standard click threshold). Existing tests in 'click-based selection raycasting' and 'rAF-throttled pointermove' sections dispatch `pointerdown` and expect immediate `onSelect` — these must be updated to dispatch pointerdown+pointerup.\n\n**V-02 (Z-axis offset):** Both `fitToView` (line 175-176) and `flyToEntity` (line 199-200) do `camera.position.copy(center); camera.position.z += distance;` — this always offsets along world Z axis regardless of current view angle. Fix: use `camera.getWorldDirection()` to get current view direction, then position camera at `center - viewDir * distance`.\n\n**V-03 (controls.target stale):** After fitToView/flyToEntity reposition the camera, `OrbitControls.target` is never updated. Subsequent orbit rotation pivots around the old target point, producing broken behavior. Fix: accept a controls reference in SelectionOptions, update `controls.target.copy(center)` in both fitToView and flyToEntity.\n\nV-02 and V-03 are tightly coupled — both require changes to fitToView/flyToEntity and the SelectionOptions interface. The controls object (with its .target Vector3) needs to be threaded from Viewport.tsx into createSelection.\n\nExisting test infrastructure (selection.test.ts) uses extensive Three.js mocks. The MockVector3 needs `sub()` and `multiplyScalar()` methods, and MockPerspectiveCamera needs `getWorldDirection()` to support the V-02 fix tests.",
+  "analysis": "Task addresses 4 viewport performance issues. (P-01) Raycasting in selection.ts:65-73 calls raycaster.intersectObjects on ALL meshes with no spatial indexing \u2014 fix by adding three-mesh-bvh for BVH acceleration on geometries and enabling firstHitOnly on the raycaster. (P-02) WireframeGeometry in selection.ts:168 is computationally expensive for large meshes, creating a line segment for every triangle edge \u2014 replace with EdgesGeometry which only computes edges where face normals differ significantly, a direct drop-in replacement. (P-03) Animation loop in Viewport.tsx:77-83 runs requestAnimationFrame continuously and calls renderer.render every frame even when completely idle \u2014 implement render-on-demand using OrbitControls 'change' event and a dirty flag, keeping the rAF loop alive (needed for damping) but skipping the expensive render call when nothing has changed. (P-04) meshManager.sync in meshManager.ts:116-117 creates new Set(Object.keys(meshes)) on every sync call \u2014 minor optimization to use direct property lookup instead. All existing tests use vi.mock('three', ...) with mock classes; new behavior can be tested by extending existing mock infrastructure. The controls module already exposes the OrbitControls instance so Viewport can listen to 'change' events directly without modifying controls.ts.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Extend mock classes in selection.test.ts: add `sub(v)`, `multiplyScalar(s)` to MockVector3; add `getWorldDirection(target)` to MockPerspectiveCamera. These are needed for V-02/V-03 tests but should be added upfront to avoid mixing mock infrastructure changes with test logic.",
+      "description": "Add three-mesh-bvh to gui/package.json dependencies and run npm install. This package provides computeBoundsTree/disposeBoundsTree for BufferGeometry BVH acceleration and acceleratedRaycast for Mesh.prototype.raycast. Required for P-01 (BVH raycasting).",
       "status": "done",
-      "commit": "0f2ddec",
+      "commit": "e67c9d4",
       "tests": []
     }
   ],
@@ -25,108 +28,137 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "V-10: Write failing tests for click-vs-drag discrimination in selection.test.ts. New describe block 'click-vs-drag discrimination' with tests: (1) pointerdown alone does NOT fire onSelect, (2) pointerdown+pointerup at same position fires onSelect with raycasted entity, (3) pointerdown+pointerup with >5px movement does NOT fire onSelect, (4) pointerdown+pointerup with <=5px movement fires onSelect, (5) onSelect receives null when pointerup raycast misses, (6) after dispose, pointerup does not fire onSelect.",
+      "description": "P-03 render-on-demand: Write failing tests in Viewport.test.tsx. Update controls mock to include addEventListener/removeEventListener on the controls object (currently just {}). Add test: 'animate loop does NOT call renderer.render when idle after initial frame' \u2014 use capturing rAF mock, fire first rAF callback (initial render), clear renderer.render mock, fire second rAF callback with no interactions, assert renderer.render was NOT called. This test fails against current code which always renders every frame.",
       "status": "done",
-      "commit": "a38392f"
+      "commit": "ca26090"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "V-10: Implement click-vs-drag discrimination in selection.ts. Replace `handlePointerDown` (which fires onSelect immediately) with: (a) `handlePointerDown` that records {clientX, clientY} and adds a one-shot pointerup listener, (b) `handlePointerUp` that computes Euclidean distance from pointerdown position and only calls raycast()+onSelect() if distance < 5px. Update dispose() to also remove pointerup listener. Update existing 'click-based selection raycasting' tests and 'rAF-throttled pointermove / pointerdown still raycasts synchronously' test to dispatch both pointerdown+pointerup events instead of just pointerdown.",
+      "description": "P-03 render-on-demand: Implement in Viewport.tsx. Add let needsRender = true flag. Add requestRender() helper that sets needsRender = true. Register controls.controls.addEventListener('change', requestRender) to mark dirty on camera movement. In animate loop: keep calling controls.update() every frame (required for enableDamping), but guard renderer.render(scene, camera) behind if(needsRender), then reset needsRender = false. Add controls.controls.removeEventListener('change', requestRender) in onCleanup. Initial needsRender = true ensures first frame renders.",
       "status": "done",
-      "commit": "4351054"
+      "commit": "be2287b"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "V-02/V-03: Write failing tests for fitToView with view-direction offset and controls.target update. In selection.test.ts, add tests: (1) fitToView offsets camera along current view direction (not just Z) — set camera at an angle, verify position is center - viewDir*distance, (2) fitToView updates controls.target to bounding box center when controls provided via SelectionOptions, (3) fitToView still works without controls (backward compat). Update setup() to optionally accept a controls mock with a target Vector3.",
+      "description": "P-03 render triggers: Write tests verifying all re-render triggers. (1) 'controls change event triggers re-render on next frame' \u2014 fire controls mock's captured 'change' callback, then fire rAF, assert renderer.render called. (2) 'resize triggers re-render' \u2014 verify renderer.render is called on next frame after ResizeObserver fires. (3) Test that renderer.render is still called once for initial frame (existing test 'animate loop does not call renderer.render after cleanup/dispose' should continue to pass).",
       "status": "done",
-      "commit": "0ada03b"
+      "commit": "f17a85b"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "V-02/V-03: Fix fitToView in selection.ts. Add optional `controls?: { target: { copy: (v: any) => void } }` field to SelectionOptions interface. In fitToView(): (a) get view direction via `camera.getWorldDirection(dir)`, (b) position camera at `center - viewDir * distance` instead of just Z offset, (c) if controls provided, set `controls.target.copy(center)`. Update existing fitToView tests that asserted Z-only offset to match new view-direction behavior.",
+      "description": "P-03 render triggers: Wire requestRender() calls in Viewport.tsx at all trigger points. Add requestRender() after meshManager.sync(props.meshes) in the mesh sync createEffect. Add requestRender() after selection.setHovered() and selection.setSelected() in their createEffects. Add requestRender() after resize() call in the ResizeObserver callback (alongside existing invalidateRect). Verify all tests from step-3 pass plus existing tests remain green.",
       "status": "done",
-      "commit": "19993ce"
+      "commit": "fba82c2"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "V-02/V-03: Write failing tests for flyToEntity with view-direction offset and controls.target update. Tests: (1) flyToEntity offsets camera along current view direction, (2) flyToEntity updates controls.target to entity bounding box center, (3) flyToEntity with unknown entity does not crash or update controls.target.",
+      "description": "P-02 EdgesGeometry: Write failing test in selection.test.ts. Add MockEdgesGeometry to the three mock (identical structure to existing MockWireframeGeometry). Add test: 'setSelected creates EdgesGeometry from mesh geometry' \u2014 verify that when setSelected('A') is called, EdgesGeometry constructor is invoked with mesh.geometry and the resulting LineSegments is added to scene. Update existing wireframe tests to use EdgesGeometry mock if needed. This test fails because current code imports/uses WireframeGeometry.",
       "status": "done",
-      "commit": "0b68dd9"
+      "commit": "0468ab5"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "V-02/V-03: Fix flyToEntity in selection.ts. Apply same view-direction offset and controls.target update pattern as fitToView. Update existing flyToEntity tests that asserted Z-only offset.",
+      "description": "P-02 EdgesGeometry: In selection.ts, change import from 'WireframeGeometry' to 'EdgesGeometry' in the three import statement. In setSelected(), replace 'new WireframeGeometry(mesh.geometry)' with 'new EdgesGeometry(mesh.geometry)'. EdgesGeometry is a direct drop-in replacement that produces LineSegments-compatible geometry but only includes edges where adjacent face normals differ by > 1 degree threshold, making it dramatically lighter for dense meshes while preserving the visual outline.",
       "status": "done",
-      "commit": "e26758b"
+      "commit": "21f3365"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Viewport integration: Write failing test in Viewport.test.tsx verifying that createSelection is called with a controls option containing the OrbitControls instance from createControls. Assert that the mock createSelection receives `controls` in its options argument.",
+      "description": "P-01 BVH geometry: Write failing tests in meshManager.test.ts. Add computeBoundsTree = vi.fn() and disposeBoundsTree = vi.fn() to MockBufferGeometry. Mock the 'three-mesh-bvh' module to export computeBoundsTree, disposeBoundsTree, acceleratedRaycast. Add tests: (1) 'sync calls geometry.computeBoundsTree() on newly created mesh', (2) 'sync calls geometry.computeBoundsTree() after updating existing mesh geometry', (3) 'removeMesh calls geometry.disposeBoundsTree() before disposing geometry'. These fail because current meshManager doesn't invoke BVH methods.",
       "status": "done",
-      "commit": "1ecc92c"
+      "commit": "effc0f6"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Viewport integration: Update Viewport.tsx to pass `controls: controls.controls` (the OrbitControls instance from ControlsContext) to createSelection's options. This threads the controls.target through so fitToView/flyToEntity can update it.",
+      "description": "P-01 BVH geometry: In meshManager.ts, import { computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh' and BufferGeometry from 'three'. Apply prototype patches at module scope: BufferGeometry.prototype.computeBoundsTree = computeBoundsTree; BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree. In createMeshFromData(), call geometry.computeBoundsTree() after all attributes are set. In updateMeshGeometry(), call geometry.computeBoundsTree() after updating all attributes (rebuilds BVH for changed geometry). In removeMesh(), call (mesh.geometry as any).disposeBoundsTree() before geometry.dispose().",
       "status": "done",
-      "commit": "80eed75"
+      "commit": "0727cff"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "P-01 BVH raycasting: Write failing test in selection.test.ts. Add mock for 'three-mesh-bvh' module. Add test: 'raycaster has firstHitOnly set to true' \u2014 after createSelection, inspect the mock Raycaster instance to verify firstHitOnly property is true. This test fails because current code doesn't set firstHitOnly on the raycaster.",
+      "status": "done",
+      "commit": "6c9eb7f"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "P-01 BVH raycasting: In selection.ts, import { acceleratedRaycast } from 'three-mesh-bvh' and import Mesh from 'three'. Apply prototype patch at module scope: Mesh.prototype.raycast = acceleratedRaycast. After creating the Raycaster instance (line 42), set (raycaster as any).firstHitOnly = true. This enables BVH-accelerated raycasting that exits early on first hit, which is correct since we only use intersections[0].object.name.",
+      "status": "done",
+      "commit": "32b83be"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "P-04 sync optimization: Run existing meshManager tests to verify they all pass (behavior is unchanged, this is a pure refactor). Optionally add test: 'sync with empty incoming object removes all existing meshes' to ensure edge case coverage if not already covered.",
+      "status": "done",
+      "commit": "ee8e317"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "P-04 sync optimization: Refactor sync() in meshManager.ts. Replace 'const incomingKeys = new Set(Object.keys(meshes))' and 'incomingKeys.has(key)' with direct property check: 'if (!(key in meshes))'. This avoids one Set + Array allocation per sync call while maintaining identical O(1) lookup semantics. Iterate meshMap.keys() for removal check, then Object.entries(meshes) for add/update (same as current).",
+      "status": "done",
+      "commit": "70b62bf"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use duck-typed controls interface `{ target: { copy: (v: any) => void } }` in SelectionOptions rather than importing OrbitControls type directly",
-      "rationale": "Keeps selection.ts decoupled from the specific controls implementation. Any controls object with a target Vector3 will work, improving testability and flexibility."
+      "decision": "Use EdgesGeometry instead of WireframeGeometry for selection overlay",
+      "rationale": "EdgesGeometry only computes edges where adjacent face normals differ by a threshold (default 1 degree), producing far fewer line segments than WireframeGeometry which duplicates every triangle edge. This is a direct drop-in replacement that dramatically reduces compute time for dense meshes. A full stencil-based outline pass (OutlinePass + EffectComposer) would require setting up a multi-pass render pipeline \u2014 disproportionate complexity for v0.1."
     },
     {
-      "decision": "5px Euclidean distance threshold for click-vs-drag discrimination",
-      "rationale": "Standard UX threshold used by most drag-detection libraries. Below 5px is within normal pointer jitter for intentional clicks. Matches the task description recommendation."
+      "decision": "Use dirty-flag render-on-demand pattern while keeping the rAF loop alive",
+      "rationale": "OrbitControls with enableDamping=true requires controls.update() to be called every frame for smooth deceleration. Stopping/restarting the rAF loop would cause damping to stutter. The dirty-flag pattern keeps the loop running (cheap controls.update() call) but skips the expensive renderer.render() when nothing has changed. OrbitControls' built-in 'change' event fires during damping, correctly triggering re-renders while the camera decelerates."
     },
     {
-      "decision": "Listen for pointerup on domElement (not document) for click detection",
-      "rationale": "If the user starts a drag on the viewport and releases outside, we correctly treat it as a drag (no selection). This matches OrbitControls' own event scope and avoids global listener cleanup complexity."
+      "decision": "Add three-mesh-bvh for BVH acceleration rather than custom spatial indexing",
+      "rationale": "three-mesh-bvh is the de-facto standard for raycasting acceleration in Three.js (recommended in official docs and Discord). It provides O(log n) triangle intersection via bounding volume hierarchy, plus firstHitOnly for early-exit. Custom spatial indexing would duplicate well-tested functionality. The package adds ~35KB gzipped and is compatible with three ^0.183."
     },
     {
-      "decision": "Record pointerdown position and use pointerup for selection instead of timing-based approach",
-      "rationale": "Position-based discrimination is more robust than timing-based. A slow deliberate click should still select, and a fast small drag should not. Distance is the correct discriminator."
+      "decision": "Apply three-mesh-bvh prototype patches at module scope in consuming files",
+      "rationale": "three-mesh-bvh works by patching BufferGeometry.prototype.computeBoundsTree and Mesh.prototype.raycast. Applying patches at module scope in meshManager.ts and selection.ts keeps them co-located with their usage. An alternative dedicated bvh.ts init module adds indirection for just two simple prototype assignments."
     },
     {
-      "decision": "Camera repositioning uses getWorldDirection to maintain viewing angle",
-      "rationale": "When a user hits 'Fit to View', they expect the scene to fill the viewport while preserving their current viewing angle (e.g., looking from above). Offsetting only along Z always shows the front-on view, which is disorienting if the user was looking from a different angle."
-    },
-    {
-      "decision": "Make controls optional in SelectionOptions for backward compatibility",
-      "rationale": "The selection system should work without controls (e.g., in tests or headless usage). When controls is not provided, fitToView/flyToEntity simply skip the target update."
+      "decision": "Use 'in' operator for sync key membership instead of Set allocation",
+      "rationale": "Current code creates new Set(Object.keys(meshes)) on every sync call. For Record<string, MeshData> objects, 'key in meshes' provides O(1) property lookup without any allocation. Behavioral equivalent, but avoids one Set + Array allocation per call."
     }
   ],
   "reuse": [
     {
-      "what": "Existing mock infrastructure in selection.test.ts (MockVector3, MockPerspectiveCamera, MockBox3, setup() helper, createMockDomElement, createMockMesh)",
-      "where": "gui/src/__tests__/viewport/selection.test.ts",
-      "how": "Extend existing mock classes with new methods (sub, multiplyScalar, getWorldDirection) rather than creating new mocks. Reuse setup() helper with minor additions for controls parameter."
+      "what": "Existing Three.js vi.mock() infrastructure in all viewport test files",
+      "where": "gui/src/__tests__/viewport/selection.test.ts, meshManager.test.ts, Viewport.test.tsx",
+      "how": "Extend existing MockBufferGeometry to add computeBoundsTree/disposeBoundsTree mock methods. Create MockEdgesGeometry following the same pattern as existing MockWireframeGeometry. Add addEventListener/removeEventListener to the controls mock object in Viewport.test.tsx."
     },
     {
-      "what": "Existing raycaster and NDC computation in selection.ts",
-      "where": "gui/src/viewport/selection.ts lines 58-73",
-      "how": "The click-vs-drag fix reuses the existing raycast() function — it just delays the call from pointerdown to pointerup after threshold check."
+      "what": "OrbitControls built-in 'change' event dispatch",
+      "where": "gui/src/viewport/Viewport.tsx",
+      "how": "OrbitControls already dispatches 'change' events when camera moves (including during damping update cycles). Viewport listens via controls.controls.addEventListener('change', requestRender) \u2014 no changes to controls.ts needed."
     },
     {
-      "what": "Existing Viewport.test.tsx mock structure for createSelection",
-      "where": "gui/src/__tests__/viewport/Viewport.test.tsx lines 74-83",
-      "how": "The mock for createSelection already captures its options argument. We can inspect the captured options to verify controls is passed."
+      "what": "ControlsContext.controls property exposing OrbitControls instance",
+      "where": "gui/src/viewport/controls.ts \u2192 used in gui/src/viewport/Viewport.tsx",
+      "how": "The controls module already returns the OrbitControls instance with addEventListener/removeEventListener via ControlsContext.controls. No interface changes needed."
     },
     {
-      "what": "ControlsContext.controls property already exposes OrbitControls instance",
-      "where": "gui/src/viewport/controls.ts line 5, 26",
-      "how": "No changes needed to controls.ts — the OrbitControls instance with its .target property is already accessible via ControlsContext.controls."
+      "what": "Existing rAF-based test infrastructure in Viewport.test.tsx",
+      "where": "gui/src/__tests__/viewport/Viewport.test.tsx lines 15-22",
+      "how": "The test file already has rafCallbacks array, rafIdCounter, and mock requestAnimationFrame/cancelAnimationFrame. Render-on-demand tests reuse this pattern to capture and selectively fire frame callbacks to verify rendering behavior."
+    },
+    {
+      "what": "Existing wireframe test patterns in selection.test.ts",
+      "where": "gui/src/__tests__/viewport/selection.test.ts 'wireframe overlay on selection' describe block",
+      "how": "Tests for setSelected already verify geometry creation, scene.add, dispose, and material cleanup. EdgesGeometry tests follow the same pattern, just with the updated mock class name."
     }
   ],
-  "_session_id": "102-45ac47a8",
-  "_created_at": "2026-03-21T17:10:32.378187+00:00"
+  "_session_id": "114-4ad7e2e4",
+  "_created_at": "2026-03-21T17:36:57.908546+00:00"
 }
