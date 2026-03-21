@@ -25,6 +25,12 @@ export async function getInitialState(): Promise<GuiState> {
   return convertRawGuiState(raw);
 }
 
+/** Refresh the full GUI state for recovery from missed events. Semantic alias for getInitialState. */
+export async function refreshFullState(): Promise<GuiState> {
+  const raw = await invoke<RawGuiState>('get_initial_state');
+  return convertRawGuiState(raw);
+}
+
 /** Set a parameter value by cell ID. Returns the updated GUI state for optional reconciliation. */
 export async function setParameter(cellId: string, value: string): Promise<GuiState> {
   const raw = await invoke<RawGuiState>('set_parameter', { cellId, value });
