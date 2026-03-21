@@ -100,16 +100,22 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             if disc_val.is_undef() {
                 return Value::Undef;
             }
-            // Extract variant from enum value
-            if let Value::Enum { variant, .. } = &disc_val {
-                for arm in arms {
-                    if arm.patterns.iter().any(|p| p == variant || p == "_") {
-                        return eval_expr(&arm.body, ctx);
+            match &disc_val {
+                Value::Enum { variant, .. } => {
+                    for arm in arms {
+                        if arm.patterns.iter().any(|p| p == variant || p == "_") {
+                            return eval_expr(&arm.body, ctx);
+                        }
                     }
+                    // No matching arm found
+                    Value::Undef
+                }
+                _ => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("[reify-expr] match expression on non-enum value: {:?}", disc_val);
+                    Value::Undef
                 }
             }
-            // No matching arm or non-enum discriminant
-            Value::Undef
         }
 
         CompiledExprKind::Conditional {
