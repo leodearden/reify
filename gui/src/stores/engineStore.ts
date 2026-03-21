@@ -24,7 +24,11 @@ export interface EngineState {
   evalStatus: EvaluationStatus;
 }
 
-export function createEngineStore() {
+export interface EngineStoreOptions {
+  onEntityRemoved?: (id: string) => void;
+}
+
+export function createEngineStore(options?: EngineStoreOptions) {
   const [state, setState] = createStore<EngineState>({
     meshes: {},
     values: {},
@@ -73,14 +77,17 @@ export function createEngineStore() {
 
   function removeMesh(entityPath: string) {
     setState(produce((s) => { delete s.meshes[entityPath]; }));
+    options?.onEntityRemoved?.(entityPath);
   }
 
   function removeValue(cellId: string) {
     setState(produce((s) => { delete s.values[cellId]; }));
+    options?.onEntityRemoved?.(cellId);
   }
 
   function removeConstraint(nodeId: string) {
     setState(produce((s) => { delete s.constraints[nodeId]; }));
+    options?.onEntityRemoved?.(nodeId);
   }
 
   function setEvalStatus(status: EvaluationStatus) {
