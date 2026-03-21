@@ -72,4 +72,42 @@ describe('ExportDialog', () => {
     ));
     expect(screen.getByTestId('export-progress')).toBeTruthy();
   });
+
+  it('Export button is disabled when exporting=true', () => {
+    const onExport = vi.fn();
+    render(() => (
+      <ExportDialog open={true} exporting={true} onExport={onExport} onClose={vi.fn()} />
+    ));
+    const exportBtn = screen.getByText('Export') as HTMLButtonElement;
+    expect(exportBtn.disabled).toBe(true);
+    fireEvent.click(exportBtn);
+    expect(onExport).not.toHaveBeenCalled();
+  });
+
+  it('Cancel button is disabled when exporting=true', () => {
+    const onClose = vi.fn();
+    render(() => (
+      <ExportDialog open={true} exporting={true} onExport={vi.fn()} onClose={onClose} />
+    ));
+    const cancelBtn = screen.getByText('Cancel') as HTMLButtonElement;
+    expect(cancelBtn.disabled).toBe(true);
+    fireEvent.click(cancelBtn);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('Export button is enabled when exporting=false', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const exportBtn = screen.getByText('Export') as HTMLButtonElement;
+    expect(exportBtn.disabled).toBe(false);
+  });
+
+  it('format selector is disabled when exporting=true', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={true} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const select = screen.getByTestId('export-dialog').querySelector('select') as HTMLSelectElement;
+    expect(select.disabled).toBe(true);
+  });
 });
