@@ -476,3 +476,47 @@ fn maximize_undef_objective_returns_no_progress() {
         "maximize(x/0) should NOT report Solved; Undef objective must be detected"
     );
 }
+
+/// Verify that the Nelder-Mead solver with sd_tolerance(1e-15) runs successfully
+/// and doesn't panic or produce garbage. This validates the tolerance config path
+/// after removing the degenerate 1-vertex simplex fallback.
+#[test]
+fn nelder_mead_tolerance_config_does_not_degenerate() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Box", "width");
+    let x_ref = value_ref("Box", "width");
+
+    // Simple feasibility: 5mm < width < 50mm
+    let gt_expr = gt(x_ref.clone(), literal(mm(5.0)));
+    let lt_expr = lt(x_ref, literal(mm(50.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+        }],
+        constraints: vec![
+            (cnid("Box", 0), gt_expr),
+            (cnid("Box", 1), lt_expr),
+        ],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    // This should not panic — the solver should configure NelderMead correctly
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let si = values.get(&x_id).unwrap().as_f64().unwrap();
+            assert!(
+                si > 0.005 && si < 0.050,
+                "width should be in feasible range (5-50mm), got {} m",
+                si
+            );
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
