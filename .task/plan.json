@@ -14,7 +14,7 @@
     "gui/src/components",
     "gui/src/__tests__"
   ],
-  "analysis": "Current App.tsx is a skeleton with 3-panel grid layout using placeholder divs and h3 labels. Existing test checks for placeholder text. All real components exist and are fully implemented:\n\n- Viewport (gui/src/viewport/) \u2014 needs {meshes} prop\n- Editor (gui/src/editor/Editor.tsx) \u2014 needs {store: EditorStore} prop\n- FileTabs (gui/src/editor/FileTabs.tsx) \u2014 needs {store: EditorStore} prop\n- PropertyEditor (gui/src/panels/) \u2014 needs {values, selectedEntity, onSetParameter}\n- ConstraintPanel (gui/src/panels/) \u2014 needs {constraints, values}\n- Toolbar (gui/src/panels/) \u2014 needs {onExport, onFitToView}\n- StatusBar (gui/src/panels/) \u2014 needs {evalStatus, meshes, constraints}\n\nStores also exist: createEngineStore (meshes/values/constraints/evalStatus with initFromState + subscribeToEvents), createEditorStore (files/cursor), createSelectionStore (selected/hovered entity). Bridge has getInitialState() which returns GuiState with meshes, values, constraints, files.\n\nApproach:\n1. Build a reusable Splitter component for draggable resize between panels (TDD).\n2. Rewrite App.tsx to: (a) create all stores, (b) call getInitialState on mount to populate them, (c) subscribe to backend events, (d) compose real components into a resizable layout with Toolbar at top, StatusBar at bottom, (e) set document.title reactively based on active file + eval status.\n3. Rewrite App.module.css for the full resizable layout with grid areas.\n4. Rewrite App.test.tsx with proper mocking of bridge/Tauri APIs and sub-components where needed.\n\nNote: Editor has no index.ts barrel, so import directly from './editor/Editor'. Viewport has an index.ts barrel. Panels have an index.ts barrel.",
+  "analysis": "Current App.tsx is a skeleton with 3-panel grid layout using placeholder divs and h3 labels. Existing test checks for placeholder text. All real components exist and are fully implemented:\n\n- Viewport (gui/src/viewport/) \u2014 needs {meshes} prop\n- Editor (gui/src/editor/Editor.tsx) \u2014 needs {store: EditorStore} prop\n- FileTabs (gui/src/editor/FileTabs.tsx) \u2014 needs {store: EditorStore} prop\n- PropertyEditor (gui/src/panels/) \u2014 needs {values, selectedEntity, onSetParameter}\n- ConstraintPanel (gui/src/panels/) \u2014 needs {constraints, values}\n- Toolbar (gui/src/panels/) \u2014 needs {onExport, onFitToView}\n- StatusBar (gui/src/panels/) \u2014 needs {evalStatus, meshes, constraints}\n\nStores also exist: createEngineStore (meshes/values/constraints/evalStatus with initFromState + subscribeToEvents), createEditorStore (files/cursor), createSelectionStore (selected/hovered entity). Bridge has getInitialState() which returns GuiState with meshes, values, constraints, files.\n\nApproach:\n1. Build a reusable Splitter component for draggable resize between panels (TDD).\n2. Rewrite App.tsx to: (a) create all stores, (b) call getInitialState on mount to populate them, (c) subscribe to backend events, (d) compose real components into a resizable layout with Toolbar at top, StatusBar at bottom, (e) set document.title reactively based on active file + eval status.\n3. Rewrite App.module.css for the full resizable layout with grid areas.\n4. Rewrite App.test.tsx with proper mocking of bridge/Tauri APIs and sub-components where needed.\n\nNote: Editor has no index.ts barrel, so import directly from './editor/Editor'. Viewport has an index.ts barrel. Panels have an index.ts barrel.\n\nREVIEW FIX (steps 13-16): Three blocking issues identified in code review:\n(a) subscribeToEvents race condition: if component unmounts before the async subscribeToEvents() resolves, the returned unsubscribe function is silently discarded, permanently leaking 7 Tauri event listeners.\n(b) getInitialState race condition: if component unmounts while getInitialState() is in-flight, initFromState() and editorStore.openFile() still execute on a dead component's stores.\n(c) handleSetParameter swallows errors: bridgeSetParameter() returns a Promise that is neither awaited nor caught, silently swallowing IPC failures.\nFix approach: use an 'alive' flag set to false in onCleanup, checked after each await; call returned unsub immediately if cleanup already ran; add .catch() to bridgeSetParameter.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -108,6 +108,34 @@
       "description": "Add vertical Splitter inside the side panel between PropertyEditor and ConstraintPanel. Track the split ratio with createSignal, apply via flex-basis or grid-template-rows. Update App.module.css for the side panel split layout.",
       "status": "done",
       "commit": "403a5da"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing tests for async mount/cleanup race conditions and setParameter error handling. Three test cases:\n(1) 'does not leak event listeners when unmounted before subscribeToEvents resolves': render App with subscribeToEvents returning a deferred promise, immediately unmount via cleanup(), then resolve the promise \u2014 assert the returned unsubscribe function was called immediately upon resolution.\n(2) 'does not call initFromState on dead component when unmounted before getInitialState resolves': render App with getInitialState returning a deferred promise, immediately unmount, then resolve \u2014 assert initFromState/openFile side effects did NOT execute (e.g., PropertyEditor does not show the values, or spy on engineStore.initFromState).\n(3) 'handleSetParameter logs error when bridge.setParameter rejects': mock bridge.setParameter to reject with an Error, spy on console.error, trigger the onSetParameter callback, assert console.error was called with the rejection reason.",
+      "status": "done",
+      "commit": "cdef1f1"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Fix async mount/cleanup race conditions in App.tsx onMount. Introduce a `let alive = true` flag and `let unsub: (() => void) | undefined`. In onCleanup, set `alive = false` and call `unsub?.()`. In onMount, after `const initialState = await getInitialState()`, check `if (!alive) return` before calling `initFromState()` or `openFile()`. After `const u = await engineStore.subscribeToEvents()`, check `if (!alive) { u(); return; }` else assign `unsub = u`. Remove the old `unsubscribeEvents` variable pattern.",
+      "status": "done",
+      "commit": "d4e7bac"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test for handleSetParameter error handling: mock bridge.setParameter to reject with an Error('backend unavailable'), spy on console.error, call the onSetParameter prop on PropertyEditor (or invoke handleSetParameter directly), wait for the microtask queue to flush, assert console.error was called with a message containing 'setParameter failed' and the error object. This test may already be written in step-13 \u2014 if so, this step validates it still fails before the impl.",
+      "status": "done",
+      "commit": "cdef1f1"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Fix handleSetParameter in App.tsx to handle rejected promises. Change `bridgeSetParameter(cellId, value)` to `bridgeSetParameter(cellId, value).catch(err => console.error('setParameter failed:', err))`. This ensures IPC errors are logged rather than silently swallowed as unhandled promise rejections.",
+      "status": "done",
+      "commit": "01701cc"
     }
   ],
   "design_decisions": [
@@ -134,6 +162,14 @@
     {
       "decision": "Window title set via document.title inside a createEffect",
       "rationale": "Tauri maps document.title to the OS window title automatically. A SolidJS createEffect watching the reactive store values ensures the title stays in sync."
+    },
+    {
+      "decision": "Use 'alive' flag pattern for async mount/cleanup race safety",
+      "rationale": "SolidJS onCleanup can fire while async operations in onMount are still pending. An 'alive' boolean flag, set to false in onCleanup and checked after each await, is the standard pattern to guard against operating on unmounted components. For subscribeToEvents specifically, the returned unsubscribe function must be called immediately if cleanup already ran, otherwise the 7 Tauri event listeners are permanently leaked."
+    },
+    {
+      "decision": "Log bridgeSetParameter errors via console.error rather than surfacing in UI",
+      "rationale": "A full error toast/notification system is outside this task's scope. console.error prevents silent promise swallowing and makes failures visible in dev tools. The error store / toast pattern can be added in a future task."
     }
   ],
   "reuse": [
@@ -160,7 +196,7 @@
     {
       "what": "setParameter() from bridge.ts",
       "where": "App.tsx callback wiring",
-      "how": "Pass as onSetParameter callback to PropertyEditor, wrapping the bridge call."
+      "how": "Pass as onSetParameter callback to PropertyEditor, wrapping the bridge call with .catch() for error handling."
     },
     {
       "what": "applyTheme() from theme.ts",
@@ -176,8 +212,13 @@
       "what": "CSS custom properties from theme.ts (--reify-* tokens)",
       "where": "App.module.css, Splitter.module.css",
       "how": "Use existing theme variables for splitter colors, panel backgrounds, and borders to maintain visual consistency."
+    },
+    {
+      "what": "Deferred promise pattern for testing async races",
+      "where": "App.test.tsx (step-13)",
+      "how": "Create a promise with externally-accessible resolve/reject to control when getInitialState/subscribeToEvents settle, allowing cleanup() to be called while the promise is still pending."
     }
   ],
   "_session_id": "93-46a2856b",
-  "_created_at": "2026-03-21T06:44:23.940624+00:00"
+  "_created_at": "2026-03-21T07:06:42.463285+00:00"
 }
