@@ -179,6 +179,10 @@ pub struct SubComponentDecl {
     /// Resolved type arguments for parameterized structures
     /// (e.g., `Box<Bolt>()` → `[StructureRef("Bolt")]`; `Box<U>()` → `[TypeParam("U")]`).
     pub type_args: Vec<Type>,
+    /// True if this sub uses collection form: `sub name : List<T>`
+    pub is_collection: bool,
+    /// For collection subs, the synthetic count ValueCell (e.g. `__count_bolts`)
+    pub count_cell: Option<ValueCellId>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -599,6 +603,12 @@ struct CompilationScope {
     names: HashMap<String, (ValueCellId, Type, Option<ValueCellId>)>,
     /// Names of ports declared in this structure, for member access disambiguation.
     port_names: HashSet<String>,
+    /// Names of collection sub-components (sub name : List<T>), for count expression handling.
+    collection_sub_names: HashSet<String>,
+    /// Member types for collection sub-components: collection_name → { member_name → Type }.
+    /// Populated from already-compiled child templates to resolve correct types for
+    /// indexed member access (e.g., bolts[0].diameter → Type::length()).
+    collection_sub_member_types: HashMap<String, HashMap<String, Type>>,
 }
 
 impl CompilationScope {
@@ -607,6 +617,8 @@ impl CompilationScope {
             entity_name: entity_name.to_string(),
             names: HashMap::new(),
             port_names: HashSet::new(),
+            collection_sub_names: HashSet::new(),
+            collection_sub_member_types: HashMap::new(),
         }
     }
 
@@ -691,6 +703,21 @@ fn compile_expr_guarded(
                     CompiledExpr::value_ref(id.clone(), ty.clone())
                 }
                 None => {
+                    // Check if this is a collection sub name — resolve to per-member __list_{name}__{member}
+                    if scope.collection_sub_names.contains(name.as_str()) {
+                        if let Some(members) = scope.collection_sub_member_types.get(name.as_str()) {
+                            // Resolve to the first member's per-member list
+                            if let Some((first_member, member_ty)) = members.iter().next() {
+                                let list_id = ValueCellId::new(&scope.entity_name, format!("__list_{}__{}", name, first_member));
+                                let list_type = Type::List(Box::new(member_ty.clone()));
+                                return CompiledExpr::value_ref(list_id, list_type);
+                            }
+                        }
+                        // Fallback: no member types available
+                        let list_id = ValueCellId::new(&scope.entity_name, format!("__list_{}", name));
+                        let list_type = Type::List(Box::new(Type::StructureRef(name.clone())));
+                        return CompiledExpr::value_ref(list_id, list_type);
+                    }
                     diagnostics.push(
                         Diagnostic::error(format!("unresolved name: {}", name))
                             .with_label(DiagnosticLabel::new(expr.span, "not found in scope")),
@@ -880,12 +907,7 @@ fn compile_expr_guarded(
                     if let Some((id, ty)) = scope.resolve(&composite_key) {
                         let id = id.clone();
                         let ty = ty.clone();
-                        let content_hash = ContentHash::of_str(&format!("ref:{}", composite_key));
-                        return CompiledExpr {
-                            kind: CompiledExprKind::ValueRef(id),
-                            result_type: ty,
-                            content_hash,
-                        };
+                        return CompiledExpr::value_ref(id, ty);
                     } else {
                         diagnostics.push(
                             Diagnostic::error(format!(
@@ -897,6 +919,62 @@ fn compile_expr_guarded(
                         return CompiledExpr::literal(Value::Undef, Type::Real);
                     }
                 }
+
+            // Check if this is an indexed collection member access: collection[i].member
+            if let reify_syntax::ExprKind::IndexAccess { object: idx_obj, index } = &object.kind
+                && let reify_syntax::ExprKind::Ident(name) = &idx_obj.kind
+                && scope.collection_sub_names.contains(name.as_str())
+            {
+                // Resolve member type from pre-populated collection_sub_member_types
+                let member_type = scope.collection_sub_member_types
+                    .get(name.as_str())
+                    .and_then(|m| m.get(member.as_str()))
+                    .cloned()
+                    .unwrap_or(Type::Real);
+
+                // For literal integer index, resolve directly to a scoped ValueRef
+                if let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind {
+                    if n.fract() != 0.0 || *n < 0.0 {
+                        diagnostics.push(
+                            Diagnostic::error("collection index must be a non-negative integer literal")
+                                .with_label(DiagnosticLabel::new(expr.span, "invalid index")),
+                        );
+                        return CompiledExpr::literal(Value::Undef, member_type);
+                    }
+                    let i = *n as i64;
+                    let scoped_entity = format!("{}.{}[{}]", scope.entity_name, name, i);
+                    let scoped_id = ValueCellId::new(&scoped_entity, member);
+                    return CompiledExpr::value_ref(scoped_id, member_type);
+                }
+                // For non-literal index, compile as IndexAccess into a per-member synthetic list.
+                // The eval engine creates __list_{name}__{member} cells that gather each
+                // instance's member value into a List, so indexing gives the right value.
+                let list_member = format!("__list_{}__{}", name, member);
+                let list_id = ValueCellId::new(&scope.entity_name, &list_member);
+                let collection_ref = CompiledExpr::value_ref(
+                    list_id,
+                    Type::List(Box::new(member_type.clone())),
+                );
+                diagnostics.push(
+                    Diagnostic::info(format!(
+                        "dynamic collection index: {}[<expr>].{} — result depends on runtime list assembly",
+                        name, member
+                    ))
+                );
+                let compiled_idx = compile_expr_guarded(index, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+                return CompiledExpr::index_access(collection_ref, compiled_idx, member_type);
+            }
+
+            // Check if this is a collection sub member access: collection.count
+            if let reify_syntax::ExprKind::Ident(name) = &object.kind
+                && scope.collection_sub_names.contains(name.as_str())
+                && member == "count"
+            {
+                // Resolve to the synthetic __count_ cell
+                let count_member = format!("__count_{}", name);
+                let count_id = ValueCellId::new(&scope.entity_name, &count_member);
+                return CompiledExpr::value_ref(count_id, Type::Int);
+            }
 
             // For non-port member access, check if it's a known collection method
             let compiled_obj = compile_expr_guarded(object, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
@@ -1441,7 +1519,7 @@ pub fn compile(
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
                 let entity_ref = EntityDefRef::from(structure);
-                let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics);
+                let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
                 templates.push(template);
             }
             reify_syntax::Declaration::Enum(_) => {
@@ -1470,7 +1548,7 @@ pub fn compile(
             }
             reify_syntax::Declaration::Occurrence(occurrence) => {
                 let entity_ref = EntityDefRef::from(occurrence);
-                let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics);
+                let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
                 templates.push(template);
             }
             reify_syntax::Declaration::Field(_) => {
@@ -1665,12 +1743,13 @@ fn compile_entity(
     field_registry: &HashMap<String, &CompiledField>,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     diagnostics: &mut Vec<Diagnostic>,
+    compiled_templates: &[TopologyTemplate],
 ) -> TopologyTemplate {
     let entity_name = structure.name;
     let mut scope = CompilationScope::new(entity_name);
     let mut value_cells = Vec::new();
     let mut constraints = Vec::new();
-    let mut sub_components = Vec::new();
+    let mut sub_components: Vec<SubComponentDecl> = Vec::new();
     let mut ports: Vec<CompiledPort> = Vec::new();
     let mut port_names: HashMap<String, SourceSpan> = HashMap::new();
     let mut duplicate_port_names: HashSet<String> = HashSet::new();
@@ -1786,6 +1865,20 @@ fn compile_entity(
                             scope.names.insert(composite_name, (id, Type::Real, None));
                         }
                         _ => {}
+                    }
+                }
+            }
+            reify_syntax::MemberDecl::Sub(sub) => {
+                if sub.is_collection {
+                    scope.collection_sub_names.insert(sub.name.clone());
+                    // Populate member types from already-compiled child template
+                    if let Some(child_tmpl) = compiled_templates.iter().find(|t| t.name == sub.structure_name) {
+                        let member_types: HashMap<String, Type> = child_tmpl
+                            .value_cells
+                            .iter()
+                            .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
+                            .collect();
+                        scope.collection_sub_member_types.insert(sub.name.clone(), member_types);
                     }
                 }
             }
@@ -1941,47 +2034,68 @@ fn compile_entity(
                 }
             }
             reify_syntax::MemberDecl::Constraint(constraint) => {
-                let compiled_expr = compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
-
-                // Check that the constraint expression produces Bool
-                if compiled_expr.result_type != Type::Bool {
-                    diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "constraint expression has type {}, expected Bool",
-                            compiled_expr.result_type,
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            constraint.expr.span,
-                            "expected Bool",
-                        )),
-                    );
-                }
-
-                let id = ConstraintNodeId::new(entity_name, constraint_index);
-                let cc = CompiledConstraint {
-                    id,
-                    label: constraint.label.clone(),
-                    expr: compiled_expr,
-                    span: constraint.span,
-                    domain: None,
-                };
-                constraint_index += 1;
-
-                if let Some(wc) = &constraint.where_clause {
-                    compile_per_decl_constraint_guard(
-                        entity_name,
-                        wc,
-                        cc,
-                        &mut scope,
-                        enum_defs,
-                        functions,
-                        diagnostics,
-                        &mut guarded_groups,
-                        &mut structure_controlling,
-                        &mut guard_index,
-                    );
+                // Detect collection count constraint pattern:
+                //   `collection_name.count == expr`  or  `expr == collection_name.count`
+                if let Some((coll_name, count_expr)) = extract_count_constraint(&constraint.expr, &scope.collection_sub_names) {
+                    let compiled_rhs = compile_expr(count_expr, &scope, enum_defs, functions, diagnostics);
+                    let count_member = format!("__count_{}", coll_name);
+                    let count_id = ValueCellId::new(entity_name, &count_member);
+                    value_cells.push(ValueCellDecl {
+                        id: count_id.clone(),
+                        kind: ValueCellKind::Let,
+                        visibility: Visibility::Private,
+                        cell_type: Type::Int,
+                        default_expr: Some(compiled_rhs),
+                        span: constraint.span,
+                    });
+                    structure_controlling.insert(count_id.clone());
+                    // Store count_cell on the matching SubComponentDecl
+                    if let Some(sub) = sub_components.iter_mut().find(|s| s.name == coll_name) {
+                        sub.count_cell = Some(count_id);
+                    }
                 } else {
-                    constraints.push(cc);
+                    let compiled_expr = compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
+
+                    // Check that the constraint expression produces Bool
+                    if compiled_expr.result_type != Type::Bool {
+                        diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "constraint expression has type {}, expected Bool",
+                                compiled_expr.result_type,
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                constraint.expr.span,
+                                "expected Bool",
+                            )),
+                        );
+                    }
+
+                    let id = ConstraintNodeId::new(entity_name, constraint_index);
+                    let cc = CompiledConstraint {
+                        id,
+                        label: constraint.label.clone(),
+                        expr: compiled_expr,
+                        span: constraint.span,
+                        domain: None,
+                    };
+                    constraint_index += 1;
+
+                    if let Some(wc) = &constraint.where_clause {
+                        compile_per_decl_constraint_guard(
+                            entity_name,
+                            wc,
+                            cc,
+                            &mut scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            &mut guarded_groups,
+                            &mut structure_controlling,
+                            &mut guard_index,
+                        );
+                    } else {
+                        constraints.push(cc);
+                    }
                 }
             }
             reify_syntax::MemberDecl::Sub(sub) => {
@@ -2027,6 +2141,8 @@ fn compile_entity(
                     visibility: Visibility::Public,
                     args: compiled_args,
                     type_args: resolved_type_args,
+                    is_collection: sub.is_collection,
+                    count_cell: None,
                     span: sub.span,
                     content_hash: sub.content_hash,
                 });
@@ -2508,6 +2624,17 @@ fn compile_entity(
         }
     }
 
+    // Reconciliation sweep: backfill count_cell for collection sub-components
+    // whose count constraint was processed before the sub declaration.
+    // Match __count_{name} cells in value_cells to sub_components where count_cell is None.
+    for vc in &value_cells {
+        if let Some(coll_name) = vc.id.member.strip_prefix("__count_")
+            && let Some(sub) = sub_components.iter_mut().find(|s| s.name == coll_name && s.count_cell.is_none())
+        {
+            sub.count_cell = Some(vc.id.clone());
+        }
+    }
+
     // Convert parsed type parameters to compiled TypeParam structs
     let type_params = convert_type_params(structure.type_params);
 
@@ -2913,6 +3040,8 @@ fn compile_connection(
             visibility: Visibility::Private,
             args: compiled_args,
             type_args: vec![],
+            is_collection: false,
+            count_cell: None,
             span,
             content_hash: conn_hash,
         });
@@ -4146,6 +4275,44 @@ fn compile_geometry_call(
         }
         _ => None,
     }
+}
+
+/// Detect if a constraint expression matches the count constraint pattern:
+///   `collection_name.count == expr`  or  `expr == collection_name.count`
+/// Returns `(collection_name, count_expr)` where count_expr is the non-.count side.
+fn extract_count_constraint<'a>(
+    expr: &'a reify_syntax::Expr,
+    collection_sub_names: &HashSet<String>,
+) -> Option<(String, &'a reify_syntax::Expr)> {
+    if let reify_syntax::ExprKind::BinOp { op, left, right } = &expr.kind {
+        if op != "==" {
+            return None;
+        }
+        // Check LHS: collection_name.count == expr
+        if let Some(name) = extract_collection_count(left, collection_sub_names) {
+            return Some((name, right));
+        }
+        // Check RHS: expr == collection_name.count
+        if let Some(name) = extract_collection_count(right, collection_sub_names) {
+            return Some((name, left));
+        }
+    }
+    None
+}
+
+/// Check if an expression is `collection_name.count` for a known collection sub.
+fn extract_collection_count(
+    expr: &reify_syntax::Expr,
+    collection_sub_names: &HashSet<String>,
+) -> Option<String> {
+    if let reify_syntax::ExprKind::MemberAccess { object, member } = &expr.kind
+        && member == "count"
+        && let reify_syntax::ExprKind::Ident(name) = &object.kind
+        && collection_sub_names.contains(name.as_str())
+    {
+        return Some(name.clone());
+    }
+    None
 }
 
 #[cfg(test)]
