@@ -207,8 +207,8 @@ async fn diagnostics_captured_after_did_open_with_syntax_error() {
     .await
     .unwrap();
 
-    // Get diagnostics from the bridge
-    let diags = lsp.get_diagnostics(uri);
+    // Get diagnostics from the bridge (async to properly await the RwLock)
+    let diags = lsp.get_diagnostics(uri).await;
     assert!(
         !diags.is_empty(),
         "should have diagnostics for broken source"
