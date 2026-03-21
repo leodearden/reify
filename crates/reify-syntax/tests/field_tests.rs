@@ -108,3 +108,22 @@ fn parse_composed_field() {
         other => panic!("expected Composed source, got {:?}", other),
     }
 }
+
+// ── Step 7: pub field ───────────────────────────────────────────────
+
+#[test]
+fn parse_pub_field() {
+    let (decls, errors) = parse_decls(
+        "pub field def temp : Point3 -> Scalar { source = analytical { |p| p } }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let field = match &decls[0] {
+        Declaration::Field(f) => f,
+        other => panic!("expected Field, got {:?}", other),
+    };
+
+    assert_eq!(field.name, "temp");
+    assert!(field.is_pub);
+}
