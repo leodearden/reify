@@ -76,6 +76,30 @@ pub enum DefaultKind {
     Constraint(reify_syntax::ConstraintDecl),
 }
 
+/// The compiled source of a field.
+#[derive(Debug, Clone)]
+pub enum CompiledFieldSource {
+    /// Analytical field: defined by a lambda expression.
+    Analytical { expr: CompiledExpr },
+    /// Sampled field: defined by config key-value pairs.
+    Sampled { config: Vec<(String, CompiledExpr)> },
+    /// Composed field: defined by a composition lambda.
+    Composed { expr: CompiledExpr },
+    /// Imported field: placeholder for externally-sourced field data.
+    Imported,
+}
+
+/// A compiled field declaration.
+#[derive(Debug, Clone)]
+pub struct CompiledField {
+    pub name: String,
+    pub is_pub: bool,
+    pub domain_type: Type,
+    pub codomain_type: Type,
+    pub source: CompiledFieldSource,
+    pub content_hash: ContentHash,
+}
+
 /// A compiled module — the output of the compiler.
 #[derive(Debug, Clone)]
 pub struct CompiledModule {
@@ -84,6 +108,7 @@ pub struct CompiledModule {
     pub enum_defs: Vec<reify_types::EnumDef>,
     pub functions: Vec<CompiledFunction>,
     pub trait_defs: Vec<CompiledTrait>,
+    pub fields: Vec<CompiledField>,
     pub templates: Vec<TopologyTemplate>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
@@ -1278,6 +1303,7 @@ pub fn compile(
 ) -> CompiledModule {
     let mut imports = Vec::new();
     let mut functions = Vec::new();
+    let mut fields = Vec::new();
     let mut templates = Vec::new();
     let mut diagnostics = Vec::new();
 
@@ -1373,8 +1399,10 @@ pub fn compile(
                 let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &mut pending_bound_checks, &mut diagnostics);
                 templates.push(template);
             }
-            reify_syntax::Declaration::Field(_field_def) => {
-                // Field compilation handled in later steps.
+            reify_syntax::Declaration::Field(field_def) => {
+                if let Some(compiled) = compile_field(field_def, &enum_defs, &functions, &mut diagnostics) {
+                    fields.push(compiled);
+                }
             }
         }
     }
@@ -1483,6 +1511,7 @@ pub fn compile(
         enum_defs,
         functions,
         trait_defs,
+        fields,
         templates,
         diagnostics,
         content_hash,
@@ -3615,6 +3644,88 @@ fn compile_function(
             let_bindings: compiled_lets,
             result_expr,
         },
+        content_hash,
+    })
+}
+
+/// Resolve a type name in field context. Unlike resolve_type_name, unresolved
+/// names become StructureRef (geometric domain types like Point3, Vector3).
+fn resolve_field_type_name(name: &str) -> Type {
+    resolve_type_name(name).unwrap_or_else(|| Type::StructureRef(name.to_string()))
+}
+
+/// Compile a field declaration into a CompiledField.
+fn compile_field(
+    field_def: &reify_syntax::FieldDef,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledField> {
+    let domain_type = resolve_field_type_name(&field_def.domain_type.name);
+    let codomain_type = resolve_field_type_name(&field_def.codomain_type.name);
+
+    // Create a scope for compiling field source expressions
+    let scope = CompilationScope::new(&field_def.name);
+
+    let source = match &field_def.source {
+        reify_syntax::FieldSource::Analytical { expr } => {
+            let compiled_expr = compile_expr(expr, &scope, enum_defs, functions, diagnostics);
+            CompiledFieldSource::Analytical { expr: compiled_expr }
+        }
+        reify_syntax::FieldSource::Sampled { config } => {
+            let compiled_config: Vec<(String, CompiledExpr)> = config
+                .iter()
+                .map(|(key, val_expr)| {
+                    // In sampled config, bare identifiers are treated as string
+                    // constants (e.g., `interpolation = linear` -> "linear").
+                    let compiled = if let reify_syntax::ExprKind::Ident(name) = &val_expr.kind {
+                        if scope.resolve(name).is_none() {
+                            CompiledExpr::literal(Value::String(name.clone()), Type::String)
+                        } else {
+                            compile_expr(val_expr, &scope, enum_defs, functions, diagnostics)
+                        }
+                    } else {
+                        compile_expr(val_expr, &scope, enum_defs, functions, diagnostics)
+                    };
+                    (key.clone(), compiled)
+                })
+                .collect();
+            CompiledFieldSource::Sampled { config: compiled_config }
+        }
+        reify_syntax::FieldSource::Composed { expr } => {
+            let compiled_expr = compile_expr(expr, &scope, enum_defs, functions, diagnostics);
+            CompiledFieldSource::Composed { expr: compiled_expr }
+        }
+        reify_syntax::FieldSource::Imported { .. } => {
+            CompiledFieldSource::Imported
+        }
+    };
+
+    // Compute content hash
+    let content_hash = {
+        let name_hash = ContentHash::of_str(&field_def.name);
+        let domain_hash = ContentHash::of_str(&format!("{}", domain_type));
+        let codomain_hash = ContentHash::of_str(&format!("{}", codomain_type));
+        let source_hash = match &source {
+            CompiledFieldSource::Analytical { expr } => expr.content_hash,
+            CompiledFieldSource::Sampled { config } => {
+                let hashes = config.iter().map(|(k, e)| {
+                    ContentHash::of_str(k).combine(e.content_hash)
+                });
+                ContentHash::combine_all(hashes)
+            }
+            CompiledFieldSource::Composed { expr } => expr.content_hash,
+            CompiledFieldSource::Imported => ContentHash::of(&[0u8]),
+        };
+        ContentHash::combine_all([name_hash, domain_hash, codomain_hash, source_hash].into_iter())
+    };
+
+    Some(CompiledField {
+        name: field_def.name.clone(),
+        is_pub: field_def.is_pub,
+        domain_type,
+        codomain_type,
+        source,
         content_hash,
     })
 }
