@@ -71,6 +71,16 @@ export function Viewport(props: ViewportProps) {
     });
     resizeObserver.observe(containerRef);
 
+    // Render-on-demand: keep rAF loop alive (for OrbitControls damping)
+    // but only call renderer.render when something has changed.
+    let needsRender = true;
+    function requestRender() {
+      needsRender = true;
+    }
+
+    // OrbitControls 'change' event fires during camera movement (including damping)
+    controls.controls.addEventListener('change', requestRender);
+
     // Animation loop with disposed guard to prevent race condition
     let disposed = false;
     let animationFrameId = 0;
@@ -78,7 +88,10 @@ export function Viewport(props: ViewportProps) {
       if (disposed) return;
       animationFrameId = requestAnimationFrame(animate);
       controls.update();
-      renderer.render(scene, camera);
+      if (needsRender) {
+        renderer.render(scene, camera);
+        needsRender = false;
+      }
     }
     animate();
 
@@ -86,6 +99,7 @@ export function Viewport(props: ViewportProps) {
     onCleanup(() => {
       disposed = true;
       cancelAnimationFrame(animationFrameId);
+      controls.controls.removeEventListener('change', requestRender);
       resizeObserver.disconnect();
       selection.dispose();
       controls.dispose();
