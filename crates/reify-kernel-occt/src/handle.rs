@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, oneshot};
 /// Requests sent from `OcctKernelHandle` to the dedicated kernel thread.
 enum OcctRequest {
     Execute {
-        op: GeometryOp,
+        op: Box<GeometryOp>,
         reply: oneshot::Sender<Result<GeometryHandle, GeometryError>>,
     },
     Query {
@@ -163,7 +163,7 @@ impl OcctKernelHandle {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .blocking_send(OcctRequest::Execute {
-                op: op.clone(),
+                op: Box::new(op.clone()),
                 reply: reply_tx,
             })
             .map_err(|_| GeometryError::OperationFailed("kernel thread died".into()))?;
@@ -242,7 +242,7 @@ impl OcctKernelHandle {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(OcctRequest::Execute {
-                op: op.clone(),
+                op: Box::new(op.clone()),
                 reply: reply_tx,
             })
             .await

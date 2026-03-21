@@ -124,6 +124,11 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Trait(decl));
                     }
                 }
+                "field_definition" => {
+                    if let Some(decl) = self.lower_field(child) {
+                        self.declarations.push(Declaration::Field(decl));
+                    }
+                }
                 "ERROR" => {
                     self.errors.push(ParseError {
                         message: format!("syntax error: {}", self.node_text(child)),
@@ -475,6 +480,73 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
+    }
+
+    fn lower_field(&mut self, node: tree_sitter::Node) -> Option<FieldDef> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+        let is_pub = self.has_pub_keyword(node);
+
+        let domain_node = node.child_by_field_name("domain")?;
+        let domain_type = self.lower_type_expr_node(domain_node);
+
+        let codomain_node = node.child_by_field_name("codomain")?;
+        let codomain_type = self.lower_type_expr_node(codomain_node);
+
+        let source_node = node.child_by_field_name("source")?;
+        let source = self.lower_field_source(source_node)?;
+
+        Some(FieldDef {
+            name,
+            is_pub,
+            domain_type,
+            codomain_type,
+            source,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_field_source(&mut self, node: tree_sitter::Node) -> Option<FieldSource> {
+        // field_source is a choice node; get its first named child
+        let inner = node.named_child(0)?;
+        match inner.kind() {
+            "field_source_analytical" => {
+                let expr_node = inner.child_by_field_name("expr")?;
+                let expr = self.lower_expr(expr_node)?;
+                Some(FieldSource::Analytical { expr })
+            }
+            "field_source_sampled" => {
+                let mut config = Vec::new();
+                let mut cursor = inner.walk();
+                for child in inner.named_children(&mut cursor) {
+                    if child.kind() == "field_config_entry"
+                        && let Some(key_node) = child.child_by_field_name("key")
+                    {
+                        let key = self.node_text(key_node).to_string();
+                        if let Some(val_node) = child.child_by_field_name("value")
+                            && let Some(val_expr) = self.lower_expr(val_node)
+                        {
+                            config.push((key, val_expr));
+                        }
+                    }
+                }
+                Some(FieldSource::Sampled { config })
+            }
+            "field_source_composed" => {
+                let expr_node = inner.child_by_field_name("expr")?;
+                let expr = self.lower_expr(expr_node)?;
+                Some(FieldSource::Composed { expr })
+            }
+            "field_source_imported" => {
+                let path_node = inner.child_by_field_name("path")?;
+                let raw = self.node_text(path_node);
+                // Strip surrounding quotes
+                let path = raw.trim_matches('"').to_string();
+                Some(FieldSource::Imported { path })
+            }
+            _ => None,
+        }
     }
 
     fn lower_fn_param(&self, node: tree_sitter::Node) -> Option<FnParam> {

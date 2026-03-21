@@ -72,7 +72,24 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             if evaluated_args.iter().any(|v| v.is_undef()) {
                 return Value::Undef;
             }
-            reify_stdlib::eval_builtin(&function.name, &evaluated_args)
+            // Field operations: sample, gradient, divergence, curl
+            // These need access to the eval context for lambda application,
+            // so they're handled here rather than in stdlib.
+            match function.name.as_str() {
+                "sample" if evaluated_args.len() == 2 => {
+                    if let Value::Field { lambda, .. } = &evaluated_args[0] {
+                        apply_lambda(lambda, &evaluated_args[1..], ctx)
+                    } else {
+                        Value::Undef
+                    }
+                }
+                "gradient" | "divergence" | "curl" if evaluated_args.len() == 1 => {
+                    // Stub: these field operations are not yet implemented.
+                    // They require numeric differentiation infrastructure.
+                    Value::Undef
+                }
+                _ => reify_stdlib::eval_builtin(&function.name, &evaluated_args),
+            }
         }
 
         CompiledExprKind::Match {

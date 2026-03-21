@@ -14,7 +14,7 @@ use reify_types::{
     AutoParam, CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintSolver, ContentHash,
     DeterminacyState, Diagnostic, ExportFormat, GeometryHandleId, GeometryKernel,
     PersistentMap, ResolutionProblem, Satisfaction, SnapshotId, SnapshotProvenance,
-    SolveResult, Value, ValueCellId, ValueMap, VersionId,
+    SolveResult, Value, ValueCellId, ValueMap, VersionId, FIELD_ENTITY_PREFIX,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
@@ -641,6 +641,57 @@ impl Engine {
             demand.add_demand(NodeId::Realization(rnode.id.clone()));
         }
         demand.rebuild_cone(&snapshot.graph);
+
+        // Evaluate field declarations first: they must be available in the
+        // values map before templates are evaluated, because structure
+        // expressions may reference fields (e.g., `sample(my_field, point)`).
+        for field in &module.fields {
+            let lambda_value = match &field.source {
+                reify_compiler::CompiledFieldSource::Analytical { expr } => {
+                    let ctx = reify_expr::EvalContext::new(&values, functions);
+                    let val = reify_expr::eval_expr(expr, &ctx);
+                    Box::new(val)
+                }
+                reify_compiler::CompiledFieldSource::Composed { expr } => {
+                    let ctx = reify_expr::EvalContext::new(&values, functions);
+                    let val = reify_expr::eval_expr(expr, &ctx);
+                    Box::new(val)
+                }
+                reify_compiler::CompiledFieldSource::Sampled { .. }
+                | reify_compiler::CompiledFieldSource::Imported => {
+                    Box::new(Value::Undef)
+                }
+            };
+
+            let source_kind = match &field.source {
+                reify_compiler::CompiledFieldSource::Analytical { .. } => {
+                    reify_types::FieldSourceKind::Analytical
+                }
+                reify_compiler::CompiledFieldSource::Sampled { .. } => {
+                    reify_types::FieldSourceKind::Sampled
+                }
+                reify_compiler::CompiledFieldSource::Composed { .. } => {
+                    reify_types::FieldSourceKind::Composed
+                }
+                reify_compiler::CompiledFieldSource::Imported => {
+                    reify_types::FieldSourceKind::Imported
+                }
+            };
+
+            let field_value = Value::Field {
+                domain_type: field.domain_type.clone(),
+                codomain_type: field.codomain_type.clone(),
+                source: source_kind,
+                lambda: lambda_value,
+            };
+
+            let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &field.name);
+            values.insert(field_id.clone(), field_value.clone());
+            snapshot.values.insert(
+                field_id,
+                (field_value, DeterminacyState::Determined),
+            );
+        }
 
         // Two-pass evaluation (same logic as before)
         for template in &module.templates {

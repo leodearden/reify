@@ -88,6 +88,15 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "cosh" => unary_f64(args, |x| Value::Real(x.cosh())),
         "tanh" => unary_f64(args, |x| Value::Real(x.tanh())),
 
+        // --- Field operations (stubs) ---
+        // These are handled by reify-expr's eval_expr FunctionCall interceptor
+        // for actual lambda application; the stdlib entries serve as documentation
+        // and fallback for direct stdlib calls.
+        "sample" => Value::Undef,     // Requires EvalContext for lambda application
+        "gradient" => Value::Undef,   // Numeric differentiation not yet implemented
+        "divergence" => Value::Undef, // Numeric differentiation not yet implemented
+        "curl" => Value::Undef,       // Numeric differentiation not yet implemented
+
         _ => Value::Undef,
     }
 }
@@ -607,5 +616,58 @@ mod tests {
             }
             other => panic!("expected Angle Scalar, got {:?}", other),
         }
+    }
+
+    // --- Field operation stubs (step-25) ---
+
+    #[test]
+    fn gradient_scalar_field_returns_undef() {
+        // gradient(field) on a scalar field should return Undef (stub).
+        let field = Value::Field {
+            domain_type: reify_types::Type::StructureRef("Point3".into()),
+            codomain_type: reify_types::Type::length(),
+            source: reify_types::FieldSourceKind::Analytical,
+            lambda: Box::new(Value::Undef),
+        };
+        let result = eval_builtin("gradient", &[field]);
+        assert!(result.is_undef(), "gradient stub should return Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn divergence_field_returns_undef() {
+        let field = Value::Field {
+            domain_type: reify_types::Type::StructureRef("Point3".into()),
+            codomain_type: reify_types::Type::StructureRef("Vector3".into()),
+            source: reify_types::FieldSourceKind::Analytical,
+            lambda: Box::new(Value::Undef),
+        };
+        let result = eval_builtin("divergence", &[field]);
+        assert!(result.is_undef(), "divergence stub should return Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn curl_field_returns_undef() {
+        let field = Value::Field {
+            domain_type: reify_types::Type::StructureRef("Point3".into()),
+            codomain_type: reify_types::Type::StructureRef("Vector3".into()),
+            source: reify_types::FieldSourceKind::Analytical,
+            lambda: Box::new(Value::Undef),
+        };
+        let result = eval_builtin("curl", &[field]);
+        assert!(result.is_undef(), "curl stub should return Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn sample_in_stdlib_returns_undef() {
+        // sample() in stdlib returns Undef because lambda application
+        // needs an EvalContext (handled in reify-expr instead).
+        let field = Value::Field {
+            domain_type: reify_types::Type::StructureRef("Point3".into()),
+            codomain_type: reify_types::Type::length(),
+            source: reify_types::FieldSourceKind::Analytical,
+            lambda: Box::new(Value::Undef),
+        };
+        let result = eval_builtin("sample", &[field, Value::Int(42)]);
+        assert!(result.is_undef(), "sample in stdlib should return Undef (handled in eval_expr), got {:?}", result);
     }
 }

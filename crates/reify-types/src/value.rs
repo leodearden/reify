@@ -6,6 +6,15 @@ use crate::hash::ContentHash;
 use crate::identity::ValueCellId;
 use crate::persistent::PersistentMap;
 
+/// The source kind of a field value at runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum FieldSourceKind {
+    Analytical,
+    Sampled,
+    Composed,
+    Imported,
+}
+
 /// Runtime values in Reify (M1 subset).
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -25,6 +34,14 @@ pub enum Value {
     Map(BTreeMap<Value, Value>),
     /// Optional value: Some(value) or None.
     Option(Option<Box<Value>>),
+    /// Field value: a typed domain->codomain mapping with stored lambda/data.
+    Field {
+        domain_type: crate::ty::Type,
+        codomain_type: crate::ty::Type,
+        source: FieldSourceKind,
+        /// The callable lambda for analytical/composed fields, or Undef for sampled/imported.
+        lambda: Box<Value>,
+    },
     /// Lambda closure: captures environment values and body expression.
     Lambda {
         params: Vec<(String, ValueCellId)>,
@@ -143,6 +160,14 @@ impl Value {
                 None => ContentHash::of(&[11, 0]),
                 Some(v) => ContentHash::of(&[11, 1]).combine(v.content_hash()),
             },
+            Value::Field { domain_type, codomain_type, source, lambda } => {
+                let mut h = ContentHash::of(&[13]);
+                h = h.combine(ContentHash::of_str(&format!("{}", domain_type)));
+                h = h.combine(ContentHash::of_str(&format!("{}", codomain_type)));
+                h = h.combine(ContentHash::of_str(&format!("{:?}", source)));
+                h = h.combine(lambda.content_hash());
+                h
+            }
             Value::Lambda { params, body, captures } => {
                 let mut h = ContentHash::of(&[12]);
                 h = h.combine(ContentHash::of(&(params.len() as u64).to_le_bytes()));
@@ -179,6 +204,10 @@ impl PartialEq for Value {
             (Value::Set(a), Value::Set(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => a == b,
             (Value::Option(a), Value::Option(b)) => a == b,
+            (
+                Value::Field { domain_type: ad, codomain_type: ac, source: as_, lambda: al },
+                Value::Field { domain_type: bd, codomain_type: bc, source: bs, lambda: bl },
+            ) => ad == bd && ac == bc && as_ == bs && al == bl,
             (
                 Value::Lambda { params: ap, body: ab, captures: ac },
                 Value::Lambda { params: bp, body: bb, captures: bc },
@@ -225,7 +254,8 @@ impl Ord for Value {
                 Value::Set(_) => 8,
                 Value::Map(_) => 9,
                 Value::Option(_) => 10,
-                Value::Lambda { .. } => 11,
+                Value::Field { .. } => 11,
+                Value::Lambda { .. } => 12,
             }
         }
 
@@ -260,6 +290,15 @@ impl Ord for Value {
                 a.iter().cmp(b.iter())
             }
             (Value::Option(a), Value::Option(b)) => a.cmp(b),
+            (
+                Value::Field { domain_type: ad, codomain_type: ac, source: as_, lambda: al },
+                Value::Field { domain_type: bd, codomain_type: bc, source: bs, lambda: bl },
+            ) => {
+                format!("{}", ad).cmp(&format!("{}", bd))
+                    .then_with(|| format!("{}", ac).cmp(&format!("{}", bc)))
+                    .then_with(|| format!("{:?}", as_).cmp(&format!("{:?}", bs)))
+                    .then_with(|| al.cmp(bl))
+            }
             (
                 Value::Lambda { params: ap, body: ab, captures: ac },
                 Value::Lambda { params: bp, body: bb, captures: bc },
@@ -327,6 +366,9 @@ impl std::fmt::Display for Value {
             }
             Value::Option(None) => write!(f, "None"),
             Value::Option(Some(v)) => write!(f, "Some({})", v),
+            Value::Field { domain_type, codomain_type, source, .. } => {
+                write!(f, "Field<{}, {}>({:?})", domain_type, codomain_type, source)
+            }
             Value::Lambda { params, .. } => {
                 write!(f, "|")?;
                 for (i, (name, _)) in params.iter().enumerate() {
@@ -1243,6 +1285,32 @@ mod tests {
         let neg = Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH };
         assert_ne!(pos, neg);
         assert_ne!(pos.content_hash(), neg.content_hash());
+    }
+
+    // --- Field tests (step-11) ---
+
+    #[test]
+    fn value_field_variant() {
+        use crate::ty::Type;
+        let field_val = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Analytical,
+            lambda: Box::new(Value::Undef),
+        };
+        // Display
+        let display = format!("{}", field_val);
+        assert!(display.contains("Field"), "expected display to contain 'Field', got: {}", display);
+        // Content hash determinism
+        let field_val2 = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Analytical,
+            lambda: Box::new(Value::Undef),
+        };
+        assert_eq!(field_val.content_hash(), field_val2.content_hash());
+        // Not equal to Undef
+        assert_ne!(field_val, Value::Undef);
     }
 
     #[test]

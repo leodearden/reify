@@ -16,7 +16,7 @@ pub use identity::*;
 pub use hash::ContentHash;
 pub use dimension::{DimensionVector, Rational};
 pub use ty::Type;
-pub use value::{DeterminacyState, EvalError, Freshness, Satisfaction, Value, ValueMap};
+pub use value::{DeterminacyState, EvalError, FieldSourceKind, Freshness, Satisfaction, Value, ValueMap};
 pub use expr::{BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm, QuantifierKind, ResolvedFunction, UnOp};
 pub use constraint::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,

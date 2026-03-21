@@ -31,6 +31,8 @@ pub enum Type {
     /// (e.g., `Bolt` in `Box<Bolt>()`). Distinct from TypeParam which
     /// represents unresolved type variables needing substitution.
     StructureRef(String),
+    /// Field type: a mapping from domain to codomain (e.g., Field<Point3, Scalar>).
+    Field { domain: Box<Type>, codomain: Box<Type> },
 }
 
 impl Type {
@@ -164,6 +166,24 @@ mod tests {
         };
         assert!(!func.is_numeric());
     }
+
+    #[test]
+    fn type_field_variant() {
+        let field_ty = Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(Type::Real),
+        };
+        // Display
+        assert_eq!(format!("{}", field_ty), "Field<Real, Real>");
+        // Equality
+        let field_ty2 = Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(Type::Real),
+        };
+        assert_eq!(field_ty, field_ty2);
+        // Not numeric
+        assert!(!field_ty.is_numeric());
+    }
 }
 
 impl std::fmt::Display for Type {
@@ -191,6 +211,7 @@ impl std::fmt::Display for Type {
             }
             Type::TypeParam(name) => write!(f, "{}", name),
             Type::StructureRef(name) => write!(f, "{}", name),
+            Type::Field { domain, codomain } => write!(f, "Field<{}, {}>", domain, codomain),
         }
     }
 }
