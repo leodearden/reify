@@ -131,3 +131,106 @@ purpose lightweight(subject : Structure) {
     );
     assert!(!engine.is_purpose_active("lightweight"));
 }
+
+// ── Step 17: full pipeline integration test ────────────────────────
+
+#[test]
+fn purpose_full_pipeline_integration() {
+    // Full pipeline: parse → compile → eval → activate purpose → verify
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+    param height : Length = 60mm
+    constraint width > 0mm
+    constraint height > 0mm
+}
+
+purpose manufacturing_ready(subject : Structure) {
+    constraint 80 > 10
+    constraint 60 > 5
+}
+"#;
+
+    // Parse
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    // Verify purpose was parsed
+    let purpose_count = parsed
+        .declarations
+        .iter()
+        .filter(|d| matches!(d, reify_syntax::Declaration::Purpose(_)))
+        .count();
+    assert_eq!(purpose_count, 1, "should parse one purpose declaration");
+
+    // Compile
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    // Verify purpose was compiled
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "should compile one purpose"
+    );
+    assert_eq!(compiled.compiled_purposes[0].name, "manufacturing_ready");
+    assert_eq!(compiled.compiled_purposes[0].constraints.len(), 2);
+
+    // Eval
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+    assert!(
+        result.diagnostics.is_empty(),
+        "eval diagnostics: {:?}",
+        result.diagnostics
+    );
+
+    // Count initial constraints
+    let snapshot = engine.snapshot().expect("should have snapshot");
+    let initial_constraints = snapshot.graph.constraints.len();
+    assert!(initial_constraints >= 2, "Bracket has at least 2 constraints");
+
+    // Activate purpose
+    engine.activate_purpose("manufacturing_ready", "Bracket");
+    assert!(engine.is_purpose_active("manufacturing_ready"));
+
+    // Purpose constraints injected
+    let snapshot = engine.snapshot().expect("snapshot after activate");
+    assert_eq!(
+        snapshot.graph.constraints.len(),
+        initial_constraints + 2,
+        "should inject 2 purpose constraints"
+    );
+
+    // Deactivate purpose
+    engine.deactivate_purpose("manufacturing_ready");
+    assert!(!engine.is_purpose_active("manufacturing_ready"));
+
+    // Constraints restored
+    let snapshot = engine.snapshot().expect("snapshot after deactivate");
+    assert_eq!(
+        snapshot.graph.constraints.len(),
+        initial_constraints,
+        "constraints should be restored after deactivation"
+    );
+
+    // Re-activation should work
+    engine.activate_purpose("manufacturing_ready", "Bracket");
+    assert!(engine.is_purpose_active("manufacturing_ready"));
+    let snapshot = engine.snapshot().expect("snapshot after re-activate");
+    assert_eq!(
+        snapshot.graph.constraints.len(),
+        initial_constraints + 2,
+        "re-activation should inject constraints again"
+    );
+}
