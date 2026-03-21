@@ -50,3 +50,25 @@ fn collection_member_typo_produces_diagnostic() {
         errors
     );
 }
+// ── H3: geometry call diagnostics ──────────────────────────────────────
+
+#[test]
+fn geometry_call_wrong_arg_count_produces_diagnostic() {
+    // box() expects 3 arguments — passing only 2 should produce a diagnostic
+    let source = r#"
+        structure S {
+            let shape = box(10mm, 20mm)
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_arg_count_error = errors
+        .iter()
+        .any(|d| d.message.contains("expects 3 arguments"));
+    assert!(
+        has_arg_count_error,
+        "expected diagnostic about argument count, got: {:?}",
+        errors
+    );
+}
