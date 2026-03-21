@@ -636,8 +636,9 @@ describe('App changedFiles multi-file tracking (R-1)', () => {
       expect(screen.getByTestId('reload-prompt')).toBeTruthy();
     });
     // Should show single file, not "2 files changed"
-    expect(screen.getByText(/bracket\.ri/)).toBeTruthy();
-    expect(screen.queryByText(/2 files changed/)).toBeNull();
+    const reloadPrompt = screen.getByTestId('reload-prompt');
+    expect(reloadPrompt.textContent).toMatch(/bracket\.ri/);
+    expect(reloadPrompt.textContent).not.toMatch(/2 files changed/);
   });
 
   it('handleReload reloads all files in the changed set', async () => {

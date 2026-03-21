@@ -67,8 +67,8 @@ const App: Component = () => {
     setToasts((prev) => [...prev, { id, type, message }]);
   }
 
-  // Reload prompt state
-  const [changedFile, setChangedFile] = createSignal<string | null>(null);
+  // Reload prompt state — tracks all files changed since last reload/dismiss
+  const [changedFiles, setChangedFiles] = createSignal<Set<string>>(new Set());
 
   // Navigation state
   const [scrollToLocation, setScrollToLocation] = createSignal<SourceLocation | null>(null);
@@ -152,7 +152,7 @@ const App: Component = () => {
         // Only show reload prompt if the file is currently open
         const isOpen = editorStore.state.openFiles.some((f) => f.path === data.path);
         if (isOpen) {
-          setChangedFile(data.path);
+          setChangedFiles((prev) => new Set([...prev, data.path]));
         }
       });
       if (!alive) {
@@ -201,19 +201,22 @@ const App: Component = () => {
   }
 
   function handleReload() {
-    const path = changedFile();
-    if (path) {
-      bridgeOpenFile(path)
-        .then((fileData) => {
-          editorStore.updateFileContent(fileData.path, fileData.content);
-          setChangedFile(null);
-        })
+    const files = changedFiles();
+    if (files.size > 0) {
+      const promises = Array.from(files).map((path) =>
+        bridgeOpenFile(path)
+          .then((fileData) => {
+            editorStore.updateFileContent(fileData.path, fileData.content);
+          }),
+      );
+      Promise.all(promises)
+        .then(() => setChangedFiles(new Set()))
         .catch((err) => console.error('Reload failed:', err));
     }
   }
 
   function handleDismissReload() {
-    setChangedFile(null);
+    setChangedFiles(new Set());
   }
 
   function handleDismissToast(id: string) {
@@ -268,7 +271,7 @@ const App: Component = () => {
     <div data-testid="app-layout" class={styles.layout}>
       <Toolbar onExport={handleExport} onFitToView={handleFitToView} />
       <ReloadPrompt
-        filePaths={changedFile() ? [changedFile()!] : []}
+        filePaths={Array.from(changedFiles())}
         onReload={handleReload}
         onDismiss={handleDismissReload}
       />
