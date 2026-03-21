@@ -304,9 +304,27 @@ impl Engine {
         // Build a unique entity prefix for the purpose-injected constraints
         let purpose_entity = format!("purpose:{}@{}", purpose_name, entity_ref);
 
+        // Rewrite compiled expressions: substitute ValueCellId(purpose_name, param)
+        // with ValueCellId(entity_ref, param) so references resolve to existing
+        // value cells in the evaluation graph.
+        let mut rewritten_constraints = purpose.constraints.clone();
+        for constraint in &mut rewritten_constraints {
+            constraint.expr.remap_entity(purpose_name, entity_ref);
+        }
+
+        let rewritten_objective = purpose.objective.clone().map(|mut obj| {
+            match &mut obj {
+                OptimizationObjective::Minimize(expr)
+                | OptimizationObjective::Maximize(expr) => {
+                    expr.remap_entity(purpose_name, entity_ref);
+                }
+            }
+            obj
+        });
+
         // Inject each of the purpose's compiled constraints into the evaluation graph
         let mut injected_ids = Vec::new();
-        for (i, constraint) in purpose.constraints.iter().enumerate() {
+        for (i, constraint) in rewritten_constraints.iter().enumerate() {
             let constraint_id = ConstraintNodeId::new(&purpose_entity, i as u32);
             let node = crate::graph::ConstraintNodeData {
                 id: constraint_id.clone(),
@@ -324,7 +342,7 @@ impl Engine {
         self.active_purposes.insert(purpose_name.to_string(), injected_ids);
 
         // Inject the optimization objective if the purpose has one
-        if let Some(ref objective) = purpose.objective {
+        if let Some(ref objective) = rewritten_objective {
             self.active_objective_map
                 .insert(purpose_name.to_string(), objective.clone());
         }

@@ -1380,9 +1380,9 @@ fn compile_purpose(
 
     // Register purpose params as identifiers in scope.
     // Each param binds an entity reference (e.g., `subject : Structure`).
-    // For now, register them as Real type so member access compiles.
+    // Use StructureRef so member access resolves correctly against the entity type.
     for param in &purpose_def.params {
-        scope.register(&param.name, Type::Real);
+        scope.register(&param.name, Type::StructureRef(param.entity_kind.clone()));
     }
 
     let mut constraints = Vec::new();
