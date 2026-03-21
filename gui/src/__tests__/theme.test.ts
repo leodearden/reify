@@ -97,4 +97,26 @@ describe('THEME_TOKENS', () => {
       ).toBe(value);
     }
   });
+
+  it('applyTheme works synchronously without requiring a component mount', () => {
+    // Clear all CSS variables first
+    const style = document.documentElement.style;
+    for (let i = style.length - 1; i >= 0; i--) {
+      const prop = style.item(i);
+      if (prop.startsWith('--reify-')) {
+        style.removeProperty(prop);
+      }
+    }
+
+    // Verify cleared
+    expect(style.getPropertyValue('--reify-background')).toBe('');
+
+    // Call applyTheme synchronously — CSS variables must be immediately available
+    applyTheme();
+
+    // Verify synchronously available (no await, no onMount needed)
+    expect(style.getPropertyValue('--reify-background')).toBe('#1e1e2e');
+    expect(style.getPropertyValue('--reify-accent')).toBe('#89b4fa');
+    expect(style.getPropertyValue('--reify-surface0')).toBe('#313244');
+  });
 });
