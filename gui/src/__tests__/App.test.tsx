@@ -10,9 +10,15 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
-// Mock Viewport (requires Three.js / WebGL which jsdom doesn't support)
+// Capture Viewport props for navigation tests
+let capturedViewportProps: any = {};
 vi.mock('../viewport', () => ({
-  Viewport: (_props: any) => {
+  Viewport: (props: any) => {
+    capturedViewportProps = props;
+    // Invoke flyToEntityRef with a mock function if provided
+    if (props.flyToEntityRef) {
+      props.flyToEntityRef((_path: string) => {});
+    }
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'viewport-container');
     el.textContent = 'Viewport Mock';
@@ -48,6 +54,8 @@ vi.mock('../bridge', () => ({
   exportGeometry: vi.fn().mockResolvedValue(undefined),
   updateSource: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
+  getSourceLocation: vi.fn().mockResolvedValue({ file: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
+  focusEntity: vi.fn().mockResolvedValue(undefined),
   onMeshUpdate: vi.fn().mockResolvedValue(() => {}),
   onValueUpdate: vi.fn().mockResolvedValue(() => {}),
   onConstraintUpdate: vi.fn().mockResolvedValue(() => {}),
@@ -63,6 +71,7 @@ import * as bridge from '../bridge';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  capturedViewportProps = {};
   // Reset getInitialState to default empty state
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
 });
@@ -415,6 +424,107 @@ describe('App new component integration', () => {
     render(() => <App />);
     await waitFor(() => {
       expect(bridge.onFileChanged).toHaveBeenCalled();
+    });
+  });
+});
+
+describe('App navigation wiring', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [
+      {
+        cell_id: 'c1',
+        name: 'width',
+        value: '80',
+        unit: 'mm',
+        determinacy: 'determined',
+        entity_path: 'Bracket.width',
+      },
+    ],
+    constraints: [
+      {
+        node_id: 'n1',
+        expression: 'width > 0',
+        status: 'violated',
+        details: null,
+        parameter_ids: ['c1'],
+      },
+    ],
+    files: [],
+  };
+
+  it('viewport onSelect triggers getSourceLocation from bridge', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(capturedViewportProps.onSelect).toBeDefined();
+    });
+
+    // Simulate viewport selection
+    capturedViewportProps.onSelect('Bracket');
+
+    await waitFor(() => {
+      expect(bridge.getSourceLocation).toHaveBeenCalledWith('Bracket');
+    });
+  });
+
+  it('App passes onGroupDoubleClick to PropertyEditor that calls bridge.focusEntity', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+    render(() => <App />);
+
+    // Wait for PropertyEditor to render with the values
+    await waitFor(() => {
+      expect(screen.getByText('Bracket')).toBeTruthy();
+    });
+
+    // Double-click the group header (this triggers onGroupDoubleClick)
+    const bracketHeader = screen.getByText('Bracket');
+    fireEvent.dblClick(bracketHeader);
+
+    await waitFor(() => {
+      expect(bridge.focusEntity).toHaveBeenCalledWith('Bracket');
+    });
+  });
+
+  it('App passes onConstraintSelect to ConstraintPanel', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+    render(() => <App />);
+
+    // Wait for ConstraintPanel to render
+    await waitFor(() => {
+      expect(screen.getByTestId('constraint-row-n1')).toBeTruthy();
+    });
+
+    // Click a constraint row
+    const row = screen.getByTestId('constraint-row-n1');
+    fireEvent.click(row);
+
+    // After clicking a constraint, the selectionStore should be updated.
+    // The PropertyEditor should reflect highlighted params — the row c1 should get data-highlighted
+    await waitFor(() => {
+      const propRow = screen.getByTestId('prop-row-c1');
+      expect(propRow.hasAttribute('data-highlighted')).toBe(true);
+    });
+  });
+
+  it('selectionStore selectedEntity updates after viewport select', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(capturedViewportProps.onSelect).toBeDefined();
+    });
+
+    // Simulate viewport selection
+    capturedViewportProps.onSelect('Bracket');
+
+    // Wait for getSourceLocation to resolve and selectEntity to be called
+    await waitFor(() => {
+      // The PropertyEditor should reflect the selection — Bracket group should be data-selected
+      const container = screen.getByTestId('property-editor');
+      const selectedGroups = container.querySelectorAll('[data-selected]');
+      expect(selectedGroups.length).toBe(1);
     });
   });
 });

@@ -272,3 +272,65 @@ describe('PropertyEditor group selection boundary checks', () => {
     expect(selectedGroups[0].textContent).toContain('Bracket');
   });
 });
+
+describe('PropertyEditor navigation enhancements', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width' }),
+    c2: makeValue({ cell_id: 'c2', name: 'height', entity_path: 'Bracket.height' }),
+  };
+
+  it('onGroupDoubleClick: double-clicking group header calls callback with group name', () => {
+    const onGroupDblClick = vi.fn();
+    render(() => (
+      <PropertyEditor
+        values={values}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        onGroupDoubleClick={onGroupDblClick}
+      />
+    ));
+    const bracketHeader = screen.getByText('Bracket');
+    fireEvent.dblClick(bracketHeader);
+    expect(onGroupDblClick).toHaveBeenCalledWith('Bracket');
+  });
+
+  it('highlightedParams: row with matching cell_id has data-highlighted attribute', () => {
+    render(() => (
+      <PropertyEditor
+        values={values}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        highlightedParams={['c1']}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    expect(row.hasAttribute('data-highlighted')).toBe(true);
+  });
+
+  it('highlightedParams: row without matching cell_id does not have data-highlighted', () => {
+    render(() => (
+      <PropertyEditor
+        values={values}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        highlightedParams={['c1']}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c2');
+    expect(row.hasAttribute('data-highlighted')).toBe(false);
+  });
+
+  it('empty highlightedParams means no rows have data-highlighted', () => {
+    render(() => (
+      <PropertyEditor
+        values={values}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        highlightedParams={[]}
+      />
+    ));
+    const container = screen.getByTestId('property-editor');
+    const highlighted = container.querySelectorAll('[data-highlighted]');
+    expect(highlighted.length).toBe(0);
+  });
+});

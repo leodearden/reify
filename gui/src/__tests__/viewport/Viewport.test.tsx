@@ -67,6 +67,7 @@ vi.mock('../../viewport/meshManager', () => ({
 const mockSelectionSetHovered = vi.fn();
 const mockSelectionSetSelected = vi.fn();
 const mockSelectionFitToView = vi.fn();
+const mockSelectionFlyToEntity = vi.fn();
 const mockSelectionInvalidateRect = vi.fn();
 const mockSelectionDispose = vi.fn();
 
@@ -75,6 +76,7 @@ vi.mock('../../viewport/selection', () => ({
     setHovered: mockSelectionSetHovered,
     setSelected: mockSelectionSetSelected,
     fitToView: mockSelectionFitToView,
+    flyToEntity: mockSelectionFlyToEntity,
     invalidateRect: mockSelectionInvalidateRect,
     dispose: mockSelectionDispose,
   })),
@@ -198,5 +200,24 @@ describe('Viewport', () => {
 
     // renderer.render should NOT have been called after cleanup
     expect(mockRendererRender).not.toHaveBeenCalled();
+  });
+
+  it('calls flyToEntityRef callback with a function on mount', () => {
+    const flyToEntityRef = vi.fn();
+    render(() => <Viewport meshes={{}} flyToEntityRef={flyToEntityRef} />);
+    expect(flyToEntityRef).toHaveBeenCalledTimes(1);
+    expect(typeof flyToEntityRef.mock.calls[0][0]).toBe('function');
+  });
+
+  it('flyToEntityRef function delegates to selection.flyToEntity', () => {
+    let capturedFn: ((entityPath: string) => void) | undefined;
+    const flyToEntityRef = vi.fn((fn: (entityPath: string) => void) => {
+      capturedFn = fn;
+    });
+    render(() => <Viewport meshes={{}} flyToEntityRef={flyToEntityRef} />);
+
+    expect(capturedFn).toBeDefined();
+    capturedFn!('Bracket');
+    expect(mockSelectionFlyToEntity).toHaveBeenCalledWith('Bracket');
   });
 });

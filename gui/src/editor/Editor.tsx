@@ -13,10 +13,12 @@ import { createDiagnosticsListener, lspDiagnosticToCodeMirror, type CmDiagnostic
 import { reifyHoverTooltip } from './hover';
 import { reifyGotoDefinition } from './gotoDefinition';
 import type { createEditorStore } from '../stores/editorStore';
+import type { SourceLocation } from '../types';
 import styles from './Editor.module.css';
 
 export interface EditorProps {
   store: ReturnType<typeof createEditorStore>;
+  scrollToLocation?: () => SourceLocation | null;
 }
 
 export function Editor(props: EditorProps) {
@@ -180,6 +182,32 @@ export function Editor(props: EditorProps) {
       .didClose(oldUri)
       .then(() => lspClient.didOpen(newUri, newContent, lspVersion))
       .catch((err: unknown) => console.error('LSP file switch error:', err));
+  });
+
+  // Watch scrollToLocation signal and scroll editor to target location
+  createEffect(() => {
+    const location = props.scrollToLocation?.();
+    if (!view || !location) return;
+
+    const doc = view.state.doc;
+    const lineCount = doc.lines;
+
+    // Guard against out-of-range positions
+    if (location.line < 1 || location.line > lineCount) return;
+
+    const line = doc.line(location.line);
+    const anchor = Math.min(line.from + (location.column - 1), line.to);
+
+    let head = anchor;
+    if (location.end_line >= 1 && location.end_line <= lineCount) {
+      const endLine = doc.line(location.end_line);
+      head = Math.min(endLine.from + (location.end_column - 1), endLine.to);
+    }
+
+    view.dispatch({
+      selection: { anchor, head },
+      scrollIntoView: true,
+    });
   });
 
   onCleanup(() => {

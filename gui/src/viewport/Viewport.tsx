@@ -13,6 +13,7 @@ export interface ViewportProps {
   selectedEntity?: string | null;
   evalStatus?: EvaluationStatus;
   onFitToView?: () => void;
+  flyToEntityRef?: (fn: (entityPath: string) => void) => void;
 }
 
 export function Viewport(props: ViewportProps) {
@@ -40,6 +41,7 @@ export function Viewport(props: ViewportProps) {
     });
 
     doFitToView = () => selection.fitToView();
+    props.flyToEntityRef?.((entityPath: string) => selection.flyToEntity(entityPath));
 
     // Sync meshes reactively
     createEffect(() => {

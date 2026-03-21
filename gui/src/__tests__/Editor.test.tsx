@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { EditorView } from '@codemirror/view';
 import { createEditorStore } from '../stores/editorStore';
 import * as bridge from '../bridge';
-import type { FileData } from '../types';
+import type { FileData, SourceLocation } from '../types';
 
 // Mock Tauri API modules before importing Editor
 vi.mock('@tauri-apps/api/core', () => ({
@@ -226,5 +227,48 @@ describe('Editor active file switching', () => {
     view = getEditorView(container);
     expect(view.state.doc.toString()).toContain('structure Bracket');
     expect(view.state.doc.toString()).not.toContain('structure Mount');
+  });
+});
+
+describe('Editor scrollToLocation', () => {
+  it('setting scrollToLocation signal moves cursor to target line/column', () => {
+    const store = setupStore();
+    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
+    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // file1 content: 'structure Bracket {\n  param width = 80mm\n}'
+    // line 2, column 3 -> offset = 20 (line 1 + \n) + 2 (0-based col 3 -> index 2) = 22
+    // line 2, column 8 -> offset = 20 + 7 = 27
+    const location: SourceLocation = {
+      file: file1.path,
+      line: 2,
+      column: 3,
+      end_line: 2,
+      end_column: 8,
+    };
+
+    setScrollTo(location);
+
+    // After the effect runs, cursor should be at line 2
+    const sel = view.state.selection.main;
+    // anchor should be at start of span, head at end
+    const line2 = view.state.doc.line(2);
+    const expectedAnchor = line2.from + 2; // column 3, 0-indexed = 2
+    const expectedHead = line2.from + 7; // column 8, 0-indexed = 7
+    expect(sel.anchor).toBe(expectedAnchor);
+    expect(sel.head).toBe(expectedHead);
+  });
+
+  it('scrollToLocation null is a no-op', () => {
+    const store = setupStore();
+    const [scrollTo] = createSignal<SourceLocation | null>(null);
+    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Cursor should be at position 0 (default)
+    expect(view.state.selection.main.head).toBe(0);
   });
 });

@@ -67,4 +67,46 @@ describe('selectionStore', () => {
       dispose();
     });
   });
+
+  it('highlightedParams defaults to empty array', () => {
+    createRoot((dispose) => {
+      const { state } = createSelectionStore();
+      expect(state.highlightedParams).toEqual([]);
+      dispose();
+    });
+  });
+
+  it('setHighlightedParams sets highlightedParams', () => {
+    createRoot((dispose) => {
+      const { state, setHighlightedParams } = createSelectionStore();
+      setHighlightedParams(['c1', 'c2']);
+      expect(state.highlightedParams).toEqual(['c1', 'c2']);
+      dispose();
+    });
+  });
+
+  it('setHighlightedParams([]) clears highlightedParams', () => {
+    createRoot((dispose) => {
+      const { state, setHighlightedParams } = createSelectionStore();
+      setHighlightedParams(['c1', 'c2']);
+      setHighlightedParams([]);
+      expect(state.highlightedParams).toEqual([]);
+      dispose();
+    });
+  });
+
+  it('clearHighlights resets selectedEntity and highlightedParams', () => {
+    createRoot((dispose) => {
+      const { state, selectEntity, setHighlightedParams, clearHighlights } = createSelectionStore();
+      selectEntity('Bracket');
+      setHighlightedParams(['c1', 'c2']);
+      expect(state.selectedEntity).toBe('Bracket');
+      expect(state.highlightedParams).toEqual(['c1', 'c2']);
+
+      clearHighlights();
+      expect(state.selectedEntity).toBeNull();
+      expect(state.highlightedParams).toEqual([]);
+      dispose();
+    });
+  });
 });

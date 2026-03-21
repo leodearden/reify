@@ -171,3 +171,77 @@ describe('ConstraintPanel expansion', () => {
     expect(screen.getByText('height = 30')).toBeTruthy();
   });
 });
+
+describe('ConstraintPanel onConstraintSelect', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50' }),
+  };
+
+  it('clicking a constraint row calls onConstraintSelect with the ConstraintData object', () => {
+    const constraint = makeConstraint({
+      node_id: 'n1',
+      status: 'violated',
+      expression: 'width > 100',
+      parameter_ids: ['c1'],
+    });
+    const onSelect = vi.fn();
+    render(() => (
+      <ConstraintPanel
+        constraints={{ n1: constraint }}
+        values={values}
+        onConstraintSelect={onSelect}
+      />
+    ));
+    const row = screen.getByTestId('constraint-row-n1');
+    fireEvent.click(row);
+    expect(onSelect).toHaveBeenCalledWith(constraint);
+  });
+
+  it('expand/collapse still works alongside onConstraintSelect', () => {
+    const constraint = makeConstraint({
+      node_id: 'n1',
+      status: 'violated',
+      expression: 'width > 100',
+      parameter_ids: ['c1'],
+    });
+    const onSelect = vi.fn();
+    render(() => (
+      <ConstraintPanel
+        constraints={{ n1: constraint }}
+        values={values}
+        onConstraintSelect={onSelect}
+      />
+    ));
+    const row = screen.getByTestId('constraint-row-n1');
+
+    // Click expands AND calls onConstraintSelect
+    fireEvent.click(row);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('width = 50')).toBeTruthy();
+
+    // Click again collapses AND calls onConstraintSelect again
+    fireEvent.click(row);
+    expect(onSelect).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText('width = 50')).toBeNull();
+  });
+
+  it('onConstraintSelect is optional — omitting it does not break existing behavior', () => {
+    const constraint = makeConstraint({
+      node_id: 'n1',
+      status: 'violated',
+      expression: 'width > 100',
+      parameter_ids: ['c1'],
+    });
+    // Render WITHOUT onConstraintSelect
+    render(() => (
+      <ConstraintPanel
+        constraints={{ n1: constraint }}
+        values={values}
+      />
+    ));
+    const row = screen.getByTestId('constraint-row-n1');
+    // Should not throw
+    fireEvent.click(row);
+    expect(screen.getByText('width = 50')).toBeTruthy();
+  });
+});

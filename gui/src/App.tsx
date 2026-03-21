@@ -25,8 +25,15 @@ import {
   updateSource as bridgeUpdateSource,
   openFile as bridgeOpenFile,
   onFileChanged,
+  getSourceLocation as bridgeGetSourceLocation,
+  focusEntity as bridgeFocusEntity,
 } from './bridge';
-import type { ExportFormat, FileData } from './types';
+import {
+  navigateToSource,
+  navigateToEntity,
+  navigateFromConstraint,
+} from './navigation';
+import type { ExportFormat, FileData, SourceLocation, ConstraintData } from './types';
 import styles from './App.module.css';
 
 const MIN_PANEL_WIDTH = 150;
@@ -54,6 +61,10 @@ const App: Component = () => {
 
   // Reload prompt state
   const [changedFile, setChangedFile] = createSignal<string | null>(null);
+
+  // Navigation state
+  const [scrollToLocation, setScrollToLocation] = createSignal<SourceLocation | null>(null);
+  let flyToEntityFn: ((entityPath: string) => void) | undefined;
 
   // Reactively update window title based on active file and eval status
   createEffect(() => {
@@ -219,6 +230,34 @@ const App: Component = () => {
     setPropertyHeight((h) => Math.max(MIN_PANEL_HEIGHT, h + delta));
   }
 
+  function handleViewportSelect(entityPath: string | null) {
+    if (!entityPath) {
+      selectionStore.selectEntity(null);
+      return;
+    }
+    navigateToSource(entityPath, {
+      getSourceLocation: bridgeGetSourceLocation,
+      scrollEditor: (loc) => setScrollToLocation(loc),
+      selectEntity: (ep) => selectionStore.selectEntity(ep),
+    });
+  }
+
+  function handleGroupDoubleClick(groupName: string) {
+    navigateToEntity(groupName, {
+      focusEntity: bridgeFocusEntity,
+      flyToEntity: (ep) => flyToEntityFn?.(ep),
+      selectEntity: (ep) => selectionStore.selectEntity(ep),
+    });
+  }
+
+  function handleConstraintSelect(constraint: ConstraintData) {
+    const valuesArray = Object.values(engineStore.state.values);
+    navigateFromConstraint(constraint, valuesArray, {
+      selectEntity: (ep) => selectionStore.selectEntity(ep),
+      setHighlightedParams: (ids) => selectionStore.setHighlightedParams(ids),
+    });
+  }
+
   return (
     <div data-testid="app-layout" class={styles.layout}>
       <Toolbar onExport={handleExport} onFitToView={handleFitToView} />
@@ -238,11 +277,17 @@ const App: Component = () => {
             onFileClick={handleFileClick}
           />
           <FileTabs store={editorStore} />
-          <Editor store={editorStore} />
+          <Editor store={editorStore} scrollToLocation={scrollToLocation} />
         </div>
         <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
         <div data-testid="viewport-panel" class={styles.viewportPanel}>
-          <Viewport meshes={engineStore.state.meshes} />
+          <Viewport
+            meshes={engineStore.state.meshes}
+            onSelect={handleViewportSelect}
+            selectedEntity={selectionStore.state.selectedEntity}
+            hoveredEntity={selectionStore.state.hoveredEntity}
+            flyToEntityRef={(fn) => { flyToEntityFn = fn; }}
+          />
         </div>
         <Splitter orientation="vertical" onResize={handleRightResize} data-testid="splitter-right" />
         <div
@@ -254,11 +299,14 @@ const App: Component = () => {
             values={engineStore.state.values}
             selectedEntity={selectionStore.state.selectedEntity}
             onSetParameter={handleSetParameter}
+            onGroupDoubleClick={handleGroupDoubleClick}
+            highlightedParams={selectionStore.state.highlightedParams}
           />
           <Splitter orientation="horizontal" onResize={handleSideResize} data-testid="splitter-side" />
           <ConstraintPanel
             constraints={engineStore.state.constraints}
             values={engineStore.state.values}
+            onConstraintSelect={handleConstraintSelect}
           />
         </div>
       </div>

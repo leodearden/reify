@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // Track mocks
 const mockSceneAdd = vi.fn();
 const mockSceneRemove = vi.fn();
+let mockBox3Instances: any[] = [];
 
 const mockRaycasterSetFromCamera = vi.fn();
 const mockRaycasterIntersectObjects = vi.fn((..._args: any[]): any[] => []);
@@ -52,6 +53,9 @@ vi.mock('three', () => {
       return target;
     });
     isEmpty = vi.fn(() => false);
+    constructor() {
+      mockBox3Instances.push(this);
+    }
   }
 
   class MockVector3 {
@@ -184,6 +188,7 @@ const syncCAF = globalThis.cancelAnimationFrame;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockBox3Instances = [];
   rafCallbacks = [];
   rafIdCounter = 1;
 });
@@ -582,6 +587,55 @@ describe('createSelection', () => {
 
       // Material should also be disposed
       expect(wireframe.material.dispose).toHaveBeenCalled();
+    });
+  });
+
+  describe('flyToEntity', () => {
+    it('createSelection returns object with flyToEntity method', () => {
+      const { selection } = setup();
+      expect(typeof selection.flyToEntity).toBe('function');
+    });
+
+    it('flyToEntity positions camera to frame the single entity mesh', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection, camera } = setup(meshMap);
+
+      selection.flyToEntity('A');
+
+      // lookAt should be called with center of mesh A's bounding box
+      expect((camera as any).lookAt).toHaveBeenCalled();
+      // Camera z should be greater than center z (offset by distance)
+      expect((camera as any).position.z).toBeGreaterThan(0.5);
+    });
+
+    it('flyToEntity with unknown entity is a no-op', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection, camera } = setup(meshMap);
+
+      // Should not throw or call lookAt
+      expect(() => selection.flyToEntity('Unknown')).not.toThrow();
+      expect((camera as any).lookAt).not.toHaveBeenCalled();
+    });
+
+    it('flyToEntity only expands bounding box for the target mesh', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection } = setup(meshMap);
+
+      // Clear instances created during setup (e.g. fitToView's Box3)
+      mockBox3Instances = [];
+
+      selection.flyToEntity('A');
+
+      // Get the Box3 instance created inside flyToEntity
+      expect(mockBox3Instances.length).toBeGreaterThanOrEqual(1);
+      const box3 = mockBox3Instances[mockBox3Instances.length - 1];
+      expect(box3.expandByObject).toHaveBeenCalledTimes(1);
+      expect(box3.expandByObject).toHaveBeenCalledWith(meshA);
     });
   });
 

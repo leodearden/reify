@@ -6,6 +6,8 @@ export interface PropertyEditorProps {
   values: Record<string, ValueData>;
   selectedEntity: string | null;
   onSetParameter: (cellId: string, value: string) => void;
+  onGroupDoubleClick?: (entityPath: string) => void;
+  highlightedParams?: string[];
 }
 
 /** Group values by the first dot-separated segment of entity_path. */
@@ -104,6 +106,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                 <button
                   class={styles.groupHeader}
                   onClick={() => toggleGroup(groupName)}
+                  onDblClick={() => props.onGroupDoubleClick?.(groupName)}
                   aria-expanded={!isGroupCollapsed(groupName)}
                 >
                   <span class={styles.collapseIcon}>
@@ -115,7 +118,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                   <div class={styles.groupBody}>
                     <For each={filteredGroups()[groupName]}>
                       {(val) => (
-                        <div class={styles.row} data-testid={`prop-row-${val.cell_id}`}>
+                        <div class={styles.row} data-testid={`prop-row-${val.cell_id}`} data-highlighted={props.highlightedParams?.includes(val.cell_id) || undefined}>
                           <span class={styles.paramName}>{val.name}</span>
                           <Show
                             when={val.determinacy === 'determined'}

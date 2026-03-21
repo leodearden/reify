@@ -24,6 +24,7 @@ export interface SelectionContext {
   setHovered: (path: string | null) => void;
   setSelected: (path: string | null) => void;
   fitToView: () => void;
+  flyToEntity: (entityPath: string) => void;
   invalidateRect: () => void;
   dispose: () => void;
 }
@@ -177,6 +178,30 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     camera.updateProjectionMatrix();
   }
 
+  function flyToEntity(entityPath: string): void {
+    const mesh = getMeshes().get(entityPath);
+    if (!mesh) return;
+
+    const box = new Box3();
+    box.expandByObject(mesh);
+
+    if (box.isEmpty()) return;
+
+    const center = new Vector3();
+    const size = new Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const fovRad = (camera.fov / 2) * (Math.PI / 180);
+    const distance = maxDim / (2 * Math.tan(fovRad));
+
+    camera.position.copy(center);
+    camera.position.z += distance;
+    camera.lookAt(center);
+    camera.updateProjectionMatrix();
+  }
+
   function dispose(): void {
     if (hoverRafPending) {
       cancelAnimationFrame(hoverRafId);
@@ -188,5 +213,5 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     removeWireframe();
   }
 
-  return { setHovered, setSelected, fitToView, invalidateRect, dispose };
+  return { setHovered, setSelected, fitToView, flyToEntity, invalidateRect, dispose };
 }

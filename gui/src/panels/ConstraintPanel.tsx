@@ -5,6 +5,7 @@ import styles from './ConstraintPanel.module.css';
 export interface ConstraintPanelProps {
   constraints: Record<string, ConstraintData>;
   values: Record<string, ValueData>;
+  onConstraintSelect?: (constraint: ConstraintData) => void;
 }
 
 const STATUS_PRIORITY: Record<string, number> = {
@@ -73,7 +74,10 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
               <div
                 data-testid={`constraint-row-${constraint.node_id}`}
                 class={`${styles.row} ${isExpandable(constraint.status) ? styles.expandable : ''}`}
-                onClick={() => isExpandable(constraint.status) && toggleExpand(constraint.node_id)}
+                onClick={() => {
+                  props.onConstraintSelect?.(constraint);
+                  if (isExpandable(constraint.status)) toggleExpand(constraint.node_id);
+                }}
               >
                 <div class={styles.rowHeader}>
                   <Show when={isExpandable(constraint.status)}>
