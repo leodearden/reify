@@ -221,3 +221,17 @@ describe('Viewport', () => {
     expect(mockSelectionFlyToEntity).toHaveBeenCalledWith('Bracket');
   });
 });
+
+describe('Viewport accessibility', () => {
+  it('canvas has tabindex="0" so it can receive keyboard focus', () => {
+    render(() => <Viewport meshes={{}} />);
+    const canvas = screen.getByTestId('viewport-canvas');
+    expect(canvas.getAttribute('tabindex')).toBe('0');
+  });
+
+  it('canvas has aria-label="3D viewport"', () => {
+    render(() => <Viewport meshes={{}} />);
+    const canvas = screen.getByTestId('viewport-canvas');
+    expect(canvas.getAttribute('aria-label')).toBe('3D viewport');
+  });
+});
