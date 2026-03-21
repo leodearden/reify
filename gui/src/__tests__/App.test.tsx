@@ -64,6 +64,7 @@ vi.mock('../bridge', () => ({
   onValueRemoved: vi.fn().mockResolvedValue(() => {}),
   onConstraintRemoved: vi.fn().mockResolvedValue(() => {}),
   onFileChanged: vi.fn().mockResolvedValue(() => {}),
+  pickSavePath: vi.fn().mockResolvedValue('/user/chosen/path.step'),
 }));
 
 import App from '../App';
@@ -821,5 +822,72 @@ describe('App reload error toast', () => {
       window.removeEventListener('unhandledrejection', rejectHandler);
       errorSpy.mockRestore();
     }
+  });
+});
+
+describe('App export with save dialog', () => {
+  it('handleDoExport calls pickSavePath before exportGeometry', async () => {
+    vi.mocked(bridge.pickSavePath).mockResolvedValue('/user/chosen/path.step');
+    await renderAndWaitForReady();
+
+    // Open export dialog
+    fireEvent.click(screen.getByText('Export'));
+    await waitFor(() => {
+      expect(screen.getByTestId('export-dialog')).toBeTruthy();
+    });
+
+    // Click Export button inside the dialog
+    const dialog = screen.getByTestId('export-dialog');
+    const exportBtn = dialog.querySelector('button:not([class*="secondary"])') as HTMLElement;
+    fireEvent.click(exportBtn);
+
+    await waitFor(() => {
+      expect(bridge.pickSavePath).toHaveBeenCalled();
+      expect(bridge.exportGeometry).toHaveBeenCalledWith('step', '/user/chosen/path.step');
+    });
+  });
+
+  it('if pickSavePath returns null (user cancelled), exportGeometry is NOT called', async () => {
+    vi.mocked(bridge.pickSavePath).mockResolvedValue(null);
+    await renderAndWaitForReady();
+
+    // Open export dialog
+    fireEvent.click(screen.getByText('Export'));
+    await waitFor(() => {
+      expect(screen.getByTestId('export-dialog')).toBeTruthy();
+    });
+
+    // Click Export button inside dialog
+    const dialog = screen.getByTestId('export-dialog');
+    const exportBtn = dialog.querySelector('button:not([class*="secondary"])') as HTMLElement;
+    fireEvent.click(exportBtn);
+
+    await waitFor(() => {
+      expect(bridge.pickSavePath).toHaveBeenCalled();
+    });
+
+    // exportGeometry should NOT be called when user cancels
+    expect(bridge.exportGeometry).not.toHaveBeenCalled();
+  });
+
+  it('if pickSavePath throws (not available), falls back to default path', async () => {
+    vi.mocked(bridge.pickSavePath).mockRejectedValue(new Error('command not found'));
+    await renderAndWaitForReady();
+
+    // Open export dialog
+    fireEvent.click(screen.getByText('Export'));
+    await waitFor(() => {
+      expect(screen.getByTestId('export-dialog')).toBeTruthy();
+    });
+
+    // Click Export button inside dialog
+    const dialog = screen.getByTestId('export-dialog');
+    const exportBtn = dialog.querySelector('button:not([class*="secondary"])') as HTMLElement;
+    fireEvent.click(exportBtn);
+
+    await waitFor(() => {
+      // Should fall back to hardcoded default path
+      expect(bridge.exportGeometry).toHaveBeenCalledWith('step', 'export.step');
+    });
   });
 });
