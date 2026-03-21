@@ -1364,11 +1364,31 @@ pub fn compile(
     // Pre-pass: compile ALL field definitions before processing structures.
     // This ensures fields can be referenced by name within structure expressions
     // (e.g., `sample(my_field, point)`).
+    let mut seen_field_names: HashMap<String, SourceSpan> = HashMap::new();
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Field(field_def) = decl
-            && let Some(compiled) = compile_field(field_def, &enum_defs, &functions, &mut diagnostics)
-        {
-            fields.push(compiled);
+        if let reify_syntax::Declaration::Field(field_def) = decl {
+            if let Some(first_span) = seen_field_names.get(&field_def.name) {
+                // Duplicate field name — emit error and skip
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "duplicate field name '{}'",
+                        field_def.name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        field_def.span,
+                        "duplicate defined here",
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        *first_span,
+                        "first defined here",
+                    )),
+                );
+                continue;
+            }
+            seen_field_names.insert(field_def.name.clone(), field_def.span);
+            if let Some(compiled) = compile_field(field_def, &enum_defs, &functions, &mut diagnostics) {
+                fields.push(compiled);
+            }
         }
     }
 
