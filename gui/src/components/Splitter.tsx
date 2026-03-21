@@ -40,6 +40,24 @@ export function Splitter(props: SplitterProps) {
     document.removeEventListener('mouseup', onMouseUp);
   }
 
+  function onKeyDown(e: KeyboardEvent) {
+    const step = e.shiftKey ? 50 : 10;
+    let delta: number | null = null;
+
+    if (props.orientation === 'vertical') {
+      if (e.key === 'ArrowRight') delta = step;
+      else if (e.key === 'ArrowLeft') delta = -step;
+    } else {
+      if (e.key === 'ArrowDown') delta = step;
+      else if (e.key === 'ArrowUp') delta = -step;
+    }
+
+    if (delta !== null) {
+      e.preventDefault();
+      props.onResize(delta);
+    }
+  }
+
   onCleanup(() => {
     document.removeEventListener('mousemove', onMouseMove);
     document.removeEventListener('mouseup', onMouseUp);
@@ -52,7 +70,11 @@ export function Splitter(props: SplitterProps) {
       class={styles.splitter}
       data-testid={props['data-testid']}
       data-orientation={props.orientation}
+      role="separator"
+      aria-orientation={props.orientation}
+      tabindex="0"
       onMouseDown={onMouseDown}
+      onKeyDown={onKeyDown}
     />
   );
 }

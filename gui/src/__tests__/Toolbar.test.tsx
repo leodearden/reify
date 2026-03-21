@@ -32,3 +32,11 @@ describe('Toolbar', () => {
     expect(onFitToView).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('Toolbar accessibility', () => {
+  it('container has role="toolbar"', () => {
+    render(() => <Toolbar onExport={vi.fn()} onFitToView={vi.fn()} />);
+    const el = screen.getByTestId('toolbar');
+    expect(el.getAttribute('role')).toBe('toolbar');
+  });
+});

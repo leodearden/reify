@@ -99,7 +99,7 @@ export function Viewport(props: ViewportProps) {
       data-testid="viewport-container"
       style={{ width: '100%', height: '100%', position: 'relative' }}
     >
-      <canvas ref={canvasRef} data-testid="viewport-canvas" />
+      <canvas ref={canvasRef} data-testid="viewport-canvas" tabindex="0" aria-label="3D viewport" />
 
       {/* Tooltip overlay */}
       <Show when={props.hoveredEntity}>

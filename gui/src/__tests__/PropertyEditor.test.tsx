@@ -335,3 +335,45 @@ describe('PropertyEditor navigation enhancements', () => {
     expect(highlighted.length).toBe(0);
   });
 });
+
+describe('PropertyEditor accessibility', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width' }),
+    c2: makeValue({ cell_id: 'c2', name: 'radius', entity_path: 'Cylinder.radius' }),
+  };
+
+  it('groups container has role="tree"', () => {
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const container = screen.getByTestId('property-editor');
+    const tree = container.querySelector('[role="tree"]');
+    expect(tree).toBeTruthy();
+  });
+
+  it('each group wrapper has role="treeitem"', () => {
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const container = screen.getByTestId('property-editor');
+    const treeitems = container.querySelectorAll('[role="treeitem"]');
+    expect(treeitems.length).toBe(2); // Bracket + Cylinder
+  });
+
+  it('each group body has role="group"', () => {
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const container = screen.getByTestId('property-editor');
+    const groups = container.querySelectorAll('[role="group"]');
+    expect(groups.length).toBe(2);
+  });
+
+  it('filter input has aria-label="Filter properties"', () => {
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const input = screen.getByPlaceholderText('Filter properties...');
+    expect(input.getAttribute('aria-label')).toBe('Filter properties');
+  });
+});

@@ -68,15 +68,24 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
         <div class={styles.emptyState}>No constraints</div>
       </Show>
       <Show when={!isEmpty()}>
-        <div class={styles.list}>
+        <div class={styles.list} role="list">
           <For each={sortedConstraints()}>
             {(constraint) => (
               <div
                 data-testid={`constraint-row-${constraint.node_id}`}
                 class={`${styles.row} ${isExpandable(constraint.status) ? styles.expandable : ''}`}
+                role="listitem"
+                tabindex="0"
                 onClick={() => {
                   props.onConstraintSelect?.(constraint);
                   if (isExpandable(constraint.status)) toggleExpand(constraint.node_id);
+                }}
+                onKeyDown={(e: KeyboardEvent) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    props.onConstraintSelect?.(constraint);
+                    if (isExpandable(constraint.status)) toggleExpand(constraint.node_id);
+                  }
                 }}
               >
                 <div class={styles.rowHeader}>
@@ -86,7 +95,7 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
                     </span>
                   </Show>
                   <span class={styles.expression}>{constraint.expression}</span>
-                  <span class={styles.statusBadge} data-status={constraint.status}>
+                  <span class={styles.statusBadge} data-status={constraint.status} aria-label={constraint.status}>
                     {statusIcon(constraint.status)}
                   </span>
                 </div>

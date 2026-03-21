@@ -246,3 +246,116 @@ describe('ConstraintPanel onConstraintSelect', () => {
     expect(screen.getByText('width = 50')).toBeTruthy();
   });
 });
+
+describe('ConstraintPanel accessibility', () => {
+  it('constraint list container has role="list"', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', expression: 'x > 0' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const container = screen.getByTestId('constraint-panel');
+    const list = container.querySelector('[role="list"]');
+    expect(list).toBeTruthy();
+  });
+
+  it('each constraint row has role="listitem"', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', expression: 'x > 0' }),
+      n2: makeConstraint({ node_id: 'n2', expression: 'y > 0' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const container = screen.getByTestId('constraint-panel');
+    const listitems = container.querySelectorAll('[role="listitem"]');
+    expect(listitems.length).toBe(2);
+  });
+
+  it('each constraint row has tabindex="0" for keyboard focusability', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', expression: 'x > 0' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const row = screen.getByTestId('constraint-row-n1');
+    expect(row.getAttribute('tabindex')).toBe('0');
+  });
+});
+
+describe('ConstraintPanel keyboard interaction', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50' }),
+  };
+
+  it('pressing Enter on a violated constraint row expands it', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({
+        node_id: 'n1',
+        status: 'violated',
+        expression: 'width > 100',
+        parameter_ids: ['c1'],
+      }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={values} />);
+    const row = screen.getByTestId('constraint-row-n1');
+
+    // Initially not expanded
+    expect(screen.queryByText('width = 50')).toBeNull();
+
+    // Press Enter to expand
+    fireEvent.keyDown(row, { key: 'Enter' });
+    expect(screen.getByText('width = 50')).toBeTruthy();
+  });
+
+  it('pressing Space on a violated constraint row expands it', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({
+        node_id: 'n1',
+        status: 'violated',
+        expression: 'width > 100',
+        parameter_ids: ['c1'],
+      }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={values} />);
+    const row = screen.getByTestId('constraint-row-n1');
+
+    // Press Space to expand
+    fireEvent.keyDown(row, { key: ' ' });
+    expect(screen.getByText('width = 50')).toBeTruthy();
+  });
+
+  it('pressing Enter again collapses an expanded row', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({
+        node_id: 'n1',
+        status: 'violated',
+        expression: 'width > 100',
+        parameter_ids: ['c1'],
+      }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={values} />);
+    const row = screen.getByTestId('constraint-row-n1');
+
+    // Expand
+    fireEvent.keyDown(row, { key: 'Enter' });
+    expect(screen.getByText('width = 50')).toBeTruthy();
+
+    // Collapse
+    fireEvent.keyDown(row, { key: 'Enter' });
+    expect(screen.queryByText('width = 50')).toBeNull();
+  });
+});
+
+describe('ConstraintPanel status badge aria-labels', () => {
+  it('each status badge has aria-label matching its status', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', status: 'satisfied', expression: 'a > 0' }),
+      n2: makeConstraint({ node_id: 'n2', status: 'violated', expression: 'b > 0' }),
+      n3: makeConstraint({ node_id: 'n3', status: 'indeterminate', expression: 'c > 0' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const container = screen.getByTestId('constraint-panel');
+    const badges = container.querySelectorAll('[data-status]');
+    const ariaLabels = Array.from(badges).map((b) => b.getAttribute('aria-label'));
+    expect(ariaLabels).toContain('satisfied');
+    expect(ariaLabels).toContain('violated');
+    expect(ariaLabels).toContain('indeterminate');
+  });
+});
