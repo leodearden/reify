@@ -394,6 +394,187 @@ structure S {
 
 // --- Phase 5: New tests ---
 
+// ─── step-1: apply_lambda with populated function registry ───
+
+/// step-1: apply_lambda with a populated function registry — lambda body
+/// is `UserFunctionCall(double, [x])`. With EvalContext::new containing
+/// the double function, apply_lambda(&lambda, &[Int(5)], &ctx) returns Int(10).
+#[test]
+fn apply_lambda_with_user_function_registry() {
+    use reify_expr::apply_lambda;
+    use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
+
+    // Define user function: double(x) = x * 2
+    let double_fn = CompiledFunction {
+        name: "double".to_string(),
+        is_pub: false,
+        params: vec![("x".to_string(), Type::Int)],
+        return_type: Type::Int,
+        body: CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(ValueCellId::new("double", "x"), Type::Int),
+                CompiledExpr::literal(Value::Int(2), Type::Int),
+                Type::Int,
+            ),
+        },
+        content_hash: ContentHash::of(b"double_fn_step1"),
+    };
+
+    // Lambda body: double(x) via UserFunctionCall
+    let x_id = ValueCellId::new("$lambda_uf.S", "x");
+    let lambda_body = CompiledExpr {
+        kind: CompiledExprKind::UserFunctionCall {
+            function_name: "double".to_string(),
+            args: vec![CompiledExpr::value_ref(x_id.clone(), Type::Int)],
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of(b"double_call_step1"),
+    };
+
+    let lambda = make_value_lambda(vec![("x", x_id)], lambda_body, ValueMap::new());
+
+    let values = ValueMap::new();
+    let functions = vec![double_fn];
+    let ctx = EvalContext::new(&values, &functions);
+    let result = apply_lambda(&lambda, &[Value::Int(5)], &ctx);
+    assert_eq!(
+        result,
+        Value::Int(10),
+        "apply_lambda should use the function registry from the passed EvalContext"
+    );
+}
+
+// ─── step-9: apply_lambda with empty registry — UserFunctionCall returns Undef ───
+
+/// step-9: apply_lambda where lambda body calls unknown_fn(x) via UserFunctionCall,
+/// but EvalContext::simple (empty registry) is passed. Should return Undef.
+#[test]
+fn apply_lambda_user_fn_not_in_registry_returns_undef() {
+    use reify_expr::apply_lambda;
+    use reify_types::{CompiledExprKind, ContentHash};
+
+    // Lambda body: unknown_fn(x) via UserFunctionCall — not in registry
+    let x_id = ValueCellId::new("$lambda_uf.S", "x");
+    let lambda_body = CompiledExpr {
+        kind: CompiledExprKind::UserFunctionCall {
+            function_name: "unknown_fn".to_string(),
+            args: vec![CompiledExpr::value_ref(x_id.clone(), Type::Int)],
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of(b"unknown_call_step9"),
+    };
+
+    let lambda = make_value_lambda(vec![("x", x_id)], lambda_body, ValueMap::new());
+
+    let empty = ValueMap::new();
+    let result = apply_lambda(&lambda, &[Value::Int(5)], &EvalContext::simple(&empty));
+    assert!(
+        result.is_undef(),
+        "calling an unknown user function should return Undef, got {:?}",
+        result
+    );
+}
+
+// ─── step-11: nested lambda calls user function ───
+
+/// step-11: nested lambda calls user function — `|x| |y| double(x) + y`.
+/// Apply outer with 3, apply inner with 4, expect 10 (double(3)=6, 6+4=10).
+#[test]
+fn nested_lambda_calls_user_function() {
+    use reify_expr::apply_lambda;
+    use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
+
+    // Define user function: double(x) = x * 2
+    let double_fn = CompiledFunction {
+        name: "double".to_string(),
+        is_pub: false,
+        params: vec![("x".to_string(), Type::Int)],
+        return_type: Type::Int,
+        body: CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(ValueCellId::new("double", "x"), Type::Int),
+                CompiledExpr::literal(Value::Int(2), Type::Int),
+                Type::Int,
+            ),
+        },
+        content_hash: ContentHash::of(b"double_fn_step11"),
+    };
+
+    let x_id = ValueCellId::new("$lambda_outer.S", "x");
+    let y_id = ValueCellId::new("$lambda_inner.S", "y");
+
+    // Inner lambda body: double(x) + y
+    let double_x = CompiledExpr {
+        kind: CompiledExprKind::UserFunctionCall {
+            function_name: "double".to_string(),
+            args: vec![CompiledExpr::value_ref(x_id.clone(), Type::Int)],
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of(b"double_call_step11"),
+    };
+    let inner_body = CompiledExpr::binop(
+        BinOp::Add,
+        double_x,
+        CompiledExpr::value_ref(y_id.clone(), Type::Int),
+        Type::Int,
+    );
+
+    // Inner lambda: |y| double(x) + y (captures x)
+    let inner_lambda_expr = CompiledExpr::lambda(
+        vec![("y".to_string(), None)],
+        vec![y_id.clone()],
+        inner_body,
+        vec![x_id.clone()], // captures x
+        Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::Int),
+        },
+    );
+
+    // Outer lambda: |x| <inner_lambda>
+    let outer_lambda_expr = CompiledExpr::lambda(
+        vec![("x".to_string(), None)],
+        vec![x_id.clone()],
+        inner_lambda_expr,
+        vec![],
+        Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Int),
+            }),
+        },
+    );
+
+    let values = ValueMap::new();
+    let functions = vec![double_fn];
+    let ctx = EvalContext::new(&values, &functions);
+
+    // Eval outer lambda expression
+    let outer_val = eval_expr(&outer_lambda_expr, &ctx);
+
+    // Apply outer with x=3 → should yield Value::Lambda with x captured as 3
+    let inner_val = apply_lambda(&outer_val, &[Value::Int(3)], &ctx);
+    match &inner_val {
+        Value::Lambda { captures, .. } => {
+            assert_eq!(captures.get(&x_id), Some(&Value::Int(3)));
+        }
+        other => panic!("expected inner Lambda after outer application, got {:?}", other),
+    }
+
+    // Apply inner with y=4 → double(3) + 4 = 6 + 4 = 10
+    let result = apply_lambda(&inner_val, &[Value::Int(4)], &ctx);
+    assert_eq!(
+        result,
+        Value::Int(10),
+        "nested lambda with user function should yield double(3)+4=10"
+    );
+}
+
 /// Non-Lambda apply returns Undef.
 #[test]
 fn apply_non_lambda_returns_undef() {

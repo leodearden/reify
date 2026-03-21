@@ -1270,3 +1270,265 @@ fn eval_method_map_with_user_function() {
         "Lambda body with UserFunctionCall should have access to the function registry"
     );
 }
+
+// ─── step-3: .filter with user-defined predicate ───
+
+#[test]
+fn eval_method_filter_with_user_function() {
+    // [1,2,3,4,5].filter(|x| is_even(x)) where is_even checks x % 2 == 0
+    // With EvalContext::new containing is_even, should return [2, 4]
+    use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
+
+    // Define user function: is_even(x) = x % 2 == 0
+    let is_even_fn = CompiledFunction {
+        name: "is_even".to_string(),
+        is_pub: false,
+        params: vec![("x".to_string(), Type::Int)],
+        return_type: Type::Bool,
+        body: CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::binop(
+                BinOp::Eq,
+                CompiledExpr::binop(
+                    BinOp::Mod,
+                    CompiledExpr::value_ref(ValueCellId::new("is_even", "x"), Type::Int),
+                    CompiledExpr::literal(Value::Int(2), Type::Int),
+                    Type::Int,
+                ),
+                CompiledExpr::literal(Value::Int(0), Type::Int),
+                Type::Bool,
+            ),
+        },
+        content_hash: ContentHash::of(b"is_even_fn"),
+    };
+
+    // Lambda body: is_even(x)
+    let x_id = ValueCellId::new("$lambda_filter_uf.S", "x");
+    let lambda_body = CompiledExpr {
+        kind: CompiledExprKind::UserFunctionCall {
+            function_name: "is_even".to_string(),
+            args: vec![CompiledExpr::value_ref(x_id.clone(), Type::Int)],
+        },
+        result_type: Type::Bool,
+        content_hash: ContentHash::of(b"is_even_call"),
+    };
+    let lambda_arg = lambda_literal(vec![("x", x_id)], lambda_body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+            CompiledExpr::literal(Value::Int(4), Type::Int),
+            CompiledExpr::literal(Value::Int(5), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "filter".to_string(),
+        vec![lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+
+    let values = ValueMap::new();
+    let functions = vec![is_even_fn];
+    let ctx = EvalContext::new(&values, &functions);
+    let result = eval_expr(&expr, &ctx);
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(2), Value::Int(4)]),
+        ".filter with user-defined predicate should use the function registry"
+    );
+}
+
+// ─── step-5: .fold with user-defined combiner ───
+
+#[test]
+fn eval_method_fold_with_user_function() {
+    // [1,2,3].fold(0, |acc, x| add(acc, x)) where add(a, b) = a + b
+    // With EvalContext::new containing add, should return Int(6)
+    use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
+
+    // Define user function: add(a, b) = a + b
+    let add_fn = CompiledFunction {
+        name: "add".to_string(),
+        is_pub: false,
+        params: vec![
+            ("a".to_string(), Type::Int),
+            ("b".to_string(), Type::Int),
+        ],
+        return_type: Type::Int,
+        body: CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::binop(
+                BinOp::Add,
+                CompiledExpr::value_ref(ValueCellId::new("add", "a"), Type::Int),
+                CompiledExpr::value_ref(ValueCellId::new("add", "b"), Type::Int),
+                Type::Int,
+            ),
+        },
+        content_hash: ContentHash::of(b"add_fn"),
+    };
+
+    // Lambda body: add(acc, x)
+    let acc_id = ValueCellId::new("$lambda_fold_uf.S", "acc");
+    let x_id = ValueCellId::new("$lambda_fold_uf.S", "x");
+    let lambda_body = CompiledExpr {
+        kind: CompiledExprKind::UserFunctionCall {
+            function_name: "add".to_string(),
+            args: vec![
+                CompiledExpr::value_ref(acc_id.clone(), Type::Int),
+                CompiledExpr::value_ref(x_id.clone(), Type::Int),
+            ],
+        },
+        result_type: Type::Int,
+        content_hash: ContentHash::of(b"add_call"),
+    };
+    let lambda_arg = lambda_literal(
+        vec![("acc", acc_id), ("x", x_id)],
+        lambda_body,
+        ValueMap::new(),
+    );
+
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "fold".to_string(),
+        vec![CompiledExpr::literal(Value::Int(0), Type::Int), lambda_arg],
+        Type::Int,
+    );
+
+    let values = ValueMap::new();
+    let functions = vec![add_fn];
+    let ctx = EvalContext::new(&values, &functions);
+    let result = eval_expr(&expr, &ctx);
+    assert_eq!(
+        result,
+        Value::Int(6),
+        ".fold with user-defined combiner should use the function registry"
+    );
+}
+
+// ─── step-7: .all/.any with user-defined predicates ───
+
+#[test]
+fn eval_method_all_any_with_user_function() {
+    // [2,4,6].all(|x| is_even(x)) → true
+    // [1,2,3].any(|x| is_even(x)) → true
+    // [1,3,5].any(|x| is_even(x)) → false
+    use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
+
+    // Define user function: is_even(x) = x % 2 == 0
+    let is_even_fn = CompiledFunction {
+        name: "is_even".to_string(),
+        is_pub: false,
+        params: vec![("x".to_string(), Type::Int)],
+        return_type: Type::Bool,
+        body: CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::binop(
+                BinOp::Eq,
+                CompiledExpr::binop(
+                    BinOp::Mod,
+                    CompiledExpr::value_ref(ValueCellId::new("is_even", "x"), Type::Int),
+                    CompiledExpr::literal(Value::Int(2), Type::Int),
+                    Type::Int,
+                ),
+                CompiledExpr::literal(Value::Int(0), Type::Int),
+                Type::Bool,
+            ),
+        },
+        content_hash: ContentHash::of(b"is_even_fn_all_any"),
+    };
+
+    let x_id = ValueCellId::new("$lambda_all_any_uf.S", "x");
+    let make_is_even_lambda = |x_id: ValueCellId| {
+        let lambda_body = CompiledExpr {
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "is_even".to_string(),
+                args: vec![CompiledExpr::value_ref(x_id.clone(), Type::Int)],
+            },
+            result_type: Type::Bool,
+            content_hash: ContentHash::of(b"is_even_call_all_any"),
+        };
+        lambda_literal(vec![("x", x_id)], lambda_body, ValueMap::new())
+    };
+
+    let values = ValueMap::new();
+    let functions = vec![is_even_fn];
+    let ctx = EvalContext::new(&values, &functions);
+
+    // [2,4,6].all(|x| is_even(x)) → true
+    let all_evens = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(4), Type::Int),
+            CompiledExpr::literal(Value::Int(6), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let all_expr = CompiledExpr::method_call(
+        all_evens,
+        "all".to_string(),
+        vec![make_is_even_lambda(x_id.clone())],
+        Type::Bool,
+    );
+    let all_result = eval_expr(&all_expr, &ctx);
+    assert_eq!(
+        all_result,
+        Value::Bool(true),
+        "[2,4,6].all(is_even) should be true"
+    );
+
+    // [1,2,3].any(|x| is_even(x)) → true
+    let mixed = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let any_true_expr = CompiledExpr::method_call(
+        mixed,
+        "any".to_string(),
+        vec![make_is_even_lambda(x_id.clone())],
+        Type::Bool,
+    );
+    let any_true_result = eval_expr(&any_true_expr, &ctx);
+    assert_eq!(
+        any_true_result,
+        Value::Bool(true),
+        "[1,2,3].any(is_even) should be true"
+    );
+
+    // [1,3,5].any(|x| is_even(x)) → false
+    let all_odds = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+            CompiledExpr::literal(Value::Int(5), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let any_false_expr = CompiledExpr::method_call(
+        all_odds,
+        "any".to_string(),
+        vec![make_is_even_lambda(x_id)],
+        Type::Bool,
+    );
+    let any_false_result = eval_expr(&any_false_expr, &ctx);
+    assert_eq!(
+        any_false_result,
+        Value::Bool(false),
+        "[1,3,5].any(is_even) should be false"
+    );
+}
