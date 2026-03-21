@@ -129,6 +129,7 @@ describe('PropertyEditor parameter rows', () => {
     const widthRow = screen.getByTestId('prop-row-c1');
     const input = widthRow.querySelector('input[type="text"]') as HTMLInputElement;
     // Change value and press Enter
+    fireEvent.focus(input);
     fireEvent.input(input, { target: { value: '75' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(onSetParam).toHaveBeenCalledWith('c1', '75');
@@ -349,6 +350,7 @@ describe('PropertyEditor blur-commit', () => {
     ));
     const row = screen.getByTestId('prop-row-c1');
     const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
     fireEvent.input(input, { target: { value: '75' } });
     fireEvent.blur(input);
     expect(onSetParam).toHaveBeenCalledWith('c1', '75');
