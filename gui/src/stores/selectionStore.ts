@@ -30,5 +30,14 @@ export function createSelectionStore() {
     setState('highlightedParams', []);
   }
 
-  return { state, selectEntity, hoverEntity, setHighlightedParams, clearHighlights };
+  function clearIfRemoved(entityPath: string) {
+    if (state.selectedEntity === entityPath) {
+      selectEntity(null);
+    }
+    if (state.hoveredEntity === entityPath) {
+      hoverEntity(null);
+    }
+  }
+
+  return { state, selectEntity, hoverEntity, setHighlightedParams, clearHighlights, clearIfRemoved };
 }
