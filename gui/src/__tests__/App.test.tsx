@@ -181,3 +181,62 @@ describe('App initial state loading', () => {
     expect(bridge.getInitialState).toHaveBeenCalledOnce();
   });
 });
+
+describe('App dynamic window title', () => {
+  it('sets document.title to "Reify" when no file is open', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [], values: [], constraints: [], files: [],
+    });
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(document.title).toBe('Reify');
+    });
+  });
+
+  it('sets document.title to "{basename} - Reify" when a file is open and idle', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+    });
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(document.title).toBe('bracket.ri - Reify');
+    });
+  });
+
+  it('includes evaluation phase in title during evaluation', async () => {
+    // Mock onEvaluationStatus to capture the callback so we can trigger it
+    let evalStatusCallback: ((status: any) => void) | undefined;
+    vi.mocked(bridge.onEvaluationStatus).mockImplementation(async (cb: any) => {
+      evalStatusCallback = cb;
+      return () => {};
+    });
+
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+    });
+
+    render(() => <App />);
+
+    // Wait for initial state to load
+    await waitFor(() => {
+      expect(document.title).toBe('bracket.ri - Reify');
+    });
+
+    // Simulate evaluation status change
+    evalStatusCallback!({ phase: 'evaluating' });
+
+    await waitFor(() => {
+      expect(document.title).toBe('bracket.ri [evaluating] - Reify');
+    });
+  });
+});
