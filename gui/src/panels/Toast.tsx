@@ -24,7 +24,7 @@ export const Toast: Component<ToastProps> = (props) => {
   });
 
   return (
-    <div data-testid="toast" data-type={props.type} class={styles.toast} role="alert" aria-live="assertive">
+    <div data-testid="toast" data-type={props.type} class={`${styles.toast} ${styles.animated}`} role="alert" aria-live="assertive">
       <span class={styles.message}>{props.message}</span>
       <button class={styles.close} aria-label="Close" onClick={() => props.onDismiss()}>
         &times;
