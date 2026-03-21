@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createRoot } from 'solid-js';
+import { createRoot, batch } from 'solid-js';
 import { createEditorStore } from '../stores/editorStore';
 import type { FileData } from '../types';
 
@@ -130,6 +130,48 @@ describe('editorStore', () => {
 
       updateFileContent('bracket.ri', 'structure Bracket { updated: true }');
       expect(state.openFiles[0].content).toBe('structure Bracket { updated: true }');
+      dispose();
+    });
+  });
+
+  // S3: stale closure — closeFile should compute fallback from local filtered list
+  it('closeFile selects first remaining file when active file is closed (3 files)', () => {
+    createRoot((dispose) => {
+      const { state, openFile, closeFile } = createEditorStore();
+      const fileA: FileData = { path: 'a.ri', content: 'a' };
+      const fileB: FileData = { path: 'b.ri', content: 'b' };
+      const fileC: FileData = { path: 'c.ri', content: 'c' };
+      openFile(fileA);
+      openFile(fileB);
+      openFile(fileC);
+      expect(state.activeFile).toBe('c.ri');
+
+      closeFile('c.ri');
+      // After closing C, remaining files are [A, B] — active should be A (first remaining)
+      expect(state.openFiles).toHaveLength(2);
+      expect(state.activeFile).toBe('a.ri');
+      dispose();
+    });
+  });
+
+  it('closeFile computes correct fallback inside batch()', () => {
+    createRoot((dispose) => {
+      const { state, openFile, closeFile } = createEditorStore();
+      const fileA: FileData = { path: 'a.ri', content: 'a' };
+      const fileB: FileData = { path: 'b.ri', content: 'b' };
+      const fileC: FileData = { path: 'c.ri', content: 'c' };
+      openFile(fileA);
+      openFile(fileB);
+      openFile(fileC);
+      expect(state.activeFile).toBe('c.ri');
+
+      // In a batched context, state reads after setState may return stale data
+      batch(() => {
+        closeFile('c.ri');
+      });
+
+      expect(state.openFiles).toHaveLength(2);
+      expect(state.activeFile).toBe('a.ri');
       dispose();
     });
   });
