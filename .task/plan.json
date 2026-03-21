@@ -1,301 +1,216 @@
 {
-  "task_id": "95",
-  "title": "Viewport selection + hover + interaction",
+  "task_id": "77",
+  "title": "OR-Tools CP-SAT FFI integration",
   "files": [
-    "gui/src/viewport/selection.ts",
-    "gui/src/viewport/Viewport.tsx",
-    "gui/src/viewport/index.ts",
-    "gui/src/__tests__/viewport/selection.test.ts",
-    "gui/src/__tests__/viewport/Viewport.test.tsx"
+    "crates/reify-constraints/src/cpsat.rs",
+    "crates/reify-constraints/src/lib.rs",
+    "crates/reify-constraints/tests/cpsat_tests.rs",
+    "crates/reify-constraints/Cargo.toml"
   ],
   "modules": [
-    "gui/src/viewport",
-    "gui/src/__tests__/viewport"
+    "crates/reify-constraints"
   ],
-  "analysis": "Task 95 adds interactive 3D selection to the viewport. The existing codebase follows a clean factory-function pattern: scene.ts, controls.ts, meshManager.ts each export a `create*` function returning a context object with methods and a dispose. Tests mock three.js via vi.mock('three') with inline mock classes.\n\nThe core new module is `selection.ts` \u2014 a `createSelection` factory that wraps Three.js Raycaster for pointer-based hover/click detection on meshes managed by meshManager. It will: (1) resolve pointer coords to entity paths via raycasting, (2) apply emissive highlight on hover, (3) create WireframeGeometry+LineSegments overlay on selection, (4) provide fitToView to frame all content, and (5) expose dispose for cleanup. Viewport.tsx will be extended to wire selection into the render loop, render a floating tooltip on hover, an evaluating spinner overlay when evalStatus.phase !== idle, and a fit-to-view button.\n\nKey considerations: The meshManager already stores entity_path as mesh.name and exposes getSceneMeshes() returning Map<string, Mesh> \u2014 perfect for raycasting. The selectionStore has selectEntity/hoverEntity. The engineStore has evalStatus with phase 'idle'|'evaluating'|'resolving'. All Three.js dependencies will be mocked in tests following the established pattern.\n\nThe Viewport component currently accepts only {meshes} prop. It will be extended to accept optional callbacks (onHover, onSelect), evalStatus, hoveredEntity, selectedEntity, and a fitToView ref. This keeps the component testable with simple prop injection, matching the existing pattern from task 93 where stores are created in App and passed as props.\n\n--- REVIEW FIX ADDENDUM (round 1) ---\nPost-implementation review identified two blocking issues:\n1. Fit-to-view button broken: onClick calls props.onFitToView?.() but never selection.fitToView(). Fix: mutable ref pattern.\n2. Material resource leak: removeWireframe() disposes WireframeGeometry but not LineBasicMaterial. Fix: add material.dispose().\n\n--- REVIEW FIX ADDENDUM (round 2) ---\nSecond review identified three additional blocking performance/robustness issues:\n3. hot_path_layout_thrashing: getBoundingClientRect() called on every pointermove forces synchronous layout reflow at mouse sampling rate (60-1000 Hz). Fix: cache DOMRect in closure, invalidate lazily on resize via a ResizeObserver or an onResize() method that Viewport.tsx calls from its existing ResizeObserver.\n4. hot_path_missing_raf_throttle: Full raycast (setFromCamera + intersectObjects) runs synchronously on every pointermove with no frame-rate gating. At 1000 Hz with even modest scenes, this saturates the main thread. Fix: store pendingMoveEvent in closure, schedule rAF only if not already queued, consume latest event in rAF callback. Cancel outstanding rAF in dispose().\n5. stale_resource_state: Wireframe overlay uses WireframeGeometry snapshot from construction time. When meshManager.sync() updates geometry after engine re-evaluation, the wireframe shows the old shape. The selectedEntity effect in Viewport.tsx doesn't track mesh data changes. Fix: make the selectedEntity effect also depend on props.meshes so it re-runs setSelected() when geometry changes, rebuilding the wireframe.",
-  "prerequisites": [],
+  "analysis": "Task 77 calls for a logical/discrete constraint solver to handle boolean SAT, enum constraints, implications, cardinality, all-different, and integer constraints. The task suggests OR-Tools CP-SAT via FFI but explicitly allows simpler alternatives for v0.1.\n\nAfter analyzing the codebase, the best v0.1 approach is a pure-Rust backtracking CP solver using the existing expression evaluator (reify_expr::eval_expr) as the constraint checker. This avoids C++ FFI complexity, keeps compile times fast, requires zero new external dependencies, and is easily testable.\n\nThe existing infrastructure is perfectly set up for this:\n- ConstraintSolver trait in reify-types defines the interface (solve(&self, problem: &ResolutionProblem) -> SolveResult)\n- SolverRegistry already has a `logical: Option<Box<dyn ConstraintSolver>>` slot\n- ConstraintClassifier already classifies bool-only expressions as ConstraintDomain::Logical\n- decompose_into_components routes logical sub-problems to the logical solver\n- reify_expr::eval_expr can evaluate any CompiledExpr tree against a ValueMap, serving as the universal constraint checker\n\nThe solver algorithm: forward-checking backtracking search over discrete variable domains. For each auto param, the domain is determined by its type (Bool -> {true,false}, Int -> {lo..hi} from bounds, Enum -> variants extracted from constraint literals). Constraints are checked incrementally after each variable assignment using eval_expr, pruning early on violation. This is O(product of domain sizes) in the worst case but with early pruning is very efficient for the small problem sizes expected in v0.1 CAD constraint solving (typically 1-10 discrete variables).\n\nThe solver will be named CpSatSolver to match the task spec, implemented in a new cpsat.rs module, exported from lib.rs, and registered as the logical solver in SolverRegistry.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Create cpsat.rs module file with a placeholder CpSatSolver struct and add `mod cpsat` to lib.rs with `pub use cpsat::CpSatSolver`. Verify the crate compiles. No trait impl yet - just the struct definition.",
+      "status": "done",
+      "commit": "634b4ee",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for createSelection factory skeleton: returns object with setHovered, setSelected, fitToView, dispose methods. Mock Three.js Raycaster, WireframeGeometry, LineSegments, LineBasicMaterial, Box3, Vector3, Color. Follow same vi.mock('three') pattern as meshManager.test.ts.",
+      "description": "Write failing test in cpsat_tests.rs: boolean SAT with 3 Bool auto params (a, b, c) and constraint `a && (b || !c)`. Use value_ref_typed with Type::Bool for param refs, literal(Value::Bool(...)) for constants, and/or/not builders. Create ResolutionProblem with auto_params typed as Type::Bool (no bounds needed). Expect SolveResult::Solved with assignment where a=true and (b=true or c=false).",
       "status": "done",
-      "commit": "7d990f3"
+      "commit": "67b9264"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement createSelection factory skeleton in selection.ts. Accepts {scene, camera, domElement, getMeshes: () => Map<string, Mesh>, onHover: (path: string|null) => void, onSelect: (path: string|null) => void}. Returns SelectionContext with stub methods (setHovered, setSelected, fitToView, dispose). Export from viewport/index.ts.",
+      "description": "Implement CpSatSolver core in cpsat.rs: (1) Variable struct with id: ValueCellId, domain: Vec<Value>; (2) build_variable_domains() extracts Bool domains from AutoParam with Type::Bool -> vec![Value::Bool(true), Value::Bool(false)]; (3) collect_constraint_refs() maps each constraint to the auto param ValueCellIds it references using CompiledExpr::walk; (4) backtrack() recursive function: picks next unassigned variable, tries each domain value, inserts into trial ValueMap (cloned from current_values), evaluates all constraints whose variables are fully assigned via reify_expr::eval_expr, prunes on Value::Bool(false), recurses; (5) solve() builds domains, runs backtrack, returns Solved with HashMap<ValueCellId, Value> or Infeasible with diagnostic. Implement ConstraintSolver trait. Export from lib.rs.",
       "status": "done",
-      "commit": "89150c5"
+      "commit": "8b4fcc8"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for pointer-based hover raycasting: simulate pointermove event on domElement, verify Raycaster.setFromCamera called with normalized device coordinates computed from event clientX/Y relative to domElement bounds, and raycaster.intersectObjects called with mesh array from getMeshes(). When intersection found, onHover called with mesh.name. When no intersection, onHover called with null.",
+      "description": "Write failing test: infeasible boolean problem `a && !a` with one Bool auto param a. Single constraint And(a_ref, Not(a_ref)). Expect SolveResult::Infeasible with non-empty diagnostics.",
       "status": "done",
-      "commit": "762cf48"
+      "commit": "3489f5b"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement pointermove handler in createSelection: compute NDC from event coords and domElement rect, call raycaster.setFromCamera + intersectObjects on Array.from(getMeshes().values()), call onHover with first intersection's object.name or null. Register handler via domElement.addEventListener('pointermove', ...).",
+      "description": "Ensure infeasible detection works correctly. When backtracking exhausts all domain values for all variables without finding a satisfying assignment, return Infeasible with a diagnostic message listing the constraint count and param count. Should already work from step-2 but verify diagnostic quality.",
       "status": "done",
-      "commit": "f5bef73"
+      "commit": "3489f5b"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for hover emissive highlight: setHovered('A') applies emissive color (theme accent) to mesh A's MeshStandardMaterial. setHovered(null) resets emissive to black (0x000000). Changing hover from A to B resets A's emissive and highlights B's emissive. setHovered with unknown entity path is a no-op.",
+      "description": "Write failing test: implication `if a then b` encoded as Or(Not(a_ref), b_ref) with two Bool auto params a, b. Verify that the solution satisfies: if a is true then b must be true. Also add a test with two constraints: And(a_ref, Or(Not(a_ref), b_ref)) forcing a=true, which means b must be true.",
       "status": "done",
-      "commit": "d49f9e9"
+      "commit": "2d7e4e8"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement setHovered in createSelection: track previousHoveredPath, look up mesh in getMeshes(), reset previous mesh's material.emissive to Color(0x000000), apply highlight Color to new mesh's material.emissive. Store highlight color as constant derived from THEME_TOKENS.accent.",
+      "description": "Implication should already work from boolean backtracking + eval_expr. Verify tests pass. No new code expected.",
       "status": "done",
-      "commit": "33e624b"
+      "commit": "2d7e4e8"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for click-based selection raycasting: simulate pointerdown event on domElement, verify raycaster used same as hover, onSelect called with mesh.name on intersection, onSelect(null) on miss.",
+      "description": "Write failing test: cardinality 'at most 2 of [a, b, c, d] are true' with 4 Bool auto params. Encode as conjunction: Not(And(a, And(b, c))) && Not(And(a, And(b, d))) && Not(And(a, And(c, d))) && Not(And(b, And(c, d))). This says no 3 of the 4 can all be true. Expect Solved with at most 2 true values in the assignment.",
       "status": "done",
-      "commit": "be23945"
+      "commit": "b3f5a87"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement pointerdown handler in createSelection: same raycast logic as hover, call onSelect. Register via domElement.addEventListener('pointerdown', ...).",
+      "description": "Cardinality should work via boolean backtracking and eval_expr. Verify tests pass. No new code expected.",
       "status": "done",
-      "commit": "4411728"
+      "commit": "b3f5a87"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for wireframe overlay on selection: setSelected('A') creates WireframeGeometry from mesh A's geometry, creates LineSegments with LineBasicMaterial(accent color), adds LineSegments to scene. setSelected(null) removes LineSegments from scene and disposes WireframeGeometry. Changing selection from A to B removes A's wireframe, creates B's. setSelected with unknown entity is a no-op (no wireframe, no crash).",
+      "description": "Write failing test: enum constraint. Auto param x with Type::Enum('Material'), no bounds. Constraints: (1) Ne(x_ref, enum_literal('Material','A')) and (2) Or(Eq(x_ref, enum_literal('Material','B')), Eq(x_ref, enum_literal('Material','C'))). Use CompiledExpr::literal(Value::Enum{type_name:'Material', variant:'A'}, Type::Enum('Material')) for enum literals and value_ref_typed('Part','x', Type::Enum('Material')) for param ref. Expect Solved with x = B or C.",
       "status": "done",
-      "commit": "cbe382c"
+      "commit": "76b4a0c"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement setSelected in createSelection: track current wireframe LineSegments object. On deselect, remove from scene and dispose geometry. On select, create WireframeGeometry from mesh.geometry, create LineSegments with LineBasicMaterial({color: accent}), add to scene.",
+      "description": "Add enum domain support to build_variable_domains: (1) for Type::Enum auto params, scan all constraint expressions for Value::Enum literals with matching type_name using CompiledExpr::walk; (2) collect unique variants as domain values (Vec<Value::Enum>); (3) if no variants found, return NoProgress with reason. Update backtrack to handle enum values in trial map.",
       "status": "done",
-      "commit": "4b33ead"
+      "commit": "76b4a0c"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing tests for fitToView: with meshes in scene, fitToView computes bounding box via Box3.expandByObject for each mesh, calculates center and size, positions camera at appropriate distance based on bounding sphere radius and camera FOV, calls camera.lookAt(center). With no meshes, fitToView is a no-op (no crash).",
+      "description": "Write failing test: integer constraint `x + y == 10 && x >= 0 && y >= 0 && x <= 10 && y <= 10` with two Int auto params x, y each with bounds Some((0.0, 10.0)). Constraints: Eq(Add(x_ref, y_ref), literal(Int(10))), Ge(x_ref, literal(Int(0))), Ge(y_ref, literal(Int(0))), Le(x_ref, literal(Int(10))), Le(y_ref, literal(Int(10))). Use value_ref_typed with Type::Int. Expect Solved with x+y==10 and both in [0,10].",
       "status": "done",
-      "commit": "19bbb7f"
+      "commit": "99a01be"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement fitToView in createSelection: create Box3, iterate getMeshes() calling box.expandByObject(mesh), compute center via box.getCenter, compute size via box.getSize, calculate distance = max(sizeX, sizeY, sizeZ) / (2 * tan(camera.fov/2 * PI/180)), set camera.position to center offset by distance on Z, call camera.lookAt(center), camera.updateProjectionMatrix().",
+      "description": "Add integer domain support to build_variable_domains: (1) for Type::Int auto params, read bounds Option<(f64, f64)> and cast to i64 range lo..=hi; (2) cap domain size at MAX_INT_DOMAIN (1000), return NoProgress if exceeded; (3) enumerate domain as Vec<Value::Int(v)> for v in lo..=hi. Update backtrack trial insertion to handle Value::Int.",
       "status": "done",
-      "commit": "f810587"
+      "commit": "99a01be"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing tests for dispose: verify domElement.removeEventListener called for both 'pointermove' and 'pointerdown' handlers. If wireframe exists, it is removed from scene and disposed.",
+      "description": "Write failing test: all-different on 3 Int auto params x, y, z each with bounds [1,3]. Encode as Ne(x,y) && Ne(x,z) && Ne(y,z). Expect Solved with {x,y,z} being a permutation of {1,2,3}.",
       "status": "done",
-      "commit": "40c861e"
+      "commit": "1738942"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement dispose in createSelection: remove pointermove and pointerdown listeners from domElement, clean up wireframe if present (remove from scene, dispose geometry).",
+      "description": "All-different should work via integer backtracking + Ne evaluation. Verify tests pass. No new code expected beyond step-12.",
       "status": "done",
-      "commit": "1b0ff69"
+      "commit": "1738942"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing tests for updated Viewport.tsx: (1) Viewport with onHover/onSelect props wires them through createSelection, (2) tooltip div with data-testid='viewport-tooltip' appears when hoveredEntity prop is set and shows the entity name, (3) tooltip hidden when hoveredEntity is null, (4) spinner overlay with data-testid='viewport-spinner' appears when evalStatus.phase is 'evaluating', (5) spinner hidden when evalStatus.phase is 'idle', (6) fit-to-view button with data-testid='fit-to-view' exists.",
+      "description": "Write failing test: SolverRegistry integration. Create SolverRegistry::with_solvers(dimensional=Box::new(DimensionalSolver), geometric=None, logical=Some(Box::new(CpSatSolver)), fallback=None). Submit a problem with 2 Bool auto params and a logical constraint (And(a, b)). Both constraints should classify as Logical via ConstraintClassifier, routing to CpSatSolver. Expect Solved with a=true and b=true.",
       "status": "done",
-      "commit": "0f460b5"
+      "commit": "eb363fc"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Update Viewport.tsx: extend ViewportProps with optional onHover, onSelect, hoveredEntity, selectedEntity, evalStatus, onFitToView. In onMount, create selection via createSelection, wire onHover/onSelect. Add createEffect watching hoveredEntity \u2192 call selection.setHovered, createEffect watching selectedEntity \u2192 call selection.setSelected. Render tooltip overlay (Show when hoveredEntity), spinner overlay (Show when evalStatus?.phase !== 'idle'), fit-to-view button. Dispose selection in onCleanup. Update viewport/index.ts exports for SelectionContext.",
+      "description": "Ensure CpSatSolver is fully exported from lib.rs and works with SolverRegistry. The dispatch infrastructure already exists in registry.rs - this step verifies the end-to-end integration. Ensure `pub use cpsat::CpSatSolver` is in lib.rs.",
       "status": "done",
-      "commit": "d529fa9"
+      "commit": "eb363fc"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "REVIEW FIX: Write failing tests for two issues: (1) In selection.test.ts, add test 'removeWireframe disposes LineBasicMaterial' \u2014 call setSelected('A') then setSelected(null), assert wireframe.material.dispose was called. Add test 'dispose disposes wireframe material if wireframe exists' \u2014 call setSelected('A') then dispose(), assert wireframe.material.dispose was called. Add test 'changing selection disposes previous wireframe material' \u2014 call setSelected('A') then setSelected('B'), assert first wireframe's material.dispose was called. (2) In Viewport.test.tsx, add test 'clicking fit-to-view button calls selection.fitToView' \u2014 render Viewport, find button by data-testid 'fit-to-view', fireEvent.click it, assert mockSelectionFitToView was called. Also assert props.onFitToView callback is still called (both should fire).",
+      "description": "Write test: CpSatSolver is Send + Sync (required by ConstraintSolver supertrait). Static assertion: fn assert_send_sync<T: Send + Sync>() {} assert_send_sync::<CpSatSolver>(). Also test empty problem (no auto params) returns Solved with empty values.",
       "status": "done",
-      "commit": "a5d4a7b"
+      "commit": "189ada9"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "REVIEW FIX: Fix both issues: (1) In selection.ts removeWireframe(), add `(currentWireframe.material as LineBasicMaterial).dispose()` after geometry.dispose() and before nulling the reference. This ensures the material is freed on every wireframe removal (deselect, re-select, and dispose). (2) In Viewport.tsx, declare `let doFitToView: (() => void) | undefined` in the Viewport function scope before onMount. Inside onMount, after creating `selection`, assign `doFitToView = () => selection.fitToView()`. Change the button onClick from `() => props.onFitToView?.()` to `() => { doFitToView?.(); props.onFitToView?.(); }`. This bridges the onMount-scoped selection instance to the JSX click handler via a mutable ref while keeping selection private to the mount closure.",
+      "description": "Ensure CpSatSolver is Send + Sync. As a unit struct with no interior state, this is automatically derived. Also ensure the empty-problem fast path works (no params -> Solved with empty HashMap). Verify all tests pass with `cargo test -p reify-constraints`.",
       "status": "done",
-      "commit": "8d61290"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "REVIEW FIX (hot_path_layout_thrashing): Write failing tests in selection.test.ts for cached DOMRect behavior. (1) 'computeNDC uses cached rect and does not call getBoundingClientRect on every pointermove' \u2014 dispatch two pointermove events, assert domElement.getBoundingClientRect was called only once (lazy population on first event). (2) 'invalidateRect causes next pointermove to re-read getBoundingClientRect' \u2014 dispatch pointermove (populates cache), call selection.invalidateRect(), dispatch another pointermove, assert getBoundingClientRect was called twice total. (3) 'pointerdown also uses cached rect' \u2014 dispatch pointerdown after pointermove, assert getBoundingClientRect still called only once. Add invalidateRect to the SelectionContext interface assertion in the factory skeleton test. Spy on domElement.getBoundingClientRect to count calls.",
-      "status": "done",
-      "commit": "6aa71e5"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "REVIEW FIX (hot_path_layout_thrashing): In selection.ts, add `let cachedRect: DOMRect | null = null` in the factory closure. Replace `domElement.getBoundingClientRect()` in computeNDC with a helper `getRect()` that returns cachedRect if non-null, otherwise calls `cachedRect = domElement.getBoundingClientRect()` and returns it. Add `invalidateRect()` method that sets `cachedRect = null`. Export invalidateRect on SelectionContext interface. In Viewport.tsx, call `selection.invalidateRect()` inside the existing ResizeObserver callback (alongside the existing `resize(w, h)` call), so the rect cache is invalidated whenever the viewport container resizes.",
-      "status": "done",
-      "commit": "bb9e05d"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "REVIEW FIX (hot_path_missing_raf_throttle): Write failing tests in selection.test.ts for rAF-throttled pointermove raycasting. (1) 'pointermove does not raycast synchronously \u2014 stores pending event and schedules rAF' \u2014 dispatch pointermove, assert raycaster.setFromCamera was NOT called synchronously, assert requestAnimationFrame was called. (2) 'rAF callback performs raycast with latest pending event' \u2014 dispatch pointermove, invoke the captured rAF callback, assert raycaster.setFromCamera was called once and onHover was called. (3) 'multiple rapid pointermoves only schedule one rAF and raycast uses the last event' \u2014 dispatch 3 pointermove events with different clientX, assert requestAnimationFrame was called only once, invoke rAF callback, assert raycaster.setFromCamera called once with NDC from the last event's coords. (4) 'pointerdown still raycasts synchronously (not throttled)' \u2014 dispatch pointerdown, assert raycaster.setFromCamera called immediately without rAF. (5) 'dispose cancels outstanding rAF' \u2014 dispatch pointermove, call dispose(), assert cancelAnimationFrame was called with the rAF id. Mock requestAnimationFrame and cancelAnimationFrame in the test setup.",
-      "status": "done",
-      "commit": "4f4167a"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "REVIEW FIX (hot_path_missing_raf_throttle): In selection.ts, refactor handlePointerMove to use pending-event + rAF throttle pattern. Add closure variables: `let pendingMoveEvent: Event | null = null; let hoverRafId = 0;`. In handlePointerMove, assign `pendingMoveEvent = event`, then only if `hoverRafId === 0`, schedule `hoverRafId = requestAnimationFrame(processHover)`. The `processHover` function reads `pendingMoveEvent`, clears it and `hoverRafId`, then performs the raycast + onHover call. pointerdown handler remains synchronous (click selection should not be delayed). In dispose(), add `if (hoverRafId) cancelAnimationFrame(hoverRafId)` before removing listeners.",
-      "status": "done",
-      "commit": "0515136"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "REVIEW FIX (stale_resource_state): Write failing test in Viewport.test.tsx: 'selectedEntity effect re-runs setSelected when props.meshes changes' \u2014 render Viewport with selectedEntity='A' and meshes={initial}, assert mockSelectionSetSelected was called with 'A'. Then update props.meshes to a new object (simulating engine re-evaluation), assert mockSelectionSetSelected was called again with 'A' (rebuilding the wireframe from updated geometry). Use SolidJS createSignal to drive reactive prop changes in the test.",
-      "status": "done",
-      "commit": "beec122"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "REVIEW FIX (stale_resource_state): In Viewport.tsx, modify the createEffect that watches selectedEntity to also read props.meshes, so it re-runs when either changes. Change from `createEffect(() => { selection.setSelected(props.selectedEntity ?? null); });` to `createEffect(() => { void props.meshes; selection.setSelected(props.selectedEntity ?? null); });`. This ensures that when meshManager.sync() processes updated geometry (triggered by the meshes effect), the selection effect also re-fires, causing setSelected to rebuild the WireframeGeometry from the now-updated mesh geometry. Also update the Viewport.test.tsx mock for selection module to include invalidateRect (from step-20) so existing tests don't break.",
-      "status": "done",
-      "commit": "e7dabe1"
+      "commit": "189ada9"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Create selection.ts as a separate factory module following the same create* pattern as scene.ts, controls.ts, meshManager.ts",
-      "rationale": "Consistent with the established viewport module architecture. Each concern is isolated in its own factory, making testing straightforward with vi.mock."
+      "decision": "Pure-Rust backtracking solver instead of OR-Tools C++ FFI",
+      "rationale": "OR-Tools FFI would require complex C++ build infrastructure (cxx or protobuf), cross-platform compilation issues, and significant maintenance burden. The task description explicitly suggests simpler alternatives for v0.1. A pure-Rust backtracking solver handles all required constraint types, has zero external dependencies, compiles fast, and is trivially testable. Problem sizes in v0.1 CAD parametric modeling are small (typically 1-10 discrete variables), making backtracking perfectly adequate."
     },
     {
-      "decision": "Selection module takes callback functions (onHover, onSelect) rather than directly importing selectionStore",
-      "rationale": "Keeps the selection module decoupled from SolidJS stores. The Viewport component wires callbacks to store methods, making the selection module purely Three.js-focused and easier to test without SolidJS reactivity."
+      "decision": "Use reify_expr::eval_expr as the constraint checker rather than building a constraint propagation engine",
+      "rationale": "The existing expression evaluator already handles all CompiledExprKind variants correctly. Using it as a black-box constraint checker means: (1) automatic support for any expression type without parsing/translation, (2) guaranteed consistency with the rest of the system, (3) no maintenance burden when new expression types are added. The trade-off is no constraint propagation (only forward-checking), but this is acceptable for v0.1 problem sizes."
     },
     {
-      "decision": "Separate setHovered/setSelected from pointer event handlers",
-      "rationale": "Allows the store to drive visual state (highlight/wireframe) independently of pointer events. When selection changes programmatically (e.g., from property editor click), the wireframe and highlight can still be updated via props flowing through Viewport. Also enables easier testing of visual effects vs event handling."
+      "decision": "Extract enum variant domains from constraint literal expressions",
+      "rationale": "AutoParam doesn't carry enum variant information (only Type::Enum(name)). Scanning constraint expressions for Value::Enum literals with matching type_name is a pragmatic way to discover the domain without requiring changes to the ResolutionProblem struct. If no variants are found, the solver returns NoProgress, which is a safe fallback."
     },
     {
-      "decision": "Use pointer events (pointermove, pointerdown) instead of mouse events",
-      "rationale": "Pointer events are the modern standard, work with touch and stylus, and are used by OrbitControls internally. Consistent event model avoids conflicts."
+      "decision": "Cap integer domains at a maximum size (1000 values)",
+      "rationale": "Integer domains could be very large (e.g., bounds 0..1_000_000). Enumerating all values would be impractical. Capping at a reasonable size and returning NoProgress for larger domains prevents performance issues while covering typical v0.1 use cases. A more sophisticated integer solver (e.g., constraint propagation, arc consistency) can be added later."
     },
     {
-      "decision": "Wireframe uses LineBasicMaterial with theme accent color",
-      "rationale": "Matches the Catppuccin Mocha theme already in use (THEME_TOKENS.accent = '#89b4fa'). WireframeGeometry+LineSegments is the standard Three.js approach for wireframe overlays that don't affect the original mesh material."
+      "decision": "Name the struct CpSatSolver to match the task specification",
+      "rationale": "The task explicitly names the struct CpSatSolver and describes the ConstraintSolver trait impl. Using this name maintains consistency with the task description and makes the intent clear (a solver for the same class of problems CP-SAT handles, even though the v0.1 implementation is a simple backtracking solver)."
     },
     {
-      "decision": "fitToView is synchronous camera repositioning (not animated) in the initial implementation",
-      "rationale": "Animation (tweening) requires either a dependency like tween.js or manual interpolation in the render loop. Starting with instant repositioning keeps complexity low; animation can be added later as an enhancement."
-    },
-    {
-      "decision": "Tooltip and spinner are absolutely-positioned divs inside the viewport container",
-      "rationale": "CSS absolute positioning over the canvas is the standard pattern for 3D viewport overlays. No extra dependency needed. Styled with existing theme CSS variables."
-    },
-    {
-      "decision": "evalStatus, hoveredEntity, selectedEntity passed as props to Viewport",
-      "rationale": "Keeps the component testable with simple prop injection. The parent (App.tsx, from task 93) already has both stores and can thread them through. Avoids premature context coupling. Matches existing pattern where meshes are a prop."
-    },
-    {
-      "decision": "Use mutable ref (doFitToView) to bridge onMount-scoped selection to JSX button handler",
-      "rationale": "The selection instance is created inside onMount and cannot be directly referenced in JSX (which is returned synchronously before onMount runs). A mutable variable declared in the component function scope, assigned inside onMount, is the standard SolidJS pattern for this. It keeps the selection instance private to the mount closure while exposing only the fitToView action through a stable function pointer."
-    },
-    {
-      "decision": "Dispose both geometry AND material in removeWireframe()",
-      "rationale": "Three.js materials are GPU-resident resources that must be explicitly disposed. The original code only disposed geometry, leaking LineBasicMaterial on every selection change. This matches the dispose pattern already used in meshManager.ts."
-    },
-    {
-      "decision": "Cache DOMRect in closure with lazy population and explicit invalidation via invalidateRect()",
-      "rationale": "getBoundingClientRect() forces synchronous layout reflow \u2014 calling it on every pointermove (60-1000 Hz) causes significant main-thread jank. Caching the rect and only re-reading on resize eliminates this hot-path thrashing. The invalidateRect() method is exposed on SelectionContext so Viewport.tsx can call it from its existing ResizeObserver, keeping resize handling centralized. Lazy population (first pointer event) avoids a redundant read during construction when the element may not yet be laid out."
-    },
-    {
-      "decision": "Use pending-event + rAF throttle for pointermove raycasting only; pointerdown remains synchronous",
-      "rationale": "Raycasting is O(n) in mesh count with per-mesh matrix math. At 1000 Hz mouse sampling, synchronous raycasting on every pointermove saturates the main thread. The rAF pattern caps hover raycasts at ~60/s (one per rendered frame), which is perceptually identical. pointerdown (click selection) remains synchronous because: (a) click events are rare (not a hot path), (b) selection feedback must feel instantaneous \u2014 a one-frame delay on click is perceptible, and (c) the pending-event pattern would discard intermediate clicks if multiple arrive before the next frame."
-    },
-    {
-      "decision": "Make selectedEntity effect depend on props.meshes to rebuild wireframe on geometry changes",
-      "rationale": "WireframeGeometry snapshots edge data at construction time \u2014 it doesn't track source geometry mutations. When meshManager.sync() updates mesh BufferGeometry after engine re-evaluation, the wireframe becomes stale. By reading props.meshes inside the selectedEntity effect, SolidJS automatically re-runs it whenever meshes change, causing setSelected() to destroy the old wireframe and create a new one from the updated geometry. This is the minimal fix: one added line (`void props.meshes;`) that leverages SolidJS's fine-grained reactivity to solve the staleness without any new mechanism."
+      "decision": "Forward-checking during backtracking instead of naive generate-and-test",
+      "rationale": "After assigning each variable, evaluate only constraints whose referenced auto params are all assigned. This prunes the search tree early without requiring full constraint propagation. Much more efficient than trying all complete assignments, especially for cardinality and all-different constraints where early violations eliminate large sub-trees."
     }
   ],
   "reuse": [
     {
-      "what": "Factory function pattern (createScene, createControls, createMeshManager)",
-      "where": "gui/src/viewport/scene.ts, controls.ts, meshManager.ts",
-      "how": "Follow same pattern for createSelection: take dependencies as arguments, return context object with methods + dispose."
+      "what": "reify_expr::eval_expr + EvalContext",
+      "where": "crates/reify-expr/src/lib.rs",
+      "how": "Use as the constraint evaluation engine: insert trial values into ValueMap, eval constraint expression, check for Value::Bool(true). Same pattern as DimensionalSolver's build_trial_values + eval."
     },
     {
-      "what": "Three.js vi.mock pattern with inline mock classes",
-      "where": "gui/src/__tests__/viewport/meshManager.test.ts, scene.test.ts, controls.test.ts",
-      "how": "Mock Raycaster, WireframeGeometry, LineSegments, Box3, Vector3, LineBasicMaterial, Color using same vi.mock('three', () => { ... }) pattern."
+      "what": "ConstraintSolver trait",
+      "where": "crates/reify-types/src/constraint.rs",
+      "how": "Implement the trait for CpSatSolver. The trait is already defined with solve(&self, problem: &ResolutionProblem) -> SolveResult."
     },
     {
-      "what": "meshManager.getSceneMeshes() returning Map<string, Mesh>",
-      "where": "gui/src/viewport/meshManager.ts",
-      "how": "Selection module uses this map to get raycastable meshes and look up meshes by entity_path for highlight/wireframe. Passed as getMeshes callback."
+      "what": "SolverRegistry logical slot",
+      "where": "crates/reify-constraints/src/registry.rs",
+      "how": "The registry already has a `logical: Option<Box<dyn ConstraintSolver>>` field and solver_for() dispatch for ConstraintDomain::Logical. CpSatSolver plugs directly into this slot with no registry changes needed."
     },
     {
-      "what": "selectionStore.selectEntity/hoverEntity",
-      "where": "gui/src/stores/selectionStore.ts",
-      "how": "Viewport wires selection onHover/onSelect callbacks to these store methods, bridging Three.js events to SolidJS reactive state."
+      "what": "ConstraintClassifier",
+      "where": "crates/reify-constraints/src/classifier.rs",
+      "how": "Already classifies bool-only constraints as ConstraintDomain::Logical, ensuring they route to the logical solver in the registry. No changes needed."
     },
     {
-      "what": "THEME_TOKENS for consistent styling",
-      "where": "gui/src/theme.ts",
-      "how": "Use THEME_TOKENS.accent for wireframe color and hover highlight emissive. Use --reify-* CSS variables for tooltip/spinner styling."
+      "what": "reify-test-support builders",
+      "where": "crates/reify-test-support/src/builders.rs + values.rs",
+      "how": "Use existing helpers: literal(), value_ref_typed(), and/or/not/eq/ne/gt/lt(), vcid(), cnid() for constructing test expressions. For enum literals, use CompiledExpr::literal() directly since the test-support literal() function panics on enum values by design."
     },
     {
-      "what": "mesh.name = entityPath convention",
-      "where": "gui/src/viewport/meshManager.ts line 62",
-      "how": "Raycaster intersection returns the mesh whose .name is the entity_path, providing the key for store updates and getMeshes() lookups."
+      "what": "CompiledExpr::walk for collecting value refs",
+      "where": "crates/reify-types/src/expr.rs",
+      "how": "Walk constraint expression trees to collect ValueCellId references for mapping constraints to variables. Same pattern used in decompose.rs collect_value_refs."
     },
     {
-      "what": "EvaluationStatus type with phase field",
-      "where": "gui/src/types.ts line 93-96",
-      "how": "Viewport checks evalStatus.phase !== 'idle' to show/hide the spinner overlay."
-    },
-    {
-      "what": "Viewport.test.tsx mock patterns (ResizeObserver stub, RAF capture, module-level vi.mock for scene/controls/meshManager)",
-      "where": "gui/src/__tests__/viewport/Viewport.test.tsx",
-      "how": "Extend existing mock setup to include selection module mock. Add tests for new overlay elements."
-    },
-    {
-      "what": "MockLineBasicMaterial.dispose mock in selection.test.ts",
-      "where": "gui/src/__tests__/viewport/selection.test.ts line 30-36",
-      "how": "The mock LineBasicMaterial already has a dispose = vi.fn() \u2014 the new material disposal tests can assert on wireframe.material.dispose without any mock changes."
-    },
-    {
-      "what": "Existing ResizeObserver in Viewport.tsx for resize handling",
-      "where": "gui/src/viewport/Viewport.tsx lines 59-67",
-      "how": "The ResizeObserver callback already fires on viewport resize. Add selection.invalidateRect() call alongside the existing resize(w, h) call to invalidate the cached DOMRect when the viewport container changes size."
-    },
-    {
-      "what": "requestAnimationFrame / cancelAnimationFrame mock in Viewport.test.tsx",
-      "where": "gui/src/__tests__/viewport/Viewport.test.tsx lines 16-20",
-      "how": "Same rAF mocking pattern will be used in selection.test.ts for the rAF-throttle tests. Capture callbacks via vi.fn() wrapping requestAnimationFrame to verify scheduling and invoke callbacks in tests."
+      "what": "DimensionalSolver build_trial_values pattern",
+      "where": "crates/reify-constraints/src/solver.rs",
+      "how": "Reuse the pattern of cloning current_values ValueMap and inserting trial auto-param values for constraint evaluation. The ValueMap clone is O(1) via PersistentMap structural sharing."
     }
   ],
-  "_session_id": "95-50938893",
-  "_created_at": "2026-03-21T07:54:17.619983+00:00",
-  "_schema_version": 1
+  "_session_id": "77-e61e454c",
+  "_created_at": "2026-03-21T08:21:07.699919+00:00"
 }
