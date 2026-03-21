@@ -1,5 +1,6 @@
-import { Raycaster, Vector2 } from 'three';
-import type { Scene, PerspectiveCamera, Mesh } from 'three';
+import { Raycaster, Vector2, Color } from 'three';
+import type { Scene, PerspectiveCamera, Mesh, MeshStandardMaterial } from 'three';
+import { THEME_TOKENS } from '../theme';
 
 export interface SelectionOptions {
   scene: Scene;
@@ -21,10 +22,14 @@ export interface SelectionContext {
  * Creates a selection system for pointer-based hover/click detection
  * on meshes managed by meshManager.
  */
+/** Emissive highlight color derived from theme accent. */
+const HIGHLIGHT_COLOR = THEME_TOKENS.accent;
+
 export function createSelection(options: SelectionOptions): SelectionContext {
   const { camera, domElement, getMeshes, onHover } = options;
   const raycaster = new Raycaster();
   const ndc = new Vector2();
+  let previousHoveredPath: string | null = null;
 
   function computeNDC(event: MouseEvent): void {
     const rect = domElement.getBoundingClientRect();
@@ -50,8 +55,29 @@ export function createSelection(options: SelectionOptions): SelectionContext {
 
   domElement.addEventListener('pointermove', handlePointerMove);
 
-  function setHovered(_path: string | null): void {
-    // stub
+  function setHovered(path: string | null): void {
+    const meshes = getMeshes();
+
+    // Reset previous hover
+    if (previousHoveredPath !== null) {
+      const prevMesh = meshes.get(previousHoveredPath);
+      if (prevMesh) {
+        (prevMesh.material as MeshStandardMaterial).emissive.set(0x000000);
+      }
+    }
+
+    // Apply new hover
+    if (path !== null) {
+      const mesh = meshes.get(path);
+      if (mesh) {
+        (mesh.material as MeshStandardMaterial).emissive.set(HIGHLIGHT_COLOR);
+        previousHoveredPath = path;
+      } else {
+        previousHoveredPath = null;
+      }
+    } else {
+      previousHoveredPath = null;
+    }
   }
 
   function setSelected(_path: string | null): void {
