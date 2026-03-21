@@ -463,6 +463,59 @@ describe('createSelection', () => {
     });
   });
 
+  describe('dispose', () => {
+    it('removes pointermove event listener from domElement', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection, domElement, onHover } = setup(meshMap);
+
+      selection.dispose();
+
+      // After dispose, pointermove should no longer trigger onHover
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+      const event = new MouseEvent('pointermove', { clientX: 400, clientY: 300 });
+      domElement.dispatchEvent(event);
+
+      expect(onHover).not.toHaveBeenCalled();
+    });
+
+    it('removes pointerdown event listener from domElement', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection, domElement, onSelect } = setup(meshMap);
+
+      selection.dispose();
+
+      // After dispose, pointerdown should no longer trigger onSelect
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+      const event = new MouseEvent('pointerdown', { clientX: 400, clientY: 300 });
+      domElement.dispatchEvent(event);
+
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it('removes existing wireframe from scene on dispose', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      // Create a wireframe by selecting
+      selection.setSelected('A');
+      const wireframe = mockSceneAdd.mock.calls[0][0];
+      mockSceneRemove.mockClear();
+
+      selection.dispose();
+
+      // Wireframe should be removed and geometry disposed
+      expect(mockSceneRemove).toHaveBeenCalledWith(wireframe);
+      expect(wireframe.geometry.dispose).toHaveBeenCalled();
+    });
+  });
+
   describe('hover raycasting', () => {
     it('calls raycaster.setFromCamera with NDC coords on pointermove', () => {
       const meshA = createMockMesh('A');
