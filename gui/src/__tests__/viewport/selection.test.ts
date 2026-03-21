@@ -1191,4 +1191,69 @@ describe('createSelection', () => {
       expect(onSelect).not.toHaveBeenCalled();
     });
   });
+
+  describe('refreshSelected (V-08)', () => {
+    it('exposes refreshSelected method', () => {
+      const { selection } = setup();
+      expect(typeof selection.refreshSelected).toBe('function');
+    });
+
+    it('refreshSelected with active selection removes old wireframe and creates new one', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      selection.setSelected('A');
+      const wireframe1 = mockSceneAdd.mock.calls[0][0];
+
+      // Clear mocks to track refreshSelected behavior
+      mockSceneAdd.mockClear();
+      mockSceneRemove.mockClear();
+
+      selection.refreshSelected();
+
+      // Old wireframe should be removed
+      expect(mockSceneRemove).toHaveBeenCalledWith(wireframe1);
+      expect(wireframe1.geometry.dispose).toHaveBeenCalled();
+
+      // New wireframe should be created
+      expect(mockSceneAdd).toHaveBeenCalledTimes(1);
+      const wireframe2 = mockSceneAdd.mock.calls[0][0];
+      expect(wireframe2.geometry).toBeDefined();
+      expect(wireframe2.material).toBeDefined();
+    });
+
+    it('refreshSelected with no selection is a no-op', () => {
+      const { selection } = setup();
+
+      mockSceneAdd.mockClear();
+      mockSceneRemove.mockClear();
+
+      selection.refreshSelected();
+
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+      expect(mockSceneRemove).not.toHaveBeenCalled();
+    });
+
+    it('refreshSelected reflects updated geometry', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      selection.setSelected('A');
+      const wireframe1 = mockSceneAdd.mock.calls[0][0];
+      const origSourceGeom = wireframe1.geometry.sourceGeometry;
+
+      // Simulate geometry update — replace mesh geometry
+      const newGeom = new BufferGeometry();
+      meshA.geometry = newGeom;
+
+      mockSceneAdd.mockClear();
+      selection.refreshSelected();
+
+      // New wireframe should reference the new geometry
+      const wireframe2 = mockSceneAdd.mock.calls[0][0];
+      expect(wireframe2.geometry.sourceGeometry).toBe(newGeom);
+    });
+  });
 });

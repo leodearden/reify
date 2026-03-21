@@ -1,236 +1,197 @@
 {
-  "task_id": "124",
-  "title": "Replace dead tower-lsp Client with NotificationSink trait for server\u2192frontend notifications",
+  "task_id": "112",
+  "title": "Viewport rendering: normals fallback, double-sided materials, data validation, buffer updates",
   "files": [
-    "crates/reify-lsp/src/server.rs",
-    "crates/reify-lsp/src/bridge.rs",
-    "crates/reify-lsp/src/lib.rs",
-    "crates/reify-lsp/tests/lifecycle.rs",
-    "crates/reify-lsp/tests/interactive_edit_loop.rs",
-    "gui/src-tauri/src/lsp_bridge.rs",
-    "gui/src-tauri/src/main.rs",
-    "gui/src-tauri/src/tests/lsp_bridge_tests.rs"
+    "gui/src/viewport/meshManager.ts",
+    "gui/src/viewport/selection.ts",
+    "gui/src/viewport/scene.ts",
+    "gui/src/viewport/Viewport.tsx",
+    "gui/src/__tests__/viewport/meshManager.test.ts",
+    "gui/src/__tests__/viewport/selection.test.ts",
+    "gui/src/__tests__/viewport/scene.test.ts"
   ],
   "modules": [
-    "crates/reify-lsp",
-    "gui/src-tauri"
+    "gui/src/viewport",
+    "gui/src/__tests__/viewport"
   ],
-  "analysis": "The in-process LSP bridge (InProcessLsp) bypasses tower-lsp's LspService dispatch layer by calling LanguageServer trait methods directly on a cloned ReifyLanguageServer. This means the tower-lsp ServerState never transitions to Initialized, so Client.send_notification() silently drops every message. The 3 publish_diagnostics() calls in server.rs (did_open, did_change, did_close) are dead code in in-process mode.\n\nThe current workaround in main.rs lsp_request() manually polls diagnostics after didOpen/didChange and emits them via Tauri events. This is fragile and doesn't generalize to other server-initiated notifications.\n\nThe fix: introduce a NotificationSink trait that publish_diagnostics() calls go through instead of Client. For in-process/Tauri mode, implement TauriNotificationSink that emits Tauri events. For stdio/TCP mode, implement ClientSink that wraps the tower-lsp Client. For tests, use NoOpSink or a RecordingSink.\n\nThere are ~14 call sites of LspService::new(ReifyLanguageServer::new) that need updating (10 in server.rs tests, 2 in integration tests, 1 in bridge.rs, 1 in lib.rs). The approach adds a with_sink constructor first for backward compatibility, then migrates all callers.\n\nKey complexity: constructor signature change propagates through LspService::new closure, InProcessLsp::new, LspBridge::new, and the Tauri main.rs setup. In main.rs, LspBridge is currently created before Tauri setup(), but TauriNotificationSink needs an AppHandle. Solution: move LspBridge creation into setup() where AppHandle is available.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Verify existing tests pass before any changes (cargo test -p reify-lsp and cargo test -p reify-gui --lib)",
-      "status": "done",
-      "commit": null,
-      "tests": []
-    }
-  ],
+  "analysis": "This task fixes 8 viewport rendering issues across 3 source files (meshManager.ts, selection.ts, scene.ts) with coordination in Viewport.tsx. The codebase uses a factory-function pattern (createScene, createMeshManager, createSelection) with Three.js fully mocked via vi.mock in vitest tests (jsdom environment).\n\nCurrent bugs and fixes:\n1. V-04 (meshManager.ts:53-55): When data.normals is null, no computeVertexNormals() fallback — causes flat-black faces. Fix: call geometry.computeVertexNormals() when normals are null in both createMeshFromData and updateMeshGeometry.\n2. V-05 (meshManager.ts:57-59): MeshStandardMaterial lacks DoubleSide — invisible back-faces on thin CAD shells. Fix: add side: THREE.DoubleSide to material constructor.\n3. V-06 (meshManager.ts): No validation of mesh data before BufferGeometry creation. Fix: validate vertices.length % 3 === 0 and indices in bounds before creating/updating geometry.\n4. V-07 (meshManager.ts:66-105): updateMeshGeometry mutates BufferAttribute internals (array + count) unsafely — when array length changes, the WebGL buffer size is fixed, causing errors. Fix: create new BufferAttribute when array length differs.\n5. V-08 (selection.ts:139-153): Selection wireframe not synced after geometry updates. Fix: add refreshSelected() to SelectionContext and call it from Viewport.tsx after mesh sync.\n6. V-11 (scene.ts:34): Fixed camera clipping planes (0.1, 10000). Fix: add adjustClipping(sceneBounds) method to SceneContext that computes near/far from camera-to-scene distance.\n7. V-13 (scene.ts:44-49): Single directional light with no camera-following headlight. Fix: add a headlight as a child of the camera.\n8. V-15 (scene.ts:58-62): setPixelRatio not updated on display change/resize. Fix: call renderer.setPixelRatio(window.devicePixelRatio) in resize handler.\n\nThe existing test infrastructure provides extensive mock classes. The MockBufferGeometry needs computeVertexNormals added. The three mock in meshManager.test.ts needs DoubleSide and FrontSide constants. Scene tests need MockPerspectiveCamera.add method. The existing Viewport.tsx effect pattern (createEffect depending on props.meshes) provides the coordination point for calling refreshSelected and adjustClipping after mesh sync.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write test in server.rs: noop_sink_implements_notification_sink \u2014 construct NoOpSink, wrap in Arc<dyn NotificationSink>, call publish_diagnostics on it (should compile and not panic). This test will fail to compile because NotificationSink and NoOpSink don't exist yet.",
+      "description": "Write failing test in meshManager.test.ts: when data.normals is null, createMeshFromData calls geometry.computeVertexNormals() (V-04). Add computeVertexNormals mock to MockBufferGeometry. Test: sync with null normals, assert computeVertexNormals was called. Also test: sync with provided normals, assert computeVertexNormals was NOT called.",
       "status": "done",
-      "commit": "e2be419"
+      "commit": "cd74b48"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Define NotificationSink trait and NoOpSink struct in server.rs. Trait has publish_diagnostics(&self, uri: Url, diagnostics: Vec<Diagnostic>, version: Option<i32>). NoOpSink implements with empty body. Both are pub. Make step-1 test pass.",
+      "description": "Implement V-04 in meshManager.ts: In createMeshFromData, add else branch after the normals check — when data.normals is null, call geometry.computeVertexNormals(). In updateMeshGeometry, in the else-if branch where normals are removed (line 97-98), call geometry.computeVertexNormals() after deleteAttribute.",
       "status": "done",
-      "commit": "3a9bc14"
+      "commit": "7d8fbc6"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test in server.rs: server_with_sink_initializes \u2014 create server via ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink)), call initialize(), verify it returns same capabilities. Will fail because with_sink constructor doesn't exist.",
+      "description": "Write failing test in meshManager.test.ts: material is created with side: THREE.DoubleSide (V-05). Add DoubleSide constant to mock. Assert that the material's side property equals DoubleSide (2).",
       "status": "done",
-      "commit": "c3f10ff"
+      "commit": "0e7398b"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add sink: Arc<dyn NotificationSink> field to ReifyLanguageServer. Add with_sink(client, sink) constructor. Update existing new(client) to delegate to with_sink(client, Arc::new(NoOpSink)) for backward compatibility. Derive(Clone) still works since Arc<dyn NotificationSink> is Clone. Make step-3 test pass; all existing tests remain green.",
+      "description": "Implement V-05 in meshManager.ts: Import DoubleSide from 'three'. Add side: DoubleSide to the MeshStandardMaterial constructor options.",
       "status": "done",
-      "commit": "c7311a7"
+      "commit": "e28a18b"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test in server.rs: sink_receives_diagnostics_on_did_open \u2014 define a RecordingSink (Arc<Mutex<Vec<(Url, Vec<Diagnostic>, Option<i32>)>>>) in the test module. Create server with RecordingSink via with_sink. Call did_open with bracket source. Assert that RecordingSink recorded exactly one publish_diagnostics call with the correct URI. This test will FAIL because publish_diagnostics still goes through self.client, not self.sink.",
+      "description": "Write failing tests in meshManager.test.ts for mesh data validation (V-06). Tests: (1) sync with vertices.length not divisible by 3 does not add mesh to scene, (2) sync with an index >= vertex count does not add mesh, (3) valid data still works normally. Also test update path: update with invalid data skips the update.",
       "status": "done",
-      "commit": "9df1b49"
+      "commit": "04f8b53"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Replace all 3 self.client.publish_diagnostics(uri, diagnostics, version).await calls in server.rs with self.sink.publish_diagnostics(uri, diagnostics, version) (sync, no .await). Call sites: did_open (line 122-124), did_change (line 171-173), did_close (line 187-189). Make step-5 test pass.",
+      "description": "Implement V-06 in meshManager.ts: Add validateMeshData(data: MeshData): boolean that checks vertices.length % 3 === 0 and max(indices) < vertices.length / 3. Guard createMeshFromData and updateMeshGeometry calls in sync() with this validation, logging a console.warn for invalid data.",
       "status": "done",
-      "commit": "9c994cf"
+      "commit": "5a4df9c"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test in server.rs: sink_receives_diagnostics_on_did_change \u2014 use RecordingSink, open a document, then did_change to broken source. Assert RecordingSink received 2 calls (one from did_open, one from did_change). Verify the second call contains error diagnostics.",
+      "description": "Write failing tests in meshManager.test.ts for safe buffer updates when array length changes (V-07). Tests: (1) update with same-length arrays reuses existing BufferAttribute (identity check — existing test), (2) update with different-length vertex array creates a new BufferAttribute (not same reference), (3) update with different-length index array creates new index BufferAttribute, (4) new BufferAttribute has correct array and count.",
       "status": "done",
-      "commit": "0583d0f"
+      "commit": "dafa7ec"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Make step-7 test pass (should already pass after step-6 implementation; this step verifies and handles any edge cases).",
+      "description": "Implement V-07 in meshManager.ts: In updateMeshGeometry, before reusing posAttr, check if posAttr.array.length !== data.vertices.length — if so, create new BufferAttribute via setAttribute instead of mutating. Same logic for index and normals.",
       "status": "done",
-      "commit": "0583d0f"
+      "commit": "8567bea"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test in server.rs: sink_receives_clear_on_did_close \u2014 use RecordingSink, open then close a document. Assert the last sink call has empty diagnostics vec (the clear-on-close notification).",
+      "description": "Write failing test in scene.test.ts: resize handler calls renderer.setPixelRatio with window.devicePixelRatio (V-15). Call resize(), assert mockSetPixelRatio was called. Verify it uses the current devicePixelRatio value.",
       "status": "done",
-      "commit": "e164564"
+      "commit": "d9c1848"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Make step-9 test pass (should already pass after step-6; this step verifies the did_close path).",
+      "description": "Implement V-15 in scene.ts: In the resize() function, add renderer.setPixelRatio(window.devicePixelRatio ?? 1) before renderer.setSize().",
       "status": "done",
-      "commit": "e164564"
+      "commit": "ed797d5"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test in bridge.rs (or server.rs integration): in_process_lsp_with_sink_receives_diagnostics \u2014 create InProcessLsp::with_sink(Arc::new(RecordingSink)) and call handle_request('textDocument/didOpen', ...). Assert RecordingSink received diagnostics. Will fail because InProcessLsp::with_sink doesn't exist yet.",
+      "description": "Write failing test in scene.test.ts: scene has a camera-following headlight (V-13). Add camera.add mock to MockPerspectiveCamera. Assert that a DirectionalLight is added as a child of the camera (via camera.add), and that the camera itself is added to the scene (scene.add(camera)).",
       "status": "done",
-      "commit": "663dc54"
+      "commit": "4c37494"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Add InProcessLsp::with_sink(sink: Arc<dyn NotificationSink>) constructor to bridge.rs. It passes the sink into LspService::new(|client| ReifyLanguageServer::with_sink(client, sink.clone())). Update InProcessLsp::new() to use NoOpSink. Export RecordingSink from server.rs for test use (cfg(test)). Make step-11 pass.",
+      "description": "Implement V-13 in scene.ts: Create a second DirectionalLight (headlight) at position (0, 0, 1) relative to camera with intensity ~0.6. Call camera.add(headlight) to make it follow the camera. Call scene.add(camera) so camera children are rendered in the scene graph.",
       "status": "done",
-      "commit": "6bfb3a2"
+      "commit": "b2bec91"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write test in gui/src-tauri/src/tests/lsp_bridge_tests.rs: lsp_bridge_with_sink_routes_diagnostics \u2014 create LspBridge::with_sink(Arc::new(NoOpSink)), run a didOpen request, verify get_diagnostics returns results. Will fail because LspBridge::with_sink doesn't exist.",
+      "description": "Write failing test in scene.test.ts: SceneContext exposes adjustClipping method (V-11). Test that adjustClipping(bounds) updates camera.near and camera.far based on scene size and that updateProjectionMatrix is called.",
       "status": "done",
-      "commit": "4b5b7a6"
+      "commit": "8f5d6f3"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Add LspBridge::with_sink(sink: Arc<dyn NotificationSink>) to gui/src-tauri/src/lsp_bridge.rs. It passes sink to InProcessLsp::with_sink(). Update LspBridge::new() to use NoOpSink (backward compat). Make step-13 pass.",
+      "description": "Implement V-11 in scene.ts: Add adjustClipping(sceneBounds: Box3) to SceneContext interface. Implementation computes camera-to-center distance, sets near = max(distance * 0.001, 0.01) and far = max(distance * 10, 100), calls camera.updateProjectionMatrix(). Export from createScene return. Update Viewport.tsx to call adjustClipping after mesh sync.",
       "status": "done",
-      "commit": "980f5bb"
+      "commit": "7bd0fac"
     },
     {
       "id": "step-15",
-      "type": "impl",
-      "description": "Add ClientSink in server.rs: wraps tower-lsp Client, implements NotificationSink by cloning Client and spawning tokio::spawn for the async publish_diagnostics call. Update lib.rs run_server() to use ClientSink: LspService::new(|client| { let sink = Arc::new(ClientSink::new(client.clone())); ReifyLanguageServer::with_sink(client, sink) }). Update integration tests (lifecycle.rs, interactive_edit_loop.rs) to use NoOpSink pattern.",
+      "type": "test",
+      "description": "Write failing test in selection.test.ts: SelectionContext exposes refreshSelected() that rebuilds wireframe for current selection (V-08). Tests: (1) refreshSelected with active selection removes old wireframe and creates new one, (2) refreshSelected with no selection is a no-op, (3) refreshSelected reflects updated geometry.",
       "status": "done",
-      "commit": "bc9092d"
+      "commit": "77b1c18"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Define TauriNotificationSink in main.rs: holds tauri::AppHandle, implements NotificationSink by calling app.emit('diagnostics', json!({uri, diagnostics})). Create it in setup() from app.handle().clone(). Move LspBridge creation into setup(): let sink = Arc::new(TauriNotificationSink { app: app.handle().clone() }); let bridge = LspBridge::with_sink(sink); app.manage(bridge). Remove the manual diagnostics polling workaround from lsp_request command (the extract_document_uri helper and the if-let-Some(uri) block that re-emits diagnostics).",
+      "description": "Implement V-08 in selection.ts: Track currentSelectedPath in a closure variable. Add refreshSelected() method that calls setSelected(currentSelectedPath) to rebuild wireframe from current geometry. Export in SelectionContext. Update Viewport.tsx to call selection.refreshSelected() after meshManager.sync() in the mesh sync effect.",
       "status": "done",
-      "commit": "a2a2888"
-    },
-    {
-      "id": "step-17",
-      "type": "impl",
-      "description": "Final cleanup: Rename with_sink to new and old new to new_default (or remove if all callers migrated). Update all remaining LspService::new(ReifyLanguageServer::new) patterns in server.rs tests to use a test helper fn: fn test_service() -> (LspService<ReifyLanguageServer>, tower_lsp::ClientSocket) { LspService::new(|c| ReifyLanguageServer::new(c, Arc::new(NoOpSink))) }. This reduces boilerplate across 10 test call sites. Verify all tests pass.",
-      "status": "done",
-      "commit": "91a97d2"
-    },
-    {
-      "id": "step-18",
-      "type": "test",
-      "description": "Fix lsp_bridge_with_sink_routes_diagnostics test: Replace NoOpSink with RecordingSink to actually verify the sink wiring. The test currently uses NoOpSink which discards all notifications, then only checks get_diagnostics() which reads from internal ServerState \u2014 completely independent of the sink. This gives false confidence that LspBridge::with_sink wiring works. The new test must: (1) create a RecordingSink, (2) create LspBridge::with_sink(recording_sink.clone()), (3) send didOpen with broken source (to get error diagnostics), (4) assert RecordingSink received at least one publish_diagnostics call with the correct URI. This requires exporting RecordingSink from reify-lsp for cross-crate test use.",
-      "status": "done",
-      "commit": "2a6f483"
-    },
-    {
-      "id": "step-19",
-      "type": "impl",
-      "description": "Export RecordingSink for cross-crate test use: Move RecordingSink definition out of the private #[cfg(test)] mod tests in server.rs into a new pub module (e.g., pub mod test_support gated by #[cfg(test)] or behind a feature flag like 'test-support'). The struct needs to be pub with a pub take_calls() method and pub Default impl. Re-export from lib.rs so the gui crate can import it as reify_lsp::test_support::RecordingSink (or reify_lsp::server::RecordingSink if kept in server.rs under a top-level #[cfg(test)] pub block). Update the server.rs tests module to use the now-public RecordingSink. Update lsp_bridge_tests.rs to import and use RecordingSink, completing the fix from step-18. Verify the test actually fails if sink wiring is broken (e.g., temporarily passing NoOpSink instead of the provided sink in InProcessLsp::with_sink should cause the test to fail).",
-      "status": "done",
-      "commit": "1b2a124"
+      "commit": "3acf530"
     }
   ],
   "design_decisions": [
     {
-      "decision": "NotificationSink trait methods are synchronous (not async)",
-      "rationale": "Tauri's app.emit() is sync. For the Client wrapper (ClientSink), we use tokio::spawn to fire-and-forget the async call. This avoids async trait complexity and makes the trait usable in both sync and async contexts."
+      "decision": "Camera headlight is added as a child of the camera object via camera.add() rather than updating position each frame",
+      "rationale": "Three.js automatically transforms child objects in the parent's local space, so a light added to camera follows it without manual position updates in the render loop. This is the standard Three.js pattern for headlights and avoids polluting the animation loop."
     },
     {
-      "decision": "Keep backward-compatible new(client) constructor during migration, add with_sink(client, sink)",
-      "rationale": "Allows incremental migration of ~14 call sites without a big-bang change. Tests can continue using the old constructor until the final cleanup step. The backward-compat new() defaults to NoOpSink, which preserves existing behavior."
+      "decision": "Dynamic clipping is exposed as an adjustClipping(sceneBounds: Box3) method called after mesh sync, not computed every frame",
+      "rationale": "Computing scene bounds every frame via Box3 traversal is expensive. Clipping only needs adjustment when mesh data changes (during sync), which is the only time bounds change. This keeps the render loop lightweight."
     },
     {
-      "decision": "Move LspBridge creation into Tauri setup() callback",
-      "rationale": "TauriNotificationSink needs an AppHandle, which is only available during/after setup(). Currently LspBridge::new() is called before .setup(). Moving it into setup() via app.manage() is the standard Tauri pattern for state that depends on the app handle."
+      "decision": "Mesh data validation logs console.warn and skips invalid data rather than throwing",
+      "rationale": "The viewport should be resilient to bad data from the engine. Throwing would crash the entire render pipeline. A console.warn is sufficient for debugging while keeping the UI responsive. This follows the existing project preference for noisy errors on logic bugs (feedback_silent_defaults_pattern.md) while still being resilient."
     },
     {
-      "decision": "Remove manual diagnostics polling workaround from lsp_request command",
-      "rationale": "With TauriNotificationSink, diagnostics are emitted by the server during did_open/did_change processing. The manual polling in lsp_request would cause duplicate events. Removing it simplifies the code and eliminates the need for extract_document_uri."
+      "decision": "New BufferAttribute is created when array length changes; existing attribute is mutated only when length matches",
+      "rationale": "WebGL buffers have a fixed size allocated on the GPU. Mutating .array and .count on an existing BufferAttribute when the size differs causes WebGL errors because the underlying GPU buffer cannot be resized. When sizes match, reusing the attribute avoids GPU buffer reallocation overhead — this is the intended Three.js pattern."
     },
     {
-      "decision": "ClientSink uses tokio::spawn for async Client.publish_diagnostics()",
-      "rationale": "NotificationSink methods are sync, but Client.publish_diagnostics() is async. tokio::spawn is fire-and-forget, which matches the expected behavior \u2014 the server doesn't wait for the notification to be sent. Client is Clone+Send+'static so this is safe."
+      "decision": "refreshSelected() method added to SelectionContext rather than coupling meshManager directly to selection",
+      "rationale": "Keeps modules decoupled. Viewport.tsx already coordinates between meshManager and selection via reactive effects. Adding a refresh method is the minimal change that preserves this clean architecture. refreshSelected internally just calls setSelected(currentSelectedPath)."
     },
     {
-      "decision": "RecordingSink defined in #[cfg(test)] module for verification",
-      "rationale": "Needed to assert that publish_diagnostics calls flow through the sink with correct arguments. Uses Arc<Mutex<Vec<...>>> to capture calls across async boundaries. Exported pub(crate) for use in bridge integration tests."
+      "decision": "computeVertexNormals() is called in both createMeshFromData and updateMeshGeometry when normals are null",
+      "rationale": "Both code paths can receive null normals. The fallback must be applied consistently in creation and update paths to prevent flat-black faces in any scenario."
     },
     {
-      "decision": "NotificationSink trait lives in server.rs alongside ReifyLanguageServer",
-      "rationale": "The trait is tightly coupled to the server's notification mechanism. Keeping it in server.rs avoids a separate file and matches the existing crate structure. It's re-exported from lib.rs for external use."
-    },
-    {
-      "decision": "Export RecordingSink via a #[cfg(test)] pub module rather than a cargo feature flag",
-      "rationale": "RecordingSink is only needed by tests within the workspace (server.rs tests, bridge tests, lsp_bridge_tests). Using #[cfg(test)] keeps it out of production builds without requiring Cargo.toml changes. Since the gui crate's tests compile with cfg(test), the import chain works: server.rs -> lib.rs -> gui crate test. This mirrors the existing pattern of #[cfg(test)] pub(crate) fn eval_state() in server.rs."
+      "decision": "scene.add(camera) is called to support camera children (headlight)",
+      "rationale": "Three.js requires parent objects to be in the scene graph for their children to be rendered. Without scene.add(camera), the headlight attached via camera.add() would not be visible. The camera itself renders fine without being in the scene, but its children do not."
     }
   ],
   "reuse": [
     {
-      "what": "Existing LspService::new(ReifyLanguageServer::new) pattern",
-      "where": "server.rs tests, lifecycle.rs, interactive_edit_loop.rs, bridge.rs, lib.rs",
-      "how": "Adapt to LspService::new(|c| ReifyLanguageServer::with_sink(c, sink)) pattern. Create a test helper to reduce boilerplate across 10+ test call sites."
+      "what": "Existing vi.mock('three') patterns and MockXxx classes in all viewport test files",
+      "where": "gui/src/__tests__/viewport/meshManager.test.ts, scene.test.ts, selection.test.ts",
+      "how": "Extend existing mock blocks with additional methods/properties: computeVertexNormals on MockBufferGeometry, DoubleSide/FrontSide constants, camera.add method on MockPerspectiveCamera. Follow the exact same mock class patterns."
     },
     {
-      "what": "Tauri app.emit() pattern for events",
-      "where": "main.rs emit_delta(), emit_status(), lsp_request command",
-      "how": "TauriNotificationSink follows the same app.emit(event_name, payload).ok() pattern used throughout main.rs for all Tauri events."
+      "what": "makeMeshData() test helper in meshManager.test.ts",
+      "where": "gui/src/__tests__/viewport/meshManager.test.ts:100-112",
+      "how": "Reuse for all new meshManager tests to create MeshData objects with optional vertices, indices, normals parameters."
     },
     {
-      "what": "Arc<Mutex<...>> pattern for interior mutability",
-      "where": "server.rs eval_state, main.rs AppState watcher field",
-      "how": "RecordingSink uses Arc<Mutex<Vec<...>>> for test capture, same pattern as eval_state."
+      "what": "setup() function pattern in each test file",
+      "where": "All viewport test files",
+      "how": "Follow the existing setup() function pattern that creates mocks and returns an object with all test dependencies. Extend as needed."
     },
     {
-      "what": "serde_json::json! macro for event payloads",
-      "where": "main.rs lsp_request command already uses json!({uri, diagnostics})",
-      "how": "TauriNotificationSink uses the same json! pattern for the diagnostics event payload."
+      "what": "SceneContext interface and return pattern",
+      "where": "gui/src/viewport/scene.ts:13-18, 64",
+      "how": "Extend SceneContext interface with adjustClipping method. Add to the return object from createScene, following the same pattern as resize()."
     },
     {
-      "what": "reify_test_support::bracket_source() for test fixtures",
-      "where": "All existing server.rs and bridge tests",
-      "how": "New RecordingSink tests reuse the same bracket_source() fixture for consistent test data."
+      "what": "SelectionContext interface",
+      "where": "gui/src/viewport/selection.ts:24-31",
+      "how": "Extend with refreshSelected() method following the same interface pattern. Add to return object from createSelection."
     },
     {
-      "what": "InProcessLsp::get_diagnostics() for test verification",
-      "where": "lsp_bridge_tests.rs, bridge.rs",
-      "how": "Existing get_diagnostics() via ServerState.last_published_diagnostics still works as the internal capture mechanism, independent of sink routing."
-    },
-    {
-      "what": "Existing RecordingSink pattern from server.rs tests",
-      "where": "server.rs #[cfg(test)] mod tests",
-      "how": "The same RecordingSink struct (Default derive, Mutex<Vec<...>> calls, take_calls() method) is promoted to a pub export so it can be reused in lsp_bridge_tests.rs for end-to-end sink verification at the LspBridge layer."
+      "what": "Viewport.tsx createEffect for mesh sync",
+      "where": "gui/src/viewport/Viewport.tsx:48-50",
+      "how": "Add refreshSelected() and adjustClipping() calls within the existing mesh sync effect, after meshManager.sync(). This is the natural coordination point between mesh updates and dependent systems."
     }
   ],
-  "_session_id": "124-bb673759",
-  "_created_at": "2026-03-21T17:33:29.156825+00:00"
+  "_session_id": "112-bacae8cf",
+  "_created_at": "2026-03-21T17:33:37.820402+00:00"
 }

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock three.js before importing anything that uses it
@@ -8,6 +9,23 @@ const mockRendererDispose = vi.fn();
 
 const mockSceneAdd = vi.fn();
 const mockSceneChildren: any[] = [];
+const mockCameraAdd = vi.fn();
+
+function makeMockPosition() {
+  const pos = {
+    x: 0, y: 0, z: 0,
+    set: vi.fn((x: number, y: number, z: number) => {
+      pos.x = x; pos.y = y; pos.z = z;
+    }),
+    distanceTo: vi.fn((target: any) => {
+      const dx = pos.x - target.x;
+      const dy = pos.y - target.y;
+      const dz = pos.z - target.z;
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }),
+  };
+  return pos;
+}
 
 vi.mock('three', () => {
   class MockScene {
@@ -21,8 +39,9 @@ vi.mock('three', () => {
     aspect: number;
     near: number;
     far: number;
-    position = { set: vi.fn() };
+    position = makeMockPosition();
     updateProjectionMatrix = vi.fn();
+    add = mockCameraAdd;
     constructor(fov: number, aspect: number, near: number, far: number) {
       this.fov = fov;
       this.aspect = aspect;
@@ -71,6 +90,18 @@ vi.mock('three', () => {
     constructor(public color?: any) {}
   }
 
+  class MockVector3 {
+    x: number;
+    y: number;
+    z: number;
+    constructor(x = 0, y = 0, z = 0) {
+      this.x = x; this.y = y; this.z = z;
+    }
+    length() {
+      return Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z);
+    }
+  }
+
   return {
     Scene: MockScene,
     PerspectiveCamera: MockPerspectiveCamera,
@@ -80,6 +111,7 @@ vi.mock('three', () => {
     GridHelper: MockGridHelper,
     AxesHelper: MockAxesHelper,
     Color: MockColor,
+    Vector3: MockVector3,
   };
 });
 
@@ -149,5 +181,95 @@ describe('createScene', () => {
     expect(camera.aspect).toBeCloseTo(1024 / 768);
     expect(camera.updateProjectionMatrix).toHaveBeenCalled();
     expect(mockSetSize).toHaveBeenCalledWith(1024, 768);
+  });
+
+  it('resize calls renderer.setPixelRatio with window.devicePixelRatio (V-15)', () => {
+    const { resize } = setup();
+    // Clear the initial setPixelRatio call from construction
+    mockSetPixelRatio.mockClear();
+
+    // Simulate a high-DPI display
+    Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+
+    resize(1024, 768);
+
+    expect(mockSetPixelRatio).toHaveBeenCalledWith(2);
+
+    // Restore
+    Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
+  });
+
+  it('adds a camera-following headlight via camera.add (V-13)', () => {
+    const { camera } = setup();
+    // A DirectionalLight should be added as a child of the camera
+    const cameraChildren = mockCameraAdd.mock.calls.map((c: any) => c[0]);
+    const headlight = cameraChildren.find((child: any) => child?.type === 'DirectionalLight');
+    expect(headlight).toBeDefined();
+    expect(headlight.intensity).toBeGreaterThan(0);
+  });
+
+  it('camera is added to scene so its children are rendered (V-13)', () => {
+    setup();
+    // scene.add should be called with the camera instance (has .fov property)
+    const addedObjects = mockSceneAdd.mock.calls.map((c: any) => c[0]);
+    const cameraInScene = addedObjects.find((obj: any) => obj?.fov !== undefined);
+    expect(cameraInScene).toBeDefined();
+  });
+
+  it('exposes adjustClipping method (V-11)', () => {
+    const result = setup();
+    expect(result).toHaveProperty('adjustClipping');
+    expect(typeof result.adjustClipping).toBe('function');
+  });
+
+  it('adjustClipping updates camera.near, camera.far and calls updateProjectionMatrix (V-11)', () => {
+    const { camera, adjustClipping } = setup();
+    camera.updateProjectionMatrix.mockClear();
+
+    // Mock a Box3-like bounds object: center at (10, 10, 10), size 20x20x20
+    const bounds = {
+      isEmpty: () => false,
+      getCenter: (target: any) => {
+        target.x = 10; target.y = 10; target.z = 10;
+        return target;
+      },
+      getSize: (target: any) => {
+        target.x = 20; target.y = 20; target.z = 20;
+        return target;
+      },
+    };
+
+    // Camera is at (5,5,5) by default via position.set mock
+    // We need the camera.position to be readable for distance computation
+    camera.position.x = 5;
+    camera.position.y = 5;
+    camera.position.z = 5;
+
+    adjustClipping(bounds as any);
+
+    // near should be > 0 and less than far
+    expect(camera.near).toBeGreaterThan(0);
+    expect(camera.far).toBeGreaterThan(camera.near);
+    expect(camera.updateProjectionMatrix).toHaveBeenCalled();
+  });
+
+  it('adjustClipping with empty bounds is a no-op (V-11)', () => {
+    const { camera, adjustClipping } = setup();
+    const origNear = camera.near;
+    const origFar = camera.far;
+    camera.updateProjectionMatrix.mockClear();
+
+    const emptyBounds = {
+      isEmpty: () => true,
+      getCenter: vi.fn(),
+      getSize: vi.fn(),
+    };
+
+    adjustClipping(emptyBounds as any);
+
+    // Should not modify clipping planes
+    expect(camera.near).toBe(origNear);
+    expect(camera.far).toBe(origFar);
+    expect(camera.updateProjectionMatrix).not.toHaveBeenCalled();
   });
 });

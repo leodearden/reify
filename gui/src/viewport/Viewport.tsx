@@ -1,5 +1,6 @@
 import { onMount, onCleanup, createEffect, Show } from 'solid-js';
 import type { MeshData, EvaluationStatus } from '../types';
+import { Box3 } from 'three';
 import { createScene } from './scene';
 import { createControls } from './controls';
 import { createMeshManager } from './meshManager';
@@ -26,7 +27,7 @@ export function Viewport(props: ViewportProps) {
     const width = rect.width || 800;
     const height = rect.height || 600;
 
-    const { scene, camera, renderer, resize } = createScene(canvasRef, width, height);
+    const { scene, camera, renderer, resize, adjustClipping } = createScene(canvasRef, width, height);
     const controls = createControls(camera, renderer.domElement);
     const meshManager = createMeshManager(scene);
 
@@ -47,6 +48,16 @@ export function Viewport(props: ViewportProps) {
     // Sync meshes reactively
     createEffect(() => {
       meshManager.sync(props.meshes);
+
+      // Refresh selection wireframe to reflect updated geometry
+      selection.refreshSelected();
+
+      // Adjust camera clipping planes based on scene bounds
+      const bounds = new Box3();
+      for (const mesh of meshManager.getSceneMeshes().values()) {
+        bounds.expandByObject(mesh);
+      }
+      adjustClipping(bounds);
     });
 
     // Sync hover/selection state from props to selection module

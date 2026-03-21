@@ -24,6 +24,7 @@ export interface SelectionOptions {
 export interface SelectionContext {
   setHovered: (path: string | null) => void;
   setSelected: (path: string | null) => void;
+  refreshSelected: () => void;
   fitToView: () => void;
   flyToEntity: (entityPath: string) => void;
   invalidateRect: () => void;
@@ -155,9 +156,12 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     }
   }
 
+  let currentSelectedPath: string | null = null;
+
   function setSelected(path: string | null): void {
     // Remove existing wireframe
     removeWireframe();
+    currentSelectedPath = path;
 
     if (path === null) return;
 
@@ -169,6 +173,11 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     const wireMat = new LineBasicMaterial({ color: HIGHLIGHT_COLOR });
     currentWireframe = new LineSegments(wireGeom, wireMat);
     scene.add(currentWireframe);
+  }
+
+  function refreshSelected(): void {
+    if (currentSelectedPath === null) return;
+    setSelected(currentSelectedPath);
   }
 
   function fitToView(): void {
@@ -244,5 +253,5 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     removeWireframe();
   }
 
-  return { setHovered, setSelected, fitToView, flyToEntity, invalidateRect, dispose };
+  return { setHovered, setSelected, refreshSelected, fitToView, flyToEntity, invalidateRect, dispose };
 }

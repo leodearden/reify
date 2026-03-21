@@ -16,6 +16,8 @@ vi.mock('three', () => {
     index: any = null;
     dispose = vi.fn();
 
+    computeVertexNormals = vi.fn();
+
     setAttribute(name: string, attr: any) {
       this.attributes[name] = attr;
     }
@@ -47,9 +49,11 @@ vi.mock('three', () => {
 
   class MockMeshStandardMaterial {
     color: any;
+    side: any;
     dispose = vi.fn();
     constructor(opts?: any) {
       this.color = opts?.color;
+      this.side = opts?.side;
       mockMaterials.push(this);
     }
   }
@@ -84,6 +88,8 @@ vi.mock('three', () => {
     Mesh: MockMesh,
     Scene: MockScene,
     Color: MockColor,
+    DoubleSide: 2,
+    FrontSide: 0,
   };
 });
 
@@ -137,7 +143,7 @@ describe('meshManager', () => {
 
   it('created mesh geometry has position attribute from vertices', () => {
     const { manager } = setup();
-    const verts = new Float32Array([1, 2, 3, 4, 5, 6]);
+    const verts = new Float32Array([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     const meshData = makeMeshData('A', verts);
     manager.sync({ A: meshData });
 
@@ -149,8 +155,10 @@ describe('meshManager', () => {
 
   it('created mesh geometry has index from indices', () => {
     const { manager } = setup();
+    // 4 vertices via default (9 floats = 3 vertices) — use custom verts for 4
+    const verts = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]);
     const indices = new Uint32Array([0, 1, 2, 2, 3, 0]);
-    const meshData = makeMeshData('A', undefined, indices);
+    const meshData = makeMeshData('A', verts, indices);
     manager.sync({ A: meshData });
 
     const mesh = manager.getSceneMeshes().get('A')!;
@@ -174,7 +182,7 @@ describe('meshManager', () => {
     const meshData1 = makeMeshData('A');
     manager.sync({ A: meshData1 });
 
-    const newVerts = new Float32Array([9, 8, 7, 6, 5, 4]);
+    const newVerts = new Float32Array([9, 8, 7, 6, 5, 4, 3, 2, 1]);
     const meshData2 = makeMeshData('A', newVerts);
     manager.sync({ A: meshData2 });
 
@@ -265,7 +273,7 @@ describe('meshManager', () => {
 
   it('update reuses existing BufferAttribute objects and sets needsUpdate', () => {
     const { manager } = setup();
-    const verts1 = new Float32Array([0, 1, 2, 3, 4, 5]);
+    const verts1 = new Float32Array([0, 1, 2, 3, 4, 5, 6, 7, 8]);
     const indices1 = new Uint32Array([0, 1, 2]);
     manager.sync({ A: makeMeshData('A', verts1, indices1) });
 
@@ -274,8 +282,8 @@ describe('meshManager', () => {
     const posAttrBefore = geom.attributes.position;
     const indexBefore = geom.index;
 
-    // Sync with new data
-    const verts2 = new Float32Array([9, 8, 7, 6, 5, 4]);
+    // Sync with new data (same length)
+    const verts2 = new Float32Array([9, 8, 7, 6, 5, 4, 3, 2, 1]);
     const indices2 = new Uint32Array([2, 1, 0]);
     manager.sync({ A: makeMeshData('A', verts2, indices2) });
 
@@ -292,6 +300,51 @@ describe('meshManager', () => {
     expect(indexBefore.needsUpdate).toBe(true);
   });
 
+  it('createMeshFromData calls computeVertexNormals when normals is null (V-04)', () => {
+    const { manager } = setup();
+    const meshData = makeMeshData('A', undefined, undefined, null);
+    manager.sync({ A: meshData });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+    const geom = mesh.geometry as any;
+    expect(geom.computeVertexNormals).toHaveBeenCalled();
+  });
+
+  it('createMeshFromData does NOT call computeVertexNormals when normals are provided (V-04)', () => {
+    const { manager } = setup();
+    const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+    const meshData = makeMeshData('A', undefined, undefined, normals);
+    manager.sync({ A: meshData });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+    const geom = mesh.geometry as any;
+    expect(geom.computeVertexNormals).not.toHaveBeenCalled();
+  });
+
+  it('material is created with side: DoubleSide (V-05)', () => {
+    const { manager } = setup();
+    manager.sync({ A: makeMeshData('A') });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+    const material = mesh.material as any;
+    // THREE.DoubleSide === 2
+    expect(material.side).toBe(2);
+  });
+
+  it('updateMeshGeometry calls computeVertexNormals when normals become null (V-04)', () => {
+    const { manager } = setup();
+    const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+    manager.sync({ A: makeMeshData('A', undefined, undefined, normals) });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+    const geom = mesh.geometry as any;
+    geom.computeVertexNormals.mockClear();
+
+    // Update with null normals
+    manager.sync({ A: makeMeshData('A', undefined, undefined, null) });
+    expect(geom.computeVertexNormals).toHaveBeenCalled();
+  });
+
   it('update with normals becoming null removes stale normal attribute', () => {
     const { manager } = setup();
     const normals = new Float32Array([0, 0, 1, 0, 0, 1]);
@@ -306,5 +359,143 @@ describe('meshManager', () => {
 
     // Normal attribute should be removed
     expect(geom.attributes.normal).toBeUndefined();
+  });
+
+  describe('safe buffer updates on array length change (V-07)', () => {
+    it('update with same-length arrays reuses existing BufferAttribute', () => {
+      const { manager } = setup();
+      const verts1 = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]);
+      const indices1 = new Uint32Array([0, 1, 2]);
+      manager.sync({ A: makeMeshData('A', verts1, indices1) });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const posAttrBefore = geom.attributes.position;
+      const indexBefore = geom.index;
+
+      // Same length arrays
+      const verts2 = new Float32Array([9, 9, 9, 8, 8, 8, 7, 7, 7]);
+      const indices2 = new Uint32Array([2, 1, 0]);
+      manager.sync({ A: makeMeshData('A', verts2, indices2) });
+
+      // Same BufferAttribute reference (reused)
+      expect(geom.attributes.position).toBe(posAttrBefore);
+      expect(geom.index).toBe(indexBefore);
+    });
+
+    it('update with different-length vertex array creates new BufferAttribute', () => {
+      const { manager } = setup();
+      const verts1 = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]);
+      const indices1 = new Uint32Array([0, 1, 2]);
+      manager.sync({ A: makeMeshData('A', verts1, indices1) });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const posAttrBefore = geom.attributes.position;
+
+      // Different length — 4 vertices instead of 3
+      const verts2 = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]);
+      const indices2 = new Uint32Array([0, 1, 2]);
+      manager.sync({ A: makeMeshData('A', verts2, indices2) });
+
+      // Should be a NEW BufferAttribute
+      expect(geom.attributes.position).not.toBe(posAttrBefore);
+      expect(geom.attributes.position.array).toBe(verts2);
+    });
+
+    it('update with different-length index array creates new index BufferAttribute', () => {
+      const { manager } = setup();
+      const verts = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]);
+      const indices1 = new Uint32Array([0, 1, 2]);
+      manager.sync({ A: makeMeshData('A', verts, indices1) });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const indexBefore = geom.index;
+
+      // Different length — 6 indices instead of 3
+      const indices2 = new Uint32Array([0, 1, 2, 2, 3, 0]);
+      manager.sync({ A: makeMeshData('A', verts, indices2) });
+
+      // Should be a NEW index BufferAttribute
+      expect(geom.index).not.toBe(indexBefore);
+      expect(geom.index.array).toBe(indices2);
+    });
+
+    it('new BufferAttribute has correct array and count', () => {
+      const { manager } = setup();
+      const verts1 = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]);
+      manager.sync({ A: makeMeshData('A', verts1) });
+
+      // Update with 4 vertices
+      const verts2 = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]);
+      const indices2 = new Uint32Array([0, 1, 2]);
+      manager.sync({ A: makeMeshData('A', verts2, indices2) });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      expect(geom.attributes.position.array).toBe(verts2);
+      expect(geom.attributes.position.count).toBe(4); // 12 / 3
+      expect(geom.attributes.position.itemSize).toBe(3);
+    });
+  });
+
+  describe('mesh data validation (V-06)', () => {
+    it('sync with vertices.length not divisible by 3 does not add mesh to scene', () => {
+      const { manager } = setup();
+      // 5 floats is not divisible by 3
+      const badVerts = new Float32Array([0, 1, 2, 3, 4]);
+      const meshData = makeMeshData('A', badVerts, new Uint32Array([0]));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      manager.sync({ A: meshData });
+      expect(manager.getSceneMeshes().size).toBe(0);
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('sync with an index >= vertex count does not add mesh to scene', () => {
+      const { manager } = setup();
+      // 3 vertices (indices 0, 1, 2), but index references vertex 3 (out of bounds)
+      const verts = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]);
+      const indices = new Uint32Array([0, 1, 3]); // 3 is out of bounds
+      const meshData = makeMeshData('A', verts, indices);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      manager.sync({ A: meshData });
+      expect(manager.getSceneMeshes().size).toBe(0);
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('valid data still works normally after validation', () => {
+      const { manager } = setup();
+      // 3 vertices, valid indices
+      const verts = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]);
+      const indices = new Uint32Array([0, 1, 2]);
+      const meshData = makeMeshData('A', verts, indices);
+      manager.sync({ A: meshData });
+      expect(manager.getSceneMeshes().size).toBe(1);
+      expect(mockSceneAdd).toHaveBeenCalledTimes(1);
+    });
+
+    it('update with invalid data skips the update', () => {
+      const { manager } = setup();
+      // Valid initial data
+      const verts = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]);
+      const indices = new Uint32Array([0, 1, 2]);
+      manager.sync({ A: makeMeshData('A', verts, indices) });
+      expect(manager.getSceneMeshes().size).toBe(1);
+
+      // Update with invalid vertices
+      const badVerts = new Float32Array([0, 1]); // not divisible by 3
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      manager.sync({ A: makeMeshData('A', badVerts, indices) });
+
+      // Mesh should still exist but geometry should not have been updated with bad data
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      // Position should still have the original data
+      expect(geom.attributes.position.array).toBe(verts);
+      warnSpy.mockRestore();
+    });
   });
 });
