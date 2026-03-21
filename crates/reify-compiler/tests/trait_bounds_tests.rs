@@ -600,3 +600,35 @@ fn both_bound_check_paths_combined() {
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
+
+// ── SubComponent path error with forward reference ───────────────────
+
+#[test]
+fn sub_component_bound_error_with_forward_ref() {
+    // Validates the SubComponent enum variant correctly resolves type_params
+    // from the template registry during the post-pass, even when the generic
+    // structure is defined after the structure that uses it (forward reference).
+    // Widget doesn't satisfy Rigid, so Box<Widget>() must error.
+    let source = r#"
+        trait Rigid { param mass : Mass }
+        structure def Widget { param x : Length = 5mm }
+        structure def Assembly { sub part = Box<Widget>() }
+        structure def Box<T: Rigid> { param width : Length = 10mm }
+    "#;
+    let module = compile_module(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected error about Widget not satisfying Rigid bound"
+    );
+    let error_msg = &errors[0].message;
+    assert!(
+        error_msg.contains("Widget") && error_msg.contains("Rigid"),
+        "error should mention Widget and Rigid, got: {error_msg}"
+    );
+}
