@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod bridge;
 pub mod completion;
 pub mod convert;
 pub mod diagnostics;
