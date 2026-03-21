@@ -14,7 +14,7 @@
     "gui/src/viewport",
     "gui/src/__tests__/viewport"
   ],
-  "analysis": "Task addresses 4 viewport performance issues. (P-01) Raycasting in selection.ts:65-73 calls raycaster.intersectObjects on ALL meshes with no spatial indexing \u2014 fix by adding three-mesh-bvh for BVH acceleration on geometries and enabling firstHitOnly on the raycaster. (P-02) WireframeGeometry in selection.ts:168 is computationally expensive for large meshes, creating a line segment for every triangle edge \u2014 replace with EdgesGeometry which only computes edges where face normals differ significantly, a direct drop-in replacement. (P-03) Animation loop in Viewport.tsx:77-83 runs requestAnimationFrame continuously and calls renderer.render every frame even when completely idle \u2014 implement render-on-demand using OrbitControls 'change' event and a dirty flag, keeping the rAF loop alive (needed for damping) but skipping the expensive render call when nothing has changed. (P-04) meshManager.sync in meshManager.ts:116-117 creates new Set(Object.keys(meshes)) on every sync call \u2014 minor optimization to use direct property lookup instead. All existing tests use vi.mock('three', ...) with mock classes; new behavior can be tested by extending existing mock infrastructure. The controls module already exposes the OrbitControls instance so Viewport can listen to 'change' events directly without modifying controls.ts.",
+  "analysis": "Task addresses 4 viewport performance issues. (P-01) Raycasting in selection.ts:65-73 calls raycaster.intersectObjects on ALL meshes with no spatial indexing \u2014 fix by adding three-mesh-bvh for BVH acceleration on geometries and enabling firstHitOnly on the raycaster. (P-02) WireframeGeometry in selection.ts:168 is computationally expensive for large meshes, creating a line segment for every triangle edge \u2014 replace with EdgesGeometry which only computes edges where face normals differ significantly, a direct drop-in replacement. (P-03) Animation loop in Viewport.tsx:77-83 runs requestAnimationFrame continuously and calls renderer.render every frame even when completely idle \u2014 implement render-on-demand using OrbitControls 'change' event and a dirty flag, keeping the rAF loop alive (needed for damping) but skipping the expensive render call when nothing has changed. (P-04) meshManager.sync in meshManager.ts:116-117 creates new Set(Object.keys(meshes)) on every sync call \u2014 minor optimization to use direct property lookup instead. All existing tests use vi.mock('three', ...) with mock classes; new behavior can be tested by extending existing mock infrastructure. The controls module already exposes the OrbitControls instance so Viewport can listen to 'change' events directly without modifying controls.ts. Post-review: two robustness issues identified in meshManager.ts where computeBoundsTree() failures could leak GPU resources or leave BVH in inconsistent state.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -115,6 +115,34 @@
       "description": "Fix resource leak in 'resize triggers re-render on next frame' test (Viewport.test.tsx lines 273-302). The test overrides globalThis.ResizeObserver but restores it only at line 301 \u2014 not in a try/finally. If any assertion between render() and the restore throws (e.g. roCallback is undefined when the non-null assertion roCallback!() fires on a failed mount), the original ResizeObserver is never restored, causing cascading failures in all subsequent tests that depend on ResizeObserver. Fix: wrap the test body (lines 284-301) in a try/finally block so that `globalThis.ResizeObserver = OrigRO` always executes regardless of assertion failures. The finally block must contain only the restore; all assertions remain in the try block.",
       "status": "done",
       "commit": "10394b3"
+    },
+    {
+      "id": "step-14",
+      "type": "test",
+      "description": "R-01 createMeshFromData resource leak: Write failing tests in meshManager.test.ts. (1) 'createMeshFromData disposes geometry and material if computeBoundsTree throws' \u2014 configure MockBufferGeometry.computeBoundsTree to throw an Error on next call (via mockImplementationOnce), call manager.sync({ A: meshData }), assert geometry.dispose() was called, assert material.dispose() was called, assert the mesh was NOT added to meshMap (getSceneMeshes().has('A') === false), and assert the mesh was NOT added to scene (mockSceneAdd not called for this mesh). (2) 'createMeshFromData logs error when computeBoundsTree throws' \u2014 spy on console.error, trigger same throw scenario, assert console.error was called with a message containing the entity path. These tests fail because current code has no try/catch around computeBoundsTree() in createMeshFromData.",
+      "status": "done",
+      "commit": "c7a4934"
+    },
+    {
+      "id": "step-15",
+      "type": "impl",
+      "description": "R-01 createMeshFromData resource leak fix: In meshManager.ts createMeshFromData(), wrap the computeBoundsTree() call (line 66) and subsequent mesh creation (lines 68-70) in a try/catch. On catch: call geometry.dispose(), call material.dispose(), log console.error with the entity path and error, and return null. Update the return type to Mesh | null. In sync(), where createMeshFromData is called (line 140), check the return value for null before adding to meshMap and scene: `const mesh = createMeshFromData(entityPath, data); if (mesh) { meshMap.set(entityPath, mesh); scene.add(mesh); }`. This ensures GPU resources are cleaned up on BVH build failure and the mesh is never added to unrecoverable state.",
+      "status": "done",
+      "commit": "0b1974c"
+    },
+    {
+      "id": "step-16",
+      "type": "test",
+      "description": "R-02 updateMeshGeometry stale BVH: Write failing tests in meshManager.test.ts. (1) 'updateMeshGeometry removes mesh from scene and meshMap if computeBoundsTree throws on update' \u2014 sync mesh A, then configure its geometry.computeBoundsTree to throw on next call (mockImplementationOnce), sync A with updated vertices, assert the mesh was removed from scene (mockSceneRemove called), assert meshMap no longer has 'A' (getSceneMeshes().has('A') === false), and assert geometry.dispose() and material.dispose() were called (full cleanup, not leaving a zombie). (2) 'updateMeshGeometry logs error when computeBoundsTree throws on update' \u2014 spy on console.error, trigger same throw scenario, assert console.error was called with a message containing the entity path. These tests fail because current code has no error handling around computeBoundsTree() in updateMeshGeometry.",
+      "status": "done",
+      "commit": "690cc59"
+    },
+    {
+      "id": "step-17",
+      "type": "impl",
+      "description": "R-02 updateMeshGeometry stale BVH fix: In meshManager.ts updateMeshGeometry(), wrap the computeBoundsTree() call (line 114) in a try/catch. On catch: log console.error with the entity path and error, then call removeMesh(mesh.name) to fully dispose the mesh (geometry, material, BVH) and remove it from scene and meshMap. This ensures a mesh with updated render geometry but stale/missing BVH is never left in the scene where it would produce silently incorrect raycast results. The mesh will be cleanly re-created on the next sync() call since it won't be found in meshMap. Note: removeMesh needs to be called with the entity path, which is available as mesh.name (set in createMeshFromData). The function signature stays the same (void return) since the caller (sync) doesn't need to know \u2014 the mesh simply disappears from meshMap and will be re-added as new on next sync.",
+      "status": "done",
+      "commit": "93bf348"
     }
   ],
   "design_decisions": [
@@ -141,6 +169,14 @@
     {
       "decision": "Use try/finally for global stub restoration in tests instead of afterEach",
       "rationale": "The resize test overrides globalThis.ResizeObserver. Restoring in a try/finally within the test body is preferred over afterEach because it keeps the save/restore co-located with the override (easier to reason about), and avoids polluting the shared afterEach with cleanup for a single test's specific stub. The finally block guarantees restoration even if assertions throw."
+    },
+    {
+      "decision": "On createMeshFromData BVH failure: dispose resources, log error, return null (skip mesh)",
+      "rationale": "When computeBoundsTree() throws during mesh creation, the geometry and material have been allocated but the mesh has not yet been added to meshMap or scene. Disposing both and returning null prevents GPU resource leaks. The mesh is simply skipped \u2014 it will be retried on the next sync() call with fresh data. Logging the error (with entity path) ensures the failure is visible rather than silent. Returning null (rather than re-throwing) prevents a single bad mesh from blocking sync of all other meshes in the same batch."
+    },
+    {
+      "decision": "On updateMeshGeometry BVH failure: remove mesh entirely via removeMesh(), let next sync re-create it",
+      "rationale": "When computeBoundsTree() throws during a geometry update, the mesh's render buffers have already been mutated but the BVH is stale. This mesh cannot be left in the scene because raycasts would use the wrong spatial index, producing silently incorrect hit results. Calling removeMesh() fully disposes the mesh (geometry, material, BVH) and removes it from both the scene and meshMap. On the next sync() call, the mesh will be absent from meshMap and re-created from scratch via createMeshFromData, which builds a fresh BVH. This is the rollback strategy (option b from the review) and is preferred over a BVH-invalid flag because it reuses existing cleanup infrastructure and avoids introducing a new mesh validity state that all raycast callers would need to check."
     }
   ],
   "reuse": [
@@ -168,8 +204,19 @@
       "what": "Existing wireframe test patterns in selection.test.ts",
       "where": "gui/src/__tests__/viewport/selection.test.ts 'wireframe overlay on selection' describe block",
       "how": "Tests for setSelected already verify geometry creation, scene.add, dispose, and material cleanup. EdgesGeometry tests follow the same pattern, just with the updated mock class name."
+    },
+    {
+      "what": "Existing removeMesh() function for BVH update failure rollback",
+      "where": "gui/src/viewport/meshManager.ts removeMesh()",
+      "how": "removeMesh() already handles full cleanup: disposeBoundsTree, geometry.dispose, material.dispose, scene.remove, meshMap.delete. Called from updateMeshGeometry's catch block to roll back a mesh with stale BVH, reusing all existing disposal logic."
+    },
+    {
+      "what": "MockBufferGeometry.computeBoundsTree vi.fn() mock for throw simulation",
+      "where": "gui/src/__tests__/viewport/meshManager.test.ts MockBufferGeometry",
+      "how": "computeBoundsTree is already a vi.fn() on MockBufferGeometry. Use mockImplementationOnce(() => { throw new Error('BVH build failed'); }) to simulate computeBoundsTree failure in specific test cases without affecting other tests."
     }
   ],
-  "_session_id": "114-4ad7e2e4",
-  "_created_at": "2026-03-21T17:54:38.652513+00:00"
+  "_session_id": "114-595d0592",
+  "_created_at": "2026-03-21T19:49:15.802707+00:00",
+  "_schema_version": 1
 }
