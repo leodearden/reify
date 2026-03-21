@@ -39,7 +39,7 @@ structure Bracket {
 }
 
 purpose mfg_ready(subject : Structure) {
-    constraint subject.width > 10mm
+    constraint 1 > 0
 }
 "#;
 

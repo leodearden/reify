@@ -9,12 +9,13 @@ pub mod snapshot;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate, ValueCellKind};
+use reify_compiler::{CompiledConstraint, CompiledModule, CompiledPurpose, TopologyTemplate, ValueCellKind};
 use reify_types::{
-    AutoParam, CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintSolver, ContentHash,
-    DeterminacyState, Diagnostic, ExportFormat, GeometryHandleId, GeometryKernel,
-    PersistentMap, ResolutionProblem, Satisfaction, SnapshotId, SnapshotProvenance,
-    SolveResult, Value, ValueCellId, ValueMap, VersionId, FIELD_ENTITY_PREFIX,
+    AutoParam, CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintNodeId,
+    ConstraintSolver, ContentHash, DeterminacyState, Diagnostic, ExportFormat,
+    GeometryHandleId, GeometryKernel, PersistentMap, ResolutionProblem, Satisfaction,
+    SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap, VersionId,
+    FIELD_ENTITY_PREFIX,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
@@ -83,6 +84,12 @@ pub struct Engine {
     /// Stored so that edit_param() and other incremental paths can evaluate
     /// expressions containing UserFunctionCall nodes.
     functions: Vec<CompiledFunction>,
+    /// Compiled purpose declarations from the last eval() call.
+    /// Stored so activate_purpose/deactivate_purpose can look up purposes by name.
+    compiled_purposes: Vec<CompiledPurpose>,
+    /// Currently active purposes: maps purpose name → injected constraint IDs.
+    /// Used by deactivate_purpose to remove the injected constraints.
+    active_purposes: HashMap<String, Vec<ConstraintNodeId>>,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
@@ -222,6 +229,8 @@ impl Engine {
             last_eval_set: Vec::new(),
             journal: EventJournal::new(),
             functions: Vec::new(),
+            compiled_purposes: Vec::new(),
+            active_purposes: HashMap::new(),
         }
     }
 
@@ -259,6 +268,80 @@ impl Engine {
     /// Access the event journal (for testing/inspection).
     pub fn journal(&self) -> &EventJournal {
         &self.journal
+    }
+
+    /// Activate a purpose by name against a target entity.
+    ///
+    /// Looks up the compiled purpose by `purpose_name`, then injects its
+    /// constraints into the current evaluation graph. The injected constraint
+    /// node IDs use a `"purpose:<purpose_name>@<entity_ref>"` entity prefix to
+    /// avoid collisions with structure-level constraints.
+    ///
+    /// Requires a prior call to `eval()` so an evaluation state exists.
+    /// If the purpose is already active, this is a no-op.
+    pub fn activate_purpose(&mut self, purpose_name: &str, entity_ref: &str) {
+        // No-op if already active
+        if self.active_purposes.contains_key(purpose_name) {
+            return;
+        }
+
+        // Look up the compiled purpose
+        let purpose = match self.compiled_purposes.iter().find(|p| p.name == purpose_name) {
+            Some(p) => p.clone(),
+            None => return, // Purpose not found — silently ignore
+        };
+
+        // Get mutable access to the evaluation state
+        let state = match self.eval_state.as_mut() {
+            Some(s) => s,
+            None => return, // No eval state — silently ignore
+        };
+
+        // Build a unique entity prefix for the purpose-injected constraints
+        let purpose_entity = format!("purpose:{}@{}", purpose_name, entity_ref);
+
+        // Inject each of the purpose's compiled constraints into the evaluation graph
+        let mut injected_ids = Vec::new();
+        for (i, constraint) in purpose.constraints.iter().enumerate() {
+            let constraint_id = ConstraintNodeId::new(&purpose_entity, i as u32);
+            let node = crate::graph::ConstraintNodeData {
+                id: constraint_id.clone(),
+                label: constraint.label.clone(),
+                expr: constraint.expr.clone(),
+                content_hash: ContentHash::of_str(&format!(
+                    "purpose:{}:constraint:{}",
+                    purpose_name, i
+                )),
+            };
+            state.snapshot.graph.constraints.insert(constraint_id.clone(), node);
+            injected_ids.push(constraint_id);
+        }
+
+        self.active_purposes.insert(purpose_name.to_string(), injected_ids);
+    }
+
+    /// Deactivate a purpose by name.
+    ///
+    /// Removes the constraints that were injected by `activate_purpose`.
+    /// If the purpose is not active, this is a no-op.
+    pub fn deactivate_purpose(&mut self, purpose_name: &str) {
+        // Look up and remove the injected constraint IDs
+        let injected_ids = match self.active_purposes.remove(purpose_name) {
+            Some(ids) => ids,
+            None => return, // Not active — no-op
+        };
+
+        // Remove each injected constraint from the evaluation graph
+        if let Some(state) = self.eval_state.as_mut() {
+            for constraint_id in &injected_ids {
+                state.snapshot.graph.constraints.remove(constraint_id);
+            }
+        }
+    }
+
+    /// Check whether a purpose is currently active.
+    pub fn is_purpose_active(&self, purpose_name: &str) -> bool {
+        self.active_purposes.contains_key(purpose_name)
     }
 
     /// Prepare state for concurrent evaluation after a parameter change.
@@ -607,8 +690,9 @@ impl Engine {
         &mut self,
         module: &CompiledModule,
     ) -> EvalResult {
-        // Store functions for this module (used by edit_param and concurrent paths)
+        // Store functions and purposes for this module (used by edit_param and purpose activation)
         self.functions = module.functions.clone();
+        self.compiled_purposes = module.compiled_purposes.clone();
         let functions = &module.functions;
 
         let mut values = ValueMap::new();
