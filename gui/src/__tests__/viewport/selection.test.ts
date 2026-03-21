@@ -8,10 +8,16 @@ let mockBox3Instances: any[] = [];
 const mockRaycasterSetFromCamera = vi.fn();
 const mockRaycasterIntersectObjects = vi.fn((..._args: any[]): any[] => []);
 
+let lastRaycasterInstance: any = null;
+
 vi.mock('three', () => {
   class MockRaycaster {
     setFromCamera = mockRaycasterSetFromCamera;
     intersectObjects = mockRaycasterIntersectObjects;
+    firstHitOnly = false;
+    constructor() {
+      lastRaycasterInstance = this;
+    }
   }
 
   class MockWireframeGeometry {
@@ -184,6 +190,12 @@ vi.mock('three', () => {
   };
 });
 
+vi.mock('three-mesh-bvh', () => ({
+  acceleratedRaycast: vi.fn(),
+  computeBoundsTree: vi.fn(),
+  disposeBoundsTree: vi.fn(),
+}));
+
 import { createSelection } from '../../viewport/selection';
 import {
   Scene,
@@ -216,6 +228,7 @@ beforeEach(() => {
   mockBox3Instances = [];
   rafCallbacks = [];
   rafIdCounter = 1;
+  lastRaycasterInstance = null;
 });
 
 function createMockDomElement() {
@@ -298,6 +311,14 @@ describe('createSelection', () => {
     it('returns an object with invalidateRect method', () => {
       const { selection } = setup();
       expect(typeof selection.invalidateRect).toBe('function');
+    });
+  });
+
+  describe('BVH raycasting', () => {
+    it('raycaster has firstHitOnly set to true', () => {
+      setup();
+      expect(lastRaycasterInstance).not.toBeNull();
+      expect(lastRaycasterInstance.firstHitOnly).toBe(true);
     });
   });
 
