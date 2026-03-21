@@ -1415,19 +1415,21 @@ fn compile_purpose(
                 objective = Some(OptimizationObjective::Maximize(compiled_expr));
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
-                let cell_type = if let Some(type_expr) = &let_decl.type_expr {
-                    resolve_type_name(&type_expr.name).unwrap_or(Type::Real)
-                } else {
-                    Type::Real
-                };
-                let compiled_expr =
-                    compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
-                let id = ValueCellId::new(purpose_name, &let_decl.name);
-                scope.names.insert(
-                    let_decl.name.clone(),
-                    (id.clone(), cell_type.clone(), None),
+                // Let bindings in purpose bodies are not yet supported:
+                // CompiledPurpose has no storage for let expressions, and
+                // activate_purpose only injects constraints. Any constraint
+                // referencing a let-bound name would produce a ValueCellId
+                // with no backing node in the eval graph.
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "let bindings in purpose bodies are not yet supported: '{}'",
+                        let_decl.name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        let_decl.span,
+                        "unsupported in purpose".to_string(),
+                    )),
                 );
-                let _ = compiled_expr; // let bindings in purposes are used for intermediate values
             }
             _ => {
                 // Other member types (GuardedGroup, Param, Sub, etc.) not yet handled in purposes
