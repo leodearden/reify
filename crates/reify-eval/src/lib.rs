@@ -1540,12 +1540,17 @@ impl Engine {
                 });
 
                 if constraints_dirty {
+                    // Look up the template-native objective by scope_name.
+                    let objective = scope_name
+                        .as_deref()
+                        .and_then(|name| self.objectives.get(name).cloned());
+
                     // Build ResolutionProblem and solve
                     let problem = ResolutionProblem {
                         auto_params: auto_param_list,
                         constraints: filtered_constraints,
                         current_values: values.clone(),
-                        objective: None,
+                        objective,
                         functions: functions.clone(),
                     };
 
