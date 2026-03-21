@@ -26,6 +26,14 @@ impl LspBridge {
     pub fn inner(&self) -> &InProcessLsp {
         &self.lsp
     }
+
+    /// Retrieve the last published diagnostics for a given URI.
+    ///
+    /// Returns a `Vec<serde_json::Value>` suitable for serialization
+    /// as a Tauri event payload.
+    pub fn get_diagnostics(&self, uri: &str) -> Vec<serde_json::Value> {
+        self.lsp.get_diagnostics(uri)
+    }
 }
 
 impl Default for LspBridge {
