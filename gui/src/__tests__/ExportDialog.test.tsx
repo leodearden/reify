@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { ExportDialog } from '../panels/ExportDialog';
 
 describe('ExportDialog', () => {
@@ -17,7 +18,7 @@ describe('ExportDialog', () => {
     expect(screen.queryByTestId('export-dialog')).toBeNull();
   });
 
-  it('format selector has STEP/STL/3MF options', () => {
+  it('format selector has only STEP and STL options (no 3MF)', () => {
     render(() => (
       <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
     ));
@@ -26,7 +27,8 @@ describe('ExportDialog', () => {
     const values = options.map((o) => o.value);
     expect(values).toContain('step');
     expect(values).toContain('stl');
-    expect(values).toContain('3mf');
+    expect(values).not.toContain('3mf');
+    expect(values).toHaveLength(2);
   });
 
   it('default selected format is "step"', () => {
@@ -109,5 +111,177 @@ describe('ExportDialog', () => {
     ));
     const select = screen.getByTestId('export-dialog').querySelector('select') as HTMLSelectElement;
     expect(select.disabled).toBe(true);
+  });
+
+  // ── ARIA attributes (E-4) ──────────────────────────────────────────
+
+  it('inner dialog div has role="dialog"', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toBeTruthy();
+  });
+
+  it('inner dialog div has aria-modal="true"', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+  });
+
+  it('inner dialog div has aria-labelledby matching the title element id', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const dialog = screen.getByRole('dialog');
+    const labelledBy = dialog.getAttribute('aria-labelledby');
+    expect(labelledBy).toBeTruthy();
+    const title = document.getElementById(labelledBy!);
+    expect(title).toBeTruthy();
+    expect(title!.textContent).toBe('Export Geometry');
+  });
+
+  // ── Label-select association (E-5) ─────────────────────────────────
+
+  it('label for attribute matches the select element id', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const label = screen.getByText('Format');
+    const forAttr = label.getAttribute('for');
+    expect(forAttr).toBeTruthy();
+    const select = document.getElementById(forAttr!) as HTMLSelectElement;
+    expect(select).toBeTruthy();
+    expect(select.tagName).toBe('SELECT');
+  });
+
+  // ── Escape key closes dialog (E-2) ────────────────────────────────
+
+  it('pressing Escape calls onClose when not exporting', () => {
+    const onClose = vi.fn();
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={onClose} />
+    ));
+    const overlay = screen.getByTestId('export-dialog');
+    fireEvent.keyDown(overlay, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('pressing Escape does NOT call onClose when exporting', () => {
+    const onClose = vi.fn();
+    render(() => (
+      <ExportDialog open={true} exporting={true} onExport={vi.fn()} onClose={onClose} />
+    ));
+    const overlay = screen.getByTestId('export-dialog');
+    fireEvent.keyDown(overlay, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // ── Overlay click dismiss (E-3) ───────────────────────────────────
+
+  it('clicking overlay background calls onClose', () => {
+    const onClose = vi.fn();
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={onClose} />
+    ));
+    const overlay = screen.getByTestId('export-dialog');
+    fireEvent.click(overlay);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('clicking inside dialog does NOT call onClose', () => {
+    const onClose = vi.fn();
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={onClose} />
+    ));
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(dialog);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('clicking overlay does NOT call onClose when exporting', () => {
+    const onClose = vi.fn();
+    render(() => (
+      <ExportDialog open={true} exporting={true} onExport={vi.fn()} onClose={onClose} />
+    ));
+    const overlay = screen.getByTestId('export-dialog');
+    fireEvent.click(overlay);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // ── Focus trap (E-1) ──────────────────────────────────────────────
+
+  it('focuses the first focusable element when dialog opens', async () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    // Wait for the queued microtask that sets initial focus
+    await new Promise((r) => queueMicrotask(r));
+    const select = document.getElementById('export-format-select');
+    expect(document.activeElement).toBe(select);
+  });
+
+  it('Tab on last focusable element cycles to first', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const exportBtn = screen.getByText('Export');
+    exportBtn.focus();
+    fireEvent.keyDown(exportBtn, { key: 'Tab' });
+    const select = document.getElementById('export-format-select');
+    expect(document.activeElement).toBe(select);
+  });
+
+  it('Shift+Tab on first focusable element cycles to last', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const select = document.getElementById('export-format-select')!;
+    select.focus();
+    fireEvent.keyDown(select, { key: 'Tab', shiftKey: true });
+    const exportBtn = screen.getByText('Export');
+    expect(document.activeElement).toBe(exportBtn);
+  });
+
+  // ── Format persistence across open/close (E-7) ──────────────────
+
+  it('format selection persists across close/reopen', () => {
+    const [open, setOpen] = createSignal(true);
+    render(() => (
+      <ExportDialog open={open()} exporting={false} onExport={vi.fn()} onClose={() => setOpen(false)} />
+    ));
+
+    // Change format to stl
+    const select = screen.getByTestId('export-dialog').querySelector('select')!;
+    fireEvent.change(select, { target: { value: 'stl' } });
+    expect((select as HTMLSelectElement).value).toBe('stl');
+
+    // Close the dialog
+    setOpen(false);
+    expect(screen.queryByTestId('export-dialog')).toBeNull();
+
+    // Reopen the dialog
+    setOpen(true);
+    const selectAfter = screen.getByTestId('export-dialog').querySelector('select') as HTMLSelectElement;
+    expect(selectAfter.value).toBe('stl');
+  });
+
+  // ── CSS spinner (E-8) ─────────────────────────────────────────────
+
+  it('shows a spinner element when exporting', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={true} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const spinner = screen.getByTestId('export-spinner');
+    expect(spinner).toBeTruthy();
+  });
+
+  it('does not show spinner when not exporting', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    expect(screen.queryByTestId('export-spinner')).toBeNull();
   });
 });

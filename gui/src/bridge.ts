@@ -4,6 +4,7 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { save } from '@tauri-apps/plugin-dialog';
 import type {
   GuiState,
   MeshData,
@@ -56,6 +57,20 @@ export async function openFile(path: string): Promise<FileData> {
 /** Export geometry to a file in the specified format. */
 export async function exportGeometry(format: string, outputPath: string): Promise<void> {
   return invoke('export', { format, path: outputPath });
+}
+
+/** Open a native save-file dialog for export. Returns the chosen path, or null if cancelled. */
+export async function pickSavePath(defaultName: string, formatExtension: string): Promise<string | null> {
+  const result = await save({
+    defaultPath: defaultName,
+    filters: [
+      {
+        name: formatExtension.toUpperCase(),
+        extensions: [formatExtension],
+      },
+    ],
+  });
+  return result ?? null;
 }
 
 /** Get the source location for an entity. */

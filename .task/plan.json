@@ -1,224 +1,235 @@
 {
-  "task_id": "114",
-  "title": "Viewport performance: BVH raycasting, render-on-demand, wireframe optimization",
+  "task_id": "108",
+  "title": "ExportDialog UX: focus trap, Escape, ARIA, overlay click, file picker, 3MF removal",
   "files": [
-    "gui/package.json",
-    "gui/src/viewport/selection.ts",
-    "gui/src/viewport/Viewport.tsx",
-    "gui/src/viewport/meshManager.ts",
-    "gui/src/__tests__/viewport/selection.test.ts",
-    "gui/src/__tests__/viewport/Viewport.test.tsx",
-    "gui/src/__tests__/viewport/meshManager.test.ts"
+    "gui/src/panels/ExportDialog.tsx",
+    "gui/src/panels/ExportDialog.module.css",
+    "gui/src/__tests__/ExportDialog.test.tsx",
+    "gui/src/types.ts",
+    "gui/src/App.tsx",
+    "gui/src/bridge.ts",
+    "gui/src/__tests__/App.test.tsx",
+    "gui/package.json"
   ],
   "modules": [
-    "gui/src/viewport",
-    "gui/src/__tests__/viewport"
+    "gui/src/panels",
+    "gui/src/__tests__",
+    "gui/src"
   ],
-  "analysis": "Task addresses 4 viewport performance issues. (P-01) Raycasting in selection.ts:65-73 calls raycaster.intersectObjects on ALL meshes with no spatial indexing \u2014 fix by adding three-mesh-bvh for BVH acceleration on geometries and enabling firstHitOnly on the raycaster. (P-02) WireframeGeometry in selection.ts:168 is computationally expensive for large meshes, creating a line segment for every triangle edge \u2014 replace with EdgesGeometry which only computes edges where face normals differ significantly, a direct drop-in replacement. (P-03) Animation loop in Viewport.tsx:77-83 runs requestAnimationFrame continuously and calls renderer.render every frame even when completely idle \u2014 implement render-on-demand using OrbitControls 'change' event and a dirty flag, keeping the rAF loop alive (needed for damping) but skipping the expensive render call when nothing has changed. (P-04) meshManager.sync in meshManager.ts:116-117 creates new Set(Object.keys(meshes)) on every sync call \u2014 minor optimization to use direct property lookup instead. All existing tests use vi.mock('three', ...) with mock classes; new behavior can be tested by extending existing mock infrastructure. The controls module already exposes the OrbitControls instance so Viewport can listen to 'change' events directly without modifying controls.ts. Post-review: two robustness issues identified in meshManager.ts where computeBoundsTree() failures could leak GPU resources or leave BVH in inconsistent state.",
+  "analysis": "This task addresses 9 UX issues in the ExportDialog modal. The current ExportDialog.tsx is a simple SolidJS component using <Show when={props.open}> for visibility. It renders an overlay div with an inner dialog div containing a format selector (STEP/STL/3MF), Cancel/Export buttons, and a text-only progress indicator.\n\nKey findings from code analysis:\n1. **No ARIA attributes**: The dialog div lacks role='dialog', aria-modal='true', aria-labelledby. The label has no htmlFor, the select has no id.\n2. **No keyboard handling**: No Escape key handler, no focus trap. Tab freely escapes the modal.\n3. **No overlay dismiss**: Clicking the overlay background doesn't close the dialog.\n4. **3MF unsupported**: The backend ExportFormat enum only has Step/Stl/Obj (no 3MF). The Tauri command handler (commands.rs:54-57) explicitly rejects unknown formats. The frontend ExportFormat type includes '3mf' but it will always fail.\n5. **Hardcoded path**: App.tsx handleDoExport (line 182) uses `export.${format}` as a hardcoded path. No native file picker.\n6. **No spinner**: Progress indicator (line 22-25) is text-only 'Exporting...' with no visual spinner.\n7. **Format persistence**: The createSignal<ExportFormat>('step') is at component level, so format SHOULD persist across open/close since the component is always mounted in App.tsx. But the task reports it resets \u2014 this may be a SolidJS <Show> subtlety or a perceived issue. Will add regression test.\n\nTesting stack: vitest + @solidjs/testing-library + jsdom. All Tauri APIs are mocked via vi.mock. Existing ExportDialog tests cover basic rendering, format selection, button clicks, and disabled states.\n\nFor the file picker (E-6), I'll add a `pickSavePath` function to bridge.ts that wraps `@tauri-apps/plugin-dialog`'s save() function. In tests, this is mocked. App.tsx handleDoExport will call pickSavePath first, and if the user cancels (returns null), skip the export.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add three-mesh-bvh to gui/package.json dependencies and run npm install. This package provides computeBoundsTree/disposeBoundsTree for BufferGeometry BVH acceleration and acceleratedRaycast for Mesh.prototype.raycast. Required for P-01 (BVH raycasting).",
+      "description": "Add @tauri-apps/plugin-dialog to gui/package.json dependencies for native save file picker. Run npm/pnpm install to ensure it's available for import in bridge.ts.",
       "status": "done",
-      "commit": "e67c9d4",
+      "commit": "63023e4",
       "tests": []
     }
   ],
-  "analysis": "Analysis of the codebase reveals 7 CSS custom properties referenced in component CSS modules but never defined by applyTheme() in theme.ts: --reify-surface0 (FileBrowser, ExportDialog, Toast), --reify-surface1 (FileBrowser, ExportDialog, ReloadPrompt), --reify-surface2 (ExportDialog, ReloadPrompt), --reify-subtext (FileBrowser, ExportDialog, Toast), --reify-overlay0 (ReloadPrompt), --reify-green (Toast), --reify-red (Toast). These CSS files use fallback values (e.g., var(--reify-surface0, #313244)) so the UI renders correctly in dark mode, but theme switching won't affect these properties since they're never set as CSS custom properties by applyTheme().\n\nThe task description mentions --reify-font-mono as missing, but it IS defined via the 'fontMono' key in THEME_TOKENS and correctly converted by camelToKebab() to --reify-font-mono.\n\nAdditionally, applyTheme() is called inside onMount() in App.tsx (line 115), which runs after the initial render. This causes a potential flash of unstyled content (FOUC) since CSS variables aren't set until the component mounts. The fix is to call applyTheme() synchronously in index.tsx before render().\n\nFor T4 (spacing system), no spacing tokens exist — CSS files use hardcoded pixel values (4px, 6px, 8px, 12px, 16px, 20px). We'll define spacing scale tokens in THEME_TOKENS but defer CSS file migration to a future task.\n\nLight mode (T2) is explicitly deferred per the task description.\n\nExisting test file (gui/src/__tests__/theme.test.ts) has 4 tests: required keys check, Catppuccin Mocha values check, hex validation for color tokens, and applyTheme callable check. These will be extended.\n\nREVIEW FIX: camelToKebab() only replaces uppercase letters, so 'space2xl' produces '--reify-space2xl' instead of '--reify-space-2xl'. This is a silent naming mismatch — CSS authors writing var(--reify-space-2xl) get the fallback value with no error. The fix extends camelToKebab to insert a hyphen at letter→digit boundaries when the digit sequence is followed by letters (e.g., space2xl → space-2xl). This preserves existing tokens like surface0/overlay0 where the trailing digit has no following letters.",
-  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "P-03 render-on-demand: Write failing tests in Viewport.test.tsx. Update controls mock to include addEventListener/removeEventListener on the controls object (currently just {}). Add test: 'animate loop does NOT call renderer.render when idle after initial frame' \u2014 use capturing rAF mock, fire first rAF callback (initial render), clear renderer.render mock, fire second rAF callback with no interactions, assert renderer.render was NOT called. This test fails against current code which always renders every frame.",
+      "description": "Write failing tests for ARIA attributes (E-4): (1) inner dialog div has role='dialog', (2) inner dialog div has aria-modal='true', (3) inner dialog div has aria-labelledby matching the title element's id. These test that the dialog element has proper accessibility semantics.",
       "status": "done",
-      "commit": "ca26090"
+      "commit": "4a71dc6"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "P-03 render-on-demand: Implement in Viewport.tsx. Add let needsRender = true flag. Add requestRender() helper that sets needsRender = true. Register controls.controls.addEventListener('change', requestRender) to mark dirty on camera movement. In animate loop: keep calling controls.update() every frame (required for enableDamping), but guard renderer.render(scene, camera) behind if(needsRender), then reset needsRender = false. Add controls.controls.removeEventListener('change', requestRender) in onCleanup. Initial needsRender = true ensures first frame renders.",
+      "description": "Add ARIA attributes to ExportDialog.tsx: add id='export-dialog-title' to the h2 title, add role='dialog', aria-modal='true', aria-labelledby='export-dialog-title' to the inner .dialog div.",
       "status": "done",
-      "commit": "be2287b"
+      "commit": "9872394"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "P-03 render triggers: Write tests verifying all re-render triggers. (1) 'controls change event triggers re-render on next frame' \u2014 fire controls mock's captured 'change' callback, then fire rAF, assert renderer.render called. (2) 'resize triggers re-render' \u2014 verify renderer.render is called on next frame after ResizeObserver fires. (3) Test that renderer.render is still called once for initial frame (existing test 'animate loop does not call renderer.render after cleanup/dispose' should continue to pass).",
+      "description": "Write failing test for label-select association (E-5): the <label> element has a for/htmlFor attribute whose value matches the <select> element's id attribute.",
       "status": "done",
-      "commit": "f17a85b"
+      "commit": "9ef499e"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "P-03 render triggers: Wire requestRender() calls in Viewport.tsx at all trigger points. Add requestRender() after meshManager.sync(props.meshes) in the mesh sync createEffect. Add requestRender() after selection.setHovered() and selection.setSelected() in their createEffects. Add requestRender() after resize() call in the ResizeObserver callback (alongside existing invalidateRect). Verify all tests from step-3 pass plus existing tests remain green.",
+      "description": "Add id='export-format-select' to the <select> element and for='export-format-select' (htmlFor in JSX) to the <label> element in ExportDialog.tsx.",
       "status": "done",
-      "commit": "fba82c2"
+      "commit": "601b21e"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "P-02 EdgesGeometry: Write failing test in selection.test.ts. Add MockEdgesGeometry to the three mock (identical structure to existing MockWireframeGeometry). Add test: 'setSelected creates EdgesGeometry from mesh geometry' \u2014 verify that when setSelected('A') is called, EdgesGeometry constructor is invoked with mesh.geometry and the resulting LineSegments is added to scene. Update existing wireframe tests to use EdgesGeometry mock if needed. This test fails because current code imports/uses WireframeGeometry.",
+      "description": "Write failing test for Escape key closes dialog (E-2): render open dialog, fire keyDown event with key='Escape' on the dialog, assert onClose was called once.",
       "status": "done",
-      "commit": "0468ab5"
+      "commit": "6b4fd93"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "P-02 EdgesGeometry: In selection.ts, change import from 'WireframeGeometry' to 'EdgesGeometry' in the three import statement. In setSelected(), replace 'new WireframeGeometry(mesh.geometry)' with 'new EdgesGeometry(mesh.geometry)'. EdgesGeometry is a direct drop-in replacement that produces LineSegments-compatible geometry but only includes edges where adjacent face normals differ by > 1 degree threshold, making it dramatically lighter for dense meshes while preserving the visual outline.",
+      "description": "Add onKeyDown handler to the overlay div in ExportDialog.tsx that checks for e.key === 'Escape' and calls props.onClose() when not exporting. Ensure the overlay is focusable or the handler is on document level.",
       "status": "done",
-      "commit": "21f3365"
+      "commit": "a253b63"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "P-01 BVH geometry: Write failing tests in meshManager.test.ts. Add computeBoundsTree = vi.fn() and disposeBoundsTree = vi.fn() to MockBufferGeometry. Mock the 'three-mesh-bvh' module to export computeBoundsTree, disposeBoundsTree, acceleratedRaycast. Add tests: (1) 'sync calls geometry.computeBoundsTree() on newly created mesh', (2) 'sync calls geometry.computeBoundsTree() after updating existing mesh geometry', (3) 'removeMesh calls geometry.disposeBoundsTree() before disposing geometry'. These fail because current meshManager doesn't invoke BVH methods.",
+      "description": "Write failing tests for overlay click dismiss (E-3): (1) clicking the overlay background calls onClose, (2) clicking inside the inner dialog div does NOT call onClose (event propagation is stopped).",
       "status": "done",
-      "commit": "effc0f6"
+      "commit": "73ef1a2"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "P-01 BVH geometry: In meshManager.ts, import { computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh' and BufferGeometry from 'three'. Apply prototype patches at module scope: BufferGeometry.prototype.computeBoundsTree = computeBoundsTree; BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree. In createMeshFromData(), call geometry.computeBoundsTree() after all attributes are set. In updateMeshGeometry(), call geometry.computeBoundsTree() after updating all attributes (rebuilds BVH for changed geometry). In removeMesh(), call (mesh.geometry as any).disposeBoundsTree() before geometry.dispose().",
+      "description": "Add onClick handler to the overlay div that calls props.onClose() when not exporting. Add onClick={e => e.stopPropagation()} to the inner .dialog div to prevent clicks inside from bubbling to the overlay.",
       "status": "done",
-      "commit": "0727cff"
+      "commit": "40ab980"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "P-01 BVH raycasting: Write failing test in selection.test.ts. Add mock for 'three-mesh-bvh' module. Add test: 'raycaster has firstHitOnly set to true' \u2014 after createSelection, inspect the mock Raycaster instance to verify firstHitOnly property is true. This test fails because current code doesn't set firstHitOnly on the raycaster.",
+      "description": "Write failing tests for focus trap (E-1): (1) when dialog opens, the first focusable element (Cancel button or select) receives focus, (2) pressing Tab on the last focusable element cycles focus back to the first focusable element, (3) pressing Shift+Tab on the first focusable element cycles to the last.",
       "status": "done",
-      "commit": "6c9eb7f"
+      "commit": "2f2a75e"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "P-01 BVH raycasting: In selection.ts, import { acceleratedRaycast } from 'three-mesh-bvh' and import Mesh from 'three'. Apply prototype patch at module scope: Mesh.prototype.raycast = acceleratedRaycast. After creating the Raycaster instance (line 42), set (raycaster as any).firstHitOnly = true. This enables BVH-accelerated raycasting that exits early on first hit, which is correct since we only use intersections[0].object.name.",
+      "description": "Implement focus trap in ExportDialog.tsx: use a ref on the inner dialog div. On mount (inside a createEffect triggered by props.open becoming true), query all focusable elements and focus the first one. Add a keydown handler that intercepts Tab/Shift+Tab and wraps focus within the dialog's focusable elements.",
       "status": "done",
-      "commit": "32b83be"
+      "commit": "9cbdc87"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "P-04 sync optimization: Run existing meshManager tests to verify they all pass (behavior is unchanged, this is a pure refactor). Optionally add test: 'sync with empty incoming object removes all existing meshes' to ensure edge case coverage if not already covered.",
+      "description": "Write failing test for 3MF removal (I7): (1) format selector does NOT contain a '3mf' option, (2) format selector contains only 'step' and 'stl' options. Update the existing test 'format selector has STEP/STL/3MF options' to expect only STEP/STL.",
       "status": "done",
-      "commit": "ee8e317"
+      "commit": "9d605bf"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "P-04 sync optimization: Refactor sync() in meshManager.ts. Replace 'const incomingKeys = new Set(Object.keys(meshes))' and 'incomingKeys.has(key)' with direct property check: 'if (!(key in meshes))'. This avoids one Set + Array allocation per sync call while maintaining identical O(1) lookup semantics. Iterate meshMap.keys() for removal check, then Object.entries(meshes) for add/update (same as current).",
+      "description": "Remove the <option value='3mf'>3MF</option> from ExportDialog.tsx. Update ExportFormat type in gui/src/types.ts from 'step' | 'stl' | '3mf' to 'step' | 'stl'. Verify no other frontend code references '3mf'.",
       "status": "done",
-      "commit": "70b62bf"
+      "commit": "b7825ce"
     },
     {
       "id": "step-13",
-      "type": "impl",
-      "description": "Fix resource leak in 'resize triggers re-render on next frame' test (Viewport.test.tsx lines 273-302). The test overrides globalThis.ResizeObserver but restores it only at line 301 \u2014 not in a try/finally. If any assertion between render() and the restore throws (e.g. roCallback is undefined when the non-null assertion roCallback!() fires on a failed mount), the original ResizeObserver is never restored, causing cascading failures in all subsequent tests that depend on ResizeObserver. Fix: wrap the test body (lines 284-301) in a try/finally block so that `globalThis.ResizeObserver = OrigRO` always executes regardless of assertion failures. The finally block must contain only the restore; all assertions remain in the try block.",
+      "type": "test",
+      "description": "Write failing test for CSS spinner during export (E-8): when exporting=true, the progress indicator contains an element with a spinner class (data-testid='export-spinner' or class check). The spinner element should be present only during export.",
       "status": "done",
-      "commit": "10394b3"
+      "commit": "3bfe6c0"
     },
     {
       "id": "step-14",
-      "type": "test",
-      "description": "R-01 createMeshFromData resource leak: Write failing tests in meshManager.test.ts. (1) 'createMeshFromData disposes geometry and material if computeBoundsTree throws' \u2014 configure MockBufferGeometry.computeBoundsTree to throw an Error on next call (via mockImplementationOnce), call manager.sync({ A: meshData }), assert geometry.dispose() was called, assert material.dispose() was called, assert the mesh was NOT added to meshMap (getSceneMeshes().has('A') === false), and assert the mesh was NOT added to scene (mockSceneAdd not called for this mesh). (2) 'createMeshFromData logs error when computeBoundsTree throws' \u2014 spy on console.error, trigger same throw scenario, assert console.error was called with a message containing the entity path. These tests fail because current code has no try/catch around computeBoundsTree() in createMeshFromData.",
+      "type": "impl",
+      "description": "Add a spinner element inside the progress div in ExportDialog.tsx \u2014 a <span> with class styles.spinner. Add CSS @keyframes spin animation in ExportDialog.module.css: .spinner { width: 16px; height: 16px; border: 2px solid; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }",
       "status": "done",
-      "commit": "c7a4934"
+      "commit": "78d8449"
     },
     {
       "id": "step-15",
-      "type": "impl",
-      "description": "R-01 createMeshFromData resource leak fix: In meshManager.ts createMeshFromData(), wrap the computeBoundsTree() call (line 66) and subsequent mesh creation (lines 68-70) in a try/catch. On catch: call geometry.dispose(), call material.dispose(), log console.error with the entity path and error, and return null. Update the return type to Mesh | null. In sync(), where createMeshFromData is called (line 140), check the return value for null before adding to meshMap and scene: `const mesh = createMeshFromData(entityPath, data); if (mesh) { meshMap.set(entityPath, mesh); scene.add(mesh); }`. This ensures GPU resources are cleaned up on BVH build failure and the mesh is never added to unrecoverable state.",
+      "type": "test",
+      "description": "Write test for format persistence across open/close (E-7): render dialog, change format to 'stl', close dialog (set open=false), reopen (set open=true), assert select value is still 'stl'. This verifies the signal persists since the component stays mounted.",
       "status": "done",
-      "commit": "0b1974c"
+      "commit": "0e97227"
     },
     {
       "id": "step-16",
-      "type": "test",
-      "description": "R-02 updateMeshGeometry stale BVH: Write failing tests in meshManager.test.ts. (1) 'updateMeshGeometry removes mesh from scene and meshMap if computeBoundsTree throws on update' \u2014 sync mesh A, then configure its geometry.computeBoundsTree to throw on next call (mockImplementationOnce), sync A with updated vertices, assert the mesh was removed from scene (mockSceneRemove called), assert meshMap no longer has 'A' (getSceneMeshes().has('A') === false), and assert geometry.dispose() and material.dispose() were called (full cleanup, not leaving a zombie). (2) 'updateMeshGeometry logs error when computeBoundsTree throws on update' \u2014 spy on console.error, trigger same throw scenario, assert console.error was called with a message containing the entity path. These tests fail because current code has no error handling around computeBoundsTree() in updateMeshGeometry.",
+      "type": "impl",
+      "description": "If step-15 test fails: lift the format signal to be preserved across Show renders, or restructure so the signal outlives the Show block. If test passes, this step is a no-op (format already persists due to component-level signal). Mark done either way.",
       "status": "done",
-      "commit": "690cc59"
+      "commit": "0e97227"
     },
     {
       "id": "step-17",
-      "type": "impl",
-      "description": "R-02 updateMeshGeometry stale BVH fix: In meshManager.ts updateMeshGeometry(), wrap the computeBoundsTree() call (line 114) in a try/catch. On catch: log console.error with the entity path and error, then call removeMesh(mesh.name) to fully dispose the mesh (geometry, material, BVH) and remove it from scene and meshMap. This ensures a mesh with updated render geometry but stale/missing BVH is never left in the scene where it would produce silently incorrect raycast results. The mesh will be cleanly re-created on the next sync() call since it won't be found in meshMap. Note: removeMesh needs to be called with the entity path, which is available as mesh.name (set in createMeshFromData). The function signature stays the same (void return) since the caller (sync) doesn't need to know \u2014 the mesh simply disappears from meshMap and will be re-added as new on next sync.",
+      "type": "test",
+      "description": "Write failing tests in App.test.tsx for file picker integration (E-6): (1) mock bridge.pickSavePath to return a path string, click Export in dialog, assert pickSavePath was called with expected default name and format filters, then assert bridgeExportGeometry was called with the returned path. (2) mock pickSavePath to return null (user cancelled), assert bridgeExportGeometry was NOT called and dialog stays open.",
       "status": "done",
-      "commit": "93bf348"
+      "commit": "9668030"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Add pickSavePath(defaultName: string, formatExtension: string) function to bridge.ts that imports save() from @tauri-apps/plugin-dialog. Returns Promise<string | null>. Modify handleDoExport in App.tsx: before calling bridgeExportGeometry, call pickSavePath to get the user-chosen path. If null (cancelled), return early without exporting. Pass the chosen path to bridgeExportGeometry instead of the hardcoded default.",
+      "status": "done",
+      "commit": "77506fd"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing test in App.test.tsx for pickSavePath error boundary (reviewer_robustness finding): mock bridge.pickSavePath to reject with an Error (e.g., 'Plugin not registered'). Click Export in the dialog. Assert that (1) an error toast is shown with message containing 'Could not open save dialog', (2) bridgeExportGeometry was NOT called, (3) setExporting(true) was never reached (the export-dialog is still visible and not in exporting state \u2014 no spinner present), (4) the dialog remains open for the user to retry or cancel.",
+      "status": "done",
+      "commit": "15a409b"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "In App.tsx handleDoExport, wrap the `await pickSavePath(defaultName, format)` call in its own try/catch block before the existing try/catch for bridgeExportGeometry. On catch: set toastType to 'error', set toastMessage to `Could not open save dialog: ${err instanceof Error ? err.message : String(err)}`, and return early. This ensures that if the Tauri dialog plugin throws (plugin not registered, OS denies dialog, initialization failure), the user sees a clear error toast and the dialog remains open \u2014 matching the reviewer's suggested fix pattern.",
+      "status": "done",
+      "commit": "d9a882b"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use EdgesGeometry instead of WireframeGeometry for selection overlay",
-      "rationale": "EdgesGeometry only computes edges where adjacent face normals differ by a threshold (default 1 degree), producing far fewer line segments than WireframeGeometry which duplicates every triangle edge. This is a direct drop-in replacement that dramatically reduces compute time for dense meshes. A full stencil-based outline pass (OutlinePass + EffectComposer) would require setting up a multi-pass render pipeline \u2014 disproportionate complexity for v0.1."
+      "decision": "Focus trap implemented manually rather than using a third-party library",
+      "rationale": "The project has no focus-trap library (e.g., focus-trap-react). The ExportDialog has only 3 focusable elements (select, Cancel, Export), making a manual implementation trivial and avoiding a new dependency. Query focusable elements via dialog.querySelectorAll('button, select, input, [tabindex]')."
     },
     {
-      "decision": "Use dirty-flag render-on-demand pattern while keeping the rAF loop alive",
-      "rationale": "OrbitControls with enableDamping=true requires controls.update() to be called every frame for smooth deceleration. Stopping/restarting the rAF loop would cause damping to stutter. The dirty-flag pattern keeps the loop running (cheap controls.update() call) but skips the expensive renderer.render() when nothing has changed. OrbitControls' built-in 'change' event fires during damping, correctly triggering re-renders while the camera decelerates."
+      "decision": "Escape key handler placed on the overlay div via onKeyDown rather than a document-level listener",
+      "rationale": "A component-level handler is cleaner and automatically scoped to the dialog's lifecycle. The overlay receives focus management from the focus trap, so keyDown events will bubble up to it. This avoids global listener registration/cleanup complexity."
     },
     {
-      "decision": "Add three-mesh-bvh for BVH acceleration rather than custom spatial indexing",
-      "rationale": "three-mesh-bvh is the de-facto standard for raycasting acceleration in Three.js (recommended in official docs and Discord). It provides O(log n) triangle intersection via bounding volume hierarchy, plus firstHitOnly for early-exit. Custom spatial indexing would duplicate well-tested functionality. The package adds ~35KB gzipped and is compatible with three ^0.183."
+      "decision": "pickSavePath abstracted in bridge.ts rather than importing @tauri-apps/plugin-dialog directly in App.tsx",
+      "rationale": "All Tauri IPC interactions go through bridge.ts (existing pattern). This keeps App.tsx decoupled from Tauri specifics and makes testing straightforward \u2014 tests mock bridge.pickSavePath rather than the plugin directly."
     },
     {
-      "decision": "Apply three-mesh-bvh prototype patches at module scope in consuming files",
-      "rationale": "three-mesh-bvh works by patching BufferGeometry.prototype.computeBoundsTree and Mesh.prototype.raycast. Applying patches at module scope in meshManager.ts and selection.ts keeps them co-located with their usage. An alternative dedicated bvh.ts init module adds indirection for just two simple prototype assignments."
+      "decision": "Remove 3MF from frontend ExportFormat type entirely rather than disabling the option",
+      "rationale": "The backend ExportFormat enum has Step/Stl/Obj but NO 3MF variant. The Tauri command handler rejects unknown format strings. Showing a disabled 3MF option would confuse users. Clean removal is better \u2014 it can be added back when backend support exists."
     },
     {
-      "decision": "Use 'in' operator for sync key membership instead of Set allocation",
-      "rationale": "Current code creates new Set(Object.keys(meshes)) on every sync call. For Record<string, MeshData> objects, 'key in meshes' provides O(1) property lookup without any allocation. Behavioral equivalent, but avoids one Set + Array allocation per call."
+      "decision": "Overlay click dismiss checks props.exporting before closing",
+      "rationale": "Consistent with Cancel button behavior \u2014 clicking overlay while export is in progress should not close the dialog and potentially leave the export in an ambiguous state."
     },
     {
-      "decision": "Use try/finally for global stub restoration in tests instead of afterEach",
-      "rationale": "The resize test overrides globalThis.ResizeObserver. Restoring in a try/finally within the test body is preferred over afterEach because it keeps the save/restore co-located with the override (easier to reason about), and avoids polluting the shared afterEach with cleanup for a single test's specific stub. The finally block guarantees restoration even if assertions throw."
+      "decision": "CSS-only spinner animation rather than SVG or animated icon library",
+      "rationale": "No icon library is in the project dependencies. A CSS border-animation spinner is lightweight, theme-compatible (uses CSS variables), and sufficient for the simple 'Exporting...' state indicator."
     },
     {
-      "decision": "On createMeshFromData BVH failure: dispose resources, log error, return null (skip mesh)",
-      "rationale": "When computeBoundsTree() throws during mesh creation, the geometry and material have been allocated but the mesh has not yet been added to meshMap or scene. Disposing both and returning null prevents GPU resource leaks. The mesh is simply skipped \u2014 it will be retried on the next sync() call with fresh data. Logging the error (with entity path) ensures the failure is visible rather than silent. Returning null (rather than re-throwing) prevents a single bad mesh from blocking sync of all other meshes in the same batch."
-    },
-    {
-      "decision": "On updateMeshGeometry BVH failure: remove mesh entirely via removeMesh(), let next sync re-create it",
-      "rationale": "When computeBoundsTree() throws during a geometry update, the mesh's render buffers have already been mutated but the BVH is stale. This mesh cannot be left in the scene because raycasts would use the wrong spatial index, producing silently incorrect hit results. Calling removeMesh() fully disposes the mesh (geometry, material, BVH) and removes it from both the scene and meshMap. On the next sync() call, the mesh will be absent from meshMap and re-created from scratch via createMeshFromData, which builds a fresh BVH. This is the rollback strategy (option b from the review) and is preferred over a BVH-invalid flag because it reuses existing cleanup infrastructure and avoids introducing a new mesh validity state that all raycast callers would need to check."
+      "decision": "Separate try/catch for pickSavePath before the export try/catch rather than merging into one block",
+      "rationale": "The pickSavePath failure and bridgeExportGeometry failure have different error messages and different UX consequences. pickSavePath failure means the save dialog couldn't open \u2014 the user should see 'Could not open save dialog' and the export dialog stays open (no exporting state entered). Export failure means the actual export failed \u2014 different message, different cleanup (setExporting(false), close dialog). Keeping them as separate try/catch blocks makes the error handling clearer and the UX distinct for each failure mode."
     }
   ],
   "reuse": [
     {
-      "what": "Existing Three.js vi.mock() infrastructure in all viewport test files",
-      "where": "gui/src/__tests__/viewport/selection.test.ts, meshManager.test.ts, Viewport.test.tsx",
-      "how": "Extend existing MockBufferGeometry to add computeBoundsTree/disposeBoundsTree mock methods. Create MockEdgesGeometry following the same pattern as existing MockWireframeGeometry. Add addEventListener/removeEventListener to the controls mock object in Viewport.test.tsx."
+      "what": "Existing ExportDialog test patterns (render with props, fireEvent.click, screen.getByTestId)",
+      "where": "gui/src/__tests__/ExportDialog.test.tsx",
+      "how": "Follow the exact same render pattern: render(() => <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />). Use fireEvent for keyboard and click events. Use screen queries for assertions."
     },
     {
-      "what": "OrbitControls built-in 'change' event dispatch",
-      "where": "gui/src/viewport/Viewport.tsx",
-      "how": "OrbitControls already dispatches 'change' events when camera moves (including during damping update cycles). Viewport listens via controls.controls.addEventListener('change', requestRender) \u2014 no changes to controls.ts needed."
+      "what": "App.test.tsx mock patterns for Tauri APIs and bridge module",
+      "where": "gui/src/__tests__/App.test.tsx lines 6-67",
+      "how": "Add pickSavePath to the existing bridge mock block (vi.mock('../bridge')). Follow the same mockResolvedValue pattern. Add @tauri-apps/plugin-dialog mock alongside existing @tauri-apps/api mocks if needed."
     },
     {
-      "what": "ControlsContext.controls property exposing OrbitControls instance",
-      "where": "gui/src/viewport/controls.ts \u2192 used in gui/src/viewport/Viewport.tsx",
-      "how": "The controls module already returns the OrbitControls instance with addEventListener/removeEventListener via ControlsContext.controls. No interface changes needed."
+      "what": "bridge.ts invoke/listen wrapper pattern",
+      "where": "gui/src/bridge.ts",
+      "how": "Add pickSavePath following the same async function pattern with JSDoc comment. Import from @tauri-apps/plugin-dialog instead of @tauri-apps/api/core since it's a separate plugin."
     },
     {
-      "what": "Existing rAF-based test infrastructure in Viewport.test.tsx",
-      "where": "gui/src/__tests__/viewport/Viewport.test.tsx lines 15-22",
-      "how": "The test file already has rafCallbacks array, rafIdCounter, and mock requestAnimationFrame/cancelAnimationFrame. Render-on-demand tests reuse this pattern to capture and selectively fire frame callbacks to verify rendering behavior."
+      "what": "ExportDialog.module.css variable naming convention",
+      "where": "gui/src/panels/ExportDialog.module.css",
+      "how": "Use existing CSS variable names (--reify-accent, --reify-subtext, etc.) for spinner colors. Follow the existing class naming pattern (.spinner alongside .progress, .button, etc.)."
     },
     {
-      "what": "Existing wireframe test patterns in selection.test.ts",
-      "where": "gui/src/__tests__/viewport/selection.test.ts 'wireframe overlay on selection' describe block",
-      "how": "Tests for setSelected already verify geometry creation, scene.add, dispose, and material cleanup. EdgesGeometry tests follow the same pattern, just with the updated mock class name."
+      "what": "Existing SolidJS createEffect/onMount patterns for lifecycle hooks",
+      "where": "gui/src/panels/ExportDialog.tsx and other panel components",
+      "how": "Use createEffect to react to props.open changes for focus management. Use onCleanup for any event listener cleanup. Follow the same import pattern from 'solid-js'."
     },
     {
-      "what": "Existing removeMesh() function for BVH update failure rollback",
-      "where": "gui/src/viewport/meshManager.ts removeMesh()",
-      "how": "removeMesh() already handles full cleanup: disposeBoundsTree, geometry.dispose, material.dispose, scene.remove, meshMap.delete. Called from updateMeshGeometry's catch block to roll back a mesh with stale BVH, reusing all existing disposal logic."
-    },
-    {
-      "what": "MockBufferGeometry.computeBoundsTree vi.fn() mock for throw simulation",
-      "where": "gui/src/__tests__/viewport/meshManager.test.ts MockBufferGeometry",
-      "how": "computeBoundsTree is already a vi.fn() on MockBufferGeometry. Use mockImplementationOnce(() => { throw new Error('BVH build failed'); }) to simulate computeBoundsTree failure in specific test cases without affecting other tests."
+      "what": "Existing App.test.tsx file picker test structure for the new error boundary test",
+      "where": "gui/src/__tests__/App.test.tsx lines 588-645 (E-6 describe block)",
+      "how": "The new step-19 test follows the identical pattern: render App, open export dialog, click Export button, then assert on toast and bridge call behavior. Use mockRejectedValue instead of mockResolvedValue for the error case."
     }
   ],
-  "_session_id": "114-595d0592",
-  "_created_at": "2026-03-21T19:49:15.802707+00:00",
-  "_schema_version": 1
+  "_session_id": "108-dd9cabba",
+  "_created_at": "2026-03-21T21:05:22.695698+00:00"
 }
