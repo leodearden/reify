@@ -278,6 +278,24 @@ mod tests {
         Url::parse("file:///test.ri").unwrap()
     }
 
+    /// A recording sink that captures all publish_diagnostics calls.
+    #[derive(Default)]
+    struct RecordingSink {
+        calls: Mutex<Vec<(Url, Vec<Diagnostic>, Option<i32>)>>,
+    }
+
+    impl NotificationSink for RecordingSink {
+        fn publish_diagnostics(&self, uri: Url, diagnostics: Vec<Diagnostic>, version: Option<i32>) {
+            self.calls.lock().unwrap().push((uri, diagnostics, version));
+        }
+    }
+
+    impl RecordingSink {
+        fn take_calls(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i32>)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
     #[test]
     fn noop_sink_implements_notification_sink() {
         let sink: Arc<dyn NotificationSink> = Arc::new(NoOpSink);
@@ -287,6 +305,33 @@ mod tests {
             vec![],
             None,
         );
+    }
+
+    #[tokio::test]
+    async fn sink_receives_diagnostics_on_did_open() {
+        let sink = Arc::new(RecordingSink::default());
+        let (service, _socket) = LspService::new(|client| {
+            ReifyLanguageServer::with_sink(client, sink.clone())
+        });
+        let server = service.inner();
+        let uri = test_uri();
+        let source = reify_test_support::bracket_source();
+
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: source.to_string(),
+                },
+            })
+            .await;
+
+        let calls = sink.take_calls();
+        assert_eq!(calls.len(), 1, "sink should receive exactly one publish_diagnostics call");
+        assert_eq!(calls[0].0, uri, "sink should receive the correct URI");
+        assert_eq!(calls[0].2, Some(1), "sink should receive version 1");
     }
 
     #[tokio::test]
