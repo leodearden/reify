@@ -437,7 +437,7 @@ impl ConstraintSolver for DimensionalSolver {
         // Configure and run Nelder-Mead
         let solver: NelderMead<Vec<f64>, f64> = NelderMead::new(simplex)
             .with_sd_tolerance(1e-15)
-            .unwrap_or_else(|_| NelderMead::new(vec![initial.clone()]));
+            .expect("sd_tolerance 1e-15 is always valid");
 
         let executor = Executor::new(cost_fn, solver)
             .configure(|state| state.max_iters(MAX_ITERS));
