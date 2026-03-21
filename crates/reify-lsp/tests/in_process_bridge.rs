@@ -81,3 +81,51 @@ async fn did_open_and_completion_returns_items() {
         "completion should return non-empty items for bracket source"
     );
 }
+
+#[tokio::test]
+async fn hover_returns_info_for_known_symbol() {
+    let lsp = InProcessLsp::new();
+
+    lsp.handle_request("initialize", json!({}))
+        .await
+        .unwrap();
+    lsp.handle_request("initialized", json!({}))
+        .await
+        .unwrap();
+
+    let source = reify_test_support::bracket_source();
+    lsp.handle_request(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": "file:///test.ri",
+                "languageId": "reify",
+                "version": 1,
+                "text": source
+            }
+        }),
+    )
+    .await
+    .unwrap();
+
+    let result = lsp
+        .handle_request(
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": "file:///test.ri" },
+                "position": { "line": 1, "character": 10 }
+            }),
+        )
+        .await
+        .expect("hover should succeed");
+
+    // Hover should return non-null info for 'width' parameter
+    assert!(
+        !result.is_null(),
+        "hover should return info for known symbol, got null"
+    );
+    assert!(
+        result["contents"].is_object() || result["contents"].is_string() || result["contents"].is_array(),
+        "hover result should have contents"
+    );
+}
