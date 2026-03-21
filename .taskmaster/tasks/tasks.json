@@ -1652,13 +1652,13 @@
         "description": "Create file browser sidebar component in gui/src/panels/ — tree view of .ri files in the project directory, click to open in editor, visual indicator for currently open file. Create export dialog: modal with format selector (STEP, STL, 3MF), native file save dialog via Tauri dialog API, progress indicator during export, success/failure toast notification. Implement keyboard shortcuts: Ctrl+O (open file dialog), F5 (force re-evaluate), Ctrl+E (open export dialog), Ctrl+S (save — already handled by editor). Wire external file change detection: when file-changed event arrives from backend, show reload prompt in editor for modified files.",
         "details": "Modules: [gui/src/panels, gui/src]\nDependencies: 93\n\nExisting code context:\n- gui/src/bridge.ts has exportGeometry(format, path) wrapper and openFile(path)\n- gui/src-tauri/src/commands.rs has export command handler (STEP/STL already work)\n- gui/src/stores/editorStore.ts has openFile/closeFile/setActiveFile methods\n- Tauri dialog API (@tauri-apps/plugin-dialog) for native file dialogs\n- Backend event \"file-changed\" already defined in bridge.ts event listeners\n- gui/src-tauri/capabilities/default.json defines Tauri permissions\n\nMemory hints:\n- Search: \"exportGeometry\" in gui/src/bridge.ts\n- Search: \"file-changed\" in gui/src/bridge.ts for event listener\n- Search: \"@tauri-apps/plugin-dialog\" or \"dialog\" for Tauri dialog usage\n\nTests: File browser lists .ri files, export triggers bridge command with correct format, keyboard shortcut handlers fire, file-changed event shows reload prompt.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "93"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-21T07:48:23.473Z"
+        "updatedAt": "2026-03-21T08:21:06.057Z"
       },
       {
         "id": "98",
@@ -1666,20 +1666,20 @@
         "description": "Configure Tauri bundler for cross-platform distribution: macOS (.dmg), Linux (.AppImage and .deb), Windows (.msi). Set app identifier, name, version, icons. Add reify gui <file> subcommand to the reify-cli crate — launches the Tauri application with the specified .ri file or directory as initial input. Ensure OCCT is statically linked in the bundled binary (same as CLI builds). Smoke test: build distributable on Linux, verify it launches and loads a .ri file.",
         "details": "Modules: [gui/src-tauri, crates/reify-cli]\nDependencies: 93\n\nExisting code context:\n- gui/src-tauri/tauri.conf.json already has basic config (1400x900 window, dev port 1420)\n- gui/src-tauri/Cargo.toml has reify-gui crate with tauri dependencies\n- crates/reify-cli/src/main.rs has existing CLI subcommands (check, build, lsp)\n- OCCT static linking is configured in crates/reify-kernel-occt/build.rs\n- gui/src-tauri/src/main.rs already handles CLI args for initial file loading\n\nMemory hints:\n- Search: \"tauri.conf.json\" for existing bundler config\n- Search: \"Subcommand\" or \"clap\" in crates/reify-cli/src/main.rs for CLI structure\n- Search: \"bundle\" in gui/src-tauri/tauri.conf.json\n- Entity: reify-cli crate\n\nTests: Bundler config produces output artifact, CLI arg --help shows gui subcommand, .ri file path is passed through to engine session.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "93"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-21T07:49:58.135Z"
+        "updatedAt": "2026-03-21T08:27:42.986Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-21T08:01:28.246Z",
+      "lastModified": "2026-03-21T08:27:42.986Z",
       "taskCount": 98,
-      "completedCount": 81,
+      "completedCount": 83,
       "tags": [
         "master"
       ]

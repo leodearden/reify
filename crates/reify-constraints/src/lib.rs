@@ -1,12 +1,15 @@
 mod classifier;
 mod decompose;
 mod registry;
+mod slvs_sys;
 mod solver;
+mod solvespace;
 
 pub use classifier::ConstraintClassifier;
 pub use decompose::{decompose_into_components, SubProblem};
 pub use registry::SolverRegistry;
 pub use solver::DimensionalSolver;
+pub use solvespace::SolveSpaceSolver;
 
 use reify_types::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Diagnostic,
