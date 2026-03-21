@@ -120,8 +120,8 @@
       "id": "step-12",
       "type": "test",
       "description": "Final integration verification: run `cargo test -p reify-cli` to ensure all CLI tests pass (smoke, gui, build, check tests). Run `cargo check -p reify-gui --features gui` to verify GUI crate compiles with bundler config changes. Verify all tests green.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "46dea4f"
     }
   ],
   "design_decisions": [
