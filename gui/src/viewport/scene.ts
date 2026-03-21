@@ -18,6 +18,8 @@ export interface SceneContext {
   renderer: WebGLRenderer;
   resize: (width: number, height: number) => void;
   adjustClipping: (sceneBounds: Box3) => void;
+  grid: GridHelper;
+  axes: AxesHelper;
 }
 
 /**
@@ -88,5 +90,5 @@ export function createScene(
     camera.updateProjectionMatrix();
   }
 
-  return { scene, camera, renderer, resize, adjustClipping };
+  return { scene, camera, renderer, resize, adjustClipping, grid, axes };
 }

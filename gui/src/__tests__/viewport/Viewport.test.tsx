@@ -44,6 +44,9 @@ const mockMeshSync = vi.fn();
 const mockMeshDispose = vi.fn();
 const mockMeshGetSceneMeshes = vi.fn(() => new Map());
 
+const mockGrid = { type: 'GridHelper', visible: true };
+const mockAxes = { type: 'AxesHelper', visible: true };
+
 vi.mock('../../viewport/scene', () => ({
   createScene: vi.fn(() => ({
     scene: { type: 'Scene' },
@@ -56,6 +59,8 @@ vi.mock('../../viewport/scene', () => ({
     },
     resize: mockResize,
     adjustClipping: vi.fn(),
+    grid: mockGrid,
+    axes: mockAxes,
   })),
 }));
 
@@ -112,6 +117,8 @@ beforeEach(() => {
   rafCallbacks = [];
   rafIdCounter = 1;
   controlsListeners = {};
+  mockGrid.visible = true;
+  mockAxes.visible = true;
 });
 
 describe('Viewport', () => {
@@ -328,6 +335,97 @@ describe('Viewport', () => {
     // createControls mock returns { controls: { addEventListener, removeEventListener }, ... }
     expect(opts.controls).toBeDefined();
     expect(typeof opts.controls.addEventListener).toBe('function');
+  });
+
+  it('calls fitToViewRef callback with a function on mount', () => {
+    const fitToViewRef = vi.fn();
+    render(() => <Viewport meshes={{}} fitToViewRef={fitToViewRef} />);
+    expect(fitToViewRef).toHaveBeenCalledTimes(1);
+    expect(typeof fitToViewRef.mock.calls[0][0]).toBe('function');
+  });
+
+  it('fitToViewRef function delegates to selection.fitToView', () => {
+    let capturedFn: (() => void) | undefined;
+    const fitToViewRef = vi.fn((fn: () => void) => {
+      capturedFn = fn;
+    });
+    render(() => <Viewport meshes={{}} fitToViewRef={fitToViewRef} />);
+
+    expect(capturedFn).toBeDefined();
+    mockSelectionFitToView.mockClear();
+    capturedFn!();
+    expect(mockSelectionFitToView).toHaveBeenCalled();
+  });
+
+  it('renders a grid toggle button with data-testid toggle-grid', () => {
+    render(() => <Viewport meshes={{}} />);
+    const btn = screen.getByTestId('toggle-grid');
+    expect(btn).toBeTruthy();
+  });
+
+  it('clicking toggle-grid button toggles grid and axes visible state', () => {
+    render(() => <Viewport meshes={{}} />);
+    const btn = screen.getByTestId('toggle-grid');
+
+    expect(mockGrid.visible).toBe(true);
+    expect(mockAxes.visible).toBe(true);
+
+    fireEvent.click(btn);
+
+    expect(mockGrid.visible).toBe(false);
+    expect(mockAxes.visible).toBe(false);
+
+    fireEvent.click(btn);
+
+    expect(mockGrid.visible).toBe(true);
+    expect(mockAxes.visible).toBe(true);
+  });
+
+  it('tooltip style top/left update on mousemove within container', () => {
+    render(() => <Viewport meshes={{}} hoveredEntity="bracket/plate" />);
+    const container = screen.getByTestId('viewport-container');
+    const tooltip = screen.getByTestId('viewport-tooltip');
+
+    // Simulate container with known position
+    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({
+      top: 100, left: 200, width: 800, height: 600,
+      right: 1000, bottom: 700, x: 200, y: 100, toJSON: () => {},
+    });
+
+    // Simulate mouse move to (350, 250) in screen coordinates
+    // Container is at (200, 100), so relative position is (150, 150)
+    fireEvent.mouseMove(container, { clientX: 350, clientY: 250 });
+
+    // Tooltip should be positioned near the pointer (with offset)
+    const top = parseInt(tooltip.style.top, 10);
+    const left = parseInt(tooltip.style.left, 10);
+
+    // Should be near pointer position, not at fixed 8px/8px
+    expect(top).toBeGreaterThan(100);
+    expect(left).toBeGreaterThan(100);
+  });
+
+  it('tooltip is not positioned at fixed 8px/8px after a mousemove event', () => {
+    render(() => <Viewport meshes={{}} hoveredEntity="bracket/plate" />);
+    const container = screen.getByTestId('viewport-container');
+    const tooltip = screen.getByTestId('viewport-tooltip');
+
+    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({
+      top: 0, left: 0, width: 800, height: 600,
+      right: 800, bottom: 600, x: 0, y: 0, toJSON: () => {},
+    });
+
+    fireEvent.mouseMove(container, { clientX: 400, clientY: 300 });
+
+    // After a mouse move, tooltip should NOT be at the initial fixed position
+    expect(tooltip.style.top).not.toBe('8px');
+    expect(tooltip.style.left).not.toBe('8px');
+  });
+
+  it('tooltip still shows the hoveredEntity text content', () => {
+    render(() => <Viewport meshes={{}} hoveredEntity="bracket/plate" />);
+    const tooltip = screen.getByTestId('viewport-tooltip');
+    expect(tooltip.textContent).toContain('bracket/plate');
   });
 });
 

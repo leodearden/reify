@@ -67,6 +67,51 @@ describe('useKeyboardShortcuts', () => {
     }
   });
 
+  it('dispatching ? key calls onHelp callback', () => {
+    const onHelp = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onHelp });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '?', bubbles: true }),
+    );
+    expect(onHelp).toHaveBeenCalledTimes(1);
+  });
+
+  it('dispatching ? when target is an <input> does NOT call onHelp', () => {
+    const onHelp = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onHelp });
+      return d;
+    });
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: '?', bubbles: true }),
+      );
+      expect(onHelp).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
+
+  it('dispatching ? with Ctrl held does NOT call onHelp', () => {
+    const onHelp = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onHelp });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '?', ctrlKey: true, bubbles: true }),
+    );
+    expect(onHelp).not.toHaveBeenCalled();
+  });
+
   it('after cleanup, dispatching shortcuts does nothing (listeners removed)', () => {
     const onOpen = vi.fn();
     dispose = createRoot((d) => {

@@ -4,6 +4,7 @@ export interface KeyboardShortcutCallbacks {
   onOpen?: () => void;
   onReEvaluate?: () => void;
   onExportDialog?: () => void;
+  onHelp?: () => void;
 }
 
 /**
@@ -41,6 +42,13 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
     if (e.ctrlKey && e.key === 'e') {
       e.preventDefault();
       callbacks.onExportDialog?.();
+      return;
+    }
+
+    // ? — Toggle keyboard help (only without modifier keys)
+    if (e.key === '?' && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      callbacks.onHelp?.();
       return;
     }
   }

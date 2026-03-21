@@ -13,6 +13,7 @@ import {
   ReloadPrompt,
 } from './panels';
 import { Splitter } from './components/Splitter';
+import { KeyboardHelp } from './components/KeyboardHelp';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { createToast } from './hooks/useToast';
 import { createEngineStore } from './stores/engineStore';
@@ -23,6 +24,7 @@ import {
   setParameter as bridgeSetParameter,
   exportGeometry as bridgeExportGeometry,
   pickSavePath,
+  pickOpenPath,
   updateSource as bridgeUpdateSource,
   openFile as bridgeOpenFile,
   onFileChanged,
@@ -36,6 +38,7 @@ import {
 } from './navigation';
 import type { ExportFormat, FileData, SourceLocation, ConstraintData } from './types';
 import { applyTheme } from './theme';
+import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
 import styles from './App.module.css';
 
 const MIN_PANEL_WIDTH = 150;
@@ -51,15 +54,31 @@ const App: Component = () => {
     onEntityRemoved: (id) => selectionStore.clearIfRemoved(id),
   });
 
-  const [editorWidth, setEditorWidth] = createSignal(DEFAULT_EDITOR_WIDTH);
-  const [sideWidth, setSideWidth] = createSignal(DEFAULT_SIDE_WIDTH);
-  const [propertyHeight, setPropertyHeight] = createSignal(DEFAULT_PROPERTY_HEIGHT);
+  const savedLayout = loadPanelLayout();
+  const [editorWidth, setEditorWidth] = createSignal(savedLayout?.editorWidth ?? DEFAULT_EDITOR_WIDTH);
+  const [sideWidth, setSideWidth] = createSignal(savedLayout?.sideWidth ?? DEFAULT_SIDE_WIDTH);
+  const [propertyHeight, setPropertyHeight] = createSignal(savedLayout?.propertyHeight ?? DEFAULT_PROPERTY_HEIGHT);
+
+  // Debounced persistence of panel layout dimensions
+  let saveTimeout: ReturnType<typeof setTimeout> | undefined;
+  createEffect(() => {
+    const layout = {
+      editorWidth: editorWidth(),
+      sideWidth: sideWidth(),
+      propertyHeight: propertyHeight(),
+    };
+    clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(() => savePanelLayout(layout), 300);
+  });
 
   // Init phase: loading → ready | error
   const [initPhase, setInitPhase] = createSignal<'loading' | 'ready' | 'error'>('loading');
 
   // Export dialog state
   const [showExportDialog, setShowExportDialog] = createSignal(false);
+
+  // Keyboard help overlay state
+  const [showHelp, setShowHelp] = createSignal(false);
   const [exporting, setExporting] = createSignal(false);
 
   // Toast state (centralized via createToast hook)
@@ -71,6 +90,11 @@ const App: Component = () => {
   // Navigation state
   const [scrollToLocation, setScrollToLocation] = createSignal<SourceLocation | null>(null);
   let flyToEntityFn: ((entityPath: string) => void) | undefined;
+  let fitToViewFn: (() => void) | undefined;
+
+  // Refs for splitter max-width clamping
+  let mainRef: HTMLDivElement | undefined;
+  let sidePanelRef: HTMLDivElement | undefined;
 
   // Reactively update window title based on active file and eval status
   createEffect(() => {
@@ -92,9 +116,15 @@ const App: Component = () => {
 
   // Keyboard shortcuts
   useKeyboardShortcuts({
-    onOpen: () => {
-      // Open file via bridge (placeholder — would use native dialog in full app)
-      // For now, this is a stub that can be wired to a native file picker
+    onOpen: async () => {
+      try {
+        const path = await pickOpenPath();
+        if (!path) return;
+        const fileData = await bridgeOpenFile(path);
+        editorStore.openFile(fileData);
+      } catch (err) {
+        toast.showToast(`Open file failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      }
     },
     onReEvaluate: () => {
       // Re-evaluate the active file
@@ -110,6 +140,9 @@ const App: Component = () => {
     },
     onExportDialog: () => {
       setShowExportDialog((v) => !v);
+    },
+    onHelp: () => {
+      setShowHelp((v) => !v);
     },
   });
 
@@ -226,7 +259,7 @@ const App: Component = () => {
   }
 
   function handleFitToView() {
-    // Fit-to-view stub — will be wired to viewport camera reset in a future task
+    fitToViewFn?.();
   }
 
   function handleReload() {
@@ -260,15 +293,21 @@ const App: Component = () => {
   }
 
   function handleLeftResize(delta: number) {
-    setEditorWidth((w) => Math.max(MIN_PANEL_WIDTH, w + delta));
+    const cw = mainRef?.clientWidth ?? 0;
+    const maxWidth = cw > 0 ? cw - sideWidth() - MIN_PANEL_WIDTH - 8 : Infinity;
+    setEditorWidth((w) => Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, w + delta)));
   }
 
   function handleRightResize(delta: number) {
-    setSideWidth((w) => Math.max(MIN_PANEL_WIDTH, w - delta));
+    const cw = mainRef?.clientWidth ?? 0;
+    const maxWidth = cw > 0 ? cw - editorWidth() - MIN_PANEL_WIDTH - 8 : Infinity;
+    setSideWidth((w) => Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, w - delta)));
   }
 
   function handleSideResize(delta: number) {
-    setPropertyHeight((h) => Math.max(MIN_PANEL_HEIGHT, h + delta));
+    const ch = sidePanelRef?.clientHeight ?? 0;
+    const maxHeight = ch > 0 ? ch - MIN_PANEL_HEIGHT - 4 : Infinity;
+    setPropertyHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
   }
 
   function handleViewportSelect(entityPath: string | null) {
@@ -301,6 +340,9 @@ const App: Component = () => {
 
   return (
     <>
+      <Show when={showHelp()}>
+        <KeyboardHelp onClose={() => setShowHelp(false)} />
+      </Show>
       <Show when={initPhase() === 'loading'}>
         <div data-testid="app-loading" class={styles.loading}>
           <div class={styles.spinner} />
@@ -322,6 +364,7 @@ const App: Component = () => {
             onDismiss={handleDismissReload}
           />
           <div
+            ref={mainRef}
             class={styles.main}
             style={{ 'grid-template-columns': `${editorWidth()}px 4px 1fr 4px ${sideWidth()}px` }}
           >
@@ -339,13 +382,17 @@ const App: Component = () => {
               <Viewport
                 meshes={engineStore.state.meshes}
                 onSelect={handleViewportSelect}
+                onHover={(path) => selectionStore.hoverEntity(path)}
                 selectedEntity={selectionStore.state.selectedEntity}
                 hoveredEntity={selectionStore.state.hoveredEntity}
+                evalStatus={engineStore.state.evalStatus}
                 flyToEntityRef={(fn) => { flyToEntityFn = fn; }}
+                fitToViewRef={(fn) => { fitToViewFn = fn; }}
               />
             </div>
             <Splitter orientation="vertical" onResize={handleRightResize} data-testid="splitter-right" />
             <div
+              ref={sidePanelRef}
               data-testid="side-panel"
               class={styles.sidePanel}
               style={{ 'grid-template-rows': `${propertyHeight()}px 4px 1fr` }}

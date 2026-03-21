@@ -78,11 +78,13 @@ vi.mock('three', () => {
 
   class MockGridHelper {
     type = 'GridHelper';
+    visible = true;
     constructor(public size?: number, public divisions?: number) {}
   }
 
   class MockAxesHelper {
     type = 'AxesHelper';
+    visible = true;
     constructor(public size?: number) {}
   }
 
@@ -251,6 +253,24 @@ describe('createScene', () => {
     expect(camera.near).toBeGreaterThan(0);
     expect(camera.far).toBeGreaterThan(camera.near);
     expect(camera.updateProjectionMatrix).toHaveBeenCalled();
+  });
+
+  it('returns grid property that is a GridHelper instance', () => {
+    const result = setup();
+    expect(result).toHaveProperty('grid');
+    expect(result.grid.type).toBe('GridHelper');
+  });
+
+  it('returns axes property that is an AxesHelper instance', () => {
+    const result = setup();
+    expect(result).toHaveProperty('axes');
+    expect(result.axes.type).toBe('AxesHelper');
+  });
+
+  it('grid and axes have a visible property (initially true)', () => {
+    const result = setup();
+    expect(result.grid).toHaveProperty('visible');
+    expect(result.axes).toHaveProperty('visible');
   });
 
   it('adjustClipping with empty bounds is a no-op (V-11)', () => {

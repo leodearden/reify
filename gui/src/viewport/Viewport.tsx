@@ -1,4 +1,4 @@
-import { onMount, onCleanup, createEffect, Show } from 'solid-js';
+import { onMount, onCleanup, createEffect, createSignal, Show } from 'solid-js';
 import type { MeshData, EvaluationStatus } from '../types';
 import { Box3 } from 'three';
 import { createScene } from './scene';
@@ -15,19 +15,22 @@ export interface ViewportProps {
   evalStatus?: EvaluationStatus;
   onFitToView?: () => void;
   flyToEntityRef?: (fn: (entityPath: string) => void) => void;
+  fitToViewRef?: (fn: () => void) => void;
 }
 
 export function Viewport(props: ViewportProps) {
   let canvasRef!: HTMLCanvasElement;
   let containerRef!: HTMLDivElement;
   let doFitToView: (() => void) | undefined;
+  const [showGrid, setShowGrid] = createSignal(true);
+  const [pointerPos, setPointerPos] = createSignal({ x: 8, y: 8 });
 
   onMount(() => {
     const rect = containerRef.getBoundingClientRect();
     const width = rect.width || 800;
     const height = rect.height || 600;
 
-    const { scene, camera, renderer, resize, adjustClipping } = createScene(canvasRef, width, height);
+    const { scene, camera, renderer, resize, adjustClipping, grid, axes } = createScene(canvasRef, width, height);
     const controls = createControls(camera, renderer.domElement);
     const meshManager = createMeshManager(scene);
 
@@ -44,6 +47,7 @@ export function Viewport(props: ViewportProps) {
 
     doFitToView = () => selection.fitToView();
     props.flyToEntityRef?.((entityPath: string) => selection.flyToEntity(entityPath));
+    props.fitToViewRef?.(() => selection.fitToView());
 
     // Render-on-demand: keep rAF loop alive (for OrbitControls damping)
     // but only call renderer.render when something has changed.
@@ -54,6 +58,14 @@ export function Viewport(props: ViewportProps) {
 
     // OrbitControls 'change' event fires during camera movement (including damping)
     controls.controls.addEventListener('change', requestRender);
+
+    // Sync grid/axes visibility
+    createEffect(() => {
+      const visible = showGrid();
+      grid.visible = visible;
+      axes.visible = visible;
+      requestRender();
+    });
 
     // Sync meshes reactively
     createEffect(() => {
@@ -128,6 +140,13 @@ export function Viewport(props: ViewportProps) {
       ref={containerRef}
       data-testid="viewport-container"
       style={{ width: '100%', height: '100%', position: 'relative' }}
+      onMouseMove={(e) => {
+        const rect = containerRef.getBoundingClientRect();
+        setPointerPos({
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top,
+        });
+      }}
     >
       <canvas ref={canvasRef} data-testid="viewport-canvas" tabindex="0" aria-label="3D viewport" />
 
@@ -137,8 +156,8 @@ export function Viewport(props: ViewportProps) {
           data-testid="viewport-tooltip"
           style={{
             position: 'absolute',
-            top: '8px',
-            left: '8px',
+            top: `${pointerPos().y + 16}px`,
+            left: `${pointerPos().x + 16}px`,
             padding: '4px 8px',
             'background-color': 'var(--reify-surface, #2a2a3a)',
             color: 'var(--reify-text, #cdd6f4)',
@@ -172,6 +191,29 @@ export function Viewport(props: ViewportProps) {
           Evaluating...
         </div>
       </Show>
+
+      {/* Grid toggle button */}
+      <button
+        data-testid="toggle-grid"
+        onClick={() => setShowGrid((v) => !v)}
+        style={{
+          position: 'absolute',
+          bottom: '12px',
+          right: '72px',
+          padding: '6px 10px',
+          'background-color': 'var(--reify-surface, #2a2a3a)',
+          color: 'var(--reify-text, #cdd6f4)',
+          border: '1px solid var(--reify-border, #45475a)',
+          'border-radius': '4px',
+          cursor: 'pointer',
+          'font-size': '12px',
+          'z-index': '10',
+          opacity: showGrid() ? '1' : '0.5',
+        }}
+        title="Toggle grid and axes"
+      >
+        Grid
+      </button>
 
       {/* Fit-to-view button */}
       <button

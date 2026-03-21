@@ -12,12 +12,17 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 // Capture Viewport props for navigation tests
 let capturedViewportProps: any = {};
+const mockViewportFitToView = vi.fn();
 vi.mock('../viewport', () => ({
   Viewport: (props: any) => {
     capturedViewportProps = props;
     // Invoke flyToEntityRef with a mock function if provided
     if (props.flyToEntityRef) {
       props.flyToEntityRef((_path: string) => {});
+    }
+    // Invoke fitToViewRef with a trackable mock function if provided
+    if (props.fitToViewRef) {
+      props.fitToViewRef(mockViewportFitToView);
     }
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'viewport-container');
@@ -53,6 +58,7 @@ vi.mock('../bridge', () => ({
   setParameter: vi.fn().mockResolvedValue(undefined),
   exportGeometry: vi.fn().mockResolvedValue(undefined),
   pickSavePath: vi.fn().mockResolvedValue('/user/chosen/path.step'),
+  pickOpenPath: vi.fn().mockResolvedValue(null),
   updateSource: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
   getSourceLocation: vi.fn().mockResolvedValue({ file: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
@@ -69,10 +75,13 @@ vi.mock('../bridge', () => ({
 
 import App from '../App';
 import * as bridge from '../bridge';
+import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 
 beforeEach(() => {
   vi.clearAllMocks();
   capturedViewportProps = {};
+  mockViewportFitToView.mockClear();
+  localStorage.clear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
@@ -1060,6 +1069,199 @@ describe('App initApp concurrent execution guard', () => {
   });
 });
 
+describe('App layout persistence', () => {
+  it('panel widths initialize from localStorage when valid data exists', async () => {
+    const layout = { editorWidth: 400, sideWidth: 350, propertyHeight: 250 };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(layout));
+
+    await renderAndWaitForReady();
+
+    const main = screen.getByTestId('app-layout').querySelector('[class*="main"]') as HTMLElement;
+    expect(main).toBeTruthy();
+    // Grid columns should reflect stored values
+    expect(main.style.gridTemplateColumns).toContain('400px');
+    expect(main.style.gridTemplateColumns).toContain('350px');
+  });
+
+  it('missing localStorage falls back to defaults (300/300/200)', async () => {
+    await renderAndWaitForReady();
+
+    const main = screen.getByTestId('app-layout').querySelector('[class*="main"]') as HTMLElement;
+    expect(main).toBeTruthy();
+    expect(main.style.gridTemplateColumns).toContain('300px');
+    // Side panel should also default to 300px
+    const cols = main.style.gridTemplateColumns;
+    // Should have 300px ... 300px (editor and side panel widths)
+    const matches = cols.match(/(\d+)px/g);
+    expect(matches).toContain('300px');
+  });
+
+  it('resizing left splitter writes updated layout to localStorage', async () => {
+    await renderAndWaitForReady();
+
+    const splitter = screen.getByTestId('splitter-left');
+
+    // Drag right by 50px
+    fireEvent.mouseDown(splitter, { clientX: 300, clientY: 200 });
+    fireEvent.mouseMove(document, { clientX: 350, clientY: 200 });
+    fireEvent.mouseUp(document);
+
+    // Wait for debounced save (300ms debounce + margin)
+    await new Promise((r) => setTimeout(r, 400));
+
+    const stored = localStorage.getItem(STORAGE_KEY);
+    expect(stored).not.toBeNull();
+    const parsed = JSON.parse(stored!);
+    expect(parsed.editorWidth).toBe(350);
+  });
+});
+
+describe('App viewport prop wiring', () => {
+  it('capturedViewportProps.onHover is a function that updates selectionStore', async () => {
+    await renderAndWaitForReady();
+
+    expect(capturedViewportProps.onHover).toBeDefined();
+    expect(typeof capturedViewportProps.onHover).toBe('function');
+
+    // Calling onHover should update selectionStore.hoveredEntity
+    capturedViewportProps.onHover('bracket/hole');
+
+    // The hoveredEntity should now be passed back to Viewport (verified via capturedViewportProps)
+    await waitFor(() => {
+      expect(capturedViewportProps.hoveredEntity).toBe('bracket/hole');
+    });
+  });
+
+  it('capturedViewportProps.evalStatus is defined and reflects engine store state', async () => {
+    await renderAndWaitForReady();
+
+    expect(capturedViewportProps.evalStatus).toBeDefined();
+    // Default engine store eval status is idle
+    expect(capturedViewportProps.evalStatus.phase).toBe('idle');
+  });
+});
+
+describe('App splitter max bounds', () => {
+  it('dragging left splitter far right clamps editor width so viewport and side panel remain visible', async () => {
+    await renderAndWaitForReady();
+    const main = screen.getByTestId('app-layout').querySelector('[class*="main"]') as HTMLElement;
+    expect(main).toBeTruthy();
+
+    // Mock container width (jsdom has 0 by default)
+    Object.defineProperty(main, 'clientWidth', { value: 1200, configurable: true });
+
+    const splitter = screen.getByTestId('splitter-left');
+
+    // Drag right by a huge amount — should be clamped
+    fireEvent.mouseDown(splitter, { clientX: 300, clientY: 200 });
+    fireEvent.mouseMove(document, { clientX: 1500, clientY: 200 });
+    fireEvent.mouseUp(document);
+
+    // Editor width should be clamped: containerWidth(1200) - sideWidth(300) - MIN_PANEL_WIDTH(150) - 8(splitters)
+    // = 742. So editorWidth should be <= 742
+    const cols = main.style.gridTemplateColumns;
+    const editorPx = parseInt(cols.split('px')[0], 10);
+    expect(editorPx).toBeLessThanOrEqual(1200 - 300 - 150 - 8);
+    expect(editorPx).toBeGreaterThan(0);
+  });
+
+  it('dragging right splitter far left clamps side panel width similarly', async () => {
+    await renderAndWaitForReady();
+    const main = screen.getByTestId('app-layout').querySelector('[class*="main"]') as HTMLElement;
+    expect(main).toBeTruthy();
+
+    Object.defineProperty(main, 'clientWidth', { value: 1200, configurable: true });
+
+    const splitter = screen.getByTestId('splitter-right');
+
+    // Drag left by a huge amount (negative delta for right splitter increases sideWidth)
+    fireEvent.mouseDown(splitter, { clientX: 900, clientY: 200 });
+    fireEvent.mouseMove(document, { clientX: 100, clientY: 200 });
+    fireEvent.mouseUp(document);
+
+    // Side panel width should be clamped: containerWidth(1200) - editorWidth(300) - MIN_PANEL_WIDTH(150) - 8
+    // = 742
+    const cols = main.style.gridTemplateColumns;
+    const parts = cols.match(/(\d+)px/g)!;
+    const sidePx = parseInt(parts[parts.length - 1], 10);
+    expect(sidePx).toBeLessThanOrEqual(1200 - 300 - 150 - 8);
+    expect(sidePx).toBeGreaterThan(0);
+  });
+
+  it('dragging side-panel splitter downward clamps property height', async () => {
+    await renderAndWaitForReady();
+    const sidePanel = screen.getByTestId('side-panel');
+    const splitter = sidePanel.querySelector('[data-testid="splitter-side"]') as HTMLElement;
+    expect(splitter).toBeTruthy();
+
+    // Mock side panel height
+    Object.defineProperty(sidePanel, 'clientHeight', { value: 600, configurable: true });
+
+    // Drag down by a huge amount
+    fireEvent.mouseDown(splitter, { clientX: 500, clientY: 200 });
+    fireEvent.mouseMove(document, { clientX: 500, clientY: 1000 });
+    fireEvent.mouseUp(document);
+
+    // Property height should be clamped so constraint panel remains visible
+    // containerHeight(600) - MIN_PANEL_HEIGHT(80) - 4(splitter) = 516
+    const rows = sidePanel.style.gridTemplateRows;
+    const heightPx = parseInt(rows.split('px')[0], 10);
+    expect(heightPx).toBeLessThanOrEqual(600 - 80 - 4);
+    expect(heightPx).toBeGreaterThan(0);
+  });
+});
+
+describe('App fit-to-view wiring', () => {
+  it('capturedViewportProps.fitToViewRef is defined', async () => {
+    await renderAndWaitForReady();
+    expect(capturedViewportProps.fitToViewRef).toBeDefined();
+    expect(typeof capturedViewportProps.fitToViewRef).toBe('function');
+  });
+
+  it('Toolbar Fit to View click triggers viewport fitToView via fitToViewRef', async () => {
+    await renderAndWaitForReady();
+
+    // The Viewport mock invokes fitToViewRef with mockViewportFitToView.
+    // App stores it. Clicking Fit to View in Toolbar should call it.
+    mockViewportFitToView.mockClear();
+
+    const fitBtn = screen.getByText('Fit to View');
+    fireEvent.click(fitBtn);
+
+    expect(mockViewportFitToView).toHaveBeenCalled();
+  });
+});
+
+describe('App Ctrl+O open file', () => {
+  it('dispatching Ctrl+O triggers pickOpenPath then openFile', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [], values: [], constraints: [],
+      files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+    });
+
+    // Mock pickOpenPath to return a path
+    vi.mocked((bridge as any).pickOpenPath).mockResolvedValue('/project/other.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/other.ri', content: 'structure Other {}' });
+
+    render(() => <App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // Press Ctrl+O
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+
+    // Should call pickOpenPath, then openFile with the returned path
+    await waitFor(() => {
+      expect((bridge as any).pickOpenPath).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      expect(bridge.openFile).toHaveBeenCalledWith('/project/other.ri');
+    });
+  });
+});
+
 describe('App end-to-end toast integration', () => {
   it('App renders, loads state (ready), then setParameter failure shows toast with correct message', async () => {
     const rejectHandler = (e: any) => e.preventDefault();
@@ -1108,5 +1310,53 @@ describe('App end-to-end toast integration', () => {
     } finally {
       window.removeEventListener('unhandledrejection', rejectHandler);
     }
+  });
+});
+
+describe('App keyboard help overlay', () => {
+  it('pressing ? key shows keyboard help overlay', async () => {
+    await renderAndWaitForReady();
+
+    // Help overlay should not be visible initially
+    expect(screen.queryByTestId('keyboard-help')).toBeNull();
+
+    // Press ? key
+    fireEvent.keyDown(document, { key: '?' });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('keyboard-help')).toBeTruthy();
+    });
+  });
+
+  it('pressing ? again hides keyboard help (toggle behavior)', async () => {
+    await renderAndWaitForReady();
+
+    // Show help
+    fireEvent.keyDown(document, { key: '?' });
+    await waitFor(() => {
+      expect(screen.getByTestId('keyboard-help')).toBeTruthy();
+    });
+
+    // Press ? again to hide
+    fireEvent.keyDown(document, { key: '?' });
+    await waitFor(() => {
+      expect(screen.queryByTestId('keyboard-help')).toBeNull();
+    });
+  });
+
+  it('pressing Escape while help is shown hides it', async () => {
+    await renderAndWaitForReady();
+
+    // Show help
+    fireEvent.keyDown(document, { key: '?' });
+    await waitFor(() => {
+      expect(screen.getByTestId('keyboard-help')).toBeTruthy();
+    });
+
+    // Press Escape to close
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByTestId('keyboard-help')).toBeNull();
+    });
   });
 });
