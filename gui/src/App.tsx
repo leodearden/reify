@@ -86,6 +86,10 @@ const App: Component = () => {
   const [scrollToLocation, setScrollToLocation] = createSignal<SourceLocation | null>(null);
   let flyToEntityFn: ((entityPath: string) => void) | undefined;
 
+  // Refs for splitter max-width clamping
+  let mainRef: HTMLDivElement | undefined;
+  let sidePanelRef: HTMLDivElement | undefined;
+
   // Reactively update window title based on active file and eval status
   createEffect(() => {
     const activeFile = editorStore.state.activeFile;
@@ -274,15 +278,21 @@ const App: Component = () => {
   }
 
   function handleLeftResize(delta: number) {
-    setEditorWidth((w) => Math.max(MIN_PANEL_WIDTH, w + delta));
+    const cw = mainRef?.clientWidth ?? 0;
+    const maxWidth = cw > 0 ? cw - sideWidth() - MIN_PANEL_WIDTH - 8 : Infinity;
+    setEditorWidth((w) => Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, w + delta)));
   }
 
   function handleRightResize(delta: number) {
-    setSideWidth((w) => Math.max(MIN_PANEL_WIDTH, w - delta));
+    const cw = mainRef?.clientWidth ?? 0;
+    const maxWidth = cw > 0 ? cw - editorWidth() - MIN_PANEL_WIDTH - 8 : Infinity;
+    setSideWidth((w) => Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, w - delta)));
   }
 
   function handleSideResize(delta: number) {
-    setPropertyHeight((h) => Math.max(MIN_PANEL_HEIGHT, h + delta));
+    const ch = sidePanelRef?.clientHeight ?? 0;
+    const maxHeight = ch > 0 ? ch - MIN_PANEL_HEIGHT - 4 : Infinity;
+    setPropertyHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
   }
 
   function handleViewportSelect(entityPath: string | null) {
@@ -336,6 +346,7 @@ const App: Component = () => {
             onDismiss={handleDismissReload}
           />
           <div
+            ref={mainRef}
             class={styles.main}
             style={{ 'grid-template-columns': `${editorWidth()}px 4px 1fr 4px ${sideWidth()}px` }}
           >
@@ -360,6 +371,7 @@ const App: Component = () => {
             </div>
             <Splitter orientation="vertical" onResize={handleRightResize} data-testid="splitter-right" />
             <div
+              ref={sidePanelRef}
               data-testid="side-panel"
               class={styles.sidePanel}
               style={{ 'grid-template-rows': `${propertyHeight()}px 4px 1fr` }}
