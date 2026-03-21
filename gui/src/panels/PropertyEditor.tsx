@@ -90,12 +90,23 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     setEditValue(input.value);
   }
 
+  function isValidValue(value: string): boolean {
+    return value.trim() !== '' && !isNaN(parseFloat(value));
+  }
+
   function handleKeyDown(cellId: string, e: KeyboardEvent) {
     if (e.key === 'Enter') {
       const input = e.target as HTMLInputElement;
+      if (!isValidValue(input.value)) {
+        input.setAttribute('data-invalid', '');
+        return;
+      }
+      input.removeAttribute('data-invalid');
       props.onSetParameter(cellId, input.value);
       setEditingCellId(null);
+      escapingRef = true;
       input.blur();
+      escapingRef = false;
     } else if (e.key === 'Escape') {
       const input = e.target as HTMLInputElement;
       // Find the original prop value for this cell
@@ -112,7 +123,15 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   function handleBlur(cellId: string, e: FocusEvent) {
     if (escapingRef) return;
     const input = e.target as HTMLInputElement;
-    props.onSetParameter(cellId, input.value);
+    if (!isValidValue(input.value)) {
+      // Revert to prop value on blur with invalid input
+      const propValue = props.values[cellId]?.value ?? '';
+      input.value = propValue;
+      input.removeAttribute('data-invalid');
+    } else {
+      input.removeAttribute('data-invalid');
+      props.onSetParameter(cellId, input.value);
+    }
     setEditingCellId(null);
   }
 

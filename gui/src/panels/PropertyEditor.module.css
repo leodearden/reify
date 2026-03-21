@@ -115,6 +115,10 @@
   outline: none;
 }
 
+.valueInput[data-invalid] {
+  border-color: var(--reify-error, #f38ba8);
+}
+
 .valueReadonly {
   width: 70px;
   padding: 2px 4px;
