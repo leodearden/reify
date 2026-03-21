@@ -1,39 +1,35 @@
 .layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--reify-background, #1e1e2e);
+  color: var(--reify-text, #cdd6f4);
+}
+
+.main {
   display: grid;
   grid-template-columns: 300px 1fr 300px;
-  height: 100vh;
+  flex: 1;
   overflow: hidden;
 }
 
-.panel {
-  background: var(--reify-panel-bg, #2a2a3a);
-  border: 1px solid var(--reify-border, #45475a);
-  padding: 8px;
-  overflow: auto;
+.editorPanel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--reify-editor-bg, #1e1e2e);
+  border-right: 1px solid var(--reify-border, #45475a);
 }
 
-.panel h3 {
-  margin: 0 0 8px 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--reify-text-secondary, #a6adc8);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+.viewportPanel {
+  overflow: hidden;
+  background: var(--reify-viewport-bg, #181825);
 }
 
 .sidePanel {
   display: flex;
   flex-direction: column;
-  gap: 0;
-}
-
-.sidePanel .panel {
-  flex: 1;
-}
-
-.placeholder {
-  color: var(--reify-text-muted, #6c7086);
-  font-size: 13px;
-  padding: 16px;
-  text-align: center;
+  overflow: hidden;
+  border-left: 1px solid var(--reify-border, #45475a);
 }
