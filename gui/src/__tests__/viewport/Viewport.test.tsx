@@ -83,6 +83,7 @@ vi.mock('../../viewport/selection', () => ({
 }));
 
 import { Viewport } from '../../viewport';
+import { createSelection } from '../../viewport/selection';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -219,6 +220,19 @@ describe('Viewport', () => {
     expect(capturedFn).toBeDefined();
     capturedFn!('Bracket');
     expect(mockSelectionFlyToEntity).toHaveBeenCalledWith('Bracket');
+  });
+
+  it('passes controls to createSelection for orbit target updates', () => {
+    render(() => <Viewport meshes={{}} />);
+
+    // createSelection should have been called with controls from createControls
+    const mockCreateSelection = createSelection as unknown as ReturnType<typeof vi.fn>;
+    expect(mockCreateSelection).toHaveBeenCalledTimes(1);
+    const opts = mockCreateSelection.mock.calls[0][0];
+    expect(opts).toHaveProperty('controls');
+    // The controls value should be the OrbitControls instance from createControls mock
+    // createControls mock returns { controls: {}, ... }, so the passed value should be {}
+    expect(opts.controls).toEqual({});
   });
 });
 

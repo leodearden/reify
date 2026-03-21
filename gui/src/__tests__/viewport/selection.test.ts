@@ -79,6 +79,18 @@ vi.mock('three', () => {
       this.z = v.z;
       return this;
     }
+    sub(v: any) {
+      this.x -= v.x;
+      this.y -= v.y;
+      this.z -= v.z;
+      return this;
+    }
+    multiplyScalar(s: number) {
+      this.x *= s;
+      this.y *= s;
+      this.z *= s;
+      return this;
+    }
   }
 
   class MockVector2 {
@@ -136,6 +148,13 @@ vi.mock('three', () => {
     position = new MockVector3(5, 5, 5);
     lookAt = vi.fn();
     updateProjectionMatrix = vi.fn();
+    getWorldDirection = vi.fn((target: any) => {
+      // Default: looking along -Z axis (Three.js convention)
+      target.x = 0;
+      target.y = 0;
+      target.z = -1;
+      return target;
+    });
   }
 
   class MockBufferGeometry {
@@ -218,7 +237,12 @@ function createMockMesh(name: string): any {
   return mesh;
 }
 
-function setup(meshMap?: Map<string, any>) {
+function createMockControls() {
+  const target = { x: 0, y: 0, z: 0, copy: vi.fn((v: any) => { target.x = v.x; target.y = v.y; target.z = v.z; }) };
+  return { target };
+}
+
+function setup(meshMap?: Map<string, any>, controls?: { target: any }) {
   const scene = new Scene();
   const camera = new PerspectiveCamera();
   const domElement = createMockDomElement();
@@ -226,14 +250,19 @@ function setup(meshMap?: Map<string, any>) {
   const onHover = vi.fn();
   const onSelect = vi.fn();
 
-  const selection = createSelection({
+  const opts: any = {
     scene: scene as any,
     camera: camera as any,
     domElement,
     getMeshes,
     onHover,
     onSelect,
-  });
+  };
+  if (controls !== undefined) {
+    opts.controls = controls;
+  }
+
+  const selection = createSelection(opts);
 
   return { scene, camera, domElement, getMeshes, onHover, onSelect, selection };
 }
@@ -408,7 +437,7 @@ describe('createSelection', () => {
   });
 
   describe('click-based selection raycasting', () => {
-    it('calls onSelect with mesh.name on pointerdown intersection', () => {
+    it('calls onSelect with mesh.name on click (pointerdown+pointerup) intersection', () => {
       const meshA = createMockMesh('A');
       const meshMap = new Map([['A', meshA]]);
       const { domElement, onSelect } = setup(meshMap);
@@ -417,27 +446,33 @@ describe('createSelection', () => {
         { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
       ]);
 
-      const event = new MouseEvent('pointerdown', {
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
         clientX: 400,
         clientY: 300,
-      });
-      domElement.dispatchEvent(event);
+      }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 400,
+        clientY: 300,
+      }));
 
       expect(onSelect).toHaveBeenCalledWith('A');
     });
 
-    it('calls onSelect with null on pointerdown miss', () => {
+    it('calls onSelect with null on click miss', () => {
       const meshA = createMockMesh('A');
       const meshMap = new Map([['A', meshA]]);
       const { domElement, onSelect } = setup(meshMap);
 
       mockRaycasterIntersectObjects.mockReturnValueOnce([]);
 
-      const event = new MouseEvent('pointerdown', {
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
         clientX: 400,
         clientY: 300,
-      });
-      domElement.dispatchEvent(event);
+      }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 400,
+        clientY: 300,
+      }));
 
       expect(onSelect).toHaveBeenCalledWith(null);
     });
@@ -447,11 +482,14 @@ describe('createSelection', () => {
       const meshMap = new Map([['A', meshA]]);
       const { domElement } = setup(meshMap);
 
-      const event = new MouseEvent('pointerdown', {
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
         clientX: 400,
         clientY: 300,
-      });
-      domElement.dispatchEvent(event);
+      }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 400,
+        clientY: 300,
+      }));
 
       expect(mockRaycasterSetFromCamera).toHaveBeenCalledTimes(1);
       const ndcArg = mockRaycasterSetFromCamera.mock.calls[0][0];
@@ -520,6 +558,62 @@ describe('createSelection', () => {
       expect(lookAtArg.y).toBeCloseTo(0.5);
       expect(lookAtArg.z).toBeCloseTo(0.5);
     });
+
+    it('offsets camera along current view direction, not just Z axis', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection, camera } = setup(meshMap);
+
+      // Mock camera looking along -X axis (e.g., viewing from right side)
+      (camera as any).getWorldDirection.mockImplementation((target: any) => {
+        target.x = -1;
+        target.y = 0;
+        target.z = 0;
+        return target;
+      });
+
+      // Reset camera position
+      (camera as any).position.x = 0;
+      (camera as any).position.y = 0;
+      (camera as any).position.z = 0;
+
+      selection.fitToView();
+
+      // Camera should be offset along +X from center (opposite to view direction)
+      // center = (0.5, 0.5, 0.5), viewDir = (-1, 0, 0)
+      // position = center - viewDir * distance = (0.5 + distance, 0.5, 0.5)
+      const pos = (camera as any).position;
+      expect(pos.x).toBeGreaterThan(0.5); // offset along X, not Z
+      expect(pos.y).toBeCloseTo(0.5);
+      expect(pos.z).toBeCloseTo(0.5);
+    });
+
+    it('updates controls.target to bounding box center when controls provided', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const controls = createMockControls();
+      const { selection } = setup(meshMap, controls);
+
+      selection.fitToView();
+
+      // controls.target should be updated to bounding box center (0.5, 0.5, 0.5)
+      expect(controls.target.copy).toHaveBeenCalled();
+      const copyArg = controls.target.copy.mock.calls[0][0];
+      expect(copyArg.x).toBeCloseTo(0.5);
+      expect(copyArg.y).toBeCloseTo(0.5);
+      expect(copyArg.z).toBeCloseTo(0.5);
+    });
+
+    it('fitToView still works without controls (backward compat)', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      // No controls passed
+      const { selection, camera } = setup(meshMap);
+
+      // Should not throw
+      expect(() => selection.fitToView()).not.toThrow();
+      expect((camera as any).lookAt).toHaveBeenCalled();
+    });
   });
 
   describe('dispose', () => {
@@ -540,19 +634,19 @@ describe('createSelection', () => {
       expect(onHover).not.toHaveBeenCalled();
     });
 
-    it('removes pointerdown event listener from domElement', () => {
+    it('removes pointer event listeners from domElement', () => {
       const meshA = createMockMesh('A');
       const meshMap = new Map([['A', meshA]]);
       const { selection, domElement, onSelect } = setup(meshMap);
 
       selection.dispose();
 
-      // After dispose, pointerdown should no longer trigger onSelect
+      // After dispose, pointerdown+pointerup should no longer trigger onSelect
       mockRaycasterIntersectObjects.mockReturnValueOnce([
         { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
       ]);
-      const event = new MouseEvent('pointerdown', { clientX: 400, clientY: 300 });
-      domElement.dispatchEvent(event);
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300 }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300 }));
 
       expect(onSelect).not.toHaveBeenCalled();
     });
@@ -636,6 +730,57 @@ describe('createSelection', () => {
       const box3 = mockBox3Instances[mockBox3Instances.length - 1];
       expect(box3.expandByObject).toHaveBeenCalledTimes(1);
       expect(box3.expandByObject).toHaveBeenCalledWith(meshA);
+    });
+
+    it('flyToEntity offsets camera along current view direction', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection, camera } = setup(meshMap);
+
+      // Mock camera looking along -X axis
+      (camera as any).getWorldDirection.mockImplementation((target: any) => {
+        target.x = -1;
+        target.y = 0;
+        target.z = 0;
+        return target;
+      });
+
+      (camera as any).position.x = 0;
+      (camera as any).position.y = 0;
+      (camera as any).position.z = 0;
+
+      selection.flyToEntity('A');
+
+      // Camera should be offset along +X from center (opposite to view direction)
+      const pos = (camera as any).position;
+      expect(pos.x).toBeGreaterThan(0.5);
+      expect(pos.y).toBeCloseTo(0.5);
+      expect(pos.z).toBeCloseTo(0.5);
+    });
+
+    it('flyToEntity updates controls.target to entity bounding box center', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const controls = createMockControls();
+      const { selection } = setup(meshMap, controls);
+
+      selection.flyToEntity('A');
+
+      expect(controls.target.copy).toHaveBeenCalled();
+      const copyArg = controls.target.copy.mock.calls[0][0];
+      expect(copyArg.x).toBeCloseTo(0.5);
+      expect(copyArg.y).toBeCloseTo(0.5);
+      expect(copyArg.z).toBeCloseTo(0.5);
+    });
+
+    it('flyToEntity with unknown entity does not crash or update controls.target', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const controls = createMockControls();
+      const { selection } = setup(meshMap, controls);
+
+      expect(() => selection.flyToEntity('Unknown')).not.toThrow();
+      expect(controls.target.copy).not.toHaveBeenCalled();
     });
   });
 
@@ -789,7 +934,7 @@ describe('createSelection', () => {
       expect(spy).toHaveBeenCalledTimes(2);
     });
 
-    it('pointerdown also uses cached rect', () => {
+    it('click (pointerdown+pointerup) also uses cached rect', () => {
       const meshA = createMockMesh('A');
       const meshMap = new Map([['A', meshA]]);
       const { domElement } = setup(meshMap);
@@ -800,9 +945,9 @@ describe('createSelection', () => {
       const ev1 = new MouseEvent('pointermove', { clientX: 100, clientY: 100 });
       domElement.dispatchEvent(ev1);
 
-      // pointerdown should reuse cached rect
-      const ev2 = new MouseEvent('pointerdown', { clientX: 200, clientY: 200 });
-      domElement.dispatchEvent(ev2);
+      // Click should reuse cached rect (raycast happens on pointerup)
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 200, clientY: 200 }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 200, clientY: 200 }));
 
       // Still only one call total
       expect(spy).toHaveBeenCalledTimes(1);
@@ -885,7 +1030,7 @@ describe('createSelection', () => {
       expect(ndcArg.x).toBeCloseTo(0.5, 1);
     });
 
-    it('pointerdown still raycasts synchronously (not throttled)', () => {
+    it('click (pointerdown+pointerup) raycasts synchronously (not throttled)', () => {
       const meshA = createMockMesh('A');
       const meshMap = new Map([['A', meshA]]);
       const { domElement, onSelect } = setupWithRaf(meshMap);
@@ -894,10 +1039,10 @@ describe('createSelection', () => {
         { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
       ]);
 
-      const ev = new MouseEvent('pointerdown', { clientX: 400, clientY: 300 });
-      domElement.dispatchEvent(ev);
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300 }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300 }));
 
-      // Pointerdown should raycast immediately without rAF
+      // Click should raycast immediately without rAF
       expect(mockRaycasterSetFromCamera).toHaveBeenCalledTimes(1);
       expect(onSelect).toHaveBeenCalledWith('A');
     });
@@ -916,6 +1061,134 @@ describe('createSelection', () => {
 
       // cancelAnimationFrame should have been called with the rAF id
       expect(globalThis.cancelAnimationFrame).toHaveBeenCalledWith(rafId);
+    });
+  });
+
+  describe('click-vs-drag discrimination', () => {
+    it('pointerdown alone does NOT fire onSelect', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      // No mockReturnValueOnce needed — pointerdown alone won't trigger raycast
+
+      const event = new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      });
+      domElement.dispatchEvent(event);
+
+      // onSelect should NOT fire on pointerdown alone — must wait for pointerup
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it('pointerdown + pointerup at same position fires onSelect with raycasted entity', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 400,
+        clientY: 300,
+      }));
+
+      expect(onSelect).toHaveBeenCalledWith('A');
+    });
+
+    it('pointerdown + pointerup with >5px movement does NOT fire onSelect', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      // No mockReturnValueOnce needed — drag won't trigger raycast at all
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      }));
+      // Move 10px to the right — this is a drag
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 410,
+        clientY: 300,
+      }));
+
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it('pointerdown + pointerup with <=5px movement fires onSelect', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      }));
+      // Move 3px diagonally (sqrt(9+9)=4.24 < 5) — still a click
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 403,
+        clientY: 303,
+      }));
+
+      expect(onSelect).toHaveBeenCalledWith('A');
+    });
+
+    it('onSelect receives null when pointerup raycast misses', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      // Raycast returns no intersection
+      mockRaycasterIntersectObjects.mockReturnValueOnce([]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 400,
+        clientY: 300,
+      }));
+
+      expect(onSelect).toHaveBeenCalledWith(null);
+    });
+
+    it('after dispose, pointerup does not fire onSelect', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect, selection } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      // Start a click
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      }));
+
+      // Dispose before pointerup
+      selection.dispose();
+
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 400,
+        clientY: 300,
+      }));
+
+      expect(onSelect).not.toHaveBeenCalled();
     });
   });
 });

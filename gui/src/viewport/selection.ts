@@ -18,6 +18,7 @@ export interface SelectionOptions {
   getMeshes: () => Map<string, Mesh>;
   onHover: (path: string | null) => void;
   onSelect: (path: string | null) => void;
+  controls?: { target: { copy: (v: any) => void } };
 }
 
 export interface SelectionContext {
@@ -37,7 +38,7 @@ export interface SelectionContext {
 const HIGHLIGHT_COLOR = THEME_TOKENS.accent;
 
 export function createSelection(options: SelectionOptions): SelectionContext {
-  const { scene, camera, domElement, getMeshes, onHover, onSelect } = options;
+  const { scene, camera, domElement, getMeshes, onHover, onSelect, controls } = options;
   const raycaster = new Raycaster();
   const ndc = new Vector2();
   let previousHoveredPath: string | null = null;
@@ -94,13 +95,31 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     }
   }
 
+  const CLICK_THRESHOLD = 5; // px — below this is a click, above is a drag
+  let pointerDownPos: { x: number; y: number } | null = null;
+  let isDisposed = false;
+
+  function handlePointerUp(event: Event): void {
+    const me = event as MouseEvent;
+    if (pointerDownPos === null) return;
+    const dx = me.clientX - pointerDownPos.x;
+    const dy = me.clientY - pointerDownPos.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    pointerDownPos = null;
+    if (distance < CLICK_THRESHOLD) {
+      const entityPath = raycast(me);
+      onSelect(entityPath);
+    }
+  }
+
   function handlePointerDown(event: Event): void {
-    const entityPath = raycast(event as MouseEvent);
-    onSelect(entityPath);
+    const me = event as MouseEvent;
+    pointerDownPos = { x: me.clientX, y: me.clientY };
   }
 
   domElement.addEventListener('pointermove', handlePointerMove);
   domElement.addEventListener('pointerdown', handlePointerDown);
+  domElement.addEventListener('pointerup', handlePointerUp);
 
   function setHovered(path: string | null): void {
     const meshes = getMeshes();
@@ -172,10 +191,15 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     const fovRad = (camera.fov / 2) * (Math.PI / 180);
     const distance = maxDim / (2 * Math.tan(fovRad));
 
-    camera.position.copy(center);
-    camera.position.z += distance;
+    const viewDir = new Vector3();
+    camera.getWorldDirection(viewDir);
+    // Position camera at center - viewDir * distance (backing away from center along view direction)
+    camera.position.copy(center).sub(viewDir.multiplyScalar(distance));
     camera.lookAt(center);
     camera.updateProjectionMatrix();
+    if (controls) {
+      controls.target.copy(center);
+    }
   }
 
   function flyToEntity(entityPath: string): void {
@@ -196,13 +220,18 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     const fovRad = (camera.fov / 2) * (Math.PI / 180);
     const distance = maxDim / (2 * Math.tan(fovRad));
 
-    camera.position.copy(center);
-    camera.position.z += distance;
+    const viewDir = new Vector3();
+    camera.getWorldDirection(viewDir);
+    camera.position.copy(center).sub(viewDir.multiplyScalar(distance));
     camera.lookAt(center);
     camera.updateProjectionMatrix();
+    if (controls) {
+      controls.target.copy(center);
+    }
   }
 
   function dispose(): void {
+    isDisposed = true;
     if (hoverRafPending) {
       cancelAnimationFrame(hoverRafId);
       hoverRafPending = false;
@@ -210,6 +239,8 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     }
     domElement.removeEventListener('pointermove', handlePointerMove);
     domElement.removeEventListener('pointerdown', handlePointerDown);
+    domElement.removeEventListener('pointerup', handlePointerUp);
+    pointerDownPos = null;
     removeWireframe();
   }
 
