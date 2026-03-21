@@ -958,11 +958,23 @@ fn compile_expr_guarded(
                 && scope.collection_sub_names.contains(name.as_str())
             {
                 // Resolve member type from pre-populated collection_sub_member_types
-                let member_type = scope.collection_sub_member_types
+                let member_type = match scope.collection_sub_member_types
                     .get(name.as_str())
                     .and_then(|m| m.get(member.as_str()))
                     .cloned()
-                    .unwrap_or(Type::Real);
+                {
+                    Some(ty) => ty,
+                    None => {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unknown member '{}' on collection sub '{}'",
+                                member, name
+                            ))
+                            .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
+                        );
+                        Type::Real // fallback to allow continued compilation
+                    }
+                };
 
                 // For literal integer index, resolve directly to a scoped ValueRef
                 if let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind {
