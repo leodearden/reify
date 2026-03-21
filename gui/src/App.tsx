@@ -114,6 +114,16 @@ const App: Component = () => {
     onExportDialog: () => {
       setShowExportDialog((v) => !v);
     },
+    onReloadShortcut: () => {
+      if (changedFiles().size > 0) {
+        handleReload();
+      }
+    },
+    onDismissReload: () => {
+      if (changedFiles().size > 0) {
+        handleDismissReload();
+      }
+    },
   });
 
   let alive = true;

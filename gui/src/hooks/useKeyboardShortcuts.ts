@@ -4,6 +4,8 @@ export interface KeyboardShortcutCallbacks {
   onOpen?: () => void;
   onReEvaluate?: () => void;
   onExportDialog?: () => void;
+  onReloadShortcut?: () => void;
+  onDismissReload?: () => void;
 }
 
 /**
@@ -41,6 +43,20 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
     if (e.ctrlKey && e.key === 'e') {
       e.preventDefault();
       callbacks.onExportDialog?.();
+      return;
+    }
+
+    // Ctrl+Shift+R — Reload changed files
+    if (e.ctrlKey && e.shiftKey && (e.key === 'R' || e.key === 'r')) {
+      e.preventDefault();
+      callbacks.onReloadShortcut?.();
+      return;
+    }
+
+    // Escape — Dismiss reload prompt
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      callbacks.onDismissReload?.();
       return;
     }
   }
