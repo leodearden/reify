@@ -29,6 +29,9 @@ export function Editor(props: EditorProps) {
   let lspVersion = 1;
   let unlistenDiagnostics: (() => void) | undefined;
 
+  // Current URI — updated on file switch, read by LSP extension getters
+  let currentUri = 'file:///untitled.ri';
+
   // Create LSP client for communicating with the in-process LSP server
   const lspClient = createLspClient();
 
@@ -43,7 +46,7 @@ export function Editor(props: EditorProps) {
     previousActiveFile = activeFile;
     const file = props.store.state.openFiles.find((f) => f.path === activeFile);
     const doc = file?.content ?? '';
-    const uri = activeFile ? pathToUri(activeFile) : 'file:///untitled.ri';
+    currentUri = activeFile ? pathToUri(activeFile) : 'file:///untitled.ri';
 
     const state = EditorState.create({
       doc,
@@ -52,12 +55,12 @@ export function Editor(props: EditorProps) {
         bracketMatching(),
         syntaxHighlighting(defaultHighlightStyle),
         history(),
-        // LSP-powered completions
-        autocompletion({ override: [reifyCompletionSource(uri)] }),
-        // LSP-powered hover tooltips
-        reifyHoverTooltip(uri),
-        // LSP-powered go-to-definition (Ctrl+Click)
-        reifyGotoDefinition(uri),
+        // LSP-powered completions — dynamic URI getter resolves on each request
+        autocompletion({ override: [reifyCompletionSource(() => currentUri)] }),
+        // LSP-powered hover tooltips — dynamic URI getter
+        reifyHoverTooltip(() => currentUri),
+        // LSP-powered go-to-definition (Ctrl+Click) — dynamic URI getter
+        reifyGotoDefinition(() => currentUri),
         // Diagnostic linter (diagnostics are pushed from LSP via Tauri events)
         linter(() => [] as Diagnostic[]),
         keymap.of([
@@ -110,12 +113,13 @@ export function Editor(props: EditorProps) {
 
     view = new EditorView({ state, parent: containerRef });
 
-    // Initialize LSP and open the document
+    // Initialize LSP, send 'initialized' notification, then open the document
     lspClient
       .initialize()
+      .then(() => lspClient.initialized())
       .then(() => {
         if (activeFile) {
-          return lspClient.didOpen(uri, doc, lspVersion);
+          return lspClient.didOpen(currentUri, doc, lspVersion);
         }
       })
       .catch((err: unknown) => console.error('LSP init error:', err));
@@ -144,10 +148,16 @@ export function Editor(props: EditorProps) {
   createEffect(() => {
     const activeFile = props.store.state.activeFile;
     if (!view || activeFile === previousActiveFile) return;
+
+    const oldUri = currentUri;
     previousActiveFile = activeFile;
 
     const file = props.store.state.openFiles.find((f) => f.path === activeFile);
     const newContent = file?.content ?? '';
+    const newUri = activeFile ? pathToUri(activeFile) : 'file:///untitled.ri';
+
+    // Update the mutable URI so extension getters resolve to the new file
+    currentUri = newUri;
 
     isSwitching = true;
     view.dispatch({
@@ -155,12 +165,21 @@ export function Editor(props: EditorProps) {
       selection: { anchor: 0 },
     });
     isSwitching = false;
+
+    // Close old document and open new one in the LSP server
+    lspVersion++;
+    lspClient
+      .didClose(oldUri)
+      .then(() => lspClient.didOpen(newUri, newContent, lspVersion))
+      .catch((err: unknown) => console.error('LSP file switch error:', err));
   });
 
   onCleanup(() => {
     clearTimeout(debounceTimer);
     clearTimeout(lspDebounceTimer);
     unlistenDiagnostics?.();
+    // Close the current document in the LSP server
+    lspClient.didClose(currentUri).catch(() => {});
     view?.destroy();
   });
 
