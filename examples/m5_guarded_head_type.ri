@@ -1,0 +1,20 @@
+enum HeadType { Hex, Socket, Button }
+
+structure def Bolt {
+    let head_type = HeadType.Hex
+    param shaft_diameter : Length = 10mm
+
+    where head_type == HeadType.Hex {
+        param across_flats : Length = 17mm
+    } else {
+        param across_flats : Length = 15mm
+    }
+
+    let head_label = match head_type {
+        Hex => 1,
+        Socket => 2,
+        Button => 3
+    }
+
+    constraint shaft_diameter > 0mm
+}

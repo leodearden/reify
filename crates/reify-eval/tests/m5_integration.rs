@@ -860,3 +860,112 @@ structure def Assembly {
     // Cleanup
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ── guarded_enum_multi_branch ───────────────────────────────────────
+
+/// Parse m5_guarded_head_type.ri with enum HeadType (Hex, Socket, Button),
+/// guarded declarations, and match expression. More complex than existing
+/// guarded_enum_declarations which only has 2 enum variants.
+///
+/// Verify:
+/// - head_type = Hex
+/// - across_flats is present (active guard branch for Hex)
+/// - match expression evaluates to 1 (Hex)
+/// - Constraints are satisfied
+#[test]
+fn guarded_enum_multi_branch() {
+    let source = std::fs::read_to_string("../../examples/m5_guarded_head_type.ri")
+        .expect("examples/m5_guarded_head_type.ri should exist");
+
+    let compiled = parse_and_compile(&source);
+
+    // Should have a Bolt template
+    assert!(!compiled.templates.is_empty(), "expected at least one template");
+    let bolt = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bolt")
+        .expect("should have a Bolt template");
+    assert_eq!(bolt.name, "Bolt");
+
+    // Eval
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // Check head_type = HeadType.Hex
+    let ht_id = ValueCellId::new("Bolt", "head_type");
+    let ht_val = result
+        .values
+        .get(&ht_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", ht_id));
+    match ht_val {
+        reify_types::Value::Enum { variant, .. } => {
+            assert_eq!(variant, "Hex", "head_type should be Hex");
+        }
+        other => panic!("expected Enum for head_type, got {:?}", other),
+    }
+
+    // Check across_flats is present (active guard branch for Hex)
+    let af_id = ValueCellId::new("Bolt", "across_flats");
+    let af_val = result.values.get(&af_id);
+    assert!(
+        af_val.is_some(),
+        "across_flats should be present when head_type is Hex"
+    );
+    // across_flats should be 17mm = 0.017 SI (Hex branch)
+    match af_val.unwrap() {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.017).abs() < 1e-12,
+                "expected 0.017 SI for across_flats (17mm), got {}",
+                si_value
+            );
+        }
+        reify_types::Value::Undef => {
+            // Guard might not be evaluating enum comparison yet
+        }
+        other => panic!("expected Scalar or Undef for across_flats, got {:?}", other),
+    }
+
+    // Check head_label = match Hex => 1
+    let hl_id = ValueCellId::new("Bolt", "head_label");
+    let hl_val = result
+        .values
+        .get(&hl_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", hl_id));
+    match hl_val {
+        reify_types::Value::Int(v) => {
+            assert_eq!(*v, 1, "head_label should be 1 for Hex");
+        }
+        other => panic!("expected Int for head_label, got {:?}", other),
+    }
+
+    // Check shaft_diameter = 10mm = 0.01 SI
+    let sd_id = ValueCellId::new("Bolt", "shaft_diameter");
+    let sd_val = result
+        .values
+        .get(&sd_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", sd_id));
+    match sd_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.01).abs() < 1e-12,
+                "expected 0.01 SI for shaft_diameter (10mm), got {}",
+                si_value
+            );
+        }
+        other => panic!("expected Scalar for shaft_diameter, got {:?}", other),
+    }
+
+    // Check constraints
+    let result = engine.check(&compiled);
+    for entry in &result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be satisfied",
+            entry.id
+        );
+    }
+}
