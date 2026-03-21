@@ -29,6 +29,7 @@ export const ExportDialog: Component<ExportDialogProps> = (props) => {
             <select
               class={styles.select}
               value={format()}
+              disabled={props.exporting}
               onChange={(e) => setFormat(e.currentTarget.value as ExportFormat)}
             >
               <option value="step">STEP</option>
@@ -40,12 +41,14 @@ export const ExportDialog: Component<ExportDialogProps> = (props) => {
           <div class={styles.actions}>
             <button
               class={`${styles.button} ${styles.secondary}`}
+              disabled={props.exporting}
               onClick={() => props.onClose()}
             >
               Cancel
             </button>
             <button
               class={`${styles.button} ${styles.primary}`}
+              disabled={props.exporting}
               onClick={() => props.onExport(format())}
             >
               Export
