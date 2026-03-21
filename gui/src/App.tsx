@@ -212,7 +212,9 @@ const App: Component = () => {
           editorStore.updateFileContent(fileData.path, fileData.content);
           setChangedFile(null);
         })
-        .catch((err) => console.error('Reload failed:', err));
+        .catch((err) =>
+          toast.showToast(`Reload failed: ${err instanceof Error ? err.message : String(err)}`, 'error'),
+        );
     }
   }
 
