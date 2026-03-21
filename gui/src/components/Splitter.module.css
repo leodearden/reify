@@ -1,0 +1,19 @@
+.splitter {
+  flex-shrink: 0;
+  background: var(--reify-border, #45475a);
+  transition: background 0.15s ease;
+}
+
+.splitter:hover {
+  background: var(--reify-accent, #89b4fa);
+}
+
+.splitter[data-orientation="vertical"] {
+  width: 4px;
+  cursor: col-resize;
+}
+
+.splitter[data-orientation="horizontal"] {
+  height: 4px;
+  cursor: row-resize;
+}
