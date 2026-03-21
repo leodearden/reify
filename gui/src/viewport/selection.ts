@@ -4,7 +4,7 @@ import {
   Vector3,
   Box3,
   Color,
-  WireframeGeometry,
+  EdgesGeometry,
   LineSegments,
   LineBasicMaterial,
 } from 'three';
@@ -165,7 +165,7 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     if (!mesh) return;
 
     // Create wireframe overlay
-    const wireGeom = new WireframeGeometry(mesh.geometry);
+    const wireGeom = new EdgesGeometry(mesh.geometry);
     const wireMat = new LineBasicMaterial({ color: HIGHLIGHT_COLOR });
     currentWireframe = new LineSegments(wireGeom, wireMat);
     scene.add(currentWireframe);
