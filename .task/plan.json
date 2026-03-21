@@ -1,101 +1,86 @@
 {
-  "task_id": "118",
-  "title": "Fix parser panics and edge cases in syntax crate",
+  "task_id": "122",
+  "title": "Fix LSP edge cases",
   "files": [
-    "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/edge_case_tests.rs"
+    "crates/reify-lsp/src/convert.rs",
+    "crates/reify-lsp/src/document.rs",
+    "crates/reify-lsp/src/server.rs"
   ],
   "modules": [
-    "crates/reify-syntax"
+    "crates/reify-lsp"
   ],
-  "analysis": "The task addresses 4 findings from a code review of ts_parser.rs:\n\n1. **C2 (CRITICAL)**: `lower_string_literal` at line 1602 does `text[1..text.len()-1]` which panics if the tree-sitter error recovery produces a string_literal node with text.len() < 2. While the grammar requires matching quotes (seq('\"', ..., '\"')), error recovery can produce malformed nodes. This would crash the LSP server during editing.\n\n2. **L5 (LOW)**: `field_source_imported` at line 550 uses `trim_matches('\"')` which strips ALL leading/trailing quote chars, not just the outer pair. Should use `strip_prefix('\"').and_then(|s| s.strip_suffix('\"'))` to only remove one outer pair.\n\n3. **Dead branch (LOW)**: Lines 1379-1388 in `lower_expr` \u2014 both arms of the if/else in the fallback `_ =>` case return None. Simplify to just `_ => None`.\n\n4. **L4 (LOW, optional)**: 10x repeated error-checking pattern in `lower_member`. Could extract a helper macro/closure but this is optional cleanup \u2014 the current code works correctly.\n\nTest pattern: existing tests use `reify_syntax::parse(source, ModulePath::single(\"test\"))` and check declarations/errors. A new test file `edge_case_tests.rs` is appropriate since these are cross-cutting edge cases rather than feature-specific tests.\n\nFor the string literal panic (C2), we can't easily feed malformed tree-sitter nodes directly since the grammar validates quotes. Instead we: (a) test that a valid string literal round-trips correctly, (b) test that a file with an unclosed string doesn't panic (it may produce parse errors instead), and (c) fix the code to use strip_prefix/strip_suffix which is safe. The fix itself is what prevents the panic.\n\nFor the imported path (L5), we can test that a path like `\"data.vtu\"` has exactly one pair of quotes stripped.",
+  "analysis": "Two low-severity issues in reify-lsp:\n\n1. **M1 \u2014 Dead branch in position_to_offset (convert.rs:79-84)**: The if/else at the end of position_to_offset has identical branches \u2014 both return `source.len()`. The condition `utf16_units < target_char` was presumably meant to distinguish 'past end of line' from 'exactly at end', but both produce the same result. Simplify to a single `source.len()` return.\n\n2. **M8 \u2014 document.update() silent no-op (document.rs:25-30)**: When `update()` is called with an unknown URI (e.g., didChange arrives before didOpen), the update is silently ignored. The fix is to make `update()` return a `bool` indicating whether the document was found, and have the server log a warning via `eprintln!` when it returns `false`. This matches the existing logging pattern in the crate (eprintln! for warnings). An alternative would be auto-opening, but that's riskier since we lack the language_id and proper initialization context.\n\nBoth fixes are small and well-contained within the reify-lsp crate. The test strategy adds:\n- A test verifying position_to_offset returns source.len() for a position past end of a line (already somewhat covered by `position_to_offset_past_end`, but we add a specific past-end-of-line-char test).\n- A test verifying update() on an unopened document returns false (observable behavior change).",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing/panic test for lower_string_literal: parse a structure containing a let with a string literal value to confirm current behavior works, then add a test that parses a malformed/incomplete string (unclosed quote) and asserts no panic (should return errors or None, not crash). The unclosed quote test should use std::panic::catch_unwind or simply parse the malformed source and assert it doesn't panic.",
+      "description": "Add test in convert.rs: position_to_offset with character past end of line returns byte offset at end of that line (or source.len() if last line). This documents the current (correct) behavior before we simplify the dead branch.",
       "status": "done",
-      "commit": "56a89c5"
+      "commit": "ccee859"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix lower_string_literal (line 1602): replace `text[1..text.len()-1].to_string()` with `strip_prefix('\"').and_then(|s| s.strip_suffix('\"')).unwrap_or(text).to_string()`. This handles malformed input gracefully \u2014 if the text doesn't have matching quotes, use the raw text rather than panicking.",
+      "description": "Simplify position_to_offset in convert.rs: replace the dead if/else at lines 79-84 with a single `source.len()` return. The test from step-1 continues to pass.",
       "status": "done",
-      "commit": "667d643"
+      "commit": "21122f7"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test for field_source_imported path stripping: parse `field def data : Point3 -> Scalar { source = imported { \"path/to/data.vtu\" } }` and verify the path is `path/to/data.vtu` (single pair of quotes stripped). This test should pass with current code for normal input. Then add a conceptual edge case comment documenting the trim_matches issue (multiple quotes).",
+      "description": "Add test in document.rs: calling update() on an unopened URI returns false (the method currently returns nothing, so this test will fail to compile until the signature is changed).",
       "status": "done",
-      "commit": "f4664b0"
+      "commit": "0cc546c"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix field_source_imported path stripping (line 550): replace `raw.trim_matches('\"').to_string()` with `raw.strip_prefix('\"').and_then(|s| s.strip_suffix('\"')).unwrap_or(raw).to_string()` to only strip the outer pair of quotes.",
+      "description": "Change DocumentStore::update() to return bool \u2014 true if the document was found and updated, false if the URI was unknown. Update the test from step-3 to pass.",
       "status": "done",
-      "commit": "59d642b"
+      "commit": "7f19f2e"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "No separate test needed for the dead branch cleanup \u2014 it's a pure refactor that doesn't change behavior. Verify all existing tests still pass after the change.",
+      "description": "Add test in document.rs: calling update() on an opened URI returns true. Ensures the happy path is also verified with the new return type.",
       "status": "done",
-      "commit": "59d642b"
+      "commit": "dae6931"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Simplify the dead branch in lower_expr (lines 1379-1388): replace the if/else that both return None with just `_ => None`. Also add a brief comment: `// Unknown node kind \u2014 skip`.",
+      "description": "Update server.rs did_change handler to check the bool return from documents.update(). If false, log a warning via eprintln!(\"[reify-lsp] didChange for unknown URI: {}\", uri) \u2014 matching the existing eprintln! logging pattern in the crate. No behavior change beyond the log line.",
       "status": "done",
-      "commit": "26f4f0f"
-    },
-    {
-      "id": "step-7",
-      "type": "impl",
-      "description": "Optional cleanup: extract a helper macro or closure for the repeated error-checking pattern in lower_member (lines 713-837). The pattern `if child.is_error() || child.has_error() { push error; None } else { lower_X(child).map(MemberDecl::X) }` is repeated 10 times. A macro like `check_and_lower!(child, \"param\", lower_param, MemberDecl::Param)` would reduce duplication. Skip if the macro makes code less readable.",
-      "status": "done",
-      "commit": "5ae7088"
+      "commit": "ad96143"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use strip_prefix/strip_suffix instead of manual indexing for quote stripping",
-      "rationale": "strip_prefix/strip_suffix are idiomatic Rust, return Option which makes error handling natural, and never panic on short strings. The unwrap_or fallback preserves the raw text when quotes are missing, which is safer than panicking."
+      "decision": "Return bool from update() rather than auto-opening the document",
+      "rationale": "Auto-opening on didChange is risky \u2014 we lack the language_id, initial version tracking, and the open event's diagnostic pipeline. A warning log is the minimal safe fix that makes the no-op observable. The caller (server.rs) can decide policy."
     },
     {
-      "decision": "Create a dedicated edge_case_tests.rs rather than adding to existing test files",
-      "rationale": "The bugs are cross-cutting (string literals, field imports, expression fallback) \u2014 they don't fit neatly into any single existing test file. A dedicated edge case file groups robustness tests together."
+      "decision": "Use eprintln! for the warning rather than adding a logging framework dependency",
+      "rationale": "The crate already uses eprintln! for its existing warnings (eval_state lock poisoning, check_snapshot fallback). Adding tracing/log as a dependency would be scope creep for this task."
     },
     {
-      "decision": "Use unwrap_or(text) as fallback rather than returning None on malformed strings",
-      "rationale": "Returning None would silently drop the expression. Using the raw text preserves something for error reporting downstream. The parser already records tree-sitter errors, so the malformed input will be flagged elsewhere."
-    },
-    {
-      "decision": "Optional: macro for lower_member error pattern",
-      "rationale": "The 10x repetition is real but each arm is simple and self-contained. A macro may hurt readability. Marked as optional \u2014 implement only if the result is clearly cleaner."
+      "decision": "Simplify dead branch to unconditional return rather than fixing the intended logic",
+      "rationale": "Both branches produce the correct result (source.len() for past-end positions). The conditional was dead code providing no useful distinction. Removing it makes the intent clear without changing behavior."
     }
   ],
   "reuse": [
     {
-      "what": "reify_syntax::parse() public API",
-      "where": "All existing test files (import_tests.rs, lambda_tests.rs, etc.)",
-      "how": "Tests call parse(source, ModulePath::single(\"test\")) and inspect the returned ParsedModule \u2014 same pattern for new edge case tests"
+      "what": "Existing eprintln! logging pattern",
+      "where": "crates/reify-lsp/src/server.rs:103, crates/reify-lsp/src/diagnostics.rs:92",
+      "how": "Follow the same `eprintln!(\"[reify-lsp] ...\")` prefix pattern for the new warning message"
     },
     {
-      "what": "strip_prefix/strip_suffix from std",
-      "where": "Rust standard library str methods",
-      "how": "Replace manual string slicing and trim_matches with the safer strip_prefix('\"').and_then(|s| s.strip_suffix('\"')) pattern"
-    },
-    {
-      "what": "Existing test helper patterns",
-      "where": "lambda_tests.rs parse_members(), field_tests.rs parse_decls()",
-      "how": "Reuse the same helper pattern of parsing source and extracting declarations/members for the new edge case tests"
+      "what": "Existing test helpers in document.rs and convert.rs",
+      "where": "crates/reify-lsp/src/document.rs (test_uri fn), crates/reify-lsp/src/convert.rs (test module)",
+      "how": "New tests follow the same patterns \u2014 inline #[cfg(test)] modules with helper functions"
     }
   ],
-  "_session_id": "118-0c2c0708",
-  "_created_at": "2026-03-21T16:33:48.338707+00:00"
+  "_session_id": "122-22a02573",
+  "_created_at": "2026-03-21T16:38:37.257361+00:00"
 }

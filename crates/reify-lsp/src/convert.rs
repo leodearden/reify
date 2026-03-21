@@ -76,12 +76,7 @@ pub fn position_to_offset(source: &str, position: Position) -> usize {
     }
 
     // Past end of line/source
-    if utf16_units < target_char {
-        source.len()
-    } else {
-        // Exactly at the end after consuming all chars
-        source.len()
-    }
+    source.len()
 }
 
 /// Extract the identifier word at the given byte offset.
@@ -505,6 +500,25 @@ mod tests {
         let source = "= 80mm";
         let result = find_word_at_offset(source, 2); // '8' in 80mm
         assert_eq!(result, Some((2, "80mm")));
+    }
+
+    #[test]
+    fn position_to_offset_char_past_end_of_last_line() {
+        let source = "abc\ndef";
+        // Line 1 ("def") has 3 chars. Position(1, 10) is past end of line.
+        // Should clamp to source.len() since it's the last line.
+        assert_eq!(
+            position_to_offset(source, Position::new(1, 10)),
+            source.len()
+        );
+    }
+
+    #[test]
+    fn position_to_offset_char_past_end_of_middle_line() {
+        let source = "abc\nde\nfgh";
+        // Line 1 ("de") has 2 chars. Position(1, 10) is past end of that line.
+        // Should clamp to the newline position (byte offset 6).
+        assert_eq!(position_to_offset(source, Position::new(1, 10)), 6);
     }
 
     #[test]

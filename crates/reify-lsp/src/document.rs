@@ -22,10 +22,13 @@ impl DocumentStore {
         self.documents.insert(uri, DocumentState { text, version });
     }
 
-    pub fn update(&mut self, uri: &Url, text: String, version: i32) {
+    pub fn update(&mut self, uri: &Url, text: String, version: i32) -> bool {
         if let Some(doc) = self.documents.get_mut(uri) {
             doc.text = text;
             doc.version = version;
+            true
+        } else {
+            false
         }
     }
 
@@ -91,6 +94,23 @@ mod tests {
         store.open(uri.clone(), "text".to_string(), 1);
         store.close(&uri);
         assert!(store.get(&uri).is_none());
+    }
+
+    #[test]
+    fn update_unopened_document_returns_false() {
+        let mut store = DocumentStore::new();
+        let uri = test_uri("unknown");
+        let found = store.update(&uri, "text".to_string(), 1);
+        assert!(!found, "update on unopened URI should return false");
+    }
+
+    #[test]
+    fn update_opened_document_returns_true() {
+        let mut store = DocumentStore::new();
+        let uri = test_uri("known");
+        store.open(uri.clone(), "original".to_string(), 1);
+        let found = store.update(&uri, "updated".to_string(), 2);
+        assert!(found, "update on opened URI should return true");
     }
 
     #[test]
