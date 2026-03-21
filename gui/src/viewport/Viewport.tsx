@@ -15,6 +15,7 @@ export interface ViewportProps {
   evalStatus?: EvaluationStatus;
   onFitToView?: () => void;
   flyToEntityRef?: (fn: (entityPath: string) => void) => void;
+  fitToViewRef?: (fn: () => void) => void;
 }
 
 export function Viewport(props: ViewportProps) {
@@ -44,6 +45,7 @@ export function Viewport(props: ViewportProps) {
 
     doFitToView = () => selection.fitToView();
     props.flyToEntityRef?.((entityPath: string) => selection.flyToEntity(entityPath));
+    props.fitToViewRef?.(() => selection.fitToView());
 
     // Render-on-demand: keep rAF loop alive (for OrbitControls damping)
     // but only call renderer.render when something has changed.

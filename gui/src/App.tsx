@@ -85,6 +85,7 @@ const App: Component = () => {
   // Navigation state
   const [scrollToLocation, setScrollToLocation] = createSignal<SourceLocation | null>(null);
   let flyToEntityFn: ((entityPath: string) => void) | undefined;
+  let fitToViewFn: (() => void) | undefined;
 
   // Refs for splitter max-width clamping
   let mainRef: HTMLDivElement | undefined;
@@ -244,7 +245,7 @@ const App: Component = () => {
   }
 
   function handleFitToView() {
-    // Fit-to-view stub — will be wired to viewport camera reset in a future task
+    fitToViewFn?.();
   }
 
   function handleReload() {
@@ -364,9 +365,12 @@ const App: Component = () => {
               <Viewport
                 meshes={engineStore.state.meshes}
                 onSelect={handleViewportSelect}
+                onHover={(path) => selectionStore.hoverEntity(path)}
                 selectedEntity={selectionStore.state.selectedEntity}
                 hoveredEntity={selectionStore.state.hoveredEntity}
+                evalStatus={engineStore.state.evalStatus}
                 flyToEntityRef={(fn) => { flyToEntityFn = fn; }}
+                fitToViewRef={(fn) => { fitToViewFn = fn; }}
               />
             </div>
             <Splitter orientation="vertical" onResize={handleRightResize} data-testid="splitter-right" />
