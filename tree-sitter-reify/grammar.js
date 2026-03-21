@@ -38,6 +38,7 @@ module.exports = grammar({
       $.enum_declaration,
       $.function_definition,
       $.trait_declaration,
+      $.field_definition,
     ),
 
     // ── Enum ──────────────────────────────────────────────────
@@ -135,6 +136,64 @@ module.exports = grammar({
       $.constraint_declaration,
       $.sub_declaration,
       $.associated_type,
+    ),
+
+    // ── Field definition ─────────────────────────────────────
+    field_definition: $ => seq(
+      optional('pub'),
+      'field',
+      'def',
+      field('name', $.identifier),
+      ':',
+      field('domain', $.type_expr),
+      '->',
+      field('codomain', $.type_expr),
+      '{',
+      'source',
+      '=',
+      field('source', $.field_source),
+      '}',
+    ),
+
+    field_source: $ => choice(
+      $.field_source_analytical,
+      $.field_source_sampled,
+      $.field_source_composed,
+      $.field_source_imported,
+    ),
+
+    field_source_analytical: $ => seq(
+      'analytical',
+      '{',
+      field('expr', $._expression),
+      '}',
+    ),
+
+    field_source_sampled: $ => seq(
+      'sampled',
+      '{',
+      repeat($.field_config_entry),
+      '}',
+    ),
+
+    field_config_entry: $ => seq(
+      field('key', $.identifier),
+      '=',
+      field('value', $._expression),
+    ),
+
+    field_source_composed: $ => seq(
+      'composed',
+      '{',
+      field('expr', $._expression),
+      '}',
+    ),
+
+    field_source_imported: $ => seq(
+      'imported',
+      '{',
+      field('path', $.string_literal),
+      '}',
     ),
 
     // ── Associated type ─────────────────────────────────────

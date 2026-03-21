@@ -1373,6 +1373,9 @@ pub fn compile(
                 let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &mut pending_bound_checks, &mut diagnostics);
                 templates.push(template);
             }
+            reify_syntax::Declaration::Field(_field_def) => {
+                // Field compilation handled in later steps.
+            }
         }
     }
 

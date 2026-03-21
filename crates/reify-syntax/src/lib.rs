@@ -20,6 +20,7 @@ pub enum Declaration {
     Enum(EnumDecl),
     Function(FnDef),
     Trait(TraitDecl),
+    Field(FieldDef),
 }
 
 /// A structure definition (the primary entity type in Reify).
@@ -268,6 +269,31 @@ pub struct TraitDecl {
     pub members: Vec<MemberDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+/// `field def temp : Point3 -> Scalar { source = analytical { |p| p } }`
+#[derive(Debug, Clone)]
+pub struct FieldDef {
+    pub name: String,
+    pub is_pub: bool,
+    pub domain_type: TypeExpr,
+    pub codomain_type: TypeExpr,
+    pub source: FieldSource,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// The source kind for a field declaration.
+#[derive(Debug, Clone)]
+pub enum FieldSource {
+    /// `analytical { |p| expr }` — a lambda defining the field analytically.
+    Analytical { expr: Expr },
+    /// `sampled { resolution = 100  interpolation = linear }` — sampled data with config.
+    Sampled { config: Vec<(String, Expr)> },
+    /// `composed { |f, g| |p| f(g(p)) }` — composition of fields.
+    Composed { expr: Expr },
+    /// `imported { "path/to/data.vtu" }` — imported from external file.
+    Imported { path: String },
 }
 
 /// A type parameter declaration: `T`, `T: Numeric`, or `T: Numeric = Int`
