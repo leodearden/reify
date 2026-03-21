@@ -1,197 +1,155 @@
 {
-  "task_id": "112",
-  "title": "Viewport rendering: normals fallback, double-sided materials, data validation, buffer updates",
+  "task_id": "113",
+  "title": "Theme and CSS: define missing variables, fix surface/color tokens, add spacing system",
   "files": [
-    "gui/src/viewport/meshManager.ts",
-    "gui/src/viewport/selection.ts",
-    "gui/src/viewport/scene.ts",
-    "gui/src/viewport/Viewport.tsx",
-    "gui/src/__tests__/viewport/meshManager.test.ts",
-    "gui/src/__tests__/viewport/selection.test.ts",
-    "gui/src/__tests__/viewport/scene.test.ts"
+    "gui/src/theme.ts",
+    "gui/src/index.tsx",
+    "gui/src/App.tsx",
+    "gui/src/__tests__/theme.test.ts"
   ],
   "modules": [
-    "gui/src/viewport",
-    "gui/src/__tests__/viewport"
+    "gui/src"
   ],
-  "analysis": "This task fixes 8 viewport rendering issues across 3 source files (meshManager.ts, selection.ts, scene.ts) with coordination in Viewport.tsx. The codebase uses a factory-function pattern (createScene, createMeshManager, createSelection) with Three.js fully mocked via vi.mock in vitest tests (jsdom environment).\n\nCurrent bugs and fixes:\n1. V-04 (meshManager.ts:53-55): When data.normals is null, no computeVertexNormals() fallback — causes flat-black faces. Fix: call geometry.computeVertexNormals() when normals are null in both createMeshFromData and updateMeshGeometry.\n2. V-05 (meshManager.ts:57-59): MeshStandardMaterial lacks DoubleSide — invisible back-faces on thin CAD shells. Fix: add side: THREE.DoubleSide to material constructor.\n3. V-06 (meshManager.ts): No validation of mesh data before BufferGeometry creation. Fix: validate vertices.length % 3 === 0 and indices in bounds before creating/updating geometry.\n4. V-07 (meshManager.ts:66-105): updateMeshGeometry mutates BufferAttribute internals (array + count) unsafely — when array length changes, the WebGL buffer size is fixed, causing errors. Fix: create new BufferAttribute when array length differs.\n5. V-08 (selection.ts:139-153): Selection wireframe not synced after geometry updates. Fix: add refreshSelected() to SelectionContext and call it from Viewport.tsx after mesh sync.\n6. V-11 (scene.ts:34): Fixed camera clipping planes (0.1, 10000). Fix: add adjustClipping(sceneBounds) method to SceneContext that computes near/far from camera-to-scene distance.\n7. V-13 (scene.ts:44-49): Single directional light with no camera-following headlight. Fix: add a headlight as a child of the camera.\n8. V-15 (scene.ts:58-62): setPixelRatio not updated on display change/resize. Fix: call renderer.setPixelRatio(window.devicePixelRatio) in resize handler.\n\nThe existing test infrastructure provides extensive mock classes. The MockBufferGeometry needs computeVertexNormals added. The three mock in meshManager.test.ts needs DoubleSide and FrontSide constants. Scene tests need MockPerspectiveCamera.add method. The existing Viewport.tsx effect pattern (createEffect depending on props.meshes) provides the coordination point for calling refreshSelected and adjustClipping after mesh sync.",
+  "analysis": "Analysis of the codebase reveals 7 CSS custom properties referenced in component CSS modules but never defined by applyTheme() in theme.ts: --reify-surface0 (FileBrowser, ExportDialog, Toast), --reify-surface1 (FileBrowser, ExportDialog, ReloadPrompt), --reify-surface2 (ExportDialog, ReloadPrompt), --reify-subtext (FileBrowser, ExportDialog, Toast), --reify-overlay0 (ReloadPrompt), --reify-green (Toast), --reify-red (Toast). These CSS files use fallback values (e.g., var(--reify-surface0, #313244)) so the UI renders correctly in dark mode, but theme switching won't affect these properties since they're never set as CSS custom properties by applyTheme().\n\nThe task description mentions --reify-font-mono as missing, but it IS defined via the 'fontMono' key in THEME_TOKENS and correctly converted by camelToKebab() to --reify-font-mono.\n\nAdditionally, applyTheme() is called inside onMount() in App.tsx (line 115), which runs after the initial render. This causes a potential flash of unstyled content (FOUC) since CSS variables aren't set until the component mounts. The fix is to call applyTheme() synchronously in index.tsx before render().\n\nFor T4 (spacing system), no spacing tokens exist — CSS files use hardcoded pixel values (4px, 6px, 8px, 12px, 16px, 20px). We'll define spacing scale tokens in THEME_TOKENS but defer CSS file migration to a future task.\n\nLight mode (T2) is explicitly deferred per the task description.\n\nExisting test file (gui/src/__tests__/theme.test.ts) has 4 tests: required keys check, Catppuccin Mocha values check, hex validation for color tokens, and applyTheme callable check. These will be extended.\n\nREVIEW FIX: camelToKebab() only replaces uppercase letters, so 'space2xl' produces '--reify-space2xl' instead of '--reify-space-2xl'. This is a silent naming mismatch — CSS authors writing var(--reify-space-2xl) get the fallback value with no error. The fix extends camelToKebab to insert a hyphen at letter→digit boundaries when the digit sequence is followed by letters (e.g., space2xl → space-2xl). This preserves existing tokens like surface0/overlay0 where the trailing digit has no following letters.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in meshManager.test.ts: when data.normals is null, createMeshFromData calls geometry.computeVertexNormals() (V-04). Add computeVertexNormals mock to MockBufferGeometry. Test: sync with null normals, assert computeVertexNormals was called. Also test: sync with provided normals, assert computeVertexNormals was NOT called.",
+      "description": "Write failing tests in theme.test.ts asserting THEME_TOKENS contains the 7 missing keys: surface0, surface1, surface2, subtext, overlay0, green, red. Add to the existing 'has all required color keys' test array AND add a new test 'has correct Catppuccin Mocha values for surface/accent tokens' asserting surface0='#313244', surface1='#45475a', surface2='#585b70', subtext='#a6adc8', overlay0='#6c7086', green='#a6e3a1', red='#f38ba8'.",
       "status": "done",
-      "commit": "cd74b48"
+      "commit": "3f4d2b0"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement V-04 in meshManager.ts: In createMeshFromData, add else branch after the normals check — when data.normals is null, call geometry.computeVertexNormals(). In updateMeshGeometry, in the else-if branch where normals are removed (line 97-98), call geometry.computeVertexNormals() after deleteAttribute.",
+      "description": "Add the 7 missing token entries to THEME_TOKENS in theme.ts: surface0: '#313244', surface1: '#45475a', surface2: '#585b70', subtext: '#a6adc8', overlay0: '#6c7086', green: '#a6e3a1', red: '#f38ba8'. The camelToKebab function handles these correctly (surface0 stays surface0, no uppercase letters to convert).",
       "status": "done",
-      "commit": "7d8fbc6"
+      "commit": "46f54d9"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test in meshManager.test.ts: material is created with side: THREE.DoubleSide (V-05). Add DoubleSide constant to mock. Assert that the material's side property equals DoubleSide (2).",
+      "description": "Write a test 'applyTheme sets all tokens as CSS custom properties' that calls applyTheme() and verifies every THEME_TOKENS entry is set on document.documentElement.style. For each key, compute the expected CSS variable name using the same camelToKebab logic, then assert document.documentElement.style.getPropertyValue(`--reify-${kebab}`) equals the token value. This catches any token silently dropped or misnamed.",
       "status": "done",
-      "commit": "0e7398b"
+      "commit": "2d945c0"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement V-05 in meshManager.ts: Import DoubleSide from 'three'. Add side: DoubleSide to the MeshStandardMaterial constructor options.",
+      "description": "No code change needed — step-2's token additions make step-3 pass. Verify all tests pass.",
       "status": "done",
-      "commit": "e28a18b"
+      "commit": "2d945c0"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests in meshManager.test.ts for mesh data validation (V-06). Tests: (1) sync with vertices.length not divisible by 3 does not add mesh to scene, (2) sync with an index >= vertex count does not add mesh, (3) valid data still works normally. Also test update path: update with invalid data skips the update.",
+      "description": "Write a completeness guard test 'every CSS variable reference has a THEME_TOKENS entry'. Hardcode a list of all unique --reify-* variable names found in the CSS files (approximately 20 names: background, surface, surface-hover, text, text-secondary, text-muted, accent, accent-hover, border, error, warning, success, editor-bg, viewport-bg, panel-bg, font-mono, surface0, surface1, surface2, subtext, overlay0, green, red). For each, convert kebab to camelCase and assert it exists in THEME_TOKENS.",
       "status": "done",
-      "commit": "04f8b53"
+      "commit": "b2f5692"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement V-06 in meshManager.ts: Add validateMeshData(data: MeshData): boolean that checks vertices.length % 3 === 0 and max(indices) < vertices.length / 3. Guard createMeshFromData and updateMeshGeometry calls in sync() with this validation, logging a console.warn for invalid data.",
+      "description": "Verify step-5 passes. If any CSS variable is still missing from THEME_TOKENS, add it. This step confirms full coverage.",
       "status": "done",
-      "commit": "5a4df9c"
+      "commit": "b2f5692"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests in meshManager.test.ts for safe buffer updates when array length changes (V-07). Tests: (1) update with same-length arrays reuses existing BufferAttribute (identity check — existing test), (2) update with different-length vertex array creates a new BufferAttribute (not same reference), (3) update with different-length index array creates new index BufferAttribute, (4) new BufferAttribute has correct array and count.",
+      "description": "Write failing test for spacing token keys: spaceXs='2px', spaceSm='4px', spaceMd='8px', spaceLg='12px', spaceXl='16px', space2xl='20px', space3xl='24px', and radius tokens: radiusSm='2px', radiusMd='4px', radiusLg='8px'. Assert these keys exist in THEME_TOKENS with the correct values. Also update the existing 'all color tokens are valid hex' test to skip non-color tokens by checking key prefixes (fontMono, space*, radius*).",
       "status": "done",
-      "commit": "dafa7ec"
+      "commit": "cd09f91"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement V-07 in meshManager.ts: In updateMeshGeometry, before reusing posAttr, check if posAttr.array.length !== data.vertices.length — if so, create new BufferAttribute via setAttribute instead of mutating. Same logic for index and normals.",
+      "description": "Add spacing and radius tokens to THEME_TOKENS in theme.ts: spaceXs:'2px', spaceSm:'4px', spaceMd:'8px', spaceLg:'12px', spaceXl:'16px', space2xl:'20px', space3xl:'24px', radiusSm:'2px', radiusMd:'4px', radiusLg:'8px'. Update the hex validation test's skip list to include these non-color keys.",
       "status": "done",
-      "commit": "8567bea"
+      "commit": "67b9073"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test in scene.test.ts: resize handler calls renderer.setPixelRatio with window.devicePixelRatio (V-15). Call resize(), assert mockSetPixelRatio was called. Verify it uses the current devicePixelRatio value.",
+      "description": "Write a test verifying applyTheme is called before render, not inside a component. Since we can't easily test index.tsx execution order in a unit test, write a structural test: import App.tsx source as a string (or just check that theme.ts exports are used correctly). More practically, test that after calling applyTheme() directly, CSS variables are immediately available — confirming it works synchronously without needing a component mount cycle.",
       "status": "done",
-      "commit": "d9c1848"
+      "commit": "4429eef"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement V-15 in scene.ts: In the resize() function, add renderer.setPixelRatio(window.devicePixelRatio ?? 1) before renderer.setSize().",
+      "description": "Move applyTheme() from App.tsx to index.tsx: (1) In index.tsx, add `import { applyTheme } from './theme';` and call `applyTheme();` before the `render()` call. (2) In App.tsx, remove the `import { applyTheme } from './theme';` import and remove the `applyTheme();` call from onMount (line 115). Keep the rest of onMount intact (getInitialState, subscribeToEvents, etc.).",
       "status": "done",
-      "commit": "ed797d5"
+      "commit": "47785c9"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test in scene.test.ts: scene has a camera-following headlight (V-13). Add camera.add mock to MockPerspectiveCamera. Assert that a DirectionalLight is added as a child of the camera (via camera.add), and that the camera itself is added to the scene (scene.add(camera)).",
+      "description": "Write a failing test 'camelToKebab inserts hyphen before digit sequences followed by letters' that explicitly asserts the generated CSS variable names for spacing tokens with numeric prefixes. Call applyTheme() and assert: (1) document.documentElement.style.getPropertyValue('--reify-space-2xl') === '20px', (2) document.documentElement.style.getPropertyValue('--reify-space-3xl') === '24px'. Also add unit-level assertions that camelToKebab('space2xl') === 'space-2xl' and camelToKebab('space3xl') === 'space-3xl'. To enable direct testing of camelToKebab, export it from theme.ts (or test via applyTheme output). Additionally assert that existing digit-trailing tokens are NOT affected: camelToKebab('surface0') === 'surface0', camelToKebab('overlay0') === 'overlay0'. This test will FAIL with the current camelToKebab because it produces 'space2xl' not 'space-2xl'.",
       "status": "done",
-      "commit": "4c37494"
+      "commit": "dde0895"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement V-13 in scene.ts: Create a second DirectionalLight (headlight) at position (0, 0, 1) relative to camera with intensity ~0.6. Call camera.add(headlight) to make it follow the camera. Call scene.add(camera) so camera children are rendered in the scene graph.",
+      "description": "Fix the camelToKebab function in theme.ts to handle letter-to-digit boundaries when the digit sequence is followed by letters. Change from: str.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`) to: str.replace(/([a-z])(\\d+[a-z]+)/g, '$1-$2').replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`). The first replacement inserts a hyphen at lowercase-letter→digit boundaries only when the digit is followed by alphabetic characters (e.g., space2xl → space-2xl, space3xl → space-3xl). Trailing digits without following letters are unaffected (surface0 stays surface0, overlay0 stays overlay0). Also update the local copy of camelToKebab in the test file's 'applyTheme sets all tokens as CSS custom properties' test (line 88-89) to use the same updated logic, so that test checks the correct CSS variable names. Export camelToKebab from theme.ts if step-11 imports it directly.",
       "status": "done",
-      "commit": "b2bec91"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing test in scene.test.ts: SceneContext exposes adjustClipping method (V-11). Test that adjustClipping(bounds) updates camera.near and camera.far based on scene size and that updateProjectionMatrix is called.",
-      "status": "done",
-      "commit": "8f5d6f3"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Implement V-11 in scene.ts: Add adjustClipping(sceneBounds: Box3) to SceneContext interface. Implementation computes camera-to-center distance, sets near = max(distance * 0.001, 0.01) and far = max(distance * 10, 100), calls camera.updateProjectionMatrix(). Export from createScene return. Update Viewport.tsx to call adjustClipping after mesh sync.",
-      "status": "done",
-      "commit": "7bd0fac"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing test in selection.test.ts: SelectionContext exposes refreshSelected() that rebuilds wireframe for current selection (V-08). Tests: (1) refreshSelected with active selection removes old wireframe and creates new one, (2) refreshSelected with no selection is a no-op, (3) refreshSelected reflects updated geometry.",
-      "status": "done",
-      "commit": "77b1c18"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Implement V-08 in selection.ts: Track currentSelectedPath in a closure variable. Add refreshSelected() method that calls setSelected(currentSelectedPath) to rebuild wireframe from current geometry. Export in SelectionContext. Update Viewport.tsx to call selection.refreshSelected() after meshManager.sync() in the mesh sync effect.",
-      "status": "done",
-      "commit": "3acf530"
+      "commit": "de17eed"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Camera headlight is added as a child of the camera object via camera.add() rather than updating position each frame",
-      "rationale": "Three.js automatically transforms child objects in the parent's local space, so a light added to camera follows it without manual position updates in the render loop. This is the standard Three.js pattern for headlights and avoids polluting the animation loop."
+      "decision": "Add missing tokens as new THEME_TOKENS entries rather than renaming existing tokens",
+      "rationale": "The CSS uses both naming conventions: --reify-surface is a general panel background (#2a2a3a), while --reify-surface0/1/2 are Catppuccin's layered surface scale (#313244/#45475a/#585b70). These are semantically different and both must coexist."
     },
     {
-      "decision": "Dynamic clipping is exposed as an adjustClipping(sceneBounds: Box3) method called after mesh sync, not computed every frame",
-      "rationale": "Computing scene bounds every frame via Box3 traversal is expensive. Clipping only needs adjustment when mesh data changes (during sync), which is the only time bounds change. This keeps the render loop lightweight."
+      "decision": "Keep 'green' and 'red' as separate tokens rather than aliasing to 'success' and 'error'",
+      "rationale": "The CSS uses --reify-success (#a6e3a1) and --reify-error (#f38ba8) for semantic status colors, AND --reify-green and --reify-red for visual accent colors (e.g., Toast border). Although they currently share values, they serve different semantic purposes — green/red are raw palette colors while success/error are semantic roles. Keeping both allows future themes to decouple them."
     },
     {
-      "decision": "Mesh data validation logs console.warn and skips invalid data rather than throwing",
-      "rationale": "The viewport should be resilient to bad data from the engine. Throwing would crash the entire render pipeline. A console.warn is sufficient for debugging while keeping the UI responsive. This follows the existing project preference for noisy errors on logic bugs (feedback_silent_defaults_pattern.md) while still being resilient."
+      "decision": "Define spacing tokens but don't migrate CSS files to use them",
+      "rationale": "Migrating all hardcoded pixel values across 12+ CSS modules is a large mechanical change that adds risk and noise to this PR. Defining the tokens enables incremental adoption. CSS files can be migrated in a follow-up task."
     },
     {
-      "decision": "New BufferAttribute is created when array length changes; existing attribute is mutated only when length matches",
-      "rationale": "WebGL buffers have a fixed size allocated on the GPU. Mutating .array and .count on an existing BufferAttribute when the size differs causes WebGL errors because the underlying GPU buffer cannot be resized. When sizes match, reusing the attribute avoids GPU buffer reallocation overhead — this is the intended Three.js pattern."
+      "decision": "Call applyTheme() synchronously in index.tsx before render() rather than in a <script> tag or CSS :root block",
+      "rationale": "Synchronous call before render() is the simplest fix that prevents FOUC. CSS :root definitions would duplicate the values. A <script> tag in index.html would require build tooling changes. The index.tsx approach keeps all theme logic in TypeScript and is consistent with SolidJS patterns."
     },
     {
-      "decision": "refreshSelected() method added to SelectionContext rather than coupling meshManager directly to selection",
-      "rationale": "Keeps modules decoupled. Viewport.tsx already coordinates between meshManager and selection via reactive effects. Adding a refresh method is the minimal change that preserves this clean architecture. refreshSelected internally just calls setSelected(currentSelectedPath)."
+      "decision": "Use a hardcoded list of CSS variable references in the completeness test",
+      "rationale": "Parsing CSS files at test time creates fragile dependencies on file system layout and test runner working directory. A hardcoded list is explicit, maintainable, and catches regressions — when someone adds a new --reify-* CSS variable reference, they must also update the test list."
     },
     {
-      "decision": "computeVertexNormals() is called in both createMeshFromData and updateMeshGeometry when normals are null",
-      "rationale": "Both code paths can receive null normals. The fallback must be applied consistently in creation and update paths to prevent flat-black faces in any scenario."
+      "decision": "Skip non-color tokens (fontMono, spacing, radius) in the hex-validation test using key prefix matching",
+      "rationale": "The existing test validates all color tokens are valid hex. Spacing tokens like '4px' and font stacks are not hex colors. Rather than maintaining a brittle exclusion list, use prefix-based detection: keys starting with 'font', 'space', or 'radius' are non-color."
     },
     {
-      "decision": "scene.add(camera) is called to support camera children (headlight)",
-      "rationale": "Three.js requires parent objects to be in the scene graph for their children to be rendered. Without scene.add(camera), the headlight attached via camera.add() would not be visible. The camera itself renders fine without being in the scene, but its children do not."
+      "decision": "Fix camelToKebab with a targeted letter→digit+letters regex rather than renaming token keys or using a name override map",
+      "rationale": "The regex /([a-z])(\\d+[a-z]+)/g inserts a hyphen only when a digit sequence is followed by alphabetic characters (space2xl → space-2xl). Trailing-digit tokens like surface0/overlay0 are unaffected because their digits aren't followed by letters. This is cleaner than an explicit override map (no maintenance burden for future tokens), cleaner than renaming keys (space2Xl would produce space2-xl, still wrong), and handles all foreseeable patterns correctly."
     }
   ],
   "reuse": [
     {
-      "what": "Existing vi.mock('three') patterns and MockXxx classes in all viewport test files",
-      "where": "gui/src/__tests__/viewport/meshManager.test.ts, scene.test.ts, selection.test.ts",
-      "how": "Extend existing mock blocks with additional methods/properties: computeVertexNormals on MockBufferGeometry, DoubleSide/FrontSide constants, camera.add method on MockPerspectiveCamera. Follow the exact same mock class patterns."
+      "what": "Existing camelToKebab() function in theme.ts",
+      "where": "gui/src/theme.ts line 39-41",
+      "how": "Extended (not replaced) to handle digit-letter boundaries. The existing uppercase replacement is preserved as the second step in a two-pass transformation."
     },
     {
-      "what": "makeMeshData() test helper in meshManager.test.ts",
-      "where": "gui/src/__tests__/viewport/meshManager.test.ts:100-112",
-      "how": "Reuse for all new meshManager tests to create MeshData objects with optional vertices, indices, normals parameters."
+      "what": "Existing applyTheme() function in theme.ts",
+      "where": "gui/src/theme.ts line 43-48",
+      "how": "Iterates all THEME_TOKENS entries and sets CSS custom properties. No changes needed to the function itself — the camelToKebab fix flows through automatically."
     },
     {
-      "what": "setup() function pattern in each test file",
-      "where": "All viewport test files",
-      "how": "Follow the existing setup() function pattern that creates mocks and returns an object with all test dependencies. Extend as needed."
+      "what": "Existing theme.test.ts test structure and patterns",
+      "where": "gui/src/__tests__/theme.test.ts",
+      "how": "Extend the existing 'has all required color keys' test to include the 7 new keys. Follow the same test patterns (describe blocks, expect().toBe() for values, regex for hex validation) for consistency."
     },
     {
-      "what": "SceneContext interface and return pattern",
-      "where": "gui/src/viewport/scene.ts:13-18, 64",
-      "how": "Extend SceneContext interface with adjustClipping method. Add to the return object from createScene, following the same pattern as resize()."
-    },
-    {
-      "what": "SelectionContext interface",
-      "where": "gui/src/viewport/selection.ts:24-31",
-      "how": "Extend with refreshSelected() method following the same interface pattern. Add to return object from createSelection."
-    },
-    {
-      "what": "Viewport.tsx createEffect for mesh sync",
-      "where": "gui/src/viewport/Viewport.tsx:48-50",
-      "how": "Add refreshSelected() and adjustClipping() calls within the existing mesh sync effect, after meshManager.sync(). This is the natural coordination point between mesh updates and dependent systems."
+      "what": "CSS fallback values already present in all module CSS files",
+      "where": "All *.module.css files under gui/src/",
+      "how": "Every CSS variable reference already has a correct fallback value (e.g., var(--reify-surface0, #313244)). No CSS file changes are needed for this task — the tokens just need to be defined in THEME_TOKENS so theme switching works correctly."
     }
   ],
-  "_session_id": "112-bacae8cf",
-  "_created_at": "2026-03-21T17:33:37.820402+00:00"
+  "_session_id": "113-24eb0c4f",
+  "_created_at": "2026-03-21T17:25:43.751899+00:00"
 }

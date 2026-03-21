@@ -1,5 +1,4 @@
 import { type Component, onMount, onCleanup, createSignal, createEffect, Show } from 'solid-js';
-import { applyTheme } from './theme';
 import { Viewport } from './viewport';
 import { Editor } from './editor/Editor';
 import { FileTabs } from './editor/FileTabs';
@@ -114,8 +113,6 @@ const App: Component = () => {
   let fileChangedUnsub: (() => void) | undefined;
 
   onMount(async () => {
-    applyTheme();
-
     try {
       const initialState = await getInitialState();
       if (!alive) return;
