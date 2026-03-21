@@ -358,4 +358,63 @@ describe('meshManager', () => {
     // Normal attribute should be removed
     expect(geom.attributes.normal).toBeUndefined();
   });
+
+  describe('mesh data validation (V-06)', () => {
+    it('sync with vertices.length not divisible by 3 does not add mesh to scene', () => {
+      const { manager } = setup();
+      // 5 floats is not divisible by 3
+      const badVerts = new Float32Array([0, 1, 2, 3, 4]);
+      const meshData = makeMeshData('A', badVerts, new Uint32Array([0]));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      manager.sync({ A: meshData });
+      expect(manager.getSceneMeshes().size).toBe(0);
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('sync with an index >= vertex count does not add mesh to scene', () => {
+      const { manager } = setup();
+      // 3 vertices (indices 0, 1, 2), but index references vertex 3 (out of bounds)
+      const verts = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]);
+      const indices = new Uint32Array([0, 1, 3]); // 3 is out of bounds
+      const meshData = makeMeshData('A', verts, indices);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      manager.sync({ A: meshData });
+      expect(manager.getSceneMeshes().size).toBe(0);
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('valid data still works normally after validation', () => {
+      const { manager } = setup();
+      // 3 vertices, valid indices
+      const verts = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]);
+      const indices = new Uint32Array([0, 1, 2]);
+      const meshData = makeMeshData('A', verts, indices);
+      manager.sync({ A: meshData });
+      expect(manager.getSceneMeshes().size).toBe(1);
+      expect(mockSceneAdd).toHaveBeenCalledTimes(1);
+    });
+
+    it('update with invalid data skips the update', () => {
+      const { manager } = setup();
+      // Valid initial data
+      const verts = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]);
+      const indices = new Uint32Array([0, 1, 2]);
+      manager.sync({ A: makeMeshData('A', verts, indices) });
+      expect(manager.getSceneMeshes().size).toBe(1);
+
+      // Update with invalid vertices
+      const badVerts = new Float32Array([0, 1]); // not divisible by 3
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      manager.sync({ A: makeMeshData('A', badVerts, indices) });
+
+      // Mesh should still exist but geometry should not have been updated with bad data
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      // Position should still have the original data
+      expect(geom.attributes.position.array).toBe(verts);
+      warnSpy.mockRestore();
+    });
+  });
 });
