@@ -281,6 +281,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_with_sink_initializes() {
+        let (service, _socket) = LspService::new(|client| {
+            ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink))
+        });
+        let server = service.inner();
+        let result = server.initialize(InitializeParams::default()).await.unwrap();
+
+        // Verify same capabilities as the default constructor
+        match result.capabilities.text_document_sync {
+            Some(TextDocumentSyncCapability::Kind(kind)) => {
+                assert_eq!(kind, TextDocumentSyncKind::FULL);
+            }
+            other => panic!("Expected TextDocumentSyncKind::FULL, got {other:?}"),
+        }
+        assert!(result.capabilities.hover_provider.is_some());
+        assert!(result.capabilities.definition_provider.is_some());
+        assert!(result.capabilities.completion_provider.is_some());
+    }
+
+    #[tokio::test]
     async fn initialize_returns_full_sync_capability() {
         let (service, _socket) = LspService::new(ReifyLanguageServer::new);
 
