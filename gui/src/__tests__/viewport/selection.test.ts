@@ -235,4 +235,114 @@ describe('createSelection', () => {
       expect(typeof selection.dispose).toBe('function');
     });
   });
+
+  describe('hover raycasting', () => {
+    it('calls raycaster.setFromCamera with NDC coords on pointermove', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement } = setup(meshMap);
+
+      // Simulate pointermove at center of element (400, 300) on 800x600
+      const event = new MouseEvent('pointermove', {
+        clientX: 400,
+        clientY: 300,
+      });
+      domElement.dispatchEvent(event);
+
+      // Center of 800x600 → NDC (0, 0)
+      expect(mockRaycasterSetFromCamera).toHaveBeenCalledTimes(1);
+      const ndcArg = mockRaycasterSetFromCamera.mock.calls[0][0];
+      expect(ndcArg.x).toBeCloseTo(0, 1);
+      expect(ndcArg.y).toBeCloseTo(0, 1);
+    });
+
+    it('calls raycaster.intersectObjects with mesh array from getMeshes', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { domElement } = setup(meshMap);
+
+      const event = new MouseEvent('pointermove', {
+        clientX: 400,
+        clientY: 300,
+      });
+      domElement.dispatchEvent(event);
+
+      expect(mockRaycasterIntersectObjects).toHaveBeenCalledTimes(1);
+      const meshArray = mockRaycasterIntersectObjects.mock.calls[0][0];
+      expect(meshArray).toHaveLength(2);
+      expect(meshArray).toContain(meshA);
+      expect(meshArray).toContain(meshB);
+    });
+
+    it('calls onHover with mesh.name when intersection found', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onHover } = setup(meshMap);
+
+      // Mock raycaster to return an intersection
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      const event = new MouseEvent('pointermove', {
+        clientX: 400,
+        clientY: 300,
+      });
+      domElement.dispatchEvent(event);
+
+      expect(onHover).toHaveBeenCalledWith('A');
+    });
+
+    it('calls onHover with null when no intersection found', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onHover } = setup(meshMap);
+
+      // Default mock returns empty array
+      mockRaycasterIntersectObjects.mockReturnValueOnce([]);
+
+      const event = new MouseEvent('pointermove', {
+        clientX: 400,
+        clientY: 300,
+      });
+      domElement.dispatchEvent(event);
+
+      expect(onHover).toHaveBeenCalledWith(null);
+    });
+
+    it('computes correct NDC for top-left corner', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement } = setup(meshMap);
+
+      // Top-left: (0, 0) → NDC (-1, 1)
+      const event = new MouseEvent('pointermove', {
+        clientX: 0,
+        clientY: 0,
+      });
+      domElement.dispatchEvent(event);
+
+      const ndcArg = mockRaycasterSetFromCamera.mock.calls[0][0];
+      expect(ndcArg.x).toBeCloseTo(-1, 1);
+      expect(ndcArg.y).toBeCloseTo(1, 1);
+    });
+
+    it('computes correct NDC for bottom-right corner', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement } = setup(meshMap);
+
+      // Bottom-right: (800, 600) → NDC (1, -1)
+      const event = new MouseEvent('pointermove', {
+        clientX: 800,
+        clientY: 600,
+      });
+      domElement.dispatchEvent(event);
+
+      const ndcArg = mockRaycasterSetFromCamera.mock.calls[0][0];
+      expect(ndcArg.x).toBeCloseTo(1, 1);
+      expect(ndcArg.y).toBeCloseTo(-1, 1);
+    });
+  });
 });
