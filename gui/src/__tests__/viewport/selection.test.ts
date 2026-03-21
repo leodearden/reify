@@ -237,7 +237,12 @@ function createMockMesh(name: string): any {
   return mesh;
 }
 
-function setup(meshMap?: Map<string, any>) {
+function createMockControls() {
+  const target = { x: 0, y: 0, z: 0, copy: vi.fn((v: any) => { target.x = v.x; target.y = v.y; target.z = v.z; }) };
+  return { target };
+}
+
+function setup(meshMap?: Map<string, any>, controls?: { target: any }) {
   const scene = new Scene();
   const camera = new PerspectiveCamera();
   const domElement = createMockDomElement();
@@ -245,14 +250,19 @@ function setup(meshMap?: Map<string, any>) {
   const onHover = vi.fn();
   const onSelect = vi.fn();
 
-  const selection = createSelection({
+  const opts: any = {
     scene: scene as any,
     camera: camera as any,
     domElement,
     getMeshes,
     onHover,
     onSelect,
-  });
+  };
+  if (controls !== undefined) {
+    opts.controls = controls;
+  }
+
+  const selection = createSelection(opts);
 
   return { scene, camera, domElement, getMeshes, onHover, onSelect, selection };
 }
@@ -547,6 +557,62 @@ describe('createSelection', () => {
       expect(lookAtArg.x).toBeCloseTo(0.5);
       expect(lookAtArg.y).toBeCloseTo(0.5);
       expect(lookAtArg.z).toBeCloseTo(0.5);
+    });
+
+    it('offsets camera along current view direction, not just Z axis', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection, camera } = setup(meshMap);
+
+      // Mock camera looking along -X axis (e.g., viewing from right side)
+      (camera as any).getWorldDirection.mockImplementation((target: any) => {
+        target.x = -1;
+        target.y = 0;
+        target.z = 0;
+        return target;
+      });
+
+      // Reset camera position
+      (camera as any).position.x = 0;
+      (camera as any).position.y = 0;
+      (camera as any).position.z = 0;
+
+      selection.fitToView();
+
+      // Camera should be offset along +X from center (opposite to view direction)
+      // center = (0.5, 0.5, 0.5), viewDir = (-1, 0, 0)
+      // position = center - viewDir * distance = (0.5 + distance, 0.5, 0.5)
+      const pos = (camera as any).position;
+      expect(pos.x).toBeGreaterThan(0.5); // offset along X, not Z
+      expect(pos.y).toBeCloseTo(0.5);
+      expect(pos.z).toBeCloseTo(0.5);
+    });
+
+    it('updates controls.target to bounding box center when controls provided', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const controls = createMockControls();
+      const { selection } = setup(meshMap, controls);
+
+      selection.fitToView();
+
+      // controls.target should be updated to bounding box center (0.5, 0.5, 0.5)
+      expect(controls.target.copy).toHaveBeenCalled();
+      const copyArg = controls.target.copy.mock.calls[0][0];
+      expect(copyArg.x).toBeCloseTo(0.5);
+      expect(copyArg.y).toBeCloseTo(0.5);
+      expect(copyArg.z).toBeCloseTo(0.5);
+    });
+
+    it('fitToView still works without controls (backward compat)', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      // No controls passed
+      const { selection, camera } = setup(meshMap);
+
+      // Should not throw
+      expect(() => selection.fitToView()).not.toThrow();
+      expect((camera as any).lookAt).toHaveBeenCalled();
     });
   });
 
