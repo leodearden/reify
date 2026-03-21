@@ -352,6 +352,33 @@ fn eval_method_sum_empty() {
 }
 
 #[test]
+fn eval_method_sum_empty_real_list() {
+    // [].sum() with result_type=Real should return Real(0.0), not Int(0)
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+    let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Real(0.0), "empty Real list sum should return Real(0.0)");
+}
+
+#[test]
+fn eval_method_sum_empty_scalar_list() {
+    // [].sum() with result_type=Scalar{LENGTH} should return Scalar{0.0, LENGTH}
+    let dim = reify_types::DimensionVector::LENGTH;
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::length())));
+    let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::length());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    match result {
+        Value::Scalar { si_value, dimension } => {
+            assert!((si_value - 0.0).abs() < 1e-12, "si_value should be 0.0");
+            assert_eq!(dimension, dim, "dimension should be LENGTH");
+        }
+        other => panic!("expected Scalar, got {:?}", other),
+    }
+}
+
+#[test]
 fn eval_method_sum_with_undef_element() {
     let id = ValueCellId::new("S", "missing");
     let list = CompiledExpr::list_literal(
