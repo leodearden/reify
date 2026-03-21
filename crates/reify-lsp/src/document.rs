@@ -105,6 +105,15 @@ mod tests {
     }
 
     #[test]
+    fn update_opened_document_returns_true() {
+        let mut store = DocumentStore::new();
+        let uri = test_uri("known");
+        store.open(uri.clone(), "original".to_string(), 1);
+        let found = store.update(&uri, "updated".to_string(), 2);
+        assert!(found, "update on opened URI should return true");
+    }
+
+    #[test]
     fn open_two_documents_independently() {
         let mut store = DocumentStore::new();
         let uri_a = test_uri("a");
