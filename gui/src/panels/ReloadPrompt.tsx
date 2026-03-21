@@ -1,8 +1,9 @@
-import { type Component, Show } from 'solid-js';
+import { type Component, Show, createMemo } from 'solid-js';
 import styles from './ReloadPrompt.module.css';
 
 export interface ReloadPromptProps {
   filePaths: string[];
+  hasDirtyFiles?: boolean;
   onReload: () => void;
   onDismiss: () => void;
 }
@@ -26,12 +27,15 @@ export const ReloadPrompt: Component<ReloadPromptProps> = (props) => {
         <span class={styles.message}>
           {message()}
         </span>
+        <Show when={props.hasDirtyFiles}>
+          <span class={styles.warning}>Unsaved changes will be lost</span>
+        </Show>
         <div class={styles.actions}>
           <button
             class={`${styles.button} ${styles.reload}`}
             onClick={() => props.onReload()}
           >
-            Reload
+            {props.hasDirtyFiles ? 'Reload Anyway' : 'Reload'}
           </button>
           <button
             class={`${styles.button} ${styles.dismiss}`}

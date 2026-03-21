@@ -69,6 +69,7 @@ const App: Component = () => {
 
   // Reload prompt state — tracks all files changed since last reload/dismiss
   const [changedFiles, setChangedFiles] = createSignal<Set<string>>(new Set());
+  const [confirmReload, setConfirmReload] = createSignal(false);
 
   // Navigation state
   const [scrollToLocation, setScrollToLocation] = createSignal<SourceLocation | null>(null);
@@ -202,21 +203,35 @@ const App: Component = () => {
 
   function handleReload() {
     const files = changedFiles();
-    if (files.size > 0) {
-      const promises = Array.from(files).map((path) =>
-        bridgeOpenFile(path)
-          .then((fileData) => {
-            editorStore.updateFileContent(fileData.path, fileData.content);
-          }),
-      );
-      Promise.all(promises)
-        .then(() => setChangedFiles(new Set()))
-        .catch((err) => console.error('Reload failed:', err));
+    if (files.size === 0) return;
+
+    // Check if any changed files have unsaved edits
+    const dirtyOverlap = Array.from(files).some((f) =>
+      editorStore.state.dirtyFiles.includes(f),
+    );
+
+    if (dirtyOverlap && !confirmReload()) {
+      setConfirmReload(true);
+      return; // Show warning, don't reload yet
     }
+
+    const promises = Array.from(files).map((path) =>
+      bridgeOpenFile(path)
+        .then((fileData) => {
+          editorStore.updateFileContent(fileData.path, fileData.content);
+        }),
+    );
+    Promise.all(promises)
+      .then(() => {
+        setChangedFiles(new Set());
+        setConfirmReload(false);
+      })
+      .catch((err) => console.error('Reload failed:', err));
   }
 
   function handleDismissReload() {
     setChangedFiles(new Set());
+    setConfirmReload(false);
   }
 
   function handleDismissToast(id: string) {
@@ -272,6 +287,7 @@ const App: Component = () => {
       <Toolbar onExport={handleExport} onFitToView={handleFitToView} />
       <ReloadPrompt
         filePaths={Array.from(changedFiles())}
+        hasDirtyFiles={confirmReload()}
         onReload={handleReload}
         onDismiss={handleDismissReload}
       />

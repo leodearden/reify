@@ -45,3 +45,9 @@
 .dismiss:hover {
   background: var(--reify-overlay0, #6c7086);
 }
+
+.warning {
+  color: var(--reify-warning, #fab387);
+  font-size: 12px;
+  font-weight: 500;
+}
