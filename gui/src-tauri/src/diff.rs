@@ -177,7 +177,7 @@ pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
 /// If `last_state` is `None` (first call), returns a full delta.
 /// Otherwise diffs against the previous state and returns the minimal delta.
 pub fn compute_delta(last_state: &Mutex<Option<GuiState>>, new_state: &GuiState) -> StateDelta {
-    let mut guard = last_state.lock().expect("last_state lock poisoned");
+    let mut guard = last_state.lock().unwrap_or_else(|e| e.into_inner());
     let delta = match guard.as_ref() {
         Some(old) => diff_gui_state(old, new_state),
         None => StateDelta::full(new_state),

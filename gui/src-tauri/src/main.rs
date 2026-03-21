@@ -41,6 +41,18 @@ fn emit_status(app: &tauri::AppHandle, phase: &str) {
     .ok();
 }
 
+/// RAII guard that emits `evaluation-status: idle` when dropped.
+///
+/// Ensures the frontend never gets stuck in "evaluating" state, even if
+/// a called function panics (provided the panic is caught or unwinds).
+struct IdleGuard(tauri::AppHandle);
+
+impl Drop for IdleGuard {
+    fn drop(&mut self) {
+        emit_status(&self.0, "idle");
+    }
+}
+
 /// Create a FileWatcher for the given file, wired to update the engine and emit events.
 fn create_watcher(app_handle: &tauri::AppHandle, file_path: &std::path::Path) -> Option<FileWatcher> {
     let parent = file_path.parent()?;
@@ -53,13 +65,15 @@ fn create_watcher(app_handle: &tauri::AppHandle, file_path: &std::path::Path) ->
             let path_str = changed_path.to_string_lossy().to_string();
 
             emit_status(&handle, "evaluating");
-            if let Ok(gui_state) =
-                reify_gui::commands::update_source_impl(&state.engine, &path_str, &content)
             {
-                let delta = compute_delta(&state.last_state, &gui_state);
-                emit_delta(&handle, &delta);
+                let _idle = IdleGuard(handle.clone());
+                if let Ok(gui_state) =
+                    reify_gui::commands::update_source_impl(&state.engine, &path_str, &content)
+                {
+                    let delta = compute_delta(&state.last_state, &gui_state);
+                    emit_delta(&handle, &delta);
+                }
             }
-            emit_status(&handle, "idle");
 
             handle
                 .emit(
@@ -111,12 +125,12 @@ fn set_parameter(
     value: String,
 ) -> Result<reify_gui::types::GuiState, String> {
     emit_status(&app, "evaluating");
+    let _idle = IdleGuard(app.clone());
     let result = reify_gui::commands::set_parameter_impl(&state.engine, &cell_id, &value);
     if let Ok(ref gui_state) = result {
         let delta = compute_delta(&state.last_state, gui_state);
         emit_delta(&app, &delta);
     }
-    emit_status(&app, "idle");
     result
 }
 
@@ -128,12 +142,12 @@ fn update_source(
     content: String,
 ) -> Result<reify_gui::types::GuiState, String> {
     emit_status(&app, "evaluating");
+    let _idle = IdleGuard(app.clone());
     let result = reify_gui::commands::update_source_impl(&state.engine, &path, &content);
     if let Ok(ref gui_state) = result {
         let delta = compute_delta(&state.last_state, gui_state);
         emit_delta(&app, &delta);
     }
-    emit_status(&app, "idle");
     result
 }
 
@@ -154,6 +168,7 @@ fn open_file_engine(
     path: String,
 ) -> Result<reify_gui::types::GuiState, String> {
     emit_status(&app, "evaluating");
+    let _idle = IdleGuard(app.clone());
     let result = reify_gui::commands::open_file_engine_impl(&state.engine, &path);
     if let Ok(ref gui_state) = result {
         let delta = compute_delta(&state.last_state, gui_state);
@@ -165,7 +180,6 @@ fn open_file_engine(
             *watcher_guard = new_watcher;
         }
     }
-    emit_status(&app, "idle");
     result
 }
 
