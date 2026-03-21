@@ -160,3 +160,30 @@ field def bad_nested : Point3 -> Scalar {
         module.diagnostics
     );
 }
+
+// ── Step 33: duplicate field names ───────────────────────────────────────
+
+#[test]
+fn compile_duplicate_field_names() {
+    let module = compile_module(
+        r#"
+field def temp : Point3 -> Scalar { source = analytical { |p| p } }
+field def temp : Scalar -> Scalar { source = analytical { |x| x } }
+"#,
+    );
+    // Should emit a diagnostic about duplicate field name
+    let has_dup_error = module.diagnostics.iter().any(|d| {
+        d.message.contains("duplicate field name")
+    });
+    assert!(
+        has_dup_error,
+        "expected 'duplicate field name' diagnostic, got: {:?}",
+        module.diagnostics
+    );
+    // Should only compile the first field (duplicate skipped)
+    assert_eq!(
+        module.fields.len(),
+        1,
+        "expected only 1 compiled field (duplicate should be skipped)"
+    );
+}
