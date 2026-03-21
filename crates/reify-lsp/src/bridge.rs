@@ -63,6 +63,38 @@ impl InProcessLsp {
                 server.initialized(InitializedParams {}).await;
                 Ok(Value::Null)
             }
+            "textDocument/didOpen" => {
+                let p: DidOpenTextDocumentParams =
+                    serde_json::from_value(params)
+                        .map_err(|e| format!("didOpen params error: {e}"))?;
+                server.did_open(p).await;
+                Ok(Value::Null)
+            }
+            "textDocument/didChange" => {
+                let p: DidChangeTextDocumentParams =
+                    serde_json::from_value(params)
+                        .map_err(|e| format!("didChange params error: {e}"))?;
+                server.did_change(p).await;
+                Ok(Value::Null)
+            }
+            "textDocument/didClose" => {
+                let p: DidCloseTextDocumentParams =
+                    serde_json::from_value(params)
+                        .map_err(|e| format!("didClose params error: {e}"))?;
+                server.did_close(p).await;
+                Ok(Value::Null)
+            }
+            "textDocument/completion" => {
+                let p: CompletionParams =
+                    serde_json::from_value(params)
+                        .map_err(|e| format!("completion params error: {e}"))?;
+                let result = server
+                    .completion(p)
+                    .await
+                    .map_err(|e| format!("completion error: {e}"))?;
+                serde_json::to_value(result)
+                    .map_err(|e| format!("serialize error: {e}"))
+            }
             "shutdown" => {
                 server
                     .shutdown()
