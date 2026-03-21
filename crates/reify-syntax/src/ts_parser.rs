@@ -1194,6 +1194,7 @@ impl<'a> Lowering<'a> {
             "conditional_expression" => self.lower_conditional(node),
             "match_expression" => self.lower_match_expr(node),
             "lambda_expression" => self.lower_lambda_expression(node),
+            "quantifier_expression" => self.lower_quantifier_expression(node),
             "quantity_literal" => self.lower_quantity_literal(node),
             "number_literal" => self.lower_number_literal(node),
             "string_literal" => self.lower_string_literal(node),
@@ -1325,6 +1326,34 @@ impl<'a> Lowering<'a> {
         Some(LambdaParam {
             name,
             type_expr,
+            span: self.span(node),
+        })
+    }
+
+    fn lower_quantifier_expression(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let quantifier_node = node.child_by_field_name("quantifier")?;
+        let kind = match self.node_text(quantifier_node) {
+            "forall" => QuantifierKind::ForAll,
+            "exists" => QuantifierKind::Exists,
+            _ => return None,
+        };
+
+        let variable_node = node.child_by_field_name("variable")?;
+        let variable = self.node_text(variable_node).to_string();
+
+        let collection_node = node.child_by_field_name("collection")?;
+        let collection = self.lower_expr(collection_node)?;
+
+        let predicate_node = node.child_by_field_name("predicate")?;
+        let predicate = self.lower_expr(predicate_node)?;
+
+        Some(Expr {
+            kind: ExprKind::Quantifier {
+                kind,
+                variable,
+                collection: Box::new(collection),
+                predicate: Box::new(predicate),
+            },
             span: self.span(node),
         })
     }

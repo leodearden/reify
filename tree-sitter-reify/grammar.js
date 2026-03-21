@@ -412,6 +412,7 @@ module.exports = grammar({
       $.conditional_expression,
       $.match_expression,
       $.lambda_expression,
+      $.quantifier_expression,
       $.index_access,
       $._primary_expression,
     ),
@@ -429,6 +430,18 @@ module.exports = grammar({
       field('name', $.identifier),
       optional(seq(':', field('type', $.type_expr))),
     ),
+
+    // ── Quantifier expression ─────────────────────────────
+    // forall x in collection: predicate
+    // exists x in collection: predicate
+    quantifier_expression: $ => prec.right(0, seq(
+      field('quantifier', choice('forall', 'exists')),
+      field('variable', $.identifier),
+      'in',
+      field('collection', $._expression),
+      ':',
+      field('predicate', $._expression),
+    )),
 
     // ── Match expression ────────────────────────────────────
     match_expression: $ => prec.right(0, seq(

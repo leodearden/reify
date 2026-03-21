@@ -60,6 +60,10 @@
           "named": true
         },
         {
+          "type": "quantifier_expression",
+          "named": true
+        },
+        {
           "type": "quantity_literal",
           "named": true
         },
@@ -162,6 +166,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
             "named": true
           },
           {
@@ -293,6 +301,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -378,6 +390,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -450,6 +466,10 @@
         },
         {
           "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "quantifier_expression",
           "named": true
         },
         {
@@ -532,6 +552,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -606,6 +630,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -677,6 +705,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
             "named": true
           },
           {
@@ -791,6 +823,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
             "named": true
           },
           {
@@ -930,6 +966,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -1046,6 +1086,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -1153,6 +1197,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
             "named": true
           },
           {
@@ -1344,6 +1392,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
             "named": true
           },
           {
@@ -1539,6 +1591,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -1610,6 +1666,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
             "named": true
           },
           {
@@ -1690,6 +1750,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
             "named": true
           },
           {
@@ -1839,6 +1903,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -1916,6 +1984,10 @@
         },
         {
           "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "quantifier_expression",
           "named": true
         },
         {
@@ -1998,6 +2070,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -2069,6 +2145,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
             "named": true
           },
           {
@@ -2167,6 +2247,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -2254,6 +2338,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
             "named": true
           },
           {
@@ -2362,6 +2450,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -2462,6 +2554,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -2539,6 +2635,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
             "named": true
           },
           {
@@ -2639,6 +2739,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
             "named": true
           },
           {
@@ -2811,6 +2915,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -2944,6 +3052,10 @@
         },
         {
           "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "quantifier_expression",
           "named": true
         },
         {
@@ -3134,6 +3246,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -3240,6 +3356,10 @@
           "named": true
         },
         {
+          "type": "quantifier_expression",
+          "named": true
+        },
+        {
           "type": "quantity_literal",
           "named": true
         },
@@ -3256,6 +3376,192 @@
           "named": true
         }
       ]
+    }
+  },
+  {
+    "type": "quantifier_expression",
+    "named": true,
+    "fields": {
+      "collection": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "bool_literal",
+            "named": true
+          },
+          {
+            "type": "conditional_expression",
+            "named": true
+          },
+          {
+            "type": "function_call",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "lambda_expression",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
+            "type": "match_expression",
+            "named": true
+          },
+          {
+            "type": "member_access",
+            "named": true
+          },
+          {
+            "type": "number_literal",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
+            "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
+            "named": true
+          },
+          {
+            "type": "string_literal",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      },
+      "predicate": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "bool_literal",
+            "named": true
+          },
+          {
+            "type": "conditional_expression",
+            "named": true
+          },
+          {
+            "type": "function_call",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "lambda_expression",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
+            "type": "match_expression",
+            "named": true
+          },
+          {
+            "type": "member_access",
+            "named": true
+          },
+          {
+            "type": "number_literal",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
+            "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
+            "named": true
+          },
+          {
+            "type": "string_literal",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      },
+      "quantifier": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "exists",
+            "named": false
+          },
+          {
+            "type": "forall",
+            "named": false
+          }
+        ]
+      },
+      "variable": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
     }
   },
   {
@@ -3342,6 +3648,10 @@
         },
         {
           "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "quantifier_expression",
           "named": true
         },
         {
@@ -3807,6 +4117,10 @@
             "named": true
           },
           {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
             "type": "quantity_literal",
             "named": true
           },
@@ -3884,6 +4198,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
             "named": true
           },
           {
@@ -4056,11 +4374,19 @@
     "named": false
   },
   {
+    "type": "exists",
+    "named": false
+  },
+  {
     "type": "false",
     "named": false
   },
   {
     "type": "fn",
+    "named": false
+  },
+  {
+    "type": "forall",
     "named": false
   },
   {

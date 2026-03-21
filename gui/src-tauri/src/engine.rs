@@ -515,6 +515,13 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
                 format!("{}.{}({})", format_expr(object), method, arg_strs.join(", "))
             }
         }
+        CompiledExprKind::Quantifier { kind, variable, collection, predicate, .. } => {
+            let keyword = match kind {
+                reify_types::QuantifierKind::ForAll => "forall",
+                reify_types::QuantifierKind::Exists => "exists",
+            };
+            format!("{} {} in {}: {}", keyword, variable, format_expr(collection), format_expr(predicate))
+        }
     }
 }
 

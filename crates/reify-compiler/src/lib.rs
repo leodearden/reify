@@ -1140,6 +1140,43 @@ fn compile_expr_guarded(
 
             CompiledExpr::lambda(compiled_params, param_ids, compiled_body, captures, result_type)
         }
+        reify_syntax::ExprKind::Quantifier { kind, variable, collection, predicate } => {
+            let quant_entity = format!("$quant{}.{}", lambda_counter, scope.entity_name);
+            *lambda_counter += 1;
+
+            // Compile collection in the outer scope
+            let compiled_collection =
+                compile_expr_guarded(collection, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+
+            // Create a nested scope with the bound variable
+            let mut quant_scope = scope.clone();
+            let variable_id = ValueCellId::new(&quant_entity, variable);
+            // Infer element type from the collection's result type
+            let elem_type = match &compiled_collection.result_type {
+                Type::List(elem) | Type::Set(elem) => *elem.clone(),
+                _ => Type::Real, // fallback for unresolved types
+            };
+            quant_scope
+                .names
+                .insert(variable.clone(), (variable_id.clone(), elem_type, None));
+
+            // Compile predicate in the nested scope
+            let compiled_predicate =
+                compile_expr_guarded(predicate, &quant_scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+
+            let compiled_kind = match kind {
+                reify_syntax::QuantifierKind::ForAll => reify_types::QuantifierKind::ForAll,
+                reify_syntax::QuantifierKind::Exists => reify_types::QuantifierKind::Exists,
+            };
+
+            CompiledExpr::quantifier(
+                compiled_kind,
+                variable.clone(),
+                variable_id,
+                compiled_collection,
+                compiled_predicate,
+            )
+        }
     }
 }
 
@@ -2835,6 +2872,18 @@ fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
         }
         CompiledExprKind::Lambda { body, .. } => {
             collect_body_refs_inner(body, refs);
+        }
+        CompiledExprKind::Quantifier { variable_id, collection, predicate, .. } => {
+            collect_body_refs_inner(collection, refs);
+            // Filter out the quantifier's bound variable from predicate refs,
+            // mirroring collect_value_refs_inner in reify-types/src/expr.rs.
+            let mut pred_refs = Vec::new();
+            collect_body_refs_inner(predicate, &mut pred_refs);
+            for r in pred_refs {
+                if r != *variable_id {
+                    refs.push(r);
+                }
+            }
         }
         CompiledExprKind::Literal(_) => {}
         CompiledExprKind::ListLiteral(elements) => {

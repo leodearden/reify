@@ -124,6 +124,10 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
                 assert_no_unresolved(arg);
             }
         }
+        CompiledExprKind::Quantifier { collection, predicate, .. } => {
+            assert_no_unresolved(collection);
+            assert_no_unresolved(predicate);
+        }
     }
 }
 

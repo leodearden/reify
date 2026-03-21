@@ -1,4 +1,4 @@
-use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, UnOp, Value, ValueCellId, ValueMap};
+use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, QuantifierKind, UnOp, Value, ValueCellId, ValueMap};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -178,6 +178,55 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             }
             let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
             eval_method_call(&obj, method, &evaluated_args, ctx)
+        }
+
+        CompiledExprKind::Quantifier { kind, variable_id, collection, predicate, .. } => {
+            let coll_val = eval_expr(collection, ctx);
+            if coll_val.is_undef() {
+                return Value::Undef;
+            }
+
+            // Extract elements from collection (List or Set)
+            let elements: Vec<&Value> = match &coll_val {
+                Value::List(items) => items.iter().collect(),
+                Value::Set(items) => items.iter().collect(),
+                _ => return Value::Undef, // not a collection
+            };
+
+            match kind {
+                QuantifierKind::ForAll => {
+                    // Kleene forall: false short-circuits, undef tracked
+                    let mut has_undef = false;
+                    for elem in &elements {
+                        let mut scope = ctx.values.clone();
+                        scope.insert(variable_id.clone(), (*elem).clone());
+                        let pred_val = eval_expr(predicate, &ctx.with_scope(&scope));
+                        match pred_val {
+                            Value::Bool(false) => return Value::Bool(false),
+                            Value::Bool(true) => {}
+                            Value::Undef => has_undef = true,
+                            _ => return Value::Undef, // type error
+                        }
+                    }
+                    if has_undef { Value::Undef } else { Value::Bool(true) }
+                }
+                QuantifierKind::Exists => {
+                    // Kleene exists: true short-circuits, undef tracked
+                    let mut has_undef = false;
+                    for elem in &elements {
+                        let mut scope = ctx.values.clone();
+                        scope.insert(variable_id.clone(), (*elem).clone());
+                        let pred_val = eval_expr(predicate, &ctx.with_scope(&scope));
+                        match pred_val {
+                            Value::Bool(true) => return Value::Bool(true),
+                            Value::Bool(false) => {}
+                            Value::Undef => has_undef = true,
+                            _ => return Value::Undef, // type error
+                        }
+                    }
+                    if has_undef { Value::Undef } else { Value::Bool(false) }
+                }
+            }
         }
     }
 }
