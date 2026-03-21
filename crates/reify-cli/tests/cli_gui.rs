@@ -149,3 +149,52 @@ fn bundler_config_is_valid() {
         "productName should be 'Reify'"
     );
 }
+
+#[test]
+fn bundler_config_has_platform_targets() {
+    let config = read_tauri_config();
+
+    // bundle.targets should include linux targets
+    let targets = config["bundle"]["targets"]
+        .as_array()
+        .expect("bundle.targets should be an array");
+    let target_strs: Vec<&str> = targets
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect();
+    assert!(
+        target_strs.contains(&"deb"),
+        "bundle.targets should include 'deb', got: {:?}",
+        target_strs
+    );
+    assert!(
+        target_strs.contains(&"appimage"),
+        "bundle.targets should include 'appimage', got: {:?}",
+        target_strs
+    );
+
+    // fileAssociations should contain .ri extension
+    let file_assocs = config["bundle"]["fileAssociations"]
+        .as_array()
+        .expect("bundle.fileAssociations should be an array");
+    let has_ri = file_assocs.iter().any(|assoc| {
+        assoc["ext"]
+            .as_array()
+            .map(|exts| exts.iter().any(|e| e.as_str() == Some("ri")))
+            .unwrap_or(false)
+    });
+    assert!(has_ri, "fileAssociations should include .ri extension");
+
+    // bundle.resources should be configured for OCCT libs
+    let resources = config["bundle"]["resources"]
+        .as_array()
+        .expect("bundle.resources should be an array");
+    let has_so = resources.iter().any(|r| {
+        r.as_str().map(|s| s.contains(".so") || s.contains(".dylib") || s.contains(".dll")).unwrap_or(false)
+    });
+    assert!(
+        has_so,
+        "bundle.resources should include shared library patterns for OCCT, got: {:?}",
+        resources
+    );
+}
