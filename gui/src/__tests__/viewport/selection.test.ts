@@ -346,6 +346,35 @@ describe('createSelection', () => {
       selection.setSelected('Unknown');
       expect(mockSceneAdd).not.toHaveBeenCalled();
     });
+
+    it('removeWireframe disposes LineBasicMaterial on deselect', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      selection.setSelected('A');
+      const wireframe = mockSceneAdd.mock.calls[0][0];
+
+      selection.setSelected(null);
+
+      // Material should be disposed alongside geometry
+      expect(wireframe.material.dispose).toHaveBeenCalled();
+    });
+
+    it('changing selection disposes previous wireframe material', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection } = setup(meshMap);
+
+      selection.setSelected('A');
+      const wireframeA = mockSceneAdd.mock.calls[0][0];
+
+      selection.setSelected('B');
+
+      // First wireframe's material should be disposed
+      expect(wireframeA.material.dispose).toHaveBeenCalled();
+    });
   });
 
   describe('click-based selection raycasting', () => {
@@ -513,6 +542,21 @@ describe('createSelection', () => {
       // Wireframe should be removed and geometry disposed
       expect(mockSceneRemove).toHaveBeenCalledWith(wireframe);
       expect(wireframe.geometry.dispose).toHaveBeenCalled();
+    });
+
+    it('dispose disposes wireframe material if wireframe exists', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      // Create a wireframe by selecting
+      selection.setSelected('A');
+      const wireframe = mockSceneAdd.mock.calls[0][0];
+
+      selection.dispose();
+
+      // Material should also be disposed
+      expect(wireframe.material.dispose).toHaveBeenCalled();
     });
   });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@solidjs/testing-library';
+import { render, screen, fireEvent } from '@solidjs/testing-library';
 
 // Stub ResizeObserver for jsdom (which doesn't support it)
 globalThis.ResizeObserver = class ResizeObserver {
@@ -134,6 +134,18 @@ describe('Viewport', () => {
   it('hides spinner when evalStatus is not provided', () => {
     render(() => <Viewport meshes={{}} />);
     expect(screen.queryByTestId('viewport-spinner')).toBeNull();
+  });
+
+  it('clicking fit-to-view button calls selection.fitToView', async () => {
+    const onFitToView = vi.fn();
+    render(() => <Viewport meshes={{}} onFitToView={onFitToView} />);
+    const btn = screen.getByTestId('fit-to-view');
+    fireEvent.click(btn);
+
+    // selection.fitToView should have been called (bridged via mutable ref)
+    expect(mockSelectionFitToView).toHaveBeenCalled();
+    // The onFitToView prop callback should also be called
+    expect(onFitToView).toHaveBeenCalled();
   });
 
   it('animate loop does not call renderer.render after cleanup/dispose', () => {
