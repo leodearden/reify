@@ -353,12 +353,12 @@ fn compile_dynamic_index_collection_member_access() {
 
     let expr = d_cell.default_expr.as_ref().expect("d should have an expression");
 
-    // The expression is a MethodCall(IndexAccess(collection_base, idx), "diameter", [])
-    // We need to verify the collection_base is a ValueRef to __list_bolts, not Literal(Undef)
+    // The expression should be IndexAccess(ValueRef(__list_bolts__diameter), idx)
+    // where __list_bolts__diameter is a per-member synthetic list
     fn find_list_ref(expr: &reify_types::CompiledExpr) -> bool {
         match &expr.kind {
             CompiledExprKind::ValueRef(id) => {
-                id.entity == "S" && id.member == "__list_bolts"
+                id.entity == "S" && id.member == "__list_bolts__diameter"
             }
             CompiledExprKind::MethodCall { object, .. } => find_list_ref(object),
             CompiledExprKind::IndexAccess { object, .. } => find_list_ref(object),
@@ -368,7 +368,7 @@ fn compile_dynamic_index_collection_member_access() {
 
     assert!(
         find_list_ref(expr),
-        "dynamic index collection access should contain ValueRef to S.__list_bolts, got: {:?}",
+        "dynamic index collection access should contain ValueRef to S.__list_bolts__diameter, got: {:?}",
         expr.kind
     );
 

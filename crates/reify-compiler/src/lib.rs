@@ -934,14 +934,23 @@ fn compile_expr_guarded(
                         content_hash,
                     };
                 }
-                // For non-literal index, compile as IndexAccess + MemberAccess chain
-                let collection_ref = CompiledExpr::literal(
-                    Value::Undef,
-                    Type::List(Box::new(Type::StructureRef(name.clone()))),
+                // For non-literal index, compile as IndexAccess into a per-member synthetic list.
+                // The eval engine creates __list_{name}__{member} cells that gather each
+                // instance's member value into a List, so indexing gives the right value.
+                let list_member = format!("__list_{}__{}", name, member);
+                let list_id = ValueCellId::new(&scope.entity_name, &list_member);
+                let collection_ref = CompiledExpr::value_ref(
+                    list_id,
+                    Type::List(Box::new(member_type.clone())),
+                );
+                diagnostics.push(
+                    Diagnostic::info(format!(
+                        "dynamic collection index: {}[<expr>].{} — result depends on runtime list assembly",
+                        name, member
+                    ))
                 );
                 let compiled_idx = compile_expr_guarded(index, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
-                let idx_access = CompiledExpr::index_access(collection_ref, compiled_idx, Type::StructureRef(name.clone()));
-                return CompiledExpr::method_call(idx_access, member.clone(), vec![], member_type);
+                return CompiledExpr::index_access(collection_ref, compiled_idx, member_type);
             }
 
             // Check if this is a collection sub member access: collection.count

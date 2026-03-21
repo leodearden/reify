@@ -942,6 +942,29 @@ impl Engine {
                                 (list_val, DeterminacyState::Determined),
                             );
                         }
+
+                        // Create per-member synthetic lists: __list_{name}__{member} for each value cell
+                        for child_cell in &child_template.value_cells {
+                            let member_items: Vec<Value> = (0..n)
+                                .map(|idx| {
+                                    let scoped_id = ValueCellId::new(
+                                        format!("{}.{}[{}]", template.name, sub.name, idx),
+                                        &child_cell.id.member,
+                                    );
+                                    values.get(&scoped_id).cloned().unwrap_or(Value::Undef)
+                                })
+                                .collect();
+                            let member_list_id = ValueCellId::new(
+                                &template.name,
+                                format!("__list_{}__{}", sub.name, child_cell.id.member),
+                            );
+                            let member_list_val = Value::List(member_items);
+                            values.insert(member_list_id.clone(), member_list_val.clone());
+                            snapshot.values.insert(
+                                member_list_id,
+                                (member_list_val, DeterminacyState::Determined),
+                            );
+                        }
                     }
                     // If count is None (Undef), no instances are created
                     continue;
@@ -1671,6 +1694,29 @@ impl Engine {
                     new_snapshot.values.insert(
                         list_cell_id,
                         (list_val, DeterminacyState::Determined),
+                    );
+                }
+
+                // Update per-member synthetic lists: __list_{name}__{member}
+                for (member, _, _, _) in &col_sub.child_value_cells {
+                    let member_items: Vec<Value> = (0..new_count)
+                        .map(|idx| {
+                            let scoped_id = ValueCellId::new(
+                                format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, idx),
+                                member,
+                            );
+                            values.get(&scoped_id).cloned().unwrap_or(Value::Undef)
+                        })
+                        .collect();
+                    let member_list_id = ValueCellId::new(
+                        &col_sub.parent_entity,
+                        format!("__list_{}__{}", col_sub.sub_name, member),
+                    );
+                    let member_list_val = Value::List(member_items);
+                    values.insert(member_list_id.clone(), member_list_val.clone());
+                    new_snapshot.values.insert(
+                        member_list_id,
+                        (member_list_val, DeterminacyState::Determined),
                     );
                 }
 
