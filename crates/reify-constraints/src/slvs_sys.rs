@@ -2,70 +2,128 @@
 //!
 //! These declarations match the v3.1 `slvs.h` API from the `libslvs1-dev`
 //! system package. No bindgen needed — the API surface is small and stable.
+//!
+//! Handle types use `#[repr(transparent)]` newtypes around `u32` to prevent
+//! accidental mixing of param, entity, constraint, and group handles.
 
 #![allow(non_camel_case_types, non_upper_case_globals, non_snake_case, dead_code)]
 
 use std::os::raw::c_int;
 
-// --- Handle types ---
-pub type Slvs_hParam = u32;
-pub type Slvs_hEntity = u32;
-pub type Slvs_hConstraint = u32;
-pub type Slvs_hGroup = u32;
+// --- Handle types (newtype wrappers for type safety) ---
+
+/// Handle to a SolveSpace parameter. Not interchangeable with entity/constraint handles.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Slvs_hParam(pub u32);
+
+/// Handle to a SolveSpace entity. Not interchangeable with param/constraint handles.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Slvs_hEntity(pub u32);
+
+/// Handle to a SolveSpace constraint. Not interchangeable with param/entity handles.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Slvs_hConstraint(pub u32);
+
+/// Handle to a SolveSpace group. Not interchangeable with other handle types.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Slvs_hGroup(pub u32);
 
 // --- Special constants ---
-pub const SLVS_FREE_IN_3D: Slvs_hEntity = 0;
+pub const SLVS_FREE_IN_3D: Slvs_hEntity = Slvs_hEntity(0);
 
 // --- Entity type constants ---
 pub const SLVS_E_POINT_IN_3D: c_int = 50000;
+#[allow(dead_code)]
 pub const SLVS_E_POINT_IN_2D: c_int = 50001;
 pub const SLVS_E_NORMAL_IN_3D: c_int = 60000;
+#[allow(dead_code)]
 pub const SLVS_E_NORMAL_IN_2D: c_int = 60001;
+#[allow(dead_code)]
 pub const SLVS_E_DISTANCE: c_int = 70000;
 pub const SLVS_E_WORKPLANE: c_int = 80000;
 pub const SLVS_E_LINE_SEGMENT: c_int = 80001;
+#[allow(dead_code)]
 pub const SLVS_E_CUBIC: c_int = 80002;
+#[allow(dead_code)]
 pub const SLVS_E_CIRCLE: c_int = 80003;
+#[allow(dead_code)]
 pub const SLVS_E_ARC_OF_CIRCLE: c_int = 80004;
 
 // --- Constraint type constants ---
 pub const SLVS_C_POINTS_COINCIDENT: c_int = 100000;
 pub const SLVS_C_PT_PT_DISTANCE: c_int = 100001;
+#[allow(dead_code)]
 pub const SLVS_C_PT_PLANE_DISTANCE: c_int = 100002;
+#[allow(dead_code)]
 pub const SLVS_C_PT_LINE_DISTANCE: c_int = 100003;
+#[allow(dead_code)]
 pub const SLVS_C_PT_FACE_DISTANCE: c_int = 100004;
+#[allow(dead_code)]
 pub const SLVS_C_PT_IN_PLANE: c_int = 100005;
+#[allow(dead_code)]
 pub const SLVS_C_PT_ON_LINE: c_int = 100006;
+#[allow(dead_code)]
 pub const SLVS_C_PT_ON_FACE: c_int = 100007;
+#[allow(dead_code)]
 pub const SLVS_C_EQUAL_LENGTH_LINES: c_int = 100008;
+#[allow(dead_code)]
 pub const SLVS_C_LENGTH_RATIO: c_int = 100009;
+#[allow(dead_code)]
 pub const SLVS_C_EQ_LEN_PT_LINE_D: c_int = 100010;
+#[allow(dead_code)]
 pub const SLVS_C_EQ_PT_LN_DISTANCES: c_int = 100011;
+#[allow(dead_code)]
 pub const SLVS_C_EQUAL_ANGLE: c_int = 100012;
+#[allow(dead_code)]
 pub const SLVS_C_EQUAL_LINE_ARC_LEN: c_int = 100013;
+#[allow(dead_code)]
 pub const SLVS_C_SYMMETRIC: c_int = 100014;
+#[allow(dead_code)]
 pub const SLVS_C_SYMMETRIC_HORIZ: c_int = 100015;
+#[allow(dead_code)]
 pub const SLVS_C_SYMMETRIC_VERT: c_int = 100016;
+#[allow(dead_code)]
 pub const SLVS_C_SYMMETRIC_LINE: c_int = 100017;
+#[allow(dead_code)]
 pub const SLVS_C_AT_MIDPOINT: c_int = 100018;
+#[allow(dead_code)]
 pub const SLVS_C_HORIZONTAL: c_int = 100019;
+#[allow(dead_code)]
 pub const SLVS_C_VERTICAL: c_int = 100020;
+#[allow(dead_code)]
 pub const SLVS_C_DIAMETER: c_int = 100021;
+#[allow(dead_code)]
 pub const SLVS_C_PT_ON_CIRCLE: c_int = 100022;
+#[allow(dead_code)]
 pub const SLVS_C_SAME_ORIENTATION: c_int = 100023;
 pub const SLVS_C_ANGLE: c_int = 100024;
 pub const SLVS_C_PARALLEL: c_int = 100025;
 pub const SLVS_C_PERPENDICULAR: c_int = 100026;
+#[allow(dead_code)]
 pub const SLVS_C_ARC_LINE_TANGENT: c_int = 100027;
+#[allow(dead_code)]
 pub const SLVS_C_CUBIC_LINE_TANGENT: c_int = 100028;
+#[allow(dead_code)]
 pub const SLVS_C_EQUAL_RADIUS: c_int = 100029;
+#[allow(dead_code)]
 pub const SLVS_C_PROJ_PT_DISTANCE: c_int = 100030;
+#[allow(dead_code)]
 pub const SLVS_C_WHERE_DRAGGED: c_int = 100031;
+#[allow(dead_code)]
 pub const SLVS_C_CURVE_CURVE_TANGENT: c_int = 100032;
+#[allow(dead_code)]
 pub const SLVS_C_LENGTH_DIFFERENCE: c_int = 100033;
+#[allow(dead_code)]
 pub const SLVS_C_ARC_ARC_LEN_RATIO: c_int = 100034;
+#[allow(dead_code)]
 pub const SLVS_C_ARC_LINE_LEN_RATIO: c_int = 100035;
+#[allow(dead_code)]
 pub const SLVS_C_ARC_ARC_DIFFERENCE: c_int = 100036;
+#[allow(dead_code)]
 pub const SLVS_C_ARC_LINE_DIFFERENCE: c_int = 100037;
 
 // --- Result constants ---
@@ -171,10 +229,10 @@ impl Slvs_Entity {
             group,
             type_,
             wrkpl: SLVS_FREE_IN_3D,
-            point: [0; 4],
-            normal: 0,
-            distance: 0,
-            param: [0; 4],
+            point: [Slvs_hEntity(0); 4],
+            normal: Slvs_hEntity(0),
+            distance: Slvs_hEntity(0),
+            param: [Slvs_hParam(0); 4],
         }
     }
 
@@ -186,7 +244,7 @@ impl Slvs_Entity {
         pz: Slvs_hParam,
     ) -> Self {
         let mut e = Self::zeroed_with(h, group, SLVS_E_POINT_IN_3D);
-        e.param = [px, py, pz, 0];
+        e.param = [px, py, pz, Slvs_hParam(0)];
         e
     }
 
@@ -197,7 +255,7 @@ impl Slvs_Entity {
         pt_b: Slvs_hEntity,
     ) -> Self {
         let mut e = Self::zeroed_with(h, group, SLVS_E_LINE_SEGMENT);
-        e.point = [pt_a, pt_b, 0, 0];
+        e.point = [pt_a, pt_b, Slvs_hEntity(0), Slvs_hEntity(0)];
         e
     }
 }
@@ -225,8 +283,8 @@ impl Slvs_Constraint {
             ptB: pt_b,
             entityA: entity_a,
             entityB: entity_b,
-            entityC: 0,
-            entityD: 0,
+            entityC: Slvs_hEntity(0),
+            entityD: Slvs_hEntity(0),
             other: 0,
             other2: 0,
         }
