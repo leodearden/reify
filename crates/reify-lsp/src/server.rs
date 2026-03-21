@@ -329,6 +329,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sink_receives_diagnostics_on_did_change() {
+        let sink = Arc::new(RecordingSink::default());
+        let (service, _socket) = LspService::new(|client| {
+            ReifyLanguageServer::with_sink(client, sink.clone())
+        });
+        let server = service.inner();
+        let uri = test_uri();
+
+        // Open with valid source
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: reify_test_support::bracket_source().to_string(),
+                },
+            })
+            .await;
+
+        // Change to broken source
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: "structure {".to_string(),
+                }],
+            })
+            .await;
+
+        let calls = sink.take_calls();
+        assert_eq!(calls.len(), 2, "sink should receive 2 calls (did_open + did_change)");
+
+        // Second call (did_change with broken source) should contain error diagnostics
+        let (_, ref diags, version) = calls[1];
+        assert_eq!(version, Some(2));
+        let has_error = diags
+            .iter()
+            .any(|d| d.severity == Some(DiagnosticSeverity::ERROR));
+        assert!(has_error, "did_change with broken source should produce error diagnostics");
+    }
+
+    #[tokio::test]
     async fn server_with_sink_initializes() {
         let (service, _socket) = LspService::new(|client| {
             ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink))
