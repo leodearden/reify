@@ -699,3 +699,81 @@ structure def Widget : Sizable {
         );
     }
 }
+
+// ── New tests: trait_rigid_mass_conformance ──────────────────────────
+
+/// Parse m5_trait_rigid.ri (trait Rigid with Mass/kg + structure Bracket : Rigid),
+/// compile, eval, verify mass=0.5kg=0.5 SI, width=80mm=0.08 SI, constraints satisfied.
+///
+/// This exercises trait conformance with Mass type and kg units — different from
+/// the existing test which uses Length/mm.
+#[test]
+fn trait_rigid_mass_conformance() {
+    let source = std::fs::read_to_string("../../examples/m5_trait_rigid.ri")
+        .expect("examples/m5_trait_rigid.ri should exist");
+
+    let compiled = parse_and_compile(&source);
+
+    // Should have one template (Bracket)
+    assert!(!compiled.templates.is_empty(), "expected at least one template");
+    let bracket = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bracket")
+        .expect("should have a Bracket template");
+    assert_eq!(bracket.name, "Bracket");
+
+    // Eval
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // Check mass = 0.5kg = 0.5 SI
+    let mass_id = ValueCellId::new("Bracket", "mass");
+    let mass_val = result
+        .values
+        .get(&mass_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", mass_id));
+    match mass_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.5).abs() < 1e-12,
+                "expected 0.5 SI for mass (0.5kg), got {}",
+                si_value
+            );
+        }
+        other => panic!("expected Scalar for mass, got {:?}", other),
+    }
+
+    // Check width = 80mm = 0.08 SI
+    let width_id = ValueCellId::new("Bracket", "width");
+    let width_val = result
+        .values
+        .get(&width_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", width_id));
+    match width_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.08).abs() < 1e-12,
+                "expected 0.08 SI for width (80mm), got {}",
+                si_value
+            );
+        }
+        other => panic!("expected Scalar for width, got {:?}", other),
+    }
+
+    // Check constraints via engine.check() — all should be Satisfied
+    let result = engine.check(&compiled);
+    assert!(
+        !result.constraint_results.is_empty(),
+        "expected constraints from trait + structure"
+    );
+    for entry in &result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be satisfied",
+            entry.id
+        );
+    }
+}
