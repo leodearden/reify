@@ -2089,14 +2089,16 @@ fn compile_entity(
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
                 // For lets, we need to infer the type from the expression.
-                // Skip geometry function calls — they won't be value cells.
+                // Geometry lets produce realizations (not value cells) but still
+                // need to be registered in scope so subsequent lets can reference them.
                 if is_geometry_let(&let_decl.value) {
-                    continue;
+                    scope.register(&let_decl.name, Type::Geometry);
+                } else {
+                    // We'll register with a placeholder type; the actual type will
+                    // be determined when we compile the expression. For now, use Real.
+                    // We'll update this after the expression is compiled.
+                    scope.register(&let_decl.name, Type::Real);
                 }
-                // We'll register with a placeholder type; the actual type will
-                // be determined when we compile the expression. For now, use Real.
-                // We'll update this after the expression is compiled.
-                scope.register(&let_decl.name, Type::Real);
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
                 register_guarded_names(&g.members, &mut scope, diagnostics);
@@ -3466,7 +3468,9 @@ fn register_guarded_names(
                 scope.register(&param.name, ty);
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
-                if !is_geometry_let(&let_decl.value) {
+                if is_geometry_let(&let_decl.value) {
+                    scope.register(&let_decl.name, Type::Geometry);
+                } else {
                     scope.register(&let_decl.name, Type::Real);
                 }
             }
