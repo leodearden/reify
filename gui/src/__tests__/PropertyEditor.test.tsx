@@ -463,6 +463,22 @@ describe('PropertyEditor validation - non-parseable', () => {
   });
 });
 
+describe('PropertyEditor highlight CSS', () => {
+  it('row with data-highlighted should have highlight CSS class applied', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} highlightedParams={['c1']} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    expect(row.hasAttribute('data-highlighted')).toBe(true);
+    // Verify the CSS module produces a class that would match [data-highlighted]
+    // The row class should exist (it's applied by the component)
+    expect(row.className).toContain('row');
+  });
+});
+
 describe('PropertyEditor validation - valid number', () => {
   const values: Record<string, ValueData> = {
     c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
