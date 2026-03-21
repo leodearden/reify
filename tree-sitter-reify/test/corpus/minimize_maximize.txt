@@ -1,0 +1,137 @@
+================================================================================
+Simple minimize_declaration
+================================================================================
+
+structure S {
+  minimize x
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (minimize_declaration
+      expr: (identifier))))
+
+================================================================================
+Simple maximize_declaration
+================================================================================
+
+structure S {
+  maximize thickness
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (maximize_declaration
+      expr: (identifier))))
+
+================================================================================
+Minimize with complex binary expression
+================================================================================
+
+structure S {
+  minimize width * height
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (minimize_declaration
+      expr: (binary_expression
+        left: (identifier)
+        right: (identifier)))))
+
+================================================================================
+Minimize with where-clause guard
+================================================================================
+
+structure S {
+  minimize x where x > 0
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (minimize_declaration
+      expr: (identifier)
+      guard: (where_clause
+        condition: (binary_expression
+          left: (identifier)
+          right: (number_literal))))))
+
+================================================================================
+Maximize with where-clause guard
+================================================================================
+
+structure S {
+  maximize throughput where throughput < 100
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (maximize_declaration
+      expr: (identifier)
+      guard: (where_clause
+        condition: (binary_expression
+          left: (identifier)
+          right: (number_literal))))))
+
+================================================================================
+Minimize alongside other members (param, let, constraint)
+================================================================================
+
+structure S {
+  param x : Float
+  let y = x + 1.0
+  constraint x > 0
+  minimize x
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier)))
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (identifier)
+        right: (number_literal)))
+    (constraint_declaration
+      expr: (binary_expression
+        left: (identifier)
+        right: (number_literal)))
+    (minimize_declaration
+      expr: (identifier))))
+
+================================================================================
+Minimize inside occurrence_definition
+================================================================================
+
+occurrence O {
+  minimize cost
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (occurrence_definition
+    name: (identifier)
+    (minimize_declaration
+      expr: (identifier))))
