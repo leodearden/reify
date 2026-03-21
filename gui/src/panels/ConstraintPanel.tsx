@@ -80,6 +80,13 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
                   props.onConstraintSelect?.(constraint);
                   if (isExpandable(constraint.status)) toggleExpand(constraint.node_id);
                 }}
+                onKeyDown={(e: KeyboardEvent) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    props.onConstraintSelect?.(constraint);
+                    if (isExpandable(constraint.status)) toggleExpand(constraint.node_id);
+                  }
+                }}
               >
                 <div class={styles.rowHeader}>
                   <Show when={isExpandable(constraint.status)}>
