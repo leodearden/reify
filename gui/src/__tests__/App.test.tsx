@@ -182,6 +182,50 @@ describe('App initial state loading', () => {
   });
 });
 
+describe('App side panel vertical splitter', () => {
+  it('has a horizontal splitter between PropertyEditor and ConstraintPanel in the side panel', () => {
+    render(() => <App />);
+    const sidePanel = screen.getByTestId('side-panel');
+    const splitter = sidePanel.querySelector('[data-testid="splitter-side"]');
+    expect(splitter).toBeTruthy();
+    expect((splitter as HTMLElement).dataset.orientation).toBe('horizontal');
+  });
+
+  it('PropertyEditor appears before splitter which appears before ConstraintPanel', () => {
+    render(() => <App />);
+    const sidePanel = screen.getByTestId('side-panel');
+    const propEditor = screen.getByTestId('property-editor');
+    const constraintPanel = screen.getByTestId('constraint-panel');
+    const splitter = sidePanel.querySelector('[data-testid="splitter-side"]') as HTMLElement;
+
+    expect(splitter).toBeTruthy();
+    // PropertyEditor before splitter
+    const propVsSplitter = propEditor.compareDocumentPosition(splitter);
+    expect(propVsSplitter & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Splitter before ConstraintPanel
+    const splitterVsConstraint = splitter.compareDocumentPosition(constraintPanel);
+    expect(splitterVsConstraint & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('dragging the side panel splitter changes the top/bottom split', () => {
+    render(() => <App />);
+    const sidePanel = screen.getByTestId('side-panel');
+    const splitter = sidePanel.querySelector('[data-testid="splitter-side"]') as HTMLElement;
+    expect(splitter).toBeTruthy();
+
+    // Get initial grid-template-rows or flex-basis
+    const initialStyle = sidePanel.style.gridTemplateRows;
+
+    fireEvent.mouseDown(splitter, { clientX: 500, clientY: 300 });
+    fireEvent.mouseMove(document, { clientX: 500, clientY: 350 });
+    fireEvent.mouseUp(document);
+
+    // Style should have changed after drag
+    const updatedStyle = sidePanel.style.gridTemplateRows;
+    expect(updatedStyle).not.toBe(initialStyle);
+  });
+});
+
 describe('App dynamic window title', () => {
   it('sets document.title to "Reify" when no file is open', async () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue({
