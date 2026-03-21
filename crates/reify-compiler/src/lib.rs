@@ -703,6 +703,12 @@ fn compile_expr_guarded(
                     CompiledExpr::value_ref(id.clone(), ty.clone())
                 }
                 None => {
+                    // Check if this is a collection sub name — resolve to __list_{name}
+                    if scope.collection_sub_names.contains(name.as_str()) {
+                        let list_id = ValueCellId::new(&scope.entity_name, format!("__list_{}", name));
+                        let list_type = Type::List(Box::new(Type::StructureRef(name.clone())));
+                        return CompiledExpr::value_ref(list_id, list_type);
+                    }
                     diagnostics.push(
                         Diagnostic::error(format!("unresolved name: {}", name))
                             .with_label(DiagnosticLabel::new(expr.span, "not found in scope")),
