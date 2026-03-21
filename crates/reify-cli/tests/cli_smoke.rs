@@ -27,6 +27,10 @@ fn no_args_shows_help_with_all_commands() {
         stderr.contains("lsp"),
         "help text should mention 'lsp' command, got: {stderr}"
     );
+    assert!(
+        stderr.contains("gui"),
+        "help text should mention 'gui' command, got: {stderr}"
+    );
 }
 
 #[test]

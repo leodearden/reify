@@ -24,6 +24,9 @@ reify-compiler.workspace = true
 reify-eval.workspace = true
 reify-constraints.workspace = true
 reify-geometry.workspace = true
+# OCCT bundling strategy: OCCT is dynamically linked via reify-kernel-occt's
+# build.rs (dylib + rpath). For distribution, OCCT .so/.dylib/.dll files are
+# listed in tauri.conf.json bundle.resources so they ship alongside the binary.
 reify-kernel-occt = { workspace = true, optional = true }
 reify-stdlib.workspace = true
 tauri = { workspace = true, optional = true }
