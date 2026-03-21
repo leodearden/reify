@@ -321,3 +321,69 @@ fn compile_bolts_count_expression() {
     // Result type should be Int
     assert_eq!(expr.result_type, reify_types::Type::Int, "bolts.count type should be Int");
 }
+
+// ─── step-27: dynamic index collection member access ───
+
+#[test]
+fn compile_dynamic_index_collection_member_access() {
+    // When index is non-literal (a param), the compiler takes the dynamic-index path.
+    // The collection base should be a ValueRef to __list_bolts, NOT a Literal(Undef).
+    let source = r#"
+        structure Bolt { param diameter : Scalar = 10mm }
+        structure S {
+            param idx : Int = 0
+            sub bolts : List<Bolt>
+            constraint bolts.count == 4
+            let d = bolts[idx].diameter
+        }
+    "#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("should have template S");
+
+    // Find the 'd' let binding
+    let d_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d")
+        .expect("should have let binding 'd'");
+
+    let expr = d_cell.default_expr.as_ref().expect("d should have an expression");
+
+    // The expression is a MethodCall(IndexAccess(collection_base, idx), "diameter", [])
+    // We need to verify the collection_base is a ValueRef to __list_bolts, not Literal(Undef)
+    fn find_list_ref(expr: &reify_types::CompiledExpr) -> bool {
+        match &expr.kind {
+            CompiledExprKind::ValueRef(id) => {
+                id.entity == "S" && id.member == "__list_bolts"
+            }
+            CompiledExprKind::MethodCall { object, .. } => find_list_ref(object),
+            CompiledExprKind::IndexAccess { object, .. } => find_list_ref(object),
+            _ => false,
+        }
+    }
+
+    assert!(
+        find_list_ref(expr),
+        "dynamic index collection access should contain ValueRef to S.__list_bolts, got: {:?}",
+        expr.kind
+    );
+
+    // Also verify it does NOT contain a Literal(Undef) as the collection base
+    fn contains_undef_literal(expr: &reify_types::CompiledExpr) -> bool {
+        match &expr.kind {
+            CompiledExprKind::Literal(reify_types::Value::Undef) => true,
+            CompiledExprKind::MethodCall { object, .. } => contains_undef_literal(object),
+            CompiledExprKind::IndexAccess { object, .. } => contains_undef_literal(object),
+            _ => false,
+        }
+    }
+
+    assert!(
+        !contains_undef_literal(expr),
+        "dynamic index collection access should NOT contain Literal(Undef) as base"
+    );
+}

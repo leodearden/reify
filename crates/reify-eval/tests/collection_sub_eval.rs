@@ -437,3 +437,49 @@ fn eval_collection_list_aggregation() {
         other => panic!("expected grades to be a List, got {:?}", other),
     }
 }
+
+// ─── step-27: dynamic index e2e eval ───
+
+#[test]
+fn eval_dynamic_index_collection_member_access_from_source() {
+    // End-to-end: compile source with bolts[idx].diameter and eval.
+    // If the compiler emits Literal(Undef) for the collection base, the result will be Undef.
+    let source = r#"
+        structure Bolt { param diameter : Scalar = 10mm }
+        structure S {
+            param idx : Int = 0
+            sub bolts : List<Bolt>
+            constraint bolts.count == 4
+            let d = bolts[idx].diameter
+        }
+    "#;
+
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // d = bolts[0].diameter should be 10mm = 0.01m, NOT Undef
+    let d_id = ValueCellId::new("S", "d");
+    let d_val = result.values.get(&d_id);
+    assert!(
+        d_val.is_some() && d_val != Some(&Value::Undef),
+        "bolts[idx].diameter should evaluate to the actual diameter, not Undef. Got: {:?}",
+        d_val
+    );
+    assert_eq!(
+        d_val,
+        Some(&Value::length(0.01)),
+        "bolts[0].diameter should be 10mm = 0.01m"
+    );
+}
