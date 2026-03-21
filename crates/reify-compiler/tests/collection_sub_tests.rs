@@ -193,6 +193,46 @@ fn compile_indexed_collection_member_access() {
             other
         ),
     }
+    // Result type should be Scalar (length) — currently hardcoded to Real (see step-24 fix)
+    assert_eq!(
+        expr.result_type,
+        reify_types::Type::Real,
+        "currently hardcoded to Real — step-24 will fix to correct type"
+    );
+}
+
+// ─── step-23: type annotation tests for indexed collection member access ───
+
+#[test]
+fn compile_indexed_collection_member_access_preserves_type() {
+    let source = r#"
+        structure Bolt { param count_per_row : Int = 4 }
+        structure S {
+            sub bolts : List<Bolt>
+            constraint bolts.count == 4
+            let c = bolts[0].count_per_row
+        }
+    "#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("should have template S");
+
+    let c_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "c")
+        .expect("should have let binding 'c'");
+
+    let expr = c_cell.default_expr.as_ref().expect("c should have an expression");
+    // The result_type should be Int (matching Bolt.count_per_row's type), not Real
+    assert_eq!(
+        expr.result_type,
+        reify_types::Type::Int,
+        "indexed collection member access should preserve the member's actual type"
+    );
 }
 
 // ─── step-17: bolts.count compiles to ValueRef(__count_bolts) ───
