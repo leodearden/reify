@@ -88,6 +88,15 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "cosh" => unary_f64(args, |x| Value::Real(x.cosh())),
         "tanh" => unary_f64(args, |x| Value::Real(x.tanh())),
 
+        // --- Field operations (stubs) ---
+        // These are handled by reify-expr's eval_expr FunctionCall interceptor
+        // for actual lambda application; the stdlib entries serve as documentation
+        // and fallback for direct stdlib calls.
+        "sample" => Value::Undef,     // Requires EvalContext for lambda application
+        "gradient" => Value::Undef,   // Numeric differentiation not yet implemented
+        "divergence" => Value::Undef, // Numeric differentiation not yet implemented
+        "curl" => Value::Undef,       // Numeric differentiation not yet implemented
+
         _ => Value::Undef,
     }
 }
