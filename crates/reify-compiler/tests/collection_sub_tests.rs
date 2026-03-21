@@ -235,6 +235,51 @@ fn compile_indexed_collection_member_access_preserves_type() {
     );
 }
 
+// ─── step-25: declaration order dependency ───
+
+#[test]
+fn compile_count_constraint_before_sub_declaration() {
+    // The constraint `bolts.count == n` appears BEFORE the `sub bolts : List<Bolt>` declaration.
+    // This tests that the compiler handles forward-referenced sub declarations.
+    let source = r#"
+        structure Bolt { param diameter : Scalar = 10mm }
+        structure S {
+            param n : Int = 4
+            constraint bolts.count == n
+            sub bolts : List<Bolt>
+        }
+    "#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("should have template S");
+
+    // (1) SubComponentDecl for 'bolts' should have count_cell set
+    let sub = s_template
+        .sub_components
+        .iter()
+        .find(|s| s.name == "bolts")
+        .expect("should have sub 'bolts'");
+    assert!(
+        sub.count_cell.is_some(),
+        "sub 'bolts' should have count_cell set even when constraint appears before sub declaration"
+    );
+    assert_eq!(
+        sub.count_cell.as_ref().unwrap().member,
+        "__count_bolts",
+        "count_cell should point to __count_bolts"
+    );
+
+    // (2) The __count_bolts cell should exist in structure_controlling
+    let count_id = sub.count_cell.as_ref().unwrap();
+    assert!(
+        s_template.structure_controlling.contains(count_id),
+        "__count_bolts should be in structure_controlling"
+    );
+}
+
 // ─── step-17: bolts.count compiles to ValueRef(__count_bolts) ───
 
 #[test]
