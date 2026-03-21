@@ -128,4 +128,33 @@ describe('createLspClient', () => {
     expect(result).not.toBeNull();
     expect(result!.uri).toBe('file:///test.ri');
   });
+
+  it('initialized sends initialized notification via lsp_request', async () => {
+    mockInvoke.mockResolvedValue('null');
+
+    const client = createLspClient();
+    await client.initialized();
+
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', {
+      method: 'initialized',
+      params: expect.any(String),
+    });
+
+    // Verify params is empty object
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toEqual({});
+  });
+
+  it('didClose sends textDocument/didClose notification with correct URI', async () => {
+    mockInvoke.mockResolvedValue('null');
+
+    const client = createLspClient();
+    await client.didClose('file:///project/main.ri');
+
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', {
+      method: 'textDocument/didClose',
+      params: expect.stringContaining('"uri":"file:///project/main.ri"'),
+    });
+  });
 });
