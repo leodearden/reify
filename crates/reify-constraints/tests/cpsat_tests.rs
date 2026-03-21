@@ -386,3 +386,58 @@ fn integer_constraint_sum_equals_10() {
         other => panic!("expected Solved, got {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// step-13: all-different on 3 Int auto params
+// ---------------------------------------------------------------------------
+
+/// x, y, z in [1,3], all different → must be a permutation of {1,2,3}.
+#[test]
+fn all_different_3_ints() {
+    let solver = CpSatSolver;
+
+    let x_id = vcid("Part", "x");
+    let y_id = vcid("Part", "y");
+    let z_id = vcid("Part", "z");
+
+    let x_ref = value_ref_typed("Part", "x", Type::Int);
+    let y_ref = value_ref_typed("Part", "y", Type::Int);
+    let z_ref = value_ref_typed("Part", "z", Type::Int);
+
+    // Constraints: x != y, x != z, y != z
+    let c1 = ne(x_ref.clone(), y_ref.clone());
+    let c2 = ne(x_ref, z_ref.clone());
+    let c3 = ne(y_ref, z_ref);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam { id: x_id.clone(), param_type: Type::Int, bounds: Some((1.0, 3.0)) },
+            AutoParam { id: y_id.clone(), param_type: Type::Int, bounds: Some((1.0, 3.0)) },
+            AutoParam { id: z_id.clone(), param_type: Type::Int, bounds: Some((1.0, 3.0)) },
+        ],
+        constraints: vec![
+            (cnid("Part", 0), c1),
+            (cnid("Part", 1), c2),
+            (cnid("Part", 2), c3),
+        ],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let mut vals: Vec<i64> = [&x_id, &y_id, &z_id]
+                .iter()
+                .map(|id| match values.get(id).unwrap() {
+                    Value::Int(v) => *v,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect();
+            vals.sort();
+            assert_eq!(vals, vec![1, 2, 3], "expected permutation of [1,2,3], got {:?}", vals);
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
