@@ -178,7 +178,16 @@ const App: Component = () => {
 
   async function handleDoExport(format: ExportFormat) {
     const defaultName = `export.${format}`;
-    const chosenPath = await pickSavePath(defaultName, format);
+
+    let chosenPath: string | null;
+    try {
+      chosenPath = await pickSavePath(defaultName, format);
+    } catch (err) {
+      setToastType('error');
+      setToastMessage(`Could not open save dialog: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
     if (!chosenPath) {
       // User cancelled the file picker — stay on dialog
       return;
