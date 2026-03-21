@@ -437,7 +437,7 @@ impl ConstraintSolver for DimensionalSolver {
         // Configure and run Nelder-Mead
         let solver: NelderMead<Vec<f64>, f64> = NelderMead::new(simplex)
             .with_sd_tolerance(1e-15)
-            .unwrap_or_else(|_| NelderMead::new(vec![initial.clone()]));
+            .expect("sd_tolerance 1e-15 is always valid");
 
         let executor = Executor::new(cost_fn, solver)
             .configure(|state| state.max_iters(MAX_ITERS));
@@ -451,7 +451,6 @@ impl ConstraintSolver for DimensionalSolver {
             }
         };
 
-        let _best_cost = result.state().get_best_cost();
         let best_param: Vec<f64> = match result.state().get_best_param() {
             Some(p) => p.clone(),
             None => {
@@ -1616,5 +1615,60 @@ mod tests {
             }
             other => panic!("expected Solved, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn simplex_has_n_plus_1_vertices() {
+        use super::build_simplex;
+        use reify_types::{AutoParam, Type, ValueCellId};
+
+        // 1-dimensional: simplex should have 2 vertices
+        let params_1d = vec![AutoParam {
+            id: ValueCellId::new("S", "x"),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+        }];
+        let initial_1d = vec![0.5];
+        let simplex = build_simplex(&initial_1d, &params_1d);
+        assert_eq!(simplex.len(), 2, "1D simplex must have N+1=2 vertices");
+
+        // 2-dimensional: simplex should have 3 vertices
+        let params_2d = vec![
+            AutoParam {
+                id: ValueCellId::new("S", "x"),
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+            },
+            AutoParam {
+                id: ValueCellId::new("S", "y"),
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+            },
+        ];
+        let initial_2d = vec![0.5, 0.5];
+        let simplex = build_simplex(&initial_2d, &params_2d);
+        assert_eq!(simplex.len(), 3, "2D simplex must have N+1=3 vertices");
+
+        // 3-dimensional: simplex should have 4 vertices
+        let params_3d = vec![
+            AutoParam {
+                id: ValueCellId::new("S", "x"),
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+            },
+            AutoParam {
+                id: ValueCellId::new("S", "y"),
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+            },
+            AutoParam {
+                id: ValueCellId::new("S", "z"),
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+            },
+        ];
+        let initial_3d = vec![0.5, 0.5, 0.5];
+        let simplex = build_simplex(&initial_3d, &params_3d);
+        assert_eq!(simplex.len(), 4, "3D simplex must have N+1=4 vertices");
     }
 }

@@ -175,7 +175,8 @@ fn try_distance_eq(
             let pt_a = extract_point_ref(&args[0], auto_params)?;
             let pt_b = extract_point_ref(&args[1], auto_params)?;
             let distance_si = extract_scalar_si(val_expr)?;
-            // distance == 0 is a coincident constraint
+            // Exact zero in SI metres — NOT a geometric tolerance.
+            // Any non-zero distance, however small, uses PtPtDistance.
             if distance_si.abs() < 1e-15 {
                 return Some(GeometricPattern::Coincident { pt_a, pt_b });
             }
@@ -239,12 +240,12 @@ fn extract_point_ref(
         CompiledExprKind::FunctionCall { function, args } => {
             let qn = &function.qualified_name;
             if (qn.contains("point3d") || qn.contains("point")) && args.len() >= 2 {
-                let x = extract_coord(&args[0], auto_params);
-                let y = extract_coord(&args[1], auto_params);
+                let x = extract_coord(&args[0], auto_params)?;
+                let y = extract_coord(&args[1], auto_params)?;
                 let z = if args.len() >= 3 {
-                    extract_coord(&args[2], auto_params)
+                    extract_coord(&args[2], auto_params)?
                 } else {
-                    CoordRef::Fixed(0.0)
+                    CoordRef::Fixed(0.0) // 2D point: z defaults to 0
                 };
                 return Some(make_point_ref(x, y, z));
             }
@@ -300,13 +301,13 @@ enum CoordRef {
     Fixed(f64),
 }
 
-fn extract_coord(expr: &CompiledExpr, auto_params: &[AutoParam]) -> CoordRef {
+fn extract_coord(expr: &CompiledExpr, auto_params: &[AutoParam]) -> Option<CoordRef> {
     match &expr.kind {
         CompiledExprKind::ValueRef(id) if is_auto_param(id, auto_params) => {
-            CoordRef::Auto(id.clone())
+            Some(CoordRef::Auto(id.clone()))
         }
-        CompiledExprKind::Literal(val) => CoordRef::Fixed(val.as_f64().unwrap_or(0.0)),
-        _ => CoordRef::Fixed(0.0),
+        CompiledExprKind::Literal(val) => Some(CoordRef::Fixed(val.as_f64()?)),
+        _ => None,
     }
 }
 

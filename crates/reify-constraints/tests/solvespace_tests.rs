@@ -665,3 +665,72 @@ fn solve_unrecognized_pattern_falls_through() {
         other => panic!("expected NoProgress for unrecognized pattern, got {:?}", other),
     }
 }
+
+/// A point3d with a non-numeric coordinate (e.g., boolean literal) should not
+/// be recognized as a valid geometric pattern. Previously, extract_coord silently
+/// returned CoordRef::Fixed(0.0) for non-numeric values, causing wrong coordinates.
+#[test]
+fn non_numeric_coord_returns_none() {
+    let solver = SolveSpaceSolver;
+
+    let x_id = vcid("Point", "x");
+
+    // Build a point with a boolean literal as the Y coordinate — this is non-numeric
+    let pt_x = value_ref_typed("Point", "x", Type::length());
+    let bool_literal = CompiledExpr {
+        kind: CompiledExprKind::Literal(Value::Bool(true)),
+        result_type: Type::Bool,
+        content_hash: ContentHash::of(b"bool_true"),
+    };
+    let zero = literal(Value::Scalar {
+        si_value: 0.0,
+        dimension: DimensionVector::LENGTH,
+    });
+
+    // point3d(x, true, 0) — second arg is non-numeric
+    let bad_point = geo_fn(
+        "point3d",
+        vec![pt_x, bool_literal, zero.clone()],
+        Type::dimensionless_scalar(),
+    );
+
+    // origin: (0, 0, 0)
+    let origin = geo_fn(
+        "point3d",
+        vec![zero.clone(), zero.clone(), zero],
+        Type::dimensionless_scalar(),
+    );
+
+    // distance(bad_point, origin) == 10mm
+    let dist_call = geo_fn("pt_pt_distance", vec![bad_point, origin], Type::length());
+    let ten_mm = literal(mm(10.0));
+    let constraint_expr = eq(dist_call, ten_mm);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id,
+            param_type: Type::length(),
+            bounds: None,
+        }],
+        constraints: vec![(cnid("Point", 0), constraint_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    // With non-numeric coord, the pattern should NOT be recognized
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::NoProgress { reason } => {
+            assert!(
+                reason.contains("unrecognized"),
+                "reason should mention unrecognized pattern, got: {}",
+                reason,
+            );
+        }
+        other => panic!(
+            "expected NoProgress for non-numeric coordinate, got {:?}",
+            other
+        ),
+    }
+}
