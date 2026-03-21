@@ -1644,24 +1644,6 @@ pub fn compile(
     let mut templates = Vec::new();
     let mut diagnostics = Vec::new();
 
-    // Pre-pass: collect ALL enum defs before processing structures.
-    // This ensures order-independent declarations — a structure declared
-    // before an enum can still reference that enum's variants.
-    let enum_defs: Vec<reify_types::EnumDef> = parsed
-        .declarations
-        .iter()
-        .filter_map(|d| {
-            if let reify_syntax::Declaration::Enum(e) = d {
-                Some(reify_types::EnumDef {
-                    name: e.name.clone(),
-                    variants: e.variants.clone(),
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-
     // Forward parse errors as diagnostics
     for err in &parsed.errors {
         diagnostics.push(
@@ -1670,26 +1652,70 @@ pub fn compile(
         );
     }
 
-    // Pre-pass: compile ALL function definitions before processing structures.
-    // This ensures order-independent declarations — a structure declared
-    // before a function can still call that function.
+    // Consolidated pre-pass: iterate declarations once, collecting references
+    // for deferred compilation. This replaces 4 separate loops (enum, function,
+    // trait, field) with a single match dispatch.
+    let mut enum_defs: Vec<reify_types::EnumDef> = Vec::new();
+    let mut fn_refs: Vec<&reify_syntax::FnDef> = Vec::new();
+    let mut trait_refs: Vec<&reify_syntax::TraitDecl> = Vec::new();
+    let mut field_refs: Vec<&reify_syntax::FieldDef> = Vec::new();
+    let mut seen_field_names: HashMap<String, SourceSpan> = HashMap::new();
+
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Function(fn_def) = decl
-            && let Some(compiled_fn) = compile_function(fn_def, &enum_defs, &functions, &mut diagnostics)
+        match decl {
+            reify_syntax::Declaration::Enum(e) => {
+                enum_defs.push(reify_types::EnumDef {
+                    name: e.name.clone(),
+                    variants: e.variants.clone(),
+                });
+            }
+            reify_syntax::Declaration::Function(fn_def) => {
+                fn_refs.push(fn_def);
+            }
+            reify_syntax::Declaration::Trait(trait_decl) => {
+                trait_refs.push(trait_decl);
+            }
+            reify_syntax::Declaration::Field(field_def) => {
+                if let Some(first_span) = seen_field_names.get(&field_def.name) {
+                    // Duplicate field name — emit error and skip
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate field name '{}'",
+                            field_def.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            field_def.span,
+                            "duplicate defined here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            *first_span,
+                            "first defined here",
+                        )),
+                    );
+                } else {
+                    seen_field_names.insert(field_def.name.clone(), field_def.span);
+                    field_refs.push(field_def);
+                }
+            }
+            // Structure, Occurrence, Import, Purpose handled in pass 2 / purpose pass
+            _ => {}
+        }
+    }
+
+    // Compile in dependency order after collecting all references:
+    // 1. Functions (need all enum_defs, plus prior compiled functions for self-reference)
+    for fn_def in &fn_refs {
+        if let Some(compiled_fn) = compile_function(fn_def, &enum_defs, &functions, &mut diagnostics)
         {
             functions.push(compiled_fn);
         }
     }
 
-    // Pre-pass: compile ALL trait definitions before processing structures.
-    // This ensures traits can be referenced as bounds on structures declared
-    // in any order.
+    // 2. Traits (independent — no deps on enums/functions)
     let mut trait_defs = Vec::new();
-    for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Trait(trait_decl) = decl {
-            let compiled_trait = compile_trait(trait_decl, &mut diagnostics);
-            trait_defs.push(compiled_trait);
-        }
+    for trait_decl in &trait_refs {
+        let compiled_trait = compile_trait(trait_decl, &mut diagnostics);
+        trait_defs.push(compiled_trait);
     }
 
     // Build trait registry for conformance checking.
@@ -1698,34 +1724,10 @@ pub fn compile(
         .map(|t| (t.name.clone(), t))
         .collect();
 
-    // Pre-pass: compile ALL field definitions before processing structures.
-    // This ensures fields can be referenced by name within structure expressions
-    // (e.g., `sample(my_field, point)`).
-    let mut seen_field_names: HashMap<String, SourceSpan> = HashMap::new();
-    for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Field(field_def) = decl {
-            if let Some(first_span) = seen_field_names.get(&field_def.name) {
-                // Duplicate field name — emit error and skip
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "duplicate field name '{}'",
-                        field_def.name
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        field_def.span,
-                        "duplicate defined here",
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        *first_span,
-                        "first defined here",
-                    )),
-                );
-                continue;
-            }
-            seen_field_names.insert(field_def.name.clone(), field_def.span);
-            if let Some(compiled) = compile_field(field_def, &enum_defs, &functions, &mut diagnostics) {
-                fields.push(compiled);
-            }
+    // 3. Fields (need all enum_defs + all compiled functions)
+    for field_def in &field_refs {
+        if let Some(compiled) = compile_field(field_def, &enum_defs, &functions, &mut diagnostics) {
+            fields.push(compiled);
         }
     }
 
