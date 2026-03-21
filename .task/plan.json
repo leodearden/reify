@@ -104,14 +104,14 @@
       "type": "test",
       "description": "Update PropertyEditor.test.tsx makeValue() helper to include `kind: string` field. Update engineStore.test.ts sampleValue and inline ValueData constructions to include `kind`. Update navigation.test.ts ValueData literals to include `kind`.",
       "status": "done",
-      "commit": "PLACEHOLDER_11"
+      "commit": "126ebfd"
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "Run all tests (both Rust cargo test for gui crate and TS vitest) to verify all 4 fixes pass. Fix any remaining test compilation errors from the type changes.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PLACEHOLDER_12"
     }
   ],
   "design_decisions": [
