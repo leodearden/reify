@@ -236,6 +236,56 @@ describe('createSelection', () => {
     });
   });
 
+  describe('hover emissive highlight', () => {
+    it('setHovered applies emissive highlight to mesh material', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      selection.setHovered('A');
+
+      // emissive should be set to accent color (not black)
+      expect(meshA.material.emissive.value).not.toBe(0x000000);
+    });
+
+    it('setHovered(null) resets emissive to black', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      selection.setHovered('A');
+      selection.setHovered(null);
+
+      expect(meshA.material.emissive.value).toBe(0x000000);
+    });
+
+    it('changing hover from A to B resets A and highlights B', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection } = setup(meshMap);
+
+      selection.setHovered('A');
+      expect(meshA.material.emissive.value).not.toBe(0x000000);
+
+      selection.setHovered('B');
+      // A should be reset, B should be highlighted
+      expect(meshA.material.emissive.value).toBe(0x000000);
+      expect(meshB.material.emissive.value).not.toBe(0x000000);
+    });
+
+    it('setHovered with unknown entity path is a no-op', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      // Should not throw
+      selection.setHovered('Unknown');
+      // A should be unaffected
+      expect(meshA.material.emissive.value).toBe(0x000000);
+    });
+  });
+
   describe('hover raycasting', () => {
     it('calls raycaster.setFromCamera with NDC coords on pointermove', () => {
       const meshA = createMockMesh('A');
