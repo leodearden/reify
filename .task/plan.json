@@ -1,0 +1,115 @@
+{
+  "task_id": "120",
+  "title": "Harden concurrent runtime: lock poisoning + topo sort safety",
+  "files": [
+    "crates/reify-runtime/src/concurrent_eval.rs",
+    "crates/reify-runtime/tests/concurrent_eval.rs",
+    "crates/reify-eval/src/dirty.rs",
+    "crates/reify-runtime/src/concurrent.rs"
+  ],
+  "modules": [
+    "crates/reify-runtime",
+    "crates/reify-eval"
+  ],
+  "analysis": "Three issues to fix:\n\n**C4 (CRITICAL): Lock poisoning recovery** \u2014 `concurrent_eval.rs` has 11 sites using `unwrap_or_else(|e| e.into_inner())` which silently recovers from poisoned locks, using potentially partially-written/corrupt data. This pattern exists on lines 74, 79, 90-92, 117-118, 121-122, 125-126, 198, 228, 234, 243. The fix is Option A from the task: panic on poison (`.unwrap()`). This is v0.1 and failing loud is correct. The existing test file has a `poison_recovery` module (tests/concurrent_eval.rs:1413-1479) that verifies the OPPOSITE behavior (graceful recovery) \u2014 these tests must be rewritten to verify panics instead. The `poison_*()` helper methods on ConcurrentEvalAdapter (behind cfg(test)/test-utils) should be kept since they're useful for the new panic tests.\n\n**M2: In-degree underflow** \u2014 Both topo sort implementations have `*deg -= 1` which can silently wrap to usize::MAX in release builds. Currently protected by Rust's debug-mode overflow check but with no clear error message. Fix: add `debug_assert!(*deg > 0, \"in-degree underflow\")` before the decrement for a clear diagnostic. After dedup (M3), this only needs to be in one place.\n\n**M3: Duplicated topo sort** \u2014 `dirty.rs::topological_sort` (flat Vec<NodeId>) and `concurrent.rs::compute_levels` (Vec<Vec<NodeId>> by level) share ~95% identical code including the DebugOrd wrapper. Strategy: extract `compute_levels` as a public function in `reify-eval::dirty` (since reify-runtime depends on reify-eval), then rewrite `topological_sort` to flatten the result. Remove the duplicate from `concurrent.rs` and import from reify-eval.\n\nNote: `priority_promotion.rs` has the same poison recovery pattern but is NOT in scope per the task description.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing tests in tests/concurrent_eval.rs asserting that poisoned locks cause panics. Add tests: (1) values() panics on poisoned values lock, (2) take_results() panics on poisoned results lock, (3) build_result_shared() panics on poisoned values lock, (4) into_result() panics on poisoned values lock. Use std::panic::catch_unwind to verify panics. These tests FAIL now because the current code silently recovers.",
+      "status": "done",
+      "commit": "71eec62"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Fix lock poisoning in concurrent_eval.rs: replace all 11 instances of `unwrap_or_else(|e| e.into_inner())` with `.unwrap()` (lines 74, 79, 90-92, 117-118, 121-122, 125-126, 198, 228, 234, 243). This makes poisoned locks panic immediately with a clear PoisonError message. The new panic tests from step-1 now pass. Also rewrite the existing poison_recovery test module (tests/concurrent_eval.rs:1413-1479): change the 3 old recovery-verification tests to verify panics instead (or remove them since step-1 covers the same ground).",
+      "status": "done",
+      "commit": "fdc99aa"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write test for public compute_levels function in reify-eval::dirty (doesn't exist yet, so test won't compile). Test: given nodes {a, b, c} where b reads a, c reads a \u2192 levels should be [[a], [b, c]]. Second test: chain a\u2192b\u2192c \u2192 levels [[a], [b], [c]]. Third test: empty input \u2192 empty output. These test the leveled topo sort API that will be extracted.",
+      "status": "done",
+      "commit": "3dddb7f"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Extract compute_levels to reify-eval::dirty as a public function. Move DebugOrd from being duplicated in both dirty.rs and concurrent.rs to dirty.rs only. The new compute_levels takes &HashSet<NodeId> and &HashMap<NodeId, DependencyTrace>, returns Vec<Vec<NodeId>>. Rewrite topological_sort to call compute_levels().into_iter().flatten().collect(). Add debug_assert!(*deg > 0, \"in-degree underflow: node {:?}\", candidate) before the `*deg -= 1` decrement in compute_levels. Tests from step-3 now pass, existing topo sort tests in dirty.rs still pass.",
+      "status": "done",
+      "commit": "89fe25c"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test in concurrent.rs verifying that compute_levels imported from reify-eval::dirty produces correct levels for the bracket topology (width+thickness at level 0, volume+C1 at level 1). This test uses the public API that concurrent.rs will switch to. Test should pass since compute_levels was made public in step-4.",
+      "status": "done",
+      "commit": "ee15f8d"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Remove duplicated code from concurrent.rs: delete the local compute_levels function (lines 241-304) and DebugOrd struct (lines 306-321). Replace with import of reify_eval::dirty::compute_levels. Update the call site in ConcurrentScheduler::execute (line 164) \u2014 convert eval_set Vec to HashSet for the function signature. All existing concurrent scheduler tests still pass.",
+      "status": "done",
+      "commit": "41ca773"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Option A for lock poisoning: panic on poison (.unwrap())",
+      "rationale": "Simplest approach for v0.1. A poisoned lock means a thread panicked while holding the lock, indicating data may be partially written. Using corrupt data silently is worse than failing loud. The scheduler already handles task panics via SchedulerError::TaskPanicked, so poison panics will be caught at that level."
+    },
+    {
+      "decision": "Extract compute_levels (leveled output) as the primitive, not topological_sort (flat output)",
+      "rationale": "compute_levels is strictly more informative \u2014 topological_sort is just compute_levels().flatten(). By making compute_levels the shared primitive, concurrent.rs gets exactly what it needs (levels for parallel execution) and dirty.rs can derive its flat sort cheaply."
+    },
+    {
+      "decision": "Use debug_assert (not assert) for in-degree underflow",
+      "rationale": "Per task guidance. In debug builds (including cargo test), this catches bugs with a clear message. In release builds, the subtraction would wrap but the topological sort would still terminate (ready set eventually empties). A hard assert would add overhead in the hot evaluation path for a condition that cannot occur with valid inputs."
+    },
+    {
+      "decision": "compute_levels takes &HashSet<NodeId> matching topological_sort's existing API",
+      "rationale": "The concurrent.rs caller already converts Vec<NodeId> to HashSet internally. Using HashSet in the signature avoids duplicate conversion and matches the existing topological_sort convention in dirty.rs."
+    },
+    {
+      "decision": "Keep poison_* test helpers on ConcurrentEvalAdapter",
+      "rationale": "These helpers (poison_results, poison_values, poison_snapshot_values) behind cfg(test)/test-utils are needed by the new panic-verification tests. They intentionally poison locks so we can verify the runtime panics correctly."
+    },
+    {
+      "decision": "priority_promotion.rs poison recovery is out of scope",
+      "rationale": "The task description explicitly lists only concurrent_eval.rs for the lock poisoning fix (C4). priority_promotion.rs has the same pattern but is a separate concern \u2014 its data (priority mappings) is less critical than evaluation values, and changing it risks scope creep."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "ConcurrentEvalAdapter::poison_* test helpers",
+      "where": "crates/reify-runtime/src/concurrent_eval.rs:150-184",
+      "how": "Reuse existing poison helper methods (poison_results, poison_values, poison_snapshot_values) in the new panic-verification tests. They're already gated behind cfg(test)/test-utils."
+    },
+    {
+      "what": "simple_setup() test fixture",
+      "where": "crates/reify-runtime/tests/concurrent_eval.rs:21-97",
+      "how": "Reuse existing test helper that builds a ConcurrentEditSetup for the poison panic tests, same as the current poison_recovery tests use."
+    },
+    {
+      "what": "Existing topological sort tests in dirty.rs",
+      "where": "crates/reify-eval/src/dirty.rs:136-733 (tests module)",
+      "how": "These 13 existing topo sort tests serve as regression tests when refactoring topological_sort to delegate to compute_levels. They verify the public API is unchanged."
+    },
+    {
+      "what": "DebugOrd wrapper from dirty.rs",
+      "where": "crates/reify-eval/src/dirty.rs:119-134",
+      "how": "Keep the existing DebugOrd in dirty.rs and delete the duplicate from concurrent.rs. No changes needed to the dirty.rs version."
+    },
+    {
+      "what": "DependencyTrace and NodeId types",
+      "where": "crates/reify-eval/src/deps.rs, crates/reify-eval/src/cache.rs",
+      "how": "compute_levels uses these existing types in its signature \u2014 same as topological_sort already does."
+    }
+  ],
+  "_session_id": "120-7f89cd7c",
+  "_created_at": "2026-03-21T16:35:47.410631+00:00"
+}
