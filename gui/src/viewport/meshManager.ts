@@ -6,7 +6,12 @@ import {
   Color,
   type Scene,
 } from 'three';
+import { computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
 import type { MeshData } from '../types';
+
+// Patch BufferGeometry prototype for BVH acceleration
+(BufferGeometry.prototype as any).computeBoundsTree = computeBoundsTree;
+(BufferGeometry.prototype as any).disposeBoundsTree = disposeBoundsTree;
 
 /** Catppuccin accent palette for deterministic mesh coloring. */
 const ACCENT_PALETTE = [
@@ -58,6 +63,8 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
       color: colorForEntity(entityPath),
     });
 
+    (geometry as any).computeBoundsTree();
+
     const mesh = new Mesh(geometry, material);
     mesh.name = entityPath;
     return mesh;
@@ -102,11 +109,15 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     // Setting to null forces Three.js to lazily recompute on next access.
     geometry.boundingSphere = null;
     geometry.boundingBox = null;
+
+    // Rebuild BVH for the updated geometry
+    (geometry as any).computeBoundsTree();
   }
 
   function removeMesh(entityPath: string): void {
     const mesh = meshMap.get(entityPath);
     if (!mesh) return;
+    (mesh.geometry as any).disposeBoundsTree();
     (mesh.geometry as BufferGeometry).dispose();
     (mesh.material as MeshStandardMaterial).dispose();
     scene.remove(mesh);
