@@ -1,14 +1,32 @@
-import { type Component, onMount, onCleanup, createSignal, createEffect } from 'solid-js';
+import { type Component, onMount, onCleanup, createSignal, createEffect, Show } from 'solid-js';
 import { applyTheme } from './theme';
 import { Viewport } from './viewport';
 import { Editor } from './editor/Editor';
 import { FileTabs } from './editor/FileTabs';
-import { PropertyEditor, ConstraintPanel, Toolbar, StatusBar } from './panels';
+import {
+  PropertyEditor,
+  ConstraintPanel,
+  Toolbar,
+  StatusBar,
+  FileBrowser,
+  ExportDialog,
+  Toast,
+  ReloadPrompt,
+} from './panels';
 import { Splitter } from './components/Splitter';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { createEngineStore } from './stores/engineStore';
 import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
-import { getInitialState, setParameter as bridgeSetParameter } from './bridge';
+import {
+  getInitialState,
+  setParameter as bridgeSetParameter,
+  exportGeometry as bridgeExportGeometry,
+  updateSource as bridgeUpdateSource,
+  openFile as bridgeOpenFile,
+  onFileChanged,
+} from './bridge';
+import type { ExportFormat, FileData } from './types';
 import styles from './App.module.css';
 
 const MIN_PANEL_WIDTH = 150;
@@ -25,6 +43,17 @@ const App: Component = () => {
   const [editorWidth, setEditorWidth] = createSignal(DEFAULT_EDITOR_WIDTH);
   const [sideWidth, setSideWidth] = createSignal(DEFAULT_SIDE_WIDTH);
   const [propertyHeight, setPropertyHeight] = createSignal(DEFAULT_PROPERTY_HEIGHT);
+
+  // Export dialog state
+  const [showExportDialog, setShowExportDialog] = createSignal(false);
+  const [exporting, setExporting] = createSignal(false);
+
+  // Toast state
+  const [toastMessage, setToastMessage] = createSignal<string | null>(null);
+  const [toastType, setToastType] = createSignal<'success' | 'error' | 'info'>('info');
+
+  // Reload prompt state
+  const [changedFile, setChangedFile] = createSignal<string | null>(null);
 
   // Reactively update window title based on active file and eval status
   createEffect(() => {
@@ -44,8 +73,32 @@ const App: Component = () => {
     }
   });
 
+  // Keyboard shortcuts
+  useKeyboardShortcuts({
+    onOpen: () => {
+      // Open file via bridge (placeholder — would use native dialog in full app)
+      // For now, this is a stub that can be wired to a native file picker
+    },
+    onReEvaluate: () => {
+      // Re-evaluate the active file
+      const activeFile = editorStore.state.activeFile;
+      if (activeFile) {
+        const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
+        if (file) {
+          bridgeUpdateSource(file.path, file.content).catch((err) =>
+            console.error('Re-evaluate failed:', err),
+          );
+        }
+      }
+    },
+    onExportDialog: () => {
+      setShowExportDialog((v) => !v);
+    },
+  });
+
   let alive = true;
   let unsub: (() => void) | undefined;
+  let fileChangedUnsub: (() => void) | undefined;
 
   onMount(async () => {
     applyTheme();
@@ -73,11 +126,30 @@ const App: Component = () => {
     } catch (err) {
       console.error('Failed to subscribe to events:', err);
     }
+
+    // Subscribe to file-changed events
+    try {
+      const unlistenFileChanged = await onFileChanged((data: FileData) => {
+        // Only show reload prompt if the file is currently open
+        const isOpen = editorStore.state.openFiles.some((f) => f.path === data.path);
+        if (isOpen) {
+          setChangedFile(data.path);
+        }
+      });
+      if (!alive) {
+        unlistenFileChanged();
+        return;
+      }
+      fileChangedUnsub = unlistenFileChanged;
+    } catch (err) {
+      console.error('Failed to subscribe to file changes:', err);
+    }
   });
 
   onCleanup(() => {
     alive = false;
     unsub?.();
+    fileChangedUnsub?.();
   });
 
   function handleSetParameter(cellId: string, value: string) {
@@ -87,11 +159,52 @@ const App: Component = () => {
   }
 
   function handleExport() {
-    // Export stub — will be wired to export dialog in a future task
+    setShowExportDialog(true);
+  }
+
+  async function handleDoExport(format: ExportFormat) {
+    setExporting(true);
+    try {
+      // In a full app, would open native save dialog here
+      const defaultPath = `export.${format}`;
+      await bridgeExportGeometry(format, defaultPath);
+      setToastType('success');
+      setToastMessage(`Exported successfully as ${format.toUpperCase()}`);
+    } catch (err) {
+      setToastType('error');
+      setToastMessage(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setExporting(false);
+      setShowExportDialog(false);
+    }
   }
 
   function handleFitToView() {
     // Fit-to-view stub — will be wired to viewport camera reset in a future task
+  }
+
+  function handleReload() {
+    const path = changedFile();
+    if (path) {
+      bridgeOpenFile(path)
+        .then((fileData) => {
+          editorStore.openFile(fileData);
+          setChangedFile(null);
+        })
+        .catch((err) => console.error('Reload failed:', err));
+    }
+  }
+
+  function handleDismissReload() {
+    setChangedFile(null);
+  }
+
+  function handleDismissToast() {
+    setToastMessage(null);
+  }
+
+  function handleFileClick(path: string) {
+    editorStore.setActiveFile(path);
   }
 
   function handleLeftResize(delta: number) {
@@ -109,11 +222,21 @@ const App: Component = () => {
   return (
     <div data-testid="app-layout" class={styles.layout}>
       <Toolbar onExport={handleExport} onFitToView={handleFitToView} />
+      <ReloadPrompt
+        filePath={changedFile()}
+        onReload={handleReload}
+        onDismiss={handleDismissReload}
+      />
       <div
         class={styles.main}
         style={{ 'grid-template-columns': `${editorWidth()}px 4px 1fr 4px ${sideWidth()}px` }}
       >
         <div data-testid="editor-panel" class={styles.editorPanel}>
+          <FileBrowser
+            files={editorStore.state.openFiles}
+            activeFile={editorStore.state.activeFile}
+            onFileClick={handleFileClick}
+          />
           <FileTabs store={editorStore} />
           <Editor store={editorStore} />
         </div>
@@ -144,6 +267,19 @@ const App: Component = () => {
         meshes={engineStore.state.meshes}
         constraints={engineStore.state.constraints}
       />
+      <ExportDialog
+        open={showExportDialog()}
+        exporting={exporting()}
+        onExport={handleDoExport}
+        onClose={() => setShowExportDialog(false)}
+      />
+      <Show when={toastMessage()}>
+        {(msg) => (
+          <div class={styles.toastContainer}>
+            <Toast message={msg()} type={toastType()} onDismiss={handleDismissToast} />
+          </div>
+        )}
+      </Show>
     </div>
   );
 };

@@ -45,6 +45,9 @@ const emptyState: GuiState = { meshes: [], values: [], constraints: [], files: [
 vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
   setParameter: vi.fn().mockResolvedValue(undefined),
+  exportGeometry: vi.fn().mockResolvedValue(undefined),
+  updateSource: vi.fn().mockResolvedValue(undefined),
+  openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
   onMeshUpdate: vi.fn().mockResolvedValue(() => {}),
   onValueUpdate: vi.fn().mockResolvedValue(() => {}),
   onConstraintUpdate: vi.fn().mockResolvedValue(() => {}),
@@ -52,6 +55,7 @@ vi.mock('../bridge', () => ({
   onMeshRemoved: vi.fn().mockResolvedValue(() => {}),
   onValueRemoved: vi.fn().mockResolvedValue(() => {}),
   onConstraintRemoved: vi.fn().mockResolvedValue(() => {}),
+  onFileChanged: vi.fn().mockResolvedValue(() => {}),
 }));
 
 import App from '../App';
@@ -369,6 +373,49 @@ describe('App async mount/cleanup race conditions', () => {
     // After fix: alive guard returns before reaching subscribeToEvents
     // With current code: initFromState runs, then subscribeToEvents runs → onMeshUpdate called
     expect(bridge.onMeshUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('App new component integration', () => {
+  it('renders FileBrowser in the editor panel', () => {
+    render(() => <App />);
+    expect(screen.getByTestId('file-browser')).toBeTruthy();
+  });
+
+  it('clicking Export in Toolbar opens ExportDialog', async () => {
+    render(() => <App />);
+
+    // ExportDialog should not be visible initially
+    expect(screen.queryByTestId('export-dialog')).toBeNull();
+
+    // Click Export in toolbar
+    fireEvent.click(screen.getByText('Export'));
+
+    // ExportDialog should now be visible
+    await waitFor(() => {
+      expect(screen.getByTestId('export-dialog')).toBeTruthy();
+    });
+  });
+
+  it('ExportDialog Cancel closes the dialog', async () => {
+    render(() => <App />);
+
+    fireEvent.click(screen.getByText('Export'));
+    await waitFor(() => {
+      expect(screen.getByTestId('export-dialog')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText('Cancel'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('export-dialog')).toBeNull();
+    });
+  });
+
+  it('subscribes to file-changed events on mount', async () => {
+    render(() => <App />);
+    await waitFor(() => {
+      expect(bridge.onFileChanged).toHaveBeenCalled();
+    });
   });
 });
 
