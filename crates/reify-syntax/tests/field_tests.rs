@@ -73,3 +73,38 @@ fn parse_sampled_field() {
         other => panic!("expected Sampled source, got {:?}", other),
     }
 }
+
+// ── Step 5: composed field ──────────────────────────────────────────
+
+#[test]
+fn parse_composed_field() {
+    let (decls, errors) = parse_decls(
+        "field def combined : Point3 -> Vector3 { source = composed { |f, g| |p| f(g(p)) } }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let field = match &decls[0] {
+        Declaration::Field(f) => f,
+        other => panic!("expected Field, got {:?}", other),
+    };
+
+    assert_eq!(field.name, "combined");
+    assert_eq!(field.domain_type.name, "Point3");
+    assert_eq!(field.codomain_type.name, "Vector3");
+
+    match &field.source {
+        FieldSource::Composed { expr } => {
+            // The expression should be a lambda: |f, g| |p| f(g(p))
+            match &expr.kind {
+                ExprKind::Lambda { params, .. } => {
+                    assert_eq!(params.len(), 2);
+                    assert_eq!(params[0].name, "f");
+                    assert_eq!(params[1].name, "g");
+                }
+                other => panic!("expected Lambda in composed source, got {:?}", other),
+            }
+        }
+        other => panic!("expected Composed source, got {:?}", other),
+    }
+}
