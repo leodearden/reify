@@ -19,6 +19,7 @@ import styles from './Editor.module.css';
 export interface EditorProps {
   store: ReturnType<typeof createEditorStore>;
   scrollToLocation?: () => SourceLocation | null;
+  onError?: (message: string) => void;
 }
 
 export function Editor(props: EditorProps) {
@@ -79,7 +80,9 @@ export function Editor(props: EditorProps) {
                 }
                 saveFile(path, file.content)
                   .then(() => props.store.markClean(path))
-                  .catch((err: unknown) => console.error('Failed to save file:', err));
+                  .catch((err: unknown) =>
+                    props.onError?.(`Failed to save file: ${err instanceof Error ? err.message : String(err)}`),
+                  );
               }
               return true;
             },
@@ -130,7 +133,9 @@ export function Editor(props: EditorProps) {
           return lspClient.didOpen(currentUri, doc, lspVersion);
         }
       })
-      .catch((err: unknown) => console.error('LSP init error:', err));
+      .catch((_err: unknown) =>
+        props.onError?.('LSP initialization failed — completions and diagnostics may be unavailable'),
+      );
 
     // Listen for diagnostics events from the backend.
     // Use a cancelled flag to handle the race where onCleanup fires
