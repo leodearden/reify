@@ -10,7 +10,7 @@
   "modules": [
     "gui/src"
   ],
-  "analysis": "Analysis of the codebase reveals 7 CSS custom properties referenced in component CSS modules but never defined by applyTheme() in theme.ts: --reify-surface0 (FileBrowser, ExportDialog, Toast), --reify-surface1 (FileBrowser, ExportDialog, ReloadPrompt), --reify-surface2 (ExportDialog, ReloadPrompt), --reify-subtext (FileBrowser, ExportDialog, Toast), --reify-overlay0 (ReloadPrompt), --reify-green (Toast), --reify-red (Toast). These CSS files use fallback values (e.g., var(--reify-surface0, #313244)) so the UI renders correctly in dark mode, but theme switching won't affect these properties since they're never set as CSS custom properties by applyTheme().\n\nThe task description mentions --reify-font-mono as missing, but it IS defined via the 'fontMono' key in THEME_TOKENS and correctly converted by camelToKebab() to --reify-font-mono.\n\nAdditionally, applyTheme() is called inside onMount() in App.tsx (line 115), which runs after the initial render. This causes a potential flash of unstyled content (FOUC) since CSS variables aren't set until the component mounts. The fix is to call applyTheme() synchronously in index.tsx before render().\n\nFor T4 (spacing system), no spacing tokens exist \u2014 CSS files use hardcoded pixel values (4px, 6px, 8px, 12px, 16px, 20px). We'll define spacing scale tokens in THEME_TOKENS but defer CSS file migration to a future task.\n\nLight mode (T2) is explicitly deferred per the task description.\n\nExisting test file (gui/src/__tests__/theme.test.ts) has 4 tests: required keys check, Catppuccin Mocha values check, hex validation for color tokens, and applyTheme callable check. These will be extended.",
+  "analysis": "Analysis of the codebase reveals 7 CSS custom properties referenced in component CSS modules but never defined by applyTheme() in theme.ts: --reify-surface0 (FileBrowser, ExportDialog, Toast), --reify-surface1 (FileBrowser, ExportDialog, ReloadPrompt), --reify-surface2 (ExportDialog, ReloadPrompt), --reify-subtext (FileBrowser, ExportDialog, Toast), --reify-overlay0 (ReloadPrompt), --reify-green (Toast), --reify-red (Toast). These CSS files use fallback values (e.g., var(--reify-surface0, #313244)) so the UI renders correctly in dark mode, but theme switching won't affect these properties since they're never set as CSS custom properties by applyTheme().\n\nThe task description mentions --reify-font-mono as missing, but it IS defined via the 'fontMono' key in THEME_TOKENS and correctly converted by camelToKebab() to --reify-font-mono.\n\nAdditionally, applyTheme() is called inside onMount() in App.tsx (line 115), which runs after the initial render. This causes a potential flash of unstyled content (FOUC) since CSS variables aren't set until the component mounts. The fix is to call applyTheme() synchronously in index.tsx before render().\n\nFor T4 (spacing system), no spacing tokens exist \u2014 CSS files use hardcoded pixel values (4px, 6px, 8px, 12px, 16px, 20px). We'll define spacing scale tokens in THEME_TOKENS but defer CSS file migration to a future task.\n\nLight mode (T2) is explicitly deferred per the task description.\n\nExisting test file (gui/src/__tests__/theme.test.ts) has 4 tests: required keys check, Catppuccin Mocha values check, hex validation for color tokens, and applyTheme callable check. These will be extended.\n\nREVIEW FIX: camelToKebab() only replaces uppercase letters, so 'space2xl' produces '--reify-space2xl' instead of '--reify-space-2xl'. This is a silent naming mismatch \u2014 CSS authors writing var(--reify-space-2xl) get the fallback value with no error. The fix extends camelToKebab to insert a hyphen at letter\u2192digit boundaries when the digit sequence is followed by letters (e.g., space2xl \u2192 space-2xl). This preserves existing tokens like surface0/overlay0 where the trailing digit has no following letters.",
   "prerequisites": [],
   "steps": [
     {
@@ -82,6 +82,20 @@
       "description": "Move applyTheme() from App.tsx to index.tsx: (1) In index.tsx, add `import { applyTheme } from './theme';` and call `applyTheme();` before the `render()` call. (2) In App.tsx, remove the `import { applyTheme } from './theme';` import and remove the `applyTheme();` call from onMount (line 115). Keep the rest of onMount intact (getInitialState, subscribeToEvents, etc.).",
       "status": "done",
       "commit": "47785c9"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write a failing test 'camelToKebab inserts hyphen before digit sequences followed by letters' that explicitly asserts the generated CSS variable names for spacing tokens with numeric prefixes. Call applyTheme() and assert: (1) document.documentElement.style.getPropertyValue('--reify-space-2xl') === '20px', (2) document.documentElement.style.getPropertyValue('--reify-space-3xl') === '24px'. Also add unit-level assertions that camelToKebab('space2xl') === 'space-2xl' and camelToKebab('space3xl') === 'space-3xl'. To enable direct testing of camelToKebab, export it from theme.ts (or test via applyTheme output). Additionally assert that existing digit-trailing tokens are NOT affected: camelToKebab('surface0') === 'surface0', camelToKebab('overlay0') === 'overlay0'. This test will FAIL with the current camelToKebab because it produces 'space2xl' not 'space-2xl'.",
+      "status": "done",
+      "commit": "dde0895"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Fix the camelToKebab function in theme.ts to handle letter-to-digit boundaries when the digit sequence is followed by letters. Change from: str.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`) to: str.replace(/([a-z])(\\d+[a-z]+)/g, '$1-$2').replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`). The first replacement inserts a hyphen at lowercase-letter\u2192digit boundaries only when the digit is followed by alphabetic characters (e.g., space2xl \u2192 space-2xl, space3xl \u2192 space-3xl). Trailing digits without following letters are unaffected (surface0 stays surface0, overlay0 stays overlay0). Also update the local copy of camelToKebab in the test file's 'applyTheme sets all tokens as CSS custom properties' test (line 88-89) to use the same updated logic, so that test checks the correct CSS variable names. Export camelToKebab from theme.ts if step-11 imports it directly.",
+      "status": "done",
+      "commit": "de17eed"
     }
   ],
   "design_decisions": [
@@ -108,18 +122,22 @@
     {
       "decision": "Skip non-color tokens (fontMono, spacing, radius) in the hex-validation test using key prefix matching",
       "rationale": "The existing test validates all color tokens are valid hex. Spacing tokens like '4px' and font stacks are not hex colors. Rather than maintaining a brittle exclusion list, use prefix-based detection: keys starting with 'font', 'space', or 'radius' are non-color."
+    },
+    {
+      "decision": "Fix camelToKebab with a targeted letter\u2192digit+letters regex rather than renaming token keys or using a name override map",
+      "rationale": "The regex /([a-z])(\\d+[a-z]+)/g inserts a hyphen only when a digit sequence is followed by alphabetic characters (space2xl \u2192 space-2xl). Trailing-digit tokens like surface0/overlay0 are unaffected because their digits aren't followed by letters. This is cleaner than an explicit override map (no maintenance burden for future tokens), cleaner than renaming keys (space2Xl would produce space2-xl, still wrong), and handles all foreseeable patterns correctly."
     }
   ],
   "reuse": [
     {
       "what": "Existing camelToKebab() function in theme.ts",
-      "where": "gui/src/theme.ts line 20-22",
-      "how": "Already converts camelCase THEME_TOKENS keys to kebab-case CSS variable names. New tokens like 'surface0' stay as 'surface0' (no uppercase), 'spaceXs' becomes 'space-xs'. Works correctly for all new token names without modification."
+      "where": "gui/src/theme.ts line 39-41",
+      "how": "Extended (not replaced) to handle digit-letter boundaries. The existing uppercase replacement is preserved as the second step in a two-pass transformation."
     },
     {
       "what": "Existing applyTheme() function in theme.ts",
-      "where": "gui/src/theme.ts line 24-29",
-      "how": "Iterates all THEME_TOKENS entries and sets CSS custom properties. No changes needed to the function itself \u2014 adding new entries to THEME_TOKENS automatically includes them in the applied theme."
+      "where": "gui/src/theme.ts line 43-48",
+      "how": "Iterates all THEME_TOKENS entries and sets CSS custom properties. No changes needed to the function itself \u2014 the camelToKebab fix flows through automatically."
     },
     {
       "what": "Existing theme.test.ts test structure and patterns",
@@ -133,5 +151,5 @@
     }
   ],
   "_session_id": "113-24eb0c4f",
-  "_created_at": "2026-03-21T17:11:52.167192+00:00"
+  "_created_at": "2026-03-21T17:25:43.751899+00:00"
 }
