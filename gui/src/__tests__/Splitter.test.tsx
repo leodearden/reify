@@ -106,3 +106,53 @@ describe('Splitter accessibility', () => {
     expect(el.getAttribute('tabindex')).toBe('0');
   });
 });
+
+describe('Splitter keyboard navigation', () => {
+  it('ArrowRight on vertical splitter calls onResize with +10', () => {
+    const onResize = vi.fn();
+    render(() => <Splitter orientation="vertical" onResize={onResize} data-testid="splitter-kbd" />);
+    const el = screen.getByTestId('splitter-kbd');
+    fireEvent.keyDown(el, { key: 'ArrowRight' });
+    expect(onResize).toHaveBeenCalledWith(10);
+  });
+
+  it('ArrowLeft on vertical splitter calls onResize with -10', () => {
+    const onResize = vi.fn();
+    render(() => <Splitter orientation="vertical" onResize={onResize} data-testid="splitter-kbd" />);
+    const el = screen.getByTestId('splitter-kbd');
+    fireEvent.keyDown(el, { key: 'ArrowLeft' });
+    expect(onResize).toHaveBeenCalledWith(-10);
+  });
+
+  it('ArrowDown on horizontal splitter calls onResize with +10', () => {
+    const onResize = vi.fn();
+    render(() => <Splitter orientation="horizontal" onResize={onResize} data-testid="splitter-kbd" />);
+    const el = screen.getByTestId('splitter-kbd');
+    fireEvent.keyDown(el, { key: 'ArrowDown' });
+    expect(onResize).toHaveBeenCalledWith(10);
+  });
+
+  it('ArrowUp on horizontal splitter calls onResize with -10', () => {
+    const onResize = vi.fn();
+    render(() => <Splitter orientation="horizontal" onResize={onResize} data-testid="splitter-kbd" />);
+    const el = screen.getByTestId('splitter-kbd');
+    fireEvent.keyDown(el, { key: 'ArrowUp' });
+    expect(onResize).toHaveBeenCalledWith(-10);
+  });
+
+  it('Shift+ArrowRight on vertical splitter uses larger step (50)', () => {
+    const onResize = vi.fn();
+    render(() => <Splitter orientation="vertical" onResize={onResize} data-testid="splitter-kbd" />);
+    const el = screen.getByTestId('splitter-kbd');
+    fireEvent.keyDown(el, { key: 'ArrowRight', shiftKey: true });
+    expect(onResize).toHaveBeenCalledWith(50);
+  });
+
+  it('Shift+ArrowUp on horizontal splitter uses larger step (50)', () => {
+    const onResize = vi.fn();
+    render(() => <Splitter orientation="horizontal" onResize={onResize} data-testid="splitter-kbd" />);
+    const el = screen.getByTestId('splitter-kbd');
+    fireEvent.keyDown(el, { key: 'ArrowUp', shiftKey: true });
+    expect(onResize).toHaveBeenCalledWith(-50);
+  });
+});
