@@ -1,8 +1,11 @@
 //! Tests for the LspBridge Tauri integration.
 
+use std::sync::Arc;
+
 use serde_json::json;
 
 use crate::lsp_bridge::{LspBridge, lsp_request_impl};
+use reify_lsp::server::NoOpSink;
 
 #[tokio::test]
 async fn lsp_bridge_can_be_constructed_and_initialized() {
@@ -126,4 +129,47 @@ async fn lsp_bridge_diagnostics_after_syntax_error() {
             .unwrap_or(false)
     });
     assert!(has_error, "should have at least one error diagnostic");
+}
+
+#[tokio::test]
+async fn lsp_bridge_with_sink_routes_diagnostics() {
+    let bridge = LspBridge::with_sink(Arc::new(NoOpSink));
+
+    lsp_request_impl(&bridge, "initialize", "{}".to_string())
+        .await
+        .expect("initialize");
+    lsp_request_impl(&bridge, "initialized", "{}".to_string())
+        .await
+        .expect("initialized");
+
+    let source = reify_test_support::bracket_source();
+    let did_open_params = json!({
+        "textDocument": {
+            "uri": "file:///test.ri",
+            "languageId": "reify",
+            "version": 1,
+            "text": source
+        }
+    });
+    lsp_request_impl(
+        &bridge,
+        "textDocument/didOpen",
+        serde_json::to_string(&did_open_params).unwrap(),
+    )
+    .await
+    .expect("didOpen should succeed");
+
+    // Diagnostics should still be captured in server state
+    let diags = bridge.get_diagnostics("file:///test.ri").await;
+    // Valid source: diagnostics may be empty or have only non-error items
+    // The key thing is that get_diagnostics works through the sink path
+    assert!(
+        diags.iter().all(|d| {
+            d.get("severity")
+                .and_then(|s| s.as_u64())
+                .map(|s| s != 1)
+                .unwrap_or(true)
+        }),
+        "valid bracket source should have no error diagnostics"
+    );
 }
