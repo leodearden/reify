@@ -28,6 +28,7 @@ export function Editor(props: EditorProps) {
   let isSwitching = false;
   let lspVersion = 1;
   let unlistenDiagnostics: (() => void) | undefined;
+  let diagnosticsListenerCancelled = false;
 
   // Current URI — updated on file switch, read by LSP extension getters
   let currentUri = 'file:///untitled.ri';
@@ -124,7 +125,10 @@ export function Editor(props: EditorProps) {
       })
       .catch((err: unknown) => console.error('LSP init error:', err));
 
-    // Listen for diagnostics events from the backend
+    // Listen for diagnostics events from the backend.
+    // Use a cancelled flag to handle the race where onCleanup fires
+    // before the listen promise resolves — prevents leaking the
+    // Tauri event listener.
     createDiagnosticsListener((event) => {
       if (!view) return;
       const diagnostics = event.diagnostics
@@ -140,7 +144,11 @@ export function Editor(props: EditorProps) {
       // Apply diagnostics to the editor via setDiagnostics
       view!.dispatch(setDiagnostics(view!.state, diagnostics));
     }).then((unlisten) => {
-      unlistenDiagnostics = unlisten;
+      if (diagnosticsListenerCancelled) {
+        unlisten(); // Component already unmounted — tear down immediately
+      } else {
+        unlistenDiagnostics = unlisten;
+      }
     });
   });
 
@@ -177,6 +185,10 @@ export function Editor(props: EditorProps) {
   onCleanup(() => {
     clearTimeout(debounceTimer);
     clearTimeout(lspDebounceTimer);
+    // Mark diagnostics listener as cancelled so that if the listen
+    // promise hasn't resolved yet, it will call unlisten() immediately
+    // when it does resolve (preventing a leaked Tauri event listener).
+    diagnosticsListenerCancelled = true;
     unlistenDiagnostics?.();
     // Close the current document in the LSP server
     lspClient.didClose(currentUri).catch(() => {});
