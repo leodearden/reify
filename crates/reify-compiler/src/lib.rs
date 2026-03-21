@@ -1738,9 +1738,8 @@ pub fn compile(
 
     // 3. Fields (need all enum_defs + all compiled functions)
     for field_def in &field_refs {
-        if let Some(compiled) = compile_field(field_def, &enum_defs, &functions, &mut diagnostics) {
-            fields.push(compiled);
-        }
+        let compiled = compile_field(field_def, &enum_defs, &functions, &mut diagnostics);
+        fields.push(compiled);
     }
 
     // Build a field registry so entity scopes can resolve field names.
@@ -4219,7 +4218,7 @@ fn compile_field(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<CompiledField> {
+) -> CompiledField {
     let domain_type = resolve_field_type_name(&field_def.domain_type.name, field_def.domain_type.span, diagnostics);
     let codomain_type = resolve_field_type_name(&field_def.codomain_type.name, field_def.codomain_type.span, diagnostics);
 
@@ -4279,14 +4278,14 @@ fn compile_field(
         ContentHash::combine_all([name_hash, domain_hash, codomain_hash, source_hash])
     };
 
-    Some(CompiledField {
+    CompiledField {
         name: field_def.name.clone(),
         is_pub: field_def.is_pub,
         domain_type,
         codomain_type,
         source,
         content_hash,
-    })
+    }
 }
 
 /// Check field composition types in a composed field expression.
