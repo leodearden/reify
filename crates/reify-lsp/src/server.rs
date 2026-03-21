@@ -74,6 +74,8 @@ impl ServerState {
 /// The Reify language server.
 #[derive(Clone)]
 pub struct ReifyLanguageServer {
+    /// Retained for tower-lsp infrastructure; notifications now go through `sink`.
+    #[allow(dead_code)]
     client: Client,
     state: Arc<RwLock<ServerState>>,
     /// Evaluation state lives outside the RwLock so eval can run without
@@ -296,6 +298,11 @@ mod tests {
         Url::parse("file:///test.ri").unwrap()
     }
 
+    /// Create a test LspService with NoOpSink (reduces boilerplate across tests).
+    fn test_service() -> (LspService<ReifyLanguageServer>, tower_lsp::ClientSocket) {
+        LspService::new(|client| ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink)))
+    }
+
     /// A recording sink that captures all publish_diagnostics calls.
     #[derive(Default)]
     struct RecordingSink {
@@ -490,7 +497,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_returns_full_sync_capability() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
 
         // Get the inner LanguageServer to call initialize directly
         let server = service.inner();
@@ -508,7 +515,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_advertises_hover_definition_completion() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let init_result = server.initialize(InitializeParams::default()).await.unwrap();
 
@@ -529,7 +536,7 @@ mod tests {
 
     #[tokio::test]
     async fn did_open_stores_document_and_runs_pipeline() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
 
         let source = reify_test_support::bracket_source();
@@ -558,7 +565,7 @@ mod tests {
 
     #[tokio::test]
     async fn did_change_updates_document_text() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let uri = test_uri();
 
@@ -620,7 +627,7 @@ mod tests {
 
     #[tokio::test]
     async fn hover_handler_returns_info_for_width() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let uri = open_bracket_source(server).await;
 
@@ -643,7 +650,7 @@ mod tests {
 
     #[tokio::test]
     async fn goto_definition_handler_returns_location_for_thickness() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let uri = open_bracket_source(server).await;
 
@@ -667,7 +674,7 @@ mod tests {
 
     #[tokio::test]
     async fn completion_handler_returns_items() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let uri = open_bracket_source(server).await;
 
@@ -703,7 +710,7 @@ mod tests {
 
     #[tokio::test]
     async fn server_captures_published_diagnostics() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let uri = test_uri();
         let source = reify_test_support::bracket_source();
@@ -739,7 +746,7 @@ mod tests {
 
     #[tokio::test]
     async fn server_recovers_from_eval_state_lock_poisoning() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let uri = test_uri();
 
@@ -788,7 +795,7 @@ mod tests {
 
     #[tokio::test]
     async fn did_close_removes_document_from_store() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let uri = test_uri();
 
