@@ -375,6 +375,34 @@ describe('PropertyEditor stale input', () => {
   });
 });
 
+describe('PropertyEditor stale input during editing', () => {
+  it('when editing (focused), external prop changes do NOT overwrite local edit value', () => {
+    const [values, setValues] = createSignal<Record<string, ValueData>>({
+      c1: makeValue({ cell_id: 'c1', name: 'width', value: '10', determinacy: 'determined', entity_path: 'Bracket.width' }),
+    });
+    render(() => (
+      <PropertyEditor values={values()} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const input = screen.getByTestId('prop-row-c1').querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.value).toBe('10');
+
+    // Start editing
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '15' } });
+    expect(input.value).toBe('15');
+
+    // External prop change while editing
+    setValues({
+      c1: makeValue({ cell_id: 'c1', name: 'width', value: '20', determinacy: 'determined', entity_path: 'Bracket.width' }),
+    });
+
+    // Re-query since SolidJS may recreate DOM
+    const inputAfter = screen.getByTestId('prop-row-c1').querySelector('input[type="text"]') as HTMLInputElement;
+    // The input should still show the local edit value '15', NOT the new prop value '20'
+    expect(inputAfter.value).toBe('15');
+  });
+});
+
 describe('PropertyEditor escape-cancel', () => {
   const values: Record<string, ValueData> = {
     c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
