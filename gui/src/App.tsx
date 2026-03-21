@@ -81,7 +81,9 @@ const App: Component = () => {
   });
 
   function handleSetParameter(cellId: string, value: string) {
-    bridgeSetParameter(cellId, value);
+    bridgeSetParameter(cellId, value).catch((err) =>
+      console.error('setParameter failed:', err),
+    );
   }
 
   function handleExport() {
