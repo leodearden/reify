@@ -49,6 +49,8 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
 pub struct OcctKernel {
     shapes: HashMap<u64, cxx::UniquePtr<ffi::ffi::OcctShape>>,
     next_id: u64,
+    /// Number of shapes that failed deserialization during the last `with_warm_state()` call.
+    last_warm_start_failures: usize,
 }
 
 // Note: OcctKernel is !Send + !Sync because cxx::UniquePtr<OcctShape> is !Send.
@@ -60,6 +62,7 @@ impl OcctKernel {
         Self {
             shapes: HashMap::new(),
             next_id: 1,
+            last_warm_start_failures: 0,
         }
     }
 
@@ -213,7 +216,7 @@ impl OcctKernel {
                     )));
                 }
                 let mag_sq = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
-                if mag_sq == 0.0 {
+                if mag_sq < f64::EPSILON * f64::EPSILON {
                     return Err(GeometryError::OperationFailed(
                         "rotation axis must not be zero-length".into(),
                     ));
@@ -515,6 +518,7 @@ impl WarmStartable for OcctKernel {
         };
         // Stage deserialization into a temporary map first. If all entries fail
         // to deserialize, we preserve the kernel's pre-existing state untouched.
+        self.last_warm_start_failures = 0;
         let mut staged = HashMap::new();
         for (id, brep) in warm.shapes {
             cxx::let_cxx_string!(brep_cxx = brep.as_str());
@@ -522,8 +526,11 @@ impl WarmStartable for OcctKernel {
                 Ok(shape) => {
                     staged.insert(id, shape);
                 }
-                Err(_) => {
-                    // Skip entries that fail to deserialize (best-effort)
+                Err(e) => {
+                    eprintln!(
+                        "warning: warm-start deserialization failed for shape {id}: {e}"
+                    );
+                    self.last_warm_start_failures += 1;
                     continue;
                 }
             }
@@ -554,6 +561,12 @@ impl OcctKernel {
         if id >= self.next_id {
             self.next_id = id + 1;
         }
+    }
+
+    /// Returns the number of shapes that failed deserialization during the
+    /// last `with_warm_state()` call.
+    pub fn warm_start_failures(&self) -> usize {
+        self.last_warm_start_failures
     }
 }
 
@@ -863,6 +876,100 @@ mod tests {
             GeometryHandleId(10),
             "next_id should be updated to 10 after partial restore"
         );
+    }
+
+    #[test]
+    fn with_warm_state_partial_failure_logs_warning() {
+        // Create a helper kernel to get a valid cylinder BRep string
+        let mut helper = OcctKernel::new();
+        helper
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        let helper_state = helper.warm_state().expect("helper should have warm state");
+        let helper_warm = helper_state
+            .downcast::<OcctWarmState>()
+            .expect("should downcast");
+        let valid_brep = helper_warm
+            .shapes
+            .get(&1)
+            .expect("handle 1 should exist")
+            .clone();
+
+        // Construct warm state: 1 valid + 1 corrupt
+        let mut shapes = HashMap::new();
+        shapes.insert(1, valid_brep);
+        shapes.insert(2, "CORRUPT_DATA".to_string());
+        let warm = OcctWarmState {
+            shapes,
+            next_id: 10,
+        };
+        let state = OpaqueState::new(warm, 64);
+
+        let mut kernel = OcctKernel::new();
+        kernel.with_warm_state(state);
+
+        // The valid shape should be restored
+        let vol = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 1570.8).abs() < 1.0,
+                    "handle 1 should be cylinder volume ~1570.8, got {v}"
+                );
+            }
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // The failure counter should report 1 failed deserialization
+        assert_eq!(
+            kernel.warm_start_failures(),
+            1,
+            "should report 1 failed deserialization"
+        );
+    }
+
+    #[test]
+    fn with_warm_state_all_valid_zero_failures() {
+        // Create a kernel with a box and extract its warm state
+        let mut source = OcctKernel::new();
+        source
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let state = source.warm_state().expect("should have warm state");
+
+        // Apply that fully-valid warm state to a fresh kernel
+        let mut kernel = OcctKernel::new();
+        kernel.with_warm_state(state);
+
+        // All shapes were valid, so failure count should be 0
+        assert_eq!(
+            kernel.warm_start_failures(),
+            0,
+            "fully valid warm state should report 0 failures"
+        );
+
+        // Verify the shape was actually restored
+        let vol = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 6000.0).abs() < 1.0,
+                    "box volume should be ~6000, got {v}"
+                );
+            }
+            other => panic!("expected Real, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1258,6 +1365,30 @@ mod tests {
             Err(GeometryError::OperationFailed(_)) => {}
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for zero-length axis in rotate"),
+        }
+    }
+
+    #[test]
+    fn execute_rotate_near_zero_axis_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // A near-zero axis (mag_sq = 1e-34, non-zero but physically meaningless)
+        // should be rejected just like exact zero
+        let result = kernel.execute(&GeometryOp::Rotate {
+            target: box_h.id,
+            axis: [1e-17, 0.0, 0.0],
+            angle_rad: 1.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for near-zero-length axis in rotate"),
         }
     }
 
