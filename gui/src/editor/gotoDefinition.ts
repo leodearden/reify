@@ -17,6 +17,13 @@ interface LspLocation {
 }
 
 /**
+ * Resolve a URI from either a static string or getter.
+ */
+function resolveUri(uri: string | (() => string)): string {
+  return typeof uri === 'function' ? uri() : uri;
+}
+
+/**
  * Send a textDocument/definition request for the given position.
  */
 async function requestDefinition(
@@ -65,13 +72,16 @@ async function requestDefinition(
 /**
  * Create a CodeMirror extension that handles Ctrl+Click for go-to-definition.
  *
+ * Accepts either a static URI string or a `() => string` getter for dynamic
+ * URI resolution after file switches.
+ *
  * When the user Ctrl+clicks (or Cmd+clicks) on a symbol, sends a
  * textDocument/definition request and moves the cursor to the result
  * if it's in the same document.
  *
- * @param uri - The document URI to use for LSP requests.
+ * @param uri - The document URI or getter to use for LSP requests.
  */
-export function reifyGotoDefinition(uri: string): Extension {
+export function reifyGotoDefinition(uri: string | (() => string)): Extension {
   return EditorView.domEventHandlers({
     mousedown(event: MouseEvent, view: EditorView) {
       // Only handle Ctrl+Click (or Cmd+Click on Mac)
@@ -83,13 +93,15 @@ export function reifyGotoDefinition(uri: string): Extension {
       const line = view.state.doc.lineAt(pos);
       const lspLine = line.number - 1;
       const lspChar = pos - line.from;
+      const currentUri = resolveUri(uri);
 
       // Fire async, don't block the event
-      requestDefinition(uri, lspLine, lspChar).then((location) => {
+      requestDefinition(currentUri, lspLine, lspChar).then((location) => {
         if (!location) return;
 
         // If same document, navigate to definition
-        if (location.uri === uri || location.uri.endsWith(uri.replace('file://', ''))) {
+        const resolvedNow = resolveUri(uri);
+        if (location.uri === resolvedNow || location.uri.endsWith(resolvedNow.replace('file://', ''))) {
           const targetLine = view.state.doc.line(location.range.start.line + 1);
           const targetPos = targetLine.from + location.range.start.character;
           view.dispatch({

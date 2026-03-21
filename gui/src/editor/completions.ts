@@ -48,19 +48,24 @@ interface LspCompletionItem {
 /**
  * Create a CodeMirror CompletionSource for the given document URI.
  *
+ * Accepts either a static URI string or a `() => string` getter for dynamic
+ * URI resolution. When a getter is provided, the URI is resolved on each
+ * completion request, ensuring the correct file is targeted after file switches.
+ *
  * Returns a function that, when called with a CompletionContext, sends a
  * textDocument/completion request to the LSP server and converts the
  * response to CodeMirror's CompletionResult format.
  */
-export function reifyCompletionSource(uri: string): CompletionSource {
+export function reifyCompletionSource(uri: string | (() => string)): CompletionSource {
   return async (context: CompletionContext): Promise<CompletionResult | null> => {
     const { pos, state } = context;
     const line = state.doc.lineAt(pos);
     const lspLine = line.number - 1; // CodeMirror is 1-based, LSP is 0-based
     const lspChar = pos - line.from;
+    const resolvedUri = typeof uri === 'function' ? uri() : uri;
 
     const params = JSON.stringify({
-      textDocument: { uri },
+      textDocument: { uri: resolvedUri },
       position: { line: lspLine, character: lspChar },
     });
 

@@ -37,17 +37,21 @@ function extractHoverText(contents: LspHoverResult['contents']): string {
 /**
  * Create a CodeMirror hoverTooltip extension for LSP hover.
  *
- * @param uri - The document URI to use for LSP requests.
+ * Accepts either a static URI string or a `() => string` getter for dynamic
+ * URI resolution after file switches.
+ *
+ * @param uri - The document URI or getter to use for LSP requests.
  */
-export function reifyHoverTooltip(uri: string) {
+export function reifyHoverTooltip(uri: string | (() => string)) {
   return hoverTooltip(async (_view, pos, _side): Promise<Tooltip | null> => {
     const state = _view.state;
     const line = state.doc.lineAt(pos);
     const lspLine = line.number - 1;
     const lspChar = pos - line.from;
+    const resolvedUri = typeof uri === 'function' ? uri() : uri;
 
     const params = JSON.stringify({
-      textDocument: { uri },
+      textDocument: { uri: resolvedUri },
       position: { line: lspLine, character: lspChar },
     });
 
