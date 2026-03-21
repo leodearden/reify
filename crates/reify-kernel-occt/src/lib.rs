@@ -49,6 +49,8 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
 pub struct OcctKernel {
     shapes: HashMap<u64, cxx::UniquePtr<ffi::ffi::OcctShape>>,
     next_id: u64,
+    /// Number of shapes that failed deserialization during the last `with_warm_state()` call.
+    last_warm_start_failures: usize,
 }
 
 // Note: OcctKernel is !Send + !Sync because cxx::UniquePtr<OcctShape> is !Send.
@@ -60,6 +62,7 @@ impl OcctKernel {
         Self {
             shapes: HashMap::new(),
             next_id: 1,
+            last_warm_start_failures: 0,
         }
     }
 
@@ -555,6 +558,12 @@ impl OcctKernel {
             self.next_id = id + 1;
         }
     }
+
+    /// Returns the number of shapes that failed deserialization during the
+    /// last `with_warm_state()` call.
+    pub fn warm_start_failures(&self) -> usize {
+        self.last_warm_start_failures
+    }
 }
 
 #[cfg(test)]
@@ -862,6 +871,61 @@ mod tests {
             new_h.id,
             GeometryHandleId(10),
             "next_id should be updated to 10 after partial restore"
+        );
+    }
+
+    #[test]
+    fn with_warm_state_partial_failure_logs_warning() {
+        // Create a helper kernel to get a valid cylinder BRep string
+        let mut helper = OcctKernel::new();
+        helper
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        let helper_state = helper.warm_state().expect("helper should have warm state");
+        let helper_warm = helper_state
+            .downcast::<OcctWarmState>()
+            .expect("should downcast");
+        let valid_brep = helper_warm
+            .shapes
+            .get(&1)
+            .expect("handle 1 should exist")
+            .clone();
+
+        // Construct warm state: 1 valid + 1 corrupt
+        let mut shapes = HashMap::new();
+        shapes.insert(1, valid_brep);
+        shapes.insert(2, "CORRUPT_DATA".to_string());
+        let warm = OcctWarmState {
+            shapes,
+            next_id: 10,
+        };
+        let state = OpaqueState::new(warm, 64);
+
+        let mut kernel = OcctKernel::new();
+        kernel.with_warm_state(state);
+
+        // The valid shape should be restored
+        let vol = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 1570.8).abs() < 1.0,
+                    "handle 1 should be cylinder volume ~1570.8, got {v}"
+                );
+            }
+            other => panic!("expected Real, got {:?}", other),
+        }
+
+        // The failure counter should report 1 failed deserialization
+        assert_eq!(
+            kernel.warm_start_failures(),
+            1,
+            "should report 1 failed deserialization"
         );
     }
 
