@@ -90,14 +90,14 @@
       "type": "test",
       "description": "Verify ConstraintPanel.test.tsx and ConstraintPanel.tsx tests fail due to 'details' \u2192 'label' rename. Update all makeConstraint() helpers and inline ConstraintData constructions in test files to use 'label' instead of 'details': ConstraintPanel.test.tsx, engineStore.test.ts, StatusBar.test.tsx, navigation.test.ts.",
       "status": "done",
-      "commit": "PLACEHOLDER_9"
+      "commit": "f3e890f"
     },
     {
       "id": "step-10",
       "type": "impl",
       "description": "Fix ConstraintPanel.tsx: change `constraint.details` references (lines 95-96) to `constraint.label`. All ConstraintPanel tests should now pass with the label field.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PLACEHOLDER_10"
     },
     {
       "id": "step-11",
