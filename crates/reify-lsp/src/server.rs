@@ -28,6 +28,30 @@ impl NotificationSink for NoOpSink {
     fn publish_diagnostics(&self, _uri: Url, _diagnostics: Vec<Diagnostic>, _version: Option<i32>) {}
 }
 
+/// A sink that wraps the tower-lsp [`Client`] for stdio/TCP mode.
+///
+/// Since [`NotificationSink`] methods are synchronous but `Client.publish_diagnostics()`
+/// is async, this implementation spawns a fire-and-forget tokio task for each call.
+pub struct ClientSink {
+    client: Client,
+}
+
+impl ClientSink {
+    /// Create a new `ClientSink` wrapping the given tower-lsp `Client`.
+    pub fn new(client: Client) -> Self {
+        Self { client }
+    }
+}
+
+impl NotificationSink for ClientSink {
+    fn publish_diagnostics(&self, uri: Url, diagnostics: Vec<Diagnostic>, version: Option<i32>) {
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            client.publish_diagnostics(uri, diagnostics, version).await;
+        });
+    }
+}
+
 /// Internal state shared across handler calls.
 ///
 /// Contains document storage and captured diagnostics. The RwLock guards

@@ -1,12 +1,16 @@
+use std::sync::Arc;
+
 use tower_lsp::lsp_types::*;
 use tower_lsp::{LanguageServer, LspService};
 
-use reify_lsp::server::ReifyLanguageServer;
+use reify_lsp::server::{NoOpSink, ReifyLanguageServer};
 
 #[tokio::test]
 async fn full_lifecycle_initialize_open_change_close() {
-    // 1. Create service
-    let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+    // 1. Create service with explicit NoOpSink
+    let (service, _socket) = LspService::new(|client| {
+        ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink))
+    });
     let server = service.inner();
 
     // 2. Initialize

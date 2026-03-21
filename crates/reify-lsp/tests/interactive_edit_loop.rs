@@ -2,11 +2,13 @@
 //!
 //! Proves the stateful diagnostics pipeline: open → edit → diagnostics update.
 
+use std::sync::Arc;
+
 use tower_lsp::lsp_types::*;
 use tower_lsp::{LanguageServer, LspService};
 
 use reify_lsp::diagnostics::{compute_diagnostics_with_state, EvalState};
-use reify_lsp::server::ReifyLanguageServer;
+use reify_lsp::server::{NoOpSink, ReifyLanguageServer};
 
 fn test_uri() -> Url {
     Url::parse("file:///test.ri").unwrap()
@@ -87,7 +89,9 @@ fn lsp_stateful_diagnostics_after_edit_detects_violation() {
 /// 6. shutdown
 #[tokio::test]
 async fn lsp_server_e2e_interactive_edit_loop() {
-    let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+    let (service, _socket) = LspService::new(|client| {
+        ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink))
+    });
     let server = service.inner();
 
     // 1. Initialize

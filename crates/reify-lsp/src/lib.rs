@@ -8,13 +8,20 @@ pub mod goto_def;
 pub mod hover;
 pub mod server;
 
+use std::sync::Arc;
+
 use tower_lsp::{LspService, Server};
+
+use server::ClientSink;
 
 /// Start the Reify LSP server on stdin/stdout.
 pub async fn run_server() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let (service, socket) = LspService::new(server::ReifyLanguageServer::new);
+    let (service, socket) = LspService::new(|client| {
+        let sink = Arc::new(ClientSink::new(client.clone()));
+        server::ReifyLanguageServer::with_sink(client, sink)
+    });
     Server::new(stdin, stdout, socket).serve(service).await;
 }
