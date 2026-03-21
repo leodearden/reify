@@ -164,11 +164,23 @@ import {
   BufferGeometry,
 } from 'three';
 
-// rAF mock for throttle tests
+// rAF mock: synchronous by default so existing tests work unchanged.
+// The rAF-throttle describe block overrides with a capturing mock.
 let rafCallbacks: Array<FrameRequestCallback> = [];
 let rafIdCounter = 1;
-const originalRAF = globalThis.requestAnimationFrame;
-const originalCAF = globalThis.cancelAnimationFrame;
+
+function installSyncRaf() {
+  globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+    cb(performance.now());
+    return rafIdCounter++;
+  }) as unknown as typeof requestAnimationFrame;
+  globalThis.cancelAnimationFrame = vi.fn() as unknown as typeof cancelAnimationFrame;
+}
+installSyncRaf();
+
+// Save the synchronous rAF as the "original" for restoring after rAF-throttle tests
+const syncRAF = globalThis.requestAnimationFrame;
+const syncCAF = globalThis.cancelAnimationFrame;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -757,9 +769,9 @@ describe('createSelection', () => {
     }
 
     afterEach(() => {
-      // Restore original rAF/cAF
-      globalThis.requestAnimationFrame = originalRAF;
-      globalThis.cancelAnimationFrame = originalCAF;
+      // Restore synchronous rAF/cAF for other test sections
+      globalThis.requestAnimationFrame = syncRAF;
+      globalThis.cancelAnimationFrame = syncCAF;
     });
 
     it('pointermove does not raycast synchronously — stores pending event and schedules rAF', () => {

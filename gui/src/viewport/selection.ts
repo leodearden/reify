@@ -71,9 +71,26 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     return null;
   }
 
+  let pendingMoveEvent: MouseEvent | null = null;
+  let hoverRafPending = false;
+  let hoverRafId = 0;
+
+  function processHover(): void {
+    hoverRafPending = false;
+    if (pendingMoveEvent) {
+      const event = pendingMoveEvent;
+      pendingMoveEvent = null;
+      const entityPath = raycast(event);
+      onHover(entityPath);
+    }
+  }
+
   function handlePointerMove(event: Event): void {
-    const entityPath = raycast(event as MouseEvent);
-    onHover(entityPath);
+    pendingMoveEvent = event as MouseEvent;
+    if (!hoverRafPending) {
+      hoverRafPending = true;
+      hoverRafId = requestAnimationFrame(processHover);
+    }
   }
 
   function handlePointerDown(event: Event): void {
@@ -161,6 +178,11 @@ export function createSelection(options: SelectionOptions): SelectionContext {
   }
 
   function dispose(): void {
+    if (hoverRafPending) {
+      cancelAnimationFrame(hoverRafId);
+      hoverRafPending = false;
+      hoverRafId = 0;
+    }
     domElement.removeEventListener('pointermove', handlePointerMove);
     domElement.removeEventListener('pointerdown', handlePointerDown);
     removeWireframe();
