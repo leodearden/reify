@@ -88,3 +88,19 @@
   font-size: 13px;
   color: var(--reify-subtext, #a6adc8);
 }
+
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--reify-subtext, #a6adc8);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

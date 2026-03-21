@@ -79,6 +79,7 @@ export const ExportDialog: Component<ExportDialogProps> = (props) => {
 
           <Show when={props.exporting}>
             <div class={styles.progress} data-testid="export-progress">
+              <span class={styles.spinner} data-testid="export-spinner" />
               Exporting...
             </div>
           </Show>
