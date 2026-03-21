@@ -94,7 +94,6 @@ export const ExportDialog: Component<ExportDialogProps> = (props) => {
             >
               <option value="step">STEP</option>
               <option value="stl">STL</option>
-              <option value="3mf">3MF</option>
             </select>
           </div>
 

@@ -102,7 +102,7 @@ export type ValueUpdate = ValueData;
 export type ConstraintUpdate = ConstraintData;
 
 /** Supported export formats for geometry. */
-export type ExportFormat = 'step' | 'stl' | '3mf';
+export type ExportFormat = 'step' | 'stl';
 
 /** An entry in the file browser tree. */
 export interface FileEntry {
