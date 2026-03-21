@@ -1,5 +1,5 @@
 import { batch } from 'solid-js';
-import { createStore } from 'solid-js/store';
+import { createStore, produce } from 'solid-js/store';
 import type {
   MeshData,
   ValueData,
@@ -72,15 +72,15 @@ export function createEngineStore() {
   }
 
   function removeMesh(entityPath: string) {
-    setState('meshes', entityPath, undefined!);
+    setState(produce((s) => { delete s.meshes[entityPath]; }));
   }
 
   function removeValue(cellId: string) {
-    setState('values', cellId, undefined!);
+    setState(produce((s) => { delete s.values[cellId]; }));
   }
 
   function removeConstraint(nodeId: string) {
-    setState('constraints', nodeId, undefined!);
+    setState(produce((s) => { delete s.constraints[nodeId]; }));
   }
 
   function setEvalStatus(status: EvaluationStatus) {
