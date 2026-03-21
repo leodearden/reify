@@ -1312,3 +1312,51 @@ describe('App end-to-end toast integration', () => {
     }
   });
 });
+
+describe('App keyboard help overlay', () => {
+  it('pressing ? key shows keyboard help overlay', async () => {
+    await renderAndWaitForReady();
+
+    // Help overlay should not be visible initially
+    expect(screen.queryByTestId('keyboard-help')).toBeNull();
+
+    // Press ? key
+    fireEvent.keyDown(document, { key: '?' });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('keyboard-help')).toBeTruthy();
+    });
+  });
+
+  it('pressing ? again hides keyboard help (toggle behavior)', async () => {
+    await renderAndWaitForReady();
+
+    // Show help
+    fireEvent.keyDown(document, { key: '?' });
+    await waitFor(() => {
+      expect(screen.getByTestId('keyboard-help')).toBeTruthy();
+    });
+
+    // Press ? again to hide
+    fireEvent.keyDown(document, { key: '?' });
+    await waitFor(() => {
+      expect(screen.queryByTestId('keyboard-help')).toBeNull();
+    });
+  });
+
+  it('pressing Escape while help is shown hides it', async () => {
+    await renderAndWaitForReady();
+
+    // Show help
+    fireEvent.keyDown(document, { key: '?' });
+    await waitFor(() => {
+      expect(screen.getByTestId('keyboard-help')).toBeTruthy();
+    });
+
+    // Press Escape to close
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByTestId('keyboard-help')).toBeNull();
+    });
+  });
+});
