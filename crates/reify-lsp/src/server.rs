@@ -250,6 +250,17 @@ mod tests {
         Url::parse("file:///test.ri").unwrap()
     }
 
+    #[test]
+    fn noop_sink_implements_notification_sink() {
+        let sink: Arc<dyn NotificationSink> = Arc::new(NoOpSink);
+        // Should not panic
+        sink.publish_diagnostics(
+            Url::parse("file:///test.ri").unwrap(),
+            vec![],
+            None,
+        );
+    }
+
     #[tokio::test]
     async fn initialize_returns_full_sync_capability() {
         let (service, _socket) = LspService::new(ReifyLanguageServer::new);
