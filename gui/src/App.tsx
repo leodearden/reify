@@ -44,13 +44,15 @@ const App: Component = () => {
     }
   });
 
-  let unsubscribeEvents: (() => void) | undefined;
+  let alive = true;
+  let unsub: (() => void) | undefined;
 
   onMount(async () => {
     applyTheme();
 
     try {
       const initialState = await getInitialState();
+      if (!alive) return;
       engineStore.initFromState(initialState);
       for (const file of initialState.files) {
         editorStore.openFile(file);
@@ -59,15 +61,23 @@ const App: Component = () => {
       console.error('Failed to load initial state:', err);
     }
 
+    if (!alive) return;
+
     try {
-      unsubscribeEvents = await engineStore.subscribeToEvents();
+      const u = await engineStore.subscribeToEvents();
+      if (!alive) {
+        u();
+        return;
+      }
+      unsub = u;
     } catch (err) {
       console.error('Failed to subscribe to events:', err);
     }
   });
 
   onCleanup(() => {
-    unsubscribeEvents?.();
+    alive = false;
+    unsub?.();
   });
 
   function handleSetParameter(cellId: string, value: string) {
