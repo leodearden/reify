@@ -58,6 +58,11 @@ export async function exportGeometry(format: string, outputPath: string): Promis
   return invoke('export', { format, path: outputPath });
 }
 
+/** Open a native save dialog and return the chosen path, or null if the user cancelled. */
+export async function pickSavePath(format: string, defaultName: string): Promise<string | null> {
+  return invoke<string | null>('pick_save_path', { format, defaultName });
+}
+
 /** Get the source location for an entity. */
 export async function getSourceLocation(entityPath: string): Promise<SourceLocation> {
   return invoke<SourceLocation>('get_source_location', { entityPath });

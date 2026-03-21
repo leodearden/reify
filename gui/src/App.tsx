@@ -23,6 +23,7 @@ import {
   getInitialState,
   setParameter as bridgeSetParameter,
   exportGeometry as bridgeExportGeometry,
+  pickSavePath as bridgePickSavePath,
   updateSource as bridgeUpdateSource,
   openFile as bridgeOpenFile,
   onFileChanged,
@@ -188,9 +189,21 @@ const App: Component = () => {
   async function handleDoExport(format: ExportFormat) {
     setExporting(true);
     try {
-      // In a full app, would open native save dialog here
-      const defaultPath = `export.${format}`;
-      await bridgeExportGeometry(format, defaultPath);
+      // Try native save dialog; fall back to default path if unavailable
+      let outputPath: string;
+      try {
+        const chosen = await bridgePickSavePath(format, `export.${format}`);
+        if (chosen === null) {
+          // User cancelled the dialog
+          return;
+        }
+        outputPath = chosen;
+      } catch {
+        // Backend command not available — fall back to hardcoded path
+        outputPath = `export.${format}`;
+      }
+
+      await bridgeExportGeometry(format, outputPath);
       toast.showToast(`Exported successfully as ${format.toUpperCase()}`, 'success');
     } catch (err) {
       toast.showToast(`Export failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
