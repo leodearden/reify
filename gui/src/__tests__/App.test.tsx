@@ -284,3 +284,145 @@ describe('App dynamic window title', () => {
     });
   });
 });
+
+describe('App async mount/cleanup race conditions', () => {
+  it('does not leak event listeners when unmounted before subscribeToEvents resolves', async () => {
+    // Create tracked unlisten functions for all bridge event listeners
+    const meshUnlisten = vi.fn();
+    const valueUnlisten = vi.fn();
+    const constraintUnlisten = vi.fn();
+    const evalUnlisten = vi.fn();
+    const meshRemovedUnlisten = vi.fn();
+    const valueRemovedUnlisten = vi.fn();
+    const constraintRemovedUnlisten = vi.fn();
+
+    // Make onMeshUpdate return a deferred promise (delays subscribeToEvents completion)
+    let resolveMeshListen!: (unsub: () => void) => void;
+    vi.mocked(bridge.onMeshUpdate).mockReturnValue(
+      new Promise<() => void>((resolve) => { resolveMeshListen = resolve; }),
+    );
+
+    // All other event listeners resolve immediately with tracked unlistens
+    vi.mocked(bridge.onValueUpdate).mockResolvedValue(valueUnlisten);
+    vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(constraintUnlisten);
+    vi.mocked(bridge.onEvaluationStatus).mockResolvedValue(evalUnlisten);
+    vi.mocked(bridge.onMeshRemoved).mockResolvedValue(meshRemovedUnlisten);
+    vi.mocked(bridge.onValueRemoved).mockResolvedValue(valueRemovedUnlisten);
+    vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(constraintRemovedUnlisten);
+
+    const { unmount } = render(() => <App />);
+
+    // Wait for getInitialState to resolve and subscribeToEvents to start
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Unmount while subscribeToEvents is still pending (waiting for deferred onMeshUpdate)
+    unmount();
+
+    // Resolve the deferred onMeshUpdate — subscribeToEvents will now complete
+    resolveMeshListen(meshUnlisten);
+
+    // Flush microtasks so subscribeToEvents' await resolves
+    await new Promise((r) => setTimeout(r, 0));
+
+    // After fix: the alive guard calls the composite unsub immediately,
+    // which calls all individual unlisten functions.
+    // With current code: unsub is assigned but never called → listeners LEAK
+    expect(meshUnlisten).toHaveBeenCalled();
+    expect(valueUnlisten).toHaveBeenCalled();
+    expect(constraintUnlisten).toHaveBeenCalled();
+    expect(evalUnlisten).toHaveBeenCalled();
+    expect(meshRemovedUnlisten).toHaveBeenCalled();
+    expect(valueRemovedUnlisten).toHaveBeenCalled();
+    expect(constraintRemovedUnlisten).toHaveBeenCalled();
+  });
+
+  it('does not call initFromState on dead component when unmounted before getInitialState resolves', async () => {
+    // Create deferred promise for getInitialState
+    let resolveGetState!: (state: GuiState) => void;
+    vi.mocked(bridge.getInitialState).mockReturnValue(
+      new Promise<GuiState>((resolve) => { resolveGetState = resolve; }),
+    );
+
+    const { unmount } = render(() => <App />);
+
+    // Unmount while getInitialState is still pending
+    unmount();
+
+    // Resolve getInitialState with data (values + files)
+    resolveGetState({
+      meshes: [],
+      values: [{
+        cell_id: 'c1',
+        name: 'testval',
+        value: '42',
+        unit: 'mm',
+        determinacy: 'determined',
+        entity_path: 'Test.testval',
+      }],
+      constraints: [],
+      files: [{ path: '/test.ri', content: '' }],
+    });
+
+    // Flush microtasks
+    await new Promise((r) => setTimeout(r, 0));
+
+    // After fix: alive guard returns before reaching subscribeToEvents
+    // With current code: initFromState runs, then subscribeToEvents runs → onMeshUpdate called
+    expect(bridge.onMeshUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('App handleSetParameter error handling', () => {
+  it('logs error when bridge.setParameter rejects', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Prevent unhandled rejection from failing the test
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      vi.mocked(bridge.setParameter).mockRejectedValue(new Error('backend unavailable'));
+
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        meshes: [],
+        values: [{
+          cell_id: 'c1',
+          name: 'width',
+          value: '80',
+          unit: 'mm',
+          determinacy: 'determined',
+          entity_path: 'Bracket.width',
+        }],
+        constraints: [],
+        files: [],
+      });
+
+      render(() => <App />);
+
+      // Wait for PropertyEditor to show the value
+      await waitFor(() => {
+        expect(screen.getByText('width')).toBeTruthy();
+      });
+
+      // Find the input and press Enter to trigger onSetParameter
+      const row = screen.getByTestId('prop-row-c1');
+      const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+      expect(input).toBeTruthy();
+
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // Flush microtask queue for the rejected promise
+      await new Promise((r) => setTimeout(r, 0));
+
+      // After fix: console.error is called with 'setParameter failed:' and the error
+      // With current code: rejected promise is unhandled, console.error NOT called
+      expect(errorSpy).toHaveBeenCalledWith(
+        'setParameter failed:',
+        expect.any(Error),
+      );
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+      errorSpy.mockRestore();
+    }
+  });
+});
