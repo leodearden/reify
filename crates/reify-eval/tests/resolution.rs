@@ -5,10 +5,11 @@ use std::collections::HashMap;
 use reify_eval::cache::NodeId;
 use reify_eval::Engine;
 use reify_test_support::{
-    CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver, TopologyTemplateBuilder,
+    CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver, SpyConstraintSolver,
+    TopologyTemplateBuilder,
     binop, gt, lt, literal, value_ref, mm,
 };
-use reify_types::{DeterminacyState, ModulePath, SnapshotId, SnapshotProvenance, Type, Value, ValueCellId};
+use reify_types::{DeterminacyState, ModulePath, OptimizationObjective, SnapshotId, SnapshotProvenance, Type, Value, ValueCellId};
 
 #[test]
 fn engine_with_solver_accepts_solver() {
@@ -571,5 +572,41 @@ fn incremental_fast_path_works_after_resolution() {
         "y's cache basis_version ({:?}) should still be the resolution version ({:?}), \
          confirming it was not re-evaluated during edit_param(z)",
         y_cache.basis_version, resolution_snap_version
+    );
+}
+
+#[test]
+fn objective_forwarded_to_solver_in_eval() {
+    // Build a template with an explicit Minimize objective.
+    // The spy captures whatever ResolutionProblem the engine passes to solve().
+    // This test fails until eval() wires template.objective into the problem.
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+
+    let spy = SpyConstraintSolver::new_solved(solved_values);
+    let captured = spy.captured_problem();
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "thickness"), literal(mm(2.0))))
+        .objective(OptimizationObjective::Minimize(value_ref("S", "thickness")))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(spy));
+
+    engine.eval(&module);
+
+    let guard = captured.lock().unwrap();
+    let problem = guard.as_ref().expect("solver should have been called during eval");
+    assert!(
+        matches!(&problem.objective, Some(OptimizationObjective::Minimize(_))),
+        "expected Minimize objective forwarded to solver, got {:?}",
+        problem.objective
     );
 }

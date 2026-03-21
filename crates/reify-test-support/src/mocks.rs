@@ -229,6 +229,39 @@ impl GeometryKernel for MockGeometryKernel {
     }
 }
 
+/// Spy constraint solver that captures the last `ResolutionProblem` passed to it.
+///
+/// Use this in tests where you need to assert what the engine sent to the solver,
+/// not just the result of solving (e.g., to verify the `objective` field is wired).
+pub struct SpyConstraintSolver {
+    captured: Arc<Mutex<Option<ResolutionProblem>>>,
+    result: SolveResult,
+}
+
+impl SpyConstraintSolver {
+    /// Create a spy that will return `Solved` with the given values and capture
+    /// the `ResolutionProblem` it receives.
+    pub fn new_solved(values: HashMap<ValueCellId, Value>) -> Self {
+        Self {
+            captured: Arc::new(Mutex::new(None)),
+            result: SolveResult::Solved { values },
+        }
+    }
+
+    /// Return a shared reference to the captured problem so callers can
+    /// inspect it after `solve()` has been called.
+    pub fn captured_problem(&self) -> Arc<Mutex<Option<ResolutionProblem>>> {
+        self.captured.clone()
+    }
+}
+
+impl ConstraintSolver for SpyConstraintSolver {
+    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+        *self.captured.lock().unwrap() = Some(problem.clone());
+        self.result.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
