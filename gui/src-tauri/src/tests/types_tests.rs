@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use crate::types::*;
+use reify_types::DeterminacyState;
 
 #[test]
 fn gui_state_empty_serializes_with_expected_keys() {
@@ -117,4 +118,13 @@ fn evaluation_status_serializes_with_phase_and_optional_progress() {
     let v = serde_json::to_value(&status).unwrap();
     assert_eq!(v["phase"], json!("evaluating"));
     assert_eq!(v["progress"], json!(0.5));
+}
+
+#[test]
+fn format_determinacy_returns_lowercase_strings() {
+    // The frontend expects lowercase determinacy strings (e.g. 'determined', not 'Determined')
+    assert_eq!(format_determinacy(DeterminacyState::Determined), "determined");
+    assert_eq!(format_determinacy(DeterminacyState::Undetermined), "undetermined");
+    assert_eq!(format_determinacy(DeterminacyState::Provisional), "provisional");
+    assert_eq!(format_determinacy(DeterminacyState::Auto), "auto");
 }
