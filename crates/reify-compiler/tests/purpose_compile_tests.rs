@@ -140,3 +140,78 @@ purpose check(subject : Structure) {
 
     let _module = compile_module(source);
 }
+
+// ── Step 25: unsupported member variants should emit error ───────────────
+
+/// Helper: parse source and compile, returning the CompiledModule without
+/// asserting on compile errors. Used to inspect diagnostics directly.
+fn compile_module_with_diagnostics(source: &str) -> CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    reify_compiler::compile(&parsed)
+}
+
+#[test]
+fn compile_purpose_rejects_guarded_blocks() {
+    // The grammar's purpose_member reuses guarded_block, so a where-guarded
+    // constraint block parses into MemberDecl::GuardedGroup. The compiler
+    // should emit a Severity::Error diagnostic rather than silently dropping it.
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+    param height : Length = 60mm
+}
+
+purpose check(subject : Structure) {
+    where 80mm > 10mm {
+        constraint 60mm > 5mm
+    }
+}
+"#;
+
+    let module = compile_module_with_diagnostics(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected compile error for guarded block in purpose, but got none"
+    );
+    let has_guarded_error = errors
+        .iter()
+        .any(|d| d.message.contains("guarded blocks in purpose bodies are not yet supported"));
+    assert!(
+        has_guarded_error,
+        "expected diagnostic about unsupported guarded blocks, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn compile_purpose_no_false_positives_from_explicit_arms() {
+    // Verify that a valid purpose with only constraints compiles cleanly
+    // (no false positives from the explicit error arms added in step 26).
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose ok(subject : Structure) {
+    constraint 80mm > 0mm
+}
+"#;
+
+    let module = compile_module_with_diagnostics(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no compile errors for valid purpose, got: {:?}",
+        errors
+    );
+}
