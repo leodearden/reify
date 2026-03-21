@@ -7,7 +7,12 @@ import {
   Color,
   type Scene,
 } from 'three';
+import { computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
 import type { MeshData } from '../types';
+
+// Patch BufferGeometry prototype for BVH acceleration
+(BufferGeometry.prototype as any).computeBoundsTree = computeBoundsTree;
+(BufferGeometry.prototype as any).disposeBoundsTree = disposeBoundsTree;
 
 /** Catppuccin accent palette for deterministic mesh coloring. */
 const ACCENT_PALETTE = [
@@ -62,7 +67,7 @@ function validateMeshData(data: MeshData): boolean {
 export function createMeshManager(scene: Scene): MeshManagerContext {
   const meshMap = new Map<string, Mesh>();
 
-  function createMeshFromData(entityPath: string, data: MeshData): Mesh {
+  function createMeshFromData(entityPath: string, data: MeshData): Mesh | null {
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new BufferAttribute(data.vertices, 3));
     geometry.setIndex(new BufferAttribute(data.indices, 1));
@@ -76,6 +81,15 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
       color: colorForEntity(entityPath),
       side: DoubleSide,
     });
+
+    try {
+      (geometry as any).computeBoundsTree();
+    } catch (err) {
+      geometry.dispose();
+      material.dispose();
+      console.error(`Failed to build BVH for mesh '${entityPath}'`, err);
+      return null;
+    }
 
     const mesh = new Mesh(geometry, material);
     mesh.name = entityPath;
@@ -126,11 +140,20 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     // Setting to null forces Three.js to lazily recompute on next access.
     geometry.boundingSphere = null;
     geometry.boundingBox = null;
+
+    // Rebuild BVH for the updated geometry
+    try {
+      (geometry as any).computeBoundsTree();
+    } catch (err) {
+      console.error(`Failed to rebuild BVH for mesh '${mesh.name}'`, err);
+      removeMesh(mesh.name);
+    }
   }
 
   function removeMesh(entityPath: string): void {
     const mesh = meshMap.get(entityPath);
     if (!mesh) return;
+    (mesh.geometry as any).disposeBoundsTree();
     (mesh.geometry as BufferGeometry).dispose();
     (mesh.material as MeshStandardMaterial).dispose();
     scene.remove(mesh);
@@ -138,11 +161,9 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
   }
 
   function sync(meshes: Record<string, MeshData>): void {
-    const incomingKeys = new Set(Object.keys(meshes));
-
     // Remove meshes no longer present
     for (const key of [...meshMap.keys()]) {
-      if (!incomingKeys.has(key)) {
+      if (!(key in meshes)) {
         removeMesh(key);
       }
     }
@@ -154,8 +175,10 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
         updateMeshGeometry(meshMap.get(entityPath)!, data);
       } else {
         const mesh = createMeshFromData(entityPath, data);
-        meshMap.set(entityPath, mesh);
-        scene.add(mesh);
+        if (mesh) {
+          meshMap.set(entityPath, mesh);
+          scene.add(mesh);
+        }
       }
     }
   }

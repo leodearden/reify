@@ -59,9 +59,18 @@ vi.mock('../../viewport/scene', () => ({
   })),
 }));
 
+// Captured event listeners from the controls mock (for render-on-demand tests)
+let controlsListeners: Record<string, Function[]> = {};
+
 vi.mock('../../viewport/controls', () => ({
   createControls: vi.fn(() => ({
-    controls: {},
+    controls: {
+      addEventListener: vi.fn((event: string, cb: Function) => {
+        if (!controlsListeners[event]) controlsListeners[event] = [];
+        controlsListeners[event].push(cb);
+      }),
+      removeEventListener: vi.fn((_event: string, _cb: Function) => {}),
+    },
     update: mockControlsUpdate,
     dispose: mockControlsDispose,
   })),
@@ -102,6 +111,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   rafCallbacks = [];
   rafIdCounter = 1;
+  controlsListeners = {};
 });
 
 describe('Viewport', () => {
@@ -235,6 +245,77 @@ describe('Viewport', () => {
     expect(mockSelectionFlyToEntity).toHaveBeenCalledWith('Bracket');
   });
 
+  it('animate loop does NOT call renderer.render when idle after initial frame', () => {
+    render(() => <Viewport meshes={{}} />);
+
+    // First rAF callback fires the initial render (animate calls rAF, then renders)
+    expect(rafCallbacks.length).toBeGreaterThan(0);
+    const firstCb = rafCallbacks[0];
+    firstCb(performance.now()); // initial frame — should render
+
+    expect(mockRendererRender).toHaveBeenCalled();
+    mockRendererRender.mockClear();
+
+    // Second rAF callback (scheduled by the first animate call)
+    // With render-on-demand, this should NOT render since nothing changed
+    const secondCb = rafCallbacks[rafCallbacks.length - 1];
+    secondCb(performance.now());
+
+    expect(mockRendererRender).not.toHaveBeenCalled();
+  });
+
+  it('controls change event triggers re-render on next frame', () => {
+    render(() => <Viewport meshes={{}} />);
+
+    // Fire first rAF callback (initial render)
+    const firstCb = rafCallbacks[0];
+    firstCb(performance.now());
+    mockRendererRender.mockClear();
+
+    // Simulate controls 'change' event (camera moved)
+    expect(controlsListeners['change']).toBeDefined();
+    controlsListeners['change'][0]();
+
+    // Fire next rAF — should render since change event set dirty flag
+    const nextCb = rafCallbacks[rafCallbacks.length - 1];
+    nextCb(performance.now());
+
+    expect(mockRendererRender).toHaveBeenCalledTimes(1);
+  });
+
+  it('resize triggers re-render on next frame', () => {
+    // Capture the ResizeObserver callback
+    let roCallback: ResizeObserverCallback | undefined;
+    const OrigRO = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+      constructor(cb: ResizeObserverCallback) { roCallback = cb; }
+    } as any;
+
+    try {
+      render(() => <Viewport meshes={{}} />);
+
+      // Fire first rAF callback (initial render)
+      const firstCb = rafCallbacks[0];
+      firstCb(performance.now());
+      mockRendererRender.mockClear();
+
+      // Simulate resize
+      roCallback!([{ contentRect: { width: 1024, height: 768 } }] as any, {} as any);
+
+      // Fire next rAF — should render since resize sets dirty flag
+      const nextCb = rafCallbacks[rafCallbacks.length - 1];
+      nextCb(performance.now());
+
+      expect(mockRendererRender).toHaveBeenCalledTimes(1);
+    } finally {
+      // Restore original ResizeObserver regardless of assertion failures
+      globalThis.ResizeObserver = OrigRO;
+    }
+  });
+
   it('passes controls to createSelection for orbit target updates', () => {
     render(() => <Viewport meshes={{}} />);
 
@@ -244,8 +325,9 @@ describe('Viewport', () => {
     const opts = mockCreateSelection.mock.calls[0][0];
     expect(opts).toHaveProperty('controls');
     // The controls value should be the OrbitControls instance from createControls mock
-    // createControls mock returns { controls: {}, ... }, so the passed value should be {}
-    expect(opts.controls).toEqual({});
+    // createControls mock returns { controls: { addEventListener, removeEventListener }, ... }
+    expect(opts.controls).toBeDefined();
+    expect(typeof opts.controls.addEventListener).toBe('function');
   });
 });
 

@@ -9,12 +9,21 @@ const mockMeshes: any[] = [];
 
 const mockSceneAdd = vi.fn();
 const mockSceneRemove = vi.fn();
+const mockComputeBoundsTree = vi.fn();
+const mockDisposeBoundsTree = vi.fn();
 
 vi.mock('three', () => {
   class MockBufferGeometry {
     attributes: Record<string, any> = {};
     index: any = null;
     dispose = vi.fn();
+    computeBoundsTree = mockComputeBoundsTree;
+    disposeBoundsTree = mockDisposeBoundsTree;
+    boundingSphere: any = null;
+    boundingBox: any = null;
+    constructor() {
+      mockGeometries.push(this);
+    }
 
     computeVertexNormals = vi.fn();
 
@@ -92,6 +101,12 @@ vi.mock('three', () => {
     FrontSide: 0,
   };
 });
+
+vi.mock('three-mesh-bvh', () => ({
+  computeBoundsTree: vi.fn(),
+  disposeBoundsTree: vi.fn(),
+  acceleratedRaycast: vi.fn(),
+}));
 
 import { createMeshManager } from '../../viewport/meshManager';
 import { Scene } from 'three';
@@ -497,5 +512,147 @@ describe('meshManager', () => {
       expect(geom.attributes.position.array).toBe(verts);
       warnSpy.mockRestore();
     });
+  });
+
+  describe('R-01: createMeshFromData disposes resources when computeBoundsTree throws', () => {
+    it('disposes geometry and material if computeBoundsTree throws', () => {
+      const { manager } = setup();
+      const meshData = makeMeshData('A');
+
+      // Configure shared mock to throw on the next call (create)
+      mockComputeBoundsTree.mockImplementationOnce(() => {
+        throw new Error('BVH build failed');
+      });
+
+      manager.sync({ A: meshData });
+
+      // Geometry should be disposed (last created geometry)
+      const geo = mockGeometries[mockGeometries.length - 1];
+      expect(geo.dispose).toHaveBeenCalled();
+      // Material should be disposed (last created material)
+      const mat = mockMaterials[mockMaterials.length - 1];
+      expect(mat.dispose).toHaveBeenCalled();
+
+      // Mesh should NOT be in the map or scene
+      expect(manager.getSceneMeshes().has('A')).toBe(false);
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+    });
+
+    it('logs error when computeBoundsTree throws', () => {
+      const { manager } = setup();
+      const meshData = makeMeshData('A');
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      mockComputeBoundsTree.mockImplementationOnce(() => {
+        throw new Error('BVH build failed');
+      });
+
+      try {
+        manager.sync({ A: meshData });
+
+        expect(consoleSpy).toHaveBeenCalledWith(
+          expect.stringContaining('A'),
+          expect.any(Error),
+        );
+      } finally {
+        consoleSpy.mockRestore();
+      }
+    });
+  });
+
+  it('sync with empty incoming object removes all existing meshes', () => {
+    const { manager } = setup();
+    manager.sync({ A: makeMeshData('A'), B: makeMeshData('B') });
+    expect(manager.getSceneMeshes().size).toBe(2);
+
+    manager.sync({});
+
+    expect(manager.getSceneMeshes().size).toBe(0);
+    expect(mockSceneRemove).toHaveBeenCalledTimes(2);
+  });
+
+  it('sync calls geometry.computeBoundsTree() on newly created mesh', () => {
+    const { manager } = setup();
+    manager.sync({ A: makeMeshData('A') });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+    expect((mesh.geometry as any).computeBoundsTree).toHaveBeenCalledTimes(1);
+  });
+
+  it('sync calls geometry.computeBoundsTree() after updating existing mesh geometry', () => {
+    const { manager } = setup();
+    manager.sync({ A: makeMeshData('A') });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+    (mesh.geometry as any).computeBoundsTree.mockClear();
+
+    // Update with new vertices (must have ≥3 vertices to pass V-06 validation with default indices [0,1,2])
+    const newVerts = new Float32Array([9, 8, 7, 6, 5, 4, 3, 2, 1]);
+    manager.sync({ A: makeMeshData('A', newVerts) });
+
+    expect((mesh.geometry as any).computeBoundsTree).toHaveBeenCalledTimes(1);
+  });
+
+  describe('R-02: updateMeshGeometry removes mesh when computeBoundsTree throws on update', () => {
+    it('removes mesh from scene and meshMap if computeBoundsTree throws on update', () => {
+      const { manager } = setup();
+      manager.sync({ A: makeMeshData('A') });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      expect(manager.getSceneMeshes().has('A')).toBe(true);
+
+      // Configure next computeBoundsTree call (the update) to throw
+      mockComputeBoundsTree.mockImplementationOnce(() => {
+        throw new Error('BVH rebuild failed');
+      });
+
+      // Update with new vertices — computeBoundsTree will throw
+      // Must have ≥3 vertices to pass V-06 validation with default indices [0,1,2]
+      const newVerts = new Float32Array([9, 8, 7, 6, 5, 4, 3, 2, 1]);
+      manager.sync({ A: makeMeshData('A', newVerts) });
+
+      // Mesh should be fully removed
+      expect(manager.getSceneMeshes().has('A')).toBe(false);
+      expect(mockSceneRemove).toHaveBeenCalledWith(mesh);
+      expect(mesh.geometry.dispose).toHaveBeenCalled();
+      expect((mesh.material as MeshStandardMaterial).dispose).toHaveBeenCalled();
+    });
+
+    it('logs error when computeBoundsTree throws on update', () => {
+      const { manager } = setup();
+      manager.sync({ A: makeMeshData('A') });
+
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      mockComputeBoundsTree.mockImplementationOnce(() => {
+        throw new Error('BVH rebuild failed');
+      });
+
+      try {
+        // Must have ≥3 vertices to pass V-06 validation with default indices [0,1,2]
+        const newVerts = new Float32Array([9, 8, 7, 6, 5, 4, 3, 2, 1]);
+        manager.sync({ A: makeMeshData('A', newVerts) });
+
+        expect(consoleSpy).toHaveBeenCalledWith(
+          expect.stringContaining('A'),
+          expect.any(Error),
+        );
+      } finally {
+        consoleSpy.mockRestore();
+      }
+    });
+  });
+
+  it('removeMesh calls geometry.disposeBoundsTree() before disposing geometry', () => {
+    const { manager } = setup();
+    manager.sync({ A: makeMeshData('A') });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+
+    // Remove A
+    manager.sync({});
+
+    expect((mesh.geometry as any).disposeBoundsTree).toHaveBeenCalledTimes(1);
+    expect((mesh.geometry as any).dispose).toHaveBeenCalledTimes(1);
   });
 });

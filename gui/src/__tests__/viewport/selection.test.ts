@@ -8,15 +8,26 @@ let mockBox3Instances: any[] = [];
 const mockRaycasterSetFromCamera = vi.fn();
 const mockRaycasterIntersectObjects = vi.fn((..._args: any[]): any[] => []);
 
+let lastRaycasterInstance: any = null;
+
 vi.mock('three', () => {
   class MockRaycaster {
     setFromCamera = mockRaycasterSetFromCamera;
     intersectObjects = mockRaycasterIntersectObjects;
+    firstHitOnly = false;
+    constructor() {
+      lastRaycasterInstance = this;
+    }
   }
 
   class MockWireframeGeometry {
     dispose = vi.fn();
     constructor(public sourceGeometry?: any) {}
+  }
+
+  class MockEdgesGeometry {
+    dispose = vi.fn();
+    constructor(public sourceGeometry?: any, public thresholdAngle?: number) {}
   }
 
   class MockLineSegments {
@@ -164,6 +175,7 @@ vi.mock('three', () => {
   return {
     Raycaster: MockRaycaster,
     WireframeGeometry: MockWireframeGeometry,
+    EdgesGeometry: MockEdgesGeometry,
     LineSegments: MockLineSegments,
     LineBasicMaterial: MockLineBasicMaterial,
     Box3: MockBox3,
@@ -177,6 +189,12 @@ vi.mock('three', () => {
     BufferGeometry: MockBufferGeometry,
   };
 });
+
+vi.mock('three-mesh-bvh', () => ({
+  acceleratedRaycast: vi.fn(),
+  computeBoundsTree: vi.fn(),
+  disposeBoundsTree: vi.fn(),
+}));
 
 import { createSelection } from '../../viewport/selection';
 import {
@@ -210,6 +228,7 @@ beforeEach(() => {
   mockBox3Instances = [];
   rafCallbacks = [];
   rafIdCounter = 1;
+  lastRaycasterInstance = null;
 });
 
 function createMockDomElement() {
@@ -292,6 +311,14 @@ describe('createSelection', () => {
     it('returns an object with invalidateRect method', () => {
       const { selection } = setup();
       expect(typeof selection.invalidateRect).toBe('function');
+    });
+  });
+
+  describe('BVH raycasting', () => {
+    it('raycaster has firstHitOnly set to true', () => {
+      setup();
+      expect(lastRaycasterInstance).not.toBeNull();
+      expect(lastRaycasterInstance.firstHitOnly).toBe(true);
     });
   });
 
@@ -418,6 +445,22 @@ describe('createSelection', () => {
 
       // Material should be disposed alongside geometry
       expect(wireframe.material.dispose).toHaveBeenCalled();
+    });
+
+    it('setSelected creates EdgesGeometry (not WireframeGeometry) from mesh geometry', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      selection.setSelected('A');
+
+      // The wireframe overlay should use EdgesGeometry
+      const addedObj = mockSceneAdd.mock.calls[0][0];
+      expect(addedObj.geometry).toBeDefined();
+      // EdgesGeometry stores the source geometry
+      expect(addedObj.geometry.sourceGeometry).toBe(meshA.geometry);
+      // Verify it's an EdgesGeometry instance (has thresholdAngle property)
+      expect('thresholdAngle' in addedObj.geometry).toBe(true);
     });
 
     it('changing selection disposes previous wireframe material', () => {

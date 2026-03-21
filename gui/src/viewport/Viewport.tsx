@@ -45,6 +45,16 @@ export function Viewport(props: ViewportProps) {
     doFitToView = () => selection.fitToView();
     props.flyToEntityRef?.((entityPath: string) => selection.flyToEntity(entityPath));
 
+    // Render-on-demand: keep rAF loop alive (for OrbitControls damping)
+    // but only call renderer.render when something has changed.
+    let needsRender = true;
+    function requestRender() {
+      needsRender = true;
+    }
+
+    // OrbitControls 'change' event fires during camera movement (including damping)
+    controls.controls.addEventListener('change', requestRender);
+
     // Sync meshes reactively
     createEffect(() => {
       meshManager.sync(props.meshes);
@@ -58,16 +68,19 @@ export function Viewport(props: ViewportProps) {
         bounds.expandByObject(mesh);
       }
       adjustClipping(bounds);
+      requestRender();
     });
 
     // Sync hover/selection state from props to selection module
     createEffect(() => {
       selection.setHovered(props.hoveredEntity ?? null);
+      requestRender();
     });
 
     createEffect(() => {
       void props.meshes;
       selection.setSelected(props.selectedEntity ?? null);
+      requestRender();
     });
 
     // Resize handling via ResizeObserver
@@ -77,6 +90,7 @@ export function Viewport(props: ViewportProps) {
         if (w > 0 && h > 0) {
           resize(w, h);
           selection.invalidateRect();
+          requestRender();
         }
       }
     });
@@ -89,7 +103,10 @@ export function Viewport(props: ViewportProps) {
       if (disposed) return;
       animationFrameId = requestAnimationFrame(animate);
       controls.update();
-      renderer.render(scene, camera);
+      if (needsRender) {
+        renderer.render(scene, camera);
+        needsRender = false;
+      }
     }
     animate();
 
@@ -97,6 +114,7 @@ export function Viewport(props: ViewportProps) {
     onCleanup(() => {
       disposed = true;
       cancelAnimationFrame(animationFrameId);
+      controls.controls.removeEventListener('change', requestRender);
       resizeObserver.disconnect();
       selection.dispose();
       controls.dispose();
