@@ -342,3 +342,20 @@ describe('ConstraintPanel keyboard interaction', () => {
     expect(screen.queryByText('width = 50')).toBeNull();
   });
 });
+
+describe('ConstraintPanel status badge aria-labels', () => {
+  it('each status badge has aria-label matching its status', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', status: 'satisfied', expression: 'a > 0' }),
+      n2: makeConstraint({ node_id: 'n2', status: 'violated', expression: 'b > 0' }),
+      n3: makeConstraint({ node_id: 'n3', status: 'indeterminate', expression: 'c > 0' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const container = screen.getByTestId('constraint-panel');
+    const badges = container.querySelectorAll('[data-status]');
+    const ariaLabels = Array.from(badges).map((b) => b.getAttribute('aria-label'));
+    expect(ariaLabels).toContain('satisfied');
+    expect(ariaLabels).toContain('violated');
+    expect(ariaLabels).toContain('indeterminate');
+  });
+});
