@@ -479,6 +479,20 @@ describe('PropertyEditor highlight CSS', () => {
   });
 });
 
+describe('PropertyEditor group header', () => {
+  it('group header button has CSS class applied for styling (including user-select)', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const header = screen.getByText('Bracket');
+    // The groupHeader class should be applied
+    expect(header.className).toContain('groupHeader');
+  });
+});
+
 describe('PropertyEditor validation - valid number', () => {
   const values: Record<string, ValueData> = {
     c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
