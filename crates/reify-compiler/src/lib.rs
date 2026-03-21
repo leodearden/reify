@@ -3780,66 +3780,40 @@ fn compile_field(
 
 /// Check field composition types in a composed field expression.
 ///
-/// Walks the expression tree looking for nested field calls like `f2(f1(p))`.
-/// For each such nesting, verifies that the inner field's codomain matches the
-/// outer field's domain.
+/// Uses `CompiledExpr::walk` to traverse all 12+ expression variants,
+/// looking for nested field calls like `f2(f1(p))`. For each such nesting,
+/// verifies that the inner field's codomain matches the outer field's domain.
 fn check_field_composition_types(
     expr: &CompiledExpr,
     field_registry: &HashMap<&str, &CompiledField>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    walk_field_composition(expr, field_registry, diagnostics);
-}
-
-fn walk_field_composition(
-    expr: &CompiledExpr,
-    field_registry: &HashMap<&str, &CompiledField>,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    match &expr.kind {
-        CompiledExprKind::FunctionCall { function, args } => {
+    let mut errors = Vec::new();
+    expr.walk(&mut |node| {
+        if let CompiledExprKind::FunctionCall { function, args } = &node.kind {
             // If this function call references a known field
             if let Some(outer_field) = field_registry.get(function.name.as_str()) {
                 // Check if any argument is also a field call
                 for arg in args {
-                    if let CompiledExprKind::FunctionCall { function: inner_fn, .. } = &arg.kind
-                        && let Some(inner_field) = field_registry.get(inner_fn.name.as_str())
-                    {
-                        // inner_field's codomain should match outer_field's domain
-                        if inner_field.codomain_type != outer_field.domain_type {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "field composition type mismatch: codomain of '{}' ({}) does not match domain of '{}' ({})",
-                                    inner_field.name, inner_field.codomain_type,
-                                    outer_field.name, outer_field.domain_type
-                                )),
-                            );
+                    if let CompiledExprKind::FunctionCall { function: inner_fn, .. } = &arg.kind {
+                        if let Some(inner_field) = field_registry.get(inner_fn.name.as_str()) {
+                            // inner_field's codomain should match outer_field's domain
+                            if inner_field.codomain_type != outer_field.domain_type {
+                                errors.push(
+                                    Diagnostic::error(format!(
+                                        "field composition type mismatch: codomain of '{}' ({}) does not match domain of '{}' ({})",
+                                        inner_field.name, inner_field.codomain_type,
+                                        outer_field.name, outer_field.domain_type
+                                    )),
+                                );
+                            }
                         }
                     }
                 }
             }
-            // Recurse into args
-            for arg in args {
-                walk_field_composition(arg, field_registry, diagnostics);
-            }
         }
-        CompiledExprKind::Lambda { body, .. } => {
-            walk_field_composition(body, field_registry, diagnostics);
-        }
-        CompiledExprKind::BinOp { left, right, .. } => {
-            walk_field_composition(left, field_registry, diagnostics);
-            walk_field_composition(right, field_registry, diagnostics);
-        }
-        CompiledExprKind::UnOp { operand, .. } => {
-            walk_field_composition(operand, field_registry, diagnostics);
-        }
-        CompiledExprKind::Conditional { condition, then_branch, else_branch } => {
-            walk_field_composition(condition, field_registry, diagnostics);
-            walk_field_composition(then_branch, field_registry, diagnostics);
-            walk_field_composition(else_branch, field_registry, diagnostics);
-        }
-        _ => {}
-    }
+    });
+    diagnostics.extend(errors);
 }
 
 /// Check if a let declaration's value is a geometry-producing function call.
