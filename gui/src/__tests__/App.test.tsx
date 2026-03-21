@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@solidjs/testing-library';
+import { render, screen, fireEvent } from '@solidjs/testing-library';
 
 // Mock Tauri APIs before any component imports
 vi.mock('@tauri-apps/api/core', () => ({
@@ -77,5 +77,42 @@ describe('App layout wiring', () => {
     // Toolbar should come before StatusBar in document order
     const comparison = toolbar.compareDocumentPosition(statusBar);
     expect(comparison & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe('App resizable splitters', () => {
+  it('has a vertical splitter between editor and viewport columns', () => {
+    render(() => <App />);
+    const splitter = screen.getByTestId('splitter-left');
+    expect(splitter).toBeTruthy();
+    expect(splitter.dataset.orientation).toBe('vertical');
+  });
+
+  it('has a vertical splitter between viewport and side panel columns', () => {
+    render(() => <App />);
+    const splitter = screen.getByTestId('splitter-right');
+    expect(splitter).toBeTruthy();
+    expect(splitter.dataset.orientation).toBe('vertical');
+  });
+
+  it('dragging left splitter updates main grid columns', () => {
+    render(() => <App />);
+    const splitter = screen.getByTestId('splitter-left');
+    const main = screen.getByTestId('app-layout').querySelector('[class*="main"]') as HTMLElement;
+    expect(main).toBeTruthy();
+
+    // Get initial grid-template-columns
+    const initialColumns = main.style.gridTemplateColumns;
+
+    // Drag right by 50px
+    fireEvent.mouseDown(splitter, { clientX: 300, clientY: 200 });
+    fireEvent.mouseMove(document, { clientX: 350, clientY: 200 });
+    fireEvent.mouseUp(document);
+
+    // Grid template columns should have changed
+    const updatedColumns = main.style.gridTemplateColumns;
+    expect(updatedColumns).not.toBe(initialColumns);
+    // Should contain 350px (300 + 50) for editor panel width
+    expect(updatedColumns).toContain('350px');
   });
 });
