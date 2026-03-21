@@ -40,15 +40,16 @@ impl InProcessLsp {
     ///
     /// Returns a JSON array of LSP Diagnostic objects. The diagnostics
     /// are captured by the server after each didOpen/didChange.
-    pub fn get_diagnostics(&self, uri: &str) -> Vec<Value> {
+    ///
+    /// This method is async because the server state is guarded by a
+    /// `tokio::sync::RwLock`. Using `.read().await` ensures we properly
+    /// wait for any concurrent write lock to release, rather than
+    /// silently returning empty diagnostics via `try_read()`.
+    pub async fn get_diagnostics(&self, uri: &str) -> Vec<Value> {
         let server = self.service.inner();
         let state = server.state();
 
-        // Use try_read to avoid blocking; return empty if locked
-        let guard = match state.try_read() {
-            Ok(g) => g,
-            Err(_) => return vec![],
-        };
+        let guard = state.read().await;
 
         let url = match Url::parse(uri) {
             Ok(u) => u,
