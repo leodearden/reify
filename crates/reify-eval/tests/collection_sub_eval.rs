@@ -277,6 +277,77 @@ fn edit_param_count_change_re_elaborates_collection() {
     );
 }
 
+// ─── step-21: count change 4→2, stale instances removed ───
+
+#[test]
+fn edit_param_count_decrease_removes_stale_instances() {
+    // Bolt template: param diameter : Scalar = 10mm
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .build();
+
+    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
+    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let n_id = ValueCellId::new("Parent", "n");
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
+        )
+        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component(
+            "bolts",
+            "Bolt",
+            ValueCellId::new("Parent", "__count_bolts"),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Initial eval with n=4
+    let _initial = engine.eval(&module);
+
+    // Edit n from 4 to 2
+    let result = engine
+        .edit_param(n_id, Value::Int(2))
+        .expect("edit_param should succeed");
+
+    // bolts[0] and bolts[1] should still have values
+    for i in 0..2 {
+        let scoped_id = ValueCellId::new(&format!("Parent.bolts[{}]", i), "diameter");
+        assert_eq!(
+            result.values.get(&scoped_id),
+            Some(&Value::length(0.01)),
+            "bolts[{}].diameter should remain after count decrease",
+            i
+        );
+    }
+
+    // bolts[2] and bolts[3] should be gone (not just overwritten)
+    for i in 2..4 {
+        let scoped_id = ValueCellId::new(&format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            result.values.get(&scoped_id).is_none(),
+            "bolts[{}].diameter should be removed after count decreased from 4 to 2",
+            i
+        );
+    }
+}
+
 // ─── step-19: collection value aggregation ───
 
 #[test]

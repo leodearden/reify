@@ -1326,4 +1326,27 @@ mod tests {
         ]);
         assert_eq!(format!("{}", v), "[Some(1), Color::Red, None]");
     }
+
+    #[test]
+    fn value_map_remove() {
+        use crate::identity::ValueCellId;
+
+        let id_a = ValueCellId::new("E", "a");
+        let id_b = ValueCellId::new("E", "b");
+        let id_c = ValueCellId::new("E", "c");
+
+        let mut map = ValueMap::new();
+        map.insert(id_a.clone(), Value::Int(1));
+        map.insert(id_b.clone(), Value::Int(2));
+        map.insert(id_c.clone(), Value::Int(3));
+        assert_eq!(map.len(), 3);
+
+        // Remove the middle entry
+        map.remove(&id_b);
+
+        assert_eq!(map.len(), 2);
+        assert!(map.get(&id_b).is_none(), "removed entry should be gone");
+        assert_eq!(map.get(&id_a), Some(&Value::Int(1)), "other entries should remain");
+        assert_eq!(map.get(&id_c), Some(&Value::Int(3)), "other entries should remain");
+    }
 }
