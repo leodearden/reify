@@ -1,4 +1,5 @@
 use std::process::Command;
+use serde_json::Value;
 
 // Test fixture for gui subcommand integration tests.
 // Uses the same pattern as cli_smoke.rs.
@@ -103,5 +104,48 @@ fn gui_with_valid_ri_file_attempts_launch() {
     assert!(
         stderr.contains("could not launch reify-gui"),
         "error should be about gui binary not found (not arg validation), got: {stderr}"
+    );
+}
+
+fn read_tauri_config() -> Value {
+    let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../gui/src-tauri/tauri.conf.json");
+    let content = std::fs::read_to_string(&config_path)
+        .unwrap_or_else(|e| panic!("failed to read tauri.conf.json at {}: {}", config_path.display(), e));
+    serde_json::from_str(&content).expect("tauri.conf.json is not valid JSON")
+}
+
+#[test]
+fn bundler_config_is_valid() {
+    let config = read_tauri_config();
+
+    // bundle.active should be true for distribution
+    assert_eq!(
+        config["bundle"]["active"],
+        Value::Bool(true),
+        "bundle.active should be true"
+    );
+
+    // identifier should be set
+    assert_eq!(
+        config["identifier"].as_str().unwrap(),
+        "dev.reify.app",
+        "identifier should be 'dev.reify.app'"
+    );
+
+    // bundle.icon should have entries
+    let icons = config["bundle"]["icon"]
+        .as_array()
+        .expect("bundle.icon should be an array");
+    assert!(
+        !icons.is_empty(),
+        "bundle.icon should have at least one entry"
+    );
+
+    // productName should be set
+    assert_eq!(
+        config["productName"].as_str().unwrap(),
+        "Reify",
+        "productName should be 'Reify'"
     );
 }
