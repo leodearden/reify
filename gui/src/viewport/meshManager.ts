@@ -85,9 +85,11 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
   function updateMeshGeometry(mesh: Mesh, data: MeshData): void {
     const geometry = mesh.geometry as BufferGeometry;
 
-    // Reuse existing BufferAttribute objects to avoid orphaning GPU-side WebGLBuffers
+    // Reuse existing BufferAttribute objects when array length matches to avoid
+    // orphaning GPU-side WebGLBuffers. When length differs, create new attribute
+    // because WebGL buffers have fixed size and cannot be resized.
     const posAttr = geometry.getAttribute('position') as BufferAttribute | null;
-    if (posAttr) {
+    if (posAttr && posAttr.array.length === data.vertices.length) {
       posAttr.array = data.vertices;
       (posAttr as { count: number }).count = data.vertices.length / 3;
       posAttr.needsUpdate = true;
@@ -96,7 +98,7 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     }
 
     const indexAttr = geometry.index;
-    if (indexAttr) {
+    if (indexAttr && indexAttr.array.length === data.indices.length) {
       indexAttr.array = data.indices;
       (indexAttr as { count: number }).count = data.indices.length;
       indexAttr.needsUpdate = true;
@@ -106,7 +108,7 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
 
     if (data.normals) {
       const normalAttr = geometry.getAttribute('normal') as BufferAttribute | null;
-      if (normalAttr) {
+      if (normalAttr && normalAttr.array.length === data.normals.length) {
         normalAttr.array = data.normals;
         (normalAttr as { count: number }).count = data.normals.length / 3;
         normalAttr.needsUpdate = true;
