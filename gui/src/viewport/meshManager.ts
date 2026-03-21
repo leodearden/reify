@@ -51,7 +51,7 @@ export interface MeshManagerContext {
 export function createMeshManager(scene: Scene): MeshManagerContext {
   const meshMap = new Map<string, Mesh>();
 
-  function createMeshFromData(entityPath: string, data: MeshData): Mesh {
+  function createMeshFromData(entityPath: string, data: MeshData): Mesh | null {
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new BufferAttribute(data.vertices, 3));
     geometry.setIndex(new BufferAttribute(data.indices, 1));
@@ -63,7 +63,14 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
       color: colorForEntity(entityPath),
     });
 
-    (geometry as any).computeBoundsTree();
+    try {
+      (geometry as any).computeBoundsTree();
+    } catch (err) {
+      geometry.dispose();
+      material.dispose();
+      console.error(`Failed to build BVH for mesh '${entityPath}'`, err);
+      return null;
+    }
 
     const mesh = new Mesh(geometry, material);
     mesh.name = entityPath;
@@ -138,8 +145,10 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
         updateMeshGeometry(meshMap.get(entityPath)!, data);
       } else {
         const mesh = createMeshFromData(entityPath, data);
-        meshMap.set(entityPath, mesh);
-        scene.add(mesh);
+        if (mesh) {
+          meshMap.set(entityPath, mesh);
+          scene.add(mesh);
+        }
       }
     }
   }

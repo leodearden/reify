@@ -358,14 +358,14 @@ describe('meshManager', () => {
 
       try {
         manager.sync({ A: meshData });
+
+        expect(consoleSpy).toHaveBeenCalledWith(
+          expect.stringContaining('A'),
+          expect.any(Error),
+        );
       } finally {
         consoleSpy.mockRestore();
       }
-
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('A'),
-        expect.any(Error),
-      );
     });
   });
 
