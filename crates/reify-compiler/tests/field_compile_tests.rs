@@ -66,3 +66,39 @@ fn compile_field_sampled() {
         other => panic!("expected Sampled source, got: {:?}", other),
     }
 }
+
+// ── Step 17: compose type check valid ───────────────────────────────
+
+#[test]
+fn compile_field_compose_type_check_valid() {
+    // Field<Point3, Scalar> composed with Field<Scalar, Scalar> is valid:
+    // codomain of first (Scalar) matches domain of second (Scalar).
+    // Result should be Field<Point3, Scalar>.
+    let module = compile_module(
+        r#"
+field def f1 : Point3 -> Scalar { source = analytical { |p| p } }
+field def f2 : Scalar -> Scalar { source = analytical { |x| x } }
+field def composed : Point3 -> Scalar { source = composed { |p| f2(f1(p)) } }
+"#,
+    );
+    // Should compile without type errors
+    assert!(module.diagnostics.is_empty(), "diagnostics: {:?}", module.diagnostics);
+    assert_eq!(module.fields.len(), 3, "expected 3 compiled fields");
+
+    let composed = &module.fields[2];
+    assert_eq!(composed.name, "composed");
+    assert_eq!(format!("{}", composed.domain_type), "Point3");
+    assert_eq!(format!("{}", composed.codomain_type), "Scalar[m]");
+
+    match &composed.source {
+        reify_compiler::CompiledFieldSource::Composed { expr } => {
+            // Should have compiled the composition lambda
+            assert!(
+                matches!(expr.kind, reify_types::CompiledExprKind::Lambda { .. }),
+                "expected Lambda expression in composed source, got: {:?}",
+                expr.kind
+            );
+        }
+        other => panic!("expected Composed source, got: {:?}", other),
+    }
+}
