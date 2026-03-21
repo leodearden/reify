@@ -16,6 +16,8 @@ vi.mock('three', () => {
     index: any = null;
     dispose = vi.fn();
 
+    computeVertexNormals = vi.fn();
+
     setAttribute(name: string, attr: any) {
       this.attributes[name] = attr;
     }
@@ -290,6 +292,41 @@ describe('meshManager', () => {
     // needsUpdate should be flagged
     expect(posAttrBefore.needsUpdate).toBe(true);
     expect(indexBefore.needsUpdate).toBe(true);
+  });
+
+  it('createMeshFromData calls computeVertexNormals when normals is null (V-04)', () => {
+    const { manager } = setup();
+    const meshData = makeMeshData('A', undefined, undefined, null);
+    manager.sync({ A: meshData });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+    const geom = mesh.geometry as any;
+    expect(geom.computeVertexNormals).toHaveBeenCalled();
+  });
+
+  it('createMeshFromData does NOT call computeVertexNormals when normals are provided (V-04)', () => {
+    const { manager } = setup();
+    const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+    const meshData = makeMeshData('A', undefined, undefined, normals);
+    manager.sync({ A: meshData });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+    const geom = mesh.geometry as any;
+    expect(geom.computeVertexNormals).not.toHaveBeenCalled();
+  });
+
+  it('updateMeshGeometry calls computeVertexNormals when normals become null (V-04)', () => {
+    const { manager } = setup();
+    const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+    manager.sync({ A: makeMeshData('A', undefined, undefined, normals) });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+    const geom = mesh.geometry as any;
+    geom.computeVertexNormals.mockClear();
+
+    // Update with null normals
+    manager.sync({ A: makeMeshData('A', undefined, undefined, null) });
+    expect(geom.computeVertexNormals).toHaveBeenCalled();
   });
 
   it('update with normals becoming null removes stale normal attribute', () => {
