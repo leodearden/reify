@@ -60,7 +60,8 @@ fn build_variable_domain(
                 // Validate bounds are representable as i64 (i64::MAX ≈ 9.22e18)
                 const I64_MIN_F: f64 = i64::MIN as f64;
                 const I64_MAX_F: f64 = i64::MAX as f64;
-                if lo < I64_MIN_F || lo > I64_MAX_F || hi < I64_MIN_F || hi > I64_MAX_F {
+                let i64_range = I64_MIN_F..=I64_MAX_F;
+                if !i64_range.contains(&lo) || !i64_range.contains(&hi) {
                     return Err(format!(
                         "integer auto param {} bounds [{}, {}] exceed i64 range",
                         param.id, lo, hi
