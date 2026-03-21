@@ -678,7 +678,14 @@ impl SystemBuilder {
 
         // Lock the global mutex — libslvs uses internal global state and
         // is not safe to call concurrently.
-        let _guard = SLVS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        //
+        // If the lock is poisoned (prior panic while holding it), refuse
+        // to proceed: the C++ global state is in an indeterminate condition
+        // and recovering would risk undefined behavior.
+        let _guard = match SLVS_LOCK.lock() {
+            Ok(guard) => guard,
+            Err(_poisoned) => return SlvsSolveResult::LockPoisoned,
+        };
 
         unsafe {
             slvs_sys::Slvs_Solve(&mut sys, SOLVE_GROUP);
