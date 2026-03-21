@@ -7,22 +7,6 @@ use std::collections::HashSet;
 use crate::*;
 use reify_types::{ContentHash, ModulePath, SourceSpan};
 
-/// Check a child node for errors before lowering it. If the node has errors,
-/// push a parse error and return None. Otherwise, evaluate the lowering expression.
-macro_rules! check_and_lower {
-    ($self:ident, $child:ident, $label:expr, $lower:expr) => {
-        if $child.is_error() || $child.has_error() {
-            $self.errors.push(ParseError {
-                message: format!("invalid {}: {}", $label, $self.node_text($child)),
-                span: $self.span($child),
-            });
-            None
-        } else {
-            $lower
-        }
-    };
-}
-
 /// Parse source text into a `ParsedModule` using tree-sitter.
 pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
     let mut ts_parser = tree_sitter::Parser::new();
@@ -562,12 +546,8 @@ impl<'a> Lowering<'a> {
             "field_source_imported" => {
                 let path_node = inner.child_by_field_name("path")?;
                 let raw = self.node_text(path_node);
-                // Strip only the outer pair of quotes (trim_matches strips ALL matching chars)
-                let path = raw
-                    .strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-                    .unwrap_or(raw)
-                    .to_string();
+                // Strip surrounding quotes
+                let path = raw.trim_matches('"').to_string();
                 Some(FieldSource::Imported { path })
             }
             _ => None,
@@ -732,29 +712,119 @@ impl<'a> Lowering<'a> {
     /// Lower a single member node (used by both lower_structure and lower_guarded_block).
     fn lower_member(&mut self, child: tree_sitter::Node) -> Option<MemberDecl> {
         match child.kind() {
-            "param_declaration" => check_and_lower!(self, child, "param",
-                self.lower_param(child).map(MemberDecl::Param)),
-            "let_declaration" => check_and_lower!(self, child, "let",
-                self.lower_let(child).map(MemberDecl::Let)),
-            "constraint_declaration" => check_and_lower!(self, child, "constraint",
-                self.lower_constraint(child).map(MemberDecl::Constraint)),
-            "sub_declaration" => check_and_lower!(self, child, "sub",
-                self.lower_sub(child).map(MemberDecl::Sub)),
-            "minimize_declaration" => check_and_lower!(self, child, "minimize",
-                self.lower_minimize(child).map(MemberDecl::Minimize)),
-            "maximize_declaration" => check_and_lower!(self, child, "maximize",
-                self.lower_maximize(child).map(MemberDecl::Maximize)),
-            "guarded_block" => check_and_lower!(self, child, "guarded block",
-                self.lower_guarded_block(child)),
+            "param_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid param: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_param(child).map(MemberDecl::Param)
+                }
+            }
+            "let_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid let: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_let(child).map(MemberDecl::Let)
+                }
+            }
+            "constraint_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid constraint: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_constraint(child).map(MemberDecl::Constraint)
+                }
+            }
+            "sub_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid sub: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_sub(child).map(MemberDecl::Sub)
+                }
+            }
+            "minimize_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid minimize: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_minimize(child).map(MemberDecl::Minimize)
+                }
+            }
+            "maximize_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid maximize: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_maximize(child).map(MemberDecl::Maximize)
+                }
+            }
+            "guarded_block" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid guarded block: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_guarded_block(child)
+                }
+            }
             "associated_type" => {
                 self.lower_associated_type(child).map(MemberDecl::AssociatedType)
             }
-            "port_declaration" => check_and_lower!(self, child, "port",
-                self.lower_port(child).map(MemberDecl::Port)),
-            "connect_statement" => check_and_lower!(self, child, "connect",
-                self.lower_connect(child).map(MemberDecl::Connect)),
-            "chain_statement" => check_and_lower!(self, child, "chain",
-                self.lower_chain(child).map(MemberDecl::Chain)),
+            "port_declaration" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid port: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_port(child).map(MemberDecl::Port)
+                }
+            }
+            "connect_statement" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid connect: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_connect(child).map(MemberDecl::Connect)
+                }
+            }
+            "chain_statement" => {
+                if child.is_error() || child.has_error() {
+                    self.errors.push(ParseError {
+                        message: format!("invalid chain: {}", self.node_text(child)),
+                        span: self.span(child),
+                    });
+                    None
+                } else {
+                    self.lower_chain(child).map(MemberDecl::Chain)
+                }
+            }
             "ERROR" => {
                 self.errors.push(ParseError {
                     message: format!("syntax error: {}", self.node_text(child)),
@@ -1306,8 +1376,15 @@ impl<'a> Lowering<'a> {
                 }
                 None
             }
-            // Unknown node kind — skip
-            _ => None,
+            _ => {
+                // Fallback: try to lower as an expression if it's a named node
+                if node.is_named() {
+                    // Unknown named node — skip
+                    None
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -1521,12 +1598,8 @@ impl<'a> Lowering<'a> {
 
     fn lower_string_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
         let text = self.node_text(node);
-        // Strip outer quotes safely (error recovery can produce malformed nodes)
-        let s = text
-            .strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-            .unwrap_or(text)
-            .to_string();
+        // Strip quotes
+        let s = text[1..text.len() - 1].to_string();
         Some(Expr {
             kind: ExprKind::StringLiteral(s),
             span: self.span(node),
