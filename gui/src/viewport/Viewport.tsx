@@ -1,4 +1,4 @@
-import { onMount, onCleanup, createEffect, Show } from 'solid-js';
+import { onMount, onCleanup, createEffect, createSignal, Show } from 'solid-js';
 import type { MeshData, EvaluationStatus } from '../types';
 import { Box3 } from 'three';
 import { createScene } from './scene';
@@ -22,13 +22,14 @@ export function Viewport(props: ViewportProps) {
   let canvasRef!: HTMLCanvasElement;
   let containerRef!: HTMLDivElement;
   let doFitToView: (() => void) | undefined;
+  const [showGrid, setShowGrid] = createSignal(true);
 
   onMount(() => {
     const rect = containerRef.getBoundingClientRect();
     const width = rect.width || 800;
     const height = rect.height || 600;
 
-    const { scene, camera, renderer, resize, adjustClipping } = createScene(canvasRef, width, height);
+    const { scene, camera, renderer, resize, adjustClipping, grid, axes } = createScene(canvasRef, width, height);
     const controls = createControls(camera, renderer.domElement);
     const meshManager = createMeshManager(scene);
 
@@ -56,6 +57,14 @@ export function Viewport(props: ViewportProps) {
 
     // OrbitControls 'change' event fires during camera movement (including damping)
     controls.controls.addEventListener('change', requestRender);
+
+    // Sync grid/axes visibility
+    createEffect(() => {
+      const visible = showGrid();
+      grid.visible = visible;
+      axes.visible = visible;
+      requestRender();
+    });
 
     // Sync meshes reactively
     createEffect(() => {
@@ -174,6 +183,29 @@ export function Viewport(props: ViewportProps) {
           Evaluating...
         </div>
       </Show>
+
+      {/* Grid toggle button */}
+      <button
+        data-testid="toggle-grid"
+        onClick={() => setShowGrid((v) => !v)}
+        style={{
+          position: 'absolute',
+          bottom: '12px',
+          right: '72px',
+          padding: '6px 10px',
+          'background-color': 'var(--reify-surface, #2a2a3a)',
+          color: 'var(--reify-text, #cdd6f4)',
+          border: '1px solid var(--reify-border, #45475a)',
+          'border-radius': '4px',
+          cursor: 'pointer',
+          'font-size': '12px',
+          'z-index': '10',
+          opacity: showGrid() ? '1' : '0.5',
+        }}
+        title="Toggle grid and axes"
+      >
+        Grid
+      </button>
 
       {/* Fit-to-view button */}
       <button
