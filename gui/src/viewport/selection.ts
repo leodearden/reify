@@ -1,4 +1,11 @@
-import { Raycaster, Vector2, Color } from 'three';
+import {
+  Raycaster,
+  Vector2,
+  Color,
+  WireframeGeometry,
+  LineSegments,
+  LineBasicMaterial,
+} from 'three';
 import type { Scene, PerspectiveCamera, Mesh, MeshStandardMaterial } from 'three';
 import { THEME_TOKENS } from '../theme';
 
@@ -26,10 +33,11 @@ export interface SelectionContext {
 const HIGHLIGHT_COLOR = THEME_TOKENS.accent;
 
 export function createSelection(options: SelectionOptions): SelectionContext {
-  const { camera, domElement, getMeshes, onHover, onSelect } = options;
+  const { scene, camera, domElement, getMeshes, onHover, onSelect } = options;
   const raycaster = new Raycaster();
   const ndc = new Vector2();
   let previousHoveredPath: string | null = null;
+  let currentWireframe: LineSegments | null = null;
 
   function computeNDC(event: MouseEvent): void {
     const rect = domElement.getBoundingClientRect();
@@ -86,8 +94,28 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     }
   }
 
-  function setSelected(_path: string | null): void {
-    // stub
+  function removeWireframe(): void {
+    if (currentWireframe) {
+      scene.remove(currentWireframe);
+      currentWireframe.geometry.dispose();
+      currentWireframe = null;
+    }
+  }
+
+  function setSelected(path: string | null): void {
+    // Remove existing wireframe
+    removeWireframe();
+
+    if (path === null) return;
+
+    const mesh = getMeshes().get(path);
+    if (!mesh) return;
+
+    // Create wireframe overlay
+    const wireGeom = new WireframeGeometry(mesh.geometry);
+    const wireMat = new LineBasicMaterial({ color: HIGHLIGHT_COLOR });
+    currentWireframe = new LineSegments(wireGeom, wireMat);
+    scene.add(currentWireframe);
   }
 
   function fitToView(): void {
