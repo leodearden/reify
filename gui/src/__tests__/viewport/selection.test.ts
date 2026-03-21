@@ -401,6 +401,68 @@ describe('createSelection', () => {
     });
   });
 
+  describe('fitToView', () => {
+    it('computes bounding box and positions camera at appropriate distance', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection, camera } = setup(meshMap);
+
+      selection.fitToView();
+
+      // Box3.expandByObject should be called for each mesh
+      // We need to get the Box3 instance - it's created internally
+      // Camera should have been repositioned (lookAt called)
+      expect((camera as any).lookAt).toHaveBeenCalled();
+      expect((camera as any).updateProjectionMatrix).toHaveBeenCalled();
+    });
+
+    it('sets camera position based on bounding sphere and FOV', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection, camera } = setup(meshMap);
+
+      // Reset camera position to origin so we can verify fitToView moves it
+      (camera as any).position.x = 0;
+      (camera as any).position.y = 0;
+      (camera as any).position.z = 0;
+
+      selection.fitToView();
+
+      // Camera position should be offset from center (0.5, 0.5, 0.5)
+      // The distance is computed from bounding box size and FOV
+      // With size (1,1,1), maxDim = 1, fov=60, distance = 1 / (2 * tan(30deg)) ≈ 0.866
+      // Camera.position.z should be center.z + distance
+      const pos = (camera as any).position;
+      expect(pos.z).toBeGreaterThan(0.5); // z > center.z
+    });
+
+    it('with no meshes, fitToView is a no-op (no crash)', () => {
+      const meshMap = new Map<string, any>();
+      const { selection, camera } = setup(meshMap);
+
+      // Should not throw
+      expect(() => selection.fitToView()).not.toThrow();
+
+      // Camera should not have been repositioned
+      expect((camera as any).lookAt).not.toHaveBeenCalled();
+    });
+
+    it('calls camera.lookAt with bounding box center', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection, camera } = setup(meshMap);
+
+      selection.fitToView();
+
+      // lookAt should be called with center vector (0.5, 0.5, 0.5) from mock
+      const lookAtArg = (camera as any).lookAt.mock.calls[0][0];
+      expect(lookAtArg.x).toBeCloseTo(0.5);
+      expect(lookAtArg.y).toBeCloseTo(0.5);
+      expect(lookAtArg.z).toBeCloseTo(0.5);
+    });
+  });
+
   describe('hover raycasting', () => {
     it('calls raycaster.setFromCamera with NDC coords on pointermove', () => {
       const meshA = createMockMesh('A');
