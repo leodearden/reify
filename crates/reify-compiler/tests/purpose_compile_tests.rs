@@ -117,3 +117,26 @@ purpose broken(subject : Structure) {
 
     let _module = compile_module(source);
 }
+
+// ── Step 23: let bindings in purposes should emit error ───────────────
+
+#[test]
+#[should_panic(expected = "compile errors")]
+fn compile_purpose_rejects_let_bindings() {
+    // Let bindings in purpose bodies are not yet supported: the compiled
+    // expression is discarded and constraints referencing let-bound names
+    // would produce ValueCellIds with no backing eval graph node.
+    // The compiler should emit a Severity::Error diagnostic.
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose check(subject : Structure) {
+    let half_w = 80mm / 2
+    constraint half_w > 10mm
+}
+"#;
+
+    let _module = compile_module(source);
+}
