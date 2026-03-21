@@ -183,6 +183,9 @@ pub struct ConcurrentEditSetup {
     pub changed_cells: HashSet<ValueCellId>,
     /// User-defined functions from the module (for evaluating UserFunctionCall nodes).
     pub functions: Vec<CompiledFunction>,
+    /// Template-native optimization objective for this edit's scope, if any.
+    /// Populated from Engine::objectives during prepare_concurrent_edit().
+    pub objective: Option<OptimizationObjective>,
 }
 
 /// Result of evaluating a single node during concurrent evaluation.
@@ -459,6 +462,7 @@ impl Engine {
             parent_snapshot_id: parent_id,
             changed_cells: changed_set,
             functions: self.functions.clone(),
+            objective: self.objectives.get(&cell.entity).cloned(),
         })
     }
 
@@ -622,7 +626,7 @@ impl Engine {
                         auto_params: auto_param_list,
                         constraints: filtered_constraints,
                         current_values: result.values.clone(),
-                        objective: None,
+                        objective: setup.objective.clone(),
                         functions: setup.functions.clone(),
                     };
 
