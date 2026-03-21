@@ -20,7 +20,7 @@
     "gui/src",
     "gui/src/hooks"
   ],
-  "analysis": "This task covers 9 improvements across Toast and ReloadPrompt components.\n\n**Toast (5 issues):**\n- TO-1: No auto-dismiss timeout. Toast stays forever. Fix: add setTimeout auto-dismiss (3s success/info, 5s error) inside the Toast component using onMount/onCleanup.\n- TO-2: Only one toast at a time (single string signal). Fix: Convert App.tsx toastMessage/toastType to a ToastMessage[] array signal. ToastMessage type already exists in types.ts with {id, type, message}. Toast component renders from queue, individual dismiss removes by id.\n- TO-3: No aria-live region. Fix: Add role='alert' and aria-live='assertive' to the toast root div.\n- TO-4: Close button lacks accessible label. Fix: Add aria-label='Close' to the x button.\n- TO-5: No enter/exit animation. Fix: Add CSS keyframe animation for slide-in from right.\n\n**ReloadPrompt (3 issues):**\n- R-1: Only one file tracked (single string signal). Fix: Convert changedFile to a Set<string> signal. ReloadPrompt props change from filePath: string|null to filePaths: string[]. Show count for multiple files.\n- R-2: No keyboard shortcut for accept/dismiss. Fix: Add Ctrl+Shift+R for reload and Escape for dismiss via useKeyboardShortcuts hook.\n- R-4: Reload destroys unsaved editor changes without warning. Fix: Check editorStore.state.dirtyFiles before reload. If dirty files overlap with changed files, show a confirmation warning.\n\n**Key observations:**\n- ToastMessage type already exists in types.ts with {id, type, message} \u2014 use directly for queue.\n- editorStore already has dirtyFiles: string[] \u2014 check intersection with changedFiles for R-4.\n- useKeyboardShortcuts hook has a clean pattern for adding shortcuts \u2014 extend for R-2.\n- Existing tests use @solidjs/testing-library with vitest, JSDOM environment.\n- App.test.tsx has comprehensive mocking of bridge/viewport/editor \u2014 will extend existing patterns.",
+  "analysis": "This task covers 9 improvements across Toast and ReloadPrompt components.\n\n**Toast (5 issues):**\n- TO-1: No auto-dismiss timeout. Toast stays forever. Fix: add setTimeout auto-dismiss (3s success/info, 5s error) inside the Toast component using onMount/onCleanup.\n- TO-2: Only one toast at a time (single string signal). Fix: Convert App.tsx toastMessage/toastType to a ToastMessage[] array signal. ToastMessage type already exists in types.ts with {id, type, message}. Toast component renders from queue, individual dismiss removes by id.\n- TO-3: No aria-live region. Fix: Add role='alert' and aria-live='assertive' to the toast root div.\n- TO-4: Close button lacks accessible label. Fix: Add aria-label='Close' to the x button.\n- TO-5: No enter/exit animation. Fix: Add CSS keyframe animation for slide-in from right.\n\n**ReloadPrompt (3 issues):**\n- R-1: Only one file tracked (single string signal). Fix: Convert changedFile to a Set<string> signal. ReloadPrompt props change from filePath: string|null to filePaths: string[]. Show count for multiple files.\n- R-2: No keyboard shortcut for accept/dismiss. Fix: Add Ctrl+Shift+R for reload and Escape for dismiss via useKeyboardShortcuts hook.\n- R-4: Reload destroys unsaved editor changes without warning. Fix: Check editorStore.state.dirtyFiles before reload. If dirty files overlap with changed files, show a confirmation warning.\n\n**Review fix (blocking):**\n- partial_failure_state_corruption: handleReload uses Promise.all which rejects on any single failure, leaving changedFiles in an inconsistent state (successfully-reloaded files remain in the set, so the reload prompt stays visible for already-reloaded files). Fix: Use Promise.allSettled, clear only succeeded files from changedFiles, keep failed files in the set, show error toast for failures, and always reset confirmReload.\n\n**Key observations:**\n- ToastMessage type already exists in types.ts with {id, type, message} \u2014 use directly for queue.\n- editorStore already has dirtyFiles: string[] \u2014 check intersection with changedFiles for R-4.\n- useKeyboardShortcuts hook has a clean pattern for adding shortcuts \u2014 extend for R-2.\n- Existing tests use @solidjs/testing-library with vitest, JSDOM environment.\n- App.test.tsx has comprehensive mocking of bridge/viewport/editor \u2014 will extend existing patterns.\n- showToast(message, type) helper already exists in App.tsx scope \u2014 use for error toasts on partial failure.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -159,6 +159,20 @@
       "description": "Extend KeyboardShortcutCallbacks in useKeyboardShortcuts.ts with onReloadShortcut and onDismissReload. Add handlers: Ctrl+Shift+R -> onReloadShortcut, Escape -> onDismissReload. In App.tsx, wire onReloadShortcut to handleReload (only when changedFiles non-empty) and onDismissReload to handleDismissReload (only when reload prompt visible).",
       "status": "done",
       "commit": "f73f4bc"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing tests for partial_failure_state_corruption fix in handleReload. Add new describe block 'App handleReload partial failure' in App.test.tsx with tests: (1) when one bridgeOpenFile rejects and another succeeds, only the failed file remains in changedFiles (the succeeded file is removed from the set), (2) when one file fails, confirmReload is still reset to false, (3) when one file fails, an error toast is shown via showToast mentioning the failed file count, (4) when all files succeed, changedFiles is cleared completely (existing behavior preserved), (5) when all files fail, all files remain in changedFiles. Mock bridge.openFile to resolve for some paths and reject for others using mockImplementation with conditional logic.",
+      "status": "done",
+      "commit": "8355841"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "In App.tsx handleReload: Replace Promise.all with Promise.allSettled. After settlement, partition results into fulfilled and rejected. For fulfilled results, their corresponding files are removed from changedFiles. For rejected results, their files remain in changedFiles. Always call setConfirmReload(false) regardless of outcome. If any promises rejected, call showToast with an error message indicating N file(s) failed to reload. If all succeeded, setChangedFiles(new Set()). If partial failure, setChangedFiles(new Set(failedPaths)). The editorStore.updateFileContent calls remain in individual .then() handlers (before allSettled) so successfully-loaded files still get their content updated immediately.",
+      "status": "done",
+      "commit": "1d04926"
     }
   ],
   "design_decisions": [
@@ -197,6 +211,14 @@
     {
       "decision": "Toast id generation uses a simple incrementing counter rather than crypto.randomUUID",
       "rationale": "Counter is deterministic and testable. UUIDs are overkill for in-memory component state that doesn't persist."
+    },
+    {
+      "decision": "Use Promise.allSettled instead of Promise.all for handleReload to handle partial failures gracefully",
+      "rationale": "Promise.all short-circuits on first rejection, leaving successfully-reloaded files stuck in changedFiles. Promise.allSettled waits for all promises and lets us partition succeeded vs failed files. Only failed files remain in changedFiles, keeping UI state consistent with actual editor state. confirmReload is always reset regardless of outcome."
+    },
+    {
+      "decision": "Track file-to-promise mapping by index correlation with Array.from(files) for allSettled result processing",
+      "rationale": "Promise.allSettled returns results in the same order as the input array. By iterating Array.from(files) alongside allSettled results, we can determine exactly which paths succeeded and which failed without needing a separate tracking structure."
     }
   ],
   "reuse": [
@@ -229,8 +251,13 @@
       "what": "CSS variable naming convention",
       "where": "gui/src/panels/Toast.module.css",
       "how": "Continue using --reify-* CSS custom properties for theming consistency in any new styles."
+    },
+    {
+      "what": "showToast helper in App.tsx",
+      "where": "gui/src/App.tsx (line 65)",
+      "how": "Already exists in handleReload's scope. Use showToast(message, 'error') to surface partial reload failures as error toasts to the user, leveraging the toast queue infrastructure built in steps 9-10."
     }
   ],
   "_session_id": "109-446fc70c",
-  "_created_at": "2026-03-21T19:47:08.895648+00:00"
+  "_created_at": "2026-03-21T21:15:04.174398+00:00"
 }
