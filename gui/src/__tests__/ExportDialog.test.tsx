@@ -110,4 +110,34 @@ describe('ExportDialog', () => {
     const select = screen.getByTestId('export-dialog').querySelector('select') as HTMLSelectElement;
     expect(select.disabled).toBe(true);
   });
+
+  // ── ARIA attributes (E-4) ──────────────────────────────────────────
+
+  it('inner dialog div has role="dialog"', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toBeTruthy();
+  });
+
+  it('inner dialog div has aria-modal="true"', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+  });
+
+  it('inner dialog div has aria-labelledby matching the title element id', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const dialog = screen.getByRole('dialog');
+    const labelledBy = dialog.getAttribute('aria-labelledby');
+    expect(labelledBy).toBeTruthy();
+    const title = document.getElementById(labelledBy!);
+    expect(title).toBeTruthy();
+    expect(title!.textContent).toBe('Export Geometry');
+  });
 });
