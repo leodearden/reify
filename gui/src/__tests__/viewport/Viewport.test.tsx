@@ -154,10 +154,10 @@ describe('Viewport', () => {
 
   it('selectedEntity effect re-runs setSelected when props.meshes changes', () => {
     const initialMeshes: Record<string, MeshData> = {
-      'bracket/plate': { vertices: new Float32Array([0, 0, 0]), indices: new Uint32Array([0]) },
+      'bracket/plate': { entity_path: 'bracket/plate', vertices: new Float32Array([0, 0, 0]), indices: new Uint32Array([0]), normals: null },
     };
     const updatedMeshes: Record<string, MeshData> = {
-      'bracket/plate': { vertices: new Float32Array([1, 1, 1]), indices: new Uint32Array([0]) },
+      'bracket/plate': { entity_path: 'bracket/plate', vertices: new Float32Array([1, 1, 1]), indices: new Uint32Array([0]), normals: null },
     };
 
     const [meshes, setMeshes] = createSignal<Record<string, MeshData>>(initialMeshes);
