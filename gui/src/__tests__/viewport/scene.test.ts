@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock three.js before importing anything that uses it
@@ -149,5 +150,21 @@ describe('createScene', () => {
     expect(camera.aspect).toBeCloseTo(1024 / 768);
     expect(camera.updateProjectionMatrix).toHaveBeenCalled();
     expect(mockSetSize).toHaveBeenCalledWith(1024, 768);
+  });
+
+  it('resize calls renderer.setPixelRatio with window.devicePixelRatio (V-15)', () => {
+    const { resize } = setup();
+    // Clear the initial setPixelRatio call from construction
+    mockSetPixelRatio.mockClear();
+
+    // Simulate a high-DPI display
+    Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+
+    resize(1024, 768);
+
+    expect(mockSetPixelRatio).toHaveBeenCalledWith(2);
+
+    // Restore
+    Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
   });
 });
