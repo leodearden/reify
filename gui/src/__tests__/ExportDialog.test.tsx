@@ -208,4 +208,37 @@ describe('ExportDialog', () => {
     fireEvent.click(overlay);
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  // ── Focus trap (E-1) ──────────────────────────────────────────────
+
+  it('focuses the first focusable element when dialog opens', async () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    // The first focusable element should be the select
+    const select = document.getElementById('export-format-select');
+    expect(document.activeElement).toBe(select);
+  });
+
+  it('Tab on last focusable element cycles to first', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const exportBtn = screen.getByText('Export');
+    exportBtn.focus();
+    fireEvent.keyDown(exportBtn, { key: 'Tab' });
+    const select = document.getElementById('export-format-select');
+    expect(document.activeElement).toBe(select);
+  });
+
+  it('Shift+Tab on first focusable element cycles to last', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const select = document.getElementById('export-format-select')!;
+    select.focus();
+    fireEvent.keyDown(select, { key: 'Tab', shiftKey: true });
+    const exportBtn = screen.getByText('Export');
+    expect(document.activeElement).toBe(exportBtn);
+  });
 });
