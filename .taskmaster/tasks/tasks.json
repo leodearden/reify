@@ -1336,7 +1336,7 @@
         "description": "FFI binding to SolveSpace's libslvs C API for geometric constraint solving.",
         "details": "## What to implement\n\n### Build infrastructure\n- Add libslvs as a system dependency or build from source\n- Create build.rs or use cc/cmake crate to link libslvs\n- libslvs has a clean C API (slvs.h) — use raw FFI or bindgen\n\n### FFI bindings (crates/reify-constraints/src/solvespace.rs or new file)\nWrap the libslvs C API:\n```c\n// Key libslvs functions to wrap:\nSlvs_MakeParam(h, group, val)\nSlvs_MakePoint3d(h, group, param_x, param_y, param_z)\nSlvs_MakeConstraint(h, group, type, entityA, entityB, ...)\nSlvs_Solve(sys, group)\nSlvs_GetParam(sys, h) -> value\n```\n\n### ConstraintSolver implementation\n```rust\nstruct SolveSpaceSolver;\n\nimpl ConstraintSolver for SolveSpaceSolver {\n    fn solve(&mut self, problem: &ResolutionProblem) -> SolveResult {\n        // 1. Map Reify auto params → libslvs params\n        // 2. Map Reify geometric constraints → libslvs constraint types:\n        //    - SLVS_C_DISTANCE → distance constraint\n        //    - SLVS_C_ANGLE → angle constraint\n        //    - SLVS_C_PARALLEL → parallel lines/planes\n        //    - SLVS_C_PERPENDICULAR → perpendicular\n        //    - SLVS_C_PT_PT_DISTANCE → point-to-point distance\n        //    - SLVS_C_PT_ON_LINE → point on line\n        //    - SLVS_C_COINCIDENT → coincident points\n        //    - SLVS_C_EQUAL → equal length/radius\n        // 3. Call Slvs_Solve\n        // 4. Extract resolved param values\n        // 5. Map solve status → SolveResult\n    }\n}\n```\n\n### Constraint type mapping\nMap Reify constraint expressions to libslvs geometric constraint types. This requires pattern-matching on the compiled expression to identify geometric constraint patterns:\n- `distance(a, b) == 10mm` → SLVS_C_PT_PT_DISTANCE\n- `angle(line1, line2) == 90deg` → SLVS_C_ANGLE + SLVS_C_PERPENDICULAR\n- `parallel(line1, line2)` → SLVS_C_PARALLEL\n\n### Register with SolverRegistry\nWire into SolverRegistry.geometric slot.\n\n## Tests\n1. Solve simple distance constraint: `distance(a, b) = 10` → a, b at distance 10\n2. Solve angle constraint: two lines at 90° → perpendicular\n3. Solve parallel constraint: two lines parallel\n4. Solve coincident point constraint\n5. Over-constrained system → Infeasible\n6. Under-constrained → solved with remaining DOF\n7. Integration: SolverRegistry dispatches geometric constraint → SolveSpace\n8. Mixed problem: dimensional + geometric → SolverRegistry decomposes correctly\n\n## Modules\ncrates/reify-constraints",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "75"
         ],
@@ -1347,7 +1347,7 @@
             "crates/reify-constraints"
           ]
         },
-        "updatedAt": "2026-03-21T07:48:22.723Z"
+        "updatedAt": "2026-03-21T08:28:13.182Z"
       },
       {
         "id": "77",
@@ -1355,7 +1355,7 @@
         "description": "FFI binding to OR-Tools CP-SAT for boolean and integer constraint solving.",
         "details": "## What to implement\n\n### Build infrastructure\n- OR-Tools CP-SAT has a C++ API. Use cxx or protobuf-based interface.\n- Alternative: use the protobuf model format — serialize CP model as protobuf, call OR-Tools solver via subprocess or FFI\n- Consider using the `good_lp` or `minilp` Rust crate as a simpler alternative for v0.1\n\n### ConstraintSolver implementation\n```rust\nstruct CpSatSolver;\n\nimpl ConstraintSolver for CpSatSolver {\n    fn solve(&mut self, problem: &ResolutionProblem) -> SolveResult {\n        // 1. Map Reify auto params → CP-SAT integer/boolean variables\n        //    - Bool params → BoolVar\n        //    - Enum params → IntVar with domain = {0..num_variants}\n        //    - Integer params → IntVar with bounds\n        // 2. Map constraints:\n        //    - x == true → literal constraint\n        //    - x != y → different constraint\n        //    - at_most_k(list, k) → cardinality constraint\n        //    - x => y → implication\n        //    - exactly_one(list) → exactly-one constraint\n        //    - all_different(list) → all-different constraint\n        // 3. Solve\n        // 4. Extract variable assignments → SolveResult\n    }\n}\n```\n\n### Constraint type mapping\nMap Reify logical constraint expressions to CP-SAT:\n- Boolean equality/inequality → literal constraints\n- Enum equality → integer domain constraints\n- Implications (`if a then b`) → reification\n- Cardinality (`at_most 3 of [a, b, c, d, e]`) → cardinality constraint\n- Exclusion (`exactly_one [opt_a, opt_b, opt_c]`) → exactly-one\n\n### Register with SolverRegistry\nWire into SolverRegistry.logical slot.\n\n## Tests\n1. Solve boolean SAT: `a && (b || !c)` → valid assignment\n2. Solve enum constraint: `x in {A, B, C} && x != A` → x = B or C\n3. Solve implication: `if a then b` → b when a is true\n4. Solve cardinality: `at_most 2 of [a, b, c, d] are true` → valid\n5. Infeasible: `a && !a` → Infeasible\n6. Integer constraint: `x + y == 10 && x >= 0 && y >= 0 && x <= 10 && y <= 10` → valid\n7. Integration: SolverRegistry dispatches logical → CP-SAT\n8. All-different: `all_different [x, y, z]` → distinct values\n\n## Modules\ncrates/reify-constraints",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "75"
         ],
@@ -1365,7 +1365,8 @@
           "modules": [
             "crates/reify-constraints"
           ]
-        }
+        },
+        "updatedAt": "2026-03-21T09:46:01.588Z"
       },
       {
         "id": "78",
@@ -1373,7 +1374,7 @@
         "description": "Add purpose declarations with entity parameter bindings, reflective schema queries, and determinacy predicates.",
         "details": "## What to implement\n\n### Grammar (tree-sitter-reify/grammar.js)\nAdd `purpose_declaration` as a top-level declaration:\n```javascript\npurpose_declaration: $ => seq(\n  optional('pub'),\n  'purpose',\n  $.identifier,\n  optional($.type_parameters),\n  '(', commaSep($.purpose_param), ')',\n  '{', repeat($.purpose_member), '}'\n),\npurpose_param: $ => seq($.identifier, ':', $.type_identifier),  // subject : Structure\npurpose_member: $ => choice(\n  $.constraint_declaration,\n  $.let_declaration,\n  $.minimize_declaration,\n  $.maximize_declaration,\n  $.guarded_block      // where clause\n)\n```\n\n### Parser (crates/reify-syntax/src/lib.rs)\nAdd `Declaration::Purpose(PurposeDef)`:\n```\nPurposeDef {\n    name: String,\n    is_pub: bool,\n    params: Vec<PurposeParam>,\n    members: Vec<MemberDecl>,\n    span: SourceSpan,\n    content_hash: ContentHash,\n}\nPurposeParam { name: String, entity_kind: String, span: SourceSpan }\n```\n\n### Compiler (crates/reify-compiler/src/lib.rs)\nCompile purposes:\n1. Purpose params bind to entity references (not values on determinacy spectrum)\n2. Reflective schema queries on bound entities — compile-time resolution:\n   - `subject.params` → List of all param ValueCellIds in the bound entity\n   - `subject.geometric_params` → params with nonzero geometric dimension exponents\n   - `subject.sub_entities` → List of SubComponentDecl names\n   - `subject.ports` → List of port names\n   - `subject.constraints` → List of ConstraintNodeIds\n3. Compile constraints and objectives like structure members\n4. Result: `CompiledPurpose` containing constraints + objectives\n\n### Eval (crates/reify-eval/src/lib.rs)\nPurpose activation:\n- When activated, inject purpose's constraints/objectives into the evaluation graph\n- When deactivated, remove them\n- Activation API: `Engine::activate_purpose(purpose_name, entity_ref)` / `deactivate_purpose`\n\n### Stdlib (crates/reify-stdlib/src/lib.rs)\nAdd determinacy predicates:\n- `determined(param_ref)` → Bool: true if param's DeterminacyState == Determined\n- `constrained(param_ref)` → Bool: true if Constrained\n- `undetermined(param_ref)` → Bool: true if Undetermined\n- `partially_determined(param_ref)` → Bool: true if Auto/Constrained (not fully determined but not undef)\n\n## Tests\n1. Parse `purpose manufacturing_ready(subject : Structure) { constraint forall p in subject.params: determined(p) }` → PurposeDef\n2. Compile purpose → reflective queries resolve param list from bound entity\n3. Eval `determined(width)` where width = 80mm → true\n4. Eval `determined(thickness)` where thickness = auto → false\n5. Activate purpose → constraints injected into graph, evaluated\n6. Deactivate purpose → constraints removed\n7. Purpose with minimize → optimization objective active when purpose active\n8. Purpose with where guard → conditional constraints\n\n## Modules\ntree-sitter-reify, crates/reify-syntax, crates/reify-compiler, crates/reify-eval, crates/reify-stdlib",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [
           "66",
           "62",
@@ -1390,7 +1391,7 @@
             "crates/reify-stdlib"
           ]
         },
-        "updatedAt": "2026-03-21T08:01:27.475Z"
+        "updatedAt": "2026-03-21T08:33:15.980Z"
       },
       {
         "id": "79",
@@ -1421,7 +1422,7 @@
         "description": "End-to-end integration tests exercising multiple M5 features together through the full pipeline.",
         "details": "## What to implement\n\nCreate comprehensive integration tests in `tests/` and example `.ri` files in `examples/`:\n\n### Test scenarios\n\n1. **Trait-implementing structure:**\n```\ntrait Rigid { param mass : Mass; constraint mass > 0kg }\nstructure def Bracket : Rigid { param mass : Mass = 0.5kg; param width : Length = 80mm }\n```\n→ reify check passes, trait conformance verified\n\n2. **Multi-module import:**\n```\n// stdlib/mechanical/fastener.ri\nmodule std.mechanical.fastener\npub structure def Bolt : Fastener { ... }\n\n// examples/assembly.ri\nmodule examples.assembly\nimport std.mechanical.fastener.Bolt\nstructure def Plate { sub bolt : Bolt { diameter = 10mm } }\n```\n→ import resolved, sub-component compiled\n\n3. **Guarded declarations with enum match:**\n```\nenum HeadType { Hex, Socket, Button }\nstructure def Bolt {\n    param head_type : HeadType = HeadType.Hex\n    where head_type == HeadType.Hex { param across_flats : Length = 13mm }\n    where head_type == HeadType.Socket { param socket_size : Length = 6mm }\n}\n```\n→ guard re-elaboration on head_type change\n\n4. **Collection operations with lambdas:**\n```\nstructure def BoltCircle {\n    param bolt_count : Int = 6\n    sub bolts : List<Bolt>\n    constraint bolts.count == bolt_count\n    constraint forall b in bolts: b.grade >= 8.8\n    let total_clamping = bolts.map(|b| b.clamping_force).sum\n}\n```\n→ collections, quantifiers, lambdas working together\n\n5. **Connect + occurrence chain:**\n```\noccurrence def Machining { port in blank : StructurePort; port out finished : StructurePort; param tolerance : Length }\noccurrence def HeatTreat { port in workpiece : StructurePort; port out treated : StructurePort }\nstructure def ManufacturingProcess {\n    sub machining : Machining { tolerance = 0.1mm }\n    sub heat_treat : HeatTreat\n    chain machining -> heat_treat\n}\n```\n→ occurrence instantiation, chain desugaring, port connections\n\n6. **User-defined function:**\n```\nfn safety_factor(applied_stress : Pressure, yield_strength : Pressure) -> Real {\n    yield_strength / applied_stress\n}\nstructure def Beam {\n    param stress : Pressure = 100MPa\n    param material_yield : Pressure = 250MPa\n    let sf = safety_factor(stress, material_yield)\n    constraint sf >= 2.0\n}\n```\n→ user fn call in let binding, result used in constraint\n\n7. **Geometry with new operations:**\n```\nstructure def Flange {\n    param outer_diameter : Length = 100mm\n    param bolt_circle_diameter : Length = 80mm\n    param hole_count : Int = 6\n    realize {\n        cylinder(radius = outer_diameter / 2, height = 10mm)\n        circular_pattern(\n            cylinder(radius = 5mm, height = 10mm),\n            count = hole_count,\n            radius = bolt_circle_diameter / 2\n        )\n    }\n}\n```\n→ new geometry ops through full pipeline\n\n### File organization\n- `tests/m5_integration.rs` — Rust integration tests\n- `examples/m5_*.ri` — example .ri source files for each scenario\n- Each test: parse → compile → eval → verify results\n\n## Tests\nAll scenarios above as individual #[test] functions. Each verifies:\n- Parse succeeds (no parse errors)\n- Compile succeeds (no error diagnostics)\n- Eval produces correct values\n- Constraints check correctly\n- Geometry builds (where applicable)\n\n## Modules\ntests, examples",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "54",
           "57",
@@ -1440,7 +1441,7 @@
             "examples"
           ]
         },
-        "updatedAt": "2026-03-21T08:01:27.605Z"
+        "updatedAt": "2026-03-21T10:05:50.429Z"
       },
       {
         "id": "81",
@@ -1448,11 +1449,11 @@
         "description": "The `compile_module` helper function is identically defined in trait_bounds_tests.rs, trait_conformance_tests.rs, and port_compile_tests.rs. Move it (and `compile_first_template`) into reify-test-support/src/ as pub functions and import from there.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-21T08:01:27.765Z"
+        "updatedAt": "2026-03-21T12:03:29.221Z"
       },
       {
         "id": "82",
@@ -1464,7 +1465,7 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-21T08:01:27.857Z"
+        "updatedAt": "2026-03-21T12:03:09.159Z"
       },
       {
         "id": "83",
@@ -1484,11 +1485,11 @@
         "description": "The supertrait_chain_satisfies_bound test only covers a 2-hop chain. Add a 3-level chain test (e.g., Bolt → Ultra → ConcreteRigid → Rigid) to verify recursion handles arbitrary depth.\n\nmemory_hints: search \"supertrait_chain\" in trait_bounds_tests.rs; entity \"satisfies_trait_bound\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-21T08:01:27.948Z"
+        "updatedAt": "2026-03-21T09:31:09.176Z"
       },
       {
         "id": "85",
@@ -1500,7 +1501,7 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-21T08:01:27.662Z"
+        "updatedAt": "2026-03-21T12:03:09.032Z"
       },
       {
         "id": "86",
@@ -1508,11 +1509,11 @@
         "description": "PendingBoundCheck.target_name carries dual semantics: structure name (sub-component path) or trait name (conformance path), distinguished only by whether type_params is empty. Replace with enum variants PendingBoundCheck::SubComponent { ... } vs PendingBoundCheck::TraitConformance { ... } to make paths explicit.\n\nmemory_hints: search \"PendingBoundCheck\" in reify-compiler/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-21T08:01:28.029Z"
+        "updatedAt": "2026-03-21T09:37:13.391Z"
       },
       {
         "id": "87",
@@ -1524,7 +1525,7 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-21T08:01:28.155Z"
+        "updatedAt": "2026-03-21T12:03:09.213Z"
       },
       {
         "id": "88",
@@ -1532,11 +1533,11 @@
         "description": "compile() makes 4 separate linear passes over parsed.declarations (enum, function, trait, structure). Consolidate into 2 passes: one pre-pass that collects all enums, functions, and traits via a single match dispatch, then one structure-compilation pass.\n\nmemory_hints: search \"pre-pass\" or \"declarations\" in reify-compiler/src/lib.rs lines 1155-1250",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-21T08:01:28.246Z"
+        "updatedAt": "2026-03-21T11:54:36.668Z"
       },
       {
         "id": "89",
@@ -1608,14 +1609,14 @@
         "description": "Add a programmatic in-process API to the reify-lsp crate (alongside existing stdio transport) so the GUI can host the LSP server without a separate process. Create gui/src-tauri/src/lsp_bridge.rs — instantiate ReifyLanguageServer in-process, route LSP JSON-RPC requests/responses through Tauri commands and events. Implement the lsp_request Tauri command handler (currently returns an error stub). On the frontend, create gui/src/editor/lspClient.ts (bridge Tauri lsp_request to CodeMirror extensions), gui/src/editor/diagnostics.ts (subscribe to diagnostics Tauri event, render inline squiggles in CodeMirror), gui/src/editor/completions.ts (CodeMirror completion source backed by lsp_request for textDocument/completion). Wire hover info and go-to-definition (Ctrl+click) through the same LSP bridge.",
         "details": "Modules: [crates/reify-lsp, gui/src-tauri/src, gui/src/editor]\nDependencies: 90, 92\n\nExisting code context:\n- crates/reify-lsp/src/lib.rs exports run_server() using stdio transport\n- crates/reify-lsp/src/server.rs has ReifyLanguageServer implementing tower_lsp::LanguageServer\n- ReifyLanguageServer::new(client) is public; server.state() gives Arc<RwLock<ServerState>> \"for testing and embedding\"\n- gui/src-tauri/src/commands.rs has lsp_request stub returning \"LSP not yet available\" error\n- gui/src/bridge.ts has lspRequest(method, params) wrapper\n- tower-lsp supports custom transports beyond stdio\n\nMemory hints:\n- Search: \"ReifyLanguageServer\" in crates/reify-lsp/src/server.rs\n- Search: \"run_server\" in crates/reify-lsp/src/lib.rs for current stdio setup\n- Search: \"lsp_request\" in gui/src-tauri/src/commands.rs for stub\n- Search: \"tower_lsp\" for transport layer patterns\n- Entity: ReifyLanguageServer\n\nTests: LSP bridge responds to initialize request, textDocument/completion returns results for .ri content, diagnostics event fires on syntax error, hover returns type info.",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [
           "90",
           "92"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-21T07:33:22.359Z"
+        "updatedAt": "2026-03-21T09:46:01.592Z"
       },
       {
         "id": "95",
@@ -1623,14 +1624,14 @@
         "description": "Create gui/src/viewport/selection.ts — Three.js Raycaster for mouse hover and click detection on meshes. On hover: apply emissive highlight to face/mesh under cursor, show floating tooltip with structure name and key dimensions. On click: select the structure → update selectionStore.selectedEntity → property editor highlights the corresponding parameter group. Add wireframe overlay (WireframeGeometry + LineSegments) on the selected structure's mesh. Implement fit-to-view button: compute bounding box of all meshes, animate camera to frame everything. Add \"Evaluating...\" spinner overlay that appears when engineStore.evalStatus is not idle.",
         "details": "Modules: [gui/src/viewport]\nDependencies: 89, 93\n\nExisting code context:\n- gui/src/viewport/ created by task 89 with scene.ts, controls.ts, meshManager.ts, Viewport.tsx\n- gui/src/stores/selectionStore.ts has setSelectedEntity(path), setHoveredEntity(path), selectedEntity/hoveredEntity signals\n- gui/src/stores/engineStore.ts has evalStatus signal\n- meshManager.ts maps entity_path → Three.js Mesh objects (need to be queryable by raycaster)\n- Three.js Raycaster, WireframeGeometry, LineSegments are standard Three.js classes\n\nMemory hints:\n- Search: \"selectionStore\" in gui/src/stores/selectionStore.ts\n- Search: \"evalStatus\" in gui/src/stores/engineStore.ts\n- Search: \"meshManager\" in gui/src/viewport/ for mesh→entity mapping\n\nTests: Raycaster initializes correctly, selection store updates on simulated click, wireframe geometry creates from mesh, fit-to-view computes correct camera position.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "89",
           "93"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-21T07:48:22.675Z"
+        "updatedAt": "2026-03-21T11:46:31.215Z"
       },
       {
         "id": "96",
@@ -1638,13 +1639,14 @@
         "description": "Wire bidirectional navigation between all GUI components. Viewport→source: on geometry click, call getSourceLocation bridge command with entity_path, then scroll CodeMirror editor to the returned line/column and highlight the span. Source→viewport: on Ctrl+click of a structure name in the editor, call focusEntity bridge command, then animate viewport camera to fly to the structure's bounding box. Property editor→viewport: on double-click of a structure group header, fly viewport to that structure. Constraint→panels: on click of a constraint row, highlight the relevant parameter_ids in the property editor and the corresponding geometry in the viewport. All navigation flows update selectionStore to keep highlighting consistent across panels.",
         "details": "Modules: [gui/src]\nDependencies: 93, 95\n\nExisting code context:\n- gui/src/bridge.ts has getSourceLocation(entityPath) returning SourceLocation and focusEntity(entityPath)\n- gui/src/stores/selectionStore.ts tracks selectedEntity for cross-panel highlighting\n- gui/src/types.ts defines SourceLocation { file, line, column, end_line, end_column }\n- Tauri backend emits \"focus-entity\" event when focusEntity command is called\n- Viewport (task 89/95) has camera controls and mesh→entity_path mapping\n- Editor (task 90) has CodeMirror instance accessible for scrolling/highlighting\n- PropertyEditor/ConstraintPanel (task 91) have entity/constraint data\n\nMemory hints:\n- Search: \"getSourceLocation\" in gui/src/bridge.ts\n- Search: \"focusEntity\" in gui/src/bridge.ts\n- Search: \"focus-entity\" event listener pattern\n- Search: \"selectionStore\" for cross-panel state\n\nTests: Geometry click triggers getSourceLocation and scrolls editor, focusEntity triggers camera animation, constraint click highlights related parameters, selection state stays consistent across panels.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "93",
           "95"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-21T12:03:54.587Z"
       },
       {
         "id": "97",
@@ -1673,13 +1675,25 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-03-21T08:27:42.986Z"
+      },
+      {
+        "id": "99",
+        "title": "Let bindings should be in scope for subsequent let expressions",
+        "description": "In a structure body, `let` bindings are not resolvable by name in subsequent `let` expressions. For example:\n\n```\nlet hole = cylinder(hole_radius, height)\nlet holes = circular_pattern(hole, ...)  // ERROR: unresolved name: hole\n```\n\nThe compiler's name resolution for `let` bindings doesn't add them to the scope visible to later `let` expressions. Params work fine (`hole_radius` resolves), but `let` bindings don't.\n\nDiscovered in task 80's `m5_geometry_flange.ri` example — `circular_pattern` should receive the `hole` geometry handle but had to use `hole_radius` (a scalar) as a workaround.\n\nmemory_hints: search \"compile_let\" or \"let binding\" in reify-compiler/src/lib.rs; search \"CompilationScope\" for how names are registered",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-03-21T12:03:09.091Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-21T08:27:42.986Z",
-      "taskCount": 98,
-      "completedCount": 83,
+      "lastModified": "2026-03-21T12:03:54.587Z",
+      "taskCount": 99,
+      "completedCount": 94,
       "tags": [
         "master"
       ]
