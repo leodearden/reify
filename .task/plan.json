@@ -9,6 +9,8 @@
     "crates/reify-syntax/tests/field_tests.rs",
     "crates/reify-types/src/ty.rs",
     "crates/reify-types/src/value.rs",
+    "crates/reify-types/src/identity.rs",
+    "crates/reify-types/src/lib.rs",
     "crates/reify-compiler/src/lib.rs",
     "crates/reify-compiler/tests/field_compile_tests.rs",
     "crates/reify-eval/src/lib.rs",
@@ -25,7 +27,7 @@
     "crates/reify-stdlib",
     "crates/reify-expr"
   ],
-  "analysis": "This task adds field declarations to Reify \u2014 a new top-level declaration type representing typed mathematical fields (domain -> codomain mappings) with multiple source kinds (analytical, sampled, composed, imported). The implementation spans all layers: grammar, parser, types, compiler, evaluator, and stdlib.\n\nExisting patterns to follow:\n- Grammar: top-level declarations are listed in `_declaration` choice, member constructs follow seq() patterns with optional pub, keyword, name, etc.\n- Parser (ts_parser.rs): CST->AST lowering via `Lowering` struct with `lower_*` methods, dispatched from `lower_source_file`.\n- Syntax AST (lib.rs): Enums for declarations, structs for each decl type with name, is_pub, span, content_hash.\n- Types (ty.rs): Type enum with variants like List(Box<Type>), Function{params, return_type}.\n- Compiler (lib.rs): compile() function with pre-passes for enums/functions/traits, then main loop over declarations. compile_entity() handles structure/occurrence members.\n- Eval (lib.rs): Engine::eval() processes templates with multi-pass (params -> lets -> guards).\n- Stdlib (lib.rs): eval_builtin() dispatches by function name.\n\nField declarations are top-level (like structures, functions, traits), not member-level. The task specifies `field def name : DomainType -> CodomainType { source = kind { ... } }`. Fields evaluate to Value::Field values that wrap lambdas or sample data. Composition (Field<A,B> compose Field<B,C>) requires type checking that the codomain of the first matches the domain of the second.\n\nKey design decisions:\n1. Fields are top-level declarations (not members), added to `_declaration` in grammar and `Declaration` enum.\n2. Type::Field { domain, codomain } added to the type system for type checking composition.\n3. Value::Field variant added for runtime field values.\n4. Field operations (gradient, divergence, curl, sample) added to stdlib.\n5. Compiler produces CompiledField entries in CompiledModule (new vec alongside functions, traits, etc.).\n6. Eval evaluates field declarations into Value::Field, storing them accessible by name.",
+  "analysis": "This task adds field declarations to Reify \u2014 a new top-level declaration type representing typed mathematical fields (domain -> codomain mappings) with multiple source kinds (analytical, sampled, composed, imported). The implementation spans all layers: grammar, parser, types, compiler, evaluator, and stdlib.\n\nExisting patterns to follow:\n- Grammar: top-level declarations are listed in `_declaration` choice, member constructs follow seq() patterns with optional pub, keyword, name, etc.\n- Parser (ts_parser.rs): CST->AST lowering via `Lowering` struct with `lower_*` methods, dispatched from `lower_source_file`.\n- Syntax AST (lib.rs): Enums for declarations, structs for each decl type with name, is_pub, span, content_hash.\n- Types (ty.rs): Type enum with variants like List(Box<Type>), Function{params, return_type}.\n- Compiler (lib.rs): compile() function with pre-passes for enums/functions/traits, then main loop over declarations. compile_entity() handles structure/occurrence members.\n- Eval (lib.rs): Engine::eval() processes templates with multi-pass (params -> lets -> guards).\n- Stdlib (lib.rs): eval_builtin() dispatches by function name.\n\nField declarations are top-level (like structures, functions, traits), not member-level. The task specifies `field def name : DomainType -> CodomainType { source = kind { ... } }`. Fields evaluate to Value::Field values that wrap lambdas or sample data. Composition (Field<A,B> compose Field<B,C>) requires type checking that the codomain of the first matches the domain of the second.\n\nKey design decisions:\n1. Fields are top-level declarations (not members), added to `_declaration` in grammar and `Declaration` enum.\n2. Type::Field { domain, codomain } added to the type system for type checking composition.\n3. Value::Field variant added for runtime field values.\n4. Field operations (gradient, divergence, curl, sample) added to stdlib.\n5. Compiler produces CompiledField entries in CompiledModule (new vec alongside functions, traits, etc.).\n6. Eval evaluates field declarations into Value::Field, storing them accessible by name.\n\nReview fixes (steps 27-34) address four blocking issues:\n- B1: Magic string '__field' used in 3 files without a shared constant \u2192 define FIELD_ENTITY_PREFIX in reify-types/src/identity.rs\n- B2: walk_field_composition manually re-implements traversal covering only 5 variants \u2192 replace with CompiledExpr::walk covering 12+ variants\n- B3: Field values not inserted into snapshot.values \u2192 add snapshot.values.insert for field values\n- B4: Duplicate field names not detected \u2192 add seen_field_names dedup check matching port pattern",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -217,6 +219,62 @@
       "description": "Add gradient, divergence, curl field operations to stdlib. These are stub implementations that return Undef for now (numeric differentiation requires further infrastructure), but the dispatch and type signature are correct. Make test pass.",
       "status": "done",
       "commit": "2ff3ec7"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Write failing test: field_entity_prefix_constant \u2014 verify that `reify_types::FIELD_ENTITY_PREFIX` exists as a public constant equal to `\"__field\"`, and that `ValueCellId::new(FIELD_ENTITY_PREFIX, \"temp\")` produces the expected ID. This test goes in crates/reify-eval/tests/field_eval_tests.rs (or a new unit test in reify-types). The test imports the constant and asserts its value. Existing tests using the literal `\"__field\"` should be updated to use the constant.",
+      "status": "done",
+      "commit": "da3e532"
+    },
+    {
+      "id": "step-28",
+      "type": "impl",
+      "description": "Define `pub const FIELD_ENTITY_PREFIX: &str = \"__field\";` in crates/reify-types/src/identity.rs (where ValueCellId lives). Re-export it from crates/reify-types/src/lib.rs. Replace all three occurrences of the `\"__field\"` literal: (1) crates/reify-compiler/src/lib.rs:1635, (2) crates/reify-eval/src/lib.rs:688, (3) crates/reify-eval/tests/field_eval_tests.rs:35. Each site imports and uses `FIELD_ENTITY_PREFIX` instead of the magic string. Make test pass.",
+      "status": "done",
+      "commit": "bb7ce93"
+    },
+    {
+      "id": "step-29",
+      "type": "test",
+      "description": "Write failing test: compose_type_check_nested_in_match \u2014 create a composed field where the mismatched field calls are nested inside a match arm body (e.g., `match x { A => f(g(p)) }`). This should produce a type error diagnostic. The current walk_field_composition misses this because it doesn't traverse Match variants; after rewriting to use CompiledExpr::walk, it will be caught. Test goes in crates/reify-compiler/tests/field_compile_tests.rs.",
+      "status": "done",
+      "commit": "d2dbf98"
+    },
+    {
+      "id": "step-30",
+      "type": "impl",
+      "description": "Delete `walk_field_composition` entirely. Rewrite `check_field_composition_types` to use `expr.walk(&mut |node| { ... })`: inside the closure, check if node is a FunctionCall referencing a known field and if any of its args is also a FunctionCall referencing a known field with mismatched types. Collect diagnostics in a local Vec and extend the outer diagnostics. This covers all 12+ expression variants (Match, UserFunctionCall, ListLiteral, etc.) automatically. Make both the new test and all existing composition tests pass.",
+      "status": "done",
+      "commit": "a29b331"
+    },
+    {
+      "id": "step-31",
+      "type": "test",
+      "description": "Write failing test: eval_field_snapshot_consistency \u2014 evaluate a module with a field and verify that the field value appears in snapshot.values (not just the cold values map). This ensures incremental re-evaluation via edit_param/warm-starting can see field values. The test calls Engine::eval(), then checks `result.snapshot_values` contains the field_id with the correct Value::Field and DeterminacyState::Determined. Test goes in crates/reify-eval/tests/field_eval_tests.rs.",
+      "status": "done",
+      "commit": "40103d0"
+    },
+    {
+      "id": "step-32",
+      "type": "impl",
+      "description": "In crates/reify-eval/src/lib.rs, after `values.insert(field_id.clone(), field_value.clone())` (line ~689), add `snapshot.values.insert(field_id, (field_value, DeterminacyState::Determined));` to keep the snapshot consistent with the local value map. This matches the pattern used by Auto, Param, and Let value kinds. Make test pass.",
+      "status": "done",
+      "commit": "3d3cf67"
+    },
+    {
+      "id": "step-33",
+      "type": "test",
+      "description": "Write failing test: compile_duplicate_field_names \u2014 compile a module with two `field def temp : ...` declarations with the same name. Verify that a diagnostic error containing 'duplicate field name' is emitted. Test goes in crates/reify-compiler/tests/field_compile_tests.rs.",
+      "status": "done",
+      "commit": "b235fc4"
+    },
+    {
+      "id": "step-34",
+      "type": "impl",
+      "description": "In crates/reify-compiler/src/lib.rs, in the field pre-pass loop (around line 1364-1373), add a `seen_field_names: HashMap<String, SourceSpan>` before the loop. On each field declaration, check if the name was already seen: if so, emit `Diagnostic::error(format!(\"duplicate field name '{}'\", name))` with labels for both locations (first defined / duplicate defined), and skip the duplicate. Otherwise, insert into seen_field_names. This matches the pattern used for duplicate port names (lines 1688-1707). Make test pass.",
+      "status": "done",
+      "commit": "b3fc54b"
     }
   ],
   "design_decisions": [
@@ -243,6 +301,18 @@
     {
       "decision": "Field grammar uses 'field def' keyword pair (not just 'field') to avoid ambiguity",
       "rationale": "The task spec shows `field def name`, matching the `structure def` pattern. The 'def' keyword disambiguates from potential future uses of 'field' keyword in other contexts."
+    },
+    {
+      "decision": "FIELD_ENTITY_PREFIX constant placed in reify-types/src/identity.rs",
+      "rationale": "The constant is intimately tied to ValueCellId which is defined in identity.rs. Placing it there keeps the namespace prefix co-located with the type it qualifies. Re-exported from reify-types/src/lib.rs for easy access by compiler, eval, and tests."
+    },
+    {
+      "decision": "Replace walk_field_composition with CompiledExpr::walk",
+      "rationale": "CompiledExpr::walk (expr.rs:183) is the canonical expression traversal covering 12+ variants. The hand-rolled walk_field_composition only covered 5, missing Match, UserFunctionCall, ListLiteral, SetLiteral, MapLiteral, IndexAccess. Using walk ensures composition checks catch mismatches in any expression context."
+    },
+    {
+      "decision": "Duplicate field detection uses HashMap<String, SourceSpan> pattern",
+      "rationale": "Matches the existing duplicate port name detection pattern (lines 1614, 1688-1707 in compiler). First occurrence is kept; duplicates emit an error diagnostic with labels pointing to both locations and are skipped."
     }
   ],
   "reuse": [
@@ -285,8 +355,23 @@
       "what": "ContentHash, SourceSpan, Visibility patterns",
       "where": "crates/reify-types, crates/reify-compiler",
       "how": "FieldDef and CompiledField use the same span/hash/visibility patterns as other declaration types"
+    },
+    {
+      "what": "CompiledExpr::walk canonical traversal",
+      "where": "crates/reify-types/src/expr.rs:183",
+      "how": "Replace hand-rolled walk_field_composition with expr.walk(&mut |node| { ... }) to get full 12+ variant coverage for field composition type checking"
+    },
+    {
+      "what": "Duplicate port name detection pattern",
+      "where": "crates/reify-compiler/src/lib.rs:1614-1707",
+      "how": "Use same HashMap<String, SourceSpan> + collision check + Diagnostic::error with two DiagnosticLabels for duplicate field name detection"
+    },
+    {
+      "what": "snapshot.values.insert pattern for DeterminacyState::Determined",
+      "where": "crates/reify-eval/src/lib.rs (Auto/Param/Let value insertion)",
+      "how": "After inserting field value into values map, also insert into snapshot.values with (value, DeterminacyState::Determined) to maintain snapshot consistency"
     }
   ],
   "_session_id": "79-cdc15691",
-  "_created_at": "2026-03-21T00:30:30.809706+00:00"
+  "_created_at": "2026-03-21T01:15:51.231356+00:00"
 }
