@@ -476,6 +476,105 @@ fn empty_problem_returns_solved_empty() {
 }
 
 // ---------------------------------------------------------------------------
+// step-19: integer overflow in build_variable_domain
+// ---------------------------------------------------------------------------
+
+/// Helper to create a minimal Int auto param problem with given bounds.
+fn make_int_problem_with_bounds(lo: f64, hi: f64) -> ResolutionProblem {
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref_typed("Part", "x", Type::Int);
+    // Trivial constraint: x >= 0 (just needs to be non-empty)
+    let constraint = ge(x_ref, literal(Value::Int(0)));
+    ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id,
+            param_type: Type::Int,
+            bounds: Some((lo, hi)),
+        }],
+        constraints: vec![(cnid("Part", 0), constraint)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    }
+}
+
+/// Int auto param with bounds (NEG_INFINITY, INFINITY). Must NOT panic; must return NoProgress.
+#[test]
+fn int_domain_infinity_bounds_returns_error() {
+    let solver = CpSatSolver;
+    let problem = make_int_problem_with_bounds(f64::NEG_INFINITY, f64::INFINITY);
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::NoProgress { reason } => {
+            assert!(!reason.is_empty(), "expected non-empty reason");
+        }
+        other => panic!("expected NoProgress for infinite bounds, got {:?}", other),
+    }
+}
+
+/// Int auto param with bounds (-1e18, 1e18). Saturating cast gives near i64 extremes;
+/// hi_i - lo_i + 1 would overflow. Must NOT panic; must return NoProgress.
+#[test]
+fn int_domain_large_finite_bounds_returns_error() {
+    let solver = CpSatSolver;
+    let problem = make_int_problem_with_bounds(-1e18, 1e18);
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::NoProgress { reason } => {
+            assert!(!reason.is_empty(), "expected non-empty reason");
+        }
+        other => panic!("expected NoProgress for huge bounds, got {:?}", other),
+    }
+}
+
+/// Int auto param with NaN lower bound. Must NOT panic; must return NoProgress.
+#[test]
+fn int_domain_nan_bound_returns_error() {
+    let solver = CpSatSolver;
+    let problem = make_int_problem_with_bounds(f64::NAN, 10.0);
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::NoProgress { reason } => {
+            assert!(!reason.is_empty(), "expected non-empty reason");
+        }
+        other => panic!("expected NoProgress for NaN bounds, got {:?}", other),
+    }
+}
+
+/// Int auto param with bounds (0, INFINITY). Only upper bound infinite.
+/// Must NOT panic; must return NoProgress.
+#[test]
+fn int_domain_positive_infinity_upper_returns_error() {
+    let solver = CpSatSolver;
+    let problem = make_int_problem_with_bounds(0.0, f64::INFINITY);
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::NoProgress { reason } => {
+            assert!(!reason.is_empty(), "expected non-empty reason");
+        }
+        other => panic!(
+            "expected NoProgress for infinite upper bound, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Int auto param with bounds (-1e19, 1e19) — values outside i64 range entirely.
+/// Must NOT panic; must return NoProgress.
+#[test]
+fn int_domain_exceeds_i64_range_returns_error() {
+    let solver = CpSatSolver;
+    let problem = make_int_problem_with_bounds(-1e19, 1e19);
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::NoProgress { reason } => {
+            assert!(!reason.is_empty(), "expected non-empty reason");
+        }
+        other => panic!("expected NoProgress for out-of-range bounds, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // step-15: SolverRegistry integration
 // ---------------------------------------------------------------------------
 
