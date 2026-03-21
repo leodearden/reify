@@ -489,6 +489,45 @@ fn supertrait_3hop_chain_satisfies_bound() {
 }
 
 #[test]
+fn supertrait_3hop_all_intermediate_bounds() {
+    // Bolt : Ultra : ConcreteRigid : Rigid.
+    // Verify Bolt satisfies bounds at every level of the chain simultaneously:
+    // BoxUltra<T: Ultra>, BoxConcrete<T: ConcreteRigid>, BoxRigid<T: Rigid>.
+    // All three instantiations with Bolt should compile without error.
+    let source = r#"
+        trait Rigid { param mass : Mass }
+        trait ConcreteRigid : Rigid { param density : Real }
+        trait Ultra : ConcreteRigid { param strength : Real }
+        structure def Bolt : Ultra {
+            param mass : Mass = 1kg
+            param density : Real = 7800
+            param strength : Real = 500
+        }
+        structure def BoxRigid<T: Rigid> { param width : Length = 10mm }
+        structure def BoxConcrete<T: ConcreteRigid> { param width : Length = 10mm }
+        structure def BoxUltra<T: Ultra> { param width : Length = 10mm }
+        structure def Assembly {
+            sub a = BoxRigid<Bolt>()
+            sub b = BoxConcrete<Bolt>()
+            sub c = BoxUltra<Bolt>()
+        }
+    "#;
+    let module = compile_module(source);
+
+    // Bolt satisfies all three bounds in the chain simultaneously.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors when Bolt satisfies all intermediate bounds, got: {:?}",
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn supertrait_3hop_chain_negative() {
     // Same 3-level trait chain, but Widget has no trait conformance.
     // Box<T: Rigid> with Box<Widget>() should produce an error.
