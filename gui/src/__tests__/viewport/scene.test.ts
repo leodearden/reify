@@ -253,6 +253,24 @@ describe('createScene', () => {
     expect(camera.updateProjectionMatrix).toHaveBeenCalled();
   });
 
+  it('returns grid property that is a GridHelper instance', () => {
+    const result = setup();
+    expect(result).toHaveProperty('grid');
+    expect(result.grid.type).toBe('GridHelper');
+  });
+
+  it('returns axes property that is an AxesHelper instance', () => {
+    const result = setup();
+    expect(result).toHaveProperty('axes');
+    expect(result.axes.type).toBe('AxesHelper');
+  });
+
+  it('grid and axes have a visible property (initially true)', () => {
+    const result = setup();
+    expect(result.grid).toHaveProperty('visible');
+    expect(result.axes).toHaveProperty('visible');
+  });
+
   it('adjustClipping with empty bounds is a no-op (V-11)', () => {
     const { camera, adjustClipping } = setup();
     const origNear = camera.near;
