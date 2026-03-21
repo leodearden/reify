@@ -1709,3 +1709,80 @@ async fn five_parent_fan_in_one_changed() {
         "d should be 20 + 1 + 2 + 3 + 4 = 30"
     );
 }
+
+// --- Lock poisoning panic tests ---
+// These tests verify that poisoned locks cause panics instead of silently
+// recovering with potentially corrupt data. Gated behind feature = "test-utils"
+// because the poison_*() helpers are only available with that feature.
+
+#[cfg(feature = "test-utils")]
+mod poison_panics {
+    use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    /// values() must panic when the values RwLock is poisoned.
+    #[test]
+    fn values_panics_on_poisoned_values_lock() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+        // Poison the values lock
+        adapter.poison_values();
+
+        // values() should panic, not silently recover
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.values()
+        }));
+        assert!(result.is_err(), "values() should panic on poisoned lock, but it returned successfully");
+    }
+
+    /// take_results() must panic when the results Mutex is poisoned.
+    #[test]
+    fn take_results_panics_on_poisoned_results_lock() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+        // Poison the results lock
+        adapter.poison_results();
+
+        // take_results() should panic, not silently recover
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.take_results()
+        }));
+        assert!(result.is_err(), "take_results() should panic on poisoned lock, but it returned successfully");
+    }
+
+    /// build_result_shared() must panic when the values RwLock is poisoned.
+    #[test]
+    fn build_result_shared_panics_on_poisoned_values_lock() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        // Poison the values lock
+        adapter.poison_values();
+
+        // build_result_shared() should panic, not silently recover
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.build_result_shared(&eval_set, HashSet::new())
+        }));
+        assert!(result.is_err(), "build_result_shared() should panic on poisoned values lock, but it returned successfully");
+    }
+
+    /// into_result() must panic when the values RwLock is poisoned.
+    #[test]
+    fn into_result_panics_on_poisoned_values_lock() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        // Poison the values lock
+        adapter.poison_values();
+
+        // into_result() should panic, not silently recover
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.into_result(&eval_set, HashSet::new())
+        }));
+        assert!(result.is_err(), "into_result() should panic on poisoned values lock, but it returned successfully");
+    }
+}
