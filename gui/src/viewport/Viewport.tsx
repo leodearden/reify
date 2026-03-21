@@ -44,33 +44,6 @@ export function Viewport(props: ViewportProps) {
     doFitToView = () => selection.fitToView();
     props.flyToEntityRef?.((entityPath: string) => selection.flyToEntity(entityPath));
 
-    // Sync meshes reactively
-    createEffect(() => {
-      meshManager.sync(props.meshes);
-    });
-
-    // Sync hover/selection state from props to selection module
-    createEffect(() => {
-      selection.setHovered(props.hoveredEntity ?? null);
-    });
-
-    createEffect(() => {
-      void props.meshes;
-      selection.setSelected(props.selectedEntity ?? null);
-    });
-
-    // Resize handling via ResizeObserver
-    const resizeObserver = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const { width: w, height: h } = entry.contentRect;
-        if (w > 0 && h > 0) {
-          resize(w, h);
-          selection.invalidateRect();
-        }
-      }
-    });
-    resizeObserver.observe(containerRef);
-
     // Render-on-demand: keep rAF loop alive (for OrbitControls damping)
     // but only call renderer.render when something has changed.
     let needsRender = true;
@@ -80,6 +53,37 @@ export function Viewport(props: ViewportProps) {
 
     // OrbitControls 'change' event fires during camera movement (including damping)
     controls.controls.addEventListener('change', requestRender);
+
+    // Sync meshes reactively
+    createEffect(() => {
+      meshManager.sync(props.meshes);
+      requestRender();
+    });
+
+    // Sync hover/selection state from props to selection module
+    createEffect(() => {
+      selection.setHovered(props.hoveredEntity ?? null);
+      requestRender();
+    });
+
+    createEffect(() => {
+      void props.meshes;
+      selection.setSelected(props.selectedEntity ?? null);
+      requestRender();
+    });
+
+    // Resize handling via ResizeObserver
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width: w, height: h } = entry.contentRect;
+        if (w > 0 && h > 0) {
+          resize(w, h);
+          selection.invalidateRect();
+          requestRender();
+        }
+      }
+    });
+    resizeObserver.observe(containerRef);
 
     // Animation loop with disposed guard to prevent race condition
     let disposed = false;
