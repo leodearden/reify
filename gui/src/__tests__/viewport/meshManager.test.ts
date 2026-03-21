@@ -402,6 +402,54 @@ describe('meshManager', () => {
     expect((mesh.geometry as any).computeBoundsTree).toHaveBeenCalledTimes(1);
   });
 
+  describe('R-02: updateMeshGeometry removes mesh when computeBoundsTree throws on update', () => {
+    it('removes mesh from scene and meshMap if computeBoundsTree throws on update', () => {
+      const { manager } = setup();
+      manager.sync({ A: makeMeshData('A') });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      expect(manager.getSceneMeshes().has('A')).toBe(true);
+
+      // Configure next computeBoundsTree call (the update) to throw
+      mockComputeBoundsTree.mockImplementationOnce(() => {
+        throw new Error('BVH rebuild failed');
+      });
+
+      // Update with new vertices — computeBoundsTree will throw
+      const newVerts = new Float32Array([9, 8, 7, 6, 5, 4]);
+      manager.sync({ A: makeMeshData('A', newVerts) });
+
+      // Mesh should be fully removed
+      expect(manager.getSceneMeshes().has('A')).toBe(false);
+      expect(mockSceneRemove).toHaveBeenCalledWith(mesh);
+      expect(mesh.geometry.dispose).toHaveBeenCalled();
+      expect((mesh.material as MeshStandardMaterial).dispose).toHaveBeenCalled();
+    });
+
+    it('logs error when computeBoundsTree throws on update', () => {
+      const { manager } = setup();
+      manager.sync({ A: makeMeshData('A') });
+
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      mockComputeBoundsTree.mockImplementationOnce(() => {
+        throw new Error('BVH rebuild failed');
+      });
+
+      try {
+        const newVerts = new Float32Array([9, 8, 7, 6, 5, 4]);
+        manager.sync({ A: makeMeshData('A', newVerts) });
+
+        expect(consoleSpy).toHaveBeenCalledWith(
+          expect.stringContaining('A'),
+          expect.any(Error),
+        );
+      } finally {
+        consoleSpy.mockRestore();
+      }
+    });
+  });
+
   it('removeMesh calls geometry.disposeBoundsTree() before disposing geometry', () => {
     const { manager } = setup();
     manager.sync({ A: makeMeshData('A') });
