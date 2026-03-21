@@ -213,7 +213,7 @@ impl OcctKernel {
                     )));
                 }
                 let mag_sq = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
-                if mag_sq == 0.0 {
+                if mag_sq < f64::EPSILON * f64::EPSILON {
                     return Err(GeometryError::OperationFailed(
                         "rotation axis must not be zero-length".into(),
                     ));
