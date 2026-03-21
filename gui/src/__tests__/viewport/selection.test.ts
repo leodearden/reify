@@ -5,7 +5,7 @@ const mockSceneAdd = vi.fn();
 const mockSceneRemove = vi.fn();
 
 const mockRaycasterSetFromCamera = vi.fn();
-const mockRaycasterIntersectObjects = vi.fn(() => []);
+const mockRaycasterIntersectObjects = vi.fn((..._args: any[]): any[] => []);
 
 vi.mock('three', () => {
   class MockRaycaster {
