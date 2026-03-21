@@ -8,7 +8,7 @@ export interface ToolbarProps {
 
 export const Toolbar: Component<ToolbarProps> = (props) => {
   return (
-    <div data-testid="toolbar" class={styles.container}>
+    <div data-testid="toolbar" class={styles.container} role="toolbar">
       <button class={styles.button} onClick={() => props.onExport()}>
         Export
       </button>
