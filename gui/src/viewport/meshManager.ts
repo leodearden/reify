@@ -52,6 +52,8 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     geometry.setIndex(new BufferAttribute(data.indices, 1));
     if (data.normals) {
       geometry.setAttribute('normal', new BufferAttribute(data.normals, 3));
+    } else {
+      geometry.computeVertexNormals();
     }
 
     const material = new MeshStandardMaterial({
@@ -96,6 +98,9 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
       }
     } else if (geometry.getAttribute('normal')) {
       geometry.deleteAttribute('normal');
+      geometry.computeVertexNormals();
+    } else {
+      geometry.computeVertexNormals();
     }
 
     // Invalidate cached bounding volumes so updated geometry is not incorrectly culled.
