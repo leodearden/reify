@@ -88,6 +88,16 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "cosh" => unary_f64(args, |x| Value::Real(x.cosh())),
         "tanh" => unary_f64(args, |x| Value::Real(x.tanh())),
 
+        // --- Determinacy predicates (stubs) ---
+        // These predicates inspect DeterminacyState which is tracked in the Engine's
+        // snapshot, not in Value itself. Like sample(), the actual behavior is
+        // intercepted at the eval layer (reify-expr/reify-eval) where snapshot state
+        // is available. These stubs serve as documentation and fallback.
+        "determined" => Value::Undef,
+        "undetermined" => Value::Undef,
+        "constrained" => Value::Undef,
+        "partially_determined" => Value::Undef,
+
         // --- Field operations (stubs) ---
         // These are handled by reify-expr's eval_expr FunctionCall interceptor
         // for actual lambda application; the stdlib entries serve as documentation
