@@ -380,6 +380,53 @@ describe('Viewport', () => {
     expect(mockGrid.visible).toBe(true);
     expect(mockAxes.visible).toBe(true);
   });
+
+  it('tooltip style top/left update on mousemove within container', () => {
+    render(() => <Viewport meshes={{}} hoveredEntity="bracket/plate" />);
+    const container = screen.getByTestId('viewport-container');
+    const tooltip = screen.getByTestId('viewport-tooltip');
+
+    // Simulate container with known position
+    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({
+      top: 100, left: 200, width: 800, height: 600,
+      right: 1000, bottom: 700, x: 200, y: 100, toJSON: () => {},
+    });
+
+    // Simulate mouse move to (350, 250) in screen coordinates
+    // Container is at (200, 100), so relative position is (150, 150)
+    fireEvent.mouseMove(container, { clientX: 350, clientY: 250 });
+
+    // Tooltip should be positioned near the pointer (with offset)
+    const top = parseInt(tooltip.style.top, 10);
+    const left = parseInt(tooltip.style.left, 10);
+
+    // Should be near pointer position, not at fixed 8px/8px
+    expect(top).toBeGreaterThan(100);
+    expect(left).toBeGreaterThan(100);
+  });
+
+  it('tooltip is not positioned at fixed 8px/8px after a mousemove event', () => {
+    render(() => <Viewport meshes={{}} hoveredEntity="bracket/plate" />);
+    const container = screen.getByTestId('viewport-container');
+    const tooltip = screen.getByTestId('viewport-tooltip');
+
+    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({
+      top: 0, left: 0, width: 800, height: 600,
+      right: 800, bottom: 600, x: 0, y: 0, toJSON: () => {},
+    });
+
+    fireEvent.mouseMove(container, { clientX: 400, clientY: 300 });
+
+    // After a mouse move, tooltip should NOT be at the initial fixed position
+    expect(tooltip.style.top).not.toBe('8px');
+    expect(tooltip.style.left).not.toBe('8px');
+  });
+
+  it('tooltip still shows the hoveredEntity text content', () => {
+    render(() => <Viewport meshes={{}} hoveredEntity="bracket/plate" />);
+    const tooltip = screen.getByTestId('viewport-tooltip');
+    expect(tooltip.textContent).toContain('bracket/plate');
+  });
 });
 
 describe('Viewport accessibility', () => {
