@@ -26,7 +26,7 @@ export interface SelectionContext {
 const HIGHLIGHT_COLOR = THEME_TOKENS.accent;
 
 export function createSelection(options: SelectionOptions): SelectionContext {
-  const { camera, domElement, getMeshes, onHover } = options;
+  const { camera, domElement, getMeshes, onHover, onSelect } = options;
   const raycaster = new Raycaster();
   const ndc = new Vector2();
   let previousHoveredPath: string | null = null;
@@ -53,7 +53,13 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     onHover(entityPath);
   }
 
+  function handlePointerDown(event: Event): void {
+    const entityPath = raycast(event as MouseEvent);
+    onSelect(entityPath);
+  }
+
   domElement.addEventListener('pointermove', handlePointerMove);
+  domElement.addEventListener('pointerdown', handlePointerDown);
 
   function setHovered(path: string | null): void {
     const meshes = getMeshes();
