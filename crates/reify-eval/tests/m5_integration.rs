@@ -700,7 +700,9 @@ structure def Widget : Sizable {
     }
 }
 
-// ── New tests: trait_rigid_mass_conformance ──────────────────────────
+// ── New tests ───────────────────────────────────────────────────────
+
+// ── trait_rigid_mass_conformance ─────────────────────────────────────
 
 /// Parse m5_trait_rigid.ri (trait Rigid with Mass/kg + structure Bracket : Rigid),
 /// compile, eval, verify mass=0.5kg=0.5 SI, width=80mm=0.08 SI, constraints satisfied.
@@ -776,4 +778,85 @@ fn trait_rigid_mass_conformance() {
             entry.id
         );
     }
+}
+
+// ── multi_module_import_with_sub ─────────────────────────────────────
+
+/// Create temp dir with two .ri files: lib.ri defining Circle with radius param,
+/// main.ri importing lib and using `sub circle = Circle()` inside Assembly.
+/// This extends the existing multi_module_import test by using the imported
+/// structure as a sub-component, exercising cross-module resolution.
+#[test]
+fn multi_module_import_with_sub() {
+    let dir = std::env::temp_dir()
+        .join("reify_m5_test")
+        .join(format!("multi_sub_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+
+    // Create stdlib dir (required by ModuleResolver)
+    let stdlib = dir.join("stdlib");
+    fs::create_dir_all(&stdlib).unwrap();
+
+    // lib.ri — defines Circle structure
+    fs::write(
+        dir.join("lib.ri"),
+        r#"
+structure def Circle {
+    param radius : Length = 10mm
+    let diameter = radius * 2
+}
+"#,
+    )
+    .unwrap();
+
+    // main.ri — imports lib and uses Circle as sub-component
+    fs::write(
+        dir.join("main.ri"),
+        r#"
+import lib
+
+structure def Assembly {
+    param size : Length = 50mm
+    sub circle = Circle()
+    constraint size > 0mm
+}
+"#,
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, &stdlib);
+    let result = compile_project(&dir.join("main.ri"), &resolver);
+
+    match result {
+        Ok(modules) => {
+            // Should have at least 2 modules (lib + main)
+            assert!(
+                modules.len() >= 2,
+                "expected at least 2 compiled modules, got {}",
+                modules.len()
+            );
+
+            // Find Assembly template and verify it has sub_components
+            let assembly_mod = modules
+                .iter()
+                .find(|m| m.templates.iter().any(|t| t.name == "Assembly"))
+                .expect("should have a module with Assembly template");
+            let assembly = assembly_mod
+                .templates
+                .iter()
+                .find(|t| t.name == "Assembly")
+                .unwrap();
+            assert!(
+                !assembly.sub_components.is_empty(),
+                "Assembly should have sub-components from 'sub circle = Circle()'"
+            );
+        }
+        Err(errors) => {
+            panic!("compile_project failed: {:?}", errors);
+        }
+    }
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&dir);
 }
