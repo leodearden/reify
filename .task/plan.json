@@ -1,159 +1,137 @@
 {
-  "task_id": "101",
-  "title": "Fix critical IPC type mismatches between Rust backend and TS frontend",
+  "task_id": "113",
+  "title": "Theme and CSS: define missing variables, fix surface/color tokens, add spacing system",
   "files": [
-    "gui/src-tauri/src/types.rs",
-    "gui/src-tauri/src/tests/types_tests.rs",
-    "gui/src-tauri/src/tests/diff_tests.rs",
-    "gui/src/types.ts",
-    "gui/src/bridge.ts",
-    "gui/src/editor/Editor.tsx",
-    "gui/src/panels/ConstraintPanel.tsx",
-    "gui/src/__tests__/bridge.test.ts",
-    "gui/src/__tests__/Editor.test.tsx",
-    "gui/src/__tests__/PropertyEditor.test.tsx",
-    "gui/src/__tests__/ConstraintPanel.test.tsx",
-    "gui/src/__tests__/engineStore.test.ts",
-    "gui/src/__tests__/StatusBar.test.tsx",
-    "gui/src/__tests__/navigation.test.ts",
-    "gui/src/__tests__/types.typecheck.ts"
+    "gui/src/theme.ts",
+    "gui/src/index.tsx",
+    "gui/src/App.tsx",
+    "gui/src/__tests__/theme.test.ts"
   ],
   "modules": [
-    "gui/src-tauri/src",
-    "gui/src",
-    "gui/src/editor",
-    "gui/src/panels",
-    "gui/src/__tests__",
-    "gui/src-tauri/src/tests"
+    "gui/src"
   ],
-  "analysis": "Four critical IPC type/field mismatches between the Rust backend and TypeScript frontend:\n\n**Y4 (Determinacy case mismatch):** `format_determinacy()` in types.rs returns capitalized strings ('Determined', 'Undetermined', etc.) but PropertyEditor.tsx line 124 checks `val.determinacy === 'determined'` (lowercase). This makes ALL parameter editing non-functional because the `when` condition never matches, so every parameter renders as read-only. Fix: change Rust `format_determinacy()` to return lowercase, since all TS code and tests already use lowercase consistently.\n\n**I1 (save_file missing content param):** `bridge.ts saveFile(path)` only passes `{ path }` to `invoke('save_file', ...)` but the Rust `save_file(path: String, content: String)` command requires both path AND content. Ctrl+S always fails with a parameter error. Fix: add `content` parameter to `saveFile()` in bridge.ts, and update Editor.tsx to get the file content from the editor store and pass it.\n\n**S1 (ConstraintData field mismatch):** Rust struct has `label: Option<String>` but TypeScript interface has `details: string | null`. The backend sends `label` in JSON but the frontend reads `details`, which is always undefined. Fix: rename `details` to `label` in the TS ConstraintData interface and update all usages in ConstraintPanel.tsx and test files.\n\n**S2 (ValueData missing kind field):** Rust struct has `kind: String` (e.g., 'Param', 'Let', 'Auto') but the TypeScript ValueData interface lacks this field. The backend sends it but the frontend ignores it, preventing future use for display differentiation. Fix: add `kind: string` to the TS ValueData interface.",
+  "analysis": "Analysis of the codebase reveals 7 CSS custom properties referenced in component CSS modules but never defined by applyTheme() in theme.ts: --reify-surface0 (FileBrowser, ExportDialog, Toast), --reify-surface1 (FileBrowser, ExportDialog, ReloadPrompt), --reify-surface2 (ExportDialog, ReloadPrompt), --reify-subtext (FileBrowser, ExportDialog, Toast), --reify-overlay0 (ReloadPrompt), --reify-green (Toast), --reify-red (Toast). These CSS files use fallback values (e.g., var(--reify-surface0, #313244)) so the UI renders correctly in dark mode, but theme switching won't affect these properties since they're never set as CSS custom properties by applyTheme().\n\nThe task description mentions --reify-font-mono as missing, but it IS defined via the 'fontMono' key in THEME_TOKENS and correctly converted by camelToKebab() to --reify-font-mono.\n\nAdditionally, applyTheme() is called inside onMount() in App.tsx (line 115), which runs after the initial render. This causes a potential flash of unstyled content (FOUC) since CSS variables aren't set until the component mounts. The fix is to call applyTheme() synchronously in index.tsx before render().\n\nFor T4 (spacing system), no spacing tokens exist \u2014 CSS files use hardcoded pixel values (4px, 6px, 8px, 12px, 16px, 20px). We'll define spacing scale tokens in THEME_TOKENS but defer CSS file migration to a future task.\n\nLight mode (T2) is explicitly deferred per the task description.\n\nExisting test file (gui/src/__tests__/theme.test.ts) has 4 tests: required keys check, Catppuccin Mocha values check, hex validation for color tokens, and applyTheme callable check. These will be extended.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing Rust test in types_tests.rs: assert format_determinacy returns lowercase ('determined', 'undetermined', 'provisional', 'auto'). Test will fail because current implementation returns capitalized strings.",
+      "description": "Write failing tests in theme.test.ts asserting THEME_TOKENS contains the 7 missing keys: surface0, surface1, surface2, subtext, overlay0, green, red. Add to the existing 'has all required color keys' test array AND add a new test 'has correct Catppuccin Mocha values for surface/accent tokens' asserting surface0='#313244', surface1='#45475a', surface2='#585b70', subtext='#a6adc8', overlay0='#6c7086', green='#a6e3a1', red='#f38ba8'.",
       "status": "done",
-      "commit": "c558f2c"
+      "commit": "3f4d2b0"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix format_determinacy() in gui/src-tauri/src/types.rs to return lowercase strings. Update existing Rust tests in types_tests.rs (value_data_serializes expects 'Determined' \u2192 'determined') and diff_tests.rs (sample_value determinacy string).",
+      "description": "Add the 7 missing token entries to THEME_TOKENS in theme.ts: surface0: '#313244', surface1: '#45475a', surface2: '#585b70', subtext: '#a6adc8', overlay0: '#6c7086', green: '#a6e3a1', red: '#f38ba8'. The camelToKebab function handles these correctly (surface0 stays surface0, no uppercase letters to convert).",
       "status": "done",
-      "commit": "527093d"
+      "commit": "46f54d9"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing TS test in bridge.test.ts: assert saveFile() calls invoke('save_file', { path, content }) with both path AND content params. Current implementation only sends { path }, so test will fail.",
+      "description": "Write a test 'applyTheme sets all tokens as CSS custom properties' that calls applyTheme() and verifies every THEME_TOKENS entry is set on document.documentElement.style. For each key, compute the expected CSS variable name using the same camelToKebab logic, then assert document.documentElement.style.getPropertyValue(`--reify-${kebab}`) equals the token value. This catches any token silently dropped or misnamed.",
       "status": "done",
-      "commit": "23b3e96"
+      "commit": "2d945c0"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix saveFile() in bridge.ts to accept content parameter: `saveFile(path: string, content: string)` and pass `{ path, content }` to invoke.",
+      "description": "No code change needed \u2014 step-2's token additions make step-3 pass. Verify all tests pass.",
       "status": "done",
-      "commit": "aa3ba0a"
+      "commit": "2d945c0"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Update Editor.test.tsx save test: expect saveFile to be called with both path AND content (retrieved from store's openFiles). Test will fail because Editor.tsx currently only passes path.",
+      "description": "Write a completeness guard test 'every CSS variable reference has a THEME_TOKENS entry'. Hardcode a list of all unique --reify-* variable names found in the CSS files (approximately 20 names: background, surface, surface-hover, text, text-secondary, text-muted, accent, accent-hover, border, error, warning, success, editor-bg, viewport-bg, panel-bg, font-mono, surface0, surface1, surface2, subtext, overlay0, green, red). For each, convert kebab to camelCase and assert it exists in THEME_TOKENS.",
       "status": "done",
-      "commit": "64c03bb"
+      "commit": "b2f5692"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Fix Editor.tsx save handler: look up the current file content from the editor store's openFiles array (or from the CodeMirror view.state.doc) and pass it as the second argument to saveFile(path, content).",
+      "description": "Verify step-5 passes. If any CSS variable is still missing from THEME_TOKENS, add it. This step confirms full coverage.",
       "status": "done",
-      "commit": "7eb0126"
+      "commit": "b2f5692"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Update types.typecheck.ts: (1) Add kind field to the ValueData example objects, (2) Change ConstraintData 'details' field to 'label'. File will fail tsc type-check because types.ts hasn't been updated yet.",
+      "description": "Write failing test for spacing token keys: spaceXs='2px', spaceSm='4px', spaceMd='8px', spaceLg='12px', spaceXl='16px', space2xl='20px', space3xl='24px', and radius tokens: radiusSm='2px', radiusMd='4px', radiusLg='8px'. Assert these keys exist in THEME_TOKENS with the correct values. Also update the existing 'all color tokens are valid hex' test to skip non-color tokens by checking key prefixes (fontMono, space*, radius*).",
       "status": "done",
-      "commit": "9e38040"
+      "commit": "cd09f91"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Fix types.ts: (1) Add `kind: string` to ValueData interface, (2) Rename `details: string | null` to `label: string | null` in ConstraintData interface. This makes types.typecheck.ts pass.",
+      "description": "Add spacing and radius tokens to THEME_TOKENS in theme.ts: spaceXs:'2px', spaceSm:'4px', spaceMd:'8px', spaceLg:'12px', spaceXl:'16px', space2xl:'20px', space3xl:'24px', radiusSm:'2px', radiusMd:'4px', radiusLg:'8px'. Update the hex validation test's skip list to include these non-color keys.",
       "status": "done",
-      "commit": "127635a"
+      "commit": "67b9073"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Verify ConstraintPanel.test.tsx and ConstraintPanel.tsx tests fail due to 'details' \u2192 'label' rename. Update all makeConstraint() helpers and inline ConstraintData constructions in test files to use 'label' instead of 'details': ConstraintPanel.test.tsx, engineStore.test.ts, StatusBar.test.tsx, navigation.test.ts.",
+      "description": "Write a test verifying applyTheme is called before render, not inside a component. Since we can't easily test index.tsx execution order in a unit test, write a structural test: import App.tsx source as a string (or just check that theme.ts exports are used correctly). More practically, test that after calling applyTheme() directly, CSS variables are immediately available \u2014 confirming it works synchronously without needing a component mount cycle.",
       "status": "done",
-      "commit": "f3e890f"
+      "commit": "4429eef"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Fix ConstraintPanel.tsx: change `constraint.details` references (lines 95-96) to `constraint.label`. All ConstraintPanel tests should now pass with the label field.",
+      "description": "Move applyTheme() from App.tsx to index.tsx: (1) In index.tsx, add `import { applyTheme } from './theme';` and call `applyTheme();` before the `render()` call. (2) In App.tsx, remove the `import { applyTheme } from './theme';` import and remove the `applyTheme();` call from onMount (line 115). Keep the rest of onMount intact (getInitialState, subscribeToEvents, etc.).",
       "status": "done",
-      "commit": "38beb9f"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Update PropertyEditor.test.tsx makeValue() helper to include `kind: string` field. Update engineStore.test.ts sampleValue and inline ValueData constructions to include `kind`. Update navigation.test.ts ValueData literals to include `kind`.",
-      "status": "done",
-      "commit": "126ebfd"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Run all tests (both Rust cargo test for gui crate and TS vitest) to verify all 4 fixes pass. Fix any remaining test compilation errors from the type changes.",
-      "status": "done",
-      "commit": "PLACEHOLDER_12"
+      "commit": "47785c9"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Change Rust format_determinacy() to lowercase rather than changing TypeScript to uppercase",
-      "rationale": "All existing TypeScript code and tests consistently use lowercase ('determined', 'auto', etc.). Lowercase is more conventional for JSON/IPC string enums. Changing Rust is a single function change plus test updates, while changing TS would require updating PropertyEditor.tsx, its tests, and all other test fixtures that construct ValueData."
+      "decision": "Add missing tokens as new THEME_TOKENS entries rather than renaming existing tokens",
+      "rationale": "The CSS uses both naming conventions: --reify-surface is a general panel background (#2a2a3a), while --reify-surface0/1/2 are Catppuccin's layered surface scale (#313244/#45475a/#585b70). These are semantically different and both must coexist."
     },
     {
-      "decision": "Rename TS ConstraintData 'details' to 'label' (align TS to Rust) rather than renaming Rust 'label' to 'details'",
-      "rationale": "The Rust backend defines the serialized JSON shape. The TypeScript interface must match the wire format exactly. The backend field is 'label' so the frontend must use 'label'. The ConstraintPanel component already renders this field as optional extra text, so the semantic difference is negligible."
+      "decision": "Keep 'green' and 'red' as separate tokens rather than aliasing to 'success' and 'error'",
+      "rationale": "The CSS uses --reify-success (#a6e3a1) and --reify-error (#f38ba8) for semantic status colors, AND --reify-green and --reify-red for visual accent colors (e.g., Toast border). Although they currently share values, they serve different semantic purposes \u2014 green/red are raw palette colors while success/error are semantic roles. Keeping both allows future themes to decouple them."
     },
     {
-      "decision": "Get file content from editor store openFiles for save, not from CodeMirror view state",
-      "rationale": "The editor store's openFiles already tracks the latest content via updateFileContent callbacks from the CodeMirror update listener. Using the store is cleaner than passing a view ref into the save handler, and it works even if the editor view isn't mounted yet."
+      "decision": "Define spacing tokens but don't migrate CSS files to use them",
+      "rationale": "Migrating all hardcoded pixel values across 12+ CSS modules is a large mechanical change that adds risk and noise to this PR. Defining the tokens enables incremental adoption. CSS files can be migrated in a follow-up task."
     },
     {
-      "decision": "Do NOT fix constraint status case mismatch (Satisfied/Violated vs satisfied/violated) in this task",
-      "rationale": "The task scope lists exactly 4 mismatches (Y4, I1, S1, S2). The constraint status casing is a separate issue \u2014 it exists but is not listed. Fixing it here would expand scope. Noted for a follow-up task."
+      "decision": "Call applyTheme() synchronously in index.tsx before render() rather than in a <script> tag or CSS :root block",
+      "rationale": "Synchronous call before render() is the simplest fix that prevents FOUC. CSS :root definitions would duplicate the values. A <script> tag in index.html would require build tooling changes. The index.tsx approach keeps all theme logic in TypeScript and is consistent with SolidJS patterns."
+    },
+    {
+      "decision": "Use a hardcoded list of CSS variable references in the completeness test",
+      "rationale": "Parsing CSS files at test time creates fragile dependencies on file system layout and test runner working directory. A hardcoded list is explicit, maintainable, and catches regressions \u2014 when someone adds a new --reify-* CSS variable reference, they must also update the test list."
+    },
+    {
+      "decision": "Skip non-color tokens (fontMono, spacing, radius) in the hex-validation test using key prefix matching",
+      "rationale": "The existing test validates all color tokens are valid hex. Spacing tokens like '4px' and font stacks are not hex colors. Rather than maintaining a brittle exclusion list, use prefix-based detection: keys starting with 'font', 'space', or 'radius' are non-color."
     }
   ],
   "reuse": [
     {
-      "what": "Existing bridge.test.ts mock pattern (vi.mock, mockInvoke)",
-      "where": "gui/src/__tests__/bridge.test.ts",
-      "how": "Follow the same pattern for the new saveFile test: mock invoke, call saveFile with path+content, assert invoke was called with correct args"
+      "what": "Existing camelToKebab() function in theme.ts",
+      "where": "gui/src/theme.ts line 20-22",
+      "how": "Already converts camelCase THEME_TOKENS keys to kebab-case CSS variable names. New tokens like 'surface0' stay as 'surface0' (no uppercase), 'spaceXs' becomes 'space-xs'. Works correctly for all new token names without modification."
     },
     {
-      "what": "Existing makeValue/makeConstraint test helpers",
-      "where": "gui/src/__tests__/PropertyEditor.test.tsx, ConstraintPanel.test.tsx",
-      "how": "Add the new 'kind' field to makeValue defaults and 'label' replacing 'details' in makeConstraint defaults"
+      "what": "Existing applyTheme() function in theme.ts",
+      "where": "gui/src/theme.ts line 24-29",
+      "how": "Iterates all THEME_TOKENS entries and sets CSS custom properties. No changes needed to the function itself \u2014 adding new entries to THEME_TOKENS automatically includes them in the applied theme."
     },
     {
-      "what": "EditorStore.state.openFiles for content retrieval",
-      "where": "gui/src/stores/editorStore.ts",
-      "how": "In the save handler, look up `store.state.openFiles.find(f => f.path === path)?.content` to get the current file content for saveFile()"
+      "what": "Existing theme.test.ts test structure and patterns",
+      "where": "gui/src/__tests__/theme.test.ts",
+      "how": "Extend the existing 'has all required color keys' test to include the 7 new keys. Follow the same test patterns (describe blocks, expect().toBe() for values, regex for hex validation) for consistency."
     },
     {
-      "what": "Existing test setup in Editor.test.tsx (setupStore, getEditorView, etc.)",
-      "where": "gui/src/__tests__/Editor.test.tsx",
-      "how": "Reuse the same setup for save tests, just change the expected saveFile call to include content"
+      "what": "CSS fallback values already present in all module CSS files",
+      "where": "All *.module.css files under gui/src/",
+      "how": "Every CSS variable reference already has a correct fallback value (e.g., var(--reify-surface0, #313244)). No CSS file changes are needed for this task \u2014 the tokens just need to be defined in THEME_TOKENS so theme switching works correctly."
     }
   ],
-  "_session_id": "101-3a437550",
-  "_created_at": "2026-03-21T16:35:37.033664+00:00"
+  "_session_id": "113-24eb0c4f",
+  "_created_at": "2026-03-21T17:11:52.167192+00:00"
 }
