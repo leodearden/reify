@@ -18,6 +18,7 @@ export interface SelectionOptions {
   getMeshes: () => Map<string, Mesh>;
   onHover: (path: string | null) => void;
   onSelect: (path: string | null) => void;
+  controls?: { target: { copy: (v: any) => void } };
 }
 
 export interface SelectionContext {
@@ -37,7 +38,7 @@ export interface SelectionContext {
 const HIGHLIGHT_COLOR = THEME_TOKENS.accent;
 
 export function createSelection(options: SelectionOptions): SelectionContext {
-  const { scene, camera, domElement, getMeshes, onHover, onSelect } = options;
+  const { scene, camera, domElement, getMeshes, onHover, onSelect, controls } = options;
   const raycaster = new Raycaster();
   const ndc = new Vector2();
   let previousHoveredPath: string | null = null;
@@ -190,10 +191,15 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     const fovRad = (camera.fov / 2) * (Math.PI / 180);
     const distance = maxDim / (2 * Math.tan(fovRad));
 
-    camera.position.copy(center);
-    camera.position.z += distance;
+    const viewDir = new Vector3();
+    camera.getWorldDirection(viewDir);
+    // Position camera at center - viewDir * distance (backing away from center along view direction)
+    camera.position.copy(center).sub(viewDir.multiplyScalar(distance));
     camera.lookAt(center);
     camera.updateProjectionMatrix();
+    if (controls) {
+      controls.target.copy(center);
+    }
   }
 
   function flyToEntity(entityPath: string): void {
