@@ -377,6 +377,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sink_receives_clear_on_did_close() {
+        let sink = Arc::new(RecordingSink::default());
+        let (service, _socket) = LspService::new(|client| {
+            ReifyLanguageServer::with_sink(client, sink.clone())
+        });
+        let server = service.inner();
+        let uri = test_uri();
+
+        // Open a document
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: "structure Foo {}".to_string(),
+                },
+            })
+            .await;
+
+        // Close it
+        server
+            .did_close(DidCloseTextDocumentParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+            })
+            .await;
+
+        let calls = sink.take_calls();
+        assert_eq!(calls.len(), 2, "sink should receive 2 calls (did_open + did_close)");
+
+        // Last call should be the clear (empty diagnostics, no version)
+        let (ref close_uri, ref close_diags, close_version) = calls[1];
+        assert_eq!(close_uri, &uri, "close should clear the same URI");
+        assert!(close_diags.is_empty(), "close should send empty diagnostics");
+        assert_eq!(close_version, None, "close should send version=None");
+    }
+
+    #[tokio::test]
     async fn server_with_sink_initializes() {
         let (service, _socket) = LspService::new(|client| {
             ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink))
