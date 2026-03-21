@@ -42,3 +42,27 @@ fn compile_field_analytical() {
         other => panic!("expected Analytical source, got: {:?}", other),
     }
 }
+
+// ── Step 15: compile sampled field ──────────────────────────────────
+
+#[test]
+fn compile_field_sampled() {
+    let module = compile_module(
+        "field def pressure : Point3 -> Scalar { source = sampled { resolution = 100 interpolation = linear } }",
+    );
+    assert!(module.diagnostics.is_empty(), "diagnostics: {:?}", module.diagnostics);
+    assert_eq!(module.fields.len(), 1, "expected 1 compiled field");
+
+    let field = &module.fields[0];
+    assert_eq!(field.name, "pressure");
+
+    // Source should be sampled with config key-value pairs
+    match &field.source {
+        reify_compiler::CompiledFieldSource::Sampled { config } => {
+            assert_eq!(config.len(), 2, "expected 2 config entries");
+            assert_eq!(config[0].0, "resolution");
+            assert_eq!(config[1].0, "interpolation");
+        }
+        other => panic!("expected Sampled source, got: {:?}", other),
+    }
+}
