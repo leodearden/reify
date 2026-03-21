@@ -234,3 +234,49 @@ purpose manufacturing_ready(subject : Structure) {
         "re-activation should inject constraints again"
     );
 }
+
+// ── Step 21: eval() should clear stale purpose state ───────────────
+
+#[test]
+fn eval_clears_stale_purpose_state() {
+    // Calling eval() a second time builds a fresh snapshot. Active purpose
+    // state must be cleared so that is_purpose_active() doesn't return
+    // stale results and activate/deactivate work correctly.
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+    param height : Length = 60mm
+    constraint width > 0mm
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint 1 > 0
+}
+"#;
+
+    let compiled = parse_and_compile(source);
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+    // First eval and activate
+    let _result = engine.eval(&compiled);
+    engine.activate_purpose("mfg_ready", "Bracket");
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "purpose should be active after activation"
+    );
+
+    // Second eval — fresh snapshot; purpose state should be cleared
+    let _result = engine.eval(&compiled);
+    assert!(
+        !engine.is_purpose_active("mfg_ready"),
+        "purpose should NOT be active after a fresh eval() call"
+    );
+
+    // Re-activation should work (not blocked by stale 'already active' guard)
+    engine.activate_purpose("mfg_ready", "Bracket");
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "purpose should be re-activatable after fresh eval()"
+    );
+}
