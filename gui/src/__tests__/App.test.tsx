@@ -73,8 +73,17 @@ import * as bridge from '../bridge';
 beforeEach(() => {
   vi.clearAllMocks();
   capturedViewportProps = {};
-  // Reset getInitialState to default empty state
+  // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
+  vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
+  vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
+  vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(() => {});
+  vi.mocked(bridge.onEvaluationStatus).mockResolvedValue(() => {});
+  vi.mocked(bridge.onMeshRemoved).mockResolvedValue(() => {});
+  vi.mocked(bridge.onValueRemoved).mockResolvedValue(() => {});
+  vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(() => {});
+  vi.mocked(bridge.onFileChanged).mockResolvedValue(() => {});
+  vi.mocked(bridge.pickSavePath).mockResolvedValue('/user/chosen/path.step');
 });
 
 afterEach(() => {
