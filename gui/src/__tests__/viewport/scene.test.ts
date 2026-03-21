@@ -11,6 +11,22 @@ const mockSceneAdd = vi.fn();
 const mockSceneChildren: any[] = [];
 const mockCameraAdd = vi.fn();
 
+function makeMockPosition() {
+  const pos = {
+    x: 0, y: 0, z: 0,
+    set: vi.fn((x: number, y: number, z: number) => {
+      pos.x = x; pos.y = y; pos.z = z;
+    }),
+    distanceTo: vi.fn((target: any) => {
+      const dx = pos.x - target.x;
+      const dy = pos.y - target.y;
+      const dz = pos.z - target.z;
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }),
+  };
+  return pos;
+}
+
 vi.mock('three', () => {
   class MockScene {
     children = mockSceneChildren;
@@ -23,7 +39,7 @@ vi.mock('three', () => {
     aspect: number;
     near: number;
     far: number;
-    position = { set: vi.fn() };
+    position = makeMockPosition();
     updateProjectionMatrix = vi.fn();
     add = mockCameraAdd;
     constructor(fov: number, aspect: number, near: number, far: number) {
@@ -74,6 +90,18 @@ vi.mock('three', () => {
     constructor(public color?: any) {}
   }
 
+  class MockVector3 {
+    x: number;
+    y: number;
+    z: number;
+    constructor(x = 0, y = 0, z = 0) {
+      this.x = x; this.y = y; this.z = z;
+    }
+    length() {
+      return Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z);
+    }
+  }
+
   return {
     Scene: MockScene,
     PerspectiveCamera: MockPerspectiveCamera,
@@ -83,6 +111,7 @@ vi.mock('three', () => {
     GridHelper: MockGridHelper,
     AxesHelper: MockAxesHelper,
     Color: MockColor,
+    Vector3: MockVector3,
   };
 });
 

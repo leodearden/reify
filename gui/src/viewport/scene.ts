@@ -7,7 +7,9 @@ import {
   GridHelper,
   AxesHelper,
   Color,
+  Vector3,
 } from 'three';
+import type { Box3 } from 'three';
 import { THEME_TOKENS } from '../theme';
 
 export interface SceneContext {
@@ -15,6 +17,7 @@ export interface SceneContext {
   camera: PerspectiveCamera;
   renderer: WebGLRenderer;
   resize: (width: number, height: number) => void;
+  adjustClipping: (sceneBounds: Box3) => void;
 }
 
 /**
@@ -68,5 +71,22 @@ export function createScene(
     renderer.setSize(w, h);
   }
 
-  return { scene, camera, renderer, resize };
+  function adjustClipping(sceneBounds: Box3): void {
+    if (sceneBounds.isEmpty()) return;
+
+    const center = new Vector3();
+    const size = new Vector3();
+    sceneBounds.getCenter(center);
+    sceneBounds.getSize(size);
+
+    const dist = camera.position.distanceTo(center);
+    const sceneRadius = size.length() / 2;
+    const extent = dist + sceneRadius;
+
+    camera.near = Math.max(extent * 0.001, 0.01);
+    camera.far = Math.max(extent * 10, 100);
+    camera.updateProjectionMatrix();
+  }
+
+  return { scene, camera, renderer, resize, adjustClipping };
 }
