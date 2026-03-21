@@ -1,0 +1,234 @@
+{
+  "task_id": "78",
+  "title": "Purpose declarations",
+  "files": [
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "tree-sitter-reify/src/grammar.json",
+    "tree-sitter-reify/src/node-types.json",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/purpose_tests.rs",
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/purpose_compile_tests.rs",
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/tests/purpose_eval.rs",
+    "crates/reify-stdlib/src/lib.rs",
+    "examples/m5_purpose.ri"
+  ],
+  "modules": [
+    "tree-sitter-reify",
+    "crates/reify-syntax",
+    "crates/reify-compiler",
+    "crates/reify-eval",
+    "crates/reify-stdlib"
+  ],
+  "analysis": "Purpose declarations are a new top-level construct for Reify, similar in structure to traits/structures but with distinct semantics: they bind entity references (not values) via parameters, support reflective schema queries on those entities, and can be activated/deactivated to inject/remove constraints and objectives from the evaluation graph.\n\nThe implementation follows the established pattern for adding new language constructs (as seen in traits, fields, ports, connect/chain):\n\n1. **Grammar**: Add `purpose_declaration` to `_declaration` in grammar.js, with `purpose_param` and `purpose_member` rules. The `purpose_member` reuses existing `constraint_declaration`, `let_declaration`, `minimize_declaration`, `maximize_declaration`, and `guarded_block` rules. After grammar change, regenerate parser.c via `tree-sitter generate`.\n\n2. **Parser (reify-syntax)**: Add `Declaration::Purpose(PurposeDef)` to the enum, define `PurposeDef` and `PurposeParam` AST types. Add lowering in `ts_parser.rs` following the trait/structure patterns (lower_purpose, lower_purpose_params, lower_purpose_members).\n\n3. **Compiler (reify-compiler)**: Add `CompiledPurpose` type containing compiled constraints, objectives, and reflective schema query results. Compile purposes in the `compile()` function's pre-pass section. Reflective schema queries (subject.params, subject.geometric_params, etc.) are resolved at compile-time by looking up the bound entity's TopologyTemplate.\n\n4. **Stdlib (reify-stdlib)**: Add determinacy predicates: `determined()`, `constrained()`, `undetermined()`, `partially_determined()`. These inspect DeterminacyState of value cells.\n\n5. **Eval (reify-eval)**: Add purpose activation/deactivation API on Engine. When activated, inject the purpose's compiled constraints/objectives into the evaluation graph; when deactivated, remove them.\n\nKey design consideration: Purposes bind entity references (Structure names), not instances. The reflective queries resolve at compile-time against the TopologyTemplate of the bound structure. Activation at eval-time injects constraints into a specific entity instance.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Create example file examples/m5_purpose.ri with purpose declaration syntax for integration tests",
+      "status": "done",
+      "commit": "6e29cfea",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing grammar test: parse a simple purpose declaration (purpose mfg_ready(subject : Structure) { constraint subject.params == subject.params }) and verify the tree-sitter CST contains a purpose_declaration node. Add grammar rule for purpose_declaration, purpose_param, purpose_member to grammar.js.",
+      "status": "done",
+      "commit": "573110e"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Add purpose_declaration, purpose_param, purpose_member rules to tree-sitter-reify/grammar.js. Add purpose_declaration to _declaration choice. purpose_member reuses constraint_declaration, let_declaration, minimize_declaration, maximize_declaration, guarded_block. Run tree-sitter generate to regenerate parser.c. Add purpose_param to conflicts array.",
+      "status": "done",
+      "commit": "9bb688f"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing syntax test in crates/reify-syntax/tests/purpose_tests.rs: parse 'purpose manufacturing_ready(subject : Structure) { constraint forall p in subject.params: determined(p) }' and assert it produces a Declaration::Purpose(PurposeDef) with name='manufacturing_ready', 1 param (name='subject', entity_kind='Structure'), 1 member (Constraint).",
+      "status": "done",
+      "commit": "0fdd5e2"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Add PurposeDef and PurposeParam AST types to crates/reify-syntax/src/lib.rs. Add Declaration::Purpose variant. Implement lower_purpose, lower_purpose_params, lower_purpose_members in ts_parser.rs. Register 'purpose_declaration' in lower_source_file dispatch.",
+      "status": "done",
+      "commit": "9bb688f"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write additional syntax tests: purpose with pub visibility, purpose with type_parameters, purpose with multiple params, purpose with minimize/maximize members, purpose with where guard, purpose with let declarations.",
+      "status": "done",
+      "commit": "ee9c8ea"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Ensure all purpose_member variants parse correctly - fix any issues with pub keyword detection, type parameters lowering, and member variety.",
+      "status": "done",
+      "commit": "9bb688f"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing stdlib test: eval_builtin('determined', &[Value::Scalar{si_value:0.08, dimension:LENGTH}]) should return Value::Bool(true) (stub returns Undef currently). Test determined/undetermined/constrained/partially_determined with various DeterminacyState values.",
+      "status": "done",
+      "commit": "842daa9"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Add determinacy predicates to reify-stdlib/src/lib.rs: determined(), constrained(), undetermined(), partially_determined(). These currently return Undef as stubs since the stdlib eval_builtin only receives Value args, not DeterminacyState. Instead, add a new Value variant or use a convention (e.g., Value::DeterminacyTag) to carry determinacy info. The simpler approach: these predicates will be handled at the eval layer (like sample), not in stdlib - add stubs in stdlib that return Undef, and test that the stubs exist.",
+      "status": "done",
+      "commit": "5ce2e49"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing compiler test in crates/reify-compiler/tests/purpose_compile_tests.rs: compile a module with a purpose declaration and a structure, assert CompiledModule has a compiled_purposes vec with one CompiledPurpose containing the purpose name, param bindings, and compiled constraints.",
+      "status": "done",
+      "commit": "724b8d2"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Add CompiledPurpose type to reify-compiler/src/lib.rs with fields: name, is_pub, params (Vec<CompiledPurposeParam>), constraints (Vec<CompiledConstraint>), objective (Option<OptimizationObjective>), content_hash. Add compiled_purposes field to CompiledModule. Add compile_purpose function. In compile(), add pre-pass for purpose declarations (after template compilation so reflective queries can resolve).",
+      "status": "done",
+      "commit": "5ac1645"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing compiler test: compile purpose with reflective schema query 'subject.params' \u2014 verify the compiled purpose resolves the query to a list of ValueCellIds from the bound structure's template.",
+      "status": "done",
+      "commit": "45b7879"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Implement reflective schema query resolution in compile_purpose: when compiling expressions that reference purpose_param.member_access (e.g., subject.params, subject.geometric_params, subject.sub_entities, subject.ports, subject.constraints), resolve them at compile-time by looking up the bound entity's TopologyTemplate and extracting the relevant list of identifiers.",
+      "status": "done",
+      "commit": "c65ee66"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing eval test in crates/reify-eval/tests/purpose_eval.rs: test Engine::activate_purpose injects constraints into the evaluation graph, and deactivate_purpose removes them. Test with a simple structure + purpose.",
+      "status": "done",
+      "commit": "0cbfb4e"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Add activate_purpose(purpose_name, entity_ref) and deactivate_purpose(purpose_name) methods to Engine in reify-eval/src/lib.rs. Activation injects the compiled purpose's constraints and objectives into the current evaluation state. Deactivation removes them. Track active purposes in Engine state.",
+      "status": "done",
+      "commit": "a4e8d1a"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write eval test: activate purpose with minimize objective \u2192 verify optimization objective is active in the engine. Deactivate \u2192 verify it's removed.",
+      "status": "done",
+      "commit": "b3a20be"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Handle purpose objectives in activate/deactivate: when a purpose has a minimize/maximize member, inject/remove the OptimizationObjective from the engine's active objectives.",
+      "status": "done",
+      "commit": "aa4fb48"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write integration test: full pipeline parse\u2192compile\u2192eval with purpose declaration. Verify purpose compiles, activating it injects constraints that evaluate correctly against the bound entity's param values.",
+      "status": "done",
+      "commit": "3a10984"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Fix any integration issues discovered. Ensure the Declaration::Purpose variant is properly handled in all match statements in the compile function (similar to how Declaration::Trait/Field are handled). Verify no regressions in existing tests.",
+      "status": "pending",
+      "commit": null
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Purpose declarations are top-level declarations, not members",
+      "rationale": "Purposes are standalone entities that can be activated against any structure, similar to traits. They declare cross-cutting constraints/objectives that apply to entities. The grammar adds purpose_declaration to the _declaration choice, not to _member."
+    },
+    {
+      "decision": "Reflective schema queries resolve at compile-time, not eval-time",
+      "rationale": "Since purpose params bind to entity types (Structure names, not instances), the schema queries (subject.params, subject.ports, etc.) can be resolved at compile-time by looking up the bound entity's TopologyTemplate. This is more efficient and catches errors earlier."
+    },
+    {
+      "decision": "Determinacy predicates handled as eval-layer interceptors, not pure stdlib functions",
+      "rationale": "The stdlib eval_builtin receives Value arguments but determinacy predicates need DeterminacyState, which is tracked in the Engine's snapshot, not in the Value itself. Following the pattern of sample() (which is a stub in stdlib, handled in reify-expr), determinacy predicates will be intercepted at the eval layer where snapshot state is available. Stdlib stubs return Undef as fallback."
+    },
+    {
+      "decision": "Purpose activation/deactivation is an Engine API, not automatic",
+      "rationale": "Purposes are activated explicitly via Engine::activate_purpose(), keeping the evaluation deterministic and giving the user control over which purposes are active. This aligns with the headless-first design where the GUI will eventually provide purpose activation controls."
+    },
+    {
+      "decision": "purpose_member reuses existing member rules rather than defining new ones",
+      "rationale": "Purpose bodies contain the same kinds of declarations as structure bodies (constraints, lets, minimize, maximize, where guards). Reusing the existing grammar rules and AST types avoids duplication and ensures consistency."
+    },
+    {
+      "decision": "CompiledPurpose stored as separate field in CompiledModule, not as TopologyTemplate",
+      "rationale": "Purposes are fundamentally different from structures/occurrences - they don't have their own value cells or geometry. They contain constraints and objectives that are injected into other entities. A separate compiled_purposes vec in CompiledModule keeps the semantics clear."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "MemberDecl enum and member lowering",
+      "where": "crates/reify-syntax/src/ts_parser.rs (lower_member function)",
+      "how": "Purpose members use the same member types (Constraint, Let, Minimize, Maximize, GuardedGroup) as structures. The purpose_member grammar rule delegates to existing rules, and lower_purpose_members can call lower_member for each child."
+    },
+    {
+      "what": "CompilationScope and compile_expr",
+      "where": "crates/reify-compiler/src/lib.rs",
+      "how": "compile_purpose creates a CompilationScope for the purpose, registers purpose params as entity references, and uses compile_expr to compile constraint/objective expressions within the purpose body."
+    },
+    {
+      "what": "CompiledConstraint and OptimizationObjective types",
+      "where": "crates/reify-compiler/src/lib.rs",
+      "how": "Purposes reuse the same CompiledConstraint and OptimizationObjective types used by structures. This allows activate_purpose to inject them directly into the evaluation graph."
+    },
+    {
+      "what": "parse_decls test helper pattern",
+      "where": "crates/reify-syntax/tests/trait_tests.rs, port_tests.rs",
+      "how": "All syntax tests follow the same pattern: parse_decls(source) returning (Vec<Declaration>, Vec<ParseError>), then assert on the parsed structure."
+    },
+    {
+      "what": "compile_first_template and compile_module test helpers",
+      "where": "crates/reify-compiler/tests/port_compile_tests.rs",
+      "how": "Compiler tests use the same helper pattern: parse \u2192 assert no parse errors \u2192 compile \u2192 extract template and diagnostics."
+    },
+    {
+      "what": "Engine test setup with MockConstraintChecker",
+      "where": "crates/reify-eval/tests/m5_integration.rs",
+      "how": "Eval tests use MockConstraintChecker from reify-test-support and create Engine instances for testing. Purpose eval tests follow the same pattern."
+    },
+    {
+      "what": "Tree-sitter grammar patterns (commaSep, optional pub, type_parameters)",
+      "where": "tree-sitter-reify/grammar.js",
+      "how": "purpose_declaration follows the same grammar patterns as trait_declaration and structure_definition: optional pub keyword, optional type_parameters, identifier name, braced body."
+    },
+    {
+      "what": "lower_type_parameters, has_pub_keyword, content_hash helper methods",
+      "where": "crates/reify-syntax/src/ts_parser.rs",
+      "how": "Reuse existing Lowering helper methods for extracting pub visibility, type parameters, spans, and content hashes from purpose_declaration nodes."
+    }
+  ],
+  "_session_id": "78-4779d406",
+  "_created_at": "2026-03-21T07:09:29.674454+00:00"
+}
