@@ -108,6 +108,13 @@
       "description": "P-04 sync optimization: Refactor sync() in meshManager.ts. Replace 'const incomingKeys = new Set(Object.keys(meshes))' and 'incomingKeys.has(key)' with direct property check: 'if (!(key in meshes))'. This avoids one Set + Array allocation per sync call while maintaining identical O(1) lookup semantics. Iterate meshMap.keys() for removal check, then Object.entries(meshes) for add/update (same as current).",
       "status": "done",
       "commit": "70b62bf"
+    },
+    {
+      "id": "step-13",
+      "type": "impl",
+      "description": "Fix resource leak in 'resize triggers re-render on next frame' test (Viewport.test.tsx lines 273-302). The test overrides globalThis.ResizeObserver but restores it only at line 301 \u2014 not in a try/finally. If any assertion between render() and the restore throws (e.g. roCallback is undefined when the non-null assertion roCallback!() fires on a failed mount), the original ResizeObserver is never restored, causing cascading failures in all subsequent tests that depend on ResizeObserver. Fix: wrap the test body (lines 284-301) in a try/finally block so that `globalThis.ResizeObserver = OrigRO` always executes regardless of assertion failures. The finally block must contain only the restore; all assertions remain in the try block.",
+      "status": "done",
+      "commit": "10394b3"
     }
   ],
   "design_decisions": [
@@ -130,6 +137,10 @@
     {
       "decision": "Use 'in' operator for sync key membership instead of Set allocation",
       "rationale": "Current code creates new Set(Object.keys(meshes)) on every sync call. For Record<string, MeshData> objects, 'key in meshes' provides O(1) property lookup without any allocation. Behavioral equivalent, but avoids one Set + Array allocation per call."
+    },
+    {
+      "decision": "Use try/finally for global stub restoration in tests instead of afterEach",
+      "rationale": "The resize test overrides globalThis.ResizeObserver. Restoring in a try/finally within the test body is preferred over afterEach because it keeps the save/restore co-located with the override (easier to reason about), and avoids polluting the shared afterEach with cleanup for a single test's specific stub. The finally block guarantees restoration even if assertions throw."
     }
   ],
   "reuse": [
@@ -160,5 +171,5 @@
     }
   ],
   "_session_id": "114-4ad7e2e4",
-  "_created_at": "2026-03-21T17:36:57.908546+00:00"
+  "_created_at": "2026-03-21T17:54:38.652513+00:00"
 }
