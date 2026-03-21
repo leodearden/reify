@@ -1,50 +1,56 @@
 {
-  "task_id": "64",
-  "title": "Counted sub-structures (sub : List<T>)",
+  "task_id": "97",
+  "title": "File browser + export dialog + keyboard shortcuts",
   "files": [
-    "tree-sitter-reify/grammar.js",
-    "tree-sitter-reify/src/parser.c",
-    "tree-sitter-reify/src/grammar.json",
-    "tree-sitter-reify/src/node-types.json",
-    "crates/reify-syntax/src/lib.rs",
-    "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/collection_sub_tests.rs",
-    "crates/reify-eval/src/graph.rs",
-    "crates/reify-eval/src/lib.rs",
-    "crates/reify-eval/tests/collection_sub_eval.rs",
-    "crates/reify-test-support/src/builders.rs",
-    "crates/reify-types/src/value.rs"
+    "gui/src/panels/FileBrowser.tsx",
+    "gui/src/panels/FileBrowser.module.css",
+    "gui/src/panels/ExportDialog.tsx",
+    "gui/src/panels/ExportDialog.module.css",
+    "gui/src/panels/Toast.tsx",
+    "gui/src/panels/Toast.module.css",
+    "gui/src/panels/ReloadPrompt.tsx",
+    "gui/src/panels/ReloadPrompt.module.css",
+    "gui/src/panels/index.ts",
+    "gui/src/hooks/useKeyboardShortcuts.ts",
+    "gui/src/__tests__/FileBrowser.test.tsx",
+    "gui/src/__tests__/ExportDialog.test.tsx",
+    "gui/src/__tests__/Toast.test.tsx",
+    "gui/src/__tests__/ReloadPrompt.test.tsx",
+    "gui/src/__tests__/useKeyboardShortcuts.test.ts",
+    "gui/src/__tests__/panels-smoke.test.tsx",
+    "gui/src/__tests__/App.test.tsx",
+    "gui/src/App.tsx",
+    "gui/src/App.module.css",
+    "gui/src/bridge.ts",
+    "gui/src/types.ts"
   ],
   "modules": [
-    "tree-sitter-reify",
-    "crates/reify-syntax",
-    "crates/reify-compiler",
-    "crates/reify-eval",
-    "crates/reify-test-support",
-    "crates/reify-types"
+    "gui/src/panels",
+    "gui/src/hooks",
+    "gui/src/__tests__",
+    "gui/src"
   ],
-  "analysis": "This task implements counted sub-structure collections (e.g., `sub bolts : List<Bolt>`) with count constraints that trigger schema re-elaboration. The implementation spans 5 modules:\n\n1. **Grammar (tree-sitter-reify)**: The current `sub_declaration` rule only supports `sub name = StructName<TypeArgs>(args)`. The spec requires `sub name : List<StructName>` form. We need to extend the grammar rule to support a collection form using `choice()` \u2014 the existing `=` instantiation form plus a new `:` collection-type form.\n\n2. **Syntax (reify-syntax)**: `SubDecl` needs an `is_collection: bool` field. The parser's `lower_sub()` must detect the collection form (when the grammar produces a node with the colon/List form) and set `is_collection=true`, extracting the element type name as structure_name.\n\n3. **Compiler (reify-compiler)**: `SubComponentDecl` needs `is_collection: bool` and `count_cell: Option<ValueCellId>`. When `is_collection` is true, the compiler must create a synthetic count ValueCell (e.g., `S.__count_bolts`, type Int, Let kind) and recognize `constraint bolts.count == expr` as structure-controlling (adding the count cell to `structure_controlling`). The count cell's expression comes from the constraint RHS.\n\n4. **Eval graph (reify-eval/graph.rs)**: `from_templates()` must handle collection sub-components. If `is_collection` and count is determined (Int(N)), create N scoped instances: `Parent.name[0]`, `Parent.name[1]`, etc. Each instance gets full value cells from the child template. If count is Undef, no instances are created.\n\n5. **Eval engine (reify-eval/lib.rs)**: Count re-elaboration \u2014 when the count ValueCell's value changes, trigger graph topology change: add/remove instances to match new count. This follows the existing guard re-elaboration pattern.\n\n**Review Fix Analysis (steps 21-26):**\n\n- **Issue 1 (unnecessary_full_collection_rebuild)**: The count-change re-elaboration at lib.rs:1625-1630 rebuilds the entire ValueMap O(V_total) on every count change. PersistentMap already has remove(), but ValueMap doesn't expose it. Fix: add ValueMap::remove() and replace the full rebuild with surgical removal of stale instance entries O(count_diff \u00d7 child_cells).\n\n- **Issues 2+4 (incorrect_type_annotation + missing assertion)**: The compiler hardcodes `result_type: Type::Real` at lines 896 and 907 for all indexed collection member accesses regardless of the member's actual type. Fix: extend CompilationScope to store a mapping from (collection_name, member_name) \u2192 Type by looking up already-compiled child templates. Pass `&[TopologyTemplate]` to compile_entity. Use this to resolve the correct member type. The existing test also lacks a result_type assertion.\n\n- **Issue 3 (declaration_order_dependency)**: When `constraint bolts.count == n` appears before `sub bolts : List<Bolt>` in source order, the single-pass member processing can't find the SubComponentDecl to set count_cell (it hasn't been pushed yet). Fix: add a reconciliation sweep after the second pass that backfills count_cell for any unlinked __count_ cells.\n\n**Review Fix Analysis (steps 27-30, blocking issues from second review):**\n\n- **Issue: silent_failure_always_undef** (lines 912-919): Non-literal (dynamic) index access `bolts[n].member` always evaluates to Undef at runtime. The collection base is constructed as `CompiledExpr::literal(Value::Undef, Type::List<StructureRef>)` \u2014 a constant Undef \u2014 rather than a reference to the actual `__list_{name}` cell that the eval engine creates. At eval time, `Undef[n]` \u2192 Undef, then `Undef.member` \u2192 Undef. Fix: Replace `literal(Value::Undef, ...)` with `value_ref(ValueCellId::new(&scope.entity_name, format!(\"__list_{}\", name)), Type::List(...))` so the dynamic index operates on the actual synthetic list cell. Also emit a compiler diagnostic noting dynamic indexing limitation.\n\n- **Issue: missing_compiler_path_for_collection_aggregation** (lines 675-688): Collection sub names are registered in `scope.collection_sub_names` (line 1717) but never in `scope.names`, so using a collection sub as a standalone identifier (`bolts` in `bolts.all(|b| ...)` or `bolts.map(...)`) hits the `ExprKind::Ident` fallback at line 680, emitting 'unresolved name: bolts' and returning Literal(Undef). The step-19 test only passes because it uses the builder API to directly construct a ValueRef to `__list_bolts`, bypassing the compiler. Fix: In the `ExprKind::Ident` handler, after `scope.resolve(name)` returns None, add a fallback check: if `name` is in `scope.collection_sub_names`, return `CompiledExpr::value_ref(ValueCellId::new(&scope.entity_name, format!(\"__list_{}\", name)), Type::List(Box::new(Type::StructureRef(name.clone()))))`. Also add a source-code integration test (not builder API) for `bolts.all(...)` to prevent regression.\n\nKey existing patterns to reuse:\n- Guard re-elaboration pattern (structure_controlling -> dirty check -> re-evaluate)\n- Sub-component scoping pattern (Parent.sub_name -> scoped ValueCellIds)\n- TopologyTemplateBuilder for test construction\n- `.count`, `.map()`, `.all()` method calls already implemented in reify-expr\n- PersistentMap::remove() already exists, just needs ValueMap wrapper\n\nThe `forall b in bolts: predicate` syntax doesn't exist in the grammar; tests will use `.all(|b| predicate)` instead, which is already supported in the expression evaluator.",
+  "analysis": "Task 97 requires 4 main features: (1) File browser sidebar with tree view of .ri files, (2) Export dialog with format selector + native save dialog + progress/toast, (3) Keyboard shortcuts (Ctrl+O, F5, Ctrl+E), (4) File-changed event detection with reload prompt.\n\nExisting codebase has:\n- bridge.ts with exportGeometry(entityPath, outputPath) \u2014 NOTE: signature doesn't match backend export(format, path) command. The bridge invokes 'export_geometry' but the backend registers 'export'. Parameter names also mismatch (entityPath vs format). Need to fix.\n- bridge.ts onFileChanged(callback) already wired to 'file-changed' backend event with FileData payload\n- editorStore with openFile/closeFile/setActiveFile/markDirty/markClean\n- App.tsx with handleExport() as a stub comment, handleFitToView() stub\n- All panel components follow pattern: Component with exported Props interface, CSS module, data-testid, export from panels/index.ts\n- Tests use vitest + @solidjs/testing-library, mock @tauri-apps/api/core and @tauri-apps/api/event\n- Backend export command takes format ('step'|'stl') and path strings\n- Backend does NOT have a list_project_files command \u2014 FileBrowser must be prop-driven\n- Editor.tsx already handles Ctrl+S for save via CodeMirror keymap\n- App.test.tsx mocks bridge module, Viewport, Editor, and FileTabs \u2014 new components may need similar mocks\n- No hooks/ directory exists yet \u2014 will be created for useKeyboardShortcuts",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Extend tree-sitter grammar: add collection form to sub_declaration. Change the rule from a single seq() to choice() with two alternatives: (1) existing `sub name = StructName<TypeArgs>(args)` form, and (2) new `sub name : List < StructName >` form using `:` separator. The collection form rule: seq('sub', field('name', $.identifier), ':', 'List', '<', field('structure_name', $.identifier), '>', optional(field('guard', $.where_clause))). Then run `cd tree-sitter-reify && tree-sitter generate` to regenerate parser.c, grammar.json, and node-types.json. Verify grammar compiles and existing sub tests still parse.",
+      "description": "Fix bridge.ts exportGeometry: change signature from (entityPath, outputPath) to (format, outputPath), update invoke call from 'export_geometry' to 'export' with {format, path: outputPath} params to match the backend command handler. This is a breaking change but handleExport() in App.tsx is currently a stub so nothing depends on the old signature.",
       "status": "done",
-      "commit": "a10bcca",
+      "commit": "043ac57",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Add `is_collection: bool` field to SubDecl in reify-syntax/src/lib.rs. Initialize to `false` in the existing SubDecl construction site in lower_sub() (ts_parser.rs line 945). This is a prerequisite for TDD steps since the struct change must exist before tests can reference it.",
+      "description": "Add ExportFormat type to types.ts: type ExportFormat = 'step' | 'stl' | '3mf'. Add FileEntry interface for file browser tree: { path: string; name: string; isDirectory: boolean; children?: FileEntry[] }. Add ToastMessage interface: { id: string; type: 'success' | 'error' | 'info'; message: string }.",
       "status": "done",
-      "commit": "e615e92",
+      "commit": "2c4cdc1",
       "tests": []
     },
     {
       "id": "pre-3",
-      "description": "Add `is_collection: bool` and `count_cell: Option<ValueCellId>` fields to SubComponentDecl in reify-compiler/src/lib.rs. Initialize to `false`/`None` in all existing SubComponentDecl construction sites: (1) compile_entity Sub handler around line 1883, (2) connector sub in compile_connection around line 2769. Update TopologyTemplateBuilder.sub_component() in reify-test-support/builders.rs to include `is_collection: false, count_cell: None`. Ensure all existing code compiles cleanly with the new fields.",
+      "description": "Create gui/src/hooks/ directory for reusable hook functions (useKeyboardShortcuts).",
       "status": "done",
-      "commit": "3658392",
+      "commit": "0ca15c5",
       "tests": []
     }
   ],
@@ -52,312 +58,174 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in crates/reify-compiler/tests/collection_sub_tests.rs: parse `structure S { sub bolts : List<Bolt> }` using reify_syntax::parse(). Assert the parsed SubDecl has is_collection==true, structure_name=='Bolt', name=='bolts'. Also test that `structure S { sub rib = Rib() }` produces is_collection==false.",
+      "description": "Write failing tests for Toast component in __tests__/Toast.test.tsx: (1) renders with data-testid='toast', (2) displays message text from props, (3) applies correct data-type attribute for 'success' and 'error' types, (4) renders a close button, (5) clicking close button calls onDismiss callback, (6) hidden when message is null/empty.",
       "status": "done",
-      "commit": "1afec5e"
+      "commit": "c4d8a95"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement collection sub parsing in ts_parser.rs lower_sub(). Detect if the sub_declaration node uses the collection form (has 'List' keyword and ':' separator). This can be detected by checking for a child matching 'List' text or by checking whether the '=' or ':' token is present. When collection form: set is_collection=true and extract structure_name from the element type field. When standard `=` form: set is_collection=false as before.",
+      "description": "Implement Toast component in panels/Toast.tsx + Toast.module.css. Props: { message: string; type: 'success' | 'error' | 'info'; onDismiss: () => void }. Uses data-testid='toast', data-type attribute for styling, close button. Add export to panels/index.ts.",
       "status": "done",
-      "commit": "7283b0b"
+      "commit": "ea6c4e9"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: compile `structure Bolt { param diameter : Scalar = 10mm } structure S { sub bolts : List<Bolt> }` and assert the compiled SubComponentDecl has is_collection==true and structure_name=='Bolt'. Also verify existing `sub rib = Rib()` compiles with is_collection==false.",
+      "description": "Write failing tests for FileBrowser in __tests__/FileBrowser.test.tsx: (1) renders with data-testid='file-browser', (2) renders a list item for each file in files prop, (3) displays basename of file path (not full path), (4) the item matching activeFile prop has data-active='true' attribute, (5) clicking a file item calls onFileClick(path), (6) shows 'No files' empty state when files array is empty.",
       "status": "done",
-      "commit": "b04728f"
+      "commit": "b8b3296"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Propagate is_collection from SubDecl to SubComponentDecl in compiler. In compile_entity() where SubComponentDecl is constructed (around line 1883), copy is_collection from the parsed SubDecl. Collection subs have no args (empty vec) since the `List<T>` form doesn't take constructor args.",
+      "description": "Implement FileBrowser component in panels/FileBrowser.tsx + FileBrowser.module.css. Props: { files: FileData[]; activeFile: string | null; onFileClick: (path: string) => void }. Uses For to iterate files, Show for empty state. Each entry shows basename, has data-active attribute when matching activeFile, click calls onFileClick. Add export to panels/index.ts.",
       "status": "done",
-      "commit": "e4ccdd2"
+      "commit": "698e9b3"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: compile `structure S { param n : Int = 4  sub bolts : List<Bolt>  constraint bolts.count == n }`. Assert: (1) a synthetic count ValueCell '__count_bolts' exists in template.value_cells with type Int and Let kind, (2) its ID is in template.structure_controlling, (3) its default_expr is a ValueRef to 'n'.",
+      "description": "Write failing tests for ExportDialog in __tests__/ExportDialog.test.tsx: (1) renders modal with data-testid='export-dialog' when open=true, (2) not in DOM when open=false, (3) format selector has STEP/STL/3MF options, (4) default selected format is 'step', (5) clicking Export button calls onExport(selectedFormat), (6) clicking Cancel calls onClose, (7) changing format selector updates selection, (8) shows progress indicator when exporting=true prop set.",
       "status": "done",
-      "commit": "fcec8b3"
+      "commit": "e889ae8"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement count constraint recognition in the compiler. When compiling constraints in compile_entity(), detect pattern `<collection_name>.count == <expr>` where the LHS is a MemberAccess with member='count' and object matching a collection sub-component name. Create a synthetic Let ValueCell `{entity}.__count_{name}` (Int type, expr = constraint RHS), add it to structure_controlling. Store the count cell ID in SubComponentDecl.count_cell. The constraint itself is still compiled normally.",
+      "description": "Implement ExportDialog component in panels/ExportDialog.tsx + ExportDialog.module.css. Props: { open: boolean; exporting: boolean; onExport: (format: ExportFormat) => void; onClose: () => void }. Modal overlay with format <select>, Export/Cancel buttons, progress indicator. Uses Show for conditional rendering. Add export to panels/index.ts.",
       "status": "done",
-      "commit": "e006fe4"
+      "commit": "3772e98"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test in crates/reify-eval/tests/collection_sub_eval.rs: Build module with Parent (param n : Int = 4, count_cell __count_bolts with expr=ValueRef(n), collection sub bolts: List<Bolt>) and Child (Bolt with param diameter). Use TopologyTemplateBuilder with new collection_sub_component() method. After EvaluationGraph::from_templates(), assert 4 scoped ValueCellNodes exist: Parent.bolts[0].diameter through Parent.bolts[3].diameter.",
+      "description": "Write failing tests for useKeyboardShortcuts in __tests__/useKeyboardShortcuts.test.ts: (1) dispatching Ctrl+O keydown on document calls onOpen callback, (2) dispatching F5 keydown calls onReEvaluate, (3) dispatching Ctrl+E keydown calls onExportDialog, (4) dispatching Ctrl+O when target is an <input> does NOT call onOpen (avoids conflict), (5) after cleanup, dispatching shortcuts does nothing (listeners removed).",
       "status": "done",
-      "commit": "c93fc6c"
+      "commit": "82a51ab"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add collection_sub_component() method to TopologyTemplateBuilder that creates SubComponentDecl with is_collection=true and count_cell. Add a structure_controlling_cell() method to add arbitrary IDs to structure_controlling. Implement collection elaboration in EvaluationGraph::from_templates(): when sub.is_collection and sub.count_cell is Some, check if the count cell's value can be statically determined (look up the count cell in the graph); for builder-based tests, create N instances based on the count cell's default_expr literal value. Each instance has scoped IDs `Parent.name[i]` with child template value cells.",
+      "description": "Implement useKeyboardShortcuts hook in hooks/useKeyboardShortcuts.ts. Accepts callbacks: { onOpen?: () => void; onReEvaluate?: () => void; onExportDialog?: () => void }. Registers document keydown listener on mount (via SolidJS onMount), removes on cleanup (onCleanup). Maps Ctrl+O, F5, Ctrl+E. Skips if event target is input/textarea/[contenteditable].",
       "status": "done",
-      "commit": "cd40524"
+      "commit": "866b6f2"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test: Engine.eval() with collection count=4 produces 4 Bolt instances with their own values. Build module with Parent (n=4, collection sub bolts) and Bolt (param diameter=10mm). After eval(), assert Parent.bolts[0].diameter through Parent.bolts[3].diameter have correct values in snapshot. Also assert the count cell __count_bolts has value Int(4).",
+      "description": "Write failing tests for ReloadPrompt in __tests__/ReloadPrompt.test.tsx: (1) renders banner with data-testid='reload-prompt' when filePath prop is non-null, (2) not in DOM when filePath is null, (3) displays the basename of filePath in the message, (4) clicking Reload button calls onReload, (5) clicking Dismiss button calls onDismiss.",
       "status": "done",
-      "commit": "36ae413"
+      "commit": "6c871c8"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement collection sub-component evaluation in Engine.eval(). In the sub-component elaboration phase (around line 830), handle is_collection subs: (1) evaluate the count cell to determine N, (2) if count is Int(N), elaborate N instances of the child template with scoped entity prefix `Parent.name[i]`, (3) evaluate each instance's params with arg defaults from the child template, (4) evaluate each instance's let bindings. Skip elaboration if count is Undef.",
+      "description": "Implement ReloadPrompt component in panels/ReloadPrompt.tsx + ReloadPrompt.module.css. Props: { filePath: string | null; onReload: () => void; onDismiss: () => void }. Thin banner above editor: '{basename} changed on disk. Reload?' with Reload and Dismiss buttons. Uses Show for conditional rendering. Add export to panels/index.ts.",
       "status": "done",
-      "commit": "f8b8176"
+      "commit": "f1a9b41"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test: count Undef means no instances. Build module where count cell has no default (or depends on an Undef param). After eval(), assert no scoped value cells exist for bolts[i] instances.",
+      "description": "Update panels-smoke.test.tsx to include all new components: add FileBrowser (with files=[] and onFileClick=vi.fn()), ExportDialog (with open=true, exporting=false, onExport=vi.fn(), onClose=vi.fn()), Toast (with message/type/onDismiss), ReloadPrompt (with filePath/onReload/onDismiss). Verify all data-testid attributes present.",
       "status": "done",
-      "commit": "ca5ff78"
+      "commit": "2148af2"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Handle Undef count in collection elaboration. In both from_templates() and Engine.eval(), when count cell evaluates to Undef or non-Int, skip instance creation. The count cell itself remains in the snapshot with its Undef value.",
+      "description": "Wire all new components into App.tsx and update layout: (1) Add FileBrowser in editor panel showing editorStore.state.openFiles, wire onFileClick to setActiveFile, (2) Add ExportDialog state (showExportDialog signal), wire handleExport to open it, wire onExport to call bridge.exportGeometry with format + native save dialog path (mock-safe), show Toast on success/error, (3) Wire useKeyboardShortcuts: Ctrl+O opens file via bridge.openFile, F5 re-evaluates by calling updateSource, Ctrl+E toggles export dialog, (4) Subscribe to bridge.onFileChanged in onMount, track changedFile signal, show ReloadPrompt for open files, wire Reload to update content, Dismiss to clear prompt, (5) Update App.module.css with fileBrowser class for layout, (6) Update App.test.tsx bridge mock to include onFileChanged. Ensure all new components render in App smoke tests.",
       "status": "done",
-      "commit": "f8b8176"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing test: count change 4->6 triggers re-elaboration. Build module with Parent (param n=4, collection sub bolts, count cell __count_bolts = n). Initial eval with n=4 produces 4 instances. edit_param(n, Int(6)). Assert: (1) topology_fingerprint changes, (2) 6 instances now exist (bolts[0] through bolts[5]), (3) new instances bolts[4] and bolts[5] have correct value cells.",
-      "status": "done",
-      "commit": "7649e25"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Implement count-based re-elaboration in Engine's incremental eval. In the guard re-elaboration phase (around line 1276), extend to also handle collection count cells. When a structure_controlling cell is a count cell and its value changed: (1) determine old vs new count, (2) remove old scoped instances from graph and values, (3) create new instances based on new count, (4) evaluate new instances, (5) recompute topology fingerprint. Also handle in the parallel incremental_eval path (around line 1508).",
-      "status": "done",
-      "commit": "3f20328"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing test: bolts[0].diameter access via compiled expression. Parse and compile `structure Bolt { param diameter : Scalar = 10mm } structure S { sub bolts : List<Bolt>  constraint bolts.count == 4  let d = bolts[0].diameter }`. Assert: the let binding 'd' compiles to a ValueRef or IndexAccess expression that can resolve to Parent.bolts[0].diameter.",
-      "status": "done",
-      "commit": "2fb4b45"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Implement indexed collection member access in the compiler. When compiling expression `name[i].member` where `name` is a collection sub: if `i` is a literal integer, resolve to ValueRef with scoped ID `Parent.name[i].member`. If `i` is a non-literal expression, compile as IndexAccess+MemberAccess chain (dynamic indexing). Register collection sub names in CompilationScope so the compiler can distinguish collection access from regular index access.",
-      "status": "done",
-      "commit": "435b6fe"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing test: `let n = bolts.count` compiles and evaluates to the count value. Parse and compile a structure with collection sub and `let n = bolts.count`. Eval and assert n == Int(4). This should compile bolts.count as a ValueRef to the __count_bolts cell.",
-      "status": "done",
-      "commit": "203100b"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Implement bolts.count expression compilation. When the compiler sees MemberAccess with object being a collection sub name and member being 'count', compile it as a ValueRef to the count cell `__count_{name}`. This is simpler than a MethodCall since the count cell already exists as a Let binding.",
-      "status": "done",
-      "commit": "435b6fe"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write integration test: collection operations on sub-structure instances. Build module using builders: Parent with collection sub bolts (count=3), Bolt with param grade (default=8.8). Create a let binding that gathers bolt grades into a list and calls .all(). Verify eval produces correct results. Note: this tests that collection method dispatch works on sub-structure instance lists, using the existing .all() method on List values.",
-      "status": "done",
-      "commit": "2660c4a"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Implement collection value aggregation. When a collection sub name is referenced in an expression context (not as .count or [i].member), create a synthetic List value by gathering instance values. Add logic in Engine.eval() (or as a Let binding in from_templates()) that for each collection sub with determined count, creates a List<StructureRef> value from instance references. This enables .map(), .all(), .any() etc. to work on the collection.",
-      "status": "done",
-      "commit": "2660c4a"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "[REVIEW FIX: unnecessary_full_collection_rebuild] Write test for ValueMap::remove() in crates/reify-types/src/value.rs (unit test in existing #[cfg(test)] mod tests block). Insert 3 entries, remove the middle one, assert it's gone and the other two remain. Also write an eval test in crates/reify-eval/tests/collection_sub_eval.rs: count change 4\u21922, then verify that bolts[0] and bolts[1] values remain in the snapshot but bolts[2] and bolts[3] are gone (not just overwritten). This catches the O(V_total) rebuild behavior \u2014 the test itself will pass with the current impl since correctness is maintained, but the impl step will replace the rebuild with surgical removal.",
-      "status": "done",
-      "commit": "ef96277"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "[REVIEW FIX: unnecessary_full_collection_rebuild] Add `pub fn remove(&mut self, id: &ValueCellId)` method to ValueMap in crates/reify-types/src/value.rs, delegating to `self.inner.remove(id)`. Then in crates/reify-eval/src/lib.rs, replace the 7-line full rebuild at lines 1625-1630 (`let mut new_values = ValueMap::new(); for (id, (val, _)) in new_snapshot.values.iter() { new_values.insert(...) } values = new_values;`) with surgical removal: in the old-instance removal loop (lines 1560-1567), add `values.remove(&scoped_id)` alongside the existing `new_snapshot.graph.value_cells.remove()` and `new_snapshot.values.remove()` calls. This reduces per-count-change work from O(V_total) to O(count_diff \u00d7 child_cells).",
-      "status": "done",
-      "commit": "18b0abb"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "[REVIEW FIX: incorrect_type_annotation + missing_meaningful_assertion] In crates/reify-compiler/tests/collection_sub_tests.rs: (1) Update the existing `compile_indexed_collection_member_access` test to add `assert_eq!(expr.result_type, reify_types::Type::Real)` after the ValueRef match \u2014 this documents the current (incorrect) behavior and will be changed to the correct type assertion in the impl step. (2) Add a new test `compile_indexed_collection_member_access_preserves_type` that compiles `structure Bolt { param count_per_row : Int = 4 } structure S { sub bolts : List<Bolt> constraint bolts.count == 4 let c = bolts[0].count_per_row }` and asserts `expr.result_type == Type::Int`. This test will FAIL because the compiler currently hardcodes Type::Real for all indexed member accesses.",
-      "status": "done",
-      "commit": "032793e"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "[REVIEW FIX: incorrect_type_annotation] Fix the hardcoded `Type::Real` at lines 896 and 907 of crates/reify-compiler/src/lib.rs. Approach: (1) Add `collection_sub_member_types: HashMap<String, HashMap<String, Type>>` field to CompilationScope (maps collection_name \u2192 { member_name \u2192 Type }). (2) Add `compiled_templates: &[TopologyTemplate]` parameter to compile_entity(). Update both call sites in compile() (lines 1394, 1423) to pass `&templates`. (3) In the first-pass Sub registration (around line 1701), when is_collection is true, look up the child template by structure_name from compiled_templates, iterate its value_cells, and populate collection_sub_member_types. (4) In compile_expr_guarded MemberAccess handling (line 896), replace `Type::Real` with a lookup: `scope.collection_sub_member_types.get(name).and_then(|m| m.get(member)).cloned().unwrap_or(Type::Real)`. Apply the same fix at line 907 for the dynamic-index path. (5) Update the step-23 test assertions: change the existing test's assertion to the correct type (Scalar for diameter), and confirm the Int-typed test passes.",
-      "status": "done",
-      "commit": "3bbb27b"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "[REVIEW FIX: declaration_order_dependency] In crates/reify-compiler/tests/collection_sub_tests.rs, add test `compile_count_constraint_before_sub_declaration` that compiles: `structure Bolt { param diameter : Scalar = 10mm } structure S { param n : Int = 4  constraint bolts.count == n  sub bolts : List<Bolt> }` (note: constraint appears BEFORE the sub declaration). Assert: (1) the SubComponentDecl for 'bolts' has count_cell == Some with member '__count_bolts', (2) the __count_bolts cell exists in structure_controlling. This test will FAIL because the current single-pass code at line 1874 does `sub_components.iter_mut().find(|s| s.name == coll_name)` which returns None when the sub hasn't been pushed yet.",
-      "status": "done",
-      "commit": "e7c03c6"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "[REVIEW FIX: declaration_order_dependency] In crates/reify-compiler/src/lib.rs, add a reconciliation sweep after the second member-processing pass (after the `for member in structure.members` loop ends, before the template is constructed). For each ValueCellDecl in value_cells whose member name matches `__count_{name}` pattern, find the corresponding SubComponentDecl in sub_components where sub.name == name AND sub.count_cell.is_none(). If found, backfill sub.count_cell = Some(count_cell_id). This handles the case where the count constraint was processed before the sub declaration was pushed. The reconciliation is O(count_cells \u00d7 sub_components) which is negligible.",
-      "status": "done",
-      "commit": "ed34b1d"
-    },
-    {
-      "id": "step-27",
-      "type": "test",
-      "description": "[REVIEW FIX: silent_failure_always_undef] In crates/reify-compiler/tests/collection_sub_tests.rs, add test `compile_dynamic_index_collection_member_access` that compiles: `structure Bolt { param diameter : Scalar = 10mm } structure S { param idx : Int = 0  sub bolts : List<Bolt>  constraint bolts.count == 4  let d = bolts[idx].diameter }`. Since `idx` is non-literal, the compiler takes the dynamic-index path (lines 912-919). Assert: (1) the let binding 'd' compiles to an expression whose collection base is NOT a Literal(Undef) but rather contains a ValueRef to the `__list_bolts` synthetic cell. Specifically, match the compiled expression tree and verify it contains a ValueRef with entity==`S` and member==`__list_bolts`. This test will FAIL because the current code at line 913 creates `CompiledExpr::literal(Value::Undef, ...)` as the collection base. Also add an eval-level test in crates/reify-eval/tests/collection_sub_eval.rs that does end-to-end compilation + eval of `bolts[idx].diameter` where `idx` is a param, and asserts the result is NOT Undef (should be the actual diameter value).",
-      "status": "done",
-      "commit": "ed67483"
-    },
-    {
-      "id": "step-28",
-      "type": "impl",
-      "description": "[REVIEW FIX: silent_failure_always_undef] In crates/reify-compiler/src/lib.rs at lines 912-919, replace `CompiledExpr::literal(Value::Undef, Type::List(Box::new(Type::StructureRef(name.clone()))))` with `CompiledExpr::value_ref(ValueCellId::new(&scope.entity_name, format!(\"__list_{}\", name)), Type::List(Box::new(Type::StructureRef(name.clone()))))`. This makes the dynamic index operate on the actual synthetic `__list_{name}` cell (created by the eval engine during collection elaboration) rather than a constant Undef. The IndexAccess + method_call chain at lines 917-919 remains the same \u2014 only the collection base changes from a literal Undef to a ValueRef to the real list cell. Also emit a compiler diagnostic (Info severity) noting that dynamic collection indexing is only partially supported, using `diagnostics.push(Diagnostic::info(\"dynamic collection index: bolts[<expr>].member \u2014 result depends on runtime list assembly\"))` or similar.",
-      "status": "done",
-      "commit": "5dcc57f"
-    },
-    {
-      "id": "step-29",
-      "type": "test",
-      "description": "[REVIEW FIX: missing_compiler_path_for_collection_aggregation] In crates/reify-compiler/tests/collection_sub_tests.rs, add test `compile_collection_sub_as_standalone_identifier` that compiles: `structure Bolt { param grade : Scalar = 8.8 } structure S { sub bolts : List<Bolt>  constraint bolts.count == 3  let grades = bolts }`. Assert: (1) no compile errors (currently fails with 'unresolved name: bolts'), (2) the let binding 'grades' compiles to a ValueRef with entity=='S' and member=='__list_bolts', (3) result_type is List(StructureRef(\"bolts\")) or similar List type. Also add a source-code integration test (NOT builder API) `compile_and_eval_collection_aggregate_from_source` that compiles and evaluates: `structure Bolt { param grade : Scalar = 8.8 } structure S { sub bolts : List<Bolt>  constraint bolts.count == 3  let grades = bolts }` end-to-end. Assert grades evaluates to a List of 3 values (not Undef). This test catches the compiler path issue that step-19's builder-based test bypasses.",
-      "status": "done",
-      "commit": "5b793cf"
-    },
-    {
-      "id": "step-30",
-      "type": "impl",
-      "description": "[REVIEW FIX: missing_compiler_path_for_collection_aggregation] In crates/reify-compiler/src/lib.rs, in the `ExprKind::Ident` handler (lines 675-688), after the `scope.resolve(name)` returns None (line 680), add a fallback check before the error diagnostic: `if scope.collection_sub_names.contains(name.as_str()) { let list_id = ValueCellId::new(&scope.entity_name, format!(\"__list_{}\", name)); let list_type = Type::List(Box::new(Type::StructureRef(name.clone()))); return CompiledExpr::value_ref(list_id, list_type); }`. This resolves a bare collection sub name (e.g., `bolts`) to its synthetic `__list_bolts` cell, allowing `bolts.all(|b| ...)`, `bolts.map(...)`, and bare `bolts` references to work correctly from source code. The existing `scope.collection_sub_names` registration at line 1717 already ensures the name is known; this step just adds the resolution path in the identifier handler.",
-      "status": "done",
-      "commit": "2166432"
+      "commit": "e548b70"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Extend tree-sitter grammar with dedicated collection sub form using choice() rather than reusing existing = syntax with List as structure_name",
-      "rationale": "The spec defines `sub name : List<StructName>` with `:` syntax, distinct from `sub name = StructName(args)` with `=`. Adding a proper grammar alternative makes the two forms syntactically distinct and avoids conflating List (a collection wrapper) with concrete structure names. The tree-sitter grammar change is straightforward: a choice() between the two seq() alternatives in sub_declaration."
+      "decision": "FileBrowser is a prop-driven presentational component receiving FileData[]",
+      "rationale": "No backend list_files/list_project_files command exists. Making it prop-driven keeps the component testable and decoupled. App.tsx derives file list from editorStore.state.openFiles. The component interface is future-proof \u2014 when a backend file listing command is added, only the data source in App changes, not the component."
     },
     {
-      "decision": "Synthetic count ValueCell (`__count_{name}`) as a Let binding in structure_controlling",
-      "rationale": "This follows the existing guard cell pattern where structure_controlling contains ValueCellIds whose changes trigger re-elaboration. The count cell is a Let binding (computed, not externally settable) whose expression comes from the `constraint name.count == expr` pattern. When the expression's dependencies change, the count re-evaluates, triggering re-elaboration if the count value differs."
+      "decision": "Fix bridge.ts exportGeometry to match backend 'export' command",
+      "rationale": "Current bridge invokes 'export_geometry' with {entityPath, outputPath} but backend registers command as 'export' with {format, path}. This is a latent bug \u2014 export can never work with current signature. Fixing as prerequisite since ExportDialog depends on it. No existing callers break because handleExport in App.tsx is a stub."
     },
     {
-      "decision": "Instance scoping uses bracket notation: Parent.name[i] as the entity prefix",
-      "rationale": "This follows the spec's positional indexing (`vents[0]`, `vents[1]`) and extends the existing scoping pattern (Parent.sub_name becomes Parent.name[i]). Each instance's value cells are: ValueCellId { entity: 'Parent.bolts[0]', member: 'diameter' }. This is natural, unambiguous, and compatible with the existing sub-component scoping."
+      "decision": "Toast as standalone reusable component in panels/",
+      "rationale": "Toast notifications are needed by export dialog (success/failure) and potentially other features. Following existing pattern of putting UI components in panels/ directory with CSS modules and data-testid."
     },
     {
-      "decision": "Count re-elaboration follows the existing guard re-elaboration pattern",
-      "rationale": "The guard re-elaboration code already handles structure_controlling cells changing and triggering topology updates. Collection count changes are analogous: a structure_controlling cell (the count) changes value, requiring the graph topology to change (add/remove instances). Reusing this pattern keeps the implementation consistent and leverages battle-tested code."
+      "decision": "ReloadPrompt as separate component rather than inline in Editor",
+      "rationale": "Editor.tsx is already complex with CodeMirror integration. ReloadPrompt is a thin banner that App.tsx controls based on file-changed events from bridge.onFileChanged. Separation follows single-responsibility and makes testing straightforward."
     },
     {
-      "decision": "forall syntax not implemented; use .all(|x| predicate) instead",
-      "rationale": "The `forall b in bolts: predicate` syntax has no grammar production and would require significant grammar/parser/compiler work. The existing .all() method on List values (already implemented in reify-expr eval_method_call) provides equivalent functionality. The spec's forall can be added as a separate syntax sugar task."
+      "decision": "Keyboard shortcuts skip when input/textarea/contenteditable is focused",
+      "rationale": "Ctrl+O and Ctrl+E would conflict with typing in PropertyEditor inputs. F5 is safe but consistent behavior is better. CodeMirror handles its own keybindings internally (Ctrl+S already works), so we only check for plain HTML inputs. The hook checks event.target tagName."
     },
     {
-      "decision": "Add count_cell: Option<ValueCellId> to SubComponentDecl rather than a separate lookup table",
-      "rationale": "Keeping the count association co-located with the sub-component declaration avoids a separate lookup structure. For non-collection subs, count_cell is None. For collection subs, it points to the synthetic __count_ ValueCell. This makes graph construction straightforward: the count cell is directly available from the SubComponentDecl."
+      "decision": "ExportDialog uses controlled props (open/exporting) rather than internal state",
+      "rationale": "Following Solid.js controlled component pattern consistent with how PropertyEditor accepts values as props. App.tsx manages dialog open state, wiring it to both Toolbar Export button and Ctrl+E shortcut. This makes testing straightforward \u2014 just set props."
     },
     {
-      "decision": "Collection sub args are empty (no constructor arguments in List<T> form)",
-      "rationale": "The `sub name : List<T>` form doesn't take constructor arguments. Individual instances get their defaults from the child template. Per-instance customization would be done through constraints on indexed members (e.g., `constraint bolts[0].grade == 10.9`), not through constructor args at the collection level."
+      "decision": "Create hooks/ directory for useKeyboardShortcuts",
+      "rationale": "Keyboard shortcuts are cross-cutting logic with lifecycle (mount/cleanup) but no reactive state store. A hooks/ directory follows common Solid/React conventions for this pattern. Keeps App.tsx clean and the logic unit-testable in isolation."
     },
     {
-      "decision": "Surgical ValueMap removal instead of full rebuild for count-change re-elaboration",
-      "rationale": "The full O(V_total) ValueMap rebuild on every count change is unnecessary. PersistentMap already has a remove() method. Adding ValueMap::remove() and using it to surgically delete stale instance entries reduces per-count-change cost to O(count_diff \u00d7 child_cells). This is important because count changes are expected to be frequent during interactive editing."
-    },
-    {
-      "decision": "Look up collection member types from already-compiled templates rather than defaulting to Type::Real",
-      "rationale": "Hardcoding Type::Real for all indexed collection member accesses (bolts[0].diameter) is incorrect when the member has type Int, Bool, Length, etc. The compiler processes templates sequentially, so child templates (e.g., Bolt) are compiled before parents (e.g., S) when declared first. Passing &[TopologyTemplate] to compile_entity allows looking up child member types. For forward-reference cases (child declared after parent), Type::Real remains as a fallback, matching existing forward-reference behavior."
-    },
-    {
-      "decision": "Post-pass reconciliation sweep for count_cell backfill rather than a third member pass",
-      "rationale": "When a count constraint appears before the sub declaration in source order, the single-pass processing can't find the SubComponentDecl to set count_cell. A lightweight reconciliation sweep after the member loop (matching __count_{name} cells to sub_components) is simpler and more targeted than restructuring the compiler into multiple passes. The sweep is O(count_cells \u00d7 sub_components) which is negligible."
-    },
-    {
-      "decision": "Resolve dynamic index collection base to __list_{name} ValueRef instead of Literal(Undef)",
-      "rationale": "The eval engine creates a synthetic `__list_{name}` cell during collection elaboration that holds the actual List of instance values. Dynamic indexing (`bolts[n].member`) must reference this cell via ValueRef so the index operation can work on the actual runtime list. Using Literal(Undef) as the base means the index always evaluates to Undef, silently corrupting all downstream computations. The fix is minimal \u2014 one line changed from `literal(...)` to `value_ref(...)` \u2014 and correctly connects the compiler's output to the eval engine's synthetic cell."
-    },
-    {
-      "decision": "Resolve bare collection sub names via ExprKind::Ident fallback to __list_{name} cell",
-      "rationale": "Collection sub names are registered in `scope.collection_sub_names` for special handling (count constraints, indexed access) but not in `scope.names` because they aren't value cells in the traditional sense. However, when used as standalone identifiers (`bolts` in `bolts.all(...)` or `let x = bolts`), the Ident handler needs to resolve them to the synthetic `__list_{name}` cell. Adding a collection_sub_names fallback in the Ident handler is the minimal fix \u2014 it only triggers when scope.resolve() returns None and the name is a known collection sub, so it doesn't interfere with any existing resolution logic."
+      "decision": "Export dialog handles native save dialog in App.tsx wiring, not inside ExportDialog component",
+      "rationale": "ExportDialog is a pure UI component that emits onExport(format). App.tsx handles the async flow: open native dialog (via @tauri-apps/plugin-dialog), get path, call bridge.exportGeometry(format, path), show toast. This keeps ExportDialog testable without mocking Tauri plugins."
     }
   ],
   "reuse": [
     {
-      "what": "Guard re-elaboration pattern (structure_controlling, dirty check, branch flip)",
-      "where": "crates/reify-eval/src/lib.rs lines 1276-1340",
-      "how": "Extend the existing guard re-elaboration phase to also handle collection count changes. When a structure_controlling cell is a count cell (not a guard cell), apply count-based re-elaboration (add/remove instances) instead of guard branch flipping."
+      "what": "CSS module pattern",
+      "where": "All existing components in panels/ (Toolbar, StatusBar, PropertyEditor, ConstraintPanel)",
+      "how": "New components follow same pattern: import styles from './Component.module.css', use styles.className for styling, consistent variable naming from theme.ts"
     },
     {
-      "what": "Sub-component scoping pattern (Parent.sub_name entity prefix)",
-      "where": "crates/reify-eval/src/graph.rs lines 136-158, crates/reify-eval/src/lib.rs lines 830-900",
-      "how": "Extend for indexed instances: `Parent.name[i]` instead of `Parent.name`. Each instance follows the same scoping logic: child template's value cells get scoped IDs with the indexed entity prefix."
+      "what": "data-testid convention for test selectors",
+      "where": "All existing components (toolbar, status-bar, property-editor, constraint-panel, editor-container, file-tabs, etc.)",
+      "how": "New components use data-testid='file-browser', 'export-dialog', 'toast', 'reload-prompt'"
     },
     {
-      "what": "TopologyTemplateBuilder for test construction",
-      "where": "crates/reify-test-support/src/builders.rs lines 146-372",
-      "how": "Add collection_sub_component() method that creates SubComponentDecl with is_collection=true and a count_cell parameter. Add structure_controlling_cell() to register count cells."
+      "what": "SolidJS testing library render/screen/fireEvent pattern",
+      "where": "All tests in __tests__/ (Toolbar.test.tsx, ConstraintPanel.test.tsx, FileTabs.test.tsx, etc.)",
+      "how": "New tests follow same structure: describe blocks, render(() => <Component />), screen.getByTestId/getByText, fireEvent for interactions, vi.fn() for callbacks"
     },
     {
-      "what": "CompiledModuleBuilder for multi-template test modules",
-      "where": "crates/reify-test-support/src/builders.rs lines 427-517",
-      "how": "Use to build test modules with both parent (collection sub) and child (element structure) templates."
+      "what": "Tauri API mocking pattern (vi.mock before imports)",
+      "where": "bridge.test.ts, App.test.tsx",
+      "how": "Tests needing bridge/Tauri mocks use vi.mock('@tauri-apps/api/core'), vi.mock('@tauri-apps/api/event'). ExportDialog app integration can mock @tauri-apps/plugin-dialog similarly."
     },
     {
-      "what": "Collection method calls (.count, .map, .all, .sum) in expression evaluator",
-      "where": "crates/reify-expr/src/lib.rs lines 266-460",
-      "how": "The expression evaluator already handles method calls on List values. Once collection instances are gathered into a List value, all existing collection operations (.count, .map, .all, .any, .sum, .fold) work naturally."
+      "what": "bridge.ts exportGeometry for export functionality",
+      "where": "bridge.ts (fixed signature in prerequisite)",
+      "how": "ExportDialog flow calls bridge.exportGeometry(format, outputPath) after user selects format and save path"
     },
     {
-      "what": "compile_no_errors() test helper pattern",
-      "where": "crates/reify-compiler/tests/collection_compile_tests.rs lines 6-27",
-      "how": "Reuse the same parse+compile+assert-no-errors helper pattern for collection sub compilation tests."
+      "what": "editorStore.openFile / setActiveFile for file navigation",
+      "where": "stores/editorStore.ts",
+      "how": "FileBrowser onFileClick uses bridge.openFile to load content, then editorStore.openFile to add to tabs. ReloadPrompt checks editorStore.state.openFiles."
     },
     {
-      "what": "tree-sitter CLI for grammar regeneration",
-      "where": "~/.local/bin/tree-sitter, tree-sitter-reify/package.json",
-      "how": "Run `cd tree-sitter-reify && tree-sitter generate` after editing grammar.js to regenerate parser.c, grammar.json, and node-types.json."
+      "what": "bridge.onFileChanged event subscription",
+      "where": "bridge.ts line 116-122, already defined and typed with FileData payload",
+      "how": "App.tsx subscribes in onMount (alongside existing engineStore.subscribeToEvents). When event fires for an open file, shows ReloadPrompt."
     },
     {
-      "what": "PersistentMap::remove() for surgical key deletion",
-      "where": "crates/reify-types/src/persistent.rs line 44",
-      "how": "PersistentMap already has a remove() method that delegates to ImHashMap::remove(). ValueMap wraps PersistentMap but doesn't expose remove(). Adding ValueMap::remove() is a one-line delegation."
+      "what": "panels/index.ts barrel export pattern",
+      "where": "panels/index.ts currently exports PropertyEditor, ConstraintPanel, Toolbar, StatusBar",
+      "how": "Add exports for FileBrowser, ExportDialog, Toast, ReloadPrompt following same pattern"
     },
     {
-      "what": "Existing __list_{name} synthetic cell created by eval engine",
-      "where": "crates/reify-eval/src/lib.rs lines 874-890",
-      "how": "The eval engine already creates a `__list_{name}` ValueCell during collection elaboration that holds the List of instance values. Both fixes (steps 28 and 30) reference this cell via ValueRef \u2014 the compiler just needs to emit the correct ValueCellId to point to it."
+      "what": "Component<Props> pattern with exported interface",
+      "where": "All panel components define exported Props interface (ToolbarProps, StatusBarProps, etc.)",
+      "how": "New components export FileBrowserProps, ExportDialogProps, ToastProps, ReloadPromptProps"
+    },
+    {
+      "what": "For/Show SolidJS primitives for conditional and list rendering",
+      "where": "ConstraintPanel.tsx (For + Show), PropertyEditor.tsx (For + Show), FileTabs.tsx (For + Show)",
+      "how": "FileBrowser uses For for file list + Show for empty state. ExportDialog uses Show for open/close. Toast uses Show for visibility. ReloadPrompt uses Show for filePath check."
     }
   ],
-  "_session_id": "64-7d937294",
-  "_created_at": "2026-03-21T06:54:17.484995+00:00",
-  "_schema_version": 1
+  "_session_id": "97-86cb4992",
+  "_created_at": "2026-03-21T07:53:52.848931+00:00"
 }
