@@ -15,6 +15,7 @@ import {
 } from './panels';
 import { Splitter } from './components/Splitter';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { createToast } from './hooks/useToast';
 import { createEngineStore } from './stores/engineStore';
 import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
@@ -60,9 +61,8 @@ const App: Component = () => {
   const [showExportDialog, setShowExportDialog] = createSignal(false);
   const [exporting, setExporting] = createSignal(false);
 
-  // Toast state
-  const [toastMessage, setToastMessage] = createSignal<string | null>(null);
-  const [toastType, setToastType] = createSignal<'success' | 'error' | 'info'>('info');
+  // Toast state (centralized via createToast hook)
+  const toast = createToast();
 
   // Reload prompt state
   const [changedFile, setChangedFile] = createSignal<string | null>(null);
@@ -177,7 +177,7 @@ const App: Component = () => {
 
   function handleSetParameter(cellId: string, value: string) {
     bridgeSetParameter(cellId, value).catch((err) =>
-      console.error('setParameter failed:', err),
+      toast.showToast(`Parameter update failed: ${err instanceof Error ? err.message : String(err)}`, 'error'),
     );
   }
 
@@ -191,11 +191,9 @@ const App: Component = () => {
       // In a full app, would open native save dialog here
       const defaultPath = `export.${format}`;
       await bridgeExportGeometry(format, defaultPath);
-      setToastType('success');
-      setToastMessage(`Exported successfully as ${format.toUpperCase()}`);
+      toast.showToast(`Exported successfully as ${format.toUpperCase()}`, 'success');
     } catch (err) {
-      setToastType('error');
-      setToastMessage(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.showToast(`Export failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
     } finally {
       setExporting(false);
       setShowExportDialog(false);
@@ -227,7 +225,7 @@ const App: Component = () => {
   }
 
   function handleDismissToast() {
-    setToastMessage(null);
+    toast.dismissToast();
   }
 
   function handleFileClick(path: string) {
@@ -351,10 +349,10 @@ const App: Component = () => {
             onExport={handleDoExport}
             onClose={() => setShowExportDialog(false)}
           />
-          <Show when={toastMessage()}>
+          <Show when={toast.toastMessage()}>
             {(msg) => (
               <div class={styles.toastContainer}>
-                <Toast message={msg()} type={toastType()} onDismiss={handleDismissToast} />
+                <Toast message={msg()} type={toast.toastType()} onDismiss={handleDismissToast} />
               </div>
             )}
           </Show>
