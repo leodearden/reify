@@ -731,6 +731,57 @@ describe('createSelection', () => {
       expect(box3.expandByObject).toHaveBeenCalledTimes(1);
       expect(box3.expandByObject).toHaveBeenCalledWith(meshA);
     });
+
+    it('flyToEntity offsets camera along current view direction', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection, camera } = setup(meshMap);
+
+      // Mock camera looking along -X axis
+      (camera as any).getWorldDirection.mockImplementation((target: any) => {
+        target.x = -1;
+        target.y = 0;
+        target.z = 0;
+        return target;
+      });
+
+      (camera as any).position.x = 0;
+      (camera as any).position.y = 0;
+      (camera as any).position.z = 0;
+
+      selection.flyToEntity('A');
+
+      // Camera should be offset along +X from center (opposite to view direction)
+      const pos = (camera as any).position;
+      expect(pos.x).toBeGreaterThan(0.5);
+      expect(pos.y).toBeCloseTo(0.5);
+      expect(pos.z).toBeCloseTo(0.5);
+    });
+
+    it('flyToEntity updates controls.target to entity bounding box center', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const controls = createMockControls();
+      const { selection } = setup(meshMap, controls);
+
+      selection.flyToEntity('A');
+
+      expect(controls.target.copy).toHaveBeenCalled();
+      const copyArg = controls.target.copy.mock.calls[0][0];
+      expect(copyArg.x).toBeCloseTo(0.5);
+      expect(copyArg.y).toBeCloseTo(0.5);
+      expect(copyArg.z).toBeCloseTo(0.5);
+    });
+
+    it('flyToEntity with unknown entity does not crash or update controls.target', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const controls = createMockControls();
+      const { selection } = setup(meshMap, controls);
+
+      expect(() => selection.flyToEntity('Unknown')).not.toThrow();
+      expect(controls.target.copy).not.toHaveBeenCalled();
+    });
   });
 
   describe('hover raycasting', () => {
