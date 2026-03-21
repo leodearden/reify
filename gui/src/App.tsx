@@ -36,6 +36,7 @@ import {
 } from './navigation';
 import type { ExportFormat, FileData, SourceLocation, ConstraintData } from './types';
 import { applyTheme } from './theme';
+import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
 import styles from './App.module.css';
 
 const MIN_PANEL_WIDTH = 150;
@@ -51,9 +52,22 @@ const App: Component = () => {
     onEntityRemoved: (id) => selectionStore.clearIfRemoved(id),
   });
 
-  const [editorWidth, setEditorWidth] = createSignal(DEFAULT_EDITOR_WIDTH);
-  const [sideWidth, setSideWidth] = createSignal(DEFAULT_SIDE_WIDTH);
-  const [propertyHeight, setPropertyHeight] = createSignal(DEFAULT_PROPERTY_HEIGHT);
+  const savedLayout = loadPanelLayout();
+  const [editorWidth, setEditorWidth] = createSignal(savedLayout?.editorWidth ?? DEFAULT_EDITOR_WIDTH);
+  const [sideWidth, setSideWidth] = createSignal(savedLayout?.sideWidth ?? DEFAULT_SIDE_WIDTH);
+  const [propertyHeight, setPropertyHeight] = createSignal(savedLayout?.propertyHeight ?? DEFAULT_PROPERTY_HEIGHT);
+
+  // Debounced persistence of panel layout dimensions
+  let saveTimeout: ReturnType<typeof setTimeout> | undefined;
+  createEffect(() => {
+    const layout = {
+      editorWidth: editorWidth(),
+      sideWidth: sideWidth(),
+      propertyHeight: propertyHeight(),
+    };
+    clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(() => savePanelLayout(layout), 300);
+  });
 
   // Init phase: loading → ready | error
   const [initPhase, setInitPhase] = createSignal<'loading' | 'ready' | 'error'>('loading');
