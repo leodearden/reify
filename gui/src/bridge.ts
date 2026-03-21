@@ -120,3 +120,30 @@ export async function onFileChanged(
     callback(event.payload);
   });
 }
+
+/** Subscribe to mesh removal events. */
+export async function onMeshRemoved(
+  callback: (entityPath: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>('mesh-removed', (event) => {
+    callback(event.payload);
+  });
+}
+
+/** Subscribe to value removal events. */
+export async function onValueRemoved(
+  callback: (cellId: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>('value-removed', (event) => {
+    callback(event.payload);
+  });
+}
+
+/** Subscribe to constraint removal events. */
+export async function onConstraintRemoved(
+  callback: (nodeId: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>('constraint-removed', (event) => {
+    callback(event.payload);
+  });
+}

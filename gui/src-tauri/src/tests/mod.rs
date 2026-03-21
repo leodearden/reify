@@ -1,6 +1,8 @@
 mod engine_tests;
 mod types_tests;
 mod commands_tests;
+mod diff_tests;
+mod watcher_tests;
 
 // Step 11: Module structure verification — importing all public types.
 #[test]
