@@ -50,6 +50,24 @@ fn collection_member_typo_produces_diagnostic() {
         errors
     );
 }
+// ── M7: compile_field returns direct value ──────────────────────────────
+
+#[test]
+fn compile_field_returns_direct_value() {
+    // Regression guard: fields should compile successfully and be present
+    // in compiled.fields, both before and after the Option removal refactor.
+    let source = r#"
+        field def temp : Point3 -> Scalar {
+            source = analytical { |p| p }
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    assert_eq!(module.fields.len(), 1, "expected 1 compiled field");
+    assert_eq!(module.fields[0].name, "temp");
+}
+
 // ── H3: geometry call diagnostics ──────────────────────────────────────
 
 #[test]
