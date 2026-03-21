@@ -286,6 +286,59 @@ describe('createSelection', () => {
     });
   });
 
+  describe('click-based selection raycasting', () => {
+    it('calls onSelect with mesh.name on pointerdown intersection', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      const event = new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      });
+      domElement.dispatchEvent(event);
+
+      expect(onSelect).toHaveBeenCalledWith('A');
+    });
+
+    it('calls onSelect with null on pointerdown miss', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([]);
+
+      const event = new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      });
+      domElement.dispatchEvent(event);
+
+      expect(onSelect).toHaveBeenCalledWith(null);
+    });
+
+    it('uses raycaster with same NDC computation as hover', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement } = setup(meshMap);
+
+      const event = new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      });
+      domElement.dispatchEvent(event);
+
+      expect(mockRaycasterSetFromCamera).toHaveBeenCalledTimes(1);
+      const ndcArg = mockRaycasterSetFromCamera.mock.calls[0][0];
+      expect(ndcArg.x).toBeCloseTo(0, 1);
+      expect(ndcArg.y).toBeCloseTo(0, 1);
+    });
+  });
+
   describe('hover raycasting', () => {
     it('calls raycaster.setFromCamera with NDC coords on pointermove', () => {
       const meshA = createMockMesh('A');
