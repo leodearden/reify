@@ -1,0 +1,132 @@
+{
+  "task_id": "102",
+  "title": "Fix viewport click-vs-drag and camera control bugs",
+  "files": [
+    "gui/src/viewport/selection.ts",
+    "gui/src/viewport/Viewport.tsx",
+    "gui/src/__tests__/viewport/selection.test.ts",
+    "gui/src/__tests__/viewport/Viewport.test.tsx"
+  ],
+  "modules": [
+    "gui/src/viewport",
+    "gui/src/__tests__/viewport"
+  ],
+  "analysis": "Three high-severity viewport interaction bugs need fixing:\n\n**V-10 (click-vs-drag):** In selection.ts line 97-100, `handlePointerDown` calls `raycast()` and `onSelect()` synchronously on every `pointerdown` event. This means every orbit-drag start fires an unwanted selection. Fix: track pointerdown position, add pointerup listener, only fire onSelect if pointer moved < 5px (standard click threshold). Existing tests in 'click-based selection raycasting' and 'rAF-throttled pointermove' sections dispatch `pointerdown` and expect immediate `onSelect` \u2014 these must be updated to dispatch pointerdown+pointerup.\n\n**V-02 (Z-axis offset):** Both `fitToView` (line 175-176) and `flyToEntity` (line 199-200) do `camera.position.copy(center); camera.position.z += distance;` \u2014 this always offsets along world Z axis regardless of current view angle. Fix: use `camera.getWorldDirection()` to get current view direction, then position camera at `center - viewDir * distance`.\n\n**V-03 (controls.target stale):** After fitToView/flyToEntity reposition the camera, `OrbitControls.target` is never updated. Subsequent orbit rotation pivots around the old target point, producing broken behavior. Fix: accept a controls reference in SelectionOptions, update `controls.target.copy(center)` in both fitToView and flyToEntity.\n\nV-02 and V-03 are tightly coupled \u2014 both require changes to fitToView/flyToEntity and the SelectionOptions interface. The controls object (with its .target Vector3) needs to be threaded from Viewport.tsx into createSelection.\n\nExisting test infrastructure (selection.test.ts) uses extensive Three.js mocks. The MockVector3 needs `sub()` and `multiplyScalar()` methods, and MockPerspectiveCamera needs `getWorldDirection()` to support the V-02 fix tests.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Extend mock classes in selection.test.ts: add `sub(v)`, `multiplyScalar(s)` to MockVector3; add `getWorldDirection(target)` to MockPerspectiveCamera. These are needed for V-02/V-03 tests but should be added upfront to avoid mixing mock infrastructure changes with test logic.",
+      "status": "done",
+      "commit": "0f2ddec",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "V-10: Write failing tests for click-vs-drag discrimination in selection.test.ts. New describe block 'click-vs-drag discrimination' with tests: (1) pointerdown alone does NOT fire onSelect, (2) pointerdown+pointerup at same position fires onSelect with raycasted entity, (3) pointerdown+pointerup with >5px movement does NOT fire onSelect, (4) pointerdown+pointerup with <=5px movement fires onSelect, (5) onSelect receives null when pointerup raycast misses, (6) after dispose, pointerup does not fire onSelect.",
+      "status": "done",
+      "commit": "a38392f"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "V-10: Implement click-vs-drag discrimination in selection.ts. Replace `handlePointerDown` (which fires onSelect immediately) with: (a) `handlePointerDown` that records {clientX, clientY} and adds a one-shot pointerup listener, (b) `handlePointerUp` that computes Euclidean distance from pointerdown position and only calls raycast()+onSelect() if distance < 5px. Update dispose() to also remove pointerup listener. Update existing 'click-based selection raycasting' tests and 'rAF-throttled pointermove / pointerdown still raycasts synchronously' test to dispatch both pointerdown+pointerup events instead of just pointerdown.",
+      "status": "done",
+      "commit": "4351054"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "V-02/V-03: Write failing tests for fitToView with view-direction offset and controls.target update. In selection.test.ts, add tests: (1) fitToView offsets camera along current view direction (not just Z) \u2014 set camera at an angle, verify position is center - viewDir*distance, (2) fitToView updates controls.target to bounding box center when controls provided via SelectionOptions, (3) fitToView still works without controls (backward compat). Update setup() to optionally accept a controls mock with a target Vector3.",
+      "status": "done",
+      "commit": "0ada03b"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "V-02/V-03: Fix fitToView in selection.ts. Add optional `controls?: { target: { copy: (v: any) => void } }` field to SelectionOptions interface. In fitToView(): (a) get view direction via `camera.getWorldDirection(dir)`, (b) position camera at `center - viewDir * distance` instead of just Z offset, (c) if controls provided, set `controls.target.copy(center)`. Update existing fitToView tests that asserted Z-only offset to match new view-direction behavior.",
+      "status": "done",
+      "commit": "19993ce"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "V-02/V-03: Write failing tests for flyToEntity with view-direction offset and controls.target update. Tests: (1) flyToEntity offsets camera along current view direction, (2) flyToEntity updates controls.target to entity bounding box center, (3) flyToEntity with unknown entity does not crash or update controls.target.",
+      "status": "done",
+      "commit": "0b68dd9"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "V-02/V-03: Fix flyToEntity in selection.ts. Apply same view-direction offset and controls.target update pattern as fitToView. Update existing flyToEntity tests that asserted Z-only offset.",
+      "status": "done",
+      "commit": "e26758b"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Viewport integration: Write failing test in Viewport.test.tsx verifying that createSelection is called with a controls option containing the OrbitControls instance from createControls. Assert that the mock createSelection receives `controls` in its options argument.",
+      "status": "done",
+      "commit": "1ecc92c"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Viewport integration: Update Viewport.tsx to pass `controls: controls.controls` (the OrbitControls instance from ControlsContext) to createSelection's options. This threads the controls.target through so fitToView/flyToEntity can update it.",
+      "status": "done",
+      "commit": "80eed75"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use duck-typed controls interface `{ target: { copy: (v: any) => void } }` in SelectionOptions rather than importing OrbitControls type directly",
+      "rationale": "Keeps selection.ts decoupled from the specific controls implementation. Any controls object with a target Vector3 will work, improving testability and flexibility."
+    },
+    {
+      "decision": "5px Euclidean distance threshold for click-vs-drag discrimination",
+      "rationale": "Standard UX threshold used by most drag-detection libraries. Below 5px is within normal pointer jitter for intentional clicks. Matches the task description recommendation."
+    },
+    {
+      "decision": "Listen for pointerup on domElement (not document) for click detection",
+      "rationale": "If the user starts a drag on the viewport and releases outside, we correctly treat it as a drag (no selection). This matches OrbitControls' own event scope and avoids global listener cleanup complexity."
+    },
+    {
+      "decision": "Record pointerdown position and use pointerup for selection instead of timing-based approach",
+      "rationale": "Position-based discrimination is more robust than timing-based. A slow deliberate click should still select, and a fast small drag should not. Distance is the correct discriminator."
+    },
+    {
+      "decision": "Camera repositioning uses getWorldDirection to maintain viewing angle",
+      "rationale": "When a user hits 'Fit to View', they expect the scene to fill the viewport while preserving their current viewing angle (e.g., looking from above). Offsetting only along Z always shows the front-on view, which is disorienting if the user was looking from a different angle."
+    },
+    {
+      "decision": "Make controls optional in SelectionOptions for backward compatibility",
+      "rationale": "The selection system should work without controls (e.g., in tests or headless usage). When controls is not provided, fitToView/flyToEntity simply skip the target update."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Existing mock infrastructure in selection.test.ts (MockVector3, MockPerspectiveCamera, MockBox3, setup() helper, createMockDomElement, createMockMesh)",
+      "where": "gui/src/__tests__/viewport/selection.test.ts",
+      "how": "Extend existing mock classes with new methods (sub, multiplyScalar, getWorldDirection) rather than creating new mocks. Reuse setup() helper with minor additions for controls parameter."
+    },
+    {
+      "what": "Existing raycaster and NDC computation in selection.ts",
+      "where": "gui/src/viewport/selection.ts lines 58-73",
+      "how": "The click-vs-drag fix reuses the existing raycast() function \u2014 it just delays the call from pointerdown to pointerup after threshold check."
+    },
+    {
+      "what": "Existing Viewport.test.tsx mock structure for createSelection",
+      "where": "gui/src/__tests__/viewport/Viewport.test.tsx lines 74-83",
+      "how": "The mock for createSelection already captures its options argument. We can inspect the captured options to verify controls is passed."
+    },
+    {
+      "what": "ControlsContext.controls property already exposes OrbitControls instance",
+      "where": "gui/src/viewport/controls.ts line 5, 26",
+      "how": "No changes needed to controls.ts \u2014 the OrbitControls instance with its .target property is already accessible via ControlsContext.controls."
+    }
+  ],
+  "_session_id": "102-45ac47a8",
+  "_created_at": "2026-03-21T17:10:32.378187+00:00"
+}
