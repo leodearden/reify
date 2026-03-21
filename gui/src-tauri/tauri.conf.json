@@ -17,6 +17,41 @@
     ]
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "targets": ["deb", "appimage", "dmg", "msi", "nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "shortDescription": "Parametric CAD with constraint-based modeling",
+    "longDescription": "Reify is a declarative parametric CAD tool that uses constraint-based modeling with a custom language (.ri files) for defining geometry, parameters, and constraints.",
+    "fileAssociations": [
+      {
+        "ext": ["ri"],
+        "mimeType": "text/x-reify",
+        "description": "Reify design file"
+      }
+    ],
+    "resources": [
+      "lib/*.so",
+      "lib/*.dylib",
+      "lib/*.dll"
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256"
+    }
   }
 }
