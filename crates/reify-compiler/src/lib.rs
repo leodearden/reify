@@ -4831,4 +4831,36 @@ mod tests {
             op
         );
     }
+
+    // --- Step 11: Directly test the catch-all branch in compile_geometry_call ---
+
+    #[test]
+    fn unsupported_geometry_fn_emits_diagnostic() {
+        // Fabricate a FunctionCall expr with a name that is NOT in the
+        // compile_geometry_call match arms (e.g., "make_cube").  This directly
+        // exercises the `_ =>` catch-all branch added in step-4.
+        let expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "make_cube".to_string(),
+                args: vec![reify_syntax::Expr {
+                    kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                    span: reify_types::SourceSpan::new(0, 1),
+                }],
+            },
+            span: reify_types::SourceSpan::new(0, 10),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let result = compile_geometry_call(&expr, &scope, &enum_defs, &functions, &mut diagnostics);
+
+        assert!(result.is_none(), "unrecognized geometry fn should return None");
+        assert!(
+            diagnostics.iter().any(|d| d.message.contains("unsupported geometry function")),
+            "expected 'unsupported geometry function' diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
 }

@@ -141,7 +141,7 @@ trait Bounded {
 // ── H3: geometry call diagnostics ──────────────────────────────────────
 
 #[test]
-fn geometry_call_wrong_arg_count_produces_diagnostic() {
+fn box_wrong_arg_count_produces_preexisting_diagnostic() {
     // box() expects 3 arguments — passing only 2 should produce a diagnostic
     let source = r#"
         structure S {
