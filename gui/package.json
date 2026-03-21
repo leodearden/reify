@@ -14,16 +14,17 @@
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.0",
+    "@codemirror/commands": "^6.3.0",
     "@codemirror/language": "^6.10.0",
     "@codemirror/lint": "^6.8.0",
     "@codemirror/state": "^6.4.0",
-    "@codemirror/commands": "^6.3.0",
     "@codemirror/view": "^6.26.0",
     "@lezer/highlight": "^1.2.0",
     "@lezer/lr": "^1.4.0",
     "@tauri-apps/api": "^2.0.0",
     "solid-js": "^1.9.0",
-    "three": "^0.183.2"
+    "three": "^0.183.2",
+    "three-mesh-bvh": "^0.9.9"
   },
   "devDependencies": {
     "@lezer/generator": "^1.7.0",
