@@ -192,3 +192,62 @@ fn implication_forced_a_true_implies_b_true() {
         other => panic!("expected Solved, got {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// step-7: cardinality — at most 2 of [a, b, c, d] are true
+// ---------------------------------------------------------------------------
+
+/// At most 2 of 4 booleans are true — encoded by forbidding all 3-element subsets.
+#[test]
+fn cardinality_at_most_2_of_4() {
+    let solver = CpSatSolver;
+
+    let a_id = vcid("Part", "a");
+    let b_id = vcid("Part", "b");
+    let c_id = vcid("Part", "c");
+    let d_id = vcid("Part", "d");
+
+    let a_ref = value_ref_typed("Part", "a", Type::Bool);
+    let b_ref = value_ref_typed("Part", "b", Type::Bool);
+    let c_ref = value_ref_typed("Part", "c", Type::Bool);
+    let d_ref = value_ref_typed("Part", "d", Type::Bool);
+
+    // Forbid each 3-subset: !(a && b && c), !(a && b && d), !(a && c && d), !(b && c && d)
+    let c1 = not(and(a_ref.clone(), and(b_ref.clone(), c_ref.clone())));
+    let c2 = not(and(a_ref.clone(), and(b_ref.clone(), d_ref.clone())));
+    let c3 = not(and(a_ref.clone(), and(c_ref.clone(), d_ref.clone())));
+    let c4 = not(and(b_ref.clone(), and(c_ref.clone(), d_ref.clone())));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam { id: a_id.clone(), param_type: Type::Bool, bounds: None },
+            AutoParam { id: b_id.clone(), param_type: Type::Bool, bounds: None },
+            AutoParam { id: c_id.clone(), param_type: Type::Bool, bounds: None },
+            AutoParam { id: d_id.clone(), param_type: Type::Bool, bounds: None },
+        ],
+        constraints: vec![
+            (cnid("Part", 0), c1),
+            (cnid("Part", 1), c2),
+            (cnid("Part", 2), c3),
+            (cnid("Part", 3), c4),
+        ],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let count_true = [&a_id, &b_id, &c_id, &d_id]
+                .iter()
+                .filter(|id| values.get(id) == Some(&Value::Bool(true)))
+                .count();
+            assert!(
+                count_true <= 2,
+                "expected at most 2 true, got {count_true}"
+            );
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
