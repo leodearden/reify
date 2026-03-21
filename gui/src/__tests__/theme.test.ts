@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { THEME_TOKENS, applyTheme } from '../theme';
+import { THEME_TOKENS, applyTheme, camelToKebab } from '../theme';
 
 describe('THEME_TOKENS', () => {
   it('has all required color keys', () => {
@@ -96,6 +96,28 @@ describe('THEME_TOKENS', () => {
         `CSS variable ${cssVar} should be set to ${value}`,
       ).toBe(value);
     }
+  });
+
+  it('camelToKebab inserts hyphen before digit sequences followed by letters', () => {
+    // Digit sequences followed by letters should get a hyphen before them
+    expect(camelToKebab('space2xl')).toBe('space-2xl');
+    expect(camelToKebab('space3xl')).toBe('space-3xl');
+
+    // Trailing digits without following letters should NOT get a hyphen
+    expect(camelToKebab('surface0')).toBe('surface0');
+    expect(camelToKebab('overlay0')).toBe('overlay0');
+    expect(camelToKebab('surface1')).toBe('surface1');
+    expect(camelToKebab('surface2')).toBe('surface2');
+
+    // Existing uppercase handling still works
+    expect(camelToKebab('spaceXs')).toBe('space-xs');
+    expect(camelToKebab('surfaceHover')).toBe('surface-hover');
+
+    // Verify applyTheme produces correct CSS variable names for spacing tokens
+    applyTheme();
+    const style = document.documentElement.style;
+    expect(style.getPropertyValue('--reify-space-2xl')).toBe('20px');
+    expect(style.getPropertyValue('--reify-space-3xl')).toBe('24px');
   });
 
   it('applyTheme works synchronously without requiring a component mount', () => {

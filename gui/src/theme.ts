@@ -36,7 +36,7 @@ export const THEME_TOKENS: Record<string, string> = {
   radiusLg: '8px',
 };
 
-function camelToKebab(str: string): string {
+export function camelToKebab(str: string): string {
   return str.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
 }
 
