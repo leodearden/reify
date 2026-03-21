@@ -922,27 +922,6 @@ impl Engine {
                             );
                         }
 
-                        // Create synthetic __list_{name} cell: gather first param value from each instance
-                        let first_param = child_template.value_cells.iter().find(|c| c.kind == ValueCellKind::Param);
-                        if let Some(param_cell) = first_param {
-                            let list_items: Vec<Value> = (0..n)
-                                .map(|idx| {
-                                    let scoped_id = ValueCellId::new(
-                                        format!("{}.{}[{}]", template.name, sub.name, idx),
-                                        &param_cell.id.member,
-                                    );
-                                    values.get(&scoped_id).cloned().unwrap_or(Value::Undef)
-                                })
-                                .collect();
-                            let list_cell_id = ValueCellId::new(&template.name, format!("__list_{}", sub.name));
-                            let list_val = Value::List(list_items);
-                            values.insert(list_cell_id.clone(), list_val.clone());
-                            snapshot.values.insert(
-                                list_cell_id,
-                                (list_val, DeterminacyState::Determined),
-                            );
-                        }
-
                         // Create per-member synthetic lists: __list_{name}__{member} for each value cell
                         for child_cell in &child_template.value_cells {
                             let member_items: Vec<Value> = (0..n)
@@ -1675,26 +1654,6 @@ impl Engine {
                             (val, DeterminacyState::Determined),
                         );
                     }
-                }
-
-                // Update synthetic __list_{name} cell with new instance values
-                if let Some(first_member) = col_sub.child_value_cells.first() {
-                    let list_items: Vec<Value> = (0..new_count)
-                        .map(|idx| {
-                            let scoped_id = ValueCellId::new(
-                                format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, idx),
-                                &first_member.0,
-                            );
-                            values.get(&scoped_id).cloned().unwrap_or(Value::Undef)
-                        })
-                        .collect();
-                    let list_cell_id = ValueCellId::new(&col_sub.parent_entity, format!("__list_{}", col_sub.sub_name));
-                    let list_val = Value::List(list_items);
-                    values.insert(list_cell_id.clone(), list_val.clone());
-                    new_snapshot.values.insert(
-                        list_cell_id,
-                        (list_val, DeterminacyState::Determined),
-                    );
                 }
 
                 // Update per-member synthetic lists: __list_{name}__{member}

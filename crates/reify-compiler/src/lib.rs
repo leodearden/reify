@@ -703,8 +703,17 @@ fn compile_expr_guarded(
                     CompiledExpr::value_ref(id.clone(), ty.clone())
                 }
                 None => {
-                    // Check if this is a collection sub name — resolve to __list_{name}
+                    // Check if this is a collection sub name — resolve to per-member __list_{name}__{member}
                     if scope.collection_sub_names.contains(name.as_str()) {
+                        if let Some(members) = scope.collection_sub_member_types.get(name.as_str()) {
+                            // Resolve to the first member's per-member list
+                            if let Some((first_member, member_ty)) = members.iter().next() {
+                                let list_id = ValueCellId::new(&scope.entity_name, format!("__list_{}__{}", name, first_member));
+                                let list_type = Type::List(Box::new(member_ty.clone()));
+                                return CompiledExpr::value_ref(list_id, list_type);
+                            }
+                        }
+                        // Fallback: no member types available
                         let list_id = ValueCellId::new(&scope.entity_name, format!("__list_{}", name));
                         let list_type = Type::List(Box::new(Type::StructureRef(name.clone())));
                         return CompiledExpr::value_ref(list_id, list_type);
@@ -898,12 +907,7 @@ fn compile_expr_guarded(
                     if let Some((id, ty)) = scope.resolve(&composite_key) {
                         let id = id.clone();
                         let ty = ty.clone();
-                        let content_hash = ContentHash::of_str(&format!("ref:{}", composite_key));
-                        return CompiledExpr {
-                            kind: CompiledExprKind::ValueRef(id),
-                            result_type: ty,
-                            content_hash,
-                        };
+                        return CompiledExpr::value_ref(id, ty);
                     } else {
                         diagnostics.push(
                             Diagnostic::error(format!(
@@ -930,15 +934,17 @@ fn compile_expr_guarded(
 
                 // For literal integer index, resolve directly to a scoped ValueRef
                 if let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind {
+                    if n.fract() != 0.0 || *n < 0.0 {
+                        diagnostics.push(
+                            Diagnostic::error("collection index must be a non-negative integer literal")
+                                .with_label(DiagnosticLabel::new(expr.span, "invalid index")),
+                        );
+                        return CompiledExpr::literal(Value::Undef, member_type);
+                    }
                     let i = *n as i64;
                     let scoped_entity = format!("{}.{}[{}]", scope.entity_name, name, i);
                     let scoped_id = ValueCellId::new(&scoped_entity, member);
-                    let content_hash = ContentHash::of_str(&format!("ref:{}.{}[{}].{}", scope.entity_name, name, i, member));
-                    return CompiledExpr {
-                        kind: CompiledExprKind::ValueRef(scoped_id),
-                        result_type: member_type,
-                        content_hash,
-                    };
+                    return CompiledExpr::value_ref(scoped_id, member_type);
                 }
                 // For non-literal index, compile as IndexAccess into a per-member synthetic list.
                 // The eval engine creates __list_{name}__{member} cells that gather each
@@ -967,12 +973,7 @@ fn compile_expr_guarded(
                 // Resolve to the synthetic __count_ cell
                 let count_member = format!("__count_{}", name);
                 let count_id = ValueCellId::new(&scope.entity_name, &count_member);
-                let content_hash = ContentHash::of_str(&format!("ref:{}.{}", scope.entity_name, count_member));
-                return CompiledExpr {
-                    kind: CompiledExprKind::ValueRef(count_id),
-                    result_type: Type::Int,
-                    content_hash,
-                };
+                return CompiledExpr::value_ref(count_id, Type::Int);
             }
 
             // For non-port member access, check if it's a known collection method

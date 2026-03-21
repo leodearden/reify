@@ -378,13 +378,13 @@ fn eval_collection_list_aggregation() {
             "Bolt",
             ValueCellId::new("Parent", "__count_bolts"),
         )
-        // Let binding that references the synthetic list of bolt grades
+        // Let binding that references the per-member synthetic list of bolt grades
         .let_binding(
             "Parent",
             "grades",
             Type::List(Box::new(Type::Real)),
             CompiledExpr::value_ref(
-                ValueCellId::new("Parent", "__list_bolts"),
+                ValueCellId::new("Parent", "__list_bolts__grade"),
                 Type::List(Box::new(Type::Real)),
             ),
         )
@@ -399,20 +399,18 @@ fn eval_collection_list_aggregation() {
     let mut engine = Engine::new(Box::new(checker), None);
     let result = engine.eval(&module);
 
-    // The synthetic __list_bolts cell should exist as a List of instance grade values.
-    // For each collection instance, the engine gathers the child param values.
+    // The per-member synthetic __list_bolts__grade cell should exist as a List of instance grade values.
     // Since Bolt has one param (grade=8.8), the list is [Real(8.8), Real(8.8), Real(8.8)].
-    let list_id = ValueCellId::new("Parent", "__list_bolts");
+    let list_id = ValueCellId::new("Parent", "__list_bolts__grade");
     let list_val = result.values.get(&list_id);
     assert!(
         list_val.is_some(),
-        "should have synthetic __list_bolts cell with a List value"
+        "should have synthetic __list_bolts__grade cell with a List value"
     );
 
     match list_val.unwrap() {
         Value::List(items) => {
-            assert_eq!(items.len(), 3, "should have 3 items in bolt list");
-            // Each item should be Real(8.8) — the single param value for each Bolt instance
+            assert_eq!(items.len(), 3, "should have 3 items in bolt grade list");
             for item in items {
                 assert_eq!(item, &Value::Real(8.8), "each bolt grade should be 8.8");
             }
@@ -420,7 +418,7 @@ fn eval_collection_list_aggregation() {
         other => panic!("expected List, got {:?}", other),
     }
 
-    // The grades let binding (which references __list_bolts) should have the same value
+    // The grades let binding (which references __list_bolts__grade) should have the same value
     let grades_id = ValueCellId::new("Parent", "grades");
     let grades_val = result.values.get(&grades_id);
     assert!(

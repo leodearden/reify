@@ -418,14 +418,14 @@ fn compile_collection_sub_as_standalone_identifier() {
 
     let expr = grades_cell.default_expr.as_ref().expect("grades should have an expression");
 
-    // Should be a ValueRef to __list_bolts, not Literal(Undef)
+    // Should be a ValueRef to __list_bolts__grade (first member's per-member list), not Literal(Undef)
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
             assert_eq!(id.entity, "S", "entity should be S");
-            assert_eq!(id.member, "__list_bolts", "member should be __list_bolts");
+            assert_eq!(id.member, "__list_bolts__grade", "member should be __list_bolts__grade");
         }
         other => panic!(
-            "expected ValueRef(S.__list_bolts), got {:?}",
+            "expected ValueRef(S.__list_bolts__grade), got {:?}",
             other
         ),
     }
