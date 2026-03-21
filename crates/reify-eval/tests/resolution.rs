@@ -721,3 +721,55 @@ fn objective_forwarded_in_concurrent_edit() {
         problem.objective
     );
 }
+
+#[test]
+fn no_objective_backward_compatible() {
+    // Regression guard: when a template has NO objective, eval() and edit_param()
+    // should still pass objective: None to the solver (existing behavior preserved).
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let limit_id = ValueCellId::new("S", "limit");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+
+    let spy = SpyConstraintSolver::new_solved(solved_values);
+    let captured = spy.captured_problem();
+
+    // Template with NO objective declared
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
+        .constraint("S", 0, None, gt(value_ref("S", "thickness"), value_ref("S", "limit")))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(spy));
+
+    // eval() with no objective: spy should capture problem with objective=None
+    engine.eval(&module);
+    {
+        let guard = captured.lock().unwrap();
+        let problem = guard.as_ref().expect("solver should have been called during eval");
+        assert!(
+            problem.objective.is_none(),
+            "expected None objective for template without objective, got {:?}",
+            problem.objective
+        );
+    }
+
+    // edit_param() with no objective: spy should still capture objective=None
+    let _result = engine.edit_param(limit_id.clone(), mm(3.0)).unwrap();
+    {
+        let guard = captured.lock().unwrap();
+        let problem = guard.as_ref().expect("solver should have been called during edit_param");
+        assert!(
+            problem.objective.is_none(),
+            "expected None objective in edit_param for template without objective, got {:?}",
+            problem.objective
+        );
+    }
+}
