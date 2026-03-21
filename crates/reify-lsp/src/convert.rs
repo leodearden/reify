@@ -508,6 +508,25 @@ mod tests {
     }
 
     #[test]
+    fn position_to_offset_char_past_end_of_last_line() {
+        let source = "abc\ndef";
+        // Line 1 ("def") has 3 chars. Position(1, 10) is past end of line.
+        // Should clamp to source.len() since it's the last line.
+        assert_eq!(
+            position_to_offset(source, Position::new(1, 10)),
+            source.len()
+        );
+    }
+
+    #[test]
+    fn position_to_offset_char_past_end_of_middle_line() {
+        let source = "abc\nde\nfgh";
+        // Line 1 ("de") has 2 chars. Position(1, 10) is past end of that line.
+        // Should clamp to the newline position (byte offset 6).
+        assert_eq!(position_to_offset(source, Position::new(1, 10)), 6);
+    }
+
+    #[test]
     fn find_word_past_end() {
         let source = "abc";
         assert_eq!(find_word_at_offset(source, 3), None);
