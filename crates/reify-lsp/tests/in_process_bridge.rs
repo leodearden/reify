@@ -178,3 +178,48 @@ async fn goto_definition_returns_location() {
         "goto-definition result should have a URI"
     );
 }
+
+#[tokio::test]
+async fn diagnostics_captured_after_did_open_with_syntax_error() {
+    let lsp = InProcessLsp::new();
+
+    lsp.handle_request("initialize", json!({}))
+        .await
+        .unwrap();
+    lsp.handle_request("initialized", json!({}))
+        .await
+        .unwrap();
+
+    // Open a document with a syntax error
+    let broken_source = "structure {";
+    let uri = "file:///broken.ri";
+    lsp.handle_request(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "reify",
+                "version": 1,
+                "text": broken_source
+            }
+        }),
+    )
+    .await
+    .unwrap();
+
+    // Get diagnostics from the bridge
+    let diags = lsp.get_diagnostics(uri);
+    assert!(
+        !diags.is_empty(),
+        "should have diagnostics for broken source"
+    );
+
+    // Check at least one is an error
+    let has_error = diags.iter().any(|d| {
+        d.get("severity")
+            .and_then(|s| s.as_u64())
+            .map(|s| s == 1) // DiagnosticSeverity::ERROR = 1
+            .unwrap_or(false)
+    });
+    assert!(has_error, "should have at least one error diagnostic");
+}
