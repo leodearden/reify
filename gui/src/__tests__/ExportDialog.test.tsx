@@ -140,4 +140,18 @@ describe('ExportDialog', () => {
     expect(title).toBeTruthy();
     expect(title!.textContent).toBe('Export Geometry');
   });
+
+  // ── Label-select association (E-5) ─────────────────────────────────
+
+  it('label for attribute matches the select element id', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const label = screen.getByText('Format');
+    const forAttr = label.getAttribute('for');
+    expect(forAttr).toBeTruthy();
+    const select = document.getElementById(forAttr!) as HTMLSelectElement;
+    expect(select).toBeTruthy();
+    expect(select.tagName).toBe('SELECT');
+  });
 });
