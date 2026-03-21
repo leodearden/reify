@@ -9,7 +9,7 @@
 
 .main {
   display: grid;
-  grid-template-columns: 300px 1fr 300px;
+  /* grid-template-columns set inline via style for resizable panels */
   flex: 1;
   overflow: hidden;
 }
@@ -19,7 +19,6 @@
   flex-direction: column;
   overflow: hidden;
   background: var(--reify-editor-bg, #1e1e2e);
-  border-right: 1px solid var(--reify-border, #45475a);
 }
 
 .viewportPanel {
@@ -31,5 +30,4 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-left: 1px solid var(--reify-border, #45475a);
 }
