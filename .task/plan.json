@@ -21,7 +21,7 @@
     "gui/src-tauri",
     "crates/reify-cli"
   ],
-  "analysis": "This task has three main deliverables: (1) Configure Tauri v2 bundler in tauri.conf.json for cross-platform distribution, (2) Add a `reify gui <file>` subcommand to the CLI crate that launches the Tauri binary with the file argument, (3) Ensure OCCT linking works for bundled binaries.\n\nCurrent state:\n- gui/src-tauri/tauri.conf.json has basic config with bundle.active=false and minimal window config\n- gui/src-tauri/src/main.rs already handles CLI args for initial file loading (reads argv[1])\n- crates/reify-cli/src/main.rs uses hand-rolled arg parsing (no clap) with check/build/lsp subcommands\n- OCCT is dynamically linked via build.rs in reify-kernel-occt (uses dylib linkage + rpath)\n- No icons exist yet in gui/src-tauri/icons/\n- Existing CLI tests use `env!(\"CARGO_BIN_EXE_reify\")` pattern and std::process::Command\n\nApproach:\n1. Configure bundler in tauri.conf.json with cross-platform targets, app metadata, and icon paths\n2. Generate placeholder icons (Tauri v2 requires specific icon files)\n3. Add `gui` subcommand to reify-cli that spawns the reify-gui binary with the file path\n4. Add OCCT library bundling config for distribution (external libraries in bundle resources or rpath)\n5. Write tests: CLI help shows gui, gui subcommand validates args, bundler config is valid JSON with correct fields\n\nThe CLI `gui` subcommand will use std::process::Command to launch the separate reify-gui binary, passing the file path as argv[1] which the Tauri main.rs already reads. The reify-cli crate does NOT need to depend on tauri -- it just spawns the binary. For development, it finds the binary via a well-known path or PATH lookup.",
+  "analysis": "This task has three main deliverables: (1) Configure Tauri v2 bundler in tauri.conf.json for cross-platform distribution, (2) Add a `reify gui <file>` subcommand to the CLI crate that launches the Tauri binary with the file argument, (3) Ensure OCCT linking works for bundled binaries.\n\nCurrent state:\n- gui/src-tauri/tauri.conf.json has basic config with bundle.active=false and minimal window config\n- gui/src-tauri/src/main.rs already handles CLI args for initial file loading (reads argv[1])\n- crates/reify-cli/src/main.rs uses hand-rolled arg parsing (no clap) with check/build/lsp subcommands\n- OCCT is dynamically linked via build.rs in reify-kernel-occt (uses dylib linkage + rpath)\n- No icons exist yet in gui/src-tauri/icons/\n- Existing CLI tests use `env!(\"CARGO_BIN_EXE_reify\")` pattern and std::process::Command\n\nApproach:\n1. Configure bundler in tauri.conf.json with cross-platform targets, app metadata, and icon paths\n2. Generate placeholder icons (Tauri v2 requires specific icon files)\n3. Add `gui` subcommand to reify-cli that spawns the reify-gui binary with the file path\n4. Add OCCT library bundling config for distribution (external libraries in bundle resources or rpath)\n5. Write tests: CLI help shows gui, gui subcommand validates args, bundler config is valid JSON with correct fields\n\nThe CLI `gui` subcommand will use std::process::Command to launch the separate reify-gui binary, passing the file path as argv[1] which the Tauri main.rs already reads. The reify-cli crate does NOT need to depend on tauri -- it just spawns the binary. For development, it finds the binary via a well-known path or PATH lookup.\n\nREVIEW FIX: The `gui_with_valid_ri_file_attempts_launch` test hangs when `reify-gui` exists in the build directory (full workspace build). Fix by adding REIFY_GUI_SKIP_LAUNCH env var check to cmd_gui that skips the actual spawn, and setting it in the test.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -122,6 +122,27 @@
       "description": "Final integration verification: run `cargo test -p reify-cli` to ensure all CLI tests pass (smoke, gui, build, check tests). Run `cargo check -p reify-gui --features gui` to verify GUI crate compiles with bundler config changes. Verify all tests green.",
       "status": "done",
       "commit": "46dea4f"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Fix test hang on full workspace build: Update `gui_with_valid_ri_file_attempts_launch` in cli_gui.rs to set env var `REIFY_GUI_SKIP_LAUNCH=1` on the spawned command via `.env(\"REIFY_GUI_SKIP_LAUNCH\", \"1\")`. This makes the test deterministic -- it will always get the 'could not launch' error regardless of whether reify-gui exists in the build directory. The test will initially FAIL because cmd_gui doesn't check the env var yet and will actually spawn reify-gui if it exists.",
+      "status": "done",
+      "commit": "ee10f30"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Update `cmd_gui` in crates/reify-cli/src/main.rs to check for `REIFY_GUI_SKIP_LAUNCH` env var. After all argument validation passes (file exists, has .ri extension) but BEFORE spawning the binary, check `std::env::var(\"REIFY_GUI_SKIP_LAUNCH\")`. If it is set (any non-empty value), print the 'could not launch reify-gui' error message with a note '(launch skipped via REIFY_GUI_SKIP_LAUNCH)' and return FAILURE without spawning. This ensures the test passes deterministically and provides an escape hatch for CI environments. The existing error message format 'Error: could not launch reify-gui' must be preserved so the test assertion still matches.",
+      "status": "done",
+      "commit": "492d3dc"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Final re-verification: run `cargo test -p reify-cli` to ensure all CLI tests pass with the REIFY_GUI_SKIP_LAUNCH fix. Verify that gui_with_valid_ri_file_attempts_launch passes deterministically. Also verify the other gui tests (no file, nonexistent file, non-.ri file) still pass unaffected since they fail before reaching the launch gate.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
@@ -148,6 +169,10 @@
     {
       "decision": "Test gui subcommand validation without requiring reify-gui binary to be built",
       "rationale": "CLI tests should verify argument parsing and validation independently of whether the GUI binary exists. Tests check for specific error messages to distinguish validation errors from binary-not-found errors. This allows the tests to run in CI where only reify-cli is built."
+    },
+    {
+      "decision": "Gate GUI launch on REIFY_GUI_SKIP_LAUNCH env var to prevent test hangs in full workspace builds",
+      "rationale": "When `cargo build --workspace` is run, reify-gui exists in target/debug/ next to reify. The test `gui_with_valid_ri_file_attempts_launch` then spawns the real Tauri GUI which blocks indefinitely waiting for user interaction. By checking REIFY_GUI_SKIP_LAUNCH in cmd_gui before spawning, and setting it in the test, the test becomes deterministic regardless of build state. The env var check happens AFTER all argument validation, so validation tests are unaffected. This also serves as a useful CI escape hatch."
     }
   ],
   "reuse": [
@@ -183,5 +208,5 @@
     }
   ],
   "_session_id": "98-4a496d03",
-  "_created_at": "2026-03-21T07:53:18.184014+00:00"
+  "_created_at": "2026-03-21T08:17:26.397780+00:00"
 }
