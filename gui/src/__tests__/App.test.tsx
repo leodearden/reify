@@ -529,6 +529,63 @@ describe('App navigation wiring', () => {
   });
 });
 
+describe('App toast queue (TO-2)', () => {
+  async function triggerExport() {
+    // Open export dialog via toolbar Export button
+    fireEvent.click(screen.getByText('Export'));
+    await waitFor(() => expect(screen.getByTestId('export-dialog')).toBeTruthy());
+    // Click the Export button inside the dialog (not the toolbar one)
+    const dialog = screen.getByTestId('export-dialog');
+    const btns = dialog.querySelectorAll('button');
+    for (const b of btns) {
+      if (b.textContent === 'Export') {
+        fireEvent.click(b);
+        break;
+      }
+    }
+  }
+
+  it('successful export renders a toast in the queue', async () => {
+    vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
+    render(() => <App />);
+    await triggerExport();
+    await waitFor(() => {
+      expect(screen.getByTestId('toast')).toBeTruthy();
+    });
+  });
+
+  it('two sequential toasts are both visible simultaneously', async () => {
+    vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
+    render(() => <App />);
+
+    await triggerExport();
+    await waitFor(() => {
+      expect(screen.getAllByTestId('toast').length).toBeGreaterThanOrEqual(1);
+    });
+
+    await triggerExport();
+    await waitFor(() => {
+      expect(screen.getAllByTestId('toast').length).toBe(2);
+    });
+  });
+
+  it('dismissing one toast removes only that toast', async () => {
+    vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
+    render(() => <App />);
+
+    await triggerExport();
+    await waitFor(() => expect(screen.getAllByTestId('toast').length).toBeGreaterThanOrEqual(1));
+
+    await triggerExport();
+    await waitFor(() => expect(screen.getAllByTestId('toast').length).toBe(2));
+
+    // Dismiss first toast via Close button
+    const closeButtons = screen.getAllByLabelText('Close');
+    fireEvent.click(closeButtons[0]);
+    await waitFor(() => expect(screen.getAllByTestId('toast').length).toBe(1));
+  });
+});
+
 describe('App handleSetParameter error handling', () => {
   it('logs error when bridge.setParameter rejects', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
