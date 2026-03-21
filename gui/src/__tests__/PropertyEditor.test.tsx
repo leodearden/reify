@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { PropertyEditor } from '../panels/PropertyEditor';
 import type { ValueData } from '../types';
 
@@ -351,6 +352,26 @@ describe('PropertyEditor blur-commit', () => {
     fireEvent.input(input, { target: { value: '75' } });
     fireEvent.blur(input);
     expect(onSetParam).toHaveBeenCalledWith('c1', '75');
+  });
+});
+
+describe('PropertyEditor stale input', () => {
+  it('when not editing, input value updates when props.values changes', () => {
+    const [values, setValues] = createSignal<Record<string, ValueData>>({
+      c1: makeValue({ cell_id: 'c1', name: 'width', value: '10', determinacy: 'determined', entity_path: 'Bracket.width' }),
+    });
+    render(() => (
+      <PropertyEditor values={values()} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const input1 = screen.getByTestId('prop-row-c1').querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input1.value).toBe('10');
+
+    setValues({
+      c1: makeValue({ cell_id: 'c1', name: 'width', value: '20', determinacy: 'determined', entity_path: 'Bracket.width' }),
+    });
+    // Re-query since SolidJS may recreate DOM nodes
+    const input2 = screen.getByTestId('prop-row-c1').querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input2.value).toBe('20');
   });
 });
 
