@@ -1365,10 +1365,10 @@ pub fn compile(
     // This ensures fields can be referenced by name within structure expressions
     // (e.g., `sample(my_field, point)`).
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Field(field_def) = decl {
-            if let Some(compiled) = compile_field(field_def, &enum_defs, &functions, &mut diagnostics) {
-                fields.push(compiled);
-            }
+        if let reify_syntax::Declaration::Field(field_def) = decl
+            && let Some(compiled) = compile_field(field_def, &enum_defs, &functions, &mut diagnostics)
+        {
+            fields.push(compiled);
         }
     }
 
@@ -1594,6 +1594,7 @@ impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
 }
 
 /// Compile a single entity definition (structure or occurrence) into a topology template.
+#[allow(clippy::too_many_arguments)]
 fn compile_entity(
     structure: &EntityDefRef<'_>,
     entity_kind: EntityKind,
@@ -3764,7 +3765,7 @@ fn compile_field(
             CompiledFieldSource::Composed { expr } => expr.content_hash,
             CompiledFieldSource::Imported => ContentHash::of(&[0u8]),
         };
-        ContentHash::combine_all([name_hash, domain_hash, codomain_hash, source_hash].into_iter())
+        ContentHash::combine_all([name_hash, domain_hash, codomain_hash, source_hash])
     };
 
     Some(CompiledField {
@@ -3801,18 +3802,18 @@ fn walk_field_composition(
             if let Some(outer_field) = field_registry.get(function.name.as_str()) {
                 // Check if any argument is also a field call
                 for arg in args {
-                    if let CompiledExprKind::FunctionCall { function: inner_fn, .. } = &arg.kind {
-                        if let Some(inner_field) = field_registry.get(inner_fn.name.as_str()) {
-                            // inner_field's codomain should match outer_field's domain
-                            if inner_field.codomain_type != outer_field.domain_type {
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "field composition type mismatch: codomain of '{}' ({}) does not match domain of '{}' ({})",
-                                        inner_field.name, inner_field.codomain_type,
-                                        outer_field.name, outer_field.domain_type
-                                    )),
-                                );
-                            }
+                    if let CompiledExprKind::FunctionCall { function: inner_fn, .. } = &arg.kind
+                        && let Some(inner_field) = field_registry.get(inner_fn.name.as_str())
+                    {
+                        // inner_field's codomain should match outer_field's domain
+                        if inner_field.codomain_type != outer_field.domain_type {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "field composition type mismatch: codomain of '{}' ({}) does not match domain of '{}' ({})",
+                                    inner_field.name, inner_field.codomain_type,
+                                    outer_field.name, outer_field.domain_type
+                                )),
+                            );
                         }
                     }
                 }
