@@ -1,0 +1,22 @@
+.container {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+}
+
+.button {
+  padding: 4px 12px;
+  background: var(--reify-accent, #89b4fa);
+  color: var(--reify-background, #1e1e2e);
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.button:hover {
+  background: var(--reify-accent-hover, #74c7ec);
+}
