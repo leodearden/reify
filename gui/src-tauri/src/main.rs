@@ -16,6 +16,7 @@ use reify_geometry::DispatchPlanner;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{compute_delta, delta_to_events, StateDelta};
 use reify_gui::engine::EngineSession;
+use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
 use reify_gui::watcher::FileWatcher;
 use reify_kernel_occt::OcctKernelHandle;
@@ -208,9 +209,40 @@ fn focus_entity(app: tauri::AppHandle, entity_path: String) -> Result<(), String
 }
 
 #[tauri::command]
-fn lsp_request(_method: String, _params: String) -> Result<String, String> {
-    // Stub: LSP requests will be wired in a future milestone
-    Err("LSP not yet available in GUI mode".to_string())
+async fn lsp_request(
+    app: tauri::AppHandle,
+    bridge: tauri::State<'_, LspBridge>,
+    method: String,
+    params: String,
+) -> Result<String, String> {
+    // Extract URI before dispatch (for diagnostics emission after mutations)
+    let uri = if method == "textDocument/didOpen" || method == "textDocument/didChange" {
+        extract_document_uri(&params)
+    } else {
+        None
+    };
+
+    let result = reify_gui::lsp_bridge::lsp_request_impl(&bridge, &method, params).await?;
+
+    // After document mutations, emit diagnostics as a Tauri event
+    if let Some(uri) = uri {
+        let diags = bridge.get_diagnostics(&uri);
+        app.emit("diagnostics", serde_json::json!({
+            "uri": uri,
+            "diagnostics": diags,
+        }))
+        .ok();
+    }
+
+    Ok(result)
+}
+
+/// Extract the document URI from LSP params JSON.
+fn extract_document_uri(params: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(params).ok()?;
+    v["textDocument"]["uri"]
+        .as_str()
+        .map(|s| s.to_string())
 }
 
 fn main() {
@@ -241,8 +273,11 @@ fn main() {
         watcher: Mutex::new(None),
     };
 
+    let lsp_bridge = LspBridge::new();
+
     tauri::Builder::default()
         .manage(app_state)
+        .manage(lsp_bridge)
         .setup(move |app| {
             // If an initial file was loaded, start watching its parent directory
             if let Some(ref file_path) = initial_file {
