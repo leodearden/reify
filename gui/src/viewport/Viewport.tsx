@@ -23,6 +23,7 @@ export function Viewport(props: ViewportProps) {
   let containerRef!: HTMLDivElement;
   let doFitToView: (() => void) | undefined;
   const [showGrid, setShowGrid] = createSignal(true);
+  const [pointerPos, setPointerPos] = createSignal({ x: 8, y: 8 });
 
   onMount(() => {
     const rect = containerRef.getBoundingClientRect();
@@ -139,6 +140,13 @@ export function Viewport(props: ViewportProps) {
       ref={containerRef}
       data-testid="viewport-container"
       style={{ width: '100%', height: '100%', position: 'relative' }}
+      onMouseMove={(e) => {
+        const rect = containerRef.getBoundingClientRect();
+        setPointerPos({
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top,
+        });
+      }}
     >
       <canvas ref={canvasRef} data-testid="viewport-canvas" tabindex="0" aria-label="3D viewport" />
 
@@ -148,8 +156,8 @@ export function Viewport(props: ViewportProps) {
           data-testid="viewport-tooltip"
           style={{
             position: 'absolute',
-            top: '8px',
-            left: '8px',
+            top: `${pointerPos().y + 16}px`,
+            left: `${pointerPos().x + 16}px`,
             padding: '4px 8px',
             'background-color': 'var(--reify-surface, #2a2a3a)',
             color: 'var(--reify-text, #cdd6f4)',
