@@ -42,6 +42,29 @@ describe('THEME_TOKENS', () => {
     expect(typeof applyTheme).toBe('function');
   });
 
+  it('every CSS variable reference has a THEME_TOKENS entry', () => {
+    // Hardcoded list of all unique --reify-* variable names found in CSS files.
+    // When adding a new --reify-* CSS variable reference, add it here too.
+    const cssVariableNames = [
+      'background', 'surface', 'surface-hover', 'text', 'text-secondary',
+      'text-muted', 'accent', 'accent-hover', 'border', 'error', 'warning',
+      'success', 'editor-bg', 'viewport-bg', 'font-mono',
+      'surface0', 'surface1', 'surface2', 'subtext', 'overlay0', 'green', 'red',
+    ];
+
+    function kebabToCamel(str: string): string {
+      return str.replace(/-([a-z0-9])/g, (_, c) => c.toUpperCase());
+    }
+
+    for (const name of cssVariableNames) {
+      const camelKey = kebabToCamel(name);
+      expect(
+        THEME_TOKENS[camelKey],
+        `CSS uses --reify-${name} but THEME_TOKENS is missing key '${camelKey}'`,
+      ).toBeTruthy();
+    }
+  });
+
   it('applyTheme sets all tokens as CSS custom properties', () => {
     applyTheme();
     const style = document.documentElement.style;
