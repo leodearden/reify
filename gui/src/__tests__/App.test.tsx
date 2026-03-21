@@ -529,6 +529,80 @@ describe('App navigation wiring', () => {
   });
 });
 
+describe('App initialization loading state', () => {
+  it('shows app-loading while getInitialState is pending', async () => {
+    // Create a deferred promise so getInitialState stays pending
+    let resolveGetState!: (state: GuiState) => void;
+    vi.mocked(bridge.getInitialState).mockReturnValue(
+      new Promise<GuiState>((resolve) => { resolveGetState = resolve; }),
+    );
+
+    render(() => <App />);
+
+    // Should show loading indicator while pending
+    expect(screen.getByTestId('app-loading')).toBeTruthy();
+    // Should NOT show the main layout yet
+    expect(screen.queryByTestId('app-layout')).toBeNull();
+
+    // Resolve to transition to ready
+    resolveGetState({ meshes: [], values: [], constraints: [], files: [] });
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('app-loading')).toBeNull();
+  });
+
+  it('shows app-error with retry button when getInitialState rejects', async () => {
+    vi.mocked(bridge.getInitialState).mockRejectedValue(new Error('network error'));
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-error')).toBeTruthy();
+    });
+    // Should have a retry button
+    expect(screen.getByText('Retry')).toBeTruthy();
+    // Should NOT show loading or main layout
+    expect(screen.queryByTestId('app-loading')).toBeNull();
+    expect(screen.queryByTestId('app-layout')).toBeNull();
+  });
+
+  it('clicking retry button calls getInitialState again', async () => {
+    // First call rejects
+    vi.mocked(bridge.getInitialState).mockRejectedValueOnce(new Error('fail'));
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-error')).toBeTruthy();
+    });
+
+    // Reset to succeed on retry
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
+
+    fireEvent.click(screen.getByText('Retry'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // getInitialState called twice: initial + retry
+    expect(bridge.getInitialState).toHaveBeenCalledTimes(2);
+  });
+
+  it('after successful getInitialState, app-layout is shown and loading/error are gone', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('app-loading')).toBeNull();
+    expect(screen.queryByTestId('app-error')).toBeNull();
+  });
+});
+
 describe('App handleSetParameter error handling', () => {
   it('logs error when bridge.setParameter rejects', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
