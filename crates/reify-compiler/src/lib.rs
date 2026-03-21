@@ -1790,30 +1790,43 @@ pub fn compile(
             .map(|t: &TopologyTemplate| (t.name.clone(), t))
             .collect();
 
-        for mut check in pending_bound_checks {
-            // For sub-component checks, type_params were left empty during
-            // compilation — fill them in now from the full template registry.
-            if check.type_params.is_empty() {
-                if let Some(target) = template_registry.get(check.target_name.as_str()) {
-                    if target.type_params.is_empty() {
-                        continue; // target has no type params, nothing to check
-                    }
-                    check.type_params = target.type_params.clone();
-                } else {
-                    // Target structure not found — skip (may be an external/unknown structure)
-                    continue;
+        for check in pending_bound_checks {
+            match check {
+                PendingBoundCheck::SubComponent { type_args, target_name, span } => {
+                    // Resolve type_params from the template registry now that
+                    // all structures are compiled.
+                    let type_params = if let Some(target) = template_registry.get(target_name.as_str()) {
+                        if target.type_params.is_empty() {
+                            continue; // target has no type params, nothing to check
+                        }
+                        &target.type_params
+                    } else {
+                        // Target structure not found — skip (may be an external/unknown structure)
+                        continue;
+                    };
+
+                    check_type_param_bounds(
+                        type_params,
+                        &type_args,
+                        &target_name,
+                        &template_registry,
+                        &trait_registry,
+                        &mut diagnostics,
+                        span,
+                    );
+                }
+                PendingBoundCheck::TraitConformance { type_params, type_args, target_name, span } => {
+                    check_type_param_bounds(
+                        &type_params,
+                        &type_args,
+                        &target_name,
+                        &template_registry,
+                        &trait_registry,
+                        &mut diagnostics,
+                        span,
+                    );
                 }
             }
-
-            check_type_param_bounds(
-                &check.type_params,
-                &check.type_args,
-                &check.target_name,
-                &template_registry,
-                &trait_registry,
-                &mut diagnostics,
-                check.span,
-            );
         }
     }
 
@@ -2174,7 +2187,7 @@ fn compile_entity(
                         })
                     })
                     .collect();
-                pending_bound_checks.push(PendingBoundCheck {
+                pending_bound_checks.push(PendingBoundCheck::TraitConformance {
                     type_params: compiled_trait.type_params.clone(),
                     type_args: resolved_args,
                     target_name: trait_bound.name.clone(),
@@ -2381,8 +2394,7 @@ fn compile_entity(
                 // Always push a pending check — even with empty type_args,
                 // the target structure may have type params requiring defaults.
                 {
-                    pending_bound_checks.push(PendingBoundCheck {
-                        type_params: Vec::new(), // filled in during post-pass
+                    pending_bound_checks.push(PendingBoundCheck::SubComponent {
                         type_args: resolved_type_args.clone(),
                         target_name: sub.structure_name.clone(),
                         span: sub.span,
@@ -2943,15 +2955,29 @@ fn compile_entity(
 
 /// A deferred bound check to be executed after all structures are compiled.
 /// This ensures forward references are resolved correctly.
-struct PendingBoundCheck {
-    /// Type parameters with bounds to check against.
-    type_params: Vec<reify_types::TypeParam>,
-    /// The resolved type arguments (Type::StructureRef for concrete names, Type::TypeParam for forwarded params).
-    type_args: Vec<Type>,
-    /// The name of the target structure or trait being instantiated.
-    target_name: String,
-    /// Source span for diagnostic messages.
-    span: SourceSpan,
+///
+/// Two distinct paths produce pending bound checks:
+/// - **SubComponent**: a `sub x = Foo<Bar>()` instantiation where type_params
+///   are not yet known (resolved from the template registry in the post-pass).
+/// - **TraitConformance**: a `structure def X : Trait<Arg>` declaration where
+///   type_params are already known from the compiled trait definition.
+enum PendingBoundCheck {
+    /// Deferred check for a sub-component instantiation of a generic structure.
+    /// The type_params are resolved from the template registry during the
+    /// post-compilation pass, since the target structure may not yet be compiled.
+    SubComponent {
+        type_args: Vec<Type>,
+        target_name: String,
+        span: SourceSpan,
+    },
+    /// Deferred check for trait conformance with type arguments.
+    /// The type_params are known at construction time from the compiled trait.
+    TraitConformance {
+        type_params: Vec<reify_types::TypeParam>,
+        type_args: Vec<Type>,
+        target_name: String,
+        span: SourceSpan,
+    },
 }
 
 /// Check that type arguments satisfy the bounds on type parameters.
