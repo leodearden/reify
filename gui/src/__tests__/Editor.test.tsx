@@ -297,3 +297,48 @@ describe('Editor scrollToLocation', () => {
     expect(view.state.selection.main.head).toBe(0);
   });
 });
+
+describe('Editor save error callback', () => {
+  it('calls onError when saveFile rejects', async () => {
+    const store = setupStore();
+    store.markDirty(file1.path);
+    const onError = vi.fn();
+    vi.spyOn(bridge, 'saveFile').mockRejectedValue(new Error('disk full'));
+    render(() => <Editor store={store} onError={onError} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Simulate Ctrl+S
+    const event = new KeyboardEvent('keydown', {
+      key: 's',
+      code: 'KeyS',
+      ctrlKey: true,
+      bubbles: true,
+    });
+    view.contentDOM.dispatchEvent(event);
+
+    // Wait for the rejected promise to settle
+    await vi.waitFor(() => {
+      expect(onError).toHaveBeenCalledWith(expect.stringContaining('Failed to save file'));
+    });
+  });
+});
+
+describe('Editor LSP init error callback', () => {
+  it('calls onError when lspClient.initialize rejects', async () => {
+    const store = setupStore();
+    const onError = vi.fn();
+
+    // Mock lspRequest to reject (lspClient.initialize calls bridge.lspRequest)
+    vi.spyOn(bridge, 'lspRequest').mockRejectedValue(new Error('LSP unavailable'));
+
+    render(() => <Editor store={store} onError={onError} />);
+
+    // Wait for LSP init chain to settle (runs in onMount)
+    await vi.waitFor(() => {
+      expect(onError).toHaveBeenCalledWith(
+        expect.stringContaining('LSP initialization failed'),
+      );
+    });
+  });
+});
