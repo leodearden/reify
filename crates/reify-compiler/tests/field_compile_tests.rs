@@ -102,3 +102,32 @@ field def composed : Point3 -> Scalar { source = composed { |p| f2(f1(p)) } }
         other => panic!("expected Composed source, got: {:?}", other),
     }
 }
+
+// ── Step 19: compose type mismatch ──────────────────────────────────
+
+#[test]
+fn compile_field_compose_type_mismatch() {
+    // Field<Point3, Vector3> composed with Field<Scalar, Scalar> is INVALID:
+    // codomain of first (Vector3) != domain of second (Scalar).
+    // Should produce a type error diagnostic.
+    let module = compile_module(
+        r#"
+field def f1 : Point3 -> Vector3 { source = analytical { |p| p } }
+field def f2 : Scalar -> Scalar { source = analytical { |x| x } }
+field def bad_compose : Point3 -> Scalar { source = composed { |p| f2(f1(p)) } }
+"#,
+    );
+    // Should have at least one diagnostic about field composition type mismatch
+    assert!(
+        !module.diagnostics.is_empty(),
+        "expected a type mismatch diagnostic for mismatched field composition"
+    );
+    let has_mismatch_error = module.diagnostics.iter().any(|d| {
+        d.message.contains("mismatch") || d.message.contains("compose") || d.message.contains("field")
+    });
+    assert!(
+        has_mismatch_error,
+        "expected field composition type mismatch diagnostic, got: {:?}",
+        module.diagnostics
+    );
+}
