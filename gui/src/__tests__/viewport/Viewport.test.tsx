@@ -62,6 +62,20 @@ vi.mock('../../viewport/meshManager', () => ({
   })),
 }));
 
+const mockSelectionSetHovered = vi.fn();
+const mockSelectionSetSelected = vi.fn();
+const mockSelectionFitToView = vi.fn();
+const mockSelectionDispose = vi.fn();
+
+vi.mock('../../viewport/selection', () => ({
+  createSelection: vi.fn(() => ({
+    setHovered: mockSelectionSetHovered,
+    setSelected: mockSelectionSetSelected,
+    fitToView: mockSelectionFitToView,
+    dispose: mockSelectionDispose,
+  })),
+}));
+
 import { Viewport } from '../../viewport';
 
 beforeEach(() => {
@@ -86,6 +100,40 @@ describe('Viewport', () => {
     // Canvas should be inside the container
     const canvas = screen.getByTestId('viewport-canvas');
     expect(container.contains(canvas)).toBe(true);
+  });
+
+  it('shows tooltip with entity name when hoveredEntity is set', () => {
+    render(() => <Viewport meshes={{}} hoveredEntity="bracket/hole" />);
+    const tooltip = screen.getByTestId('viewport-tooltip');
+    expect(tooltip).toBeTruthy();
+    expect(tooltip.textContent).toContain('bracket/hole');
+  });
+
+  it('hides tooltip when hoveredEntity is null', () => {
+    render(() => <Viewport meshes={{}} hoveredEntity={null} />);
+    expect(screen.queryByTestId('viewport-tooltip')).toBeNull();
+  });
+
+  it('shows spinner overlay when evalStatus phase is evaluating', () => {
+    render(() => <Viewport meshes={{}} evalStatus={{ phase: 'evaluating' }} />);
+    const spinner = screen.getByTestId('viewport-spinner');
+    expect(spinner).toBeTruthy();
+  });
+
+  it('hides spinner when evalStatus phase is idle', () => {
+    render(() => <Viewport meshes={{}} evalStatus={{ phase: 'idle' }} />);
+    expect(screen.queryByTestId('viewport-spinner')).toBeNull();
+  });
+
+  it('renders fit-to-view button with data-testid', () => {
+    render(() => <Viewport meshes={{}} />);
+    const btn = screen.getByTestId('fit-to-view');
+    expect(btn).toBeTruthy();
+  });
+
+  it('hides spinner when evalStatus is not provided', () => {
+    render(() => <Viewport meshes={{}} />);
+    expect(screen.queryByTestId('viewport-spinner')).toBeNull();
   });
 
   it('animate loop does not call renderer.render after cleanup/dispose', () => {
