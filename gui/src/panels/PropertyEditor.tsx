@@ -44,7 +44,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
 
   const groupNames = createMemo(() => Object.keys(filteredGroups()).sort());
 
-  const isEmpty = createMemo(() => Object.keys(props.values).length === 0);
+  const isEmpty = createMemo(() => Object.keys(filteredGroups()).length === 0);
 
   function toggleGroup(name: string) {
     setCollapsedGroups((prev) => {
