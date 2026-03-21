@@ -934,6 +934,45 @@ mod tests {
     }
 
     #[test]
+    fn with_warm_state_all_valid_zero_failures() {
+        // Create a kernel with a box and extract its warm state
+        let mut source = OcctKernel::new();
+        source
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let state = source.warm_state().expect("should have warm state");
+
+        // Apply that fully-valid warm state to a fresh kernel
+        let mut kernel = OcctKernel::new();
+        kernel.with_warm_state(state);
+
+        // All shapes were valid, so failure count should be 0
+        assert_eq!(
+            kernel.warm_start_failures(),
+            0,
+            "fully valid warm state should report 0 failures"
+        );
+
+        // Verify the shape was actually restored
+        let vol = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 6000.0).abs() < 1.0,
+                    "box volume should be ~6000, got {v}"
+                );
+            }
+            other => panic!("expected Real, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn get_shape_null_ptr_returns_error_not_panic() {
         let mut kernel = OcctKernel::new();
         // Create a valid box (id=1)
