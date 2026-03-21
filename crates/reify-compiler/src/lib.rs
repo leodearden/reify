@@ -1100,12 +1100,14 @@ fn compile_expr_guarded(
             // Create a nested scope with the bound variable
             let mut quant_scope = scope.clone();
             let variable_id = ValueCellId::new(&quant_entity, variable);
-            // Default type to Real for the bound variable; the actual type
-            // depends on the collection element type but we don't have full
-            // type inference yet
+            // Infer element type from the collection's result type
+            let elem_type = match &compiled_collection.result_type {
+                Type::List(elem) | Type::Set(elem) => *elem.clone(),
+                _ => Type::Real, // fallback for unresolved types
+            };
             quant_scope
                 .names
-                .insert(variable.clone(), (variable_id.clone(), Type::Real, None));
+                .insert(variable.clone(), (variable_id.clone(), elem_type, None));
 
             // Compile predicate in the nested scope
             let compiled_predicate =
