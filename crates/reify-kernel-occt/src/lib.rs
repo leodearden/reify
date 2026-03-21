@@ -1261,6 +1261,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn execute_rotate_near_zero_axis_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // A near-zero axis (mag_sq = 1e-34, non-zero but physically meaningless)
+        // should be rejected just like exact zero
+        let result = kernel.execute(&GeometryOp::Rotate {
+            target: box_h.id,
+            axis: [1e-17, 0.0, 0.0],
+            angle_rad: 1.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for near-zero-length axis in rotate"),
+        }
+    }
+
     // --- Error message quality regression tests (step-7) ---
 
     #[test]
