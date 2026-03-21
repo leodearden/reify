@@ -31,9 +31,25 @@ describe('THEME_TOKENS', () => {
     expect(THEME_TOKENS.red).toBe('#f38ba8');
   });
 
+  it('has correct spacing token values', () => {
+    expect(THEME_TOKENS.spaceXs).toBe('2px');
+    expect(THEME_TOKENS.spaceSm).toBe('4px');
+    expect(THEME_TOKENS.spaceMd).toBe('8px');
+    expect(THEME_TOKENS.spaceLg).toBe('12px');
+    expect(THEME_TOKENS.spaceXl).toBe('16px');
+    expect(THEME_TOKENS.space2xl).toBe('20px');
+    expect(THEME_TOKENS.space3xl).toBe('24px');
+  });
+
+  it('has correct radius token values', () => {
+    expect(THEME_TOKENS.radiusSm).toBe('2px');
+    expect(THEME_TOKENS.radiusMd).toBe('4px');
+    expect(THEME_TOKENS.radiusLg).toBe('8px');
+  });
+
   it('all color tokens are valid hex', () => {
     for (const [key, value] of Object.entries(THEME_TOKENS)) {
-      if (key === 'fontMono') continue;
+      if (key.startsWith('font') || key.startsWith('space') || key.startsWith('radius')) continue;
       expect(value, `${key} should be valid hex color`).toMatch(/^#[0-9a-f]{6}$/i);
     }
   });
