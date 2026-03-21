@@ -1,0 +1,159 @@
+{
+  "task_id": "101",
+  "title": "Fix critical IPC type mismatches between Rust backend and TS frontend",
+  "files": [
+    "gui/src-tauri/src/types.rs",
+    "gui/src-tauri/src/tests/types_tests.rs",
+    "gui/src-tauri/src/tests/diff_tests.rs",
+    "gui/src/types.ts",
+    "gui/src/bridge.ts",
+    "gui/src/editor/Editor.tsx",
+    "gui/src/panels/ConstraintPanel.tsx",
+    "gui/src/__tests__/bridge.test.ts",
+    "gui/src/__tests__/Editor.test.tsx",
+    "gui/src/__tests__/PropertyEditor.test.tsx",
+    "gui/src/__tests__/ConstraintPanel.test.tsx",
+    "gui/src/__tests__/engineStore.test.ts",
+    "gui/src/__tests__/StatusBar.test.tsx",
+    "gui/src/__tests__/navigation.test.ts",
+    "gui/src/__tests__/types.typecheck.ts"
+  ],
+  "modules": [
+    "gui/src-tauri/src",
+    "gui/src",
+    "gui/src/editor",
+    "gui/src/panels",
+    "gui/src/__tests__",
+    "gui/src-tauri/src/tests"
+  ],
+  "analysis": "Four critical IPC type/field mismatches between the Rust backend and TypeScript frontend:\n\n**Y4 (Determinacy case mismatch):** `format_determinacy()` in types.rs returns capitalized strings ('Determined', 'Undetermined', etc.) but PropertyEditor.tsx line 124 checks `val.determinacy === 'determined'` (lowercase). This makes ALL parameter editing non-functional because the `when` condition never matches, so every parameter renders as read-only. Fix: change Rust `format_determinacy()` to return lowercase, since all TS code and tests already use lowercase consistently.\n\n**I1 (save_file missing content param):** `bridge.ts saveFile(path)` only passes `{ path }` to `invoke('save_file', ...)` but the Rust `save_file(path: String, content: String)` command requires both path AND content. Ctrl+S always fails with a parameter error. Fix: add `content` parameter to `saveFile()` in bridge.ts, and update Editor.tsx to get the file content from the editor store and pass it.\n\n**S1 (ConstraintData field mismatch):** Rust struct has `label: Option<String>` but TypeScript interface has `details: string | null`. The backend sends `label` in JSON but the frontend reads `details`, which is always undefined. Fix: rename `details` to `label` in the TS ConstraintData interface and update all usages in ConstraintPanel.tsx and test files.\n\n**S2 (ValueData missing kind field):** Rust struct has `kind: String` (e.g., 'Param', 'Let', 'Auto') but the TypeScript ValueData interface lacks this field. The backend sends it but the frontend ignores it, preventing future use for display differentiation. Fix: add `kind: string` to the TS ValueData interface.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing Rust test in types_tests.rs: assert format_determinacy returns lowercase ('determined', 'undetermined', 'provisional', 'auto'). Test will fail because current implementation returns capitalized strings.",
+      "status": "done",
+      "commit": "c558f2c"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Fix format_determinacy() in gui/src-tauri/src/types.rs to return lowercase strings. Update existing Rust tests in types_tests.rs (value_data_serializes expects 'Determined' \u2192 'determined') and diff_tests.rs (sample_value determinacy string).",
+      "status": "done",
+      "commit": "527093d"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing TS test in bridge.test.ts: assert saveFile() calls invoke('save_file', { path, content }) with both path AND content params. Current implementation only sends { path }, so test will fail.",
+      "status": "done",
+      "commit": "23b3e96"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Fix saveFile() in bridge.ts to accept content parameter: `saveFile(path: string, content: string)` and pass `{ path, content }` to invoke.",
+      "status": "done",
+      "commit": "aa3ba0a"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Update Editor.test.tsx save test: expect saveFile to be called with both path AND content (retrieved from store's openFiles). Test will fail because Editor.tsx currently only passes path.",
+      "status": "done",
+      "commit": "64c03bb"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Fix Editor.tsx save handler: look up the current file content from the editor store's openFiles array (or from the CodeMirror view.state.doc) and pass it as the second argument to saveFile(path, content).",
+      "status": "done",
+      "commit": "7eb0126"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Update types.typecheck.ts: (1) Add kind field to the ValueData example objects, (2) Change ConstraintData 'details' field to 'label'. File will fail tsc type-check because types.ts hasn't been updated yet.",
+      "status": "done",
+      "commit": "9e38040"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Fix types.ts: (1) Add `kind: string` to ValueData interface, (2) Rename `details: string | null` to `label: string | null` in ConstraintData interface. This makes types.typecheck.ts pass.",
+      "status": "done",
+      "commit": "127635a"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Verify ConstraintPanel.test.tsx and ConstraintPanel.tsx tests fail due to 'details' \u2192 'label' rename. Update all makeConstraint() helpers and inline ConstraintData constructions in test files to use 'label' instead of 'details': ConstraintPanel.test.tsx, engineStore.test.ts, StatusBar.test.tsx, navigation.test.ts.",
+      "status": "done",
+      "commit": "PLACEHOLDER_9"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Fix ConstraintPanel.tsx: change `constraint.details` references (lines 95-96) to `constraint.label`. All ConstraintPanel tests should now pass with the label field.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Update PropertyEditor.test.tsx makeValue() helper to include `kind: string` field. Update engineStore.test.ts sampleValue and inline ValueData constructions to include `kind`. Update navigation.test.ts ValueData literals to include `kind`.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Run all tests (both Rust cargo test for gui crate and TS vitest) to verify all 4 fixes pass. Fix any remaining test compilation errors from the type changes.",
+      "status": "pending",
+      "commit": null
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Change Rust format_determinacy() to lowercase rather than changing TypeScript to uppercase",
+      "rationale": "All existing TypeScript code and tests consistently use lowercase ('determined', 'auto', etc.). Lowercase is more conventional for JSON/IPC string enums. Changing Rust is a single function change plus test updates, while changing TS would require updating PropertyEditor.tsx, its tests, and all other test fixtures that construct ValueData."
+    },
+    {
+      "decision": "Rename TS ConstraintData 'details' to 'label' (align TS to Rust) rather than renaming Rust 'label' to 'details'",
+      "rationale": "The Rust backend defines the serialized JSON shape. The TypeScript interface must match the wire format exactly. The backend field is 'label' so the frontend must use 'label'. The ConstraintPanel component already renders this field as optional extra text, so the semantic difference is negligible."
+    },
+    {
+      "decision": "Get file content from editor store openFiles for save, not from CodeMirror view state",
+      "rationale": "The editor store's openFiles already tracks the latest content via updateFileContent callbacks from the CodeMirror update listener. Using the store is cleaner than passing a view ref into the save handler, and it works even if the editor view isn't mounted yet."
+    },
+    {
+      "decision": "Do NOT fix constraint status case mismatch (Satisfied/Violated vs satisfied/violated) in this task",
+      "rationale": "The task scope lists exactly 4 mismatches (Y4, I1, S1, S2). The constraint status casing is a separate issue \u2014 it exists but is not listed. Fixing it here would expand scope. Noted for a follow-up task."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Existing bridge.test.ts mock pattern (vi.mock, mockInvoke)",
+      "where": "gui/src/__tests__/bridge.test.ts",
+      "how": "Follow the same pattern for the new saveFile test: mock invoke, call saveFile with path+content, assert invoke was called with correct args"
+    },
+    {
+      "what": "Existing makeValue/makeConstraint test helpers",
+      "where": "gui/src/__tests__/PropertyEditor.test.tsx, ConstraintPanel.test.tsx",
+      "how": "Add the new 'kind' field to makeValue defaults and 'label' replacing 'details' in makeConstraint defaults"
+    },
+    {
+      "what": "EditorStore.state.openFiles for content retrieval",
+      "where": "gui/src/stores/editorStore.ts",
+      "how": "In the save handler, look up `store.state.openFiles.find(f => f.path === path)?.content` to get the current file content for saveFile()"
+    },
+    {
+      "what": "Existing test setup in Editor.test.tsx (setupStore, getEditorView, etc.)",
+      "where": "gui/src/__tests__/Editor.test.tsx",
+      "how": "Reuse the same setup for save tests, just change the expected saveFile call to include content"
+    }
+  ],
+  "_session_id": "101-3a437550",
+  "_created_at": "2026-03-21T16:35:37.033664+00:00"
+}
