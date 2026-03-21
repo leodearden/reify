@@ -76,12 +76,7 @@ pub fn position_to_offset(source: &str, position: Position) -> usize {
     }
 
     // Past end of line/source
-    if utf16_units < target_char {
-        source.len()
-    } else {
-        // Exactly at the end after consuming all chars
-        source.len()
-    }
+    source.len()
 }
 
 /// Extract the identifier word at the given byte offset.
