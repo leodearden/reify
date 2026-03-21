@@ -11,7 +11,7 @@ export const Toast: Component<ToastProps> = (props) => {
   return (
     <div data-testid="toast" data-type={props.type} class={styles.toast}>
       <span class={styles.message}>{props.message}</span>
-      <button class={styles.close} onClick={() => props.onDismiss()}>
+      <button class={styles.close} aria-label="Close" onClick={() => props.onDismiss()}>
         &times;
       </button>
     </div>
