@@ -6,3 +6,5 @@ export { createControls } from './controls';
 export type { ControlsContext } from './controls';
 export { createMeshManager } from './meshManager';
 export type { MeshManagerContext } from './meshManager';
+export { createSelection } from './selection';
+export type { SelectionContext, SelectionOptions } from './selection';
