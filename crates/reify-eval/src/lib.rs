@@ -686,7 +686,11 @@ impl Engine {
             };
 
             let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &field.name);
-            values.insert(field_id, field_value);
+            values.insert(field_id.clone(), field_value.clone());
+            snapshot.values.insert(
+                field_id,
+                (field_value, DeterminacyState::Determined),
+            );
         }
 
         // Two-pass evaluation (same logic as before)
