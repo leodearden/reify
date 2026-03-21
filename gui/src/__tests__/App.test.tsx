@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@solidjs/testing-library';
+import { render, screen, fireEvent, waitFor } from '@solidjs/testing-library';
+import type { GuiState } from '../types';
 
 // Mock Tauri APIs before any component imports
 vi.mock('@tauri-apps/api/core', () => ({
@@ -24,7 +25,18 @@ vi.mock('../editor/FileTabs', () => ({
   FileTabs: (props: any) => <div data-testid="file-tabs">FileTabs Mock</div>,
 }));
 
+// Mock bridge functions
+vi.mock('../bridge', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../bridge')>();
+  return {
+    ...original,
+    getInitialState: vi.fn(),
+    setParameter: vi.fn(),
+  };
+});
+
 import App from '../App';
+import * as bridge from '../bridge';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -114,5 +126,37 @@ describe('App resizable splitters', () => {
     expect(updatedColumns).not.toBe(initialColumns);
     // Should contain 350px (300 + 50) for editor panel width
     expect(updatedColumns).toContain('350px');
+  });
+});
+
+describe('App initial state loading', () => {
+  it('calls getInitialState on mount and populates store values into PropertyEditor', async () => {
+    const testState: GuiState = {
+      meshes: [],
+      values: [
+        {
+          cell_id: 'c1',
+          name: 'width',
+          value: '80',
+          unit: 'mm',
+          determinacy: 'determined',
+          entity_path: 'Bracket.width',
+        },
+      ],
+      constraints: [],
+      files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+    };
+
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+
+    render(() => <App />);
+
+    // Wait for async getInitialState to resolve and populate the store
+    await waitFor(() => {
+      // PropertyEditor should show the value from the initial state
+      expect(screen.getByText('width')).toBeTruthy();
+    });
+
+    expect(bridge.getInitialState).toHaveBeenCalledOnce();
   });
 });
