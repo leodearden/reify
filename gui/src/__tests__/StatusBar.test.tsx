@@ -82,3 +82,29 @@ describe('StatusBar', () => {
     expect(text).toContain('1');
   });
 });
+
+describe('StatusBar accessibility', () => {
+  it('container has role="status" for screen readers', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+      />
+    ));
+    const el = screen.getByTestId('status-bar');
+    expect(el.getAttribute('role')).toBe('status');
+  });
+
+  it('container has aria-live="polite" for live region updates', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+      />
+    ));
+    const el = screen.getByTestId('status-bar');
+    expect(el.getAttribute('aria-live')).toBe('polite');
+  });
+});
