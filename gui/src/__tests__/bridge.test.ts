@@ -15,6 +15,7 @@ import { listen } from '@tauri-apps/api/event';
 import {
   getInitialState,
   setParameter,
+  exportGeometry,
   onMeshUpdate,
   onEvaluationStatus,
 } from '../bridge';
@@ -50,6 +51,17 @@ describe('bridge commands', () => {
     expect(mockInvoke).toHaveBeenCalledWith('set_parameter', {
       cellId: 'cell_001',
       value: '42.0',
+    });
+  });
+
+  it('exportGeometry calls invoke with format and path', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await exportGeometry('step', '/tmp/output.step');
+
+    expect(mockInvoke).toHaveBeenCalledWith('export', {
+      format: 'step',
+      path: '/tmp/output.step',
     });
   });
 });

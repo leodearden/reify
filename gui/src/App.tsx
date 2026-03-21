@@ -188,7 +188,7 @@ const App: Component = () => {
     if (path) {
       bridgeOpenFile(path)
         .then((fileData) => {
-          editorStore.openFile(fileData);
+          editorStore.updateFileContent(fileData.path, fileData.content);
           setChangedFile(null);
         })
         .catch((err) => console.error('Reload failed:', err));

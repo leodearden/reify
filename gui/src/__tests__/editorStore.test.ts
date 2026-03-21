@@ -121,4 +121,16 @@ describe('editorStore', () => {
       dispose();
     });
   });
+
+  it('updateFileContent updates content of an already-open file', () => {
+    createRoot((dispose) => {
+      const { state, openFile, updateFileContent } = createEditorStore();
+      openFile(file1);
+      expect(state.openFiles[0].content).toBe('structure Bracket {}');
+
+      updateFileContent('bracket.ri', 'structure Bracket { updated: true }');
+      expect(state.openFiles[0].content).toBe('structure Bracket { updated: true }');
+      dispose();
+    });
+  });
 });
