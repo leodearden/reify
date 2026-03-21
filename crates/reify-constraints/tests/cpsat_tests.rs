@@ -443,6 +443,39 @@ fn all_different_3_ints() {
 }
 
 // ---------------------------------------------------------------------------
+// step-17: Send + Sync static assertion and empty problem
+// ---------------------------------------------------------------------------
+
+/// CpSatSolver must be Send + Sync (required by ConstraintSolver supertrait).
+#[test]
+fn cpsat_solver_is_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<CpSatSolver>();
+}
+
+/// Empty problem (no auto params, no constraints) → Solved with empty values.
+#[test]
+fn empty_problem_returns_solved_empty() {
+    let solver = CpSatSolver;
+
+    let problem = ResolutionProblem {
+        auto_params: vec![],
+        constraints: vec![],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            assert!(values.is_empty(), "expected empty values for empty problem");
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // step-15: SolverRegistry integration
 // ---------------------------------------------------------------------------
 
