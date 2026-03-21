@@ -48,6 +48,12 @@ export function createScene(
   directional.position.set(5, 10, 7);
   scene.add(directional);
 
+  // Camera-following headlight — stays fixed relative to the camera
+  const headlight = new DirectionalLight(0xffffff, 0.6);
+  headlight.position.set(0, 0, 1);
+  camera.add(headlight);
+  scene.add(camera); // Camera must be in scene graph for its children to render
+
   // Helpers
   const grid = new GridHelper(20, 20, 0x444466, 0x333344);
   scene.add(grid);
