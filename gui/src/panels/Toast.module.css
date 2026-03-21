@@ -1,0 +1,42 @@
+.toast {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--reify-text, #cdd6f4);
+  background: var(--reify-surface0, #313244);
+  border-left: 3px solid var(--reify-accent, #89b4fa);
+}
+
+.toast[data-type='success'] {
+  border-left-color: var(--reify-green, #a6e3a1);
+}
+
+.toast[data-type='error'] {
+  border-left-color: var(--reify-red, #f38ba8);
+}
+
+.toast[data-type='info'] {
+  border-left-color: var(--reify-accent, #89b4fa);
+}
+
+.message {
+  flex: 1;
+}
+
+.close {
+  background: none;
+  border: none;
+  color: var(--reify-subtext, #a6adc8);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.close:hover {
+  color: var(--reify-text, #cdd6f4);
+}
