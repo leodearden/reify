@@ -100,3 +100,95 @@ fn boolean_infeasible_contradiction() {
         other => panic!("expected Infeasible, got {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// step-5: implication `if a then b` encoded as Or(!a, b)
+// ---------------------------------------------------------------------------
+
+/// `!a || b` (implication: a → b) — solution must satisfy: if a then b.
+#[test]
+fn implication_if_a_then_b() {
+    let solver = CpSatSolver;
+
+    let a_id = vcid("Part", "a");
+    let b_id = vcid("Part", "b");
+
+    let a_ref = value_ref_typed("Part", "a", Type::Bool);
+    let b_ref = value_ref_typed("Part", "b", Type::Bool);
+
+    // constraint: !a || b  (a implies b)
+    let constraint_expr = or(not(a_ref), b_ref);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: a_id.clone(),
+                param_type: Type::Bool,
+                bounds: None,
+            },
+            AutoParam {
+                id: b_id.clone(),
+                param_type: Type::Bool,
+                bounds: None,
+            },
+        ],
+        constraints: vec![(cnid("Part", 0), constraint_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let a = values.get(&a_id).unwrap() == &Value::Bool(true);
+            let b = values.get(&b_id).unwrap() == &Value::Bool(true);
+            assert!(!a || b, "implication violated: a={a}, b={b}");
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
+
+/// `a && (!a || b)` forces a=true, which means b must be true.
+#[test]
+fn implication_forced_a_true_implies_b_true() {
+    let solver = CpSatSolver;
+
+    let a_id = vcid("Part", "a");
+    let b_id = vcid("Part", "b");
+
+    let a_ref = value_ref_typed("Part", "a", Type::Bool);
+    let b_ref = value_ref_typed("Part", "b", Type::Bool);
+
+    // Two constraints: a, and !a || b
+    let c1 = a_ref.clone();
+    let c2 = or(not(a_ref), b_ref);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: a_id.clone(),
+                param_type: Type::Bool,
+                bounds: None,
+            },
+            AutoParam {
+                id: b_id.clone(),
+                param_type: Type::Bool,
+                bounds: None,
+            },
+        ],
+        constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            assert_eq!(values.get(&a_id), Some(&Value::Bool(true)));
+            assert_eq!(values.get(&b_id), Some(&Value::Bool(true)));
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
