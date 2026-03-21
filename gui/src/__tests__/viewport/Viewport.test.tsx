@@ -251,6 +251,56 @@ describe('Viewport', () => {
     expect(mockRendererRender).not.toHaveBeenCalled();
   });
 
+  it('controls change event triggers re-render on next frame', () => {
+    render(() => <Viewport meshes={{}} />);
+
+    // Fire first rAF callback (initial render)
+    const firstCb = rafCallbacks[0];
+    firstCb(performance.now());
+    mockRendererRender.mockClear();
+
+    // Simulate controls 'change' event (camera moved)
+    expect(controlsListeners['change']).toBeDefined();
+    controlsListeners['change'][0]();
+
+    // Fire next rAF — should render since change event set dirty flag
+    const nextCb = rafCallbacks[rafCallbacks.length - 1];
+    nextCb(performance.now());
+
+    expect(mockRendererRender).toHaveBeenCalledTimes(1);
+  });
+
+  it('resize triggers re-render on next frame', () => {
+    // Capture the ResizeObserver callback
+    let roCallback: ResizeObserverCallback | undefined;
+    const OrigRO = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+      constructor(cb: ResizeObserverCallback) { roCallback = cb; }
+    } as any;
+
+    render(() => <Viewport meshes={{}} />);
+
+    // Fire first rAF callback (initial render)
+    const firstCb = rafCallbacks[0];
+    firstCb(performance.now());
+    mockRendererRender.mockClear();
+
+    // Simulate resize
+    roCallback!([{ contentRect: { width: 1024, height: 768 } }] as any, {} as any);
+
+    // Fire next rAF — should render since resize sets dirty flag
+    const nextCb = rafCallbacks[rafCallbacks.length - 1];
+    nextCb(performance.now());
+
+    expect(mockRendererRender).toHaveBeenCalledTimes(1);
+
+    // Restore original ResizeObserver
+    globalThis.ResizeObserver = OrigRO;
+  });
+
   it('passes controls to createSelection for orbit target updates', () => {
     render(() => <Viewport meshes={{}} />);
 
