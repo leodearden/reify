@@ -566,3 +566,69 @@ fn generic_forwarding_no_false_positive() {
         .collect();
     assert!(errors.is_empty(), "expected no errors for generic forwarding, got: {:?}", errors);
 }
+
+// ── Both PendingBoundCheck paths in a single compilation ─────────────
+
+#[test]
+fn both_bound_check_paths_combined() {
+    // This test exercises both deferred-checking paths in a single compilation:
+    // 1. TraitConformance path: `Crate : Container<Bolt>` — trait with type params
+    // 2. SubComponent path: `sub part = Box<Bolt>()` — generic structure instantiation
+    // Both should succeed without errors when Bolt satisfies Rigid.
+    let source = r#"
+        trait Rigid { param mass : Mass }
+        structure def Bolt : Rigid { param mass : Mass = 1kg }
+        trait Container<T: Rigid> { param count : Int }
+        structure def Box<T: Rigid> { param w : Length = 10mm }
+        structure def Assembly : Container<Bolt> {
+            param count : Int = 3
+            sub part = Box<Bolt>()
+        }
+    "#;
+    let module = compile_module(source);
+
+    // Both paths should succeed — Bolt satisfies Rigid.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors when both trait-conformance and sub-component \
+         bound checks pass, got: {:?}",
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// ── SubComponent path error with forward reference ───────────────────
+
+#[test]
+fn sub_component_bound_error_with_forward_ref() {
+    // Validates the SubComponent enum variant correctly resolves type_params
+    // from the template registry during the post-pass, even when the generic
+    // structure is defined after the structure that uses it (forward reference).
+    // Widget doesn't satisfy Rigid, so Box<Widget>() must error.
+    let source = r#"
+        trait Rigid { param mass : Mass }
+        structure def Widget { param x : Length = 5mm }
+        structure def Assembly { sub part = Box<Widget>() }
+        structure def Box<T: Rigid> { param width : Length = 10mm }
+    "#;
+    let module = compile_module(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected error about Widget not satisfying Rigid bound"
+    );
+    let error_msg = &errors[0].message;
+    assert!(
+        error_msg.contains("Widget") && error_msg.contains("Rigid"),
+        "error should mention Widget and Rigid, got: {error_msg}"
+    );
+}
