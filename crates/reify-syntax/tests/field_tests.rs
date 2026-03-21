@@ -44,3 +44,32 @@ fn parse_analytical_field() {
         other => panic!("expected Analytical source, got {:?}", other),
     }
 }
+
+// ── Step 3: sampled field ────────────────────────────────────────────
+
+#[test]
+fn parse_sampled_field() {
+    let (decls, errors) = parse_decls(
+        "field def pressure : Point3 -> Scalar { source = sampled { resolution = 100  interpolation = linear } }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let field = match &decls[0] {
+        Declaration::Field(f) => f,
+        other => panic!("expected Field, got {:?}", other),
+    };
+
+    assert_eq!(field.name, "pressure");
+    assert_eq!(field.domain_type.name, "Point3");
+    assert_eq!(field.codomain_type.name, "Scalar");
+
+    match &field.source {
+        FieldSource::Sampled { config } => {
+            assert_eq!(config.len(), 2);
+            assert_eq!(config[0].0, "resolution");
+            assert_eq!(config[1].0, "interpolation");
+        }
+        other => panic!("expected Sampled source, got {:?}", other),
+    }
+}
