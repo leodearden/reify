@@ -79,3 +79,55 @@ purpose mfg_ready(subject : Structure) {
         constraints_before, constraints_final
     );
 }
+
+// ── Step 15: activate purpose with optimization objective ──────────
+
+#[test]
+fn activate_purpose_with_minimize_objective() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+    param height : Length = 60mm
+    constraint width > 0mm
+}
+
+purpose lightweight(subject : Structure) {
+    minimize width + height
+}
+"#;
+
+    let compiled = parse_and_compile(source);
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+    // Initial eval
+    let _result = engine.eval(&compiled);
+
+    // Before activation: no active objectives
+    assert!(
+        engine.active_objectives().is_empty(),
+        "should have no active objectives before activation"
+    );
+
+    // Activate the purpose
+    engine.activate_purpose("lightweight", "Bracket");
+
+    // After activation: should have one active objective
+    let objectives = engine.active_objectives();
+    assert_eq!(
+        objectives.len(),
+        1,
+        "activating purpose with minimize should add one objective"
+    );
+    assert!(engine.is_purpose_active("lightweight"));
+
+    // Deactivate the purpose
+    engine.deactivate_purpose("lightweight");
+
+    // After deactivation: no active objectives
+    assert!(
+        engine.active_objectives().is_empty(),
+        "deactivating purpose should remove the objective"
+    );
+    assert!(!engine.is_purpose_active("lightweight"));
+}
