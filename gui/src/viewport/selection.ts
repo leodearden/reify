@@ -220,10 +220,14 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     const fovRad = (camera.fov / 2) * (Math.PI / 180);
     const distance = maxDim / (2 * Math.tan(fovRad));
 
-    camera.position.copy(center);
-    camera.position.z += distance;
+    const viewDir = new Vector3();
+    camera.getWorldDirection(viewDir);
+    camera.position.copy(center).sub(viewDir.multiplyScalar(distance));
     camera.lookAt(center);
     camera.updateProjectionMatrix();
+    if (controls) {
+      controls.target.copy(center);
+    }
   }
 
   function dispose(): void {
