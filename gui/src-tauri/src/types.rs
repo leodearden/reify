@@ -103,6 +103,9 @@ pub fn format_value(v: &Value) -> (String, String) {
             None => ("none".to_string(), String::new()),
         },
         Value::Lambda { .. } => ("<lambda>".to_string(), String::new()),
+        Value::Field { domain_type, codomain_type, source, .. } => {
+            (format!("Field<{}, {}>({:?})", domain_type, codomain_type, source), String::new())
+        }
         Value::Undef => ("undefined".to_string(), String::new()),
     }
 }
