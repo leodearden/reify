@@ -37,7 +37,9 @@ export const THEME_TOKENS: Record<string, string> = {
 };
 
 export function camelToKebab(str: string): string {
-  return str.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+  return str
+    .replace(/([a-z])(\d+[a-z]+)/g, '$1-$2')
+    .replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
 }
 
 export function applyTheme(): void {

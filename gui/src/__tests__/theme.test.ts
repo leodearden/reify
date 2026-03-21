@@ -86,7 +86,9 @@ describe('THEME_TOKENS', () => {
     const style = document.documentElement.style;
 
     function camelToKebab(str: string): string {
-      return str.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+      return str
+        .replace(/([a-z])(\d+[a-z]+)/g, '$1-$2')
+        .replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
     }
 
     for (const [key, value] of Object.entries(THEME_TOKENS)) {
