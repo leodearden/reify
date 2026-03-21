@@ -937,4 +937,136 @@ describe('createSelection', () => {
       expect(globalThis.cancelAnimationFrame).toHaveBeenCalledWith(rafId);
     });
   });
+
+  describe('click-vs-drag discrimination', () => {
+    it('pointerdown alone does NOT fire onSelect', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      const event = new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      });
+      domElement.dispatchEvent(event);
+
+      // onSelect should NOT fire on pointerdown alone — must wait for pointerup
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it('pointerdown + pointerup at same position fires onSelect with raycasted entity', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 400,
+        clientY: 300,
+      }));
+
+      expect(onSelect).toHaveBeenCalledWith('A');
+    });
+
+    it('pointerdown + pointerup with >5px movement does NOT fire onSelect', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      }));
+      // Move 10px to the right — this is a drag
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 410,
+        clientY: 300,
+      }));
+
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it('pointerdown + pointerup with <=5px movement fires onSelect', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      }));
+      // Move 3px diagonally (sqrt(9+9)=4.24 < 5) — still a click
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 403,
+        clientY: 303,
+      }));
+
+      expect(onSelect).toHaveBeenCalledWith('A');
+    });
+
+    it('onSelect receives null when pointerup raycast misses', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      // Raycast returns no intersection
+      mockRaycasterIntersectObjects.mockReturnValueOnce([]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 400,
+        clientY: 300,
+      }));
+
+      expect(onSelect).toHaveBeenCalledWith(null);
+    });
+
+    it('after dispose, pointerup does not fire onSelect', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect, selection } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      // Start a click
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
+        clientX: 400,
+        clientY: 300,
+      }));
+
+      // Dispose before pointerup
+      selection.dispose();
+
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 400,
+        clientY: 300,
+      }));
+
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+  });
 });
