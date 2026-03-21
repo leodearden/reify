@@ -233,6 +233,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rational_getters() {
+        let r = Rational::new(3, 4);
+        assert_eq!(r.num(), 3);
+        assert_eq!(r.den(), 4);
+    }
+
+    #[test]
+    fn rational_normalization_via_getters() {
+        let r = Rational::new(2, 4);
+        assert_eq!(r.num(), 1);
+        assert_eq!(r.den(), 2);
+    }
+
+    #[test]
     fn rational_arithmetic() {
         assert_eq!(Rational::new(1, 2) + Rational::new(1, 3), Rational::new(5, 6));
         assert_eq!(Rational::new(1, 1) - Rational::new(1, 1), Rational::ZERO);
