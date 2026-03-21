@@ -89,3 +89,23 @@ purpose check_params(subject : Widget) {
     assert!(id_names.contains(&"width"), "should contain width");
     assert!(id_names.contains(&"height"), "should contain height");
 }
+
+// ── Step 19: compile_module helper should catch compile errors ───────────────
+
+#[test]
+#[should_panic(expected = "compile errors")]
+fn compile_module_rejects_purpose_with_unknown_identifier() {
+    // The compile_module helper should fail when a purpose references
+    // an unknown identifier. Without diagnostic checking, this silently passes.
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose broken(subject : Structure) {
+    constraint nonexistent_var > 0mm
+}
+"#;
+
+    let _module = compile_module(source);
+}
