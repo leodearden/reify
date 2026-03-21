@@ -14,6 +14,7 @@ fn main() -> ExitCode {
         eprintln!("  check <file>              Check constraints");
         eprintln!("  build <file> -o <output>   Build geometry and export");
         eprintln!("  lsp                        Start language server (stdin/stdout)");
+        eprintln!("  gui <file>                 Open file in GUI");
         return ExitCode::FAILURE;
     }
 
@@ -21,6 +22,7 @@ fn main() -> ExitCode {
         "check" => cmd_check(&args[2..]),
         "build" => cmd_build(&args[2..]),
         "lsp" => cmd_lsp(),
+        "gui" => cmd_gui(&args[2..]),
         other => {
             eprintln!("Unknown command: {}", other);
             ExitCode::FAILURE
@@ -174,6 +176,62 @@ fn cmd_build(args: &[String]) -> ExitCode {
         }
         None => {
             eprintln!("No geometry output produced");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_gui(args: &[String]) -> ExitCode {
+    if args.is_empty() {
+        eprintln!("Usage: reify gui <file>");
+        return ExitCode::FAILURE;
+    }
+
+    let file = &args[0];
+    let path = std::path::Path::new(file);
+
+    // Validate file exists
+    if !path.exists() {
+        eprintln!("Error: file does not exist: {}", file);
+        return ExitCode::FAILURE;
+    }
+
+    // Validate .ri extension
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("ri") => {}
+        _ => {
+            eprintln!("Error: file must have .ri extension: {}", file);
+            return ExitCode::FAILURE;
+        }
+    }
+
+    // Locate the reify-gui binary: same directory as this binary, then PATH
+    let gui_binary_name = if cfg!(target_os = "windows") {
+        "reify-gui.exe"
+    } else {
+        "reify-gui"
+    };
+
+    let gui_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(gui_binary_name)))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| std::path::PathBuf::from(gui_binary_name));
+
+    match std::process::Command::new(&gui_path).arg(file).status() {
+        Ok(status) => {
+            if status.success() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "Error: could not launch reify-gui ({}): {}",
+                gui_path.display(),
+                e
+            );
             ExitCode::FAILURE
         }
     }
