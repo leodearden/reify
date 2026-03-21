@@ -361,6 +361,85 @@ describe('meshManager', () => {
     expect(geom.attributes.normal).toBeUndefined();
   });
 
+  describe('safe buffer updates on array length change (V-07)', () => {
+    it('update with same-length arrays reuses existing BufferAttribute', () => {
+      const { manager } = setup();
+      const verts1 = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]);
+      const indices1 = new Uint32Array([0, 1, 2]);
+      manager.sync({ A: makeMeshData('A', verts1, indices1) });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const posAttrBefore = geom.attributes.position;
+      const indexBefore = geom.index;
+
+      // Same length arrays
+      const verts2 = new Float32Array([9, 9, 9, 8, 8, 8, 7, 7, 7]);
+      const indices2 = new Uint32Array([2, 1, 0]);
+      manager.sync({ A: makeMeshData('A', verts2, indices2) });
+
+      // Same BufferAttribute reference (reused)
+      expect(geom.attributes.position).toBe(posAttrBefore);
+      expect(geom.index).toBe(indexBefore);
+    });
+
+    it('update with different-length vertex array creates new BufferAttribute', () => {
+      const { manager } = setup();
+      const verts1 = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]);
+      const indices1 = new Uint32Array([0, 1, 2]);
+      manager.sync({ A: makeMeshData('A', verts1, indices1) });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const posAttrBefore = geom.attributes.position;
+
+      // Different length — 4 vertices instead of 3
+      const verts2 = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]);
+      const indices2 = new Uint32Array([0, 1, 2]);
+      manager.sync({ A: makeMeshData('A', verts2, indices2) });
+
+      // Should be a NEW BufferAttribute
+      expect(geom.attributes.position).not.toBe(posAttrBefore);
+      expect(geom.attributes.position.array).toBe(verts2);
+    });
+
+    it('update with different-length index array creates new index BufferAttribute', () => {
+      const { manager } = setup();
+      const verts = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]);
+      const indices1 = new Uint32Array([0, 1, 2]);
+      manager.sync({ A: makeMeshData('A', verts, indices1) });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const indexBefore = geom.index;
+
+      // Different length — 6 indices instead of 3
+      const indices2 = new Uint32Array([0, 1, 2, 2, 3, 0]);
+      manager.sync({ A: makeMeshData('A', verts, indices2) });
+
+      // Should be a NEW index BufferAttribute
+      expect(geom.index).not.toBe(indexBefore);
+      expect(geom.index.array).toBe(indices2);
+    });
+
+    it('new BufferAttribute has correct array and count', () => {
+      const { manager } = setup();
+      const verts1 = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]);
+      manager.sync({ A: makeMeshData('A', verts1) });
+
+      // Update with 4 vertices
+      const verts2 = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]);
+      const indices2 = new Uint32Array([0, 1, 2]);
+      manager.sync({ A: makeMeshData('A', verts2, indices2) });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      expect(geom.attributes.position.array).toBe(verts2);
+      expect(geom.attributes.position.count).toBe(4); // 12 / 3
+      expect(geom.attributes.position.itemSize).toBe(3);
+    });
+  });
+
   describe('mesh data validation (V-06)', () => {
     it('sync with vertices.length not divisible by 3 does not add mesh to scene', () => {
       const { manager } = setup();
