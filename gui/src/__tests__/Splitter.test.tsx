@@ -80,3 +80,29 @@ describe('Splitter', () => {
     expect(el.dataset.orientation).toBe('vertical');
   });
 });
+
+describe('Splitter accessibility', () => {
+  it('has role="separator"', () => {
+    render(() => <Splitter orientation="vertical" onResize={vi.fn()} data-testid="splitter-a11y" />);
+    const el = screen.getByTestId('splitter-a11y');
+    expect(el.getAttribute('role')).toBe('separator');
+  });
+
+  it('has aria-orientation="vertical" for vertical splitter', () => {
+    render(() => <Splitter orientation="vertical" onResize={vi.fn()} data-testid="splitter-v" />);
+    const el = screen.getByTestId('splitter-v');
+    expect(el.getAttribute('aria-orientation')).toBe('vertical');
+  });
+
+  it('has aria-orientation="horizontal" for horizontal splitter', () => {
+    render(() => <Splitter orientation="horizontal" onResize={vi.fn()} data-testid="splitter-h" />);
+    const el = screen.getByTestId('splitter-h');
+    expect(el.getAttribute('aria-orientation')).toBe('horizontal');
+  });
+
+  it('has tabindex="0" for keyboard focusability', () => {
+    render(() => <Splitter orientation="vertical" onResize={vi.fn()} data-testid="splitter-tab" />);
+    const el = screen.getByTestId('splitter-tab');
+    expect(el.getAttribute('tabindex')).toBe('0');
+  });
+});
