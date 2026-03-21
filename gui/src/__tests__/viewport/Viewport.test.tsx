@@ -21,6 +21,16 @@ globalThis.requestAnimationFrame = vi.fn((cb: FrameRequestCallback) => {
 }) as unknown as typeof requestAnimationFrame;
 globalThis.cancelAnimationFrame = vi.fn((_id: number) => {}) as unknown as typeof cancelAnimationFrame;
 
+// Mock three.js Box3 used for scene bounds computation
+vi.mock('three', () => ({
+  Box3: vi.fn(() => ({
+    expandByObject: vi.fn(),
+    isEmpty: vi.fn(() => true),
+    getCenter: vi.fn(),
+    getSize: vi.fn(),
+  })),
+}));
+
 // Mock the viewport modules
 const mockResize = vi.fn();
 const mockRendererRender = vi.fn();
@@ -45,6 +55,7 @@ vi.mock('../../viewport/scene', () => ({
       domElement: document.createElement('canvas'),
     },
     resize: mockResize,
+    adjustClipping: vi.fn(),
   })),
 }));
 
