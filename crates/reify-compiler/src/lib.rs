@@ -2187,6 +2187,8 @@ fn compile_entity(
                         })
                     })
                     .collect();
+                // TraitConformance: type_params are known now from the compiled
+                // trait, so they're carried directly in the enum variant.
                 pending_bound_checks.push(PendingBoundCheck::TraitConformance {
                     type_params: compiled_trait.type_params.clone(),
                     type_args: resolved_args,
@@ -2389,10 +2391,11 @@ fn compile_entity(
                     })
                     .collect();
 
-                // Defer bound checking to the post-compilation pass so
-                // forward-referenced structures are available in the registry.
-                // Always push a pending check — even with empty type_args,
-                // the target structure may have type params requiring defaults.
+                // SubComponent: defer bound checking to the post-compilation
+                // pass so forward-referenced structures are available in the
+                // registry. type_params are resolved from the target template
+                // during the post-pass. Always push — even with empty
+                // type_args, the target may have type params requiring defaults.
                 {
                     pending_bound_checks.push(PendingBoundCheck::SubComponent {
                         type_args: resolved_type_args.clone(),
