@@ -137,7 +137,9 @@ impl LanguageServer for ReifyLanguageServer {
         // Brief write lock: update the document
         {
             let mut state = self.state.write().await;
-            state.documents.update(&uri, text.clone(), version);
+            if !state.documents.update(&uri, text.clone(), version) {
+                eprintln!("[reify-lsp] didChange for unknown URI: {}", uri);
+            }
         }
 
         // Eval runs outside the RwLock, using only the eval_state Mutex.
