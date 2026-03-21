@@ -268,7 +268,7 @@ const App: Component = () => {
     <div data-testid="app-layout" class={styles.layout}>
       <Toolbar onExport={handleExport} onFitToView={handleFitToView} />
       <ReloadPrompt
-        filePath={changedFile()}
+        filePaths={changedFile() ? [changedFile()!] : []}
         onReload={handleReload}
         onDismiss={handleDismissReload}
       />
