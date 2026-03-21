@@ -48,3 +48,58 @@ structure S {}
   (line_comment)
   (structure_definition
     name: (identifier)))
+
+================================================================================
+Simple single-line block comment
+================================================================================
+
+structure S {
+  /* block comment */
+  param x : Float
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (block_comment)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier)))))
+
+================================================================================
+Multi-line block comment
+================================================================================
+
+structure S {
+  /* multi
+     line */
+  param x : Float
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (block_comment)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier)))))
+
+================================================================================
+Block comment with asterisks inside
+================================================================================
+
+/* block with star: * */
+structure S {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (block_comment)
+  (structure_definition
+    name: (identifier)))
