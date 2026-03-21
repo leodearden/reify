@@ -1,4 +1,4 @@
-import { type Component, onMount, createSignal } from 'solid-js';
+import { type Component, onMount, onCleanup, createSignal, createEffect } from 'solid-js';
 import { applyTheme } from './theme';
 import { Viewport } from './viewport';
 import { Editor } from './editor/Editor';
@@ -8,7 +8,7 @@ import { Splitter } from './components/Splitter';
 import { createEngineStore } from './stores/engineStore';
 import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
-import { setParameter as bridgeSetParameter } from './bridge';
+import { getInitialState, setParameter as bridgeSetParameter } from './bridge';
 import styles from './App.module.css';
 
 const MIN_PANEL_WIDTH = 150;
@@ -23,8 +23,48 @@ const App: Component = () => {
   const [editorWidth, setEditorWidth] = createSignal(DEFAULT_EDITOR_WIDTH);
   const [sideWidth, setSideWidth] = createSignal(DEFAULT_SIDE_WIDTH);
 
-  onMount(() => {
+  // Reactively update window title based on active file and eval status
+  createEffect(() => {
+    const activeFile = editorStore.state.activeFile;
+    const phase = engineStore.state.evalStatus.phase;
+
+    if (!activeFile) {
+      document.title = 'Reify';
+      return;
+    }
+
+    const basename = activeFile.split('/').pop() ?? activeFile;
+    if (phase === 'idle') {
+      document.title = `${basename} - Reify`;
+    } else {
+      document.title = `${basename} [${phase}] - Reify`;
+    }
+  });
+
+  let unsubscribeEvents: (() => void) | undefined;
+
+  onMount(async () => {
     applyTheme();
+
+    try {
+      const initialState = await getInitialState();
+      engineStore.initFromState(initialState);
+      for (const file of initialState.files) {
+        editorStore.openFile(file);
+      }
+    } catch (err) {
+      console.error('Failed to load initial state:', err);
+    }
+
+    try {
+      unsubscribeEvents = await engineStore.subscribeToEvents();
+    } catch (err) {
+      console.error('Failed to subscribe to events:', err);
+    }
+  });
+
+  onCleanup(() => {
+    unsubscribeEvents?.();
   });
 
   function handleSetParameter(cellId: string, value: string) {
