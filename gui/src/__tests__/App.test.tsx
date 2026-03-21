@@ -1109,6 +1109,31 @@ describe('App layout persistence', () => {
   });
 });
 
+describe('App viewport prop wiring', () => {
+  it('capturedViewportProps.onHover is a function that updates selectionStore', async () => {
+    await renderAndWaitForReady();
+
+    expect(capturedViewportProps.onHover).toBeDefined();
+    expect(typeof capturedViewportProps.onHover).toBe('function');
+
+    // Calling onHover should update selectionStore.hoveredEntity
+    capturedViewportProps.onHover('bracket/hole');
+
+    // The hoveredEntity should now be passed back to Viewport (verified via capturedViewportProps)
+    await waitFor(() => {
+      expect(capturedViewportProps.hoveredEntity).toBe('bracket/hole');
+    });
+  });
+
+  it('capturedViewportProps.evalStatus is defined and reflects engine store state', async () => {
+    await renderAndWaitForReady();
+
+    expect(capturedViewportProps.evalStatus).toBeDefined();
+    // Default engine store eval status is idle
+    expect(capturedViewportProps.evalStatus.phase).toBe('idle');
+  });
+});
+
 describe('App splitter max bounds', () => {
   it('dragging left splitter far right clamps editor width so viewport and side panel remain visible', async () => {
     await renderAndWaitForReady();
