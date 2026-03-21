@@ -215,7 +215,8 @@ describe('ExportDialog', () => {
     render(() => (
       <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
     ));
-    // The first focusable element should be the select
+    // Wait for the queued microtask that sets initial focus
+    await new Promise((r) => queueMicrotask(r));
     const select = document.getElementById('export-format-select');
     expect(document.activeElement).toBe(select);
   });

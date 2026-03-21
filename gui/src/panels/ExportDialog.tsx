@@ -1,4 +1,4 @@
-import { type Component, Show, createSignal } from 'solid-js';
+import { type Component, Show, createSignal, onMount } from 'solid-js';
 import type { ExportFormat } from '../types';
 import styles from './ExportDialog.module.css';
 
@@ -9,19 +9,58 @@ export interface ExportDialogProps {
   onClose: () => void;
 }
 
+const FOCUSABLE_SELECTOR = 'button:not([disabled]), select:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 export const ExportDialog: Component<ExportDialogProps> = (props) => {
   const [format, setFormat] = createSignal<ExportFormat>('step');
+
+  function setupFocusTrap(dialogEl: HTMLDivElement) {
+    // Auto-focus the first focusable element (deferred to ensure DOM is ready)
+    queueMicrotask(() => {
+      const focusable = dialogEl.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
+      if (focusable.length > 0) {
+        focusable[0].focus();
+      }
+    });
+  }
+
+  function handleKeyDown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && !props.exporting) {
+      props.onClose();
+      return;
+    }
+
+    if (e.key === 'Tab') {
+      const overlay = e.currentTarget as HTMLElement;
+      const dialog = overlay.querySelector('[role="dialog"]');
+      if (!dialog) return;
+
+      const focusable = dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+
+      if (e.shiftKey) {
+        if (document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    }
+  }
 
   return (
     <Show when={props.open}>
       <div
         class={styles.overlay}
         data-testid="export-dialog"
-        onKeyDown={(e) => {
-          if (e.key === 'Escape' && !props.exporting) {
-            props.onClose();
-          }
-        }}
+        onKeyDown={handleKeyDown}
         onClick={() => {
           if (!props.exporting) {
             props.onClose();
@@ -29,6 +68,7 @@ export const ExportDialog: Component<ExportDialogProps> = (props) => {
         }}
       >
         <div
+          ref={(el) => setupFocusTrap(el)}
           class={styles.dialog}
           role="dialog"
           aria-modal="true"
