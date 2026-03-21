@@ -10,7 +10,7 @@
   "modules": [
     "crates/reify-constraints"
   ],
-  "analysis": "Task 77 calls for a logical/discrete constraint solver to handle boolean SAT, enum constraints, implications, cardinality, all-different, and integer constraints. The task suggests OR-Tools CP-SAT via FFI but explicitly allows simpler alternatives for v0.1.\n\nAfter analyzing the codebase, the best v0.1 approach is a pure-Rust backtracking CP solver using the existing expression evaluator (reify_expr::eval_expr) as the constraint checker. This avoids C++ FFI complexity, keeps compile times fast, requires zero new external dependencies, and is easily testable.\n\nThe existing infrastructure is perfectly set up for this:\n- ConstraintSolver trait in reify-types defines the interface (solve(&self, problem: &ResolutionProblem) -> SolveResult)\n- SolverRegistry already has a `logical: Option<Box<dyn ConstraintSolver>>` slot\n- ConstraintClassifier already classifies bool-only expressions as ConstraintDomain::Logical\n- decompose_into_components routes logical sub-problems to the logical solver\n- reify_expr::eval_expr can evaluate any CompiledExpr tree against a ValueMap, serving as the universal constraint checker\n\nThe solver algorithm: forward-checking backtracking search over discrete variable domains. For each auto param, the domain is determined by its type (Bool -> {true,false}, Int -> {lo..hi} from bounds, Enum -> variants extracted from constraint literals). Constraints are checked incrementally after each variable assignment using eval_expr, pruning early on violation. This is O(product of domain sizes) in the worst case but with early pruning is very efficient for the small problem sizes expected in v0.1 CAD constraint solving (typically 1-10 discrete variables).\n\nThe solver will be named CpSatSolver to match the task spec, implemented in a new cpsat.rs module, exported from lib.rs, and registered as the logical solver in SolverRegistry.",
+  "analysis": "Task 77 calls for a logical/discrete constraint solver to handle boolean SAT, enum constraints, implications, cardinality, all-different, and integer constraints. The task suggests OR-Tools CP-SAT via FFI but explicitly allows simpler alternatives for v0.1.\n\nAfter analyzing the codebase, the best v0.1 approach is a pure-Rust backtracking CP solver using the existing expression evaluator (reify_expr::eval_expr) as the constraint checker. This avoids C++ FFI complexity, keeps compile times fast, requires zero new external dependencies, and is easily testable.\n\nThe existing infrastructure is perfectly set up for this:\n- ConstraintSolver trait in reify-types defines the interface (solve(&self, problem: &ResolutionProblem) -> SolveResult)\n- SolverRegistry already has a `logical: Option<Box<dyn ConstraintSolver>>` slot\n- ConstraintClassifier already classifies bool-only expressions as ConstraintDomain::Logical\n- decompose_into_components routes logical sub-problems to the logical solver\n- reify_expr::eval_expr can evaluate any CompiledExpr tree against a ValueMap, serving as the universal constraint checker\n\nThe solver algorithm: forward-checking backtracking search over discrete variable domains. For each auto param, the domain is determined by its type (Bool -> {true,false}, Int -> {lo..hi} from bounds, Enum -> variants extracted from constraint literals). Constraints are checked incrementally after each variable assignment using eval_expr, pruning early on violation. This is O(product of domain sizes) in the worst case but with early pruning is very efficient for the small problem sizes expected in v0.1 CAD constraint solving (typically 1-10 discrete variables).\n\nThe solver will be named CpSatSolver to match the task spec, implemented in a new cpsat.rs module, exported from lib.rs, and registered as the logical solver in SolverRegistry.\n\n--- Post-review amendment ---\nReview identified a blocking integer overflow bug in build_variable_domain (cpsat.rs:55-56): the expression `hi_i - lo_i + 1` overflows in debug builds before the size guard can catch it. The f64-to-i64 saturating casts convert infinity/large f64 values to i64::MAX/MIN, and their difference exceeds i64::MAX. Steps 19-20 add TDD coverage and fix for this.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -146,6 +146,20 @@
       "description": "Ensure CpSatSolver is Send + Sync. As a unit struct with no interior state, this is automatically derived. Also ensure the empty-problem fast path works (no params -> Solved with empty HashMap). Verify all tests pass with `cargo test -p reify-constraints`.",
       "status": "done",
       "commit": "189ada9"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing tests for integer overflow in build_variable_domain (review issue: integer_overflow). Add these tests to cpsat_tests.rs:\n\n1. `int_domain_infinity_bounds_returns_error` \u2014 Int auto param with bounds `(f64::NEG_INFINITY, f64::INFINITY)`. Must NOT panic; must return NoProgress/error with a diagnostic about non-representable bounds.\n\n2. `int_domain_large_finite_bounds_returns_error` \u2014 Int auto param with bounds `(-1e18, 1e18)`. These cast to near i64::MIN/MAX via saturating cast; `hi_i - lo_i + 1` would overflow i64. Must NOT panic; must return NoProgress/error.\n\n3. `int_domain_nan_bound_returns_error` \u2014 Int auto param with bounds `(f64::NAN, 10.0)`. NaN is not finite. Must NOT panic; must return NoProgress/error.\n\n4. `int_domain_positive_infinity_upper_returns_error` \u2014 Int auto param with bounds `(0.0, f64::INFINITY)`. Only upper bound is infinite. Must NOT panic; must return NoProgress/error.\n\n5. `int_domain_exceeds_i64_range_returns_error` \u2014 Int auto param with bounds `(-1e19, 1e19)` (values outside i64 range entirely). Must NOT panic; must return NoProgress/error.\n\nAll tests create a minimal ResolutionProblem with one Int auto param, one trivial constraint (e.g., Ge(x_ref, literal(Int(0)))), and assert that `solver.solve(...)` returns `SolveResult::NoProgress { .. }` (not panic, not Infeasible). The key assertion is that these tests do NOT panic \u2014 the current code panics in debug mode due to integer overflow at line 55.",
+      "status": "done",
+      "commit": "59f1dcf"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Fix integer overflow in build_variable_domain (cpsat.rs lines 51-61). Replace the unsafe f64\u2192i64 cast and unchecked arithmetic with safe validation:\n\n1. Before casting, validate f64 bounds are finite and representable as i64:\n   ```rust\n   if !lo.is_finite() || !hi.is_finite() {\n       return Err(format!(\"integer auto param {} has non-finite bounds [{}, {}]\", param.id, lo, hi));\n   }\n   // i64 can represent up to 2^63-1 \u2248 9.22e18. Check f64 values are in representable range.\n   const I64_MIN_F: f64 = i64::MIN as f64;\n   const I64_MAX_F: f64 = i64::MAX as f64;\n   if lo < I64_MIN_F || lo > I64_MAX_F || hi < I64_MIN_F || hi > I64_MAX_F {\n       return Err(format!(\"integer auto param {} bounds [{}, {}] exceed i64 range\", param.id, lo, hi));\n   }\n   ```\n\n2. After casting to i64, use checked arithmetic for the domain size computation:\n   ```rust\n   let lo_i = lo as i64;\n   let hi_i = hi as i64;\n   let size = hi_i.checked_sub(lo_i)\n       .and_then(|d| d.checked_add(1))\n       .unwrap_or(i64::MAX);\n   ```\n\n3. Keep the existing `size > MAX_INT_DOMAIN || size <= 0` guard, which now safely handles any result.\n\nVerify all existing integer tests still pass AND all new step-19 overflow tests pass without panicking. Run `cargo test -p reify-constraints`.",
+      "status": "done",
+      "commit": "0e43538"
     }
   ],
   "design_decisions": [
@@ -172,6 +186,10 @@
     {
       "decision": "Forward-checking during backtracking instead of naive generate-and-test",
       "rationale": "After assigning each variable, evaluate only constraints whose referenced auto params are all assigned. This prunes the search tree early without requiring full constraint propagation. Much more efficient than trying all complete assignments, especially for cardinality and all-different constraints where early violations eliminate large sub-trees."
+    },
+    {
+      "decision": "Validate f64 bounds before i64 cast with checked arithmetic for domain size",
+      "rationale": "The f64-to-i64 saturating cast silently converts infinity/large values to i64::MAX/MIN, and the subsequent subtraction overflows. Validating is_finite() and range-checking before casting prevents silent corruption. Using checked_sub/checked_add prevents debug panics and release-mode wrapping. Returning Err (mapped to NoProgress) is the correct fallback \u2014 the solver cannot handle unrepresentable domains, so it should gracefully decline rather than panic or produce garbage."
     }
   ],
   "reuse": [
@@ -211,6 +229,7 @@
       "how": "Reuse the pattern of cloning current_values ValueMap and inserting trial auto-param values for constraint evaluation. The ValueMap clone is O(1) via PersistentMap structural sharing."
     }
   ],
-  "_session_id": "77-e61e454c",
-  "_created_at": "2026-03-21T08:21:07.699919+00:00"
+  "_session_id": "77-1def127e",
+  "_created_at": "2026-03-21T09:36:33.855566+00:00",
+  "_schema_version": 1
 }
