@@ -1070,3 +1070,113 @@ fn collection_with_quantifier() {
         );
     }
 }
+
+// ── occurrence_manufacturing_chain ──────────────────────────────────
+
+/// Parse m5_occurrence_process.ri with occurrence defs Machining and HeatTreat,
+/// each with typed ports, connected via chain in ManufacturingProcess.
+/// Different from existing connect_occurrence_chain which uses Pipe/FluidPort.
+///
+/// Verify:
+/// - Machining and HeatTreat are EntityKind::Occurrence
+/// - ManufacturingProcess has connections from chain
+/// - feed_rate and temperature params evaluate correctly
+/// - All constraints satisfied
+#[test]
+fn occurrence_manufacturing_chain() {
+    let source = std::fs::read_to_string("../../examples/m5_occurrence_process.ri")
+        .expect("examples/m5_occurrence_process.ri should exist");
+
+    let compiled = parse_and_compile(&source);
+
+    // Should have templates for Machining, HeatTreat, and ManufacturingProcess
+    assert!(
+        compiled.templates.len() >= 3,
+        "expected at least 3 templates, got {}",
+        compiled.templates.len()
+    );
+
+    // Verify Machining is an occurrence
+    let machining = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Machining")
+        .expect("should have a Machining template");
+    assert_eq!(
+        machining.entity_kind,
+        reify_compiler::EntityKind::Occurrence,
+        "Machining should be an occurrence"
+    );
+
+    // Verify HeatTreat is an occurrence
+    let heat_treat = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "HeatTreat")
+        .expect("should have a HeatTreat template");
+    assert_eq!(
+        heat_treat.entity_kind,
+        reify_compiler::EntityKind::Occurrence,
+        "HeatTreat should be an occurrence"
+    );
+
+    // Verify ManufacturingProcess has connections from chain
+    let mfg_process = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "ManufacturingProcess")
+        .expect("should have a ManufacturingProcess template");
+    assert!(
+        !mfg_process.connections.is_empty(),
+        "ManufacturingProcess should have connections from chain desugaring"
+    );
+
+    // Eval + check
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // Check feed_rate = 100
+    let fr_id = ValueCellId::new("Machining", "feed_rate");
+    let fr_val = result
+        .values
+        .get(&fr_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", fr_id));
+    match fr_val {
+        reify_types::Value::Real(v) => {
+            assert!((v - 100.0).abs() < 1e-12, "expected 100.0, got {}", v);
+        }
+        reify_types::Value::Int(v) => {
+            assert_eq!(*v, 100, "expected 100, got {}", v);
+        }
+        other => panic!("expected Real(100) or Int(100) for feed_rate, got {:?}", other),
+    }
+
+    // Check temperature = 850
+    let temp_id = ValueCellId::new("HeatTreat", "temperature");
+    let temp_val = result
+        .values
+        .get(&temp_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", temp_id));
+    match temp_val {
+        reify_types::Value::Real(v) => {
+            assert!((v - 850.0).abs() < 1e-12, "expected 850.0, got {}", v);
+        }
+        reify_types::Value::Int(v) => {
+            assert_eq!(*v, 850, "expected 850, got {}", v);
+        }
+        other => panic!("expected Real(850) or Int(850) for temperature, got {:?}", other),
+    }
+
+    // All compatibility constraints should be Satisfied
+    let result = engine.check(&compiled);
+    for entry in &result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be satisfied, got {:?}",
+            entry.id,
+            entry.satisfaction
+        );
+    }
+}
