@@ -248,6 +248,19 @@ impl Slvs_Entity {
         e
     }
 
+    pub fn point_2d(
+        h: Slvs_hEntity,
+        group: Slvs_hGroup,
+        wrkpl: Slvs_hEntity,
+        pu: Slvs_hParam,
+        pv: Slvs_hParam,
+    ) -> Self {
+        let mut e = Self::zeroed_with(h, group, SLVS_E_POINT_IN_2D);
+        e.wrkpl = wrkpl;
+        e.param = [pu, pv, Slvs_hParam(0), Slvs_hParam(0)];
+        e
+    }
+
     pub fn line_segment(
         h: Slvs_hEntity,
         group: Slvs_hGroup,

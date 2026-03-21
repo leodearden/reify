@@ -86,6 +86,16 @@ enum PointRef {
     Fixed { x: f64, y: f64, z: f64 },
 }
 
+impl PointRef {
+    /// Returns true if this is a 2D point (Auto with z=None, or Fixed with z=0).
+    fn is_2d(&self) -> bool {
+        match self {
+            PointRef::Auto { z, .. } => z.is_none(),
+            PointRef::Fixed { z, .. } => *z == 0.0,
+        }
+    }
+}
+
 /// A line reference: two points.
 #[derive(Debug, Clone)]
 struct LineRef {
@@ -482,10 +492,19 @@ impl SystemBuilder {
             } => {
                 let px = self.add_auto_coord(x_id, auto_params, current_values);
                 let py = self.add_auto_coord(y_id, auto_params, current_values);
-                let pz = self.add_auto_coord(z_id, auto_params, current_values);
                 let eh = self.alloc.entity();
-                self.entities
-                    .push(Slvs_Entity::point_3d(eh, SOLVE_GROUP, px, py, pz));
+                if z_id.is_none() {
+                    // 2D point: use POINT_IN_2D on the XY workplane.
+                    // This has only 2 params (u, v) — z is implicitly 0,
+                    // so the solver cannot vary it.
+                    let wp = self.get_workplane();
+                    self.entities
+                        .push(Slvs_Entity::point_2d(eh, SOLVE_GROUP, wp, px, py));
+                } else {
+                    let pz = self.add_auto_coord(z_id, auto_params, current_values);
+                    self.entities
+                        .push(Slvs_Entity::point_3d(eh, SOLVE_GROUP, px, py, pz));
+                }
                 self.point_entities.insert(key, eh);
                 eh
             }
@@ -499,6 +518,9 @@ impl SystemBuilder {
     /// Jacobian rank issues in libslvs. "Fixed" coordinates (no cell_id or
     /// non-auto cell_id) are initialized to their value but not mapped, so
     /// their solved values are ignored in the output.
+    ///
+    /// For 2D points (z=None), `add_point` uses POINT_IN_2D entities that
+    /// have only 2 params; this method is called only for x and y in that case.
     fn add_auto_coord(
         &mut self,
         cell_id: &Option<ValueCellId>,
@@ -531,7 +553,11 @@ impl SystemBuilder {
             self.params.push(Slvs_Param::new(h, SOLVE_GROUP, val));
             h
         } else {
-            // No cell_id — put in SOLVE_GROUP at 0 (not mapped, value ignored)
+            // No cell_id — a fixed coordinate not backed by a cell.
+            // This path is reached when a 3D point has a literal coordinate
+            // that isn't an auto param (e.g. x=literal in a mixed auto/fixed
+            // point). Put in SOLVE_GROUP to match the entity group and avoid
+            // mixed-group Jacobian issues. Not mapped, so the value is ignored.
             let h = self.alloc.param();
             self.params.push(Slvs_Param::new(h, SOLVE_GROUP, 0.0));
             h
@@ -591,20 +617,7 @@ impl SystemBuilder {
         wp_e
     }
 
-    /// Add a constraint, optionally on a workplane.
-    fn add_constraint(
-        &mut self,
-        type_: std::os::raw::c_int,
-        val_a: f64,
-        pt_a: Slvs_hEntity,
-        pt_b: Slvs_hEntity,
-        entity_a: Slvs_hEntity,
-        entity_b: Slvs_hEntity,
-    ) {
-        self.add_constraint_wrkpl(type_, SLVS_FREE_IN_3D, val_a, pt_a, pt_b, entity_a, entity_b);
-    }
-
-    /// Add a constraint on a specific workplane.
+    /// Add a constraint on a specific workplane (or `SLVS_FREE_IN_3D` for 3D).
     #[allow(clippy::too_many_arguments)]
     fn add_constraint_wrkpl(
         &mut self,
@@ -866,7 +879,13 @@ fn add_pattern_to_builder(
         } => {
             let ea = builder.add_point(pt_a, auto_params, current_values);
             let eb = builder.add_point(pt_b, auto_params, current_values);
-            builder.add_constraint(SLVS_C_PT_PT_DISTANCE, *distance_si, ea, eb, e_none, e_none);
+            // Use the workplane for 2D points so the constraint operates in 2D.
+            let wrkpl = if pt_a.is_2d() && pt_b.is_2d() {
+                builder.get_workplane()
+            } else {
+                SLVS_FREE_IN_3D
+            };
+            builder.add_constraint_wrkpl(SLVS_C_PT_PT_DISTANCE, wrkpl, *distance_si, ea, eb, e_none, e_none);
         }
         GeometricPattern::Angle {
             line_a,
@@ -879,7 +898,9 @@ fn add_pattern_to_builder(
             let lb_end = builder.add_point(&line_b.end, auto_params, current_values);
             let line_a_e = builder.add_line_segment(la_start, la_end);
             let line_b_e = builder.add_line_segment(lb_start, lb_end);
-            builder.add_constraint(SLVS_C_ANGLE, *angle_deg, e_none, e_none, line_a_e, line_b_e);
+            // Angle constraints require a workplane in SolveSpace.
+            let wp = builder.get_workplane();
+            builder.add_constraint_wrkpl(SLVS_C_ANGLE, wp, *angle_deg, e_none, e_none, line_a_e, line_b_e);
         }
         GeometricPattern::Parallel { line_a, line_b } => {
             let la_start = builder.add_point(&line_a.start, auto_params, current_values);
@@ -905,7 +926,13 @@ fn add_pattern_to_builder(
         GeometricPattern::Coincident { pt_a, pt_b } => {
             let ea = builder.add_point(pt_a, auto_params, current_values);
             let eb = builder.add_point(pt_b, auto_params, current_values);
-            builder.add_constraint(SLVS_C_POINTS_COINCIDENT, 0.0, ea, eb, e_none, e_none);
+            // Use the workplane for 2D points so the constraint operates in 2D.
+            let wrkpl = if pt_a.is_2d() && pt_b.is_2d() {
+                builder.get_workplane()
+            } else {
+                SLVS_FREE_IN_3D
+            };
+            builder.add_constraint_wrkpl(SLVS_C_POINTS_COINCIDENT, wrkpl, 0.0, ea, eb, e_none, e_none);
         }
     }
 }
