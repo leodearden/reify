@@ -41,4 +41,21 @@ describe('THEME_TOKENS', () => {
   it('applyTheme is callable function', () => {
     expect(typeof applyTheme).toBe('function');
   });
+
+  it('applyTheme sets all tokens as CSS custom properties', () => {
+    applyTheme();
+    const style = document.documentElement.style;
+
+    function camelToKebab(str: string): string {
+      return str.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+    }
+
+    for (const [key, value] of Object.entries(THEME_TOKENS)) {
+      const cssVar = `--reify-${camelToKebab(key)}`;
+      expect(
+        style.getPropertyValue(cssVar),
+        `CSS variable ${cssVar} should be set to ${value}`,
+      ).toBe(value);
+    }
+  });
 });
