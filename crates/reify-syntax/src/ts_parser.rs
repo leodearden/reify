@@ -1598,8 +1598,12 @@ impl<'a> Lowering<'a> {
 
     fn lower_string_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
         let text = self.node_text(node);
-        // Strip quotes
-        let s = text[1..text.len() - 1].to_string();
+        // Strip outer quotes safely (error recovery can produce malformed nodes)
+        let s = text
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(text)
+            .to_string();
         Some(Expr {
             kind: ExprKind::StringLiteral(s),
             span: self.span(node),
