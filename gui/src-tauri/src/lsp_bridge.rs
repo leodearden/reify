@@ -31,8 +31,11 @@ impl LspBridge {
     ///
     /// Returns a `Vec<serde_json::Value>` suitable for serialization
     /// as a Tauri event payload.
-    pub fn get_diagnostics(&self, uri: &str) -> Vec<serde_json::Value> {
-        self.lsp.get_diagnostics(uri)
+    ///
+    /// Async because the underlying `InProcessLsp::get_diagnostics`
+    /// awaits a `tokio::sync::RwLock` read guard.
+    pub async fn get_diagnostics(&self, uri: &str) -> Vec<serde_json::Value> {
+        self.lsp.get_diagnostics(uri).await
     }
 }
 

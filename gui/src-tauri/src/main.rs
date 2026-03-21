@@ -226,7 +226,7 @@ async fn lsp_request(
 
     // After document mutations, emit diagnostics as a Tauri event
     if let Some(uri) = uri {
-        let diags = bridge.get_diagnostics(&uri);
+        let diags = bridge.get_diagnostics(&uri).await;
         app.emit("diagnostics", serde_json::json!({
             "uri": uri,
             "diagnostics": diags,
