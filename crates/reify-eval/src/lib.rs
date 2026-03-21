@@ -589,6 +589,7 @@ impl Engine {
             // Collect auto param IDs from graph
             let mut auto_ids: HashSet<ValueCellId> = HashSet::new();
             let mut auto_param_list: Vec<AutoParam> = Vec::new();
+            let mut scope_name: Option<String> = None;
 
             for (_, node) in setup.graph.value_cells.iter() {
                 if node.kind == ValueCellKind::Auto {
@@ -598,6 +599,10 @@ impl Engine {
                         param_type: node.cell_type.clone(),
                         bounds: None,
                     });
+                    // Use entity from ValueCellId as scope
+                    if scope_name.is_none() {
+                        scope_name = Some(node.id.entity.clone());
+                    }
                 }
             }
 
@@ -622,11 +627,16 @@ impl Engine {
                 });
 
                 if constraints_dirty {
+                    // Look up the template-native objective by scope_name.
+                    let objective = scope_name
+                        .as_deref()
+                        .and_then(|name| self.objectives.get(name).cloned());
+
                     let problem = ResolutionProblem {
                         auto_params: auto_param_list,
                         constraints: filtered_constraints,
                         current_values: result.values.clone(),
-                        objective: setup.objective.clone(),
+                        objective,
                         functions: setup.functions.clone(),
                     };
 
