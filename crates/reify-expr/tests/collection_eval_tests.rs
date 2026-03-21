@@ -142,6 +142,24 @@ fn eval_index_access_list_out_of_bounds() {
 }
 
 #[test]
+fn eval_index_access_negative_index() {
+    // [10, 20, 30][-1] -> Undef (negative indices are rejected)
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(10), Type::Int),
+            CompiledExpr::literal(Value::Int(20), Type::Int),
+            CompiledExpr::literal(Value::Int(30), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let idx = CompiledExpr::literal(Value::Int(-1), Type::Int);
+    let expr = CompiledExpr::index_access(list, idx, Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "negative index should be Undef");
+}
+
+#[test]
 fn eval_index_access_map() {
     // map{"a" => 1, "b" => 2}["b"] -> 2
     let map = CompiledExpr::map_literal(
