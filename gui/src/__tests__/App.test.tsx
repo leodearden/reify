@@ -716,6 +716,52 @@ describe('App re-evaluate error toast', () => {
   });
 });
 
+describe('App event subscription error toast', () => {
+  it('shows warning toast when subscribeToEvents fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      // Make onMeshUpdate throw synchronously — this causes subscribeToEvents
+      // to reject because the array literal throws before Promise.allSettled runs
+      vi.mocked(bridge.onMeshUpdate).mockImplementation(() => {
+        throw new Error('subscription failed');
+      });
+
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+      });
+
+      render(() => <App />);
+
+      // Wait for ready state (subscribeToEvents failure is non-fatal)
+      await waitFor(() => {
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+      });
+
+      // Wait for the warning toast to appear
+      await waitFor(() => {
+        const toastEl = screen.getByTestId('toast');
+        expect(toastEl).toBeTruthy();
+        expect(toastEl.textContent).toContain('Event subscription failed');
+      });
+
+      // console.error should NOT be called (replaced with toast)
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        'Failed to subscribe to events:',
+        expect.any(Error),
+      );
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+      errorSpy.mockRestore();
+    }
+  });
+});
+
 describe('App reload error toast', () => {
   it('shows error toast when reload fails', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
