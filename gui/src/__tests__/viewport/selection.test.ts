@@ -19,6 +19,11 @@ vi.mock('three', () => {
     constructor(public sourceGeometry?: any) {}
   }
 
+  class MockEdgesGeometry {
+    dispose = vi.fn();
+    constructor(public sourceGeometry?: any, public thresholdAngle?: number) {}
+  }
+
   class MockLineSegments {
     geometry: any;
     material: any;
@@ -164,6 +169,7 @@ vi.mock('three', () => {
   return {
     Raycaster: MockRaycaster,
     WireframeGeometry: MockWireframeGeometry,
+    EdgesGeometry: MockEdgesGeometry,
     LineSegments: MockLineSegments,
     LineBasicMaterial: MockLineBasicMaterial,
     Box3: MockBox3,
@@ -418,6 +424,22 @@ describe('createSelection', () => {
 
       // Material should be disposed alongside geometry
       expect(wireframe.material.dispose).toHaveBeenCalled();
+    });
+
+    it('setSelected creates EdgesGeometry (not WireframeGeometry) from mesh geometry', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      selection.setSelected('A');
+
+      // The wireframe overlay should use EdgesGeometry
+      const addedObj = mockSceneAdd.mock.calls[0][0];
+      expect(addedObj.geometry).toBeDefined();
+      // EdgesGeometry stores the source geometry
+      expect(addedObj.geometry.sourceGeometry).toBe(meshA.geometry);
+      // Verify it's an EdgesGeometry instance (has thresholdAngle property)
+      expect('thresholdAngle' in addedObj.geometry).toBe(true);
     });
 
     it('changing selection disposes previous wireframe material', () => {
