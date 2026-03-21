@@ -1,0 +1,398 @@
+{
+  "task_id": "94",
+  "title": "In-process LSP bridge for editor diagnostics + completions",
+  "files": [
+    "crates/reify-lsp/src/lib.rs",
+    "crates/reify-lsp/src/bridge.rs",
+    "crates/reify-lsp/Cargo.toml",
+    "crates/reify-lsp/tests/in_process_bridge.rs",
+    "gui/src-tauri/src/lsp_bridge.rs",
+    "gui/src-tauri/src/lib.rs",
+    "gui/src-tauri/src/main.rs",
+    "gui/src-tauri/src/commands.rs",
+    "gui/src-tauri/src/tests/mod.rs",
+    "gui/src-tauri/src/tests/lsp_bridge_tests.rs",
+    "gui/src-tauri/Cargo.toml",
+    "gui/src/editor/lspClient.ts",
+    "gui/src/editor/diagnostics.ts",
+    "gui/src/editor/completions.ts",
+    "gui/src/editor/hover.ts",
+    "gui/src/editor/gotoDefinition.ts",
+    "gui/src/editor/Editor.tsx",
+    "gui/src/__tests__/lspClient.test.ts",
+    "gui/src/__tests__/diagnostics.test.ts",
+    "gui/src/__tests__/completions.test.ts",
+    "gui/src/__tests__/hover.test.ts",
+    "gui/src/__tests__/gotoDefinition.test.ts",
+    "gui/package.json"
+  ],
+  "modules": [
+    "crates/reify-lsp",
+    "gui/src-tauri/src",
+    "gui/src/editor",
+    "gui/src/__tests__"
+  ],
+  "analysis": "This task has three distinct layers:\n\n1. **reify-lsp in-process API** (Rust, crates/reify-lsp): Currently only exposes `run_server()` which uses stdin/stdout. Need to add a programmatic API that creates an LspService and routes JSON-RPC requests/responses through function calls rather than I/O streams. The key insight is that `LspService::new(ReifyLanguageServer::new)` gives us a service with `.inner()` to call LanguageServer trait methods directly. For the in-process bridge, we need a struct that holds the LspService and provides a `request(method, params_json) -> response_json` method that dispatches to the appropriate LanguageServer method. We also need a way to capture notifications (like publishDiagnostics) from the server \u2014 the tower-lsp Client sends these. For in-process use, we'll use tokio channels.\n\n2. **Tauri bridge** (Rust, gui/src-tauri): Replace the `lsp_request` stub in main.rs with a real implementation. Create `lsp_bridge.rs` that instantiates the in-process LSP server, manages its lifecycle, and provides a Tauri command handler. The bridge holds the LspService as managed state and routes requests through it. For diagnostics, the LSP server calls `client.publish_diagnostics()` \u2014 in the in-process setup, we need to intercept these and emit them as Tauri events.\n\n3. **Frontend TypeScript** (gui/src/editor): Create CodeMirror extensions that use the Tauri `lsp_request` bridge for completions, hover, and go-to-definition, plus a diagnostics listener that subscribes to Tauri events and renders inline squiggles.\n\nThe tower-lsp crate's LspService wraps LanguageServer and provides JSON-RPC dispatch. For in-process use, we can call the LanguageServer trait methods directly (as the tests already do), bypassing JSON-RPC entirely. This is simpler and more efficient than piping JSON-RPC through channels.\n\nApproach:\n- Create `crates/reify-lsp/src/bridge.rs` with `InProcessLsp` struct that holds the LspService and a channel-based diagnostic receiver\n- The key challenge is the `Client` that tower-lsp creates \u2014 it sends notifications. For in-process use, we'll use tower-lsp's LspService and access `.inner()` for direct method calls, while capturing diagnostics via a custom notification channel or by polling server state\n- Since ReifyLanguageServer stores last_published_diagnostics in its state (accessible via `.state()`), we can poll these directly from the Tauri side\n- The Tauri lsp_bridge.rs instantiates InProcessLsp, wires it as managed state, and the `lsp_request` command dispatches based on method name\n- Frontend creates CodeMirror extensions using the existing `lspRequest` bridge function",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add @codemirror/autocomplete and @codemirror/lint as dependencies to gui/package.json (needed for completion source and diagnostic rendering)",
+      "status": "done",
+      "commit": "64a3377",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add reify-lsp and tokio dependencies to gui/src-tauri/Cargo.toml so the Tauri backend can instantiate the LSP server in-process",
+      "status": "done",
+      "commit": "7a286eb",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write test in crates/reify-lsp/tests/in_process_bridge.rs: InProcessLsp can be created and responds to initialize request, returning ServerCapabilities with completion/hover/definition providers",
+      "status": "done",
+      "commit": "066e3f8"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Create crates/reify-lsp/src/bridge.rs with InProcessLsp struct that wraps LspService, exposes handle_request(method, params_json) -> Result<serde_json::Value>, and dispatches initialize/shutdown. Export from lib.rs",
+      "status": "done",
+      "commit": "f6b8830"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write test: InProcessLsp handles textDocument/didOpen and textDocument/completion returns non-empty results for .ri content with bracket source",
+      "status": "done",
+      "commit": "d451699"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Implement didOpen, didChange, didClose, and completion dispatch in InProcessLsp.handle_request by deserializing params and calling the LanguageServer trait methods",
+      "status": "done",
+      "commit": "1e18811"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test: InProcessLsp handles textDocument/hover and returns hover info for a known symbol in bracket source",
+      "status": "done",
+      "commit": "634bb41"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Implement hover dispatch in InProcessLsp.handle_request",
+      "status": "done",
+      "commit": "b2dc52f"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test: InProcessLsp handles textDocument/definition and returns a location for a known identifier",
+      "status": "done",
+      "commit": "1ac7b65"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Implement goto-definition dispatch in InProcessLsp.handle_request",
+      "status": "done",
+      "commit": "5e01067"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write test: InProcessLsp captures diagnostics after didOpen with syntax error source \u2014 diagnostics are retrievable via a get_diagnostics method or polling state",
+      "status": "done",
+      "commit": "d614ab7"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Implement diagnostics capture in InProcessLsp \u2014 after didOpen/didChange, poll server state's last_published_diagnostics and expose via get_diagnostics(uri) method",
+      "status": "done",
+      "commit": "2a7914c"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write test in gui/src-tauri/src/tests/lsp_bridge_tests.rs: LspBridge can be constructed and initialized, lsp_request_impl dispatches 'initialize' and returns valid JSON",
+      "status": "done",
+      "commit": "633510d"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Create gui/src-tauri/src/lsp_bridge.rs with LspBridge struct wrapping InProcessLsp, add LspBridge to AppState, add lsp_request_impl helper function. Register module in lib.rs",
+      "status": "done",
+      "commit": "633510d"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write test: lsp_request_impl handles textDocument/completion and returns parsed completion items after opening a document",
+      "status": "done",
+      "commit": "65c383e"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Wire lsp_request_impl to forward all LSP methods through InProcessLsp.handle_request, handle the request/notification distinction (notifications like didOpen don't return values)",
+      "status": "done",
+      "commit": "633510d"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write test: diagnostics emission \u2014 after didOpen with syntax error, LspBridge produces diagnostics that can be serialized for Tauri event emission",
+      "status": "done",
+      "commit": "9753847"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement diagnostics polling/forwarding in LspBridge \u2014 after each request that might produce diagnostics, check server state and return diagnostics alongside the response (or emit via callback)",
+      "status": "done",
+      "commit": "3fd80e6"
+    },
+    {
+      "id": "step-17",
+      "type": "impl",
+      "description": "Wire lsp_request Tauri command in main.rs to use LspBridge from AppState instead of the error stub. Add LspBridge initialization in main() setup. Add Tauri event emission for diagnostics",
+      "status": "done",
+      "commit": "13c4f7d"
+    },
+    {
+      "id": "step-18",
+      "type": "test",
+      "description": "Write gui/src/__tests__/lspClient.test.ts: lspClient module exports createLspClient that sends requests through lspRequest bridge and returns typed responses. Test initialize request mock",
+      "status": "done",
+      "commit": "a190458"
+    },
+    {
+      "id": "step-19",
+      "type": "impl",
+      "description": "Create gui/src/editor/lspClient.ts: LSP client wrapper that calls bridge.lspRequest(), manages document sync (didOpen/didChange notifications), provides typed methods for completion/hover/definition",
+      "status": "done",
+      "commit": "62faa04"
+    },
+    {
+      "id": "step-20",
+      "type": "test",
+      "description": "Write gui/src/__tests__/completions.test.ts: completion source function returns CodeMirror CompletionResult by calling lspRequest with textDocument/completion",
+      "status": "done",
+      "commit": "be16b11"
+    },
+    {
+      "id": "step-21",
+      "type": "impl",
+      "description": "Create gui/src/editor/completions.ts: CodeMirror CompletionSource that calls lspClient.completion() and maps LSP CompletionItems to CodeMirror Completion objects",
+      "status": "done",
+      "commit": "0aedb3f"
+    },
+    {
+      "id": "step-22",
+      "type": "test",
+      "description": "Write gui/src/__tests__/diagnostics.test.ts: diagnostics module subscribes to 'diagnostics' Tauri event and converts LSP diagnostics to CodeMirror lint Diagnostic format",
+      "status": "done",
+      "commit": "258ba5a"
+    },
+    {
+      "id": "step-23",
+      "type": "impl",
+      "description": "Create gui/src/editor/diagnostics.ts: subscribes to onDiagnostics Tauri event, converts LSP diagnostics (line/col ranges, severity) to CodeMirror lintGutter/setDiagnostics format, provides a CM extension",
+      "status": "done",
+      "commit": "96f0080"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Create gui/src/editor/hover.ts: CodeMirror tooltip extension that calls lspClient.hover() on mouse hover and displays the result. Create gui/src/editor/gotoDefinition.ts: Ctrl+click handler that calls lspClient.gotoDefinition() and navigates",
+      "status": "done",
+      "commit": "b74f806"
+    },
+    {
+      "id": "step-25",
+      "type": "impl",
+      "description": "Wire all LSP extensions into Editor.tsx: add completions, diagnostics, hover, and gotoDefinition extensions to the CodeMirror editor setup. Ensure lspClient is initialized on mount and documents are synced",
+      "status": "done",
+      "commit": "d9a0a96"
+    },
+    {
+      "id": "step-26",
+      "type": "test",
+      "description": "[FIX: missing_initialization_step + stale_state] Add tests to gui/src/__tests__/lspClient.test.ts: (1) `initialized()` sends 'initialized' notification via lsp_request, (2) `didClose(uri)` sends 'textDocument/didClose' notification with the correct textDocument.uri. These two methods are missing from the LspClient interface \u2014 the LSP spec requires `initialized` after `initialize`, and `didClose` is needed when switching files.",
+      "status": "done",
+      "commit": "81c4021"
+    },
+    {
+      "id": "step-27",
+      "type": "impl",
+      "description": "[FIX: missing_initialization_step + stale_state] Add `initialized(): Promise<void>` and `didClose(uri: string): Promise<void>` to the LspClient interface and createLspClient implementation in lspClient.ts. `initialized` sends method 'initialized' with empty params. `didClose` sends 'textDocument/didClose' with { textDocument: { uri } }.",
+      "status": "done",
+      "commit": "205da8d"
+    },
+    {
+      "id": "step-28",
+      "type": "test",
+      "description": "[FIX: stale_state] Add/update tests: (1) In completions.test.ts, add test that `reifyCompletionSource` accepts a `() => string` getter and uses the current return value for each request (call getter twice with different URIs, verify both requests use the correct URI). (2) Create gui/src/__tests__/hover.test.ts with test that `reifyHoverTooltip` accepts `() => string` getter. (3) Create gui/src/__tests__/gotoDefinition.test.ts with test that `reifyGotoDefinition` accepts `() => string` getter. This ensures extensions resolve the URI dynamically on each request rather than closing over a static value at construction time.",
+      "status": "done",
+      "commit": "18e0d7b"
+    },
+    {
+      "id": "step-29",
+      "type": "impl",
+      "description": "[FIX: stale_state] Refactor all three LSP extension factories to accept a dynamic URI getter instead of a static string: (1) `reifyCompletionSource(uri: string)` \u2192 `reifyCompletionSource(getUri: () => string)`, call `getUri()` inside the async completion handler. (2) `reifyHoverTooltip(uri: string)` \u2192 `reifyHoverTooltip(getUri: () => string)`, call `getUri()` inside the hover handler. (3) `reifyGotoDefinition(uri: string)` \u2192 `reifyGotoDefinition(getUri: () => string)`, call `getUri()` inside the mousedown handler and the navigation comparison. This eliminates the stale URI closure problem \u2014 after a file switch, extensions automatically use the current URI.",
+      "status": "done",
+      "commit": "f230a75"
+    },
+    {
+      "id": "step-30",
+      "type": "impl",
+      "description": "[FIX: stale_state + missing_initialization_step] Fix Editor.tsx with three changes: (1) LSP initialization: chain `lspClient.initialized()` after `lspClient.initialize()` before calling `didOpen()`, per LSP spec requirement. (2) File switch in createEffect: after dispatching content change to the view, send `lspClient.didClose(oldUri)` for the previous file, then `lspClient.didOpen(newUri, newContent, ++lspVersion)` for the new file, using `pathToUri()` for both. Track `currentUri` in a mutable variable updated on each switch. (3) Dynamic URI for extensions: introduce a `let currentUri = uri` variable updated on file switch, pass `() => currentUri` getter to `reifyCompletionSource`, `reifyHoverTooltip`, and `reifyGotoDefinition` instead of the static `uri` string. Also send `lspClient.didClose(currentUri)` in the onCleanup handler.",
+      "status": "done",
+      "commit": "f0a9368"
+    },
+    {
+      "id": "step-31",
+      "type": "test",
+      "description": "[FIX: race_condition_silent_data_loss] Update test in crates/reify-lsp/tests/in_process_bridge.rs: change `diagnostics_captured_after_did_open_with_syntax_error` to call `get_diagnostics` with `.await` since it becomes async. The test already runs in a `#[tokio::test]` context so the change is minimal \u2014 just add `.await` to the `lsp.get_diagnostics(uri)` call.",
+      "status": "done",
+      "commit": "14e1d31"
+    },
+    {
+      "id": "step-32",
+      "type": "impl",
+      "description": "[FIX: race_condition_silent_data_loss] Make `InProcessLsp::get_diagnostics` async and use `state.read().await` instead of `state.try_read()`. The method signature changes from `pub fn get_diagnostics(&self, uri: &str) -> Vec<Value>` to `pub async fn get_diagnostics(&self, uri: &str) -> Vec<Value>`. This eliminates the silent data loss when the tokio::sync::RwLock is momentarily write-locked by a concurrent LSP handler (e.g., didChange writing diagnostics). The `.await` will properly wait for the write lock to release rather than returning empty diagnostics.",
+      "status": "done",
+      "commit": "6492558"
+    },
+    {
+      "id": "step-33",
+      "type": "test",
+      "description": "[FIX: race_condition_silent_data_loss] Update test in gui/src-tauri/src/tests/lsp_bridge_tests.rs: change `lsp_bridge_diagnostics_after_syntax_error` to call `bridge.get_diagnostics(uri)` with `.await` since `LspBridge::get_diagnostics` becomes async. The test already runs in `#[tokio::test]`.",
+      "status": "done",
+      "commit": "6a6f3c1"
+    },
+    {
+      "id": "step-34",
+      "type": "impl",
+      "description": "[FIX: race_condition_silent_data_loss] Make `LspBridge::get_diagnostics` async, forwarding to the now-async `InProcessLsp::get_diagnostics`. Update `gui/src-tauri/src/main.rs` line 229 to `.await` the `bridge.get_diagnostics(&uri)` call \u2014 the `lsp_request` Tauri command is already async so this requires no signature change at the command level.",
+      "status": "done",
+      "commit": "6357a3b"
+    },
+    {
+      "id": "step-35",
+      "type": "test",
+      "description": "[FIX: resource_leak] Add test in gui/src/__tests__/diagnostics.test.ts: when `createDiagnosticsListener` promise resolves after the component has been 'unmounted' (simulated by calling cleanup before the promise resolves), the returned unlisten function should still be called. Test that the unlisten is invoked even when cleanup races with setup: (1) mock `listen` to return a delayed promise, (2) call `createDiagnosticsListener`, (3) before awaiting, simulate cleanup by calling the returned unlisten-promise's then-handler pattern. Alternatively, test the new `createCancellableDiagnosticsListener` helper that returns `{ promise, cancel }` \u2014 calling `cancel()` before promise resolves should call `unlisten()` when it does resolve.",
+      "status": "done",
+      "commit": "5077ea0"
+    },
+    {
+      "id": "step-36",
+      "type": "impl",
+      "description": "[FIX: resource_leak] Fix the diagnostics listener lifecycle in Editor.tsx. Replace the current pattern:\n```\ncreateDiagnosticsListener(cb).then(unlisten => { unlistenDiagnostics = unlisten; });\n```\nwith a cancellation-safe pattern using a `cancelled` flag:\n```\nlet diagnosticsListenerCancelled = false;\ncreateDiagnosticsListener(cb).then(unlisten => {\n  if (diagnosticsListenerCancelled) {\n    unlisten(); // Component already unmounted, tear down immediately\n  } else {\n    unlistenDiagnostics = unlisten;\n  }\n});\n```\nIn `onCleanup`, set `diagnosticsListenerCancelled = true` before calling `unlistenDiagnostics?.()`. This ensures that if the component unmounts before the Promise resolves, the unlisten function is called as soon as it becomes available, preventing the Tauri event listener from leaking.",
+      "status": "done",
+      "commit": "f2b4a7e"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use direct LanguageServer trait method calls via LspService::inner() rather than JSON-RPC over channels",
+      "rationale": "The existing test pattern (server.rs tests) already calls LanguageServer methods directly via service.inner(). This avoids the overhead and complexity of JSON-RPC serialization for in-process communication. The InProcessLsp bridge handles JSON deserialization at the boundary (Tauri sends JSON) and calls typed methods internally."
+    },
+    {
+      "decision": "Poll server state for diagnostics rather than intercepting Client notifications",
+      "rationale": "ReifyLanguageServer already stores last_published_diagnostics in its ServerState (accessible via .state()). Polling this after didOpen/didChange is simpler than creating a custom tower-lsp Client implementation. The Tauri side can check for new diagnostics after each document mutation request and emit a Tauri event."
+    },
+    {
+      "decision": "Add InProcessLsp to reify-lsp crate (not gui crate) so it's reusable",
+      "rationale": "The in-process LSP bridge is useful beyond the GUI \u2014 testing, embedding, future WASM builds. Keeping it in the reify-lsp crate alongside the server makes it part of the LSP crate's public API. The gui crate depends on reify-lsp and wraps it with Tauri-specific concerns."
+    },
+    {
+      "decision": "Keep the lsp_request Tauri command as a single generic endpoint taking method + params JSON",
+      "rationale": "This matches the existing stub signature and the bridge.ts lspRequest wrapper. A single generic endpoint is simpler than individual commands per LSP method and aligns with how LSP JSON-RPC works \u2014 the method name determines the dispatch."
+    },
+    {
+      "decision": "Add @codemirror/autocomplete and @codemirror/lint as frontend dependencies",
+      "rationale": "These are the standard CodeMirror 6 packages for completion and diagnostics rendering. The project already uses @codemirror/state, @codemirror/view, @codemirror/language, and @codemirror/commands \u2014 these are natural additions."
+    },
+    {
+      "decision": "Frontend LSP client manages document sync separately from updateSource",
+      "rationale": "The existing Editor.tsx sends updateSource to the engine for evaluation. The LSP client needs separate didOpen/didChange notifications to the in-process LSP server for language features. These are independent concerns \u2014 the engine evaluates geometry while the LSP provides editing features."
+    },
+    {
+      "decision": "Use dynamic URI getter (() => string) for LSP extensions instead of static string parameter",
+      "rationale": "CodeMirror 6 extensions are configured once at EditorState creation and persist across the editor's lifetime. Passing a static URI at mount time means the extensions always target the original file after a file switch. A getter function resolves the URI at request time, so after a file switch the extensions automatically use the new file's URI without needing to reconstruct the entire EditorState. This is simpler than using CodeMirror Compartments to reconfigure extensions on every file switch."
+    },
+    {
+      "decision": "Send didClose/didOpen on file switch rather than just didChange",
+      "rationale": "The LSP specification models files as discrete documents identified by URI. Changing the editor content to a different file's content while keeping the old URI confuses the LSP server \u2014 it thinks the old file changed rather than a new file was opened. Sending didClose for the old URI and didOpen for the new URI correctly maintains the server's document store. This also ensures diagnostics are associated with the correct URI."
+    },
+    {
+      "decision": "Make get_diagnostics async with state.read().await instead of try_read()",
+      "rationale": "The ServerState is guarded by tokio::sync::RwLock. Using try_read() silently returns empty diagnostics when the lock is momentarily write-locked (e.g., during concurrent didChange handling). Since get_diagnostics is called from async Tauri commands, making it async and using read().await is the correct fix \u2014 it waits for the write lock to release rather than dropping data. The RwLock write hold time is short (only lightweight field updates after eval completes), so await latency is negligible."
+    },
+    {
+      "decision": "Use cancelled-flag pattern for diagnostics listener cleanup instead of awaiting the promise in onCleanup",
+      "rationale": "SolidJS onCleanup is synchronous \u2014 it cannot await a Promise. The cancelled-flag pattern is the standard solution: set a flag in onCleanup, and when the Promise resolves, check the flag and call unlisten() immediately if the component is already gone. This prevents the Tauri event listener from leaking without requiring async cleanup infrastructure."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "LspService::new(ReifyLanguageServer::new) + service.inner() pattern",
+      "where": "crates/reify-lsp/src/server.rs tests, tests/lifecycle.rs",
+      "how": "Same pattern for creating and accessing the language server instance. InProcessLsp wraps this."
+    },
+    {
+      "what": "ReifyLanguageServer::state() for diagnostics access",
+      "where": "crates/reify-lsp/src/server.rs line 54",
+      "how": "Already public, returns Arc<RwLock<ServerState>> which has last_diagnostics_for(). Use to poll diagnostics after mutations."
+    },
+    {
+      "what": "bridge.ts lspRequest() function",
+      "where": "gui/src/bridge.ts line 64",
+      "how": "Already exists, wraps invoke('lsp_request'). Frontend LSP client uses this directly."
+    },
+    {
+      "what": "onDiagnostics event listener",
+      "where": "gui/src/bridge.ts line 107",
+      "how": "Already exists, subscribes to 'diagnostics' Tauri event. Diagnostics module uses this."
+    },
+    {
+      "what": "Tauri test pattern (commands_tests.rs _impl functions)",
+      "where": "gui/src-tauri/src/tests/commands_tests.rs",
+      "how": "Tests use _impl helper functions that take &Mutex<EngineSession> directly, avoiding Tauri runtime. Same pattern for lsp_bridge_tests using lsp_request_impl."
+    },
+    {
+      "what": "Vitest mock pattern for @tauri-apps/api",
+      "where": "gui/src/__tests__/bridge.test.ts",
+      "how": "Mocks invoke/listen from Tauri API. Same pattern for LSP client tests."
+    },
+    {
+      "what": "reify_test_support::bracket_source()",
+      "where": "Used throughout LSP and GUI tests",
+      "how": "Standard test fixture for valid Reify source code. Used in in-process bridge tests."
+    },
+    {
+      "what": "AppState struct with managed state pattern",
+      "where": "gui/src-tauri/src/commands.rs line 11",
+      "how": "Add LspBridge as a new field in AppState, following the same Arc<Mutex<>> wrapping pattern."
+    },
+    {
+      "what": "InProcessLsp.handle_request already handles 'initialized' and 'textDocument/didClose'",
+      "where": "crates/reify-lsp/src/bridge.rs lines 90-113",
+      "how": "The Rust bridge already dispatches both methods correctly. Only the TypeScript LspClient interface and Editor.tsx wiring are missing \u2014 no Rust changes needed for the fix."
+    }
+  ],
+  "_session_id": "94-9732e5d8",
+  "_created_at": "2026-03-21T09:35:26.234934+00:00",
+  "_schema_version": 1
+}

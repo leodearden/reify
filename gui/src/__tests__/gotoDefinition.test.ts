@@ -1,0 +1,90 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Mock Tauri API modules
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(),
+}));
+
+// Mock @codemirror/view and @codemirror/state to avoid DOM dependencies
+vi.mock('@codemirror/view', () => ({
+  EditorView: {
+    domEventHandlers: (handlers: Record<string, Function>) => ({ handlers }),
+  },
+}));
+
+vi.mock('@codemirror/state', () => ({
+  // Minimal mock
+}));
+
+import { invoke } from '@tauri-apps/api/core';
+import { reifyGotoDefinition } from '../editor/gotoDefinition';
+
+const mockInvoke = vi.mocked(invoke);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+describe('reifyGotoDefinition', () => {
+  it('returns an extension', () => {
+    const ext = reifyGotoDefinition('file:///test.ri');
+    expect(ext).toBeDefined();
+  });
+
+  it('accepts a () => string getter and uses current URI for each request', async () => {
+    let currentUri = 'file:///first.ri';
+    const mockLocation = {
+      uri: 'file:///first.ri',
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(mockLocation));
+
+    const ext = reifyGotoDefinition(() => currentUri) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          line: () => ({ from: 0 }),
+        },
+      },
+      dispatch: vi.fn(),
+    };
+
+    // First call uses first URI
+    mousedownHandler(mockEvent, mockView);
+    // Wait for the async requestDefinition to complete
+    await new Promise((r) => setTimeout(r, 10));
+    let params = JSON.parse((mockInvoke.mock.calls[0][1] as { params: string }).params);
+    expect(params.textDocument.uri).toBe('file:///first.ri');
+
+    // Switch URI
+    currentUri = 'file:///second.ri';
+    mockInvoke.mockClear();
+    mockInvoke.mockResolvedValue(
+      JSON.stringify({
+        uri: 'file:///second.ri',
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+      }),
+    );
+
+    // Second call uses updated URI
+    mousedownHandler(mockEvent, mockView);
+    await new Promise((r) => setTimeout(r, 10));
+    params = JSON.parse((mockInvoke.mock.calls[0][1] as { params: string }).params);
+    expect(params.textDocument.uri).toBe('file:///second.ri');
+  });
+});

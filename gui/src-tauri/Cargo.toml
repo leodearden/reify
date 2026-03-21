@@ -29,7 +29,9 @@ reify-geometry.workspace = true
 # listed in tauri.conf.json bundle.resources so they ship alongside the binary.
 reify-kernel-occt = { workspace = true, optional = true }
 reify-stdlib.workspace = true
+reify-lsp.workspace = true
 tauri = { workspace = true, optional = true }
+tokio.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 notify.workspace = true
