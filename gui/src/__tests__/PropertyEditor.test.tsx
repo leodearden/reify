@@ -11,6 +11,7 @@ function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueDa
     unit: overrides.unit ?? 'mm',
     determinacy: overrides.determinacy ?? 'determined',
     entity_path: overrides.entity_path ?? 'Bracket.param',
+    kind: overrides.kind ?? 'Param',
   };
 }
 

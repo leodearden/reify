@@ -97,14 +97,14 @@
       "type": "impl",
       "description": "Fix ConstraintPanel.tsx: change `constraint.details` references (lines 95-96) to `constraint.label`. All ConstraintPanel tests should now pass with the label field.",
       "status": "done",
-      "commit": "PLACEHOLDER_10"
+      "commit": "38beb9f"
     },
     {
       "id": "step-11",
       "type": "test",
       "description": "Update PropertyEditor.test.tsx makeValue() helper to include `kind: string` field. Update engineStore.test.ts sampleValue and inline ValueData constructions to include `kind`. Update navigation.test.ts ValueData literals to include `kind`.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PLACEHOLDER_11"
     },
     {
       "id": "step-12",

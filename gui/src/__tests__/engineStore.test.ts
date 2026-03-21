@@ -56,13 +56,14 @@ const sampleValue: ValueData = {
   unit: 'mm',
   determinacy: 'determined',
   entity_path: 'Bracket.width',
+  kind: 'Param',
 };
 
 const sampleConstraint: ConstraintData = {
   node_id: 'constraint_001',
   expression: 'width > 10',
   status: 'satisfied',
-  details: null,
+  label: null,
   parameter_ids: ['cell_001'],
 };
 
@@ -120,6 +121,7 @@ describe('engineStore', () => {
         unit: 'mm',
         determinacy: 'determined',
         entity_path: 'Bracket.height',
+        kind: 'Param',
       };
       applyValueUpdates([sampleValue, value2]);
       expect(state.values['cell_001']).toEqual(sampleValue);
@@ -135,7 +137,7 @@ describe('engineStore', () => {
         node_id: 'constraint_002',
         expression: 'height < 100',
         status: 'violated',
-        details: 'too large',
+        label: 'too large',
         parameter_ids: ['cell_002'],
       };
       applyConstraintUpdates([sampleConstraint, c2]);
@@ -211,9 +213,9 @@ describe('engineStore', () => {
       expect(updateCount).toBe(0);
 
       const values: ValueData[] = [
-        { cell_id: 'a', name: 'a', value: '1', unit: 'mm', determinacy: 'determined', entity_path: 'X.a' },
-        { cell_id: 'b', name: 'b', value: '2', unit: 'mm', determinacy: 'determined', entity_path: 'X.b' },
-        { cell_id: 'c', name: 'c', value: '3', unit: 'mm', determinacy: 'determined', entity_path: 'X.c' },
+        { cell_id: 'a', name: 'a', value: '1', unit: 'mm', determinacy: 'determined', entity_path: 'X.a', kind: 'Param' },
+        { cell_id: 'b', name: 'b', value: '2', unit: 'mm', determinacy: 'determined', entity_path: 'X.b', kind: 'Param' },
+        { cell_id: 'c', name: 'c', value: '3', unit: 'mm', determinacy: 'determined', entity_path: 'X.c', kind: 'Param' },
       ];
 
       applyValueUpdates(values);
@@ -238,9 +240,9 @@ describe('engineStore', () => {
       expect(updateCount).toBe(0);
 
       const constraints: ConstraintData[] = [
-        { node_id: 'n1', expression: 'a > 0', status: 'satisfied', details: null, parameter_ids: ['a'] },
-        { node_id: 'n2', expression: 'b > 0', status: 'satisfied', details: null, parameter_ids: ['b'] },
-        { node_id: 'n3', expression: 'c > 0', status: 'violated', details: 'fail', parameter_ids: ['c'] },
+        { node_id: 'n1', expression: 'a > 0', status: 'satisfied', label: null, parameter_ids: ['a'] },
+        { node_id: 'n2', expression: 'b > 0', status: 'satisfied', label: null, parameter_ids: ['b'] },
+        { node_id: 'n3', expression: 'c > 0', status: 'violated', label: 'fail', parameter_ids: ['c'] },
       ];
 
       applyConstraintUpdates(constraints);
