@@ -67,6 +67,53 @@ describe('lspDiagnosticToCodeMirror', () => {
   });
 });
 
+describe('diagnostics listener lifecycle', () => {
+  it('unlisten is called when cleanup races with async setup', async () => {
+    // Simulate the race: listen() resolves after "cleanup" has occurred.
+    // This tests the cancelled-flag pattern used in Editor.tsx:
+    //   let cancelled = false;
+    //   createDiagnosticsListener(cb).then(unlisten => {
+    //     if (cancelled) unlisten();   // <-- component already unmounted
+    //     else unlistenRef = unlisten;
+    //   });
+    //   // ... later, onCleanup: cancelled = true;
+
+    const unlisten = vi.fn();
+    let resolveListenPromise: (val: () => void) => void;
+    const listenPromise = new Promise<() => void>((resolve) => {
+      resolveListenPromise = resolve;
+    });
+    mockListen.mockReturnValue(listenPromise);
+
+    const callback = vi.fn();
+
+    // Start the listener (not yet resolved)
+    let unlistenRef: (() => void) | undefined;
+    let cancelled = false;
+    createDiagnosticsListener(callback).then((fn) => {
+      if (cancelled) {
+        fn(); // Component already gone — tear down immediately
+      } else {
+        unlistenRef = fn;
+      }
+    });
+
+    // Simulate cleanup happening BEFORE the promise resolves
+    cancelled = true;
+
+    // Now resolve the listen promise (simulating Tauri responding late)
+    resolveListenPromise!(unlisten);
+
+    // Let microtasks flush
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The unlisten should have been called because we were cancelled
+    expect(unlisten).toHaveBeenCalled();
+    // And unlistenRef should NOT have been set
+    expect(unlistenRef).toBeUndefined();
+  });
+});
+
 describe('createDiagnosticsListener', () => {
   it('subscribes to diagnostics Tauri event', async () => {
     const unlisten = vi.fn();
