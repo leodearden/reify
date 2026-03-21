@@ -715,3 +715,65 @@ describe('App re-evaluate error toast', () => {
     }
   });
 });
+
+describe('App reload error toast', () => {
+  it('shows error toast when reload fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      // Set up a file-changed callback we can trigger
+      let fileChangedCb!: (data: any) => void;
+      vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+        fileChangedCb = cb;
+        return () => {};
+      });
+
+      // Make bridgeOpenFile reject
+      vi.mocked(bridge.openFile).mockRejectedValue(new Error('file not found'));
+
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+      });
+
+      render(() => <App />);
+
+      // Wait for ready state and file-changed subscription
+      await waitFor(() => {
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+        expect(fileChangedCb).toBeDefined();
+      });
+
+      // Trigger file changed event to show the reload prompt
+      fileChangedCb({ path: '/project/bracket.ri', content: 'updated' });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('reload-prompt')).toBeTruthy();
+      });
+
+      // Click the Reload button
+      fireEvent.click(screen.getByText('Reload'));
+
+      // Wait for the error toast to appear
+      await waitFor(() => {
+        const toastEl = screen.getByTestId('toast');
+        expect(toastEl).toBeTruthy();
+        expect(toastEl.dataset.type).toBe('error');
+        expect(toastEl.textContent).toContain('Reload failed');
+      });
+
+      // console.error should NOT be called (replaced with toast)
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        'Reload failed:',
+        expect.any(Error),
+      );
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+      errorSpy.mockRestore();
+    }
+  });
+});
