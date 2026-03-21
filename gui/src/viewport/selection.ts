@@ -1,6 +1,8 @@
 import {
   Raycaster,
   Vector2,
+  Vector3,
+  Box3,
   Color,
   WireframeGeometry,
   LineSegments,
@@ -119,7 +121,29 @@ export function createSelection(options: SelectionOptions): SelectionContext {
   }
 
   function fitToView(): void {
-    // stub
+    const meshes = getMeshes();
+    if (meshes.size === 0) return;
+
+    const box = new Box3();
+    for (const mesh of meshes.values()) {
+      box.expandByObject(mesh);
+    }
+
+    if (box.isEmpty()) return;
+
+    const center = new Vector3();
+    const size = new Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const fovRad = (camera.fov / 2) * (Math.PI / 180);
+    const distance = maxDim / (2 * Math.tan(fovRad));
+
+    camera.position.copy(center);
+    camera.position.z += distance;
+    camera.lookAt(center);
+    camera.updateProjectionMatrix();
   }
 
   function dispose(): void {
