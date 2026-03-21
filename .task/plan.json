@@ -156,6 +156,20 @@
       "description": "Final cleanup pass: verify all console.error calls in App.tsx are replaced with toast calls, ensure Editor.tsx LSP didChange/fileSwitch errors remain as console.error (intentional), run full vitest suite to confirm no regressions. Clean up any unused imports.",
       "status": "done",
       "commit": "bbd5bd7"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing tests for initApp race condition guard in gui/src/__tests__/App.test.tsx (new describe 'App initApp concurrent execution guard'): (1) 'rapid double-click on Retry does not start two concurrent initApp flights': first call to getInitialState returns a deferred promise, click Retry, then immediately click Retry again while first is still pending \u2014 verify getInitialState is called only twice total (initial mount + first retry), not three times. (2) 'retry cleans up prior subscriptions before re-subscribing': mock onMeshUpdate etc. with tracked unlisten fns, let first initApp succeed (subscriptions established), then make getInitialState reject on second call, click Retry \u2014 verify the prior unsub/fileChangedUnsub are called (cleaned up) before the second initApp attempts to subscribe. (3) 'Retry button is disabled while initApp is in-flight (loading phase)': after getInitialState rejects and error state shows, click Retry \u2014 verify the Retry button becomes disabled (or disappears) synchronously while loading, preventing a second click from firing.",
+      "status": "done",
+      "commit": "565cde7"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Fix the initApp race condition in App.tsx with a two-pronged approach: (1) At the top of initApp(), clean up existing subscriptions before proceeding: call `unsub?.(); unsub = undefined; fileChangedUnsub?.(); fileChangedUnsub = undefined;` \u2014 this ensures that if initApp is called again (via retry), any previously-established subscriptions are torn down so they cannot leak or fire duplicates. (2) The Retry button is already gated by initPhase: since initApp() synchronously sets initPhase to 'loading' at line 121, the Show block for the error state (which contains the Retry button) is removed from the DOM immediately on click, preventing a second click from reaching handleRetry. Verify this is sufficient by confirming the Show condition `initPhase() === 'error'` is mutually exclusive with 'loading'. If the Retry button is still clickable during microtask gap, additionally add `disabled={initPhase() === 'loading'}` to the Retry button as a belt-and-suspenders guard. Run tests from step-19 to confirm all pass.",
+      "status": "done",
+      "commit": "c272be3"
     }
   ],
   "design_decisions": [
@@ -182,6 +196,10 @@
     {
       "decision": "Auto-dismiss timers: 5s for success/info, 10s for errors",
       "rationale": "Success messages are brief acknowledgements; errors need more reading time and may contain diagnostic information. The timer resets when showToast is called again to prevent stale messages from lingering."
+    },
+    {
+      "decision": "Fix initApp race condition via subscription cleanup + Show-based button removal rather than an explicit inFlight flag",
+      "rationale": "The initPhase signal already drives conditional rendering via Show \u2014 when initApp sets initPhase('loading') synchronously at entry, SolidJS removes the error state (and its Retry button) from the DOM, preventing a second click. This is the idiomatic SolidJS approach and avoids adding a separate boolean flag. The critical fix is cleaning up existing unsub/fileChangedUnsub at the top of initApp so that even if concurrent execution somehow occurs (e.g., programmatic call), prior subscriptions are always torn down before new ones are established. This prevents subscription leaks and duplicate event handlers."
     }
   ],
   "reuse": [
@@ -219,8 +237,13 @@
       "what": "SolidJS createStore/createSignal factory pattern",
       "where": "createEditorStore, createEngineStore, createSelectionStore all use factory functions returning {state, ...methods}",
       "how": "createToast follows the same convention: factory function returning reactive accessors + mutation methods."
+    },
+    {
+      "what": "Existing deferred promise test pattern for async race condition tests",
+      "where": "Already used in App.test.tsx 'App async mount/cleanup race conditions' and 'App initialization loading state' describes",
+      "how": "Follow the same pattern: create deferred promises for getInitialState/onMeshUpdate, control resolution timing to test concurrent execution scenarios."
     }
   ],
   "_session_id": "105-3a68578e",
-  "_created_at": "2026-03-21T19:48:33.677613+00:00"
+  "_created_at": "2026-03-21T21:17:32.801355+00:00"
 }
