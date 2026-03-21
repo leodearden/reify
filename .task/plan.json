@@ -152,6 +152,20 @@
       "description": "Add pickSavePath(defaultName: string, formatExtension: string) function to bridge.ts that imports save() from @tauri-apps/plugin-dialog. Returns Promise<string | null>. Modify handleDoExport in App.tsx: before calling bridgeExportGeometry, call pickSavePath to get the user-chosen path. If null (cancelled), return early without exporting. Pass the chosen path to bridgeExportGeometry instead of the hardcoded default.",
       "status": "done",
       "commit": "77506fd"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing test in App.test.tsx for pickSavePath error boundary (reviewer_robustness finding): mock bridge.pickSavePath to reject with an Error (e.g., 'Plugin not registered'). Click Export in the dialog. Assert that (1) an error toast is shown with message containing 'Could not open save dialog', (2) bridgeExportGeometry was NOT called, (3) setExporting(true) was never reached (the export-dialog is still visible and not in exporting state \u2014 no spinner present), (4) the dialog remains open for the user to retry or cancel.",
+      "status": "done",
+      "commit": "15a409b"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "In App.tsx handleDoExport, wrap the `await pickSavePath(defaultName, format)` call in its own try/catch block before the existing try/catch for bridgeExportGeometry. On catch: set toastType to 'error', set toastMessage to `Could not open save dialog: ${err instanceof Error ? err.message : String(err)}`, and return early. This ensures that if the Tauri dialog plugin throws (plugin not registered, OS denies dialog, initialization failure), the user sees a clear error toast and the dialog remains open \u2014 matching the reviewer's suggested fix pattern.",
+      "status": "done",
+      "commit": "d9a882b"
     }
   ],
   "design_decisions": [
@@ -178,6 +192,10 @@
     {
       "decision": "CSS-only spinner animation rather than SVG or animated icon library",
       "rationale": "No icon library is in the project dependencies. A CSS border-animation spinner is lightweight, theme-compatible (uses CSS variables), and sufficient for the simple 'Exporting...' state indicator."
+    },
+    {
+      "decision": "Separate try/catch for pickSavePath before the export try/catch rather than merging into one block",
+      "rationale": "The pickSavePath failure and bridgeExportGeometry failure have different error messages and different UX consequences. pickSavePath failure means the save dialog couldn't open \u2014 the user should see 'Could not open save dialog' and the export dialog stays open (no exporting state entered). Export failure means the actual export failed \u2014 different message, different cleanup (setExporting(false), close dialog). Keeping them as separate try/catch blocks makes the error handling clearer and the UX distinct for each failure mode."
     }
   ],
   "reuse": [
@@ -205,8 +223,13 @@
       "what": "Existing SolidJS createEffect/onMount patterns for lifecycle hooks",
       "where": "gui/src/panels/ExportDialog.tsx and other panel components",
       "how": "Use createEffect to react to props.open changes for focus management. Use onCleanup for any event listener cleanup. Follow the same import pattern from 'solid-js'."
+    },
+    {
+      "what": "Existing App.test.tsx file picker test structure for the new error boundary test",
+      "where": "gui/src/__tests__/App.test.tsx lines 588-645 (E-6 describe block)",
+      "how": "The new step-19 test follows the identical pattern: render App, open export dialog, click Export button, then assert on toast and bridge call behavior. Use mockRejectedValue instead of mockResolvedValue for the error case."
     }
   ],
   "_session_id": "108-dd9cabba",
-  "_created_at": "2026-03-21T19:47:24.704427+00:00"
+  "_created_at": "2026-03-21T21:05:22.695698+00:00"
 }
