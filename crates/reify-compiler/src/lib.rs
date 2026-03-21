@@ -1431,8 +1431,83 @@ fn compile_purpose(
                     )),
                 );
             }
-            _ => {
-                // Other member types (GuardedGroup, Param, Sub, etc.) not yet handled in purposes
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "guarded blocks in purpose bodies are not yet supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        g.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Param(p) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "param declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        p.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Sub(s) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "sub declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        s.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Port(p) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "port declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        p.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Connect(c) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "connect declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        c.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Chain(c) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "chain declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        c.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::AssociatedType(a) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "associated type declarations in purpose bodies are not supported"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        a.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
             }
         }
     }
