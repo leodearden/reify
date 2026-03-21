@@ -506,10 +506,10 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
             let init = &args[0];
             let lambda = &args[1];
             // Validate lambda arity upfront (fold requires exactly 2 params: acc, item)
-            if let Value::Lambda { params, .. } = lambda {
-                if params.len() != 2 {
-                    return Value::Undef;
-                }
+            if let Value::Lambda { params, .. } = lambda
+                && params.len() != 2
+            {
+                return Value::Undef;
             }
             match obj {
                 Value::List(items) => {
