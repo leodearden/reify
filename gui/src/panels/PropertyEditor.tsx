@@ -89,6 +89,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
         type="text"
         placeholder="Filter properties..."
         class={styles.filterInput}
+        aria-label="Filter properties"
         value={filterText()}
         onInput={(e) => setFilterText(e.currentTarget.value)}
       />
@@ -96,12 +97,13 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
         <div class={styles.emptyState}>No properties</div>
       </Show>
       <Show when={!isEmpty()}>
-        <div class={styles.groups}>
+        <div class={styles.groups} role="tree">
           <For each={groupNames()}>
             {(groupName) => (
               <div
                 class={`${styles.group} ${isGroupSelected(groupName) ? styles.selected : ''}`}
                 data-selected={isGroupSelected(groupName) || undefined}
+                role="treeitem"
               >
                 <button
                   class={styles.groupHeader}
@@ -115,7 +117,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                   {groupName}
                 </button>
                 <Show when={!isGroupCollapsed(groupName)}>
-                  <div class={styles.groupBody}>
+                  <div class={styles.groupBody} role="group">
                     <For each={filteredGroups()[groupName]}>
                       {(val) => (
                         <div class={styles.row} data-testid={`prop-row-${val.cell_id}`} data-highlighted={props.highlightedParams?.includes(val.cell_id) || undefined}>
