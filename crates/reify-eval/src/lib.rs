@@ -711,6 +711,10 @@ impl Engine {
         // Store functions and purposes for this module (used by edit_param and purpose activation)
         self.functions = module.functions.clone();
         self.compiled_purposes = module.compiled_purposes.clone();
+        // Clear stale purpose state from previous eval() calls — the fresh
+        // snapshot discards all purpose-injected constraints/objectives.
+        self.active_purposes.clear();
+        self.active_objective_map.clear();
         let functions = &module.functions;
 
         let mut values = ValueMap::new();
