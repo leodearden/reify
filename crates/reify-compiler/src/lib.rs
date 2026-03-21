@@ -4570,7 +4570,13 @@ fn compile_geometry_call(
                 ],
             }])
         }
-        _ => None,
+        _ => {
+            diagnostics.push(Diagnostic::error(format!(
+                "unsupported geometry function: {}",
+                name
+            )));
+            None
+        }
     }
 }
 
