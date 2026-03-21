@@ -387,3 +387,52 @@ fn compile_dynamic_index_collection_member_access() {
         "dynamic index collection access should NOT contain Literal(Undef) as base"
     );
 }
+
+// ─── step-29: collection sub as standalone identifier ───
+
+#[test]
+fn compile_collection_sub_as_standalone_identifier() {
+    // A bare collection sub name (`bolts`) should resolve to ValueRef(__list_bolts),
+    // not produce an 'unresolved name' error.
+    let source = r#"
+        structure Bolt { param grade : Scalar = 8.8 }
+        structure S {
+            sub bolts : List<Bolt>
+            constraint bolts.count == 3
+            let grades = bolts
+        }
+    "#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("should have template S");
+
+    // Find the 'grades' let binding
+    let grades_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "grades")
+        .expect("should have let binding 'grades'");
+
+    let expr = grades_cell.default_expr.as_ref().expect("grades should have an expression");
+
+    // Should be a ValueRef to __list_bolts, not Literal(Undef)
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(id.entity, "S", "entity should be S");
+            assert_eq!(id.member, "__list_bolts", "member should be __list_bolts");
+        }
+        other => panic!(
+            "expected ValueRef(S.__list_bolts), got {:?}",
+            other
+        ),
+    }
+
+    // Result type should be List
+    match &expr.result_type {
+        reify_types::Type::List(_) => {}
+        other => panic!("expected List type, got {:?}", other),
+    }
+}

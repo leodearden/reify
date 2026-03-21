@@ -483,3 +483,51 @@ fn eval_dynamic_index_collection_member_access_from_source() {
         "bolts[0].diameter should be 10mm = 0.01m"
     );
 }
+
+// ─── step-29: collection sub as standalone identifier e2e eval ───
+
+#[test]
+fn eval_collection_aggregate_from_source() {
+    // End-to-end: compile and eval `let grades = bolts` where bolts is a collection sub.
+    // This tests the compiler path for bare collection sub identifier resolution,
+    // NOT the builder API that step-19 uses.
+    let source = r#"
+        structure Bolt { param grade : Scalar = 8.8 }
+        structure S {
+            sub bolts : List<Bolt>
+            constraint bolts.count == 3
+            let grades = bolts
+        }
+    "#;
+
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // grades should be a List of 3 values (the bolt grades), not Undef
+    let grades_id = ValueCellId::new("S", "grades");
+    let grades_val = result.values.get(&grades_id);
+    assert!(
+        grades_val.is_some() && grades_val != Some(&Value::Undef),
+        "grades should be a List of bolt values, not Undef. Got: {:?}",
+        grades_val
+    );
+
+    match grades_val.unwrap() {
+        Value::List(items) => {
+            assert_eq!(items.len(), 3, "should have 3 items in grades list");
+        }
+        other => panic!("expected List, got {:?}", other),
+    }
+}
