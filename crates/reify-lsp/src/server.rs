@@ -9,6 +9,25 @@ use tower_lsp::{Client, LanguageServer};
 use crate::diagnostics::EvalState;
 use crate::document::DocumentStore;
 
+/// Trait for emitting server-initiated notifications to the frontend.
+///
+/// Replaces direct use of `tower_lsp::Client` for notifications, so the
+/// same `ReifyLanguageServer` can work with:
+/// - `NoOpSink` (tests and backward compatibility)
+/// - `ClientSink` (stdio/TCP mode via tower-lsp)
+/// - `TauriNotificationSink` (in-process Tauri mode)
+pub trait NotificationSink: Send + Sync {
+    /// Publish diagnostics for the given document.
+    fn publish_diagnostics(&self, uri: Url, diagnostics: Vec<Diagnostic>, version: Option<i32>);
+}
+
+/// A no-op sink that discards all notifications.
+pub struct NoOpSink;
+
+impl NotificationSink for NoOpSink {
+    fn publish_diagnostics(&self, _uri: Url, _diagnostics: Vec<Diagnostic>, _version: Option<i32>) {}
+}
+
 /// Internal state shared across handler calls.
 ///
 /// Contains document storage and captured diagnostics. The RwLock guards
