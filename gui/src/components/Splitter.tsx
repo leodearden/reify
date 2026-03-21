@@ -52,6 +52,9 @@ export function Splitter(props: SplitterProps) {
       class={styles.splitter}
       data-testid={props['data-testid']}
       data-orientation={props.orientation}
+      role="separator"
+      aria-orientation={props.orientation}
+      tabindex="0"
       onMouseDown={onMouseDown}
     />
   );
