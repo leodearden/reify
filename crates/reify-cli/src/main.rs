@@ -205,6 +205,14 @@ fn cmd_gui(args: &[String]) -> ExitCode {
         }
     }
 
+    // Check if launch is suppressed (for testing / CI)
+    if std::env::var("REIFY_GUI_SKIP_LAUNCH").is_ok() {
+        eprintln!(
+            "Error: could not launch reify-gui (launch skipped via REIFY_GUI_SKIP_LAUNCH)"
+        );
+        return ExitCode::FAILURE;
+    }
+
     // Locate the reify-gui binary: same directory as this binary, then PATH
     let gui_binary_name = if cfg!(target_os = "windows") {
         "reify-gui.exe"
