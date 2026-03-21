@@ -1410,71 +1410,42 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
     );
 }
 
-// --- PoisonError recovery tests ---
-// Gated behind feature = "test-utils" because #[cfg(test)] only applies to
-// unit tests within the crate, not integration tests in the tests/ directory.
+// --- PoisonError behavior tests (legacy module, kept for backward compat) ---
+// The old poison_recovery tests verified silent recovery from poisoned locks.
+// After the C4 fix (panic-on-poison), these now verify panics instead.
+// The comprehensive panic tests are in the `poison_panics` module below.
 
 #[cfg(feature = "test-utils")]
 mod poison_recovery {
     use super::*;
-    use reify_runtime::concurrent::{AsyncNodeEvaluator};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
-    /// values() should recover gracefully when values RwLock is poisoned.
+    /// After the C4 fix, values() panics on poisoned lock (no silent recovery).
     #[test]
-    fn values_recovers_after_values_lock_poisoning() {
+    fn values_panics_after_values_lock_poisoning() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
 
-        // Poison the values lock
         adapter.poison_values();
 
-        // values() should return a ValueMap without panicking
-        let vals = adapter.values();
-        assert!(!vals.is_empty(), "values should still be readable after poisoning");
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.values()
+        }));
+        assert!(result.is_err(), "values() must panic on poisoned lock after C4 fix");
     }
 
-    /// take_results() should recover gracefully when results lock is poisoned.
+    /// After the C4 fix, take_results() panics on poisoned lock.
     #[test]
-    fn take_results_recovers_after_results_lock_poisoning() {
+    fn take_results_panics_after_results_lock_poisoning() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
 
-        // Poison the results lock
         adapter.poison_results();
 
-        // take_results() should return a Vec without panicking
-        let _results = adapter.take_results();
-    }
-
-    /// evaluate() should recover gracefully when the values RwLock is poisoned,
-    /// and take_results()/build_result_shared() should still work afterward.
-    #[tokio::test]
-    async fn evaluate_continues_after_lock_poisoning() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let b_node = NodeId::Value(ValueCellId::new("T", "b"));
-
-        // Poison the values RwLock
-        adapter.poison_values();
-
-        // evaluate() should complete without cascading panic
-        let outcome = adapter.evaluate(b_node.clone()).await;
-
-        // Should get an outcome (Changed or Unchanged, doesn't matter which)
-        assert!(
-            outcome == EvalOutcome::Changed || outcome == EvalOutcome::Unchanged,
-            "evaluate should return a valid outcome, got {:?}",
-            outcome
-        );
-
-        // take_results() should still work
-        let results = adapter.take_results();
-        assert!(!results.is_empty(), "should have at least one result after evaluate");
-
-        // build_result_shared() should still work (regression guard for already-fixed paths)
-        let eval_set = vec![b_node];
-        let result = adapter.build_result_shared(&eval_set, HashSet::new());
-        assert!(!result.values.is_empty(), "build_result_shared should return values");
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.take_results()
+        }));
+        assert!(result.is_err(), "take_results() must panic on poisoned lock after C4 fix");
     }
 }
 
