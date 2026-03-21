@@ -520,14 +520,14 @@ impl<'a> Lowering<'a> {
                 let mut config = Vec::new();
                 let mut cursor = inner.walk();
                 for child in inner.named_children(&mut cursor) {
-                    if child.kind() == "field_config_entry" {
-                        if let Some(key_node) = child.child_by_field_name("key") {
-                            let key = self.node_text(key_node).to_string();
-                            if let Some(val_node) = child.child_by_field_name("value") {
-                                if let Some(val_expr) = self.lower_expr(val_node) {
-                                    config.push((key, val_expr));
-                                }
-                            }
+                    if child.kind() == "field_config_entry"
+                        && let Some(key_node) = child.child_by_field_name("key")
+                    {
+                        let key = self.node_text(key_node).to_string();
+                        if let Some(val_node) = child.child_by_field_name("value")
+                            && let Some(val_expr) = self.lower_expr(val_node)
+                        {
+                            config.push((key, val_expr));
                         }
                     }
                 }
