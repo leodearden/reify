@@ -992,4 +992,62 @@ mod tests {
         assert!(result.changed.contains(&d), "d should be changed");
         assert!(result.skipped.is_empty(), "nothing should be skipped: {:?}", result.skipped);
     }
+
+    /// Verify that reify_eval::dirty::compute_levels produces correct levels
+    /// for the bracket topology: width+thickness at level 0, volume+C1 at level 1.
+    #[test]
+    fn compute_levels_bracket_topology() {
+        use reify_eval::cache::NodeId;
+        use reify_eval::deps::DependencyTrace;
+        use reify_eval::dirty::compute_levels;
+        use reify_types::{ConstraintNodeId, ValueCellId};
+        use std::collections::{HashMap, HashSet};
+
+        let e = "B";
+        let width = NodeId::Value(ValueCellId::new(e, "width"));
+        let thickness = NodeId::Value(ValueCellId::new(e, "thickness"));
+        let volume = NodeId::Value(ValueCellId::new(e, "volume"));
+        let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
+
+        let mut nodes = HashSet::new();
+        nodes.insert(width.clone());
+        nodes.insert(thickness.clone());
+        nodes.insert(volume.clone());
+        nodes.insert(c1.clone());
+
+        let mut traces = HashMap::new();
+        traces.insert(width.clone(), DependencyTrace::default());
+        traces.insert(thickness.clone(), DependencyTrace::default());
+        traces.insert(
+            volume.clone(),
+            DependencyTrace {
+                reads: vec![
+                    ValueCellId::new(e, "width"),
+                    ValueCellId::new(e, "thickness"),
+                ],
+            },
+        );
+        traces.insert(
+            c1.clone(),
+            DependencyTrace {
+                reads: vec![
+                    ValueCellId::new(e, "width"),
+                    ValueCellId::new(e, "thickness"),
+                ],
+            },
+        );
+
+        let levels = compute_levels(&nodes, &traces);
+        assert_eq!(levels.len(), 2, "expected 2 levels, got {:?}", levels);
+
+        // Level 0: width + thickness (no in-set deps)
+        assert_eq!(levels[0].len(), 2, "level 0: {:?}", levels[0]);
+        assert!(levels[0].contains(&width));
+        assert!(levels[0].contains(&thickness));
+
+        // Level 1: volume + C1 (both depend on width + thickness)
+        assert_eq!(levels[1].len(), 2, "level 1: {:?}", levels[1]);
+        assert!(levels[1].contains(&volume));
+        assert!(levels[1].contains(&c1));
+    }
 }
