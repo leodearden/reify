@@ -48,8 +48,10 @@ export interface Location {
 
 export interface LspClient {
   initialize(): Promise<InitializeResult>;
+  initialized(): Promise<void>;
   didOpen(uri: string, text: string, version: number): Promise<void>;
   didChange(uri: string, text: string, version: number): Promise<void>;
+  didClose(uri: string): Promise<void>;
   completion(uri: string, line: number, character: number): Promise<CompletionItem[]>;
   hover(uri: string, line: number, character: number): Promise<HoverResult | null>;
   gotoDefinition(uri: string, line: number, character: number): Promise<Location | null>;
@@ -77,9 +79,19 @@ export function createLspClient(): LspClient {
       return JSON.parse(response) as InitializeResult;
     },
 
+    async initialized(): Promise<void> {
+      await lspRequest('initialized', {});
+    },
+
     async didOpen(uri: string, text: string, version: number): Promise<void> {
       await lspRequest('textDocument/didOpen', {
         textDocument: { uri, languageId: 'reify', version, text },
+      });
+    },
+
+    async didClose(uri: string): Promise<void> {
+      await lspRequest('textDocument/didClose', {
+        textDocument: { uri },
       });
     },
 
