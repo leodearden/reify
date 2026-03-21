@@ -125,11 +125,9 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
   }
 
   function sync(meshes: Record<string, MeshData>): void {
-    const incomingKeys = new Set(Object.keys(meshes));
-
     // Remove meshes no longer present
     for (const key of [...meshMap.keys()]) {
-      if (!incomingKeys.has(key)) {
+      if (!(key in meshes)) {
         removeMesh(key);
       }
     }
