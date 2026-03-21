@@ -25,8 +25,9 @@ export const ExportDialog: Component<ExportDialogProps> = (props) => {
           </Show>
 
           <div class={styles.field}>
-            <label class={styles.label}>Format</label>
+            <label class={styles.label} for="export-format-select">Format</label>
             <select
+              id="export-format-select"
               class={styles.select}
               value={format()}
               disabled={props.exporting}
