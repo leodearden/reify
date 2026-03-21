@@ -49,9 +49,11 @@ vi.mock('three', () => {
 
   class MockMeshStandardMaterial {
     color: any;
+    side: any;
     dispose = vi.fn();
     constructor(opts?: any) {
       this.color = opts?.color;
+      this.side = opts?.side;
       mockMaterials.push(this);
     }
   }
@@ -86,6 +88,8 @@ vi.mock('three', () => {
     Mesh: MockMesh,
     Scene: MockScene,
     Color: MockColor,
+    DoubleSide: 2,
+    FrontSide: 0,
   };
 });
 
@@ -313,6 +317,16 @@ describe('meshManager', () => {
     const mesh = manager.getSceneMeshes().get('A')!;
     const geom = mesh.geometry as any;
     expect(geom.computeVertexNormals).not.toHaveBeenCalled();
+  });
+
+  it('material is created with side: DoubleSide (V-05)', () => {
+    const { manager } = setup();
+    manager.sync({ A: makeMeshData('A') });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+    const material = mesh.material as any;
+    // THREE.DoubleSide === 2
+    expect(material.side).toBe(2);
   });
 
   it('updateMeshGeometry calls computeVertexNormals when normals become null (V-04)', () => {
