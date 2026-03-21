@@ -670,3 +670,48 @@ describe('App handleSetParameter error handling', () => {
     }
   });
 });
+
+describe('App re-evaluate error toast', () => {
+  it('shows error toast when re-evaluate (F5) fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      vi.mocked(bridge.updateSource).mockRejectedValue(new Error('eval error'));
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+      });
+
+      render(() => <App />);
+
+      // Wait for ready state
+      await waitFor(() => {
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+      });
+
+      // Press F5 to trigger re-evaluate (on a non-input element)
+      fireEvent.keyDown(document, { key: 'F5' });
+
+      // Wait for the error toast to appear
+      await waitFor(() => {
+        const toastEl = screen.getByTestId('toast');
+        expect(toastEl).toBeTruthy();
+        expect(toastEl.dataset.type).toBe('error');
+        expect(toastEl.textContent).toContain('Re-evaluation failed');
+      });
+
+      // console.error should NOT be called
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        'Re-evaluate failed:',
+        expect.any(Error),
+      );
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+      errorSpy.mockRestore();
+    }
+  });
+});
