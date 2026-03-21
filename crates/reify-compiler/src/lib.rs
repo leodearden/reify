@@ -1782,14 +1782,16 @@ pub fn compile(
         }
     }
 
+    // Build the template registry once; reused by the bound-check pass and the
+    // purpose compilation pass below.
+    let template_registry: HashMap<String, &TopologyTemplate> = templates
+        .iter()
+        .map(|t: &TopologyTemplate| (t.name.clone(), t))
+        .collect();
+
     // Post-compilation pass: run deferred bound checks now that all structures
     // are compiled and available in the template registry.
     {
-        let template_registry: HashMap<String, &TopologyTemplate> = templates
-            .iter()
-            .map(|t: &TopologyTemplate| (t.name.clone(), t))
-            .collect();
-
         for mut check in pending_bound_checks {
             // For sub-component checks, type_params were left empty during
             // compilation — fill them in now from the full template registry.
@@ -1868,11 +1870,6 @@ pub fn compile(
     // Purpose compilation pass: compile after templates so reflective schema queries
     // can resolve against TopologyTemplates.
     let compiled_purposes = {
-        let purpose_template_registry: HashMap<String, &TopologyTemplate> = templates
-            .iter()
-            .map(|t: &TopologyTemplate| (t.name.clone(), t))
-            .collect();
-
         let mut purposes = Vec::new();
         for decl in &parsed.declarations {
             if let reify_syntax::Declaration::Purpose(purpose_def) = decl {
@@ -1880,7 +1877,7 @@ pub fn compile(
                     purpose_def,
                     &enum_defs,
                     &functions,
-                    &purpose_template_registry,
+                    &template_registry,
                     &mut diagnostics,
                 );
                 purposes.push(compiled);
