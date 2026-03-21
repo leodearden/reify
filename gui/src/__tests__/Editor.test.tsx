@@ -137,7 +137,7 @@ describe('Editor save (Ctrl+S)', () => {
     });
     view.contentDOM.dispatchEvent(event);
 
-    expect(saveSpy).toHaveBeenCalledWith(file1.path);
+    expect(saveSpy).toHaveBeenCalledWith(file1.path, file1.content);
   });
 
   it('save clears dirty flag', async () => {
