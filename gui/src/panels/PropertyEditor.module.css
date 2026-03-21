@@ -60,6 +60,7 @@
   letter-spacing: 0.05em;
   cursor: pointer;
   text-align: left;
+  user-select: none;
 }
 
 .groupHeader:hover {
