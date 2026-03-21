@@ -37,14 +37,15 @@ export interface ValueData {
   unit: string;
   determinacy: string;
   entity_path: string;
+  kind: string;
 }
 
-/** Status and details of a constraint node. */
+/** Status and label of a constraint node. */
 export interface ConstraintData {
   node_id: string;
   expression: string;
   status: string;
-  details: string | null;
+  label: string | null;
   parameter_ids: string[];
 }
 
