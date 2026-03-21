@@ -33,6 +33,8 @@ pub enum Type {
     StructureRef(String),
     /// Field type: a mapping from domain to codomain (e.g., Field<Point3, Scalar>).
     Field { domain: Box<Type>, codomain: Box<Type> },
+    /// Geometry handle (a reference to a realization, not a scalar value).
+    Geometry,
 }
 
 impl Type {
@@ -212,6 +214,7 @@ impl std::fmt::Display for Type {
             Type::TypeParam(name) => write!(f, "{}", name),
             Type::StructureRef(name) => write!(f, "{}", name),
             Type::Field { domain, codomain } => write!(f, "Field<{}, {}>", domain, codomain),
+            Type::Geometry => write!(f, "Geometry"),
         }
     }
 }
