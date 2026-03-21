@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { GuiState, EvaluationStatus } from '../types';
+import type { GuiState, RawGuiState, EvaluationStatus } from '../types';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
@@ -15,6 +15,7 @@ import { listen } from '@tauri-apps/api/event';
 import {
   getInitialState,
   setParameter,
+  updateSource,
   exportGeometry,
   onMeshUpdate,
   onEvaluationStatus,
@@ -63,6 +64,44 @@ describe('bridge commands', () => {
       format: 'step',
       path: '/tmp/output.step',
     });
+  });
+
+  // S5: setParameter should return a converted GuiState (not void)
+  it('setParameter returns a GuiState with typed arrays', async () => {
+    const rawState: RawGuiState = {
+      meshes: [{ entity_path: 'Box.body', vertices: [0, 1, 2], indices: [0, 1, 2], normals: null }],
+      values: [{ cell_id: 'c1', name: 'w', value: '10', unit: 'mm', determinacy: 'determined', entity_path: 'Box.w' }],
+      constraints: [],
+      files: [],
+    };
+    mockInvoke.mockResolvedValue(rawState);
+
+    const result = await setParameter('c1', '42.0');
+
+    expect(mockInvoke).toHaveBeenCalledWith('set_parameter', { cellId: 'c1', value: '42.0' });
+    // result should be a converted GuiState with typed arrays
+    expect(result).toBeDefined();
+    expect(result.meshes[0].vertices).toBeInstanceOf(Float32Array);
+    expect(result.meshes[0].indices).toBeInstanceOf(Uint32Array);
+    expect(result.values).toHaveLength(1);
+  });
+
+  // S6: updateSource should return a converted GuiState (not void)
+  it('updateSource returns a GuiState with typed arrays', async () => {
+    const rawState: RawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [{ node_id: 'n1', expression: 'x > 0', status: 'satisfied', details: null, parameter_ids: [] }],
+      files: [{ path: 'main.ri', content: 'updated' }],
+    };
+    mockInvoke.mockResolvedValue(rawState);
+
+    const result = await updateSource('main.ri', 'updated');
+
+    expect(mockInvoke).toHaveBeenCalledWith('update_source', { path: 'main.ri', content: 'updated' });
+    expect(result).toBeDefined();
+    expect(result.constraints).toHaveLength(1);
+    expect(result.files).toHaveLength(1);
   });
 });
 
