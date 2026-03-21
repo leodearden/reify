@@ -201,22 +201,22 @@
       "id": "step-24",
       "type": "impl",
       "description": "Complete the sample() stdlib implementation to properly invoke the field's stored lambda with the given point argument. Make test pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "4f921af"
     },
     {
       "id": "step-25",
       "type": "test",
       "description": "Write failing stdlib test: gradient_scalar_field \u2014 gradient(field) on a scalar field should return a vector field (or Undef as initial stub)",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "d2ce31e"
     },
     {
       "id": "step-26",
       "type": "impl",
       "description": "Add gradient, divergence, curl field operations to stdlib. These are stub implementations that return Undef for now (numeric differentiation requires further infrastructure), but the dispatch and type signature are correct. Make test pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "2ff3ec7"
     }
   ],
   "design_decisions": [
