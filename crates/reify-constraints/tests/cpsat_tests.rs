@@ -313,3 +313,76 @@ fn enum_constraint_excludes_one_variant() {
         other => panic!("expected Solved, got {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// step-11: integer constraint x + y == 10
+// ---------------------------------------------------------------------------
+
+/// x + y == 10 with both in [0, 10]. Expect solved with x+y==10.
+#[test]
+fn integer_constraint_sum_equals_10() {
+    use reify_types::{BinOp, CompiledExpr};
+
+    let solver = CpSatSolver;
+
+    let x_id = vcid("Part", "x");
+    let y_id = vcid("Part", "y");
+
+    let x_ref = value_ref_typed("Part", "x", Type::Int);
+    let y_ref = value_ref_typed("Part", "y", Type::Int);
+
+    // x + y
+    let sum = CompiledExpr::binop(BinOp::Add, x_ref.clone(), y_ref.clone(), Type::Int);
+    let ten = literal(Value::Int(10));
+
+    // Constraints: x + y == 10
+    let c1 = eq(sum, ten);
+    // x >= 0, y >= 0, x <= 10, y <= 10
+    let c2 = ge(x_ref.clone(), literal(Value::Int(0)));
+    let c3 = ge(y_ref.clone(), literal(Value::Int(0)));
+    let c4 = le(x_ref, literal(Value::Int(10)));
+    let c5 = le(y_ref, literal(Value::Int(10)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::Int,
+                bounds: Some((0.0, 10.0)),
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::Int,
+                bounds: Some((0.0, 10.0)),
+            },
+        ],
+        constraints: vec![
+            (cnid("Part", 0), c1),
+            (cnid("Part", 1), c2),
+            (cnid("Part", 2), c3),
+            (cnid("Part", 3), c4),
+            (cnid("Part", 4), c5),
+        ],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let x = match values.get(&x_id).unwrap() {
+                Value::Int(v) => *v,
+                other => panic!("expected Int for x, got {:?}", other),
+            };
+            let y = match values.get(&y_id).unwrap() {
+                Value::Int(v) => *v,
+                other => panic!("expected Int for y, got {:?}", other),
+            };
+            assert_eq!(x + y, 10, "expected x + y == 10, got x={x}, y={y}");
+            assert!(x >= 0 && x <= 10, "x out of bounds: {x}");
+            assert!(y >= 0 && y <= 10, "y out of bounds: {y}");
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
