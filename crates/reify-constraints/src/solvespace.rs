@@ -175,7 +175,8 @@ fn try_distance_eq(
             let pt_a = extract_point_ref(&args[0], auto_params)?;
             let pt_b = extract_point_ref(&args[1], auto_params)?;
             let distance_si = extract_scalar_si(val_expr)?;
-            // distance == 0 is a coincident constraint
+            // Exact zero in SI metres — NOT a geometric tolerance.
+            // Any non-zero distance, however small, uses PtPtDistance.
             if distance_si.abs() < 1e-15 {
                 return Some(GeometricPattern::Coincident { pt_a, pt_b });
             }
