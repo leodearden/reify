@@ -1109,6 +1109,76 @@ describe('App layout persistence', () => {
   });
 });
 
+describe('App splitter max bounds', () => {
+  it('dragging left splitter far right clamps editor width so viewport and side panel remain visible', async () => {
+    await renderAndWaitForReady();
+    const main = screen.getByTestId('app-layout').querySelector('[class*="main"]') as HTMLElement;
+    expect(main).toBeTruthy();
+
+    // Mock container width (jsdom has 0 by default)
+    Object.defineProperty(main, 'clientWidth', { value: 1200, configurable: true });
+
+    const splitter = screen.getByTestId('splitter-left');
+
+    // Drag right by a huge amount — should be clamped
+    fireEvent.mouseDown(splitter, { clientX: 300, clientY: 200 });
+    fireEvent.mouseMove(document, { clientX: 1500, clientY: 200 });
+    fireEvent.mouseUp(document);
+
+    // Editor width should be clamped: containerWidth(1200) - sideWidth(300) - MIN_PANEL_WIDTH(150) - 8(splitters)
+    // = 742. So editorWidth should be <= 742
+    const cols = main.style.gridTemplateColumns;
+    const editorPx = parseInt(cols.split('px')[0], 10);
+    expect(editorPx).toBeLessThanOrEqual(1200 - 300 - 150 - 8);
+    expect(editorPx).toBeGreaterThan(0);
+  });
+
+  it('dragging right splitter far left clamps side panel width similarly', async () => {
+    await renderAndWaitForReady();
+    const main = screen.getByTestId('app-layout').querySelector('[class*="main"]') as HTMLElement;
+    expect(main).toBeTruthy();
+
+    Object.defineProperty(main, 'clientWidth', { value: 1200, configurable: true });
+
+    const splitter = screen.getByTestId('splitter-right');
+
+    // Drag left by a huge amount (negative delta for right splitter increases sideWidth)
+    fireEvent.mouseDown(splitter, { clientX: 900, clientY: 200 });
+    fireEvent.mouseMove(document, { clientX: 100, clientY: 200 });
+    fireEvent.mouseUp(document);
+
+    // Side panel width should be clamped: containerWidth(1200) - editorWidth(300) - MIN_PANEL_WIDTH(150) - 8
+    // = 742
+    const cols = main.style.gridTemplateColumns;
+    const parts = cols.match(/(\d+)px/g)!;
+    const sidePx = parseInt(parts[parts.length - 1], 10);
+    expect(sidePx).toBeLessThanOrEqual(1200 - 300 - 150 - 8);
+    expect(sidePx).toBeGreaterThan(0);
+  });
+
+  it('dragging side-panel splitter downward clamps property height', async () => {
+    await renderAndWaitForReady();
+    const sidePanel = screen.getByTestId('side-panel');
+    const splitter = sidePanel.querySelector('[data-testid="splitter-side"]') as HTMLElement;
+    expect(splitter).toBeTruthy();
+
+    // Mock side panel height
+    Object.defineProperty(sidePanel, 'clientHeight', { value: 600, configurable: true });
+
+    // Drag down by a huge amount
+    fireEvent.mouseDown(splitter, { clientX: 500, clientY: 200 });
+    fireEvent.mouseMove(document, { clientX: 500, clientY: 1000 });
+    fireEvent.mouseUp(document);
+
+    // Property height should be clamped so constraint panel remains visible
+    // containerHeight(600) - MIN_PANEL_HEIGHT(80) - 4(splitter) = 516
+    const rows = sidePanel.style.gridTemplateRows;
+    const heightPx = parseInt(rows.split('px')[0], 10);
+    expect(heightPx).toBeLessThanOrEqual(600 - 80 - 4);
+    expect(heightPx).toBeGreaterThan(0);
+  });
+});
+
 describe('App end-to-end toast integration', () => {
   it('App renders, loads state (ready), then setParameter failure shows toast with correct message', async () => {
     const rejectHandler = (e: any) => e.preventDefault();
