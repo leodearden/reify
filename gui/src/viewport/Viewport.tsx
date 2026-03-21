@@ -49,6 +49,9 @@ export function Viewport(props: ViewportProps) {
     createEffect(() => {
       meshManager.sync(props.meshes);
 
+      // Refresh selection wireframe to reflect updated geometry
+      selection.refreshSelected();
+
       // Adjust camera clipping planes based on scene bounds
       const bounds = new Box3();
       for (const mesh of meshManager.getSceneMeshes().values()) {

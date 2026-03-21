@@ -1,132 +1,197 @@
 {
-  "task_id": "102",
-  "title": "Fix viewport click-vs-drag and camera control bugs",
+  "task_id": "112",
+  "title": "Viewport rendering: normals fallback, double-sided materials, data validation, buffer updates",
   "files": [
+    "gui/src/viewport/meshManager.ts",
     "gui/src/viewport/selection.ts",
+    "gui/src/viewport/scene.ts",
     "gui/src/viewport/Viewport.tsx",
+    "gui/src/__tests__/viewport/meshManager.test.ts",
     "gui/src/__tests__/viewport/selection.test.ts",
-    "gui/src/__tests__/viewport/Viewport.test.tsx"
+    "gui/src/__tests__/viewport/scene.test.ts"
   ],
   "modules": [
     "gui/src/viewport",
     "gui/src/__tests__/viewport"
   ],
-  "analysis": "Three high-severity viewport interaction bugs need fixing:\n\n**V-10 (click-vs-drag):** In selection.ts line 97-100, `handlePointerDown` calls `raycast()` and `onSelect()` synchronously on every `pointerdown` event. This means every orbit-drag start fires an unwanted selection. Fix: track pointerdown position, add pointerup listener, only fire onSelect if pointer moved < 5px (standard click threshold). Existing tests in 'click-based selection raycasting' and 'rAF-throttled pointermove' sections dispatch `pointerdown` and expect immediate `onSelect` — these must be updated to dispatch pointerdown+pointerup.\n\n**V-02 (Z-axis offset):** Both `fitToView` (line 175-176) and `flyToEntity` (line 199-200) do `camera.position.copy(center); camera.position.z += distance;` — this always offsets along world Z axis regardless of current view angle. Fix: use `camera.getWorldDirection()` to get current view direction, then position camera at `center - viewDir * distance`.\n\n**V-03 (controls.target stale):** After fitToView/flyToEntity reposition the camera, `OrbitControls.target` is never updated. Subsequent orbit rotation pivots around the old target point, producing broken behavior. Fix: accept a controls reference in SelectionOptions, update `controls.target.copy(center)` in both fitToView and flyToEntity.\n\nV-02 and V-03 are tightly coupled — both require changes to fitToView/flyToEntity and the SelectionOptions interface. The controls object (with its .target Vector3) needs to be threaded from Viewport.tsx into createSelection.\n\nExisting test infrastructure (selection.test.ts) uses extensive Three.js mocks. The MockVector3 needs `sub()` and `multiplyScalar()` methods, and MockPerspectiveCamera needs `getWorldDirection()` to support the V-02 fix tests.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Extend mock classes in selection.test.ts: add `sub(v)`, `multiplyScalar(s)` to MockVector3; add `getWorldDirection(target)` to MockPerspectiveCamera. These are needed for V-02/V-03 tests but should be added upfront to avoid mixing mock infrastructure changes with test logic.",
-      "status": "done",
-      "commit": "0f2ddec",
-      "tests": []
-    }
-  ],
+  "analysis": "This task fixes 8 viewport rendering issues across 3 source files (meshManager.ts, selection.ts, scene.ts) with coordination in Viewport.tsx. The codebase uses a factory-function pattern (createScene, createMeshManager, createSelection) with Three.js fully mocked via vi.mock in vitest tests (jsdom environment).\n\nCurrent bugs and fixes:\n1. V-04 (meshManager.ts:53-55): When data.normals is null, no computeVertexNormals() fallback \u2014 causes flat-black faces. Fix: call geometry.computeVertexNormals() when normals are null in both createMeshFromData and updateMeshGeometry.\n2. V-05 (meshManager.ts:57-59): MeshStandardMaterial lacks DoubleSide \u2014 invisible back-faces on thin CAD shells. Fix: add side: THREE.DoubleSide to material constructor.\n3. V-06 (meshManager.ts): No validation of mesh data before BufferGeometry creation. Fix: validate vertices.length % 3 === 0 and indices in bounds before creating/updating geometry.\n4. V-07 (meshManager.ts:66-105): updateMeshGeometry mutates BufferAttribute internals (array + count) unsafely \u2014 when array length changes, the WebGL buffer size is fixed, causing errors. Fix: create new BufferAttribute when array length differs.\n5. V-08 (selection.ts:139-153): Selection wireframe not synced after geometry updates. Fix: add refreshSelected() to SelectionContext and call it from Viewport.tsx after mesh sync.\n6. V-11 (scene.ts:34): Fixed camera clipping planes (0.1, 10000). Fix: add adjustClipping(sceneBounds) method to SceneContext that computes near/far from camera-to-scene distance.\n7. V-13 (scene.ts:44-49): Single directional light with no camera-following headlight. Fix: add a headlight as a child of the camera.\n8. V-15 (scene.ts:58-62): setPixelRatio not updated on display change/resize. Fix: call renderer.setPixelRatio(window.devicePixelRatio) in resize handler.\n\nThe existing test infrastructure provides extensive mock classes. The MockBufferGeometry needs computeVertexNormals added. The three mock in meshManager.test.ts needs DoubleSide and FrontSide constants. Scene tests need MockPerspectiveCamera.add method. The existing Viewport.tsx effect pattern (createEffect depending on props.meshes) provides the coordination point for calling refreshSelected and adjustClipping after mesh sync.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "V-10: Write failing tests for click-vs-drag discrimination in selection.test.ts. New describe block 'click-vs-drag discrimination' with tests: (1) pointerdown alone does NOT fire onSelect, (2) pointerdown+pointerup at same position fires onSelect with raycasted entity, (3) pointerdown+pointerup with >5px movement does NOT fire onSelect, (4) pointerdown+pointerup with <=5px movement fires onSelect, (5) onSelect receives null when pointerup raycast misses, (6) after dispose, pointerup does not fire onSelect.",
+      "description": "Write failing test in meshManager.test.ts: when data.normals is null, createMeshFromData calls geometry.computeVertexNormals() (V-04). Add computeVertexNormals mock to MockBufferGeometry. Test: sync with null normals, assert computeVertexNormals was called. Also test: sync with provided normals, assert computeVertexNormals was NOT called.",
       "status": "done",
-      "commit": "a38392f"
+      "commit": "cd74b48"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "V-10: Implement click-vs-drag discrimination in selection.ts. Replace `handlePointerDown` (which fires onSelect immediately) with: (a) `handlePointerDown` that records {clientX, clientY} and adds a one-shot pointerup listener, (b) `handlePointerUp` that computes Euclidean distance from pointerdown position and only calls raycast()+onSelect() if distance < 5px. Update dispose() to also remove pointerup listener. Update existing 'click-based selection raycasting' tests and 'rAF-throttled pointermove / pointerdown still raycasts synchronously' test to dispatch both pointerdown+pointerup events instead of just pointerdown.",
+      "description": "Implement V-04 in meshManager.ts: In createMeshFromData, add else branch after the normals check \u2014 when data.normals is null, call geometry.computeVertexNormals(). In updateMeshGeometry, in the else-if branch where normals are removed (line 97-98), call geometry.computeVertexNormals() after deleteAttribute.",
       "status": "done",
-      "commit": "4351054"
+      "commit": "7d8fbc6"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "V-02/V-03: Write failing tests for fitToView with view-direction offset and controls.target update. In selection.test.ts, add tests: (1) fitToView offsets camera along current view direction (not just Z) — set camera at an angle, verify position is center - viewDir*distance, (2) fitToView updates controls.target to bounding box center when controls provided via SelectionOptions, (3) fitToView still works without controls (backward compat). Update setup() to optionally accept a controls mock with a target Vector3.",
+      "description": "Write failing test in meshManager.test.ts: material is created with side: THREE.DoubleSide (V-05). Add DoubleSide constant to mock. Assert that the material's side property equals DoubleSide (2).",
       "status": "done",
-      "commit": "0ada03b"
+      "commit": "0e7398b"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "V-02/V-03: Fix fitToView in selection.ts. Add optional `controls?: { target: { copy: (v: any) => void } }` field to SelectionOptions interface. In fitToView(): (a) get view direction via `camera.getWorldDirection(dir)`, (b) position camera at `center - viewDir * distance` instead of just Z offset, (c) if controls provided, set `controls.target.copy(center)`. Update existing fitToView tests that asserted Z-only offset to match new view-direction behavior.",
+      "description": "Implement V-05 in meshManager.ts: Import DoubleSide from 'three'. Add side: DoubleSide to the MeshStandardMaterial constructor options.",
       "status": "done",
-      "commit": "19993ce"
+      "commit": "e28a18b"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "V-02/V-03: Write failing tests for flyToEntity with view-direction offset and controls.target update. Tests: (1) flyToEntity offsets camera along current view direction, (2) flyToEntity updates controls.target to entity bounding box center, (3) flyToEntity with unknown entity does not crash or update controls.target.",
+      "description": "Write failing tests in meshManager.test.ts for mesh data validation (V-06). Tests: (1) sync with vertices.length not divisible by 3 does not add mesh to scene, (2) sync with an index >= vertex count does not add mesh, (3) valid data still works normally. Also test update path: update with invalid data skips the update.",
       "status": "done",
-      "commit": "0b68dd9"
+      "commit": "04f8b53"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "V-02/V-03: Fix flyToEntity in selection.ts. Apply same view-direction offset and controls.target update pattern as fitToView. Update existing flyToEntity tests that asserted Z-only offset.",
+      "description": "Implement V-06 in meshManager.ts: Add validateMeshData(data: MeshData): boolean that checks vertices.length % 3 === 0 and max(indices) < vertices.length / 3. Guard createMeshFromData and updateMeshGeometry calls in sync() with this validation, logging a console.warn for invalid data.",
       "status": "done",
-      "commit": "e26758b"
+      "commit": "5a4df9c"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Viewport integration: Write failing test in Viewport.test.tsx verifying that createSelection is called with a controls option containing the OrbitControls instance from createControls. Assert that the mock createSelection receives `controls` in its options argument.",
+      "description": "Write failing tests in meshManager.test.ts for safe buffer updates when array length changes (V-07). Tests: (1) update with same-length arrays reuses existing BufferAttribute (identity check \u2014 existing test), (2) update with different-length vertex array creates a new BufferAttribute (not same reference), (3) update with different-length index array creates new index BufferAttribute, (4) new BufferAttribute has correct array and count.",
       "status": "done",
-      "commit": "1ecc92c"
+      "commit": "dafa7ec"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Viewport integration: Update Viewport.tsx to pass `controls: controls.controls` (the OrbitControls instance from ControlsContext) to createSelection's options. This threads the controls.target through so fitToView/flyToEntity can update it.",
+      "description": "Implement V-07 in meshManager.ts: In updateMeshGeometry, before reusing posAttr, check if posAttr.array.length !== data.vertices.length \u2014 if so, create new BufferAttribute via setAttribute instead of mutating. Same logic for index and normals.",
       "status": "done",
-      "commit": "80eed75"
+      "commit": "8567bea"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing test in scene.test.ts: resize handler calls renderer.setPixelRatio with window.devicePixelRatio (V-15). Call resize(), assert mockSetPixelRatio was called. Verify it uses the current devicePixelRatio value.",
+      "status": "done",
+      "commit": "d9c1848"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Implement V-15 in scene.ts: In the resize() function, add renderer.setPixelRatio(window.devicePixelRatio ?? 1) before renderer.setSize().",
+      "status": "done",
+      "commit": "ed797d5"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test in scene.test.ts: scene has a camera-following headlight (V-13). Add camera.add mock to MockPerspectiveCamera. Assert that a DirectionalLight is added as a child of the camera (via camera.add), and that the camera itself is added to the scene (scene.add(camera)).",
+      "status": "done",
+      "commit": "4c37494"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Implement V-13 in scene.ts: Create a second DirectionalLight (headlight) at position (0, 0, 1) relative to camera with intensity ~0.6. Call camera.add(headlight) to make it follow the camera. Call scene.add(camera) so camera children are rendered in the scene graph.",
+      "status": "done",
+      "commit": "b2bec91"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test in scene.test.ts: SceneContext exposes adjustClipping method (V-11). Test that adjustClipping(bounds) updates camera.near and camera.far based on scene size and that updateProjectionMatrix is called.",
+      "status": "done",
+      "commit": "8f5d6f3"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Implement V-11 in scene.ts: Add adjustClipping(sceneBounds: Box3) to SceneContext interface. Implementation computes camera-to-center distance, sets near = max(distance * 0.001, 0.01) and far = max(distance * 10, 100), calls camera.updateProjectionMatrix(). Export from createScene return. Update Viewport.tsx to call adjustClipping after mesh sync.",
+      "status": "done",
+      "commit": "7bd0fac"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test in selection.test.ts: SelectionContext exposes refreshSelected() that rebuilds wireframe for current selection (V-08). Tests: (1) refreshSelected with active selection removes old wireframe and creates new one, (2) refreshSelected with no selection is a no-op, (3) refreshSelected reflects updated geometry.",
+      "status": "done",
+      "commit": "77b1c18"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement V-08 in selection.ts: Track currentSelectedPath in a closure variable. Add refreshSelected() method that calls setSelected(currentSelectedPath) to rebuild wireframe from current geometry. Export in SelectionContext. Update Viewport.tsx to call selection.refreshSelected() after meshManager.sync() in the mesh sync effect.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use duck-typed controls interface `{ target: { copy: (v: any) => void } }` in SelectionOptions rather than importing OrbitControls type directly",
-      "rationale": "Keeps selection.ts decoupled from the specific controls implementation. Any controls object with a target Vector3 will work, improving testability and flexibility."
+      "decision": "Camera headlight is added as a child of the camera object via camera.add() rather than updating position each frame",
+      "rationale": "Three.js automatically transforms child objects in the parent's local space, so a light added to camera follows it without manual position updates in the render loop. This is the standard Three.js pattern for headlights and avoids polluting the animation loop."
     },
     {
-      "decision": "5px Euclidean distance threshold for click-vs-drag discrimination",
-      "rationale": "Standard UX threshold used by most drag-detection libraries. Below 5px is within normal pointer jitter for intentional clicks. Matches the task description recommendation."
+      "decision": "Dynamic clipping is exposed as an adjustClipping(sceneBounds: Box3) method called after mesh sync, not computed every frame",
+      "rationale": "Computing scene bounds every frame via Box3 traversal is expensive. Clipping only needs adjustment when mesh data changes (during sync), which is the only time bounds change. This keeps the render loop lightweight."
     },
     {
-      "decision": "Listen for pointerup on domElement (not document) for click detection",
-      "rationale": "If the user starts a drag on the viewport and releases outside, we correctly treat it as a drag (no selection). This matches OrbitControls' own event scope and avoids global listener cleanup complexity."
+      "decision": "Mesh data validation logs console.warn and skips invalid data rather than throwing",
+      "rationale": "The viewport should be resilient to bad data from the engine. Throwing would crash the entire render pipeline. A console.warn is sufficient for debugging while keeping the UI responsive. This follows the existing project preference for noisy errors on logic bugs (feedback_silent_defaults_pattern.md) while still being resilient."
     },
     {
-      "decision": "Record pointerdown position and use pointerup for selection instead of timing-based approach",
-      "rationale": "Position-based discrimination is more robust than timing-based. A slow deliberate click should still select, and a fast small drag should not. Distance is the correct discriminator."
+      "decision": "New BufferAttribute is created when array length changes; existing attribute is mutated only when length matches",
+      "rationale": "WebGL buffers have a fixed size allocated on the GPU. Mutating .array and .count on an existing BufferAttribute when the size differs causes WebGL errors because the underlying GPU buffer cannot be resized. When sizes match, reusing the attribute avoids GPU buffer reallocation overhead \u2014 this is the intended Three.js pattern."
     },
     {
-      "decision": "Camera repositioning uses getWorldDirection to maintain viewing angle",
-      "rationale": "When a user hits 'Fit to View', they expect the scene to fill the viewport while preserving their current viewing angle (e.g., looking from above). Offsetting only along Z always shows the front-on view, which is disorienting if the user was looking from a different angle."
+      "decision": "refreshSelected() method added to SelectionContext rather than coupling meshManager directly to selection",
+      "rationale": "Keeps modules decoupled. Viewport.tsx already coordinates between meshManager and selection via reactive effects. Adding a refresh method is the minimal change that preserves this clean architecture. refreshSelected internally just calls setSelected(currentSelectedPath)."
     },
     {
-      "decision": "Make controls optional in SelectionOptions for backward compatibility",
-      "rationale": "The selection system should work without controls (e.g., in tests or headless usage). When controls is not provided, fitToView/flyToEntity simply skip the target update."
+      "decision": "computeVertexNormals() is called in both createMeshFromData and updateMeshGeometry when normals are null",
+      "rationale": "Both code paths can receive null normals. The fallback must be applied consistently in creation and update paths to prevent flat-black faces in any scenario."
+    },
+    {
+      "decision": "scene.add(camera) is called to support camera children (headlight)",
+      "rationale": "Three.js requires parent objects to be in the scene graph for their children to be rendered. Without scene.add(camera), the headlight attached via camera.add() would not be visible. The camera itself renders fine without being in the scene, but its children do not."
     }
   ],
   "reuse": [
     {
-      "what": "Existing mock infrastructure in selection.test.ts (MockVector3, MockPerspectiveCamera, MockBox3, setup() helper, createMockDomElement, createMockMesh)",
-      "where": "gui/src/__tests__/viewport/selection.test.ts",
-      "how": "Extend existing mock classes with new methods (sub, multiplyScalar, getWorldDirection) rather than creating new mocks. Reuse setup() helper with minor additions for controls parameter."
+      "what": "Existing vi.mock('three') patterns and MockXxx classes in all viewport test files",
+      "where": "gui/src/__tests__/viewport/meshManager.test.ts, scene.test.ts, selection.test.ts",
+      "how": "Extend existing mock blocks with additional methods/properties: computeVertexNormals on MockBufferGeometry, DoubleSide/FrontSide constants, camera.add method on MockPerspectiveCamera. Follow the exact same mock class patterns."
     },
     {
-      "what": "Existing raycaster and NDC computation in selection.ts",
-      "where": "gui/src/viewport/selection.ts lines 58-73",
-      "how": "The click-vs-drag fix reuses the existing raycast() function — it just delays the call from pointerdown to pointerup after threshold check."
+      "what": "makeMeshData() test helper in meshManager.test.ts",
+      "where": "gui/src/__tests__/viewport/meshManager.test.ts:100-112",
+      "how": "Reuse for all new meshManager tests to create MeshData objects with optional vertices, indices, normals parameters."
     },
     {
-      "what": "Existing Viewport.test.tsx mock structure for createSelection",
-      "where": "gui/src/__tests__/viewport/Viewport.test.tsx lines 74-83",
-      "how": "The mock for createSelection already captures its options argument. We can inspect the captured options to verify controls is passed."
+      "what": "setup() function pattern in each test file",
+      "where": "All viewport test files",
+      "how": "Follow the existing setup() function pattern that creates mocks and returns an object with all test dependencies. Extend as needed."
     },
     {
-      "what": "ControlsContext.controls property already exposes OrbitControls instance",
-      "where": "gui/src/viewport/controls.ts line 5, 26",
-      "how": "No changes needed to controls.ts — the OrbitControls instance with its .target property is already accessible via ControlsContext.controls."
+      "what": "SceneContext interface and return pattern",
+      "where": "gui/src/viewport/scene.ts:13-18, 64",
+      "how": "Extend SceneContext interface with adjustClipping method. Add to the return object from createScene, following the same pattern as resize()."
+    },
+    {
+      "what": "SelectionContext interface",
+      "where": "gui/src/viewport/selection.ts:24-31",
+      "how": "Extend with refreshSelected() method following the same interface pattern. Add to return object from createSelection."
+    },
+    {
+      "what": "Viewport.tsx createEffect for mesh sync",
+      "where": "gui/src/viewport/Viewport.tsx:48-50",
+      "how": "Add refreshSelected() and adjustClipping() calls within the existing mesh sync effect, after meshManager.sync(). This is the natural coordination point between mesh updates and dependent systems."
     }
   ],
-  "_session_id": "102-45ac47a8",
-  "_created_at": "2026-03-21T17:10:32.378187+00:00"
+  "_session_id": "112-bacae8cf",
+  "_created_at": "2026-03-21T17:33:37.820402+00:00"
 }

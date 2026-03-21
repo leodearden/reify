@@ -77,6 +77,7 @@ vi.mock('../../viewport/meshManager', () => ({
 
 const mockSelectionSetHovered = vi.fn();
 const mockSelectionSetSelected = vi.fn();
+const mockSelectionRefreshSelected = vi.fn();
 const mockSelectionFitToView = vi.fn();
 const mockSelectionFlyToEntity = vi.fn();
 const mockSelectionInvalidateRect = vi.fn();
@@ -86,6 +87,7 @@ vi.mock('../../viewport/selection', () => ({
   createSelection: vi.fn(() => ({
     setHovered: mockSelectionSetHovered,
     setSelected: mockSelectionSetSelected,
+    refreshSelected: mockSelectionRefreshSelected,
     fitToView: mockSelectionFitToView,
     flyToEntity: mockSelectionFlyToEntity,
     invalidateRect: mockSelectionInvalidateRect,
