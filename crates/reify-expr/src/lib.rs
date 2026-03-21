@@ -1,4 +1,4 @@
-use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, QuantifierKind, UnOp, Value, ValueCellId, ValueMap};
+use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -100,16 +100,22 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             if disc_val.is_undef() {
                 return Value::Undef;
             }
-            // Extract variant from enum value
-            if let Value::Enum { variant, .. } = &disc_val {
-                for arm in arms {
-                    if arm.patterns.iter().any(|p| p == variant || p == "_") {
-                        return eval_expr(&arm.body, ctx);
+            match &disc_val {
+                Value::Enum { variant, .. } => {
+                    for arm in arms {
+                        if arm.patterns.iter().any(|p| p == variant || p == "_") {
+                            return eval_expr(&arm.body, ctx);
+                        }
                     }
+                    // No matching arm found
+                    Value::Undef
+                }
+                _ => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("[reify-expr] match expression on non-enum value: {:?}", disc_val);
+                    Value::Undef
                 }
             }
-            // No matching arm or non-enum discriminant
-            Value::Undef
         }
 
         CompiledExprKind::Conditional {
@@ -178,6 +184,9 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             }
             match (&obj, &idx) {
                 (Value::List(items), Value::Int(i)) => {
+                    if *i < 0 {
+                        return Value::Undef;
+                    }
                     let i = *i as usize;
                     items.get(i).cloned().unwrap_or(Value::Undef)
                 }
@@ -194,7 +203,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 return Value::Undef;
             }
             let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
-            eval_method_call(&obj, method, &evaluated_args, ctx)
+            eval_method_call(&obj, method, &evaluated_args, &expr.result_type, ctx)
         }
 
         CompiledExprKind::Quantifier { kind, variable_id, collection, predicate, .. } => {
@@ -329,7 +338,7 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 }
 
 /// Evaluate a method call on a collection value.
-fn eval_method_call(obj: &Value, method: &str, args: &[Value], ctx: &EvalContext) -> Value {
+fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Type, ctx: &EvalContext) -> Value {
     match method {
         "count" => match obj {
             Value::List(items) => Value::Int(items.len() as i64),
@@ -405,7 +414,15 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], ctx: &EvalContext
         "sum" => match obj {
             Value::List(items) => {
                 if items.is_empty() {
-                    return Value::Int(0);
+                    return match result_type {
+                        Type::Int => Value::Int(0),
+                        Type::Real => Value::Real(0.0),
+                        Type::Scalar { dimension } => Value::Scalar {
+                            si_value: 0.0,
+                            dimension: *dimension,
+                        },
+                        _ => Value::Undef,
+                    };
                 }
                 let mut acc = items[0].clone();
                 if acc.is_undef() {
@@ -488,6 +505,12 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], ctx: &EvalContext
             }
             let init = &args[0];
             let lambda = &args[1];
+            // Validate lambda arity upfront (fold requires exactly 2 params: acc, item)
+            if let Value::Lambda { params, .. } = lambda
+                && params.len() != 2
+            {
+                return Value::Undef;
+            }
             match obj {
                 Value::List(items) => {
                     let mut acc = init.clone();
@@ -957,7 +980,7 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{DimensionVector, Type, ValueCellId};
+    use reify_types::{CompiledMatchArm, DimensionVector, Type, ValueCellId};
 
     // Helper to build a literal expression
     fn lit(v: Value, ty: Type) -> CompiledExpr {
@@ -2104,5 +2127,36 @@ mod tests {
             Value::Real(v) => assert!((v - 7.0).abs() < 1e-12, "expected 7.0, got {}", v),
             other => panic!("expected Real(7.0), got {:?}", other),
         }
+    }
+
+    // ── Match non-enum discriminant ──────────────────────────────
+
+    #[test]
+    fn match_non_enum_discriminant_returns_undef() {
+        // match Int(42) { [In] => 1, [Out] => 2 } → Undef
+        let discriminant = lit(Value::Int(42), Type::Int);
+        let arms = vec![
+            CompiledMatchArm {
+                patterns: vec!["In".to_string()],
+                body: lit(Value::Int(1), Type::Int),
+            },
+            CompiledMatchArm {
+                patterns: vec!["Out".to_string()],
+                body: lit(Value::Int(2), Type::Int),
+            },
+        ];
+        let expr = CompiledExpr {
+            content_hash: ContentHash::of(&[200]),
+            result_type: Type::Int,
+            kind: CompiledExprKind::Match {
+                discriminant: Box::new(discriminant),
+                arms,
+            },
+        };
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "matching on non-enum value should return Undef"
+        );
     }
 }

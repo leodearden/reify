@@ -142,6 +142,24 @@ fn eval_index_access_list_out_of_bounds() {
 }
 
 #[test]
+fn eval_index_access_negative_index() {
+    // [10, 20, 30][-1] -> Undef (negative indices are rejected)
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(10), Type::Int),
+            CompiledExpr::literal(Value::Int(20), Type::Int),
+            CompiledExpr::literal(Value::Int(30), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let idx = CompiledExpr::literal(Value::Int(-1), Type::Int);
+    let expr = CompiledExpr::index_access(list, idx, Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "negative index should be Undef");
+}
+
+#[test]
 fn eval_index_access_map() {
     // map{"a" => 1, "b" => 2}["b"] -> 2
     let map = CompiledExpr::map_literal(
@@ -331,6 +349,33 @@ fn eval_method_sum_empty() {
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Int(0));
+}
+
+#[test]
+fn eval_method_sum_empty_real_list() {
+    // [].sum() with result_type=Real should return Real(0.0), not Int(0)
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+    let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Real(0.0), "empty Real list sum should return Real(0.0)");
+}
+
+#[test]
+fn eval_method_sum_empty_scalar_list() {
+    // [].sum() with result_type=Scalar{LENGTH} should return Scalar{0.0, LENGTH}
+    let dim = reify_types::DimensionVector::LENGTH;
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::length())));
+    let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::length());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    match result {
+        Value::Scalar { si_value, dimension } => {
+            assert!((si_value - 0.0).abs() < 1e-12, "si_value should be 0.0");
+            assert_eq!(dimension, dim, "dimension should be LENGTH");
+        }
+        other => panic!("expected Scalar, got {:?}", other),
+    }
 }
 
 #[test]
@@ -666,6 +711,33 @@ fn eval_method_fold_with_initial() {
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Int(16));
+}
+
+#[test]
+fn eval_method_fold_wrong_arity_lambda_empty_list() {
+    // [].fold(0, |x| x + 1) → should be Undef (lambda has 1 param, fold needs 2)
+    // On empty lists, fold currently returns init without validating lambda arity
+    let x_id = ValueCellId::new("$lambda_fold_bad.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(1), Type::Int),
+        Type::Int,
+    );
+    // 1-param lambda (fold requires 2)
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let init = CompiledExpr::literal(Value::Int(0), Type::Int);
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let expr = CompiledExpr::method_call(
+        list,
+        "fold".to_string(),
+        vec![init, lambda_arg],
+        Type::Int,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "fold with wrong-arity lambda should return Undef even on empty list");
 }
 
 // ─── step-19/20: MethodCall .all and .any ───
