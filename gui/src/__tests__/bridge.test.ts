@@ -17,6 +17,7 @@ import {
   setParameter,
   updateSource,
   exportGeometry,
+  refreshFullState,
   onMeshUpdate,
   onEvaluationStatus,
 } from '../bridge';
@@ -102,6 +103,25 @@ describe('bridge commands', () => {
     expect(mockInvoke).toHaveBeenCalledWith('update_source', { path: 'main.ri', content: 'updated' });
     expect(result).toBeDefined();
     expect(result.constraints).toHaveLength(1);
+    expect(result.files).toHaveLength(1);
+  });
+
+  // S7: refreshFullState should call get_initial_state and return a converted GuiState
+  it('refreshFullState calls get_initial_state and returns converted GuiState', async () => {
+    const rawState: RawGuiState = {
+      meshes: [{ entity_path: 'Box.body', vertices: [1, 2, 3], indices: [0, 1, 2], normals: null }],
+      values: [],
+      constraints: [],
+      files: [{ path: 'main.ri', content: 'content' }],
+    };
+    mockInvoke.mockResolvedValue(rawState);
+
+    const result = await refreshFullState();
+
+    expect(mockInvoke).toHaveBeenCalledWith('get_initial_state');
+    expect(result).toBeDefined();
+    expect(result.meshes[0].vertices).toBeInstanceOf(Float32Array);
+    expect(result.meshes[0].indices).toBeInstanceOf(Uint32Array);
     expect(result.files).toHaveLength(1);
   });
 });
