@@ -93,6 +93,11 @@ pub struct Engine {
     /// Active optimization objectives injected by purposes.
     /// Maps purpose name → optimization objective.
     active_objective_map: HashMap<String, OptimizationObjective>,
+    /// Template-native optimization objectives from the last eval() call.
+    /// Maps template name → optimization objective declared in the template.
+    /// Populated during eval() so that edit_param() can look up the objective
+    /// by scope_name without needing access to the original templates.
+    objectives: HashMap<String, OptimizationObjective>,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
@@ -235,6 +240,7 @@ impl Engine {
             compiled_purposes: Vec::new(),
             active_purposes: HashMap::new(),
             active_objective_map: HashMap::new(),
+            objectives: HashMap::new(),
         }
     }
 
@@ -1100,6 +1106,13 @@ impl Engine {
         // Resolution phase: resolve auto params using the constraint solver.
         let mut resolved_params = HashMap::new();
         if self.solver.is_some() {
+            // Refresh template-native objectives so edit_param() can access them.
+            self.objectives.clear();
+            for template in &module.templates {
+                if let Some(obj) = &template.objective {
+                    self.objectives.insert(template.name.clone(), obj.clone());
+                }
+            }
             for template in &module.templates {
                 // Collect auto param IDs for this template
                 let auto_ids: std::collections::HashSet<ValueCellId> = template
@@ -1141,7 +1154,7 @@ impl Engine {
                     auto_params: auto_param_list,
                     constraints: filtered_constraints,
                     current_values: values.clone(),
-                    objective: None,
+                    objective: template.objective.clone(),
                     functions: module.functions.clone(),
                 };
 
