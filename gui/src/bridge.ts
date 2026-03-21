@@ -36,8 +36,8 @@ export async function updateSource(path: string, content: string): Promise<void>
 }
 
 /** Save a file to disk. */
-export async function saveFile(path: string): Promise<void> {
-  return invoke('save_file', { path });
+export async function saveFile(path: string, content: string): Promise<void> {
+  return invoke('save_file', { path, content });
 }
 
 /** Open a file from disk. */

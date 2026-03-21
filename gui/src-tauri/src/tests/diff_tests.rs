@@ -16,7 +16,7 @@ fn sample_value(cell_id: &str, value: &str) -> ValueData {
         name: cell_id.split('.').last().unwrap_or(cell_id).to_string(),
         value: value.to_string(),
         unit: "mm".to_string(),
-        determinacy: "Determined".to_string(),
+        determinacy: "determined".to_string(),
         entity_path: cell_id.split('.').next().unwrap_or("").to_string(),
         kind: "Param".to_string(),
     }

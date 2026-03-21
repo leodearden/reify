@@ -52,6 +52,7 @@ const value: ValueData = {
   unit: 'mm',
   determinacy: 'determined',
   entity_path: 'Bracket.width',
+  kind: 'Param',
 };
 
 // --- ConstraintData ---
@@ -59,15 +60,15 @@ const constraint: ConstraintData = {
   node_id: 'constraint_001',
   expression: 'width > 10',
   status: 'satisfied',
-  details: null,
+  label: null,
   parameter_ids: ['cell_001', 'cell_002'],
 };
 
-const constraintWithDetails: ConstraintData = {
+const constraintWithLabel: ConstraintData = {
   node_id: 'constraint_002',
   expression: 'height < 100',
   status: 'violated',
-  details: 'height is 150, exceeds maximum of 100',
+  label: 'height is 150, exceeds maximum of 100',
   parameter_ids: ['cell_003'],
 };
 
@@ -90,7 +91,7 @@ const file: FileData = {
 const state: GuiState = {
   meshes: [mesh, meshNoNormals],
   values: [value],
-  constraints: [constraint, constraintWithDetails],
+  constraints: [constraint, constraintWithLabel],
   files: [file],
 };
 
@@ -111,7 +112,7 @@ void rawMesh;
 void converted;
 void value;
 void constraint;
-void constraintWithDetails;
+void constraintWithLabel;
 void loc;
 void file;
 void state;

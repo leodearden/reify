@@ -137,7 +137,32 @@ describe('Editor save (Ctrl+S)', () => {
     });
     view.contentDOM.dispatchEvent(event);
 
-    expect(saveSpy).toHaveBeenCalledWith(file1.path);
+    expect(saveSpy).toHaveBeenCalledWith(file1.path, file1.content);
+  });
+
+  it('save aborts without calling saveFile when file is not in store', () => {
+    const store = setupStore([file1]);
+    // Set activeFile to a path that is NOT in openFiles
+    store.setActiveFile('/project/src/missing.ri');
+    const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+    const cleanSpy = vi.spyOn(store, 'markClean');
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Simulate Ctrl+S
+    const event = new KeyboardEvent('keydown', {
+      key: 's',
+      code: 'KeyS',
+      ctrlKey: true,
+      bubbles: true,
+    });
+    view.contentDOM.dispatchEvent(event);
+
+    // saveFile should NOT be called — the file isn't in the store
+    expect(saveSpy).not.toHaveBeenCalled();
+    // markClean should also NOT be called
+    expect(cleanSpy).not.toHaveBeenCalled();
   });
 
   it('save clears dirty flag', async () => {

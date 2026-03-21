@@ -72,7 +72,12 @@ export function Editor(props: EditorProps) {
             run: () => {
               const path = props.store.state.activeFile;
               if (path) {
-                saveFile(path)
+                const file = props.store.state.openFiles.find((f) => f.path === path);
+                if (!file) {
+                  console.error('Save aborted: file not in store', path);
+                  return true;
+                }
+                saveFile(path, file.content)
                   .then(() => props.store.markClean(path))
                   .catch((err: unknown) => console.error('Failed to save file:', err));
               }

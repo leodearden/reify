@@ -15,6 +15,7 @@ import { listen } from '@tauri-apps/api/event';
 import {
   getInitialState,
   setParameter,
+  saveFile,
   exportGeometry,
   onMeshUpdate,
   onEvaluationStatus,
@@ -51,6 +52,17 @@ describe('bridge commands', () => {
     expect(mockInvoke).toHaveBeenCalledWith('set_parameter', {
       cellId: 'cell_001',
       value: '42.0',
+    });
+  });
+
+  it('saveFile calls invoke with both path and content', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await saveFile('/project/bracket.ri', 'structure Bracket {}');
+
+    expect(mockInvoke).toHaveBeenCalledWith('save_file', {
+      path: '/project/bracket.ri',
+      content: 'structure Bracket {}',
     });
   });
 

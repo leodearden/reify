@@ -107,7 +107,7 @@ describe('navigation', () => {
         node_id: 'n1',
         expression: 'width > 10',
         status: 'violated',
-        details: null,
+        label: null,
         parameter_ids: ['c1', 'c2'],
       };
       const values: ValueData[] = [
@@ -118,6 +118,7 @@ describe('navigation', () => {
           unit: 'mm',
           determinacy: 'determined',
           entity_path: 'Bracket',
+          kind: 'Param',
         },
         {
           cell_id: 'c2',
@@ -126,6 +127,7 @@ describe('navigation', () => {
           unit: 'mm',
           determinacy: 'determined',
           entity_path: 'Bracket',
+          kind: 'Param',
         },
       ];
       const selectEntity = vi.fn();
@@ -145,7 +147,7 @@ describe('navigation', () => {
         node_id: 'n2',
         expression: 'true',
         status: 'satisfied',
-        details: null,
+        label: null,
         parameter_ids: [],
       };
       const values: ValueData[] = [];

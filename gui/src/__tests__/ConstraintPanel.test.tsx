@@ -8,7 +8,7 @@ function makeConstraint(overrides: Partial<ConstraintData> & { node_id: string }
     node_id: overrides.node_id,
     expression: overrides.expression ?? 'x > 0',
     status: overrides.status ?? 'satisfied',
-    details: overrides.details ?? null,
+    label: overrides.label ?? null,
     parameter_ids: overrides.parameter_ids ?? [],
   };
 }
@@ -21,6 +21,7 @@ function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueDa
     unit: overrides.unit ?? 'mm',
     determinacy: overrides.determinacy ?? 'determined',
     entity_path: overrides.entity_path ?? 'Bracket.param',
+    kind: overrides.kind ?? 'Param',
   };
 }
 

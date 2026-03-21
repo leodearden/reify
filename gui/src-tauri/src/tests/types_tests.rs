@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use crate::types::*;
+use reify_types::DeterminacyState;
 
 #[test]
 fn gui_state_empty_serializes_with_expected_keys() {
@@ -39,7 +40,7 @@ fn value_data_serializes_with_expected_fields() {
         name: "width".to_string(),
         value: "80".to_string(),
         unit: "mm".to_string(),
-        determinacy: "Determined".to_string(),
+        determinacy: "determined".to_string(),
         entity_path: "Bracket".to_string(),
         kind: "Param".to_string(),
     };
@@ -48,7 +49,7 @@ fn value_data_serializes_with_expected_fields() {
     assert_eq!(v["name"], json!("width"));
     assert_eq!(v["value"], json!("80"));
     assert_eq!(v["unit"], json!("mm"));
-    assert_eq!(v["determinacy"], json!("Determined"));
+    assert_eq!(v["determinacy"], json!("determined"));
     assert_eq!(v["entity_path"], json!("Bracket"));
     assert_eq!(v["kind"], json!("Param"));
 }
@@ -117,4 +118,13 @@ fn evaluation_status_serializes_with_phase_and_optional_progress() {
     let v = serde_json::to_value(&status).unwrap();
     assert_eq!(v["phase"], json!("evaluating"));
     assert_eq!(v["progress"], json!(0.5));
+}
+
+#[test]
+fn format_determinacy_returns_lowercase_strings() {
+    // The frontend expects lowercase determinacy strings (e.g. 'determined', not 'Determined')
+    assert_eq!(format_determinacy(DeterminacyState::Determined), "determined");
+    assert_eq!(format_determinacy(DeterminacyState::Undetermined), "undetermined");
+    assert_eq!(format_determinacy(DeterminacyState::Provisional), "provisional");
+    assert_eq!(format_determinacy(DeterminacyState::Auto), "auto");
 }

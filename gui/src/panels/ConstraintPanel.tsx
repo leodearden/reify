@@ -92,8 +92,8 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
                 </div>
                 <Show when={isExpanded(constraint.node_id) && isExpandable(constraint.status)}>
                   <div class={styles.details}>
-                    <Show when={constraint.details}>
-                      <div class={styles.detailsText}>{constraint.details}</div>
+                    <Show when={constraint.label}>
+                      <div class={styles.detailsText}>{constraint.label}</div>
                     </Show>
                     <Show when={constraint.parameter_ids.length > 0}>
                       <div class={styles.params}>
