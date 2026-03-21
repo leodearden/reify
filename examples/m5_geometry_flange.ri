@@ -1,0 +1,13 @@
+structure def BoltFlange {
+    param outer_radius : Scalar = 60mm
+    param height : Scalar = 12mm
+    param hole_count : Int = 8
+    param bolt_circle_radius : Scalar = 45mm
+    param hole_radius : Scalar = 4mm
+
+    constraint outer_radius > bolt_circle_radius
+    constraint hole_count > 0
+
+    let body = cylinder(outer_radius, height)
+    let holes = circular_pattern(outer_radius, 0, 0, 0, 0, 0, 1, hole_count, 360)
+}

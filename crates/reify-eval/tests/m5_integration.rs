@@ -1263,3 +1263,70 @@ fn user_fn_safety_factor() {
         );
     }
 }
+
+// ── geometry_flange_with_pattern ────────────────────────────────────
+
+/// Parse m5_geometry_flange.ri with cylinder + circular_pattern through the
+/// full build pipeline with OCCT kernel. This extends existing geometry test
+/// by adding circular_pattern (the existing test only has a single cylinder).
+///
+/// Verify:
+/// - BoltFlange template has realizations for geometry lets
+/// - Build produces valid STEP output with ISO-10303-21 header
+/// - All constraints satisfied
+#[test]
+fn geometry_flange_with_pattern() {
+    let source = std::fs::read_to_string("../../examples/m5_geometry_flange.ri")
+        .expect("examples/m5_geometry_flange.ri should exist");
+
+    let compiled = parse_and_compile(&source);
+
+    // Should have a BoltFlange template
+    let flange = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "BoltFlange")
+        .expect("should have a BoltFlange template");
+
+    // Verify geometry let bindings produced realizations
+    assert!(
+        !flange.realizations.is_empty(),
+        "BoltFlange should have realization declarations from geometry lets"
+    );
+    // Should have at least 2 realizations (body cylinder + holes circular_pattern)
+    assert!(
+        flange.realizations.len() >= 2,
+        "expected at least 2 realizations (cylinder + circular_pattern), got {}",
+        flange.realizations.len()
+    );
+
+    // Build with real constraint checker and OCCT kernel
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::DispatchPlanner::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // All constraints should be satisfied
+    for entry in &result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be satisfied",
+            entry.id
+        );
+    }
+
+    // Geometry output should be present and valid STEP
+    let output = result
+        .geometry_output
+        .expect("build should produce geometry output");
+    assert!(!output.is_empty(), "STEP output should be non-empty");
+
+    let step_str = String::from_utf8(output).expect("STEP should be valid UTF-8");
+    assert!(
+        step_str.contains("ISO-10303-21"),
+        "STEP output should contain ISO-10303-21 header"
+    );
+}
