@@ -259,6 +259,48 @@
       "description": "[FIX: stale_state + missing_initialization_step] Fix Editor.tsx with three changes: (1) LSP initialization: chain `lspClient.initialized()` after `lspClient.initialize()` before calling `didOpen()`, per LSP spec requirement. (2) File switch in createEffect: after dispatching content change to the view, send `lspClient.didClose(oldUri)` for the previous file, then `lspClient.didOpen(newUri, newContent, ++lspVersion)` for the new file, using `pathToUri()` for both. Track `currentUri` in a mutable variable updated on each switch. (3) Dynamic URI for extensions: introduce a `let currentUri = uri` variable updated on file switch, pass `() => currentUri` getter to `reifyCompletionSource`, `reifyHoverTooltip`, and `reifyGotoDefinition` instead of the static `uri` string. Also send `lspClient.didClose(currentUri)` in the onCleanup handler.",
       "status": "done",
       "commit": "f0a9368"
+    },
+    {
+      "id": "step-31",
+      "type": "test",
+      "description": "[FIX: race_condition_silent_data_loss] Update test in crates/reify-lsp/tests/in_process_bridge.rs: change `diagnostics_captured_after_did_open_with_syntax_error` to call `get_diagnostics` with `.await` since it becomes async. The test already runs in a `#[tokio::test]` context so the change is minimal \u2014 just add `.await` to the `lsp.get_diagnostics(uri)` call.",
+      "status": "done",
+      "commit": "14e1d31"
+    },
+    {
+      "id": "step-32",
+      "type": "impl",
+      "description": "[FIX: race_condition_silent_data_loss] Make `InProcessLsp::get_diagnostics` async and use `state.read().await` instead of `state.try_read()`. The method signature changes from `pub fn get_diagnostics(&self, uri: &str) -> Vec<Value>` to `pub async fn get_diagnostics(&self, uri: &str) -> Vec<Value>`. This eliminates the silent data loss when the tokio::sync::RwLock is momentarily write-locked by a concurrent LSP handler (e.g., didChange writing diagnostics). The `.await` will properly wait for the write lock to release rather than returning empty diagnostics.",
+      "status": "done",
+      "commit": "6492558"
+    },
+    {
+      "id": "step-33",
+      "type": "test",
+      "description": "[FIX: race_condition_silent_data_loss] Update test in gui/src-tauri/src/tests/lsp_bridge_tests.rs: change `lsp_bridge_diagnostics_after_syntax_error` to call `bridge.get_diagnostics(uri)` with `.await` since `LspBridge::get_diagnostics` becomes async. The test already runs in `#[tokio::test]`.",
+      "status": "done",
+      "commit": "6a6f3c1"
+    },
+    {
+      "id": "step-34",
+      "type": "impl",
+      "description": "[FIX: race_condition_silent_data_loss] Make `LspBridge::get_diagnostics` async, forwarding to the now-async `InProcessLsp::get_diagnostics`. Update `gui/src-tauri/src/main.rs` line 229 to `.await` the `bridge.get_diagnostics(&uri)` call \u2014 the `lsp_request` Tauri command is already async so this requires no signature change at the command level.",
+      "status": "done",
+      "commit": "6357a3b"
+    },
+    {
+      "id": "step-35",
+      "type": "test",
+      "description": "[FIX: resource_leak] Add test in gui/src/__tests__/diagnostics.test.ts: when `createDiagnosticsListener` promise resolves after the component has been 'unmounted' (simulated by calling cleanup before the promise resolves), the returned unlisten function should still be called. Test that the unlisten is invoked even when cleanup races with setup: (1) mock `listen` to return a delayed promise, (2) call `createDiagnosticsListener`, (3) before awaiting, simulate cleanup by calling the returned unlisten-promise's then-handler pattern. Alternatively, test the new `createCancellableDiagnosticsListener` helper that returns `{ promise, cancel }` \u2014 calling `cancel()` before promise resolves should call `unlisten()` when it does resolve.",
+      "status": "done",
+      "commit": "5077ea0"
+    },
+    {
+      "id": "step-36",
+      "type": "impl",
+      "description": "[FIX: resource_leak] Fix the diagnostics listener lifecycle in Editor.tsx. Replace the current pattern:\n```\ncreateDiagnosticsListener(cb).then(unlisten => { unlistenDiagnostics = unlisten; });\n```\nwith a cancellation-safe pattern using a `cancelled` flag:\n```\nlet diagnosticsListenerCancelled = false;\ncreateDiagnosticsListener(cb).then(unlisten => {\n  if (diagnosticsListenerCancelled) {\n    unlisten(); // Component already unmounted, tear down immediately\n  } else {\n    unlistenDiagnostics = unlisten;\n  }\n});\n```\nIn `onCleanup`, set `diagnosticsListenerCancelled = true` before calling `unlistenDiagnostics?.()`. This ensures that if the component unmounts before the Promise resolves, the unlisten function is called as soon as it becomes available, preventing the Tauri event listener from leaking.",
+      "status": "done",
+      "commit": "f2b4a7e"
     }
   ],
   "design_decisions": [
@@ -293,6 +335,14 @@
     {
       "decision": "Send didClose/didOpen on file switch rather than just didChange",
       "rationale": "The LSP specification models files as discrete documents identified by URI. Changing the editor content to a different file's content while keeping the old URI confuses the LSP server \u2014 it thinks the old file changed rather than a new file was opened. Sending didClose for the old URI and didOpen for the new URI correctly maintains the server's document store. This also ensures diagnostics are associated with the correct URI."
+    },
+    {
+      "decision": "Make get_diagnostics async with state.read().await instead of try_read()",
+      "rationale": "The ServerState is guarded by tokio::sync::RwLock. Using try_read() silently returns empty diagnostics when the lock is momentarily write-locked (e.g., during concurrent didChange handling). Since get_diagnostics is called from async Tauri commands, making it async and using read().await is the correct fix \u2014 it waits for the write lock to release rather than dropping data. The RwLock write hold time is short (only lightweight field updates after eval completes), so await latency is negligible."
+    },
+    {
+      "decision": "Use cancelled-flag pattern for diagnostics listener cleanup instead of awaiting the promise in onCleanup",
+      "rationale": "SolidJS onCleanup is synchronous \u2014 it cannot await a Promise. The cancelled-flag pattern is the standard solution: set a flag in onCleanup, and when the Promise resolves, check the flag and call unlisten() immediately if the component is already gone. This prevents the Tauri event listener from leaking without requiring async cleanup infrastructure."
     }
   ],
   "reuse": [
@@ -342,6 +392,7 @@
       "how": "The Rust bridge already dispatches both methods correctly. Only the TypeScript LspClient interface and Editor.tsx wiring are missing \u2014 no Rust changes needed for the fix."
     }
   ],
-  "_session_id": "94-d07ca8be",
-  "_created_at": "2026-03-21T07:24:14.263469+00:00"
+  "_session_id": "94-9732e5d8",
+  "_created_at": "2026-03-21T09:35:26.234934+00:00",
+  "_schema_version": 1
 }
