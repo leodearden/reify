@@ -1,0 +1,80 @@
+{
+  "task_id": "86",
+  "title": "Use enum variants for PendingBoundCheck (SubComponent vs TraitConformance)",
+  "files": [
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/trait_bounds_tests.rs"
+  ],
+  "modules": [
+    "crates/reify-compiler"
+  ],
+  "analysis": "PendingBoundCheck is a private struct at line 2946 of lib.rs with four fields: type_params, type_args, target_name, span. It is constructed in two places:\n\n1. **TraitConformance path** (line 2177): When a structure declares conformance to a parameterized trait (e.g., `structure def Bolt : Container<Steel>`). Here, type_params is filled immediately from the compiled trait, and target_name is the trait name.\n\n2. **SubComponent path** (line 2384): When a structure has a sub-component (e.g., `sub part = Box<Bolt>()`). Here, type_params is left as Vec::new() and filled in during the post-compilation pass from the template registry. target_name is the structure name.\n\nThe post-compilation pass (lines 1793-1817) distinguishes these two cases by checking `check.type_params.is_empty()` \u2014 empty means SubComponent (needs lookup), non-empty means TraitConformance (already resolved). This implicit discrimination is fragile.\n\nThe fix: replace the flat struct with an enum having two variants, each carrying only the fields it needs. The post-pass match becomes an explicit `match` on the enum variant instead of an implicit emptiness check.\n\nThe struct is private (no `pub` keyword) and only used within lib.rs, so no external API impact. All existing tests in trait_bounds_tests.rs and trait_conformance_tests.rs should continue passing since this is a pure internal refactor.\n\nNote: Both variants share type_args, target_name, and span. The key difference is that TraitConformance carries type_params at construction time, while SubComponent does not (it's resolved in the post-pass). The enum makes this explicit.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Add a test in trait_bounds_tests.rs that exercises both PendingBoundCheck paths in a single compilation: a structure conforming to a parameterized trait (TraitConformance path) AND a sub-component instantiation of a generic structure (SubComponent path). Assert no error diagnostics are emitted. This test ensures the refactored enum handles both paths correctly and serves as the regression guard.",
+      "status": "done",
+      "commit": "7fe7006"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Replace the PendingBoundCheck struct (line 2946) with an enum: `enum PendingBoundCheck { SubComponent { type_args: Vec<Type>, target_name: String, span: SourceSpan }, TraitConformance { type_params: Vec<reify_types::TypeParam>, type_args: Vec<Type>, target_name: String, span: SourceSpan } }`. Update the construction site at line 2177 (trait conformance) to use PendingBoundCheck::TraitConformance { ... }. Update the construction site at line 2384 (sub-component) to use PendingBoundCheck::SubComponent { ... }. Update the post-compilation pass (lines 1793-1817) to match on the enum variants explicitly instead of checking type_params.is_empty(). SubComponent variant: look up target in template_registry, skip if not found or no type_params, then call check_type_param_bounds. TraitConformance variant: call check_type_param_bounds directly with the carried type_params. All existing tests must pass.",
+      "status": "done",
+      "commit": "8496eb1"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Add a test verifying the SubComponent path correctly errors when a sub-component's type arg violates a bound (e.g., `sub part = Box<Widget>()` where Widget doesn't satisfy Rigid). This specifically validates that the SubComponent enum variant correctly resolves type_params from the template registry during the post-pass. (Note: this test may already exist as bound_check_invalid_type_arg \u2014 verify it covers the SubComponent path specifically and add if missing.)",
+      "status": "done",
+      "commit": "f30cef4"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Update doc comments on the PendingBoundCheck enum and its variants to explain the two deferred-checking paths clearly. Add a brief comment at each construction site explaining which variant is used and why. Ensure all tests pass (cargo test -p reify-compiler).",
+      "status": "done",
+      "commit": "4dd72ce"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use an enum with two variants rather than a trait object or separate types",
+      "rationale": "The two cases share the same consumer (the post-compilation pass loop) and most fields. An enum with explicit variants is the idiomatic Rust way to express a closed set of alternatives with shared processing, avoids heap allocation, and makes the match exhaustive."
+    },
+    {
+      "decision": "SubComponent variant omits type_params field",
+      "rationale": "The SubComponent path never has type_params at construction time \u2014 they're always resolved from the template registry in the post-pass. Omitting the field makes it impossible to accidentally populate it, enforcing the intended semantics structurally."
+    },
+    {
+      "decision": "Keep shared fields (type_args, target_name, span) duplicated in each variant rather than extracting a common struct",
+      "rationale": "With only 3 shared fields and 2 variants, the duplication is minimal and keeps the match arms clean without needing to destructure a nested struct. A common struct would add indirection for no readability benefit."
+    },
+    {
+      "decision": "Add regression test before refactoring",
+      "rationale": "TDD discipline: write a test that exercises both code paths first, then refactor with confidence that the behavior is preserved. Existing tests cover both paths individually but having an explicit combined test documents the dual-path semantics."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "compile_module helper function",
+      "where": "crates/reify-compiler/tests/trait_bounds_tests.rs line 10",
+      "how": "Reuse the existing test helper that parses and compiles source, for any new tests added"
+    },
+    {
+      "what": "Existing test patterns in trait_bounds_tests.rs",
+      "where": "crates/reify-compiler/tests/trait_bounds_tests.rs",
+      "how": "Follow the same pattern: compile source string, filter diagnostics by Severity::Error, assert on error presence/absence and message content"
+    },
+    {
+      "what": "check_type_param_bounds function",
+      "where": "crates/reify-compiler/src/lib.rs line 2966",
+      "how": "This function is unchanged \u2014 both enum variant handlers call it the same way, just with different sources for type_params"
+    }
+  ],
+  "_session_id": "86-5f7742fb",
+  "_created_at": "2026-03-21T09:29:34.448683+00:00"
+}
