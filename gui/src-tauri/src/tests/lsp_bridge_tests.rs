@@ -5,7 +5,6 @@ use std::sync::Arc;
 use serde_json::json;
 
 use crate::lsp_bridge::{LspBridge, lsp_request_impl};
-use reify_lsp::server::NoOpSink;
 use reify_lsp::test_support::RecordingSink;
 
 #[tokio::test]

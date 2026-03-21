@@ -39,3 +39,4 @@ notify.workspace = true
 
 [dev-dependencies]
 reify-test-support.workspace = true
+reify-lsp = { workspace = true, features = ["test-support"] }

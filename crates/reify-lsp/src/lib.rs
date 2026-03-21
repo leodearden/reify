@@ -8,6 +8,10 @@ pub mod goto_def;
 pub mod hover;
 pub mod server;
 
+/// Re-export test support types for cross-crate test use.
+#[cfg(any(test, feature = "test-support"))]
+pub use server::test_support;
+
 use std::sync::Arc;
 
 use tower_lsp::{LspService, Server};

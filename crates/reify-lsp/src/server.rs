@@ -289,9 +289,52 @@ impl LanguageServer for ReifyLanguageServer {
     }
 }
 
+/// Test support types exported for cross-crate test use.
+///
+/// Contains [`RecordingSink`], a [`NotificationSink`] implementation that
+/// captures all `publish_diagnostics` calls for assertion in tests.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    use std::sync::Mutex;
+
+    use tower_lsp::lsp_types::{Diagnostic, Url};
+
+    use super::NotificationSink;
+
+    /// A recording sink that captures all `publish_diagnostics` calls.
+    ///
+    /// Use `take_calls()` to inspect what was recorded.
+    #[derive(Default)]
+    pub struct RecordingSink {
+        calls: Mutex<Vec<(Url, Vec<Diagnostic>, Option<i32>)>>,
+    }
+
+    impl NotificationSink for RecordingSink {
+        fn publish_diagnostics(
+            &self,
+            uri: Url,
+            diagnostics: Vec<Diagnostic>,
+            version: Option<i32>,
+        ) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((uri, diagnostics, version));
+        }
+    }
+
+    impl RecordingSink {
+        /// Return a clone of all recorded calls.
+        pub fn take_calls(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i32>)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::test_support::RecordingSink;
     use tower_lsp::LspService;
 
     fn test_uri() -> Url {
@@ -301,24 +344,6 @@ mod tests {
     /// Create a test LspService with NoOpSink (reduces boilerplate across tests).
     fn test_service() -> (LspService<ReifyLanguageServer>, tower_lsp::ClientSocket) {
         LspService::new(|client| ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink)))
-    }
-
-    /// A recording sink that captures all publish_diagnostics calls.
-    #[derive(Default)]
-    struct RecordingSink {
-        calls: Mutex<Vec<(Url, Vec<Diagnostic>, Option<i32>)>>,
-    }
-
-    impl NotificationSink for RecordingSink {
-        fn publish_diagnostics(&self, uri: Url, diagnostics: Vec<Diagnostic>, version: Option<i32>) {
-            self.calls.lock().unwrap().push((uri, diagnostics, version));
-        }
-    }
-
-    impl RecordingSink {
-        fn take_calls(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i32>)> {
-            self.calls.lock().unwrap().clone()
-        }
     }
 
     #[test]
