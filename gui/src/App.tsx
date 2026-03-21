@@ -118,6 +118,13 @@ const App: Component = () => {
   let fileChangedUnsub: (() => void) | undefined;
 
   async function initApp() {
+    // Clean up existing subscriptions before proceeding (defensive against
+    // concurrent or re-entrant initApp calls, e.g. rapid retry)
+    unsub?.();
+    unsub = undefined;
+    fileChangedUnsub?.();
+    fileChangedUnsub = undefined;
+
     setInitPhase('loading');
 
     try {
@@ -133,8 +140,9 @@ const App: Component = () => {
     }
 
     if (!alive) return;
-    setInitPhase('ready');
 
+    // Subscribe to events before showing ready state — "ready" means
+    // fully initialized including live update subscriptions
     try {
       const u = await engineStore.subscribeToEvents();
       if (!alive) {
@@ -163,6 +171,9 @@ const App: Component = () => {
     } catch (_err) {
       toast.showToast('File change monitoring unavailable — external edits may not be detected', 'error');
     }
+
+    if (!alive) return;
+    setInitPhase('ready');
   }
 
   onMount(() => {
@@ -298,7 +309,7 @@ const App: Component = () => {
       <Show when={initPhase() === 'error'}>
         <div data-testid="app-error" class={styles.errorState}>
           <p>Failed to load application state.</p>
-          <button onClick={handleRetry}>Retry</button>
+          <button onClick={handleRetry} disabled={initPhase() === 'loading'}>Retry</button>
         </div>
       </Show>
       <Show when={initPhase() === 'ready'}>
