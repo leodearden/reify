@@ -38,6 +38,7 @@ export function Viewport(props: ViewportProps) {
       getMeshes: () => meshManager.getSceneMeshes(),
       onHover: (path) => props.onHover?.(path),
       onSelect: (path) => props.onSelect?.(path),
+      controls: controls.controls,
     });
 
     doFitToView = () => selection.fitToView();
