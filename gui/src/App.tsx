@@ -53,6 +53,9 @@ const App: Component = () => {
   const [sideWidth, setSideWidth] = createSignal(DEFAULT_SIDE_WIDTH);
   const [propertyHeight, setPropertyHeight] = createSignal(DEFAULT_PROPERTY_HEIGHT);
 
+  // Init phase: loading → ready | error
+  const [initPhase, setInitPhase] = createSignal<'loading' | 'ready' | 'error'>('loading');
+
   // Export dialog state
   const [showExportDialog, setShowExportDialog] = createSignal(false);
   const [exporting, setExporting] = createSignal(false);
@@ -113,8 +116,8 @@ const App: Component = () => {
   let unsub: (() => void) | undefined;
   let fileChangedUnsub: (() => void) | undefined;
 
-  onMount(async () => {
-    applyTheme();
+  async function initApp() {
+    setInitPhase('loading');
 
     try {
       const initialState = await getInitialState();
@@ -123,11 +126,13 @@ const App: Component = () => {
       for (const file of initialState.files) {
         editorStore.openFile(file);
       }
-    } catch (err) {
-      console.error('Failed to load initial state:', err);
+    } catch (_err) {
+      setInitPhase('error');
+      return;
     }
 
     if (!alive) return;
+    setInitPhase('ready');
 
     try {
       const u = await engineStore.subscribeToEvents();
@@ -157,6 +162,11 @@ const App: Component = () => {
     } catch (err) {
       console.error('Failed to subscribe to file changes:', err);
     }
+  }
+
+  onMount(() => {
+    applyTheme();
+    initApp();
   });
 
   onCleanup(() => {
@@ -212,6 +222,10 @@ const App: Component = () => {
     setChangedFile(null);
   }
 
+  function handleRetry() {
+    initApp();
+  }
+
   function handleDismissToast() {
     setToastMessage(null);
   }
@@ -261,76 +275,92 @@ const App: Component = () => {
   }
 
   return (
-    <div data-testid="app-layout" class={styles.layout}>
-      <Toolbar onExport={handleExport} onFitToView={handleFitToView} />
-      <ReloadPrompt
-        filePath={changedFile()}
-        onReload={handleReload}
-        onDismiss={handleDismissReload}
-      />
-      <div
-        class={styles.main}
-        style={{ 'grid-template-columns': `${editorWidth()}px 4px 1fr 4px ${sideWidth()}px` }}
-      >
-        <div data-testid="editor-panel" class={styles.editorPanel}>
-          <FileBrowser
-            files={editorStore.state.openFiles}
-            activeFile={editorStore.state.activeFile}
-            onFileClick={handleFileClick}
-          />
-          <FileTabs store={editorStore} />
-          <Editor store={editorStore} scrollToLocation={scrollToLocation} />
+    <>
+      <Show when={initPhase() === 'loading'}>
+        <div data-testid="app-loading" class={styles.loading}>
+          <div class={styles.spinner} />
+          <p>Loading...</p>
         </div>
-        <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
-        <div data-testid="viewport-panel" class={styles.viewportPanel}>
-          <Viewport
-            meshes={engineStore.state.meshes}
-            onSelect={handleViewportSelect}
-            selectedEntity={selectionStore.state.selectedEntity}
-            hoveredEntity={selectionStore.state.hoveredEntity}
-            flyToEntityRef={(fn) => { flyToEntityFn = fn; }}
-          />
-        </div>
-        <Splitter orientation="vertical" onResize={handleRightResize} data-testid="splitter-right" />
-        <div
-          data-testid="side-panel"
-          class={styles.sidePanel}
-          style={{ 'grid-template-rows': `${propertyHeight()}px 4px 1fr` }}
-        >
-          <PropertyEditor
-            values={engineStore.state.values}
-            selectedEntity={selectionStore.state.selectedEntity}
-            onSetParameter={handleSetParameter}
-            onGroupDoubleClick={handleGroupDoubleClick}
-            highlightedParams={selectionStore.state.highlightedParams}
-          />
-          <Splitter orientation="horizontal" onResize={handleSideResize} data-testid="splitter-side" />
-          <ConstraintPanel
-            constraints={engineStore.state.constraints}
-            values={engineStore.state.values}
-            onConstraintSelect={handleConstraintSelect}
-          />
-        </div>
-      </div>
-      <StatusBar
-        evalStatus={engineStore.state.evalStatus}
-        meshes={engineStore.state.meshes}
-        constraints={engineStore.state.constraints}
-      />
-      <ExportDialog
-        open={showExportDialog()}
-        exporting={exporting()}
-        onExport={handleDoExport}
-        onClose={() => setShowExportDialog(false)}
-      />
-      <Show when={toastMessage()}>
-        {(msg) => (
-          <div class={styles.toastContainer}>
-            <Toast message={msg()} type={toastType()} onDismiss={handleDismissToast} />
-          </div>
-        )}
       </Show>
-    </div>
+      <Show when={initPhase() === 'error'}>
+        <div data-testid="app-error" class={styles.errorState}>
+          <p>Failed to load application state.</p>
+          <button onClick={handleRetry}>Retry</button>
+        </div>
+      </Show>
+      <Show when={initPhase() === 'ready'}>
+        <div data-testid="app-layout" class={styles.layout}>
+          <Toolbar onExport={handleExport} onFitToView={handleFitToView} />
+          <ReloadPrompt
+            filePath={changedFile()}
+            onReload={handleReload}
+            onDismiss={handleDismissReload}
+          />
+          <div
+            class={styles.main}
+            style={{ 'grid-template-columns': `${editorWidth()}px 4px 1fr 4px ${sideWidth()}px` }}
+          >
+            <div data-testid="editor-panel" class={styles.editorPanel}>
+              <FileBrowser
+                files={editorStore.state.openFiles}
+                activeFile={editorStore.state.activeFile}
+                onFileClick={handleFileClick}
+              />
+              <FileTabs store={editorStore} />
+              <Editor store={editorStore} scrollToLocation={scrollToLocation} />
+            </div>
+            <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
+            <div data-testid="viewport-panel" class={styles.viewportPanel}>
+              <Viewport
+                meshes={engineStore.state.meshes}
+                onSelect={handleViewportSelect}
+                selectedEntity={selectionStore.state.selectedEntity}
+                hoveredEntity={selectionStore.state.hoveredEntity}
+                flyToEntityRef={(fn) => { flyToEntityFn = fn; }}
+              />
+            </div>
+            <Splitter orientation="vertical" onResize={handleRightResize} data-testid="splitter-right" />
+            <div
+              data-testid="side-panel"
+              class={styles.sidePanel}
+              style={{ 'grid-template-rows': `${propertyHeight()}px 4px 1fr` }}
+            >
+              <PropertyEditor
+                values={engineStore.state.values}
+                selectedEntity={selectionStore.state.selectedEntity}
+                onSetParameter={handleSetParameter}
+                onGroupDoubleClick={handleGroupDoubleClick}
+                highlightedParams={selectionStore.state.highlightedParams}
+              />
+              <Splitter orientation="horizontal" onResize={handleSideResize} data-testid="splitter-side" />
+              <ConstraintPanel
+                constraints={engineStore.state.constraints}
+                values={engineStore.state.values}
+                onConstraintSelect={handleConstraintSelect}
+              />
+            </div>
+          </div>
+          <StatusBar
+            evalStatus={engineStore.state.evalStatus}
+            meshes={engineStore.state.meshes}
+            constraints={engineStore.state.constraints}
+          />
+          <ExportDialog
+            open={showExportDialog()}
+            exporting={exporting()}
+            onExport={handleDoExport}
+            onClose={() => setShowExportDialog(false)}
+          />
+          <Show when={toastMessage()}>
+            {(msg) => (
+              <div class={styles.toastContainer}>
+                <Toast message={msg()} type={toastType()} onDismiss={handleDismissToast} />
+              </div>
+            )}
+          </Show>
+        </div>
+      </Show>
+    </>
   );
 };
 

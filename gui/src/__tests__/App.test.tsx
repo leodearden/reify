@@ -80,44 +80,53 @@ afterEach(() => {
   cleanup();
 });
 
+/** Helper: render App and wait for init to complete (ready state). */
+async function renderAndWaitForReady() {
+  const result = render(() => <App />);
+  await waitFor(() => {
+    expect(screen.getByTestId('app-layout')).toBeTruthy();
+  });
+  return result;
+}
+
 describe('App layout wiring', () => {
-  it('renders app-layout container', () => {
-    render(() => <App />);
+  it('renders app-layout container', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('app-layout')).toBeTruthy();
   });
 
-  it('renders Toolbar at top', () => {
-    render(() => <App />);
+  it('renders Toolbar at top', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('toolbar')).toBeTruthy();
   });
 
-  it('renders StatusBar at bottom', () => {
-    render(() => <App />);
+  it('renders StatusBar at bottom', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('status-bar')).toBeTruthy();
   });
 
-  it('renders Viewport', () => {
-    render(() => <App />);
+  it('renders Viewport', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('viewport-container')).toBeTruthy();
   });
 
-  it('renders Editor', () => {
-    render(() => <App />);
+  it('renders Editor', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('editor-container')).toBeTruthy();
   });
 
-  it('renders PropertyEditor', () => {
-    render(() => <App />);
+  it('renders PropertyEditor', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('property-editor')).toBeTruthy();
   });
 
-  it('renders ConstraintPanel', () => {
-    render(() => <App />);
+  it('renders ConstraintPanel', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('constraint-panel')).toBeTruthy();
   });
 
-  it('renders Toolbar before StatusBar in DOM order', () => {
-    render(() => <App />);
+  it('renders Toolbar before StatusBar in DOM order', async () => {
+    await renderAndWaitForReady();
     const toolbar = screen.getByTestId('toolbar');
     const statusBar = screen.getByTestId('status-bar');
     // Toolbar should come before StatusBar in document order
@@ -127,22 +136,22 @@ describe('App layout wiring', () => {
 });
 
 describe('App resizable splitters', () => {
-  it('has a vertical splitter between editor and viewport columns', () => {
-    render(() => <App />);
+  it('has a vertical splitter between editor and viewport columns', async () => {
+    await renderAndWaitForReady();
     const splitter = screen.getByTestId('splitter-left');
     expect(splitter).toBeTruthy();
     expect(splitter.dataset.orientation).toBe('vertical');
   });
 
-  it('has a vertical splitter between viewport and side panel columns', () => {
-    render(() => <App />);
+  it('has a vertical splitter between viewport and side panel columns', async () => {
+    await renderAndWaitForReady();
     const splitter = screen.getByTestId('splitter-right');
     expect(splitter).toBeTruthy();
     expect(splitter.dataset.orientation).toBe('vertical');
   });
 
-  it('dragging left splitter updates main grid columns', () => {
-    render(() => <App />);
+  it('dragging left splitter updates main grid columns', async () => {
+    await renderAndWaitForReady();
     const splitter = screen.getByTestId('splitter-left');
     const main = screen.getByTestId('app-layout').querySelector('[class*="main"]') as HTMLElement;
     expect(main).toBeTruthy();
@@ -196,16 +205,16 @@ describe('App initial state loading', () => {
 });
 
 describe('App side panel vertical splitter', () => {
-  it('has a horizontal splitter between PropertyEditor and ConstraintPanel in the side panel', () => {
-    render(() => <App />);
+  it('has a horizontal splitter between PropertyEditor and ConstraintPanel in the side panel', async () => {
+    await renderAndWaitForReady();
     const sidePanel = screen.getByTestId('side-panel');
     const splitter = sidePanel.querySelector('[data-testid="splitter-side"]');
     expect(splitter).toBeTruthy();
     expect((splitter as HTMLElement).dataset.orientation).toBe('horizontal');
   });
 
-  it('PropertyEditor appears before splitter which appears before ConstraintPanel', () => {
-    render(() => <App />);
+  it('PropertyEditor appears before splitter which appears before ConstraintPanel', async () => {
+    await renderAndWaitForReady();
     const sidePanel = screen.getByTestId('side-panel');
     const propEditor = screen.getByTestId('property-editor');
     const constraintPanel = screen.getByTestId('constraint-panel');
@@ -220,8 +229,8 @@ describe('App side panel vertical splitter', () => {
     expect(splitterVsConstraint & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('dragging the side panel splitter changes the top/bottom split', () => {
-    render(() => <App />);
+  it('dragging the side panel splitter changes the top/bottom split', async () => {
+    await renderAndWaitForReady();
     const sidePanel = screen.getByTestId('side-panel');
     const splitter = sidePanel.querySelector('[data-testid="splitter-side"]') as HTMLElement;
     expect(splitter).toBeTruthy();
@@ -386,13 +395,13 @@ describe('App async mount/cleanup race conditions', () => {
 });
 
 describe('App new component integration', () => {
-  it('renders FileBrowser in the editor panel', () => {
-    render(() => <App />);
+  it('renders FileBrowser in the editor panel', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('file-browser')).toBeTruthy();
   });
 
   it('clicking Export in Toolbar opens ExportDialog', async () => {
-    render(() => <App />);
+    await renderAndWaitForReady();
 
     // ExportDialog should not be visible initially
     expect(screen.queryByTestId('export-dialog')).toBeNull();
@@ -407,7 +416,7 @@ describe('App new component integration', () => {
   });
 
   it('ExportDialog Cancel closes the dialog', async () => {
-    render(() => <App />);
+    await renderAndWaitForReady();
 
     fireEvent.click(screen.getByText('Export'));
     await waitFor(() => {
@@ -421,7 +430,7 @@ describe('App new component integration', () => {
   });
 
   it('subscribes to file-changed events on mount', async () => {
-    render(() => <App />);
+    await renderAndWaitForReady();
     await waitFor(() => {
       expect(bridge.onFileChanged).toHaveBeenCalled();
     });
