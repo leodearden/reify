@@ -578,10 +578,10 @@ impl<'a> Lowering<'a> {
         let mut params = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "purpose_param" {
-                if let Some(param) = self.lower_purpose_param(child) {
-                    params.push(param);
-                }
+            if child.kind() == "purpose_param"
+                && let Some(param) = self.lower_purpose_param(child)
+            {
+                params.push(param);
             }
         }
         params
