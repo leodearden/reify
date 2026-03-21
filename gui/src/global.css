@@ -13,6 +13,11 @@ body,
   overflow: hidden;
 }
 
+*:focus-visible {
+  outline: 2px solid var(--reify-accent, #89b4fa);
+  outline-offset: 2px;
+}
+
 body {
   background-color: var(--reify-background, #1e1e2e);
   color: var(--reify-text, #cdd6f4);
