@@ -44,6 +44,21 @@ export interface MeshManagerContext {
  * Manages Three.js Mesh objects in a scene, syncing them against a
  * Record<string, MeshData> from the engine store.
  */
+function validateMeshData(data: MeshData): boolean {
+  if (data.vertices.length % 3 !== 0) {
+    console.warn(`Invalid mesh data: vertices.length (${data.vertices.length}) is not divisible by 3`);
+    return false;
+  }
+  const vertexCount = data.vertices.length / 3;
+  for (let i = 0; i < data.indices.length; i++) {
+    if (data.indices[i] >= vertexCount) {
+      console.warn(`Invalid mesh data: index ${data.indices[i]} at position ${i} >= vertex count ${vertexCount}`);
+      return false;
+    }
+  }
+  return true;
+}
+
 export function createMeshManager(scene: Scene): MeshManagerContext {
   const meshMap = new Map<string, Mesh>();
 
@@ -132,6 +147,7 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
 
     // Add or update meshes
     for (const [entityPath, data] of Object.entries(meshes)) {
+      if (!validateMeshData(data)) continue;
       if (meshMap.has(entityPath)) {
         updateMeshGeometry(meshMap.get(entityPath)!, data);
       } else {

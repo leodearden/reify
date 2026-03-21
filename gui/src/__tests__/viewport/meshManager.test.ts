@@ -143,7 +143,7 @@ describe('meshManager', () => {
 
   it('created mesh geometry has position attribute from vertices', () => {
     const { manager } = setup();
-    const verts = new Float32Array([1, 2, 3, 4, 5, 6]);
+    const verts = new Float32Array([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     const meshData = makeMeshData('A', verts);
     manager.sync({ A: meshData });
 
@@ -155,8 +155,10 @@ describe('meshManager', () => {
 
   it('created mesh geometry has index from indices', () => {
     const { manager } = setup();
+    // 4 vertices via default (9 floats = 3 vertices) — use custom verts for 4
+    const verts = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]);
     const indices = new Uint32Array([0, 1, 2, 2, 3, 0]);
-    const meshData = makeMeshData('A', undefined, indices);
+    const meshData = makeMeshData('A', verts, indices);
     manager.sync({ A: meshData });
 
     const mesh = manager.getSceneMeshes().get('A')!;
@@ -180,7 +182,7 @@ describe('meshManager', () => {
     const meshData1 = makeMeshData('A');
     manager.sync({ A: meshData1 });
 
-    const newVerts = new Float32Array([9, 8, 7, 6, 5, 4]);
+    const newVerts = new Float32Array([9, 8, 7, 6, 5, 4, 3, 2, 1]);
     const meshData2 = makeMeshData('A', newVerts);
     manager.sync({ A: meshData2 });
 
@@ -271,7 +273,7 @@ describe('meshManager', () => {
 
   it('update reuses existing BufferAttribute objects and sets needsUpdate', () => {
     const { manager } = setup();
-    const verts1 = new Float32Array([0, 1, 2, 3, 4, 5]);
+    const verts1 = new Float32Array([0, 1, 2, 3, 4, 5, 6, 7, 8]);
     const indices1 = new Uint32Array([0, 1, 2]);
     manager.sync({ A: makeMeshData('A', verts1, indices1) });
 
@@ -280,8 +282,8 @@ describe('meshManager', () => {
     const posAttrBefore = geom.attributes.position;
     const indexBefore = geom.index;
 
-    // Sync with new data
-    const verts2 = new Float32Array([9, 8, 7, 6, 5, 4]);
+    // Sync with new data (same length)
+    const verts2 = new Float32Array([9, 8, 7, 6, 5, 4, 3, 2, 1]);
     const indices2 = new Uint32Array([2, 1, 0]);
     manager.sync({ A: makeMeshData('A', verts2, indices2) });
 
