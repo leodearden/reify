@@ -518,6 +518,7 @@ impl WarmStartable for OcctKernel {
         };
         // Stage deserialization into a temporary map first. If all entries fail
         // to deserialize, we preserve the kernel's pre-existing state untouched.
+        self.last_warm_start_failures = 0;
         let mut staged = HashMap::new();
         for (id, brep) in warm.shapes {
             cxx::let_cxx_string!(brep_cxx = brep.as_str());
@@ -525,8 +526,11 @@ impl WarmStartable for OcctKernel {
                 Ok(shape) => {
                     staged.insert(id, shape);
                 }
-                Err(_) => {
-                    // Skip entries that fail to deserialize (best-effort)
+                Err(e) => {
+                    eprintln!(
+                        "warning: warm-start deserialization failed for shape {id}: {e}"
+                    );
+                    self.last_warm_start_failures += 1;
                     continue;
                 }
             }
