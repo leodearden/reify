@@ -38,127 +38,127 @@
       "id": "step-1",
       "type": "test",
       "description": "Write failing test for TO-4: Toast close button should have aria-label='Close'. Assert that the button inside the toast has the correct aria-label attribute.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "ce34904"
     },
     {
       "id": "step-2",
       "type": "impl",
       "description": "Add aria-label='Close' to the x button in Toast.tsx",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "6437ed0"
     },
     {
       "id": "step-3",
       "type": "test",
       "description": "Write failing test for TO-3: Toast root div should have role='alert' and aria-live='assertive'. Assert both attributes exist on the toast element.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f4e73b4"
     },
     {
       "id": "step-4",
       "type": "impl",
       "description": "Add role='alert' and aria-live='assertive' to the toast root div in Toast.tsx",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "d22b266"
     },
     {
       "id": "step-5",
       "type": "test",
       "description": "Write failing tests for TO-1: Toast auto-dismiss. Use vi.useFakeTimers. Tests: (1) success toast calls onDismiss after 3000ms, (2) error toast calls onDismiss after 5000ms, (3) info toast calls onDismiss after 3000ms, (4) manual dismiss before timeout does not double-call onDismiss (clearTimeout on cleanup).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "a05c61b"
     },
     {
       "id": "step-6",
       "type": "impl",
       "description": "Add auto-dismiss setTimeout in Toast.tsx using onMount/onCleanup. Compute timeout from props.type (3000ms for success/info, 5000ms for error). Call props.onDismiss() on timeout. Clear timeout in onCleanup.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "583a538"
     },
     {
       "id": "step-7",
       "type": "test",
       "description": "Write failing test for TO-5: Toast should have a CSS animation applied. Verify the toast element's computed/applied class includes the animation styling (check for animation-name or that the CSS module class is applied correctly).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f4db465"
     },
     {
       "id": "step-8",
       "type": "impl",
       "description": "Add @keyframes slideIn animation to Toast.module.css (translateX(100%) + opacity 0 -> translateX(0) + opacity 1 over 200ms ease-out). Apply animation property to .toast class.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "c3b616d"
     },
     {
       "id": "step-9",
       "type": "test",
       "description": "Write failing tests for TO-2: Toast queue support in App. Tests: (1) showToast adds a ToastMessage to the toasts array, (2) two sequential showToast calls result in two toasts rendered, (3) dismissing one toast by id removes only that toast, (4) handleDoExport success creates a toast in the queue. This requires refactoring App.tsx toast state from single signal to array.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "c17f20e"
     },
     {
       "id": "step-10",
       "type": "impl",
       "description": "In App.tsx: Replace toastMessage/toastType signals with a toasts signal of ToastMessage[]. Add showToast(message, type) helper that generates unique id (counter-based) and appends. Update handleDismissToast to accept id and filter. Update handleDoExport to use showToast(). Render with <For> over toasts array, each rendering a <Toast>. Update Toast props to accept ToastMessage (id + message + type). Update App.module.css toastContainer to stack with flex-direction: column-reverse and gap: 8px.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "e057b71"
     },
     {
       "id": "step-11",
       "type": "test",
       "description": "Write failing tests for R-1: ReloadPrompt multi-file tracking. Tests: (1) renders nothing when filePaths is empty array, (2) renders single file basename when filePaths has one entry, (3) renders 'N files changed on disk' when filePaths has 2+ entries, (4) Reload and Dismiss buttons still work.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "32c8033"
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "Update ReloadPrompt props from filePath: string|null to filePaths: string[]. Show when array is non-empty. Display basename for single file, 'N files changed on disk. Reload?' for multiple. Update existing tests to use new prop name.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "b071ca3"
     },
     {
       "id": "step-13",
       "type": "test",
       "description": "Write failing tests for R-1 App integration: In App.tsx, changedFiles should be a Set<string> signal. Tests: (1) onFileChanged with two different files adds both to the set, (2) onFileChanged with same file twice only has one entry, (3) handleReload reloads all files in set, (4) handleDismissReload clears the set. Update existing App.test.tsx tests that reference changedFile/filePath.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "833a609"
     },
     {
       "id": "step-14",
       "type": "impl",
       "description": "In App.tsx: Convert changedFile signal to changedFiles as createSignal<Set<string>>(new Set()). Update onFileChanged handler to add to set via new Set([...prev, path]). Pass Array.from(changedFiles()) as filePaths to ReloadPrompt. Update handleReload to iterate all files in set, calling bridgeOpenFile for each. Update handleDismissReload to reset to empty set. Fix any broken existing App tests.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "8012ba6"
     },
     {
       "id": "step-15",
       "type": "test",
       "description": "Write failing tests for R-4: dirty-file check before reload. Tests: (1) when no dirty files overlap, handleReload proceeds immediately (bridgeOpenFile called), (2) when dirty files overlap with changed files, handleReload shows a confirmation warning (does NOT call bridgeOpenFile immediately), (3) confirming 'Reload Anyway' triggers bridgeOpenFile for all changed files, (4) dismissing confirmation does not reload.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "853dc70"
     },
     {
       "id": "step-16",
       "type": "impl",
       "description": "In App.tsx handleReload: Check intersection of changedFiles with editorStore.state.dirtyFiles. If overlap exists, set a confirmReload signal to true. In ReloadPrompt: accept optional hasDirtyFiles prop. When true, show warning text 'Unsaved changes will be lost' and change Reload button text to 'Reload Anyway'. When false or absent, show normal UI. In App.tsx, pass hasDirtyFiles computed from intersection. handleReload only proceeds to bridgeOpenFile when confirmReload is set or no dirty overlap. Update ReloadPrompt.module.css with warning styling.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "88f550d"
     },
     {
       "id": "step-17",
       "type": "test",
       "description": "Write failing tests for R-2: keyboard shortcuts. Tests: (1) Ctrl+Shift+R dispatched on document calls onReloadShortcut callback, (2) Escape dispatched on document calls onDismissReload callback, (3) shortcuts are skipped when target is an input element.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "fe65edd"
     },
     {
       "id": "step-18",
       "type": "impl",
       "description": "Extend KeyboardShortcutCallbacks in useKeyboardShortcuts.ts with onReloadShortcut and onDismissReload. Add handlers: Ctrl+Shift+R -> onReloadShortcut, Escape -> onDismissReload. In App.tsx, wire onReloadShortcut to handleReload (only when changedFiles non-empty) and onDismissReload to handleDismissReload (only when reload prompt visible).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f73f4bc"
     }
   ],
   "design_decisions": [
