@@ -9,16 +9,21 @@ const mockMeshes: any[] = [];
 
 const mockSceneAdd = vi.fn();
 const mockSceneRemove = vi.fn();
+const mockComputeBoundsTree = vi.fn();
+const mockDisposeBoundsTree = vi.fn();
 
 vi.mock('three', () => {
   class MockBufferGeometry {
     attributes: Record<string, any> = {};
     index: any = null;
     dispose = vi.fn();
-    computeBoundsTree = vi.fn();
-    disposeBoundsTree = vi.fn();
+    computeBoundsTree = mockComputeBoundsTree;
+    disposeBoundsTree = mockDisposeBoundsTree;
     boundingSphere: any = null;
     boundingBox: any = null;
+    constructor() {
+      mockGeometries.push(this);
+    }
 
     setAttribute(name: string, attr: any) {
       this.attributes[name] = attr;
@@ -316,6 +321,52 @@ describe('meshManager', () => {
 
     // Normal attribute should be removed
     expect(geom.attributes.normal).toBeUndefined();
+  });
+
+  describe('R-01: createMeshFromData disposes resources when computeBoundsTree throws', () => {
+    it('disposes geometry and material if computeBoundsTree throws', () => {
+      const { manager } = setup();
+      const meshData = makeMeshData('A');
+
+      // Configure shared mock to throw on the next call (create)
+      mockComputeBoundsTree.mockImplementationOnce(() => {
+        throw new Error('BVH build failed');
+      });
+
+      manager.sync({ A: meshData });
+
+      // Geometry should be disposed (last created geometry)
+      const geo = mockGeometries[mockGeometries.length - 1];
+      expect(geo.dispose).toHaveBeenCalled();
+      // Material should be disposed (last created material)
+      const mat = mockMaterials[mockMaterials.length - 1];
+      expect(mat.dispose).toHaveBeenCalled();
+
+      // Mesh should NOT be in the map or scene
+      expect(manager.getSceneMeshes().has('A')).toBe(false);
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+    });
+
+    it('logs error when computeBoundsTree throws', () => {
+      const { manager } = setup();
+      const meshData = makeMeshData('A');
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      mockComputeBoundsTree.mockImplementationOnce(() => {
+        throw new Error('BVH build failed');
+      });
+
+      try {
+        manager.sync({ A: meshData });
+      } finally {
+        consoleSpy.mockRestore();
+      }
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('A'),
+        expect.any(Error),
+      );
+    });
   });
 
   it('sync with empty incoming object removes all existing meshes', () => {
