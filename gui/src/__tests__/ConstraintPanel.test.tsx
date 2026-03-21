@@ -278,3 +278,67 @@ describe('ConstraintPanel accessibility', () => {
     expect(row.getAttribute('tabindex')).toBe('0');
   });
 });
+
+describe('ConstraintPanel keyboard interaction', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50' }),
+  };
+
+  it('pressing Enter on a violated constraint row expands it', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({
+        node_id: 'n1',
+        status: 'violated',
+        expression: 'width > 100',
+        parameter_ids: ['c1'],
+      }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={values} />);
+    const row = screen.getByTestId('constraint-row-n1');
+
+    // Initially not expanded
+    expect(screen.queryByText('width = 50')).toBeNull();
+
+    // Press Enter to expand
+    fireEvent.keyDown(row, { key: 'Enter' });
+    expect(screen.getByText('width = 50')).toBeTruthy();
+  });
+
+  it('pressing Space on a violated constraint row expands it', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({
+        node_id: 'n1',
+        status: 'violated',
+        expression: 'width > 100',
+        parameter_ids: ['c1'],
+      }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={values} />);
+    const row = screen.getByTestId('constraint-row-n1');
+
+    // Press Space to expand
+    fireEvent.keyDown(row, { key: ' ' });
+    expect(screen.getByText('width = 50')).toBeTruthy();
+  });
+
+  it('pressing Enter again collapses an expanded row', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({
+        node_id: 'n1',
+        status: 'violated',
+        expression: 'width > 100',
+        parameter_ids: ['c1'],
+      }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={values} />);
+    const row = screen.getByTestId('constraint-row-n1');
+
+    // Expand
+    fireEvent.keyDown(row, { key: 'Enter' });
+    expect(screen.getByText('width = 50')).toBeTruthy();
+
+    // Collapse
+    fireEvent.keyDown(row, { key: 'Enter' });
+    expect(screen.queryByText('width = 50')).toBeNull();
+  });
+});
