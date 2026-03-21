@@ -1,28 +1,32 @@
 {
-  "task_id": "108",
-  "title": "ExportDialog UX: focus trap, Escape, ARIA, overlay click, file picker, 3MF removal",
+  "task_id": "105",
+  "title": "Surface errors to users: replace console.error with toast notifications + loading states",
   "files": [
-    "gui/src/panels/ExportDialog.tsx",
-    "gui/src/panels/ExportDialog.module.css",
-    "gui/src/__tests__/ExportDialog.test.tsx",
-    "gui/src/types.ts",
     "gui/src/App.tsx",
+    "gui/src/App.module.css",
+    "gui/src/editor/Editor.tsx",
+    "gui/src/panels/ExportDialog.tsx",
     "gui/src/bridge.ts",
+    "gui/src/hooks/useToast.ts",
     "gui/src/__tests__/App.test.tsx",
-    "gui/package.json"
+    "gui/src/__tests__/Editor.test.tsx",
+    "gui/src/__tests__/ExportDialog.test.tsx",
+    "gui/src/__tests__/useToast.test.ts"
   ],
   "modules": [
+    "gui/src",
     "gui/src/panels",
-    "gui/src/__tests__",
-    "gui/src"
+    "gui/src/editor",
+    "gui/src/hooks",
+    "gui/src/__tests__"
   ],
-  "analysis": "This task addresses 9 UX issues in the ExportDialog modal. The current ExportDialog.tsx is a simple SolidJS component using <Show when={props.open}> for visibility. It renders an overlay div with an inner dialog div containing a format selector (STEP/STL/3MF), Cancel/Export buttons, and a text-only progress indicator.\n\nKey findings from code analysis:\n1. **No ARIA attributes**: The dialog div lacks role='dialog', aria-modal='true', aria-labelledby. The label has no htmlFor, the select has no id.\n2. **No keyboard handling**: No Escape key handler, no focus trap. Tab freely escapes the modal.\n3. **No overlay dismiss**: Clicking the overlay background doesn't close the dialog.\n4. **3MF unsupported**: The backend ExportFormat enum only has Step/Stl/Obj (no 3MF). The Tauri command handler (commands.rs:54-57) explicitly rejects unknown formats. The frontend ExportFormat type includes '3mf' but it will always fail.\n5. **Hardcoded path**: App.tsx handleDoExport (line 182) uses `export.${format}` as a hardcoded path. No native file picker.\n6. **No spinner**: Progress indicator (line 22-25) is text-only 'Exporting...' with no visual spinner.\n7. **Format persistence**: The createSignal<ExportFormat>('step') is at component level, so format SHOULD persist across open/close since the component is always mounted in App.tsx. But the task reports it resets \u2014 this may be a SolidJS <Show> subtlety or a perceived issue. Will add regression test.\n\nTesting stack: vitest + @solidjs/testing-library + jsdom. All Tauri APIs are mocked via vi.mock. Existing ExportDialog tests cover basic rendering, format selection, button clicks, and disabled states.\n\nFor the file picker (E-6), I'll add a `pickSavePath` function to bridge.ts that wraps `@tauri-apps/plugin-dialog`'s save() function. In tests, this is mocked. App.tsx handleDoExport will call pickSavePath first, and if the user cancels (returns null), skip the export.",
+  "analysis": "The task requires replacing 8+ console.error calls with user-visible toast notifications, adding a loading/error state during app initialization, and integrating Tauri's native save dialog for export. Currently:\n\n1. **App.tsx** has 6 console.error sites: getInitialState failure (line 127), subscribeToEvents failure (line 140), file-change subscription failure (line 158), setParameter failure (line 170), re-evaluate failure (line 102), reload failure (line 207). No loading state during init.\n2. **Editor.tsx** has 4 console.error sites: save failure (line 82), updateSource failure (line 99), LSP didChange failure (line 109), LSP init failure (line 133). The Editor operates internally and doesn't have a toast mechanism.\n3. **ExportDialog.tsx** already handles errors with toasts via handleDoExport in App.tsx but uses a hardcoded path `export.${format}` instead of a native file picker.\n\n**Approach:**\n- Create a `useToast` hook (createToast factory following SolidJS conventions) that provides `showToast(message, type)` with auto-dismiss. This centralizes toast logic currently spread across App.tsx's manual signals.\n- Replace App.tsx console.error calls with toast notifications using `showToast`.\n- Add `initPhase` signal to App.tsx: 'loading' | 'ready' | 'error'. Show a loading spinner/skeleton during init, error state with retry on failure.\n- For Editor.tsx errors (save, LSP init): pass an `onError` callback prop from App.tsx so the Editor can surface errors as toasts without coupling to toast implementation. This follows the existing dependency-injection pattern (onSelect, onSetParameter, etc.).\n- For export: add a `pickSavePath` bridge function that invokes a backend command. Since the Tauri dialog plugin is NOT installed (no @tauri-apps/plugin-dialog in package.json or Cargo.toml), we add the bridge function with graceful fallback to hardcoded path when the backend command doesn't exist yet.\n- LSP didChange/fileSwitch errors stay as console.error since they're frequent recoverable internal operations that would flood the user with noise if toasted.\n\nExisting infrastructure to reuse: Toast component (gui/src/panels/Toast.tsx) is already fully built with data-type styling. App.module.css already has .toastContainer with fixed positioning. The Show component pattern from SolidJS is used throughout for conditional rendering.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add @tauri-apps/plugin-dialog to gui/package.json dependencies for native save file picker. Run npm/pnpm install to ensure it's available for import in bridge.ts.",
+      "description": "Create useToast hook file skeleton at gui/src/hooks/useToast.ts (empty export to enable test-first development)",
       "status": "done",
-      "commit": "63023e4",
+      "commit": "068025e",
       "tests": []
     }
   ],
@@ -30,206 +34,216 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for ARIA attributes (E-4): (1) inner dialog div has role='dialog', (2) inner dialog div has aria-modal='true', (3) inner dialog div has aria-labelledby matching the title element's id. These test that the dialog element has proper accessibility semantics.",
+      "description": "Write failing tests for useToast hook in gui/src/__tests__/useToast.test.ts: (1) showToast sets message and type signals, (2) dismissToast clears message to null, (3) auto-dismiss fires after 5000ms for success type, (4) auto-dismiss fires after 10000ms for error type, (5) calling showToast again resets the auto-dismiss timer, (6) dismissToast cancels pending auto-dismiss timer. Use createRoot from solid-js for reactive context, vi.useFakeTimers for timer assertions.",
       "status": "done",
-      "commit": "4a71dc6"
+      "commit": "1ba7e1e"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add ARIA attributes to ExportDialog.tsx: add id='export-dialog-title' to the h2 title, add role='dialog', aria-modal='true', aria-labelledby='export-dialog-title' to the inner .dialog div.",
+      "description": "Implement createToast() in gui/src/hooks/useToast.ts: createSignal<string|null>(null) for message, createSignal<'success'|'error'|'info'>('info') for type. showToast(msg, type) sets both signals and starts setTimeout (5000ms for success/info, 10000ms for error). dismissToast() clears message and cancels timer. Returns { toastMessage, toastType, showToast, dismissToast }.",
       "status": "done",
-      "commit": "9872394"
+      "commit": "2a4ecd3"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test for label-select association (E-5): the <label> element has a for/htmlFor attribute whose value matches the <select> element's id attribute.",
+      "description": "Write failing tests for App.tsx loading state in gui/src/__tests__/App.test.tsx (new describe 'App initialization loading state'): (1) shows data-testid='app-loading' while getInitialState is pending (use deferred promise), (2) shows data-testid='app-error' with retry button when getInitialState rejects, (3) clicking retry button calls getInitialState again, (4) after successful getInitialState resolve, data-testid='app-layout' is shown and loading/error elements are gone.",
       "status": "done",
-      "commit": "9ef499e"
+      "commit": "e3d9b89"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add id='export-format-select' to the <select> element and for='export-format-select' (htmlFor in JSX) to the <label> element in ExportDialog.tsx.",
+      "description": "Add loading/error state to App.tsx: createSignal<'loading'|'ready'|'error'>('loading') for initPhase. Wrap onMount init logic in try/catch that sets 'ready' on success, 'error' on failure. Add conditional rendering with Show: when loading show spinner div (data-testid='app-loading'), when error show error div with Retry button (data-testid='app-error'), when ready show normal layout. Add retry handler. Add .loading and .errorState CSS classes to App.module.css.",
       "status": "done",
-      "commit": "601b21e"
+      "commit": "76c2eee"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test for Escape key closes dialog (E-2): render open dialog, fire keyDown event with key='Escape' on the dialog, assert onClose was called once.",
+      "description": "Write failing tests for App.tsx toast on setParameter failure in gui/src/__tests__/App.test.tsx: modify/replace existing 'handleSetParameter error handling' test. When bridgeSetParameter rejects, a toast element (data-testid='toast' with data-type='error') appears in the DOM containing the error message. Verify console.error is NOT called (behavior replaced).",
       "status": "done",
-      "commit": "6b4fd93"
+      "commit": "34fef7e"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add onKeyDown handler to the overlay div in ExportDialog.tsx that checks for e.key === 'Escape' and calls props.onClose() when not exporting. Ensure the overlay is focusable or the handler is on document level.",
+      "description": "Wire createToast() hook into App.tsx, replacing manual toastMessage/toastType/setToastMessage/setToastType signals. Replace console.error in handleSetParameter (line 170) with showToast(`Parameter update failed: ${err.message}`, 'error'). Update Toast rendering in JSX to use toast.toastMessage()/toast.toastType()/toast.dismissToast().",
       "status": "done",
-      "commit": "a253b63"
+      "commit": "689b9d9"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for overlay click dismiss (E-3): (1) clicking the overlay background calls onClose, (2) clicking inside the inner dialog div does NOT call onClose (event propagation is stopped).",
+      "description": "Write failing test for App.tsx toast on re-evaluate failure in gui/src/__tests__/App.test.tsx (new describe 'App re-evaluate error toast'): mock bridgeUpdateSource to reject, simulate keyboard shortcut trigger (or directly call the handler via store interaction), verify error toast appears.",
       "status": "done",
-      "commit": "73ef1a2"
+      "commit": "11a7271"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add onClick handler to the overlay div that calls props.onClose() when not exporting. Add onClick={e => e.stopPropagation()} to the inner .dialog div to prevent clicks inside from bubbling to the overlay.",
+      "description": "Replace console.error in onReEvaluate callback (App.tsx line 102) with showToast('Re-evaluation failed: ...', 'error').",
       "status": "done",
-      "commit": "40ab980"
+      "commit": "0cf5777"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for focus trap (E-1): (1) when dialog opens, the first focusable element (Cancel button or select) receives focus, (2) pressing Tab on the last focusable element cycles focus back to the first focusable element, (3) pressing Shift+Tab on the first focusable element cycles to the last.",
+      "description": "Write failing test for App.tsx toast on reload failure in gui/src/__tests__/App.test.tsx (new describe 'App reload error toast'): set changedFile, mock bridgeOpenFile to reject, trigger handleReload via ReloadPrompt interaction, verify error toast appears.",
       "status": "done",
-      "commit": "2f2a75e"
+      "commit": "87a58af"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement focus trap in ExportDialog.tsx: use a ref on the inner dialog div. On mount (inside a createEffect triggered by props.open becoming true), query all focusable elements and focus the first one. Add a keydown handler that intercepts Tab/Shift+Tab and wraps focus within the dialog's focusable elements.",
+      "description": "Replace console.error in handleReload (App.tsx line 207) with showToast('Reload failed: ...', 'error').",
       "status": "done",
-      "commit": "9cbdc87"
+      "commit": "3b12d60"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test for 3MF removal (I7): (1) format selector does NOT contain a '3mf' option, (2) format selector contains only 'step' and 'stl' options. Update the existing test 'format selector has STEP/STL/3MF options' to expect only STEP/STL.",
+      "description": "Write failing test for App.tsx toast on event subscription failure in gui/src/__tests__/App.test.tsx (new describe 'App event subscription error toast'): mock engineStore.subscribeToEvents to reject, verify warning toast appears after mount ('Event subscription failed \u2014 some updates may not appear').",
       "status": "done",
-      "commit": "9d605bf"
+      "commit": "b0f4d34"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Remove the <option value='3mf'>3MF</option> from ExportDialog.tsx. Update ExportFormat type in gui/src/types.ts from 'step' | 'stl' | '3mf' to 'step' | 'stl'. Verify no other frontend code references '3mf'.",
+      "description": "Replace console.error for subscribeToEvents failure (App.tsx line 140) and onFileChanged failure (App.tsx line 158) with showToast warning calls. These are non-fatal: show info/error toast but continue running.",
       "status": "done",
-      "commit": "b7825ce"
+      "commit": "f07f3f4"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test for CSS spinner during export (E-8): when exporting=true, the progress indicator contains an element with a spinner class (data-testid='export-spinner' or class check). The spinner element should be present only during export.",
+      "description": "Write failing tests for Editor.tsx error surfacing via onError prop in gui/src/__tests__/Editor.test.tsx: (1) new describe 'Editor save error callback' \u2014 when saveFile rejects, onError callback is called with message string, (2) new describe 'Editor LSP init error callback' \u2014 when lspClient.initialize rejects, onError is called with LSP failure message.",
       "status": "done",
-      "commit": "3bfe6c0"
+      "commit": "9e99fce"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Add a spinner element inside the progress div in ExportDialog.tsx \u2014 a <span> with class styles.spinner. Add CSS @keyframes spin animation in ExportDialog.module.css: .spinner { width: 16px; height: 16px; border: 2px solid; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }",
+      "description": "Add optional onError?: (message: string) => void to EditorProps in Editor.tsx. Replace console.error in save handler (line 82) with props.onError?.('Failed to save file: ...') call. Replace console.error in LSP init chain (line 133) with props.onError?.('LSP initialization failed \u2014 completions and diagnostics may be unavailable'). Wire onError from App.tsx to Editor component, passing (msg) => showToast(msg, 'error').",
       "status": "done",
-      "commit": "78d8449"
+      "commit": "7261063"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write test for format persistence across open/close (E-7): render dialog, change format to 'stl', close dialog (set open=false), reopen (set open=true), assert select value is still 'stl'. This verifies the signal persists since the component stays mounted.",
+      "description": "Write failing tests for export with save dialog in gui/src/__tests__/App.test.tsx or gui/src/__tests__/ExportDialog.test.tsx: (1) handleDoExport calls bridge.pickSavePath before bridgeExportGeometry, (2) if pickSavePath returns null (user cancelled), bridgeExportGeometry is NOT called, (3) if pickSavePath throws (not available), falls back to default path and proceeds with export.",
       "status": "done",
-      "commit": "0e97227"
+      "commit": "9b5b6cc"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "If step-15 test fails: lift the format signal to be preserved across Show renders, or restructure so the signal outlives the Show block. If test passes, this step is a no-op (format already persists due to component-level signal). Mark done either way.",
+      "description": "Add pickSavePath to bridge.ts: invoke<string|null>('pick_save_path', { format, defaultName }). Update handleDoExport in App.tsx to call pickSavePath first wrapped in try/catch; if result is null, abort (user cancelled); if call throws, fall back to hardcoded 'export.{format}' path. This way the feature degrades gracefully when the backend command doesn't exist yet.",
       "status": "done",
-      "commit": "0e97227"
+      "commit": "3feab26"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write failing tests in App.test.tsx for file picker integration (E-6): (1) mock bridge.pickSavePath to return a path string, click Export in dialog, assert pickSavePath was called with expected default name and format filters, then assert bridgeExportGeometry was called with the returned path. (2) mock pickSavePath to return null (user cancelled), assert bridgeExportGeometry was NOT called and dialog stays open.",
+      "description": "Write integration test in gui/src/__tests__/App.test.tsx verifying end-to-end flow: App renders, getInitialState succeeds (ready state), then setParameter fails, verify toast is visible with correct error message. Ensures the createToast hook is properly wired through the full component tree.",
       "status": "done",
-      "commit": "9668030"
+      "commit": "b647cb0"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Add pickSavePath(defaultName: string, formatExtension: string) function to bridge.ts that imports save() from @tauri-apps/plugin-dialog. Returns Promise<string | null>. Modify handleDoExport in App.tsx: before calling bridgeExportGeometry, call pickSavePath to get the user-chosen path. If null (cancelled), return early without exporting. Pass the chosen path to bridgeExportGeometry instead of the hardcoded default.",
+      "description": "Final cleanup pass: verify all console.error calls in App.tsx are replaced with toast calls, ensure Editor.tsx LSP didChange/fileSwitch errors remain as console.error (intentional), run full vitest suite to confirm no regressions. Clean up any unused imports.",
       "status": "done",
-      "commit": "77506fd"
+      "commit": "bbd5bd7"
     },
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write failing test in App.test.tsx for pickSavePath error boundary (reviewer_robustness finding): mock bridge.pickSavePath to reject with an Error (e.g., 'Plugin not registered'). Click Export in the dialog. Assert that (1) an error toast is shown with message containing 'Could not open save dialog', (2) bridgeExportGeometry was NOT called, (3) setExporting(true) was never reached (the export-dialog is still visible and not in exporting state \u2014 no spinner present), (4) the dialog remains open for the user to retry or cancel.",
+      "description": "Write failing tests for initApp race condition guard in gui/src/__tests__/App.test.tsx (new describe 'App initApp concurrent execution guard'): (1) 'rapid double-click on Retry does not start two concurrent initApp flights': first call to getInitialState returns a deferred promise, click Retry, then immediately click Retry again while first is still pending \u2014 verify getInitialState is called only twice total (initial mount + first retry), not three times. (2) 'retry cleans up prior subscriptions before re-subscribing': mock onMeshUpdate etc. with tracked unlisten fns, let first initApp succeed (subscriptions established), then make getInitialState reject on second call, click Retry \u2014 verify the prior unsub/fileChangedUnsub are called (cleaned up) before the second initApp attempts to subscribe. (3) 'Retry button is disabled while initApp is in-flight (loading phase)': after getInitialState rejects and error state shows, click Retry \u2014 verify the Retry button becomes disabled (or disappears) synchronously while loading, preventing a second click from firing.",
       "status": "done",
-      "commit": "15a409b"
+      "commit": "565cde7"
     },
     {
       "id": "step-20",
       "type": "impl",
-      "description": "In App.tsx handleDoExport, wrap the `await pickSavePath(defaultName, format)` call in its own try/catch block before the existing try/catch for bridgeExportGeometry. On catch: set toastType to 'error', set toastMessage to `Could not open save dialog: ${err instanceof Error ? err.message : String(err)}`, and return early. This ensures that if the Tauri dialog plugin throws (plugin not registered, OS denies dialog, initialization failure), the user sees a clear error toast and the dialog remains open \u2014 matching the reviewer's suggested fix pattern.",
+      "description": "Fix the initApp race condition in App.tsx with a two-pronged approach: (1) At the top of initApp(), clean up existing subscriptions before proceeding: call `unsub?.(); unsub = undefined; fileChangedUnsub?.(); fileChangedUnsub = undefined;` \u2014 this ensures that if initApp is called again (via retry), any previously-established subscriptions are torn down so they cannot leak or fire duplicates. (2) The Retry button is already gated by initPhase: since initApp() synchronously sets initPhase to 'loading' at line 121, the Show block for the error state (which contains the Retry button) is removed from the DOM immediately on click, preventing a second click from reaching handleRetry. Verify this is sufficient by confirming the Show condition `initPhase() === 'error'` is mutually exclusive with 'loading'. If the Retry button is still clickable during microtask gap, additionally add `disabled={initPhase() === 'loading'}` to the Retry button as a belt-and-suspenders guard. Run tests from step-19 to confirm all pass.",
       "status": "done",
-      "commit": "d9a882b"
+      "commit": "c272be3"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Focus trap implemented manually rather than using a third-party library",
-      "rationale": "The project has no focus-trap library (e.g., focus-trap-react). The ExportDialog has only 3 focusable elements (select, Cancel, Export), making a manual implementation trivial and avoiding a new dependency. Query focusable elements via dialog.querySelectorAll('button, select, input, [tabindex]')."
+      "decision": "Create a reusable createToast() hook rather than adding toast logic inline in App.tsx",
+      "rationale": "App.tsx already has manual toastMessage/toastType signals (lines 61-62). Extracting to a hook adds auto-dismiss, centralizes logic, and makes it testable in isolation. The factory-function pattern (createToast) follows the existing SolidJS convention used by createEditorStore, createEngineStore, createSelectionStore."
     },
     {
-      "decision": "Escape key handler placed on the overlay div via onKeyDown rather than a document-level listener",
-      "rationale": "A component-level handler is cleaner and automatically scoped to the dialog's lifecycle. The overlay receives focus management from the focus trap, so keyDown events will bubble up to it. This avoids global listener registration/cleanup complexity."
+      "decision": "Surface Editor.tsx errors via an onError callback prop rather than importing toast hook directly",
+      "rationale": "The Editor component is a leaf component that shouldn't know about the toast system. Dependency injection via callback prop is consistent with the codebase pattern (onSelect, onSetParameter, onGroupDoubleClick, etc.) and keeps the Editor testable without mocking toast infrastructure."
     },
     {
-      "decision": "pickSavePath abstracted in bridge.ts rather than importing @tauri-apps/plugin-dialog directly in App.tsx",
-      "rationale": "All Tauri IPC interactions go through bridge.ts (existing pattern). This keeps App.tsx decoupled from Tauri specifics and makes testing straightforward \u2014 tests mock bridge.pickSavePath rather than the plugin directly."
+      "decision": "Keep LSP didChange/fileSwitch errors as console.error (not toasted)",
+      "rationale": "These are frequent, recoverable internal operations that fire on every keystroke (debounced). Toasting every LSP sync error would flood the user with noise. Only LSP init failure (which means broken completions/diagnostics for the session) warrants a user-visible warning."
     },
     {
-      "decision": "Remove 3MF from frontend ExportFormat type entirely rather than disabling the option",
-      "rationale": "The backend ExportFormat enum has Step/Stl/Obj but NO 3MF variant. The Tauri command handler rejects unknown format strings. Showing a disabled 3MF option would confuse users. Clean removal is better \u2014 it can be added back when backend support exists."
+      "decision": "Add pickSavePath to bridge.ts with graceful fallback to hardcoded path",
+      "rationale": "The Rust backend doesn't have a pick_save_path command yet \u2014 the Tauri dialog plugin is not in Cargo.toml dependencies. By adding the bridge call with try/catch fallback, we prepare the frontend for the native dialog while maintaining current behavior until the backend implements the command."
     },
     {
-      "decision": "Overlay click dismiss checks props.exporting before closing",
-      "rationale": "Consistent with Cancel button behavior \u2014 clicking overlay while export is in progress should not close the dialog and potentially leave the export in an ambiguous state."
+      "decision": "App init loading state uses a simple 'loading' | 'ready' | 'error' signal with conditional rendering via Show",
+      "rationale": "SolidJS's Show component + signal is the idiomatic pattern. No need for a separate store \u2014 init state is local to App.tsx lifecycle. The three-state enum is sufficient: loading (pending), ready (success), error (failed with retry)."
     },
     {
-      "decision": "CSS-only spinner animation rather than SVG or animated icon library",
-      "rationale": "No icon library is in the project dependencies. A CSS border-animation spinner is lightweight, theme-compatible (uses CSS variables), and sufficient for the simple 'Exporting...' state indicator."
+      "decision": "Auto-dismiss timers: 5s for success/info, 10s for errors",
+      "rationale": "Success messages are brief acknowledgements; errors need more reading time and may contain diagnostic information. The timer resets when showToast is called again to prevent stale messages from lingering."
     },
     {
-      "decision": "Separate try/catch for pickSavePath before the export try/catch rather than merging into one block",
-      "rationale": "The pickSavePath failure and bridgeExportGeometry failure have different error messages and different UX consequences. pickSavePath failure means the save dialog couldn't open \u2014 the user should see 'Could not open save dialog' and the export dialog stays open (no exporting state entered). Export failure means the actual export failed \u2014 different message, different cleanup (setExporting(false), close dialog). Keeping them as separate try/catch blocks makes the error handling clearer and the UX distinct for each failure mode."
+      "decision": "Fix initApp race condition via subscription cleanup + Show-based button removal rather than an explicit inFlight flag",
+      "rationale": "The initPhase signal already drives conditional rendering via Show \u2014 when initApp sets initPhase('loading') synchronously at entry, SolidJS removes the error state (and its Retry button) from the DOM, preventing a second click. This is the idiomatic SolidJS approach and avoids adding a separate boolean flag. The critical fix is cleaning up existing unsub/fileChangedUnsub at the top of initApp so that even if concurrent execution somehow occurs (e.g., programmatic call), prior subscriptions are always torn down before new ones are established. This prevents subscription leaks and duplicate event handlers."
     }
   ],
   "reuse": [
     {
-      "what": "Existing ExportDialog test patterns (render with props, fireEvent.click, screen.getByTestId)",
-      "where": "gui/src/__tests__/ExportDialog.test.tsx",
-      "how": "Follow the exact same render pattern: render(() => <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />). Use fireEvent for keyboard and click events. Use screen queries for assertions."
+      "what": "Existing Toast component (gui/src/panels/Toast.tsx)",
+      "where": "Already renders toast UI with message, type, and dismiss button",
+      "how": "Keep as-is. The new createToast hook manages state; Toast component remains a pure presentational component. No changes needed to Toast.tsx itself."
     },
     {
-      "what": "App.test.tsx mock patterns for Tauri APIs and bridge module",
-      "where": "gui/src/__tests__/App.test.tsx lines 6-67",
-      "how": "Add pickSavePath to the existing bridge mock block (vi.mock('../bridge')). Follow the same mockResolvedValue pattern. Add @tauri-apps/plugin-dialog mock alongside existing @tauri-apps/api mocks if needed."
+      "what": "Existing toast CSS and container (App.module.css .toastContainer)",
+      "where": "Already has fixed positioning, z-index, and width constraints for toast overlay",
+      "how": "Reuse directly. Only add .loading and .errorState CSS classes for the new init states."
     },
     {
-      "what": "bridge.ts invoke/listen wrapper pattern",
-      "where": "gui/src/bridge.ts",
-      "how": "Add pickSavePath following the same async function pattern with JSDoc comment. Import from @tauri-apps/plugin-dialog instead of @tauri-apps/api/core since it's a separate plugin."
+      "what": "Existing App.test.tsx mock patterns for bridge functions",
+      "where": "vi.mock('../bridge') with all bridge functions mocked, waitFor pattern for async assertions",
+      "how": "Follow the same mock setup pattern for new tests. Add pickSavePath to the mock list."
     },
     {
-      "what": "ExportDialog.module.css variable naming convention",
-      "where": "gui/src/panels/ExportDialog.module.css",
-      "how": "Use existing CSS variable names (--reify-accent, --reify-subtext, etc.) for spinner colors. Follow the existing class naming pattern (.spinner alongside .progress, .button, etc.)."
+      "what": "Existing bridge.ts invoke pattern",
+      "where": "All bridge functions follow invoke<T>('command', params) pattern",
+      "how": "Add pickSavePath following the same pattern: invoke<string|null>('pick_save_path', { format, defaultName })."
     },
     {
-      "what": "Existing SolidJS createEffect/onMount patterns for lifecycle hooks",
-      "where": "gui/src/panels/ExportDialog.tsx and other panel components",
-      "how": "Use createEffect to react to props.open changes for focus management. Use onCleanup for any event listener cleanup. Follow the same import pattern from 'solid-js'."
+      "what": "Dependency injection callback pattern for component props",
+      "where": "Used throughout: EditorProps, PropertyEditor (onSetParameter), ConstraintPanel (onConstraintSelect), Viewport (onSelect)",
+      "how": "Add onError?: (message: string) => void to EditorProps following this established pattern."
     },
     {
-      "what": "Existing App.test.tsx file picker test structure for the new error boundary test",
-      "where": "gui/src/__tests__/App.test.tsx lines 588-645 (E-6 describe block)",
-      "how": "The new step-19 test follows the identical pattern: render App, open export dialog, click Export button, then assert on toast and bridge call behavior. Use mockRejectedValue instead of mockResolvedValue for the error case."
+      "what": "SolidJS Show component for conditional rendering",
+      "where": "Used in ExportDialog, App.tsx toast rendering, ReloadPrompt",
+      "how": "Use Show with when={} for loading/error/ready state conditional rendering in App.tsx."
+    },
+    {
+      "what": "SolidJS createStore/createSignal factory pattern",
+      "where": "createEditorStore, createEngineStore, createSelectionStore all use factory functions returning {state, ...methods}",
+      "how": "createToast follows the same convention: factory function returning reactive accessors + mutation methods."
+    },
+    {
+      "what": "Existing deferred promise test pattern for async race condition tests",
+      "where": "Already used in App.test.tsx 'App async mount/cleanup race conditions' and 'App initialization loading state' describes",
+      "how": "Follow the same pattern: create deferred promises for getInitialState/onMeshUpdate, control resolution timing to test concurrent execution scenarios."
     }
   ],
-  "_session_id": "108-dd9cabba",
-  "_created_at": "2026-03-21T21:05:22.695698+00:00"
+  "_session_id": "105-3a68578e",
+  "_created_at": "2026-03-21T21:17:32.801355+00:00"
 }

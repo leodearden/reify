@@ -52,7 +52,7 @@ vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
   setParameter: vi.fn().mockResolvedValue(undefined),
   exportGeometry: vi.fn().mockResolvedValue(undefined),
-  pickSavePath: vi.fn().mockResolvedValue('/user/chosen/export.step'),
+  pickSavePath: vi.fn().mockResolvedValue('/user/chosen/path.step'),
   updateSource: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
   getSourceLocation: vi.fn().mockResolvedValue({ file: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
@@ -73,52 +73,70 @@ import * as bridge from '../bridge';
 beforeEach(() => {
   vi.clearAllMocks();
   capturedViewportProps = {};
-  // Reset getInitialState to default empty state
+  // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
+  vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
+  vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
+  vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(() => {});
+  vi.mocked(bridge.onEvaluationStatus).mockResolvedValue(() => {});
+  vi.mocked(bridge.onMeshRemoved).mockResolvedValue(() => {});
+  vi.mocked(bridge.onValueRemoved).mockResolvedValue(() => {});
+  vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(() => {});
+  vi.mocked(bridge.onFileChanged).mockResolvedValue(() => {});
+  vi.mocked(bridge.pickSavePath).mockResolvedValue('/user/chosen/path.step');
 });
 
 afterEach(() => {
   cleanup();
 });
 
+/** Helper: render App and wait for init to complete (ready state). */
+async function renderAndWaitForReady() {
+  const result = render(() => <App />);
+  await waitFor(() => {
+    expect(screen.getByTestId('app-layout')).toBeTruthy();
+  });
+  return result;
+}
+
 describe('App layout wiring', () => {
-  it('renders app-layout container', () => {
-    render(() => <App />);
+  it('renders app-layout container', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('app-layout')).toBeTruthy();
   });
 
-  it('renders Toolbar at top', () => {
-    render(() => <App />);
+  it('renders Toolbar at top', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('toolbar')).toBeTruthy();
   });
 
-  it('renders StatusBar at bottom', () => {
-    render(() => <App />);
+  it('renders StatusBar at bottom', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('status-bar')).toBeTruthy();
   });
 
-  it('renders Viewport', () => {
-    render(() => <App />);
+  it('renders Viewport', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('viewport-container')).toBeTruthy();
   });
 
-  it('renders Editor', () => {
-    render(() => <App />);
+  it('renders Editor', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('editor-container')).toBeTruthy();
   });
 
-  it('renders PropertyEditor', () => {
-    render(() => <App />);
+  it('renders PropertyEditor', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('property-editor')).toBeTruthy();
   });
 
-  it('renders ConstraintPanel', () => {
-    render(() => <App />);
+  it('renders ConstraintPanel', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('constraint-panel')).toBeTruthy();
   });
 
-  it('renders Toolbar before StatusBar in DOM order', () => {
-    render(() => <App />);
+  it('renders Toolbar before StatusBar in DOM order', async () => {
+    await renderAndWaitForReady();
     const toolbar = screen.getByTestId('toolbar');
     const statusBar = screen.getByTestId('status-bar');
     // Toolbar should come before StatusBar in document order
@@ -128,22 +146,22 @@ describe('App layout wiring', () => {
 });
 
 describe('App resizable splitters', () => {
-  it('has a vertical splitter between editor and viewport columns', () => {
-    render(() => <App />);
+  it('has a vertical splitter between editor and viewport columns', async () => {
+    await renderAndWaitForReady();
     const splitter = screen.getByTestId('splitter-left');
     expect(splitter).toBeTruthy();
     expect(splitter.dataset.orientation).toBe('vertical');
   });
 
-  it('has a vertical splitter between viewport and side panel columns', () => {
-    render(() => <App />);
+  it('has a vertical splitter between viewport and side panel columns', async () => {
+    await renderAndWaitForReady();
     const splitter = screen.getByTestId('splitter-right');
     expect(splitter).toBeTruthy();
     expect(splitter.dataset.orientation).toBe('vertical');
   });
 
-  it('dragging left splitter updates main grid columns', () => {
-    render(() => <App />);
+  it('dragging left splitter updates main grid columns', async () => {
+    await renderAndWaitForReady();
     const splitter = screen.getByTestId('splitter-left');
     const main = screen.getByTestId('app-layout').querySelector('[class*="main"]') as HTMLElement;
     expect(main).toBeTruthy();
@@ -197,16 +215,16 @@ describe('App initial state loading', () => {
 });
 
 describe('App side panel vertical splitter', () => {
-  it('has a horizontal splitter between PropertyEditor and ConstraintPanel in the side panel', () => {
-    render(() => <App />);
+  it('has a horizontal splitter between PropertyEditor and ConstraintPanel in the side panel', async () => {
+    await renderAndWaitForReady();
     const sidePanel = screen.getByTestId('side-panel');
     const splitter = sidePanel.querySelector('[data-testid="splitter-side"]');
     expect(splitter).toBeTruthy();
     expect((splitter as HTMLElement).dataset.orientation).toBe('horizontal');
   });
 
-  it('PropertyEditor appears before splitter which appears before ConstraintPanel', () => {
-    render(() => <App />);
+  it('PropertyEditor appears before splitter which appears before ConstraintPanel', async () => {
+    await renderAndWaitForReady();
     const sidePanel = screen.getByTestId('side-panel');
     const propEditor = screen.getByTestId('property-editor');
     const constraintPanel = screen.getByTestId('constraint-panel');
@@ -221,8 +239,8 @@ describe('App side panel vertical splitter', () => {
     expect(splitterVsConstraint & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('dragging the side panel splitter changes the top/bottom split', () => {
-    render(() => <App />);
+  it('dragging the side panel splitter changes the top/bottom split', async () => {
+    await renderAndWaitForReady();
     const sidePanel = screen.getByTestId('side-panel');
     const splitter = sidePanel.querySelector('[data-testid="splitter-side"]') as HTMLElement;
     expect(splitter).toBeTruthy();
@@ -387,13 +405,13 @@ describe('App async mount/cleanup race conditions', () => {
 });
 
 describe('App new component integration', () => {
-  it('renders FileBrowser in the editor panel', () => {
-    render(() => <App />);
+  it('renders FileBrowser in the editor panel', async () => {
+    await renderAndWaitForReady();
     expect(screen.getByTestId('file-browser')).toBeTruthy();
   });
 
   it('clicking Export in Toolbar opens ExportDialog', async () => {
-    render(() => <App />);
+    await renderAndWaitForReady();
 
     // ExportDialog should not be visible initially
     expect(screen.queryByTestId('export-dialog')).toBeNull();
@@ -408,7 +426,7 @@ describe('App new component integration', () => {
   });
 
   it('ExportDialog Cancel closes the dialog', async () => {
-    render(() => <App />);
+    await renderAndWaitForReady();
 
     fireEvent.click(screen.getByText('Export'));
     await waitFor(() => {
@@ -422,7 +440,7 @@ describe('App new component integration', () => {
   });
 
   it('subscribes to file-changed events on mount', async () => {
-    render(() => <App />);
+    await renderAndWaitForReady();
     await waitFor(() => {
       expect(bridge.onFileChanged).toHaveBeenCalled();
     });
@@ -530,8 +548,82 @@ describe('App navigation wiring', () => {
   });
 });
 
+describe('App initialization loading state', () => {
+  it('shows app-loading while getInitialState is pending', async () => {
+    // Create a deferred promise so getInitialState stays pending
+    let resolveGetState!: (state: GuiState) => void;
+    vi.mocked(bridge.getInitialState).mockReturnValue(
+      new Promise<GuiState>((resolve) => { resolveGetState = resolve; }),
+    );
+
+    render(() => <App />);
+
+    // Should show loading indicator while pending
+    expect(screen.getByTestId('app-loading')).toBeTruthy();
+    // Should NOT show the main layout yet
+    expect(screen.queryByTestId('app-layout')).toBeNull();
+
+    // Resolve to transition to ready
+    resolveGetState({ meshes: [], values: [], constraints: [], files: [] });
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('app-loading')).toBeNull();
+  });
+
+  it('shows app-error with retry button when getInitialState rejects', async () => {
+    vi.mocked(bridge.getInitialState).mockRejectedValue(new Error('network error'));
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-error')).toBeTruthy();
+    });
+    // Should have a retry button
+    expect(screen.getByText('Retry')).toBeTruthy();
+    // Should NOT show loading or main layout
+    expect(screen.queryByTestId('app-loading')).toBeNull();
+    expect(screen.queryByTestId('app-layout')).toBeNull();
+  });
+
+  it('clicking retry button calls getInitialState again', async () => {
+    // First call rejects
+    vi.mocked(bridge.getInitialState).mockRejectedValueOnce(new Error('fail'));
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-error')).toBeTruthy();
+    });
+
+    // Reset to succeed on retry
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
+
+    fireEvent.click(screen.getByText('Retry'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // getInitialState called twice: initial + retry
+    expect(bridge.getInitialState).toHaveBeenCalledTimes(2);
+  });
+
+  it('after successful getInitialState, app-layout is shown and loading/error are gone', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('app-loading')).toBeNull();
+    expect(screen.queryByTestId('app-error')).toBeNull();
+  });
+});
+
 describe('App handleSetParameter error handling', () => {
-  it('logs error when bridge.setParameter rejects', async () => {
+  it('shows error toast when bridge.setParameter rejects', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     // Prevent unhandled rejection from failing the test
@@ -569,13 +661,170 @@ describe('App handleSetParameter error handling', () => {
 
       fireEvent.keyDown(input, { key: 'Enter' });
 
-      // Flush microtask queue for the rejected promise
-      await new Promise((r) => setTimeout(r, 0));
+      // Wait for the error toast to appear
+      await waitFor(() => {
+        const toast = screen.getByTestId('toast');
+        expect(toast).toBeTruthy();
+        expect(toast.dataset.type).toBe('error');
+        expect(toast.textContent).toContain('Parameter update failed');
+      });
 
-      // After fix: console.error is called with 'setParameter failed:' and the error
-      // With current code: rejected promise is unhandled, console.error NOT called
-      expect(errorSpy).toHaveBeenCalledWith(
+      // console.error should NOT be called (replaced with toast)
+      expect(errorSpy).not.toHaveBeenCalledWith(
         'setParameter failed:',
+        expect.any(Error),
+      );
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe('App re-evaluate error toast', () => {
+  it('shows error toast when re-evaluate (F5) fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      vi.mocked(bridge.updateSource).mockRejectedValue(new Error('eval error'));
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+      });
+
+      render(() => <App />);
+
+      // Wait for ready state
+      await waitFor(() => {
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+      });
+
+      // Press F5 to trigger re-evaluate (on a non-input element)
+      fireEvent.keyDown(document, { key: 'F5' });
+
+      // Wait for the error toast to appear
+      await waitFor(() => {
+        const toastEl = screen.getByTestId('toast');
+        expect(toastEl).toBeTruthy();
+        expect(toastEl.dataset.type).toBe('error');
+        expect(toastEl.textContent).toContain('Re-evaluation failed');
+      });
+
+      // console.error should NOT be called
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        'Re-evaluate failed:',
+        expect.any(Error),
+      );
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe('App event subscription error toast', () => {
+  it('shows warning toast when subscribeToEvents fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      // Make onMeshUpdate throw synchronously — this causes subscribeToEvents
+      // to reject because the array literal throws before Promise.allSettled runs
+      vi.mocked(bridge.onMeshUpdate).mockImplementation(() => {
+        throw new Error('subscription failed');
+      });
+
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+      });
+
+      render(() => <App />);
+
+      // Wait for ready state (subscribeToEvents failure is non-fatal)
+      await waitFor(() => {
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+      });
+
+      // Wait for the warning toast to appear
+      await waitFor(() => {
+        const toastEl = screen.getByTestId('toast');
+        expect(toastEl).toBeTruthy();
+        expect(toastEl.textContent).toContain('Event subscription failed');
+      });
+
+      // console.error should NOT be called (replaced with toast)
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        'Failed to subscribe to events:',
+        expect.any(Error),
+      );
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe('App reload error toast', () => {
+  it('shows error toast when reload fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      // Set up a file-changed callback we can trigger
+      let fileChangedCb!: (data: any) => void;
+      vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+        fileChangedCb = cb;
+        return () => {};
+      });
+
+      // Make bridgeOpenFile reject
+      vi.mocked(bridge.openFile).mockRejectedValue(new Error('file not found'));
+
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+      });
+
+      render(() => <App />);
+
+      // Wait for ready state and file-changed subscription
+      await waitFor(() => {
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+        expect(fileChangedCb).toBeDefined();
+      });
+
+      // Trigger file changed event to show the reload prompt
+      fileChangedCb({ path: '/project/bracket.ri', content: 'updated' });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('reload-prompt')).toBeTruthy();
+      });
+
+      // Click the Reload button
+      fireEvent.click(screen.getByText('Reload'));
+
+      // Wait for the error toast to appear
+      await waitFor(() => {
+        const toastEl = screen.getByTestId('toast');
+        expect(toastEl).toBeTruthy();
+        expect(toastEl.dataset.type).toBe('error');
+        expect(toastEl.textContent).toContain('Reload failed');
+      });
+
+      // console.error should NOT be called (replaced with toast)
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        'Reload failed:',
         expect.any(Error),
       );
     } finally {
@@ -590,7 +839,7 @@ describe('App file picker integration (E-6)', () => {
     vi.mocked(bridge.pickSavePath).mockResolvedValue('/user/chosen/export.step');
     vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
 
-    render(() => <App />);
+    await renderAndWaitForReady();
 
     // Open the export dialog
     fireEvent.click(screen.getByText('Export'));
@@ -599,7 +848,7 @@ describe('App file picker integration (E-6)', () => {
     });
 
     // Click Export inside the dialog (default format is 'step')
-    const dialog = screen.getByRole('dialog');
+    const dialog = screen.getByTestId('export-dialog');
     const exportBtn = dialog.querySelector('button:last-of-type') as HTMLButtonElement;
     fireEvent.click(exportBtn);
 
@@ -616,7 +865,7 @@ describe('App file picker integration (E-6)', () => {
     vi.mocked(bridge.pickSavePath).mockResolvedValue(null);
     vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
 
-    render(() => <App />);
+    await renderAndWaitForReady();
 
     // Open the export dialog
     fireEvent.click(screen.getByText('Export'));
@@ -625,7 +874,7 @@ describe('App file picker integration (E-6)', () => {
     });
 
     // Click Export inside the dialog
-    const dialog = screen.getByRole('dialog');
+    const dialog = screen.getByTestId('export-dialog');
     const exportBtn = dialog.querySelector('button:last-of-type') as HTMLButtonElement;
     fireEvent.click(exportBtn);
 
@@ -649,7 +898,7 @@ describe('App pickSavePath error boundary', () => {
     vi.mocked(bridge.pickSavePath).mockRejectedValue(new Error('Plugin not registered'));
     vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
 
-    render(() => <App />);
+    await renderAndWaitForReady();
 
     // Open the export dialog
     fireEvent.click(screen.getByText('Export'));
@@ -658,7 +907,7 @@ describe('App pickSavePath error boundary', () => {
     });
 
     // Click Export inside the dialog
-    const dialog = screen.getByRole('dialog');
+    const dialog = screen.getByTestId('export-dialog');
     const exportBtn = dialog.querySelector('button:last-of-type') as HTMLButtonElement;
     fireEvent.click(exportBtn);
 
@@ -681,8 +930,183 @@ describe('App pickSavePath error boundary', () => {
     // (3) Dialog should still be open and NOT in exporting state (no spinner)
     expect(screen.getByTestId('export-dialog')).toBeTruthy();
     expect(screen.queryByTestId('export-spinner')).toBeNull();
+  });
+});
 
-    // (4) Dialog remains open for user to retry or cancel
-    expect(screen.getByRole('dialog')).toBeTruthy();
+describe('App initApp concurrent execution guard', () => {
+  it('rapid double-click on Retry does not start two concurrent initApp flights', async () => {
+    // First getInitialState rejects → error state
+    vi.mocked(bridge.getInitialState).mockRejectedValueOnce(new Error('fail'));
+
+    render(() => <App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('app-error')).toBeTruthy();
+    });
+
+    // Set up deferred promise for retry (keeps initApp in-flight)
+    let resolveRetry!: (state: GuiState) => void;
+    vi.mocked(bridge.getInitialState).mockReturnValue(
+      new Promise<GuiState>((resolve) => { resolveRetry = resolve; }),
+    );
+
+    // Click Retry — first retry
+    fireEvent.click(screen.getByText('Retry'));
+
+    // Immediately after click, the Retry button should be either disabled or
+    // removed from DOM, preventing a second click from firing.
+    const retryBtn = screen.queryByText('Retry');
+    expect(retryBtn === null || (retryBtn as HTMLButtonElement).disabled).toBe(true);
+
+    // getInitialState should be called exactly twice: initial mount + first retry
+    // NOT three times (which would indicate double-click succeeded)
+    expect(bridge.getInitialState).toHaveBeenCalledTimes(2);
+
+    // Clean up: resolve the deferred promise
+    resolveRetry({ meshes: [], values: [], constraints: [], files: [] });
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+  });
+
+  it('retry cleans up prior subscriptions before re-subscribing', async () => {
+    // Track unsub calls with call order tracking
+    const callLog: string[] = [];
+    const priorUnsub = vi.fn(() => callLog.push('prior-unsub'));
+    const priorFileUnsub = vi.fn(() => callLog.push('prior-file-unsub'));
+    const newMeshUnsub = vi.fn(() => callLog.push('new-mesh-unsub'));
+    const newValueUnsub = vi.fn(() => callLog.push('new-value-unsub'));
+    const newConstraintUnsub = vi.fn(() => callLog.push('new-constraint-unsub'));
+    const newEvalUnsub = vi.fn(() => callLog.push('new-eval-unsub'));
+    const newMeshRmUnsub = vi.fn(() => callLog.push('new-mesh-rm-unsub'));
+    const newValueRmUnsub = vi.fn(() => callLog.push('new-value-rm-unsub'));
+    const newConstraintRmUnsub = vi.fn(() => callLog.push('new-constraint-rm-unsub'));
+    const newFileUnsub = vi.fn(() => callLog.push('new-file-unsub'));
+
+    // First initApp (mount): getInitialState succeeds, subs established
+    // onMeshUpdate returns the "prior" unsub — subscribeToEvents bundles it
+    vi.mocked(bridge.onMeshUpdate).mockResolvedValueOnce(priorUnsub);
+    vi.mocked(bridge.onFileChanged).mockResolvedValueOnce(priorFileUnsub);
+
+    vi.mocked(bridge.getInitialState).mockResolvedValueOnce({
+      meshes: [], values: [], constraints: [], files: [],
+    });
+
+    const { unmount } = render(() => <App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // Verify prior subscriptions are active (unsubs not yet called)
+    expect(priorUnsub).not.toHaveBeenCalled();
+    expect(priorFileUnsub).not.toHaveBeenCalled();
+
+    // Set up new mocks for a second initApp call (if it were to happen)
+    vi.mocked(bridge.onMeshUpdate).mockResolvedValue(newMeshUnsub);
+    vi.mocked(bridge.onValueUpdate).mockResolvedValue(newValueUnsub);
+    vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(newConstraintUnsub);
+    vi.mocked(bridge.onEvaluationStatus).mockResolvedValue(newEvalUnsub);
+    vi.mocked(bridge.onMeshRemoved).mockResolvedValue(newMeshRmUnsub);
+    vi.mocked(bridge.onValueRemoved).mockResolvedValue(newValueRmUnsub);
+    vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(newConstraintRmUnsub);
+    vi.mocked(bridge.onFileChanged).mockResolvedValue(newFileUnsub);
+
+    // Unmount — cleanup should call both the composite unsub (which calls
+    // priorUnsub) and fileChangedUnsub (priorFileUnsub)
+    unmount();
+
+    // All prior subscription cleanup functions should have been called
+    expect(priorUnsub).toHaveBeenCalled();
+    expect(priorFileUnsub).toHaveBeenCalled();
+
+    // Verify cleanup happened — the prior unsubs should be in the call log
+    expect(callLog).toContain('prior-unsub');
+    expect(callLog).toContain('prior-file-unsub');
+  });
+
+  it('Retry button is disabled while initApp is in-flight (loading phase)', async () => {
+    // First getInitialState rejects → error state
+    vi.mocked(bridge.getInitialState).mockRejectedValueOnce(new Error('fail'));
+
+    render(() => <App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('app-error')).toBeTruthy();
+    });
+
+    // Retry button should be present and clickable in error state
+    const retryBtn = screen.getByText('Retry') as HTMLButtonElement;
+    expect(retryBtn.disabled).toBe(false);
+
+    // Set up deferred getInitialState so initApp stays in loading phase
+    let resolveRetry!: (state: GuiState) => void;
+    vi.mocked(bridge.getInitialState).mockReturnValue(
+      new Promise<GuiState>((resolve) => { resolveRetry = resolve; }),
+    );
+
+    // Click Retry — should transition to loading phase
+    fireEvent.click(retryBtn);
+
+    // The Retry button should no longer be in the DOM (loading phase hides
+    // the error state) or should be disabled to prevent re-clicks
+    expect(screen.queryByText('Retry')).toBeNull();
+
+    // Also verify we're in loading state
+    expect(screen.getByTestId('app-loading')).toBeTruthy();
+
+    // Clean up: resolve the deferred promise
+    resolveRetry({ meshes: [], values: [], constraints: [], files: [] });
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+  });
+});
+
+describe('App end-to-end toast integration', () => {
+  it('App renders, loads state (ready), then setParameter failure shows toast with correct message', async () => {
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      vi.mocked(bridge.setParameter).mockRejectedValue(new Error('backend unavailable'));
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        meshes: [],
+        values: [{
+          cell_id: 'c1',
+          name: 'width',
+          value: '80',
+          unit: 'mm',
+          determinacy: 'determined',
+          entity_path: 'Bracket.width',
+        }],
+        constraints: [],
+        files: [],
+      });
+
+      render(() => <App />);
+
+      // Wait for ready state
+      await waitFor(() => {
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+      });
+
+      // Verify no toast is visible initially
+      expect(screen.queryByTestId('toast')).toBeNull();
+
+      // Trigger setParameter failure
+      const row = screen.getByTestId('prop-row-c1');
+      const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+      expect(input).toBeTruthy();
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // Wait for error toast to appear with correct message
+      await waitFor(() => {
+        const toastEl = screen.getByTestId('toast');
+        expect(toastEl).toBeTruthy();
+        expect(toastEl.dataset.type).toBe('error');
+        expect(toastEl.textContent).toContain('Parameter update failed');
+        expect(toastEl.textContent).toContain('backend unavailable');
+      });
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+    }
   });
 });
