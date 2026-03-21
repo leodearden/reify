@@ -24,8 +24,10 @@ fn compile_field_analytical() {
     assert!(!field.is_pub);
 
     // Domain and codomain types should be resolved
+    // Point3 is not a built-in type, so it resolves to StructureRef
     assert_eq!(format!("{}", field.domain_type), "Point3");
-    assert_eq!(format!("{}", field.codomain_type), "Scalar");
+    // Scalar resolves to Type::length() which displays as "Scalar[m]"
+    assert_eq!(format!("{}", field.codomain_type), "Scalar[m]");
 
     // Source should be analytical with a compiled lambda expression
     match &field.source {
