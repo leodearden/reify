@@ -613,7 +613,7 @@ describe('App initialization loading state', () => {
 });
 
 describe('App handleSetParameter error handling', () => {
-  it('logs error when bridge.setParameter rejects', async () => {
+  it('shows error toast when bridge.setParameter rejects', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     // Prevent unhandled rejection from failing the test
@@ -651,12 +651,16 @@ describe('App handleSetParameter error handling', () => {
 
       fireEvent.keyDown(input, { key: 'Enter' });
 
-      // Flush microtask queue for the rejected promise
-      await new Promise((r) => setTimeout(r, 0));
+      // Wait for the error toast to appear
+      await waitFor(() => {
+        const toast = screen.getByTestId('toast');
+        expect(toast).toBeTruthy();
+        expect(toast.dataset.type).toBe('error');
+        expect(toast.textContent).toContain('Parameter update failed');
+      });
 
-      // After fix: console.error is called with 'setParameter failed:' and the error
-      // With current code: rejected promise is unhandled, console.error NOT called
-      expect(errorSpy).toHaveBeenCalledWith(
+      // console.error should NOT be called (replaced with toast)
+      expect(errorSpy).not.toHaveBeenCalledWith(
         'setParameter failed:',
         expect.any(Error),
       );
