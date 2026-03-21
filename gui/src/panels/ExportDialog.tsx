@@ -22,8 +22,19 @@ export const ExportDialog: Component<ExportDialogProps> = (props) => {
             props.onClose();
           }
         }}
+        onClick={() => {
+          if (!props.exporting) {
+            props.onClose();
+          }
+        }}
       >
-        <div class={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="export-dialog-title">
+        <div
+          class={styles.dialog}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="export-dialog-title"
+          onClick={(e) => e.stopPropagation()}
+        >
           <h2 id="export-dialog-title" class={styles.title}>Export Geometry</h2>
 
           <Show when={props.exporting}>
