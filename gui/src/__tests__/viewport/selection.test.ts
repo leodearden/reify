@@ -234,6 +234,11 @@ describe('createSelection', () => {
       const { selection } = setup();
       expect(typeof selection.dispose).toBe('function');
     });
+
+    it('returns an object with invalidateRect method', () => {
+      const { selection } = setup();
+      expect(typeof selection.invalidateRect).toBe('function');
+    });
   });
 
   describe('hover emissive highlight', () => {
@@ -667,6 +672,66 @@ describe('createSelection', () => {
       const ndcArg = mockRaycasterSetFromCamera.mock.calls[0][0];
       expect(ndcArg.x).toBeCloseTo(1, 1);
       expect(ndcArg.y).toBeCloseTo(-1, 1);
+    });
+  });
+
+  describe('cached DOMRect', () => {
+    it('computeNDC uses cached rect and does not call getBoundingClientRect on every pointermove', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement } = setup(meshMap);
+
+      // Spy on getBoundingClientRect to count calls
+      const spy = vi.spyOn(domElement, 'getBoundingClientRect');
+
+      const ev1 = new MouseEvent('pointermove', { clientX: 100, clientY: 100 });
+      domElement.dispatchEvent(ev1);
+
+      const ev2 = new MouseEvent('pointermove', { clientX: 200, clientY: 200 });
+      domElement.dispatchEvent(ev2);
+
+      // Should have been called only once (lazy population on first event)
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('invalidateRect causes next pointermove to re-read getBoundingClientRect', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, selection } = setup(meshMap);
+
+      const spy = vi.spyOn(domElement, 'getBoundingClientRect');
+
+      // First pointermove populates cache
+      const ev1 = new MouseEvent('pointermove', { clientX: 100, clientY: 100 });
+      domElement.dispatchEvent(ev1);
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      // Invalidate the cache
+      selection.invalidateRect();
+
+      // Next pointermove should re-read
+      const ev2 = new MouseEvent('pointermove', { clientX: 200, clientY: 200 });
+      domElement.dispatchEvent(ev2);
+      expect(spy).toHaveBeenCalledTimes(2);
+    });
+
+    it('pointerdown also uses cached rect', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement } = setup(meshMap);
+
+      const spy = vi.spyOn(domElement, 'getBoundingClientRect');
+
+      // First pointermove populates cache
+      const ev1 = new MouseEvent('pointermove', { clientX: 100, clientY: 100 });
+      domElement.dispatchEvent(ev1);
+
+      // pointerdown should reuse cached rect
+      const ev2 = new MouseEvent('pointerdown', { clientX: 200, clientY: 200 });
+      domElement.dispatchEvent(ev2);
+
+      // Still only one call total
+      expect(spy).toHaveBeenCalledTimes(1);
     });
   });
 });
