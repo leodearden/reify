@@ -1,9 +1,11 @@
 mod classifier;
+mod cpsat;
 mod decompose;
 mod registry;
 mod solver;
 
 pub use classifier::ConstraintClassifier;
+pub use cpsat::CpSatSolver;
 pub use decompose::{decompose_into_components, SubProblem};
 pub use registry::SolverRegistry;
 pub use solver::DimensionalSolver;
