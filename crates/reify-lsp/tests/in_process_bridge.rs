@@ -33,3 +33,51 @@ async fn initialize_returns_server_capabilities() {
         "should advertise text document sync"
     );
 }
+
+#[tokio::test]
+async fn did_open_and_completion_returns_items() {
+    let lsp = InProcessLsp::new();
+
+    // Initialize first
+    lsp.handle_request("initialize", json!({}))
+        .await
+        .expect("initialize should succeed");
+    lsp.handle_request("initialized", json!({}))
+        .await
+        .expect("initialized should succeed");
+
+    // Open a document with bracket source
+    let source = reify_test_support::bracket_source();
+    lsp.handle_request(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": "file:///test.ri",
+                "languageId": "reify",
+                "version": 1,
+                "text": source
+            }
+        }),
+    )
+    .await
+    .expect("didOpen should succeed");
+
+    // Request completions
+    let result = lsp
+        .handle_request(
+            "textDocument/completion",
+            json!({
+                "textDocument": { "uri": "file:///test.ri" },
+                "position": { "line": 1, "character": 0 }
+            }),
+        )
+        .await
+        .expect("completion should succeed");
+
+    // Should return an array of completion items
+    let items = result.as_array().expect("completion should return an array");
+    assert!(
+        !items.is_empty(),
+        "completion should return non-empty items for bracket source"
+    );
+}
