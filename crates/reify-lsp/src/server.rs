@@ -56,10 +56,18 @@ pub struct ReifyLanguageServer {
     /// blocking concurrent LSP requests that only need document state.
     /// Wrapped in Mutex because Engine internals (OpaqueState) are Send but not Sync.
     eval_state: Arc<Mutex<EvalState>>,
+    /// Notification sink for server-initiated messages (diagnostics, etc.).
+    sink: Arc<dyn NotificationSink>,
 }
 
 impl ReifyLanguageServer {
+    /// Create a new server with a [`NoOpSink`] (backward compatibility).
     pub fn new(client: Client) -> Self {
+        Self::with_sink(client, Arc::new(NoOpSink))
+    }
+
+    /// Create a new server with a custom notification sink.
+    pub fn with_sink(client: Client, sink: Arc<dyn NotificationSink>) -> Self {
         Self {
             client,
             state: Arc::new(RwLock::new(ServerState {
@@ -67,6 +75,7 @@ impl ReifyLanguageServer {
                 last_published_diagnostics: HashMap::new(),
             })),
             eval_state: Arc::new(Mutex::new(EvalState::new())),
+            sink,
         }
     }
 
