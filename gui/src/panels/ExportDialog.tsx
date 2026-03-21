@@ -14,7 +14,15 @@ export const ExportDialog: Component<ExportDialogProps> = (props) => {
 
   return (
     <Show when={props.open}>
-      <div class={styles.overlay} data-testid="export-dialog">
+      <div
+        class={styles.overlay}
+        data-testid="export-dialog"
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && !props.exporting) {
+            props.onClose();
+          }
+        }}
+      >
         <div class={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="export-dialog-title">
           <h2 id="export-dialog-title" class={styles.title}>Export Geometry</h2>
 
