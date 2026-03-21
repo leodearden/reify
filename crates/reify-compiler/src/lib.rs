@@ -1476,6 +1476,9 @@ pub fn compile(
             reify_syntax::Declaration::Field(_) => {
                 // Already compiled in field pre-pass above.
             }
+            reify_syntax::Declaration::Purpose(_) => {
+                // Purpose compilation is handled in a later step.
+            }
         }
     }
 

@@ -3745,6 +3745,97 @@
     }
   },
   {
+    "type": "purpose_declaration",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "purpose_member",
+          "named": true
+        },
+        {
+          "type": "purpose_param",
+          "named": true
+        },
+        {
+          "type": "type_parameters",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "purpose_member",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "constraint_declaration",
+          "named": true
+        },
+        {
+          "type": "guarded_block",
+          "named": true
+        },
+        {
+          "type": "let_declaration",
+          "named": true
+        },
+        {
+          "type": "maximize_declaration",
+          "named": true
+        },
+        {
+          "type": "minimize_declaration",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "purpose_param",
+    "named": true,
+    "fields": {
+      "entity_kind": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "quantifier_expression",
     "named": true,
     "fields": {
@@ -4066,6 +4157,10 @@
         },
         {
           "type": "occurrence_definition",
+          "named": true
+        },
+        {
+          "type": "purpose_declaration",
           "named": true
         },
         {
@@ -4842,6 +4937,10 @@
   },
   {
     "type": "pub",
+    "named": false
+  },
+  {
+    "type": "purpose",
     "named": false
   },
   {

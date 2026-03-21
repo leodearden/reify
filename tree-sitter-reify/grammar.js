@@ -39,6 +39,7 @@ module.exports = grammar({
       $.function_definition,
       $.trait_declaration,
       $.field_definition,
+      $.purpose_declaration,
     ),
 
     // ── Enum ──────────────────────────────────────────────────
@@ -194,6 +195,34 @@ module.exports = grammar({
       '{',
       field('path', $.string_literal),
       '}',
+    ),
+
+    // ── Purpose ───────────────────────────────────────────────
+    purpose_declaration: $ => seq(
+      optional('pub'),
+      'purpose',
+      field('name', $.identifier),
+      optional($.type_parameters),
+      '(',
+      commaSep($.purpose_param),
+      ')',
+      '{',
+      repeat($.purpose_member),
+      '}',
+    ),
+
+    purpose_param: $ => seq(
+      field('name', $.identifier),
+      ':',
+      field('entity_kind', $.identifier),
+    ),
+
+    purpose_member: $ => choice(
+      $.constraint_declaration,
+      $.let_declaration,
+      $.minimize_declaration,
+      $.maximize_declaration,
+      $.guarded_block,
     ),
 
     // ── Associated type ─────────────────────────────────────
