@@ -477,6 +477,10 @@ impl ValueMap {
         self.inner.insert(id, value);
     }
 
+    pub fn remove(&mut self, id: &ValueCellId) {
+        self.inner.remove(id);
+    }
+
     pub fn contains(&self, id: &ValueCellId) -> bool {
         self.inner.contains_key(id)
     }

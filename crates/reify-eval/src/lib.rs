@@ -1614,6 +1614,7 @@ impl Engine {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         new_snapshot.graph.value_cells.remove(&scoped_id);
                         new_snapshot.values.remove(&scoped_id);
+                        values.remove(&scoped_id);
                     }
                 }
 
@@ -1672,13 +1673,6 @@ impl Engine {
                         (list_val, DeterminacyState::Determined),
                     );
                 }
-
-                // Rebuild values map from snapshot to remove stale entries
-                let mut new_values = ValueMap::new();
-                for (id, (val, _)) in new_snapshot.values.iter() {
-                    new_values.insert(id.clone(), val.clone());
-                }
-                values = new_values;
 
                 // Recompute topology fingerprint to reflect count change
                 let count_state_hash = ContentHash::of_str(&format!(
