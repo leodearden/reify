@@ -9,6 +9,7 @@ const mockRendererDispose = vi.fn();
 
 const mockSceneAdd = vi.fn();
 const mockSceneChildren: any[] = [];
+const mockCameraAdd = vi.fn();
 
 vi.mock('three', () => {
   class MockScene {
@@ -24,6 +25,7 @@ vi.mock('three', () => {
     far: number;
     position = { set: vi.fn() };
     updateProjectionMatrix = vi.fn();
+    add = mockCameraAdd;
     constructor(fov: number, aspect: number, near: number, far: number) {
       this.fov = fov;
       this.aspect = aspect;
@@ -166,5 +168,22 @@ describe('createScene', () => {
 
     // Restore
     Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
+  });
+
+  it('adds a camera-following headlight via camera.add (V-13)', () => {
+    const { camera } = setup();
+    // A DirectionalLight should be added as a child of the camera
+    const cameraChildren = mockCameraAdd.mock.calls.map((c: any) => c[0]);
+    const headlight = cameraChildren.find((child: any) => child?.type === 'DirectionalLight');
+    expect(headlight).toBeDefined();
+    expect(headlight.intensity).toBeGreaterThan(0);
+  });
+
+  it('camera is added to scene so its children are rendered (V-13)', () => {
+    setup();
+    // scene.add should be called with the camera instance (has .fov property)
+    const addedObjects = mockSceneAdd.mock.calls.map((c: any) => c[0]);
+    const cameraInScene = addedObjects.find((obj: any) => obj?.fov !== undefined);
+    expect(cameraInScene).toBeDefined();
   });
 });
