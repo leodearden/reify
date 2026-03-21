@@ -248,6 +248,13 @@ mod tests {
     }
 
     #[test]
+    fn rational_const_new_normalization() {
+        const R: Rational = Rational::new(6, 4);
+        assert_eq!(R.num(), 3);
+        assert_eq!(R.den(), 2);
+    }
+
+    #[test]
     fn rational_normalization_via_getters() {
         let r = Rational::new(2, 4);
         assert_eq!(r.num(), 1);
