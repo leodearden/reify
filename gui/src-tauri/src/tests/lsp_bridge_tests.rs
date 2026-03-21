@@ -72,3 +72,58 @@ async fn lsp_request_impl_completion_returns_items() {
         "completion should return non-empty items"
     );
 }
+
+#[tokio::test]
+async fn lsp_bridge_diagnostics_after_syntax_error() {
+    let bridge = LspBridge::new();
+
+    lsp_request_impl(&bridge, "initialize", "{}".to_string())
+        .await
+        .expect("initialize");
+    lsp_request_impl(&bridge, "initialized", "{}".to_string())
+        .await
+        .expect("initialized");
+
+    // Open a document with a syntax error
+    let broken_source = "structure {";
+    let uri = "file:///broken.ri";
+    let did_open_params = json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "reify",
+            "version": 1,
+            "text": broken_source
+        }
+    });
+    lsp_request_impl(
+        &bridge,
+        "textDocument/didOpen",
+        serde_json::to_string(&did_open_params).unwrap(),
+    )
+    .await
+    .expect("didOpen");
+
+    // Get diagnostics through the bridge
+    let diags = bridge.get_diagnostics(uri);
+    assert!(
+        !diags.is_empty(),
+        "should have diagnostics for broken source"
+    );
+
+    // Verify diagnostics can be serialized to JSON (for Tauri event emission)
+    let serialized =
+        serde_json::to_string(&diags).expect("diagnostics should be serializable to JSON");
+    assert!(
+        serialized.len() > 2,
+        "serialized diagnostics should be non-trivial"
+    );
+
+    // At least one diagnostic should be an error (severity 1)
+    let has_error = diags.iter().any(|d| {
+        d.get("severity")
+            .and_then(|s| s.as_u64())
+            .map(|s| s == 1)
+            .unwrap_or(false)
+    });
+    assert!(has_error, "should have at least one error diagnostic");
+}
