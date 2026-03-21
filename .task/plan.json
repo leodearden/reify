@@ -126,8 +126,8 @@
       "id": "step-16",
       "type": "impl",
       "description": "Implement V-08 in selection.ts: Track currentSelectedPath in a closure variable. Add refreshSelected() method that calls setSelected(currentSelectedPath) to rebuild wireframe from current geometry. Export in SelectionContext. Update Viewport.tsx to call selection.refreshSelected() after meshManager.sync() in the mesh sync effect.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "3acf530"
     }
   ],
   "design_decisions": [
