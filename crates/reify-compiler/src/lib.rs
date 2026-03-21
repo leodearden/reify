@@ -100,6 +100,24 @@ pub struct CompiledField {
     pub content_hash: ContentHash,
 }
 
+/// A compiled purpose parameter — binds an entity reference.
+#[derive(Debug, Clone)]
+pub struct CompiledPurposeParam {
+    pub name: String,
+    pub entity_kind: String,
+}
+
+/// A compiled purpose declaration.
+#[derive(Debug, Clone)]
+pub struct CompiledPurpose {
+    pub name: String,
+    pub is_pub: bool,
+    pub params: Vec<CompiledPurposeParam>,
+    pub constraints: Vec<CompiledConstraint>,
+    pub objective: Option<OptimizationObjective>,
+    pub content_hash: ContentHash,
+}
+
 /// A compiled module — the output of the compiler.
 #[derive(Debug, Clone)]
 pub struct CompiledModule {
@@ -109,6 +127,7 @@ pub struct CompiledModule {
     pub functions: Vec<CompiledFunction>,
     pub trait_defs: Vec<CompiledTrait>,
     pub fields: Vec<CompiledField>,
+    pub compiled_purposes: Vec<CompiledPurpose>,
     pub templates: Vec<TopologyTemplate>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
@@ -1332,6 +1351,95 @@ fn compile_trait(
     }
 }
 
+/// Compile a parsed purpose declaration into a CompiledPurpose.
+fn compile_purpose(
+    purpose_def: &reify_syntax::PurposeDef,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledPurpose {
+    let purpose_name = &purpose_def.name;
+
+    // Create a compilation scope for the purpose body.
+    // Purpose params are registered so their members can be referenced.
+    let mut scope = CompilationScope::new(purpose_name);
+
+    // Register purpose params as identifiers in scope.
+    // Each param binds an entity reference (e.g., `subject : Structure`).
+    // For now, register them as Real type so member access compiles.
+    for param in &purpose_def.params {
+        scope.register(&param.name, Type::Real);
+    }
+
+    let mut constraints = Vec::new();
+    let mut constraint_index = 0u32;
+    let mut objective = None;
+
+    for member in &purpose_def.members {
+        match member {
+            reify_syntax::MemberDecl::Constraint(constraint) => {
+                let compiled_expr =
+                    compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
+                let id = ConstraintNodeId::new(purpose_name, constraint_index);
+                constraints.push(CompiledConstraint {
+                    id,
+                    label: constraint.label.clone(),
+                    expr: compiled_expr,
+                    span: constraint.span,
+                    domain: None,
+                });
+                constraint_index += 1;
+            }
+            reify_syntax::MemberDecl::Minimize(min_decl) => {
+                let compiled_expr =
+                    compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
+                objective = Some(OptimizationObjective::Minimize(compiled_expr));
+            }
+            reify_syntax::MemberDecl::Maximize(max_decl) => {
+                let compiled_expr =
+                    compile_expr(&max_decl.expr, &scope, enum_defs, functions, diagnostics);
+                objective = Some(OptimizationObjective::Maximize(compiled_expr));
+            }
+            reify_syntax::MemberDecl::Let(let_decl) => {
+                let cell_type = if let Some(type_expr) = &let_decl.type_expr {
+                    resolve_type_name(&type_expr.name).unwrap_or(Type::Real)
+                } else {
+                    Type::Real
+                };
+                let compiled_expr =
+                    compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
+                let id = ValueCellId::new(purpose_name, &let_decl.name);
+                scope.names.insert(
+                    let_decl.name.clone(),
+                    (id.clone(), cell_type.clone(), None),
+                );
+                let _ = compiled_expr; // let bindings in purposes are used for intermediate values
+            }
+            _ => {
+                // Other member types (GuardedGroup, Param, Sub, etc.) not yet handled in purposes
+            }
+        }
+    }
+
+    let params = purpose_def
+        .params
+        .iter()
+        .map(|p| CompiledPurposeParam {
+            name: p.name.clone(),
+            entity_kind: p.entity_kind.clone(),
+        })
+        .collect();
+
+    CompiledPurpose {
+        name: purpose_def.name.clone(),
+        is_pub: purpose_def.is_pub,
+        params,
+        constraints,
+        objective,
+        content_hash: purpose_def.content_hash,
+    }
+}
+
 /// Compile a parsed module into a compiled module.
 ///
 /// Performs name resolution, type checking, and expression compilation.
@@ -1477,7 +1585,7 @@ pub fn compile(
                 // Already compiled in field pre-pass above.
             }
             reify_syntax::Declaration::Purpose(_) => {
-                // Purpose compilation is handled in a later step.
+                // Compiled in dedicated purpose pass below.
             }
         }
     }
@@ -1565,6 +1673,16 @@ pub fn compile(
         }
     }
 
+    // Purpose compilation pass: compile after templates so reflective schema queries
+    // could resolve against TopologyTemplates (full resolution in a later step).
+    let mut compiled_purposes = Vec::new();
+    for decl in &parsed.declarations {
+        if let reify_syntax::Declaration::Purpose(purpose_def) = decl {
+            let compiled = compile_purpose(purpose_def, &enum_defs, &functions, &mut diagnostics);
+            compiled_purposes.push(compiled);
+        }
+    }
+
     // Build a content-sensitive hash by combining the path with all compiled content.
     let content_hash = {
         let path_hash = ContentHash::of_str(&format!("{}", parsed.path));
@@ -1593,13 +1711,17 @@ pub fn compile(
         // Field content hashes
         let field_hashes = fields.iter().map(|f| f.content_hash);
 
+        // Purpose content hashes
+        let purpose_hashes = compiled_purposes.iter().map(|p| p.content_hash);
+
         let all_hashes = std::iter::once(path_hash)
             .chain(template_hashes)
             .chain(import_hashes)
             .chain(enum_hashes)
             .chain(function_hashes)
             .chain(trait_hashes)
-            .chain(field_hashes);
+            .chain(field_hashes)
+            .chain(purpose_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -1611,6 +1733,7 @@ pub fn compile(
         functions,
         trait_defs,
         fields,
+        compiled_purposes,
         templates,
         diagnostics,
         content_hash,

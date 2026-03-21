@@ -510,6 +510,7 @@ impl CompiledModuleBuilder {
             functions: self.functions,
             trait_defs: Vec::new(),
             fields: Vec::new(),
+            compiled_purposes: Vec::new(),
             templates: self.templates,
             diagnostics: self.diagnostics,
             content_hash,
