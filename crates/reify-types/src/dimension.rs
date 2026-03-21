@@ -7,15 +7,15 @@ use crate::ContentHash;
 /// Uses i16 to prevent overflow when multiplying exponents (max i8 * i8 = 16,129 < i16::MAX).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Rational {
-    pub num: i16,
-    pub den: i16,
+    num: i16,
+    den: i16,
 }
 
 impl Rational {
-    pub const ZERO: Rational = Rational { num: 0, den: 1 };
-    pub const ONE: Rational = Rational { num: 1, den: 1 };
+    pub const ZERO: Rational = Rational::new(0, 1);
+    pub const ONE: Rational = Rational::new(1, 1);
 
-    pub fn new(num: i16, den: i16) -> Self {
+    pub const fn new(num: i16, den: i16) -> Self {
         assert!(den != 0, "denominator must not be zero");
         let g = gcd(num.unsigned_abs(), den.unsigned_abs()) as i16;
         let sign = if den < 0 { -1 } else { 1 };
@@ -25,19 +25,27 @@ impl Rational {
         }
     }
 
+    pub const fn num(&self) -> i16 {
+        self.num
+    }
+
+    pub const fn den(&self) -> i16 {
+        self.den
+    }
+
     pub fn is_zero(self) -> bool {
-        self.num == 0
+        self.num() == 0
     }
 
     pub fn is_integer(self) -> bool {
-        self.den == 1 || self.num % self.den == 0
+        self.den() == 1 || self.num() % self.den() == 0
     }
 
     pub fn as_i8(self) -> Option<i8> {
-        let val = if self.den == 1 {
-            self.num
-        } else if self.num % self.den == 0 {
-            self.num / self.den
+        let val = if self.den() == 1 {
+            self.num()
+        } else if self.num() % self.den() == 0 {
+            self.num() / self.den()
         } else {
             return None;
         };
@@ -49,8 +57,8 @@ impl Add for Rational {
     type Output = Rational;
     fn add(self, rhs: Rational) -> Rational {
         Rational::new(
-            self.num * rhs.den + rhs.num * self.den,
-            self.den * rhs.den,
+            self.num() * rhs.den() + rhs.num() * self.den(),
+            self.den() * rhs.den(),
         )
     }
 }
@@ -59,8 +67,8 @@ impl Sub for Rational {
     type Output = Rational;
     fn sub(self, rhs: Rational) -> Rational {
         Rational::new(
-            self.num * rhs.den - rhs.num * self.den,
-            self.den * rhs.den,
+            self.num() * rhs.den() - rhs.num() * self.den(),
+            self.den() * rhs.den(),
         )
     }
 }
@@ -68,24 +76,21 @@ impl Sub for Rational {
 impl Neg for Rational {
     type Output = Rational;
     fn neg(self) -> Rational {
-        Rational {
-            num: -self.num,
-            den: self.den,
-        }
+        Rational::new(-self.num(), self.den())
     }
 }
 
 impl fmt::Display for Rational {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.den == 1 {
-            write!(f, "{}", self.num)
+        if self.den() == 1 {
+            write!(f, "{}", self.num())
         } else {
-            write!(f, "{}/{}", self.num, self.den)
+            write!(f, "{}/{}", self.num(), self.den())
         }
     }
 }
 
-fn gcd(mut a: u16, mut b: u16) -> u16 {
+const fn gcd(mut a: u16, mut b: u16) -> u16 {
     while b != 0 {
         let t = b;
         b = a % b;
@@ -130,7 +135,7 @@ impl DimensionVector {
 
     const fn basis_n(index: usize, n: i16) -> DimensionVector {
         let mut v = [Rational::ZERO; 9];
-        v[index] = Rational { num: n, den: 1 };
+        v[index] = Rational::new(n, 1);
         DimensionVector(v)
     }
 
@@ -165,7 +170,7 @@ impl DimensionVector {
         let n = n as i16;
         let mut result = [Rational::ZERO; 9];
         for (i, slot) in result.iter_mut().enumerate() {
-            *slot = Rational::new(self.0[i].num, self.0[i].den * n);
+            *slot = Rational::new(self.0[i].num(), self.0[i].den() * n);
         }
         DimensionVector(result)
     }
@@ -174,9 +179,9 @@ impl DimensionVector {
     pub fn pow(&self, n: i8) -> DimensionVector {
         let mut result = [Rational::ZERO; 9];
         let n = n as i16;
-        let nr = Rational { num: n, den: 1 };
+        let nr = Rational::new(n, 1);
         for (i, slot) in result.iter_mut().enumerate() {
-            *slot = Rational::new(self.0[i].num * nr.num, self.0[i].den * nr.den);
+            *slot = Rational::new(self.0[i].num() * nr.num(), self.0[i].den() * nr.den());
         }
         DimensionVector(result)
     }
@@ -184,8 +189,8 @@ impl DimensionVector {
     pub fn content_hash(&self) -> ContentHash {
         let mut buf = [0u8; 36]; // 9 * 4 bytes (2 bytes per i16 field)
         for (i, r) in self.0.iter().enumerate() {
-            let num_bytes = r.num.to_le_bytes();
-            let den_bytes = r.den.to_le_bytes();
+            let num_bytes = r.num().to_le_bytes();
+            let den_bytes = r.den().to_le_bytes();
             buf[i * 4] = num_bytes[0];
             buf[i * 4 + 1] = num_bytes[1];
             buf[i * 4 + 2] = den_bytes[0];
@@ -200,10 +205,7 @@ pub const FORCE: DimensionVector = {
     let mut v = [Rational::ZERO; 9];
     v[0] = Rational::ONE; // length
     v[1] = Rational::ONE; // mass
-    v[2] = Rational {
-        num: -2,
-        den: 1,
-    }; // time^-2
+    v[2] = Rational::new(-2, 1); // time^-2
     DimensionVector(v)
 };
 
@@ -231,6 +233,27 @@ impl fmt::Display for DimensionVector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rational_getters() {
+        let r = Rational::new(3, 4);
+        assert_eq!(r.num(), 3);
+        assert_eq!(r.den(), 4);
+    }
+
+    #[test]
+    fn rational_const_new_normalization() {
+        const R: Rational = Rational::new(6, 4);
+        assert_eq!(R.num(), 3);
+        assert_eq!(R.den(), 2);
+    }
+
+    #[test]
+    fn rational_normalization_via_getters() {
+        let r = Rational::new(2, 4);
+        assert_eq!(r.num(), 1);
+        assert_eq!(r.den(), 2);
+    }
 
     #[test]
     fn rational_arithmetic() {
@@ -332,7 +355,7 @@ mod tests {
         // With i8, 64*2=128 overflows i8::MAX (127).
         let len64 = DimensionVector::basis_n(0, 64);
         let result = len64.pow(2);
-        assert_eq!(result.0[0], Rational { num: 128, den: 1 });
+        assert_eq!(result.0[0], Rational::new(128, 1));
     }
 
     #[test]
@@ -340,10 +363,10 @@ mod tests {
         // Rational exponent {1, 64} with root(3) → {1, 192}.
         // With i8, den 64*3=192 overflows i8::MAX.
         let mut v = [Rational::ZERO; 9];
-        v[0] = Rational { num: 1, den: 64 };
+        v[0] = Rational::new(1, 64);
         let dv = DimensionVector(v);
         let result = dv.root(3);
-        assert_eq!(result.0[0], Rational { num: 1, den: 192 });
+        assert_eq!(result.0[0], Rational::new(1, 192));
     }
 
     #[test]
@@ -358,8 +381,8 @@ mod tests {
     fn rational_neg_at_i8_boundary() {
         // Negating -128 in i8 overflows (no positive 128 in i8).
         // With i16, -(-128) = 128 works fine.
-        let r = Rational { num: -128, den: 1 };
-        assert_eq!(-r, Rational { num: 128, den: 1 });
+        let r = Rational::new(-128, 1);
+        assert_eq!(-r, Rational::new(128, 1));
     }
 
     #[test]
@@ -375,7 +398,7 @@ mod tests {
     fn pow_large_exponent_round_trip() {
         // LENGTH^100 then root(100) should recover LENGTH.
         let powered = DimensionVector::LENGTH.pow(100);
-        assert_eq!(powered.0[0], Rational { num: 100, den: 1 });
+        assert_eq!(powered.0[0], Rational::new(100, 1));
         let rooted = powered.root(100);
         assert_eq!(rooted, DimensionVector::LENGTH);
     }
@@ -395,7 +418,7 @@ mod tests {
     #[test]
     fn rational_display_wide_values() {
         // Display formatting must show correct values beyond old i8 range.
-        let r = Rational { num: 200, den: 1 };
+        let r = Rational::new(200, 1);
         assert_eq!(format!("{}", r), "200");
         let r2 = Rational::new(300, 2);
         assert_eq!(format!("{}", r2), "150");
