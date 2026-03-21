@@ -1,8 +1,9 @@
 //! SolveSpace geometric constraint solver integration.
 //!
 //! Implements `ConstraintSolver` using the SolveSpace libslvs C library
-//! via hand-written FFI bindings. Creates a fresh solver system per call
-//! (stateless), making it trivially Send + Sync.
+//! via hand-written FFI bindings with newtype-wrapped handles.  Creates
+//! a fresh solver system per call (stateless), making it trivially
+//! Send + Sync.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -338,6 +339,9 @@ fn is_auto_param(id: &ValueCellId, auto_params: &[AutoParam]) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Allocator for slvs handles (params, entities, constraints).
+///
+/// Each handle type is a distinct newtype, preventing accidental mixing
+/// of param handles with entity handles at compile time.
 struct HandleAlloc {
     next_param: Slvs_hParam,
     next_entity: Slvs_hEntity,
@@ -347,36 +351,36 @@ struct HandleAlloc {
 impl HandleAlloc {
     fn new() -> Self {
         Self {
-            next_param: 1,
-            next_entity: 1,
-            next_constraint: 1,
+            next_param: Slvs_hParam(1),
+            next_entity: Slvs_hEntity(1),
+            next_constraint: Slvs_hConstraint(1),
         }
     }
 
     fn param(&mut self) -> Slvs_hParam {
         let h = self.next_param;
-        self.next_param += 1;
+        self.next_param.0 += 1;
         h
     }
 
     fn entity(&mut self) -> Slvs_hEntity {
         let h = self.next_entity;
-        self.next_entity += 1;
+        self.next_entity.0 += 1;
         h
     }
 
     fn constraint(&mut self) -> Slvs_hConstraint {
         let h = self.next_constraint;
-        self.next_constraint += 1;
+        self.next_constraint.0 += 1;
         h
     }
 }
 
 /// Maps between Reify ValueCellIds and slvs parameter handles.
 struct ParamMapping {
-    /// ValueCellId → slvs param handle
+    /// ValueCellId -> slvs param handle
     cell_to_param: HashMap<ValueCellId, Slvs_hParam>,
-    /// slvs param handle → ValueCellId
+    /// slvs param handle -> ValueCellId
     param_to_cell: HashMap<Slvs_hParam, ValueCellId>,
 }
 
@@ -415,8 +419,8 @@ struct SystemBuilder {
     workplane: Option<Slvs_hEntity>,
 }
 
-const FIXED_GROUP: Slvs_hGroup = 1;
-const SOLVE_GROUP: Slvs_hGroup = 2;
+const FIXED_GROUP: Slvs_hGroup = Slvs_hGroup(1);
+const SOLVE_GROUP: Slvs_hGroup = Slvs_hGroup(2);
 
 /// Key to deduplicate point entities.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -621,6 +625,10 @@ impl SystemBuilder {
     }
 
     /// Solve the system and return the result.
+    ///
+    /// Checks for Vec-length overflow when casting to `c_int` (i32) and
+    /// performs bounds-checked access on the `faileds` field returned by
+    /// `Slvs_Solve`.
     fn solve(mut self) -> SlvsSolveResult {
         if self.constraints.is_empty() {
             return SlvsSolveResult::Ok {
@@ -630,19 +638,45 @@ impl SystemBuilder {
             };
         }
 
-        let mut failed: Vec<Slvs_hConstraint> = vec![0; self.constraints.len()];
+        // --- Overflow checks for vec lengths → c_int (i32) ---
+        let n_params = i32::try_from(self.params.len()).unwrap_or_else(|_| {
+            panic!(
+                "too many SolveSpace params: {} exceeds i32::MAX",
+                self.params.len()
+            )
+        });
+        let n_entities = i32::try_from(self.entities.len()).unwrap_or_else(|_| {
+            panic!(
+                "too many SolveSpace entities: {} exceeds i32::MAX",
+                self.entities.len()
+            )
+        });
+        let n_constraints = i32::try_from(self.constraints.len()).unwrap_or_else(|_| {
+            panic!(
+                "too many SolveSpace constraints: {} exceeds i32::MAX",
+                self.constraints.len()
+            )
+        });
+
+        let mut failed: Vec<Slvs_hConstraint> = vec![Slvs_hConstraint(0); self.constraints.len()];
+        let n_failed_buf = i32::try_from(failed.len()).unwrap_or_else(|_| {
+            panic!(
+                "failed buffer length {} exceeds i32::MAX",
+                failed.len()
+            )
+        });
 
         let mut sys = Slvs_System {
             param: self.params.as_mut_ptr(),
-            params: self.params.len() as i32,
+            params: n_params,
             entity: self.entities.as_mut_ptr(),
-            entities: self.entities.len() as i32,
+            entities: n_entities,
             constraint: self.constraints.as_mut_ptr(),
-            constraints: self.constraints.len() as i32,
-            dragged: [0; 4],
+            constraints: n_constraints,
+            dragged: [Slvs_hParam(0); 4],
             calculateFaileds: 1,
             failed: failed.as_mut_ptr(),
-            faileds: failed.len() as i32,
+            faileds: n_failed_buf,
             dof: 0,
             result: 0,
         };
@@ -665,7 +699,12 @@ impl SystemBuilder {
                 dof: sys.dof,
             },
             SLVS_RESULT_INCONSISTENT => {
-                let n_failed = sys.faileds as usize;
+                // --- Bounds check on faileds (c_int → usize) ---
+                let n_failed = if sys.faileds < 0 {
+                    0usize
+                } else {
+                    (sys.faileds as usize).min(failed.len())
+                };
                 let failed_ids = failed[..n_failed].to_vec();
                 SlvsSolveResult::Inconsistent { failed_ids }
             }
@@ -797,6 +836,8 @@ fn add_pattern_to_builder(
     auto_params: &[AutoParam],
     current_values: &ValueMap,
 ) {
+    let e_none = Slvs_hEntity(0);
+
     match pattern {
         GeometricPattern::PtPtDistance {
             pt_a,
@@ -805,7 +846,7 @@ fn add_pattern_to_builder(
         } => {
             let ea = builder.add_point(pt_a, auto_params, current_values);
             let eb = builder.add_point(pt_b, auto_params, current_values);
-            builder.add_constraint(SLVS_C_PT_PT_DISTANCE, *distance_si, ea, eb, 0, 0);
+            builder.add_constraint(SLVS_C_PT_PT_DISTANCE, *distance_si, ea, eb, e_none, e_none);
         }
         GeometricPattern::Angle {
             line_a,
@@ -818,7 +859,7 @@ fn add_pattern_to_builder(
             let lb_end = builder.add_point(&line_b.end, auto_params, current_values);
             let line_a_e = builder.add_line_segment(la_start, la_end);
             let line_b_e = builder.add_line_segment(lb_start, lb_end);
-            builder.add_constraint(SLVS_C_ANGLE, *angle_deg, 0, 0, line_a_e, line_b_e);
+            builder.add_constraint(SLVS_C_ANGLE, *angle_deg, e_none, e_none, line_a_e, line_b_e);
         }
         GeometricPattern::Parallel { line_a, line_b } => {
             let la_start = builder.add_point(&line_a.start, auto_params, current_values);
@@ -829,7 +870,7 @@ fn add_pattern_to_builder(
             let line_b_e = builder.add_line_segment(lb_start, lb_end);
             // Parallel/perpendicular require a workplane in SolveSpace
             let wp = builder.get_workplane();
-            builder.add_constraint_wrkpl(SLVS_C_PARALLEL, wp, 0.0, 0, 0, line_a_e, line_b_e);
+            builder.add_constraint_wrkpl(SLVS_C_PARALLEL, wp, 0.0, e_none, e_none, line_a_e, line_b_e);
         }
         GeometricPattern::Perpendicular { line_a, line_b } => {
             let la_start = builder.add_point(&line_a.start, auto_params, current_values);
@@ -839,12 +880,12 @@ fn add_pattern_to_builder(
             let line_a_e = builder.add_line_segment(la_start, la_end);
             let line_b_e = builder.add_line_segment(lb_start, lb_end);
             let wp = builder.get_workplane();
-            builder.add_constraint_wrkpl(SLVS_C_PERPENDICULAR, wp, 0.0, 0, 0, line_a_e, line_b_e);
+            builder.add_constraint_wrkpl(SLVS_C_PERPENDICULAR, wp, 0.0, e_none, e_none, line_a_e, line_b_e);
         }
         GeometricPattern::Coincident { pt_a, pt_b } => {
             let ea = builder.add_point(pt_a, auto_params, current_values);
             let eb = builder.add_point(pt_b, auto_params, current_values);
-            builder.add_constraint(SLVS_C_POINTS_COINCIDENT, 0.0, ea, eb, 0, 0);
+            builder.add_constraint(SLVS_C_POINTS_COINCIDENT, 0.0, ea, eb, e_none, e_none);
         }
     }
 }
@@ -856,4 +897,3 @@ fn dimension_of(ty: &Type) -> DimensionVector {
         _ => DimensionVector::DIMENSIONLESS,
     }
 }
-
