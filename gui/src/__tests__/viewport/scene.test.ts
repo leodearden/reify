@@ -78,11 +78,13 @@ vi.mock('three', () => {
 
   class MockGridHelper {
     type = 'GridHelper';
+    visible = true;
     constructor(public size?: number, public divisions?: number) {}
   }
 
   class MockAxesHelper {
     type = 'AxesHelper';
+    visible = true;
     constructor(public size?: number) {}
   }
 
