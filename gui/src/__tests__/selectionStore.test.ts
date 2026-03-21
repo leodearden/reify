@@ -109,4 +109,55 @@ describe('selectionStore', () => {
       dispose();
     });
   });
+
+  // S8: clearIfRemoved — clears stale references to removed entities
+  it('clearIfRemoved clears selectedEntity when it matches the removed path', () => {
+    createRoot((dispose) => {
+      const { state, selectEntity, clearIfRemoved } = createSelectionStore();
+      selectEntity('Bracket.body');
+      expect(state.selectedEntity).toBe('Bracket.body');
+
+      clearIfRemoved('Bracket.body');
+      expect(state.selectedEntity).toBeNull();
+      dispose();
+    });
+  });
+
+  it('clearIfRemoved clears hoveredEntity when it matches the removed path', () => {
+    createRoot((dispose) => {
+      const { state, hoverEntity, clearIfRemoved } = createSelectionStore();
+      hoverEntity('Bracket.body');
+      expect(state.hoveredEntity).toBe('Bracket.body');
+
+      clearIfRemoved('Bracket.body');
+      expect(state.hoveredEntity).toBeNull();
+      dispose();
+    });
+  });
+
+  it('clearIfRemoved does NOT clear selection/hover when path does not match', () => {
+    createRoot((dispose) => {
+      const { state, selectEntity, hoverEntity, clearIfRemoved } = createSelectionStore();
+      selectEntity('Bracket.body');
+      hoverEntity('Mount.body');
+
+      clearIfRemoved('Other.body');
+      expect(state.selectedEntity).toBe('Bracket.body');
+      expect(state.hoveredEntity).toBe('Mount.body');
+      dispose();
+    });
+  });
+
+  it('clearIfRemoved clears both selectedEntity and hoveredEntity when both match', () => {
+    createRoot((dispose) => {
+      const { state, selectEntity, hoverEntity, clearIfRemoved } = createSelectionStore();
+      selectEntity('Bracket.body');
+      hoverEntity('Bracket.body');
+
+      clearIfRemoved('Bracket.body');
+      expect(state.selectedEntity).toBeNull();
+      expect(state.hoveredEntity).toBeNull();
+      dispose();
+    });
+  });
 });

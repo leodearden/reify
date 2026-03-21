@@ -43,9 +43,11 @@ const DEFAULT_SIDE_WIDTH = 300;
 const DEFAULT_PROPERTY_HEIGHT = 200;
 
 const App: Component = () => {
-  const engineStore = createEngineStore();
   const editorStore = createEditorStore();
   const selectionStore = createSelectionStore();
+  const engineStore = createEngineStore({
+    onEntityRemoved: (id) => selectionStore.clearIfRemoved(id),
+  });
 
   const [editorWidth, setEditorWidth] = createSignal(DEFAULT_EDITOR_WIDTH);
   const [sideWidth, setSideWidth] = createSignal(DEFAULT_SIDE_WIDTH);

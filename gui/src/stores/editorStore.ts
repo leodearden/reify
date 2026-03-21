@@ -34,10 +34,10 @@ export function createEditorStore() {
   }
 
   function closeFile(path: string) {
-    setState('openFiles', (files) => files.filter((f) => f.path !== path));
+    const remaining = state.openFiles.filter((f) => f.path !== path);
+    setState('openFiles', remaining);
     setState('dirtyFiles', (dirty) => dirty.filter((p) => p !== path));
     if (state.activeFile === path) {
-      const remaining = state.openFiles;
       setState('activeFile', remaining.length > 0 ? remaining[0].path : null);
     }
   }
