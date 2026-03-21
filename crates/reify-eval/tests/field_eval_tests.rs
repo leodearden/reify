@@ -105,3 +105,52 @@ fn field_entity_prefix_constant() {
     assert_eq!(field_id.member, "temp");
     assert_eq!(format!("{}", field_id), "__field.temp");
 }
+
+// ── Step 31: eval field snapshot consistency ─────────────────────────────
+
+#[test]
+fn eval_field_snapshot_consistency() {
+    // Evaluate a module with a field and verify the field value appears
+    // in snapshot.values (not just the cold values map).
+    // This ensures incremental re-evaluation via edit_param/warm-starting
+    // can see field values.
+    let source = "field def temp : Point3 -> Scalar { source = analytical { |p| p } }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("field_snapshot_test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let _result = engine.eval(&compiled);
+
+    // The field should be in the snapshot values
+    let snapshot = engine.snapshot().expect("snapshot should exist after eval");
+    let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "temp");
+
+    let snapshot_entry = snapshot.values.get(&field_id);
+    assert!(
+        snapshot_entry.is_some(),
+        "field 'temp' not found in snapshot.values — field values must be inserted \
+         into the snapshot for incremental re-evaluation to work"
+    );
+
+    let (val, det) = snapshot_entry.unwrap();
+    // Should be a Value::Field
+    assert!(
+        matches!(val, Value::Field { .. }),
+        "expected Value::Field in snapshot, got: {:?}",
+        val
+    );
+    // Should be Determined
+    assert_eq!(
+        *det,
+        reify_types::DeterminacyState::Determined,
+        "field snapshot value should be Determined"
+    );
+}
