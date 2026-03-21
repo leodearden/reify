@@ -90,6 +90,10 @@
   background: var(--reify-surface-hover, #313244);
 }
 
+.row[data-highlighted] {
+  background: rgba(250, 179, 135, 0.12);
+}
+
 .paramName {
   flex: 1;
   min-width: 0;
