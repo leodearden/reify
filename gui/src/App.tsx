@@ -13,6 +13,7 @@ import {
   ReloadPrompt,
 } from './panels';
 import { Splitter } from './components/Splitter';
+import { KeyboardHelp } from './components/KeyboardHelp';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { createToast } from './hooks/useToast';
 import { createEngineStore } from './stores/engineStore';
@@ -75,6 +76,9 @@ const App: Component = () => {
 
   // Export dialog state
   const [showExportDialog, setShowExportDialog] = createSignal(false);
+
+  // Keyboard help overlay state
+  const [showHelp, setShowHelp] = createSignal(false);
   const [exporting, setExporting] = createSignal(false);
 
   // Toast state (centralized via createToast hook)
@@ -136,6 +140,9 @@ const App: Component = () => {
     },
     onExportDialog: () => {
       setShowExportDialog((v) => !v);
+    },
+    onHelp: () => {
+      setShowHelp((v) => !v);
     },
   });
 
@@ -333,6 +340,9 @@ const App: Component = () => {
 
   return (
     <>
+      <Show when={showHelp()}>
+        <KeyboardHelp onClose={() => setShowHelp(false)} />
+      </Show>
       <Show when={initPhase() === 'loading'}>
         <div data-testid="app-loading" class={styles.loading}>
           <div class={styles.spinner} />
