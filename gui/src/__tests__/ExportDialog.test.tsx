@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { ExportDialog } from '../panels/ExportDialog';
 
 describe('ExportDialog', () => {
@@ -242,6 +243,29 @@ describe('ExportDialog', () => {
     fireEvent.keyDown(select, { key: 'Tab', shiftKey: true });
     const exportBtn = screen.getByText('Export');
     expect(document.activeElement).toBe(exportBtn);
+  });
+
+  // ── Format persistence across open/close (E-7) ──────────────────
+
+  it('format selection persists across close/reopen', () => {
+    const [open, setOpen] = createSignal(true);
+    render(() => (
+      <ExportDialog open={open()} exporting={false} onExport={vi.fn()} onClose={() => setOpen(false)} />
+    ));
+
+    // Change format to stl
+    const select = screen.getByTestId('export-dialog').querySelector('select')!;
+    fireEvent.change(select, { target: { value: 'stl' } });
+    expect((select as HTMLSelectElement).value).toBe('stl');
+
+    // Close the dialog
+    setOpen(false);
+    expect(screen.queryByTestId('export-dialog')).toBeNull();
+
+    // Reopen the dialog
+    setOpen(true);
+    const selectAfter = screen.getByTestId('export-dialog').querySelector('select') as HTMLSelectElement;
+    expect(selectAfter.value).toBe('stl');
   });
 
   // ── CSS spinner (E-8) ─────────────────────────────────────────────
