@@ -3924,7 +3924,7 @@ fn check_trait_conformance(
     for default in &all_defaults {
         match &default.kind {
             DefaultKind::Param { cell_type, default_decl } => {
-                let name = default.name.as_deref().unwrap_or("");
+                let name = default.name.as_deref().expect("DefaultKind::Param always has Some(name)");
                 if !structure_members.contains_key(name) {
                     // Inject default param into value_cells
                     let cell_id = ValueCellId {
@@ -3947,7 +3947,7 @@ fn check_trait_conformance(
                 }
             }
             DefaultKind::Let(let_decl) => {
-                let name = default.name.as_deref().unwrap_or("");
+                let name = default.name.as_deref().expect("DefaultKind::Let always has Some(name)");
                 if !structure_members.contains_key(name) {
                     let cell_id = ValueCellId {
                         entity: structure.name.to_string(),
