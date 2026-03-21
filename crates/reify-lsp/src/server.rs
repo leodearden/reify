@@ -147,9 +147,7 @@ impl LanguageServer for ReifyLanguageServer {
                 .insert(uri.clone(), diagnostics.clone());
         }
 
-        self.client
-            .publish_diagnostics(uri, diagnostics, Some(version))
-            .await;
+        self.sink.publish_diagnostics(uri, diagnostics, Some(version));
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -196,9 +194,7 @@ impl LanguageServer for ReifyLanguageServer {
                 .insert(uri.clone(), diagnostics.clone());
         }
 
-        self.client
-            .publish_diagnostics(uri, diagnostics, Some(version))
-            .await;
+        self.sink.publish_diagnostics(uri, diagnostics, Some(version));
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -212,9 +208,7 @@ impl LanguageServer for ReifyLanguageServer {
         }
 
         // Clear diagnostics for the closed file
-        self.client
-            .publish_diagnostics(uri, vec![], None)
-            .await;
+        self.sink.publish_diagnostics(uri, vec![], None);
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
