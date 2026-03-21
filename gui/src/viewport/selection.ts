@@ -94,13 +94,31 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     }
   }
 
+  const CLICK_THRESHOLD = 5; // px — below this is a click, above is a drag
+  let pointerDownPos: { x: number; y: number } | null = null;
+  let isDisposed = false;
+
+  function handlePointerUp(event: Event): void {
+    const me = event as MouseEvent;
+    if (pointerDownPos === null) return;
+    const dx = me.clientX - pointerDownPos.x;
+    const dy = me.clientY - pointerDownPos.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    pointerDownPos = null;
+    if (distance < CLICK_THRESHOLD) {
+      const entityPath = raycast(me);
+      onSelect(entityPath);
+    }
+  }
+
   function handlePointerDown(event: Event): void {
-    const entityPath = raycast(event as MouseEvent);
-    onSelect(entityPath);
+    const me = event as MouseEvent;
+    pointerDownPos = { x: me.clientX, y: me.clientY };
   }
 
   domElement.addEventListener('pointermove', handlePointerMove);
   domElement.addEventListener('pointerdown', handlePointerDown);
+  domElement.addEventListener('pointerup', handlePointerUp);
 
   function setHovered(path: string | null): void {
     const meshes = getMeshes();
@@ -203,6 +221,7 @@ export function createSelection(options: SelectionOptions): SelectionContext {
   }
 
   function dispose(): void {
+    isDisposed = true;
     if (hoverRafPending) {
       cancelAnimationFrame(hoverRafId);
       hoverRafPending = false;
@@ -210,6 +229,8 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     }
     domElement.removeEventListener('pointermove', handlePointerMove);
     domElement.removeEventListener('pointerdown', handlePointerDown);
+    domElement.removeEventListener('pointerup', handlePointerUp);
+    pointerDownPos = null;
     removeWireframe();
   }
 

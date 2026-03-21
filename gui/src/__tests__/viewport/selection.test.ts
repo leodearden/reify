@@ -427,7 +427,7 @@ describe('createSelection', () => {
   });
 
   describe('click-based selection raycasting', () => {
-    it('calls onSelect with mesh.name on pointerdown intersection', () => {
+    it('calls onSelect with mesh.name on click (pointerdown+pointerup) intersection', () => {
       const meshA = createMockMesh('A');
       const meshMap = new Map([['A', meshA]]);
       const { domElement, onSelect } = setup(meshMap);
@@ -436,27 +436,33 @@ describe('createSelection', () => {
         { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
       ]);
 
-      const event = new MouseEvent('pointerdown', {
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
         clientX: 400,
         clientY: 300,
-      });
-      domElement.dispatchEvent(event);
+      }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 400,
+        clientY: 300,
+      }));
 
       expect(onSelect).toHaveBeenCalledWith('A');
     });
 
-    it('calls onSelect with null on pointerdown miss', () => {
+    it('calls onSelect with null on click miss', () => {
       const meshA = createMockMesh('A');
       const meshMap = new Map([['A', meshA]]);
       const { domElement, onSelect } = setup(meshMap);
 
       mockRaycasterIntersectObjects.mockReturnValueOnce([]);
 
-      const event = new MouseEvent('pointerdown', {
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
         clientX: 400,
         clientY: 300,
-      });
-      domElement.dispatchEvent(event);
+      }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 400,
+        clientY: 300,
+      }));
 
       expect(onSelect).toHaveBeenCalledWith(null);
     });
@@ -466,11 +472,14 @@ describe('createSelection', () => {
       const meshMap = new Map([['A', meshA]]);
       const { domElement } = setup(meshMap);
 
-      const event = new MouseEvent('pointerdown', {
+      domElement.dispatchEvent(new MouseEvent('pointerdown', {
         clientX: 400,
         clientY: 300,
-      });
-      domElement.dispatchEvent(event);
+      }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', {
+        clientX: 400,
+        clientY: 300,
+      }));
 
       expect(mockRaycasterSetFromCamera).toHaveBeenCalledTimes(1);
       const ndcArg = mockRaycasterSetFromCamera.mock.calls[0][0];
@@ -559,19 +568,19 @@ describe('createSelection', () => {
       expect(onHover).not.toHaveBeenCalled();
     });
 
-    it('removes pointerdown event listener from domElement', () => {
+    it('removes pointer event listeners from domElement', () => {
       const meshA = createMockMesh('A');
       const meshMap = new Map([['A', meshA]]);
       const { selection, domElement, onSelect } = setup(meshMap);
 
       selection.dispose();
 
-      // After dispose, pointerdown should no longer trigger onSelect
+      // After dispose, pointerdown+pointerup should no longer trigger onSelect
       mockRaycasterIntersectObjects.mockReturnValueOnce([
         { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
       ]);
-      const event = new MouseEvent('pointerdown', { clientX: 400, clientY: 300 });
-      domElement.dispatchEvent(event);
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300 }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300 }));
 
       expect(onSelect).not.toHaveBeenCalled();
     });
@@ -808,7 +817,7 @@ describe('createSelection', () => {
       expect(spy).toHaveBeenCalledTimes(2);
     });
 
-    it('pointerdown also uses cached rect', () => {
+    it('click (pointerdown+pointerup) also uses cached rect', () => {
       const meshA = createMockMesh('A');
       const meshMap = new Map([['A', meshA]]);
       const { domElement } = setup(meshMap);
@@ -819,9 +828,9 @@ describe('createSelection', () => {
       const ev1 = new MouseEvent('pointermove', { clientX: 100, clientY: 100 });
       domElement.dispatchEvent(ev1);
 
-      // pointerdown should reuse cached rect
-      const ev2 = new MouseEvent('pointerdown', { clientX: 200, clientY: 200 });
-      domElement.dispatchEvent(ev2);
+      // Click should reuse cached rect (raycast happens on pointerup)
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 200, clientY: 200 }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 200, clientY: 200 }));
 
       // Still only one call total
       expect(spy).toHaveBeenCalledTimes(1);
@@ -904,7 +913,7 @@ describe('createSelection', () => {
       expect(ndcArg.x).toBeCloseTo(0.5, 1);
     });
 
-    it('pointerdown still raycasts synchronously (not throttled)', () => {
+    it('click (pointerdown+pointerup) raycasts synchronously (not throttled)', () => {
       const meshA = createMockMesh('A');
       const meshMap = new Map([['A', meshA]]);
       const { domElement, onSelect } = setupWithRaf(meshMap);
@@ -913,10 +922,10 @@ describe('createSelection', () => {
         { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
       ]);
 
-      const ev = new MouseEvent('pointerdown', { clientX: 400, clientY: 300 });
-      domElement.dispatchEvent(ev);
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300 }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300 }));
 
-      // Pointerdown should raycast immediately without rAF
+      // Click should raycast immediately without rAF
       expect(mockRaycasterSetFromCamera).toHaveBeenCalledTimes(1);
       expect(onSelect).toHaveBeenCalledWith('A');
     });
@@ -944,9 +953,7 @@ describe('createSelection', () => {
       const meshMap = new Map([['A', meshA]]);
       const { domElement, onSelect } = setup(meshMap);
 
-      mockRaycasterIntersectObjects.mockReturnValueOnce([
-        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
-      ]);
+      // No mockReturnValueOnce needed — pointerdown alone won't trigger raycast
 
       const event = new MouseEvent('pointerdown', {
         clientX: 400,
@@ -984,9 +991,7 @@ describe('createSelection', () => {
       const meshMap = new Map([['A', meshA]]);
       const { domElement, onSelect } = setup(meshMap);
 
-      mockRaycasterIntersectObjects.mockReturnValueOnce([
-        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
-      ]);
+      // No mockReturnValueOnce needed — drag won't trigger raycast at all
 
       domElement.dispatchEvent(new MouseEvent('pointerdown', {
         clientX: 400,
