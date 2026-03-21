@@ -39,4 +39,7 @@
   z-index: 200;
   min-width: 280px;
   max-width: 420px;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
 }

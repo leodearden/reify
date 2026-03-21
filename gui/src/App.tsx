@@ -1,4 +1,4 @@
-import { type Component, onMount, onCleanup, createSignal, createEffect, Show } from 'solid-js';
+import { type Component, onMount, onCleanup, createSignal, createEffect, For } from 'solid-js';
 import { applyTheme } from './theme';
 import { Viewport } from './viewport';
 import { Editor } from './editor/Editor';
@@ -33,7 +33,7 @@ import {
   navigateToEntity,
   navigateFromConstraint,
 } from './navigation';
-import type { ExportFormat, FileData, SourceLocation, ConstraintData } from './types';
+import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage } from './types';
 import styles from './App.module.css';
 
 const MIN_PANEL_WIDTH = 150;
@@ -41,6 +41,8 @@ const MIN_PANEL_HEIGHT = 80;
 const DEFAULT_EDITOR_WIDTH = 300;
 const DEFAULT_SIDE_WIDTH = 300;
 const DEFAULT_PROPERTY_HEIGHT = 200;
+
+let toastIdCounter = 0;
 
 const App: Component = () => {
   const editorStore = createEditorStore();
@@ -57,9 +59,13 @@ const App: Component = () => {
   const [showExportDialog, setShowExportDialog] = createSignal(false);
   const [exporting, setExporting] = createSignal(false);
 
-  // Toast state
-  const [toastMessage, setToastMessage] = createSignal<string | null>(null);
-  const [toastType, setToastType] = createSignal<'success' | 'error' | 'info'>('info');
+  // Toast queue state
+  const [toasts, setToasts] = createSignal<ToastMessage[]>([]);
+
+  function showToast(message: string, type: ToastMessage['type']) {
+    const id = String(++toastIdCounter);
+    setToasts((prev) => [...prev, { id, type, message }]);
+  }
 
   // Reload prompt state
   const [changedFile, setChangedFile] = createSignal<string | null>(null);
@@ -181,11 +187,9 @@ const App: Component = () => {
       // In a full app, would open native save dialog here
       const defaultPath = `export.${format}`;
       await bridgeExportGeometry(format, defaultPath);
-      setToastType('success');
-      setToastMessage(`Exported successfully as ${format.toUpperCase()}`);
+      showToast(`Exported successfully as ${format.toUpperCase()}`, 'success');
     } catch (err) {
-      setToastType('error');
-      setToastMessage(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+      showToast(`Export failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
     } finally {
       setExporting(false);
       setShowExportDialog(false);
@@ -212,8 +216,8 @@ const App: Component = () => {
     setChangedFile(null);
   }
 
-  function handleDismissToast() {
-    setToastMessage(null);
+  function handleDismissToast(id: string) {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
   }
 
   function handleFileClick(path: string) {
@@ -323,13 +327,17 @@ const App: Component = () => {
         onExport={handleDoExport}
         onClose={() => setShowExportDialog(false)}
       />
-      <Show when={toastMessage()}>
-        {(msg) => (
-          <div class={styles.toastContainer}>
-            <Toast message={msg()} type={toastType()} onDismiss={handleDismissToast} />
-          </div>
-        )}
-      </Show>
+      <div class={styles.toastContainer}>
+        <For each={toasts()}>
+          {(toast) => (
+            <Toast
+              message={toast.message}
+              type={toast.type}
+              onDismiss={() => handleDismissToast(toast.id)}
+            />
+          )}
+        </For>
+      </div>
     </div>
   );
 };
