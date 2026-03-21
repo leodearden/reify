@@ -415,6 +415,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn in_process_lsp_with_sink_receives_diagnostics() {
+        use crate::bridge::InProcessLsp;
+
+        let sink = Arc::new(RecordingSink::default());
+        let lsp = InProcessLsp::with_sink(sink.clone());
+
+        let source = reify_test_support::bracket_source();
+        let params = serde_json::json!({
+            "textDocument": {
+                "uri": "file:///test.ri",
+                "languageId": "reify",
+                "version": 1,
+                "text": source
+            }
+        });
+
+        lsp.handle_request("textDocument/didOpen", params)
+            .await
+            .expect("didOpen should succeed");
+
+        let calls = sink.take_calls();
+        assert_eq!(calls.len(), 1, "sink should receive diagnostics from InProcessLsp");
+        assert_eq!(
+            calls[0].0,
+            Url::parse("file:///test.ri").unwrap(),
+            "should receive the correct URI"
+        );
+    }
+
+    #[tokio::test]
     async fn server_with_sink_initializes() {
         let (service, _socket) = LspService::new(|client| {
             ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink))
