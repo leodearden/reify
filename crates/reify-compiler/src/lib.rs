@@ -100,6 +100,37 @@ pub struct CompiledField {
     pub content_hash: ContentHash,
 }
 
+/// A compiled purpose parameter — binds an entity reference.
+#[derive(Debug, Clone)]
+pub struct CompiledPurposeParam {
+    pub name: String,
+    pub entity_kind: String,
+}
+
+/// A resolved reflective schema query — e.g., `subject.params` resolved to concrete ValueCellIds.
+#[derive(Debug, Clone)]
+pub struct ResolvedSchemaQuery {
+    /// The purpose parameter name this query was on (e.g., "subject").
+    pub param_name: String,
+    /// The kind of schema query (e.g., "params", "geometric_params", "ports").
+    pub query_kind: String,
+    /// The resolved ValueCellIds from the bound entity's TopologyTemplate.
+    pub resolved_ids: Vec<ValueCellId>,
+}
+
+/// A compiled purpose declaration.
+#[derive(Debug, Clone)]
+pub struct CompiledPurpose {
+    pub name: String,
+    pub is_pub: bool,
+    pub params: Vec<CompiledPurposeParam>,
+    pub constraints: Vec<CompiledConstraint>,
+    pub objective: Option<OptimizationObjective>,
+    /// Reflective schema queries resolved at compile time.
+    pub resolved_queries: Vec<ResolvedSchemaQuery>,
+    pub content_hash: ContentHash,
+}
+
 /// A compiled module — the output of the compiler.
 #[derive(Debug, Clone)]
 pub struct CompiledModule {
@@ -109,6 +140,7 @@ pub struct CompiledModule {
     pub functions: Vec<CompiledFunction>,
     pub trait_defs: Vec<CompiledTrait>,
     pub fields: Vec<CompiledField>,
+    pub compiled_purposes: Vec<CompiledPurpose>,
     pub templates: Vec<TopologyTemplate>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
@@ -1410,6 +1442,196 @@ fn compile_trait(
     }
 }
 
+/// Compile a parsed purpose declaration into a CompiledPurpose.
+fn compile_purpose(
+    purpose_def: &reify_syntax::PurposeDef,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledPurpose {
+    let purpose_name = &purpose_def.name;
+
+    // Create a compilation scope for the purpose body.
+    // Purpose params are registered so their members can be referenced.
+    let mut scope = CompilationScope::new(purpose_name);
+
+    // Register purpose params as identifiers in scope.
+    // Each param binds an entity reference (e.g., `subject : Structure`).
+    // Use StructureRef so member access resolves correctly against the entity type.
+    for param in &purpose_def.params {
+        scope.register(&param.name, Type::StructureRef(param.entity_kind.clone()));
+    }
+
+    let mut constraints = Vec::new();
+    let mut constraint_index = 0u32;
+    let mut objective = None;
+
+    for member in &purpose_def.members {
+        match member {
+            reify_syntax::MemberDecl::Constraint(constraint) => {
+                let compiled_expr =
+                    compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
+                let id = ConstraintNodeId::new(purpose_name, constraint_index);
+                constraints.push(CompiledConstraint {
+                    id,
+                    label: constraint.label.clone(),
+                    expr: compiled_expr,
+                    span: constraint.span,
+                    domain: None,
+                });
+                constraint_index += 1;
+            }
+            reify_syntax::MemberDecl::Minimize(min_decl) => {
+                let compiled_expr =
+                    compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
+                objective = Some(OptimizationObjective::Minimize(compiled_expr));
+            }
+            reify_syntax::MemberDecl::Maximize(max_decl) => {
+                let compiled_expr =
+                    compile_expr(&max_decl.expr, &scope, enum_defs, functions, diagnostics);
+                objective = Some(OptimizationObjective::Maximize(compiled_expr));
+            }
+            reify_syntax::MemberDecl::Let(let_decl) => {
+                // Let bindings in purpose bodies are not yet supported:
+                // CompiledPurpose has no storage for let expressions, and
+                // activate_purpose only injects constraints. Any constraint
+                // referencing a let-bound name would produce a ValueCellId
+                // with no backing node in the eval graph.
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "let bindings in purpose bodies are not yet supported: '{}'",
+                        let_decl.name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        let_decl.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "guarded blocks in purpose bodies are not yet supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        g.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Param(p) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "param declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        p.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Sub(s) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "sub declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        s.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Port(p) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "port declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        p.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Connect(c) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "connect declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        c.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Chain(c) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "chain declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        c.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::AssociatedType(a) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "associated type declarations in purpose bodies are not supported"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        a.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+        }
+    }
+
+    let params: Vec<CompiledPurposeParam> = purpose_def
+        .params
+        .iter()
+        .map(|p| CompiledPurposeParam {
+            name: p.name.clone(),
+            entity_kind: p.entity_kind.clone(),
+        })
+        .collect();
+
+    // Resolve reflective schema queries for each purpose param.
+    // Look up the bound entity's TopologyTemplate and extract relevant ValueCellIds.
+    let mut resolved_queries = Vec::new();
+    for param in &params {
+        if let Some(template) = template_registry.get(&param.entity_kind) {
+            // Resolve "params" query: all Param and Auto value cells
+            let param_ids: Vec<ValueCellId> = template
+                .value_cells
+                .iter()
+                .filter(|vc| matches!(vc.kind, ValueCellKind::Param | ValueCellKind::Auto))
+                .map(|vc| vc.id.clone())
+                .collect();
+            if !param_ids.is_empty() {
+                resolved_queries.push(ResolvedSchemaQuery {
+                    param_name: param.name.clone(),
+                    query_kind: "params".to_string(),
+                    resolved_ids: param_ids,
+                });
+            }
+        }
+    }
+
+    CompiledPurpose {
+        name: purpose_def.name.clone(),
+        is_pub: purpose_def.is_pub,
+        params,
+        constraints,
+        objective,
+        resolved_queries,
+        content_hash: purpose_def.content_hash,
+    }
+}
+
 /// Compile a parsed module into a compiled module.
 ///
 /// Performs name resolution, type checking, and expression compilation.
@@ -1554,6 +1776,9 @@ pub fn compile(
             reify_syntax::Declaration::Field(_) => {
                 // Already compiled in field pre-pass above.
             }
+            reify_syntax::Declaration::Purpose(_) => {
+                // Compiled in dedicated purpose pass below.
+            }
         }
     }
 
@@ -1640,6 +1865,30 @@ pub fn compile(
         }
     }
 
+    // Purpose compilation pass: compile after templates so reflective schema queries
+    // can resolve against TopologyTemplates.
+    let compiled_purposes = {
+        let purpose_template_registry: HashMap<String, &TopologyTemplate> = templates
+            .iter()
+            .map(|t: &TopologyTemplate| (t.name.clone(), t))
+            .collect();
+
+        let mut purposes = Vec::new();
+        for decl in &parsed.declarations {
+            if let reify_syntax::Declaration::Purpose(purpose_def) = decl {
+                let compiled = compile_purpose(
+                    purpose_def,
+                    &enum_defs,
+                    &functions,
+                    &purpose_template_registry,
+                    &mut diagnostics,
+                );
+                purposes.push(compiled);
+            }
+        }
+        purposes
+    };
+
     // Build a content-sensitive hash by combining the path with all compiled content.
     let content_hash = {
         let path_hash = ContentHash::of_str(&format!("{}", parsed.path));
@@ -1668,13 +1917,17 @@ pub fn compile(
         // Field content hashes
         let field_hashes = fields.iter().map(|f| f.content_hash);
 
+        // Purpose content hashes
+        let purpose_hashes = compiled_purposes.iter().map(|p| p.content_hash);
+
         let all_hashes = std::iter::once(path_hash)
             .chain(template_hashes)
             .chain(import_hashes)
             .chain(enum_hashes)
             .chain(function_hashes)
             .chain(trait_hashes)
-            .chain(field_hashes);
+            .chain(field_hashes)
+            .chain(purpose_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -1686,6 +1939,7 @@ pub fn compile(
         functions,
         trait_defs,
         fields,
+        compiled_purposes,
         templates,
         diagnostics,
         content_hash,

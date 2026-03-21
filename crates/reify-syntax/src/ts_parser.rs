@@ -129,6 +129,11 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Field(decl));
                     }
                 }
+                "purpose_declaration" => {
+                    if let Some(decl) = self.lower_purpose(child) {
+                        self.declarations.push(Declaration::Purpose(decl));
+                    }
+                }
                 "ERROR" => {
                     self.errors.push(ParseError {
                         message: format!("syntax error: {}", self.node_text(child)),
@@ -547,6 +552,69 @@ impl<'a> Lowering<'a> {
             }
             _ => None,
         }
+    }
+
+    fn lower_purpose(&mut self, node: tree_sitter::Node) -> Option<PurposeDef> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let is_pub = self.has_pub_keyword(node);
+        let type_params = self.lower_type_parameters(node);
+        let params = self.lower_purpose_params(node);
+        let members = self.lower_purpose_members(node);
+
+        Some(PurposeDef {
+            name,
+            is_pub,
+            type_params,
+            params,
+            members,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_purpose_params(&self, node: tree_sitter::Node) -> Vec<PurposeParam> {
+        let mut params = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "purpose_param"
+                && let Some(param) = self.lower_purpose_param(child)
+            {
+                params.push(param);
+            }
+        }
+        params
+    }
+
+    fn lower_purpose_param(&self, node: tree_sitter::Node) -> Option<PurposeParam> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let kind_node = node.child_by_field_name("entity_kind")?;
+        let entity_kind = self.node_text(kind_node).to_string();
+
+        Some(PurposeParam {
+            name,
+            entity_kind,
+            span: self.span(node),
+        })
+    }
+
+    fn lower_purpose_members(&mut self, node: tree_sitter::Node) -> Vec<MemberDecl> {
+        let mut members = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "purpose_member" {
+                // purpose_member is a choice node wrapping the actual member
+                if let Some(inner) = child.named_child(0)
+                    && let Some(member) = self.lower_member(inner)
+                {
+                    members.push(member);
+                }
+            }
+        }
+        members
     }
 
     fn lower_fn_param(&self, node: tree_sitter::Node) -> Option<FnParam> {

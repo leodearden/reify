@@ -1074,7 +1074,7 @@
         "description": "Add forall and exists quantifier expressions for constraint checking over collections.",
         "details": "## What to implement\n\n### Grammar (tree-sitter-reify/grammar.js)\nAdd quantifier expressions:\n```javascript\nquantifier_expression: $ => seq(\n  choice('forall', 'exists'),\n  $.identifier,\n  'in',\n  $._expression,\n  ':',\n  $._expression\n)\n```\nAdd to primary expression choices.\n\n### Parser (crates/reify-syntax/src/lib.rs)\nAdd `ExprKind::Quantifier { kind: QuantifierKind, variable: String, collection: Box<Expr>, predicate: Box<Expr> }`.\n`QuantifierKind` enum: `ForAll, Exists`.\n\n### Compiler (crates/reify-compiler/src/lib.rs)\nAdd `CompiledExprKind::Quantifier { kind, variable: String, collection: Box<CompiledExpr>, predicate: Box<CompiledExpr> }`.\nType check: collection must be List/Set type. Variable binds to element type within predicate scope.\nReference safety: if collection is guarded, quantifier must be under same/stronger guard.\n\n### Expression eval (crates/reify-expr/src/lib.rs)\nEvaluate quantifier:\n1. Evaluate collection expression → must be List or Set\n2. For each element, bind variable in scope, evaluate predicate\n3. `forall`: conjunction of all predicate results. Empty → true (vacuous truth).\n4. `exists`: disjunction of all predicate results. Empty → false (vacuous falsity).\n5. Use Kleene 3-valued logic: `forall` with one undef and no false → Undef. `exists` with one true → true (short-circuit).\n\n## Tests\n1. Parse `forall x in list: x > 0` → Quantifier ForAll\n2. Parse `exists x in set: x == target` → Quantifier Exists\n3. Eval `forall x in [1, 2, 3]: x > 0` → Bool(true)\n4. Eval `forall x in [1, -1, 3]: x > 0` → Bool(false)\n5. Eval `exists x in [1, 2, 3]: x > 2` → Bool(true)\n6. Eval `exists x in [1, 2, 3]: x > 5` → Bool(false)\n7. Eval `forall x in []: x > 0` → Bool(true) (vacuous truth)\n8. Eval `exists x in []: x > 0` → Bool(false) (vacuous falsity)\n9. Eval `forall x in [1, undef, 3]: x > 0` → Undef (Kleene: undef element)\n10. Eval `exists x in [1, undef, 3]: x > 2` → Bool(true) (short-circuit on 3)\n11. Quantifier in constraint context: `constraint forall b in bolts: b.grade >= 8.8`\n\n## Modules\ntree-sitter-reify, crates/reify-syntax, crates/reify-compiler, crates/reify-expr",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "62",
           "60"
@@ -1089,7 +1089,7 @@
             "crates/reify-expr"
           ]
         },
-        "updatedAt": "2026-03-20T21:37:04.072Z"
+        "updatedAt": "2026-03-21T06:36:46.065Z"
       },
       {
         "id": "64",
@@ -1097,7 +1097,7 @@
         "description": "Support sub-structure collections with count constraints that trigger schema re-elaboration.",
         "details": "## What to implement\n\n### Compiler (crates/reify-compiler/src/lib.rs)\nExtend `SubComponentDecl` to support collection form:\n```\nSubComponentDecl {\n    name: String,\n    structure_name: String,\n    is_collection: bool,        // true for sub name : List<StructName>\n    args: Vec<(String, CompiledExpr)>,\n    span: SourceSpan,\n    content_hash: ContentHash,\n}\n```\n\nWhen `is_collection` is true:\n- Recognize `constraint name.count == expr` as structure-controlling\n- The count expression's result ValueCell goes into `structure_controlling` set\n- Collection access: `name[i].member` accesses i-th instance's member\n\n### Grammar/Parser\nMay need to extend sub declaration syntax to support `sub name : List<StructName>` form (vs current `sub name = StructName(args)` form). Check if grammar already supports this or needs modification.\n\n### Eval (crates/reify-eval/src/lib.rs)\nSchema re-elaboration for counted sub-structures:\n1. When count ValueCell becomes determined (e.g., count = 4), trigger re-elaboration\n2. Re-elaboration replicates the sub-structure template N times\n3. Each instance gets a unique identity: `parent.name[0]`, `parent.name[1]`, etc.\n4. Instance ValueCells are added to the evaluation graph\n5. Collection operations on the sub-structure list return aggregated values\n\nIn `EvaluationGraph::from_templates()`:\n- If sub-component is a collection and count is determined, create N copies\n- If count is Undef, the sub-structure list is Undef (no instances)\n- Count change triggers topology change (re-elaboration)\n\n## Tests\n1. Parse `sub bolts : List<Bolt>` → SubComponentDecl with is_collection=true\n2. Compile `constraint bolts.count == 4` → count ValueCell is structure_controlling\n3. Eval with count=4 → 4 Bolt instances in graph, each with own ValueCells\n4. Eval `bolts.count` → Int(4)\n5. Eval `bolts[0].diameter` → accesses first bolt's diameter\n6. Eval count change 4→6 → schema re-elaboration adds 2 more instances\n7. Eval count Undef → bolts list is Undef, bolts.count is Undef\n8. Collection operations: `forall b in bolts: b.grade >= 8.8` → checks all instances\n9. Eval `bolts.map(|b| b.length)` → List of bolt lengths\n\n## Modules\ncrates/reify-compiler, crates/reify-eval",
         "testStrategy": "",
-        "status": "pending",
+        "status": "blocked",
         "dependencies": [
           "62",
           "60"
@@ -1109,7 +1109,8 @@
             "crates/reify-compiler",
             "crates/reify-eval"
           ]
-        }
+        },
+        "updatedAt": "2026-03-21T07:06:32.199Z"
       },
       {
         "id": "65",
@@ -1346,7 +1347,7 @@
             "crates/reify-constraints"
           ]
         },
-        "updatedAt": "2026-03-20T19:14:26.798Z"
+        "updatedAt": "2026-03-21T07:48:22.723Z"
       },
       {
         "id": "77",
@@ -1372,7 +1373,7 @@
         "description": "Add purpose declarations with entity parameter bindings, reflective schema queries, and determinacy predicates.",
         "details": "## What to implement\n\n### Grammar (tree-sitter-reify/grammar.js)\nAdd `purpose_declaration` as a top-level declaration:\n```javascript\npurpose_declaration: $ => seq(\n  optional('pub'),\n  'purpose',\n  $.identifier,\n  optional($.type_parameters),\n  '(', commaSep($.purpose_param), ')',\n  '{', repeat($.purpose_member), '}'\n),\npurpose_param: $ => seq($.identifier, ':', $.type_identifier),  // subject : Structure\npurpose_member: $ => choice(\n  $.constraint_declaration,\n  $.let_declaration,\n  $.minimize_declaration,\n  $.maximize_declaration,\n  $.guarded_block      // where clause\n)\n```\n\n### Parser (crates/reify-syntax/src/lib.rs)\nAdd `Declaration::Purpose(PurposeDef)`:\n```\nPurposeDef {\n    name: String,\n    is_pub: bool,\n    params: Vec<PurposeParam>,\n    members: Vec<MemberDecl>,\n    span: SourceSpan,\n    content_hash: ContentHash,\n}\nPurposeParam { name: String, entity_kind: String, span: SourceSpan }\n```\n\n### Compiler (crates/reify-compiler/src/lib.rs)\nCompile purposes:\n1. Purpose params bind to entity references (not values on determinacy spectrum)\n2. Reflective schema queries on bound entities — compile-time resolution:\n   - `subject.params` → List of all param ValueCellIds in the bound entity\n   - `subject.geometric_params` → params with nonzero geometric dimension exponents\n   - `subject.sub_entities` → List of SubComponentDecl names\n   - `subject.ports` → List of port names\n   - `subject.constraints` → List of ConstraintNodeIds\n3. Compile constraints and objectives like structure members\n4. Result: `CompiledPurpose` containing constraints + objectives\n\n### Eval (crates/reify-eval/src/lib.rs)\nPurpose activation:\n- When activated, inject purpose's constraints/objectives into the evaluation graph\n- When deactivated, remove them\n- Activation API: `Engine::activate_purpose(purpose_name, entity_ref)` / `deactivate_purpose`\n\n### Stdlib (crates/reify-stdlib/src/lib.rs)\nAdd determinacy predicates:\n- `determined(param_ref)` → Bool: true if param's DeterminacyState == Determined\n- `constrained(param_ref)` → Bool: true if Constrained\n- `undetermined(param_ref)` → Bool: true if Undetermined\n- `partially_determined(param_ref)` → Bool: true if Auto/Constrained (not fully determined but not undef)\n\n## Tests\n1. Parse `purpose manufacturing_ready(subject : Structure) { constraint forall p in subject.params: determined(p) }` → PurposeDef\n2. Compile purpose → reflective queries resolve param list from bound entity\n3. Eval `determined(width)` where width = 80mm → true\n4. Eval `determined(thickness)` where thickness = auto → false\n5. Activate purpose → constraints injected into graph, evaluated\n6. Deactivate purpose → constraints removed\n7. Purpose with minimize → optimization objective active when purpose active\n8. Purpose with where guard → conditional constraints\n\n## Modules\ntree-sitter-reify, crates/reify-syntax, crates/reify-compiler, crates/reify-eval, crates/reify-stdlib",
         "testStrategy": "",
-        "status": "pending",
+        "status": "blocked",
         "dependencies": [
           "66",
           "62",
@@ -1388,7 +1389,8 @@
             "crates/reify-eval",
             "crates/reify-stdlib"
           ]
-        }
+        },
+        "updatedAt": "2026-03-21T08:01:27.475Z"
       },
       {
         "id": "79",
@@ -1396,7 +1398,7 @@
         "description": "Add field type, field declarations with source kinds, field evaluation and composition.",
         "details": "## What to implement\n\n### Grammar (tree-sitter-reify/grammar.js)\nAdd `field_definition` as a top-level or member declaration:\n```javascript\nfield_definition: $ => seq(\n  optional('pub'),\n  'field', 'def',\n  $.identifier,\n  ':',\n  $.type_expression,    // domain type\n  '->',\n  $.type_expression,    // codomain type\n  '{',\n  optional($.field_source),\n  '}'\n),\nfield_source: $ => seq(\n  'source', '=',\n  choice(\n    seq('analytical', '{', $.lambda_expression, '}'),\n    seq('sampled', '{', repeat($.field_sample_config), '}'),\n    seq('composed', '{', $.lambda_expression, '}'),\n    seq('imported', '{', $._expression, '}')\n  )\n),\nfield_sample_config: $ => seq($.identifier, '=', $._expression)\n```\n\n### Parser (crates/reify-syntax/src/lib.rs)\nAdd `Declaration::Field(FieldDef)`:\n```\nFieldDef {\n    name: String,\n    is_pub: bool,\n    domain_type: TypeExpr,\n    codomain_type: TypeExpr,\n    source: FieldSource,\n    span: SourceSpan,\n    content_hash: ContentHash,\n}\nenum FieldSource {\n    Analytical(Expr),     // lambda expression\n    Sampled { configs: Vec<(String, Expr)> },\n    Composed(Expr),       // lambda over other fields\n    Imported(Expr),       // import path/expression\n}\n```\n\n### Types (crates/reify-types/src/ty.rs)\nAdd `Type::Field { domain: Box<Type>, codomain: Box<Type> }`.\n\n### Compiler (crates/reify-compiler/src/lib.rs)\nCompile field declarations:\n- Domain/codomain types must be valid types\n- Source expression compiled (analytical → lambda compilation, sampled → config compilation)\n- Field composition type safety: `Field<A,B> ∘ Field<B,C> → Field<A,C>` — check B matches\n\n### Eval (crates/reify-eval/src/lib.rs)\nField evaluation:\n- Fields are ValueCells holding Field values\n- Analytical: store compiled lambda, evaluate on demand\n- Sampled: store grid + data, interpolate on query\n- Composed: compose source fields, evaluate composed result\n\n### Stdlib\nAdd field operations: `gradient(field)`, `divergence(field)`, `curl(field)`, `sample(field, point)`.\n\n## Tests\n1. Parse analytical field: `field def temp : Point3<Length> -> Scalar<Temperature> { source = analytical { |p| 300K + 50K * exp(-distance(p, origin) / 10mm) } }`\n2. Parse sampled field with config\n3. Parse composed field\n4. Compile field → correct domain/codomain types\n5. Compose: `Field<A,B> ∘ Field<B,C>` type checks → `Field<A,C>`\n6. Compose: `Field<A,B> ∘ Field<C,D>` where B≠C → type error\n7. Eval analytical field at a point → correct value\n8. Eval `sample(field, point)` → codomain value\n9. Eval gradient of scalar field → vector field\n\n## Modules\ntree-sitter-reify, crates/reify-syntax, crates/reify-types, crates/reify-compiler, crates/reify-eval",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "58"
         ],
@@ -1410,7 +1412,8 @@
             "crates/reify-compiler",
             "crates/reify-eval"
           ]
-        }
+        },
+        "updatedAt": "2026-03-21T06:36:46.071Z"
       },
       {
         "id": "80",
@@ -1437,7 +1440,7 @@
             "examples"
           ]
         },
-        "updatedAt": "2026-03-20T21:37:04.118Z"
+        "updatedAt": "2026-03-21T08:01:27.605Z"
       },
       {
         "id": "81",
@@ -1445,11 +1448,11 @@
         "description": "The `compile_module` helper function is identically defined in trait_bounds_tests.rs, trait_conformance_tests.rs, and port_compile_tests.rs. Move it (and `compile_first_template`) into reify-test-support/src/ as pub functions and import from there.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-20T21:39:53.208Z"
+        "updatedAt": "2026-03-21T08:01:27.765Z"
       },
       {
         "id": "82",
@@ -1457,11 +1460,11 @@
         "description": "Three ad-hoc type-name resolution patterns exist: resolve_type_with_params (lib.rs:415), inline 3-stage resolution in Sub branch (~1682), and convert_type_params (~443). Create a single infallible `resolve_type_fully(name, type_param_names) -> Type` that returns TypeParam if name is a type param, StructureRef otherwise, consolidating all three patterns.\n\nmemory_hints: search \"resolve_type_with_params\" and \"resolve_type_name\" in reify-compiler/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-20T21:44:20.917Z"
+        "updatedAt": "2026-03-21T08:01:27.857Z"
       },
       {
         "id": "83",
@@ -1481,11 +1484,11 @@
         "description": "The supertrait_chain_satisfies_bound test only covers a 2-hop chain. Add a 3-level chain test (e.g., Bolt → Ultra → ConcreteRigid → Rigid) to verify recursion handles arbitrary depth.\n\nmemory_hints: search \"supertrait_chain\" in trait_bounds_tests.rs; entity \"satisfies_trait_bound\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-20T21:45:37.439Z"
+        "updatedAt": "2026-03-21T08:01:27.948Z"
       },
       {
         "id": "85",
@@ -1493,11 +1496,11 @@
         "description": "TopologyTemplate.trait_bounds is Vec&lt;String&gt;, which discards type args from TraitBoundRef at the module boundary. Change to Vec&lt;CompiledTraitBound&gt; (or Vec&lt;(String, Vec&lt;Type&gt;)&gt;) to preserve resolved type arguments for downstream phases (evaluator type substitution, cross-referencing).\n\nmemory_hints: search \"trait_bounds\" in TopologyTemplate; entity \"TraitBoundRef\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-20T21:42:10.006Z"
+        "updatedAt": "2026-03-21T08:01:27.662Z"
       },
       {
         "id": "86",
@@ -1505,11 +1508,11 @@
         "description": "PendingBoundCheck.target_name carries dual semantics: structure name (sub-component path) or trait name (conformance path), distinguished only by whether type_params is empty. Replace with enum variants PendingBoundCheck::SubComponent { ... } vs PendingBoundCheck::TraitConformance { ... } to make paths explicit.\n\nmemory_hints: search \"PendingBoundCheck\" in reify-compiler/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-20T21:44:25.555Z"
+        "updatedAt": "2026-03-21T08:01:28.029Z"
       },
       {
         "id": "87",
@@ -1517,11 +1520,11 @@
         "description": "PendingBoundCheck is pushed unconditionally for every sub-component, even non-generic ones with no type params. The post-pass immediately skips these. Only push when !sub.type_args.is_empty() to avoid unnecessary allocation/iteration.\n\nmemory_hints: search \"pending_bound_checks.push\" in reify-compiler/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-20T21:45:45.526Z"
+        "updatedAt": "2026-03-21T08:01:28.155Z"
       },
       {
         "id": "88",
@@ -1529,11 +1532,11 @@
         "description": "compile() makes 4 separate linear passes over parsed.declarations (enum, function, trait, structure). Consolidate into 2 passes: one pre-pass that collects all enums, functions, and traits via a single match dispatch, then one structure-compilation pass.\n\nmemory_hints: search \"pre-pass\" or \"declarations\" in reify-compiler/src/lib.rs lines 1155-1250",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-20T21:43:11.754Z"
+        "updatedAt": "2026-03-21T08:01:28.246Z"
       },
       {
         "id": "89",
@@ -1541,10 +1544,11 @@
         "description": "Add three.js dependency to gui/package.json. Create the gui/src/viewport/ directory with: scene.ts (Three.js scene setup — PerspectiveCamera, ambient + directional lights, WebGLRenderer with dark gray gradient background, GridHelper ground plane, axis indicator gizmo in corner), controls.ts (thin OrbitControls wrapper for orbit/pan/zoom), meshManager.ts (receive MeshData arrays from engineStore, create/update/remove Three.js BufferGeometry + MeshStandardMaterial objects, assign distinct colors per entity_path), Viewport.tsx (SolidJS component that creates a canvas element, initializes scene/renderer/controls on mount, subscribes to engineStore.meshes signal, handles window resize, runs animation loop). Export Viewport component from index.ts.",
         "details": "Modules: [gui/src/viewport]\n\nExisting code context:\n- gui/src/stores/engineStore.ts already has meshes signal with MeshData[] type\n- gui/src/types.ts defines MeshData { entity_path, vertices: number[], indices: number[], normals?: number[] }\n- gui/src/bridge.ts has typed wrappers for Tauri invoke/listen\n- gui/src/theme.ts has Catppuccin dark theme colors (use --reify-bg-base for background)\n\nMemory hints:\n- Search: \"MeshData type definition\" in gui/src/types.ts\n- Search: \"engineStore meshes signal\" in gui/src/stores/engineStore.ts\n- Search: \"three.js OrbitControls\" for import patterns\n\nTests: Viewport component mounts canvas element, meshManager creates BufferGeometry from MeshData arrays, scene initializes with correct lighting.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-21T06:36:46.074Z"
       },
       {
         "id": "90",
@@ -1552,10 +1556,11 @@
         "description": "Create gui/src/editor/Editor.tsx — SolidJS component that mounts CodeMirror 6 editor, wiring the existing reifyLanguage (gui/src/editor/reifyLanguage.ts), syntax highlighting (gui/src/editor/highlight.ts), and bracket matching. Create gui/src/editor/FileTabs.tsx — tab bar showing open files from editorStore, dirty indicator (dot), close button per tab, click to switch active file. Wire update_source bridge command on document change (debounced ~300ms). Wire save_file on Ctrl+S. Wire open_file for loading file content into editor. Connect to editorStore for open files, active file, dirty state, cursor position tracking.",
         "details": "Modules: [gui/src/editor]\n\nExisting code context:\n- gui/src/editor/reifyLanguage.ts — CodeMirror 6 language support with Lezer grammar, folding, indentation, auto-close brackets\n- gui/src/editor/highlight.ts — syntax highlighting tags for Reify keywords, numbers, strings, operators\n- gui/src/editor/reifyParser.js — generated Lezer parser\n- gui/src/stores/editorStore.ts — manages openFiles, activeFile, dirtyFiles, cursorPosition\n- gui/src/bridge.ts — has updateSource(path, content), saveFile(path, content), openFile(path) wrappers\n- @codemirror/state and @codemirror/view are already in package.json devDependencies\n\nMemory hints:\n- Search: \"reifyLanguage\" in gui/src/editor/reifyLanguage.ts for language support setup\n- Search: \"editorStore\" in gui/src/stores/editorStore.ts for file/dirty state management\n- Search: \"updateSource\" in gui/src/bridge.ts for Tauri command wrappers\n\nTests: Editor mounts with content, FileTabs renders open files, dirty state tracks on edit, save clears dirty flag.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-21T06:36:46.077Z"
       },
       {
         "id": "91",
@@ -1563,10 +1568,11 @@
         "description": "Create gui/src/panels/PropertyEditor.tsx — tree view of structures→parameters from engineStore.values. Group parameters by entity_path prefix (structure name). Each row shows: name, value (editable input for determined params, read-only for auto/constrained), unit badge, determinacy badge (green=determined, blue=auto, yellow=constrained, gray=undef). Collapse/expand structure groups. Search/filter input at top. Inline editing calls set_parameter bridge command. Create gui/src/panels/ConstraintPanel.tsx — flat list from engineStore.constraints. Status badges (green checkmark=satisfied, red X=violated, gray ?=indeterminate). Expand violated constraints to show expression text + contributing parameter values. Sort by status (violated first). Create gui/src/panels/Toolbar.tsx — export button, fit-to-view button. Create gui/src/panels/StatusBar.tsx — evaluation time, triangle count, constraint summary counts.",
         "details": "Modules: [gui/src/panels]\n\nExisting code context:\n- gui/src/stores/engineStore.ts has values (ValueData[]) and constraints (ConstraintData[]) signals\n- gui/src/types.ts defines ValueData { cell_id, name, value, unit, determinacy, entity_path, kind } and ConstraintData { node_id, expression, status, label, parameter_ids }\n- gui/src/bridge.ts has setParameter(cellId, value) wrapper\n- gui/src/stores/selectionStore.ts has selectedEntity/hoveredEntity for cross-highlighting\n- gui/src/theme.ts has CSS custom properties for colors\n\nMemory hints:\n- Search: \"ValueData\" in gui/src/types.ts for property data shape\n- Search: \"ConstraintData\" in gui/src/types.ts for constraint data shape\n- Search: \"setParameter\" in gui/src/bridge.ts for parameter editing command\n- Search: \"selectionStore\" for selection state to highlight selected entity's params\n\nTests: PropertyEditor renders values grouped by entity, editing triggers setParameter, constraint panel shows correct status badges, violated constraints expand.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-21T06:36:46.080Z"
       },
       {
         "id": "92",
@@ -1574,10 +1580,11 @@
         "description": "Add notify crate to gui/src-tauri/Cargo.toml for filesystem watching. Implement file watcher that monitors .ri files and triggers re-parse/re-evaluate on external changes. Implement Tauri event emission in the backend: after set_parameter/update_source operations, diff old vs new GuiState and emit targeted events (mesh-update for changed meshes, value-update for changed values, constraint-update for changed constraints). Emit evaluation-status events (idle/evaluating/resolving) around engine operations. Emit file-changed event when watcher detects external modification. Create gui/src-tauri/src/diff.rs for snapshot diffing logic — compare consecutive GuiState snapshots by entity_path/cell_id/node_id to produce minimal delta updates rather than full state dumps.",
         "details": "Modules: [gui/src-tauri/src]\n\nExisting code context:\n- gui/src-tauri/src/commands.rs has all Tauri command handlers (set_parameter, update_source, etc.)\n- gui/src-tauri/src/engine.rs has EngineSession with build_gui_state() method\n- gui/src-tauri/src/types.rs defines GuiState, MeshData, ValueData, ConstraintData\n- gui/src-tauri/src/main.rs sets up Tauri app with Arc<Mutex<EngineSession>> state\n- Frontend bridge.ts already defines event listeners for: mesh-update, value-update, constraint-update, evaluation-status, diagnostics, file-changed\n- Frontend engineStore.ts already subscribes to these events and updates signals\n\nThe frontend is ready to receive events — the backend just needs to emit them.\n\nMemory hints:\n- Search: \"emit\" in gui/src-tauri/src/main.rs for Tauri app handle\n- Search: \"listen\" in gui/src/bridge.ts for expected event payloads\n- Search: \"MeshData\" in gui/src-tauri/src/types.rs for diff targets\n- Entity: EngineSession in gui/src-tauri/src/engine.rs\n\nTests: Event emission fires after parameter change, diff produces minimal deltas (unchanged meshes not re-sent), file watcher detects .ri file modification.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-21T06:36:46.083Z"
       },
       {
         "id": "93",
@@ -1585,14 +1592,15 @@
         "description": "Update gui/src/App.tsx to replace all placeholder content with the actual Viewport, Editor, PropertyEditor, ConstraintPanel, Toolbar, and StatusBar components. Implement resizable panel layout with draggable splitters: editor panel (left), viewport (center), side panel (right, containing PropertyEditor on top and ConstraintPanel below). Toolbar at top, StatusBar at bottom. Wire engineStore initialization: call getInitialState on app mount, populate stores. Subscribe to Tauri events for live updates. Integrate dark theme (Catppuccin) across all component boundaries. Handle window title showing current file name and evaluation status.",
         "details": "Modules: [gui/src, gui/src/stores]\nDependencies: 89, 90, 91\n\nExisting code context:\n- gui/src/App.tsx has 3-panel grid layout skeleton with placeholder text\n- gui/src/App.module.css has existing grid styles\n- gui/src/stores/engineStore.ts already subscribes to backend events\n- gui/src/bridge.ts has getInitialState() wrapper\n- gui/src/theme.ts applies CSS custom properties on mount\n- Viewport exported from gui/src/viewport/\n- Editor exported from gui/src/editor/\n- PropertyEditor, ConstraintPanel, Toolbar, StatusBar from gui/src/panels/\n\nMemory hints:\n- Search: \"App\" in gui/src/App.tsx for current layout structure\n- Search: \"getInitialState\" in gui/src/bridge.ts\n- Search: \"initializeStore\" or \"subscribe\" in gui/src/stores/engineStore.ts\n\nTests: App renders all panels (viewport canvas, editor, property editor, constraint panel). Resizable splitters adjust panel sizes. Initial state loads on mount.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "89",
           "90",
           "91"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-21T07:20:31.843Z"
       },
       {
         "id": "94",
@@ -1600,13 +1608,14 @@
         "description": "Add a programmatic in-process API to the reify-lsp crate (alongside existing stdio transport) so the GUI can host the LSP server without a separate process. Create gui/src-tauri/src/lsp_bridge.rs — instantiate ReifyLanguageServer in-process, route LSP JSON-RPC requests/responses through Tauri commands and events. Implement the lsp_request Tauri command handler (currently returns an error stub). On the frontend, create gui/src/editor/lspClient.ts (bridge Tauri lsp_request to CodeMirror extensions), gui/src/editor/diagnostics.ts (subscribe to diagnostics Tauri event, render inline squiggles in CodeMirror), gui/src/editor/completions.ts (CodeMirror completion source backed by lsp_request for textDocument/completion). Wire hover info and go-to-definition (Ctrl+click) through the same LSP bridge.",
         "details": "Modules: [crates/reify-lsp, gui/src-tauri/src, gui/src/editor]\nDependencies: 90, 92\n\nExisting code context:\n- crates/reify-lsp/src/lib.rs exports run_server() using stdio transport\n- crates/reify-lsp/src/server.rs has ReifyLanguageServer implementing tower_lsp::LanguageServer\n- ReifyLanguageServer::new(client) is public; server.state() gives Arc<RwLock<ServerState>> \"for testing and embedding\"\n- gui/src-tauri/src/commands.rs has lsp_request stub returning \"LSP not yet available\" error\n- gui/src/bridge.ts has lspRequest(method, params) wrapper\n- tower-lsp supports custom transports beyond stdio\n\nMemory hints:\n- Search: \"ReifyLanguageServer\" in crates/reify-lsp/src/server.rs\n- Search: \"run_server\" in crates/reify-lsp/src/lib.rs for current stdio setup\n- Search: \"lsp_request\" in gui/src-tauri/src/commands.rs for stub\n- Search: \"tower_lsp\" for transport layer patterns\n- Entity: ReifyLanguageServer\n\nTests: LSP bridge responds to initialize request, textDocument/completion returns results for .ri content, diagnostics event fires on syntax error, hover returns type info.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "blocked",
         "dependencies": [
           "90",
           "92"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-21T07:33:22.359Z"
       },
       {
         "id": "95",
@@ -1614,13 +1623,14 @@
         "description": "Create gui/src/viewport/selection.ts — Three.js Raycaster for mouse hover and click detection on meshes. On hover: apply emissive highlight to face/mesh under cursor, show floating tooltip with structure name and key dimensions. On click: select the structure → update selectionStore.selectedEntity → property editor highlights the corresponding parameter group. Add wireframe overlay (WireframeGeometry + LineSegments) on the selected structure's mesh. Implement fit-to-view button: compute bounding box of all meshes, animate camera to frame everything. Add \"Evaluating...\" spinner overlay that appears when engineStore.evalStatus is not idle.",
         "details": "Modules: [gui/src/viewport]\nDependencies: 89, 93\n\nExisting code context:\n- gui/src/viewport/ created by task 89 with scene.ts, controls.ts, meshManager.ts, Viewport.tsx\n- gui/src/stores/selectionStore.ts has setSelectedEntity(path), setHoveredEntity(path), selectedEntity/hoveredEntity signals\n- gui/src/stores/engineStore.ts has evalStatus signal\n- meshManager.ts maps entity_path → Three.js Mesh objects (need to be queryable by raycaster)\n- Three.js Raycaster, WireframeGeometry, LineSegments are standard Three.js classes\n\nMemory hints:\n- Search: \"selectionStore\" in gui/src/stores/selectionStore.ts\n- Search: \"evalStatus\" in gui/src/stores/engineStore.ts\n- Search: \"meshManager\" in gui/src/viewport/ for mesh→entity mapping\n\nTests: Raycaster initializes correctly, selection store updates on simulated click, wireframe geometry creates from mesh, fit-to-view computes correct camera position.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "89",
           "93"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-21T07:48:22.675Z"
       },
       {
         "id": "96",
@@ -1642,12 +1652,13 @@
         "description": "Create file browser sidebar component in gui/src/panels/ — tree view of .ri files in the project directory, click to open in editor, visual indicator for currently open file. Create export dialog: modal with format selector (STEP, STL, 3MF), native file save dialog via Tauri dialog API, progress indicator during export, success/failure toast notification. Implement keyboard shortcuts: Ctrl+O (open file dialog), F5 (force re-evaluate), Ctrl+E (open export dialog), Ctrl+S (save — already handled by editor). Wire external file change detection: when file-changed event arrives from backend, show reload prompt in editor for modified files.",
         "details": "Modules: [gui/src/panels, gui/src]\nDependencies: 93\n\nExisting code context:\n- gui/src/bridge.ts has exportGeometry(format, path) wrapper and openFile(path)\n- gui/src-tauri/src/commands.rs has export command handler (STEP/STL already work)\n- gui/src/stores/editorStore.ts has openFile/closeFile/setActiveFile methods\n- Tauri dialog API (@tauri-apps/plugin-dialog) for native file dialogs\n- Backend event \"file-changed\" already defined in bridge.ts event listeners\n- gui/src-tauri/capabilities/default.json defines Tauri permissions\n\nMemory hints:\n- Search: \"exportGeometry\" in gui/src/bridge.ts\n- Search: \"file-changed\" in gui/src/bridge.ts for event listener\n- Search: \"@tauri-apps/plugin-dialog\" or \"dialog\" for Tauri dialog usage\n\nTests: File browser lists .ri files, export triggers bridge command with correct format, keyboard shortcut handlers fire, file-changed event shows reload prompt.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "93"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-21T07:48:23.473Z"
       },
       {
         "id": "98",
@@ -1655,19 +1666,20 @@
         "description": "Configure Tauri bundler for cross-platform distribution: macOS (.dmg), Linux (.AppImage and .deb), Windows (.msi). Set app identifier, name, version, icons. Add reify gui <file> subcommand to the reify-cli crate — launches the Tauri application with the specified .ri file or directory as initial input. Ensure OCCT is statically linked in the bundled binary (same as CLI builds). Smoke test: build distributable on Linux, verify it launches and loads a .ri file.",
         "details": "Modules: [gui/src-tauri, crates/reify-cli]\nDependencies: 93\n\nExisting code context:\n- gui/src-tauri/tauri.conf.json already has basic config (1400x900 window, dev port 1420)\n- gui/src-tauri/Cargo.toml has reify-gui crate with tauri dependencies\n- crates/reify-cli/src/main.rs has existing CLI subcommands (check, build, lsp)\n- OCCT static linking is configured in crates/reify-kernel-occt/build.rs\n- gui/src-tauri/src/main.rs already handles CLI args for initial file loading\n\nMemory hints:\n- Search: \"tauri.conf.json\" for existing bundler config\n- Search: \"Subcommand\" or \"clap\" in crates/reify-cli/src/main.rs for CLI structure\n- Search: \"bundle\" in gui/src-tauri/tauri.conf.json\n- Entity: reify-cli crate\n\nTests: Bundler config produces output artifact, CLI arg --help shows gui subcommand, .ri file path is passed through to engine session.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "93"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-21T07:49:58.135Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-21T06:29:33.525Z",
+      "lastModified": "2026-03-21T08:01:28.246Z",
       "taskCount": 98,
-      "completedCount": 74,
+      "completedCount": 81,
       "tags": [
         "master"
       ]

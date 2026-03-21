@@ -1,0 +1,35 @@
+// Example: Purpose declarations in Reify
+//
+// Purposes declare cross-cutting constraints and objectives that can be
+// activated against entity instances. They bind entity references (Structure
+// names) via parameters and support reflective schema queries.
+
+structure Bracket {
+    param width : Length = 80mm
+    param height : Length = 60mm
+    param thickness : Length = 5mm
+
+    let volume = width * height * thickness
+
+    constraint width > 0mm
+    constraint height > 0mm
+    constraint thickness > 2mm
+}
+
+// A purpose that checks manufacturing readiness:
+// all parameters of the bound entity must be determined.
+purpose manufacturing_ready(subject : Structure) {
+    constraint forall p in subject.params: determined(p)
+}
+
+// A purpose with minimize objective
+purpose lightweight(subject : Structure) {
+    constraint subject.mass > 0
+    minimize subject.mass
+}
+
+// A purpose with pub visibility and multiple constraints
+pub purpose dimensionally_valid(part : Structure) {
+    constraint forall p in part.geometric_params: constrained(p)
+    constraint forall p in part.params: determined(p)
+}

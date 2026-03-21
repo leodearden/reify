@@ -491,6 +491,112 @@ impl CompiledExpr {
         }
     }
 
+    /// Rewrite all `ValueRef` cell IDs whose entity matches `from_entity`,
+    /// replacing the entity part with `to_entity`. This is used during purpose
+    /// activation to remap compiled references from the purpose's parameter
+    /// namespace to the concrete entity being bound.
+    pub fn remap_entity(&mut self, from_entity: &str, to_entity: &str) {
+        match &mut self.kind {
+            CompiledExprKind::ValueRef(id) => {
+                if id.entity == from_entity {
+                    id.entity = to_entity.to_string();
+                }
+            }
+            CompiledExprKind::Literal(_) => {}
+            CompiledExprKind::BinOp { left, right, .. } => {
+                left.remap_entity(from_entity, to_entity);
+                right.remap_entity(from_entity, to_entity);
+            }
+            CompiledExprKind::UnOp { operand, .. } => {
+                operand.remap_entity(from_entity, to_entity);
+            }
+            CompiledExprKind::FunctionCall { args, .. } => {
+                for arg in args {
+                    arg.remap_entity(from_entity, to_entity);
+                }
+            }
+            CompiledExprKind::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                condition.remap_entity(from_entity, to_entity);
+                then_branch.remap_entity(from_entity, to_entity);
+                else_branch.remap_entity(from_entity, to_entity);
+            }
+            CompiledExprKind::Match {
+                discriminant,
+                arms,
+            } => {
+                discriminant.remap_entity(from_entity, to_entity);
+                for arm in arms {
+                    arm.body.remap_entity(from_entity, to_entity);
+                }
+            }
+            CompiledExprKind::UserFunctionCall { args, .. } => {
+                for arg in args {
+                    arg.remap_entity(from_entity, to_entity);
+                }
+            }
+            CompiledExprKind::Lambda {
+                body,
+                captures,
+                param_ids,
+                ..
+            } => {
+                body.remap_entity(from_entity, to_entity);
+                for cap in captures {
+                    if cap.entity == from_entity {
+                        cap.entity = to_entity.to_string();
+                    }
+                }
+                for pid in param_ids {
+                    if pid.entity == from_entity {
+                        pid.entity = to_entity.to_string();
+                    }
+                }
+            }
+            CompiledExprKind::ListLiteral(elements) => {
+                for elem in elements {
+                    elem.remap_entity(from_entity, to_entity);
+                }
+            }
+            CompiledExprKind::SetLiteral(elements) => {
+                for elem in elements {
+                    elem.remap_entity(from_entity, to_entity);
+                }
+            }
+            CompiledExprKind::MapLiteral(entries) => {
+                for (key, val) in entries {
+                    key.remap_entity(from_entity, to_entity);
+                    val.remap_entity(from_entity, to_entity);
+                }
+            }
+            CompiledExprKind::IndexAccess { object, index } => {
+                object.remap_entity(from_entity, to_entity);
+                index.remap_entity(from_entity, to_entity);
+            }
+            CompiledExprKind::MethodCall { object, args, .. } => {
+                object.remap_entity(from_entity, to_entity);
+                for arg in args {
+                    arg.remap_entity(from_entity, to_entity);
+                }
+            }
+            CompiledExprKind::Quantifier {
+                variable_id,
+                collection,
+                predicate,
+                ..
+            } => {
+                if variable_id.entity == from_entity {
+                    variable_id.entity = to_entity.to_string();
+                }
+                collection.remap_entity(from_entity, to_entity);
+                predicate.remap_entity(from_entity, to_entity);
+            }
+        }
+    }
+
     /// Create a method call expression.
     pub fn method_call(
         object: CompiledExpr,

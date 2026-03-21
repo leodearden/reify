@@ -88,6 +88,16 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "cosh" => unary_f64(args, |x| Value::Real(x.cosh())),
         "tanh" => unary_f64(args, |x| Value::Real(x.tanh())),
 
+        // --- Determinacy predicates (stubs) ---
+        // These predicates inspect DeterminacyState which is tracked in the Engine's
+        // snapshot, not in Value itself. Like sample(), the actual behavior is
+        // intercepted at the eval layer (reify-expr/reify-eval) where snapshot state
+        // is available. These stubs serve as documentation and fallback.
+        "determined" => Value::Undef,
+        "undetermined" => Value::Undef,
+        "constrained" => Value::Undef,
+        "partially_determined" => Value::Undef,
+
         // --- Field operations (stubs) ---
         // These are handled by reify-expr's eval_expr FunctionCall interceptor
         // for actual lambda application; the stdlib entries serve as documentation
@@ -616,6 +626,34 @@ mod tests {
             }
             other => panic!("expected Angle Scalar, got {:?}", other),
         }
+    }
+
+    // --- Determinacy predicate stubs (step-7) ---
+
+    #[test]
+    fn determined_stub_returns_undef() {
+        // determined() is handled at the eval layer where DeterminacyState is available.
+        // The stdlib stub returns Undef as a fallback.
+        let result = eval_builtin("determined", &[Value::Real(42.0)]);
+        assert!(result.is_undef(), "determined stub should return Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn undetermined_stub_returns_undef() {
+        let result = eval_builtin("undetermined", &[Value::Real(42.0)]);
+        assert!(result.is_undef(), "undetermined stub should return Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn constrained_stub_returns_undef() {
+        let result = eval_builtin("constrained", &[Value::Real(42.0)]);
+        assert!(result.is_undef(), "constrained stub should return Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn partially_determined_stub_returns_undef() {
+        let result = eval_builtin("partially_determined", &[Value::Real(42.0)]);
+        assert!(result.is_undef(), "partially_determined stub should return Undef, got {:?}", result);
     }
 
     // --- Field operation stubs (step-25) ---

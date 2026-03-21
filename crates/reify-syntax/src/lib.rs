@@ -21,6 +21,7 @@ pub enum Declaration {
     Function(FnDef),
     Trait(TraitDecl),
     Field(FieldDef),
+    Purpose(PurposeDef),
 }
 
 /// A structure definition (the primary entity type in Reify).
@@ -282,6 +283,26 @@ pub struct FieldDef {
     pub source: FieldSource,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+/// `purpose mfg_ready(subject : Structure) { constraint ... }`
+#[derive(Debug, Clone)]
+pub struct PurposeDef {
+    pub name: String,
+    pub is_pub: bool,
+    pub type_params: Vec<TypeParamDecl>,
+    pub params: Vec<PurposeParam>,
+    pub members: Vec<MemberDecl>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// A purpose parameter binding an entity reference: `subject : Structure`
+#[derive(Debug, Clone)]
+pub struct PurposeParam {
+    pub name: String,
+    pub entity_kind: String,
+    pub span: SourceSpan,
 }
 
 /// The source kind for a field declaration.
