@@ -243,4 +243,21 @@ describe('ExportDialog', () => {
     const exportBtn = screen.getByText('Export');
     expect(document.activeElement).toBe(exportBtn);
   });
+
+  // ── CSS spinner (E-8) ─────────────────────────────────────────────
+
+  it('shows a spinner element when exporting', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={true} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    const spinner = screen.getByTestId('export-spinner');
+    expect(spinner).toBeTruthy();
+  });
+
+  it('does not show spinner when not exporting', () => {
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
+    ));
+    expect(screen.queryByTestId('export-spinner')).toBeNull();
+  });
 });
