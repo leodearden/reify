@@ -1,31 +1,81 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@solidjs/testing-library';
+
+// Mock Tauri APIs before any component imports
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
+}));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+
+// Mock Viewport (requires Three.js / WebGL which jsdom doesn't support)
+vi.mock('../viewport', () => ({
+  Viewport: (props: any) => <div data-testid="viewport-container">Viewport Mock</div>,
+}));
+
+// Mock Editor (requires CodeMirror DOM APIs)
+vi.mock('../editor/Editor', () => ({
+  Editor: (props: any) => <div data-testid="editor-container">Editor Mock</div>,
+}));
+
+// Mock FileTabs
+vi.mock('../editor/FileTabs', () => ({
+  FileTabs: (props: any) => <div data-testid="file-tabs">FileTabs Mock</div>,
+}));
+
 import App from '../App';
 
-describe('App', () => {
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('App layout wiring', () => {
   it('renders app-layout container', () => {
     render(() => <App />);
     expect(screen.getByTestId('app-layout')).toBeTruthy();
   });
 
-  it('renders editor panel with label', () => {
+  it('renders Toolbar at top', () => {
     render(() => <App />);
-    expect(screen.getByTestId('editor-panel')).toBeTruthy();
-    expect(screen.getByText('Editor')).toBeTruthy();
+    expect(screen.getByTestId('toolbar')).toBeTruthy();
   });
 
-  it('renders viewport panel with label', () => {
+  it('renders StatusBar at bottom', () => {
     render(() => <App />);
-    expect(screen.getByTestId('viewport-panel')).toBeTruthy();
-    expect(screen.getByText('3D Viewport')).toBeTruthy();
+    expect(screen.getByTestId('status-bar')).toBeTruthy();
   });
 
-  it('renders side panel with Properties and Constraints sub-panels', () => {
+  it('renders Viewport', () => {
     render(() => <App />);
-    expect(screen.getByTestId('side-panel')).toBeTruthy();
-    expect(screen.getByTestId('property-editor-panel')).toBeTruthy();
-    expect(screen.getByTestId('constraints-panel')).toBeTruthy();
-    expect(screen.getByText('Properties')).toBeTruthy();
-    expect(screen.getByText('Constraints')).toBeTruthy();
+    expect(screen.getByTestId('viewport-container')).toBeTruthy();
+  });
+
+  it('renders Editor', () => {
+    render(() => <App />);
+    expect(screen.getByTestId('editor-container')).toBeTruthy();
+  });
+
+  it('renders PropertyEditor', () => {
+    render(() => <App />);
+    expect(screen.getByTestId('property-editor')).toBeTruthy();
+  });
+
+  it('renders ConstraintPanel', () => {
+    render(() => <App />);
+    expect(screen.getByTestId('constraint-panel')).toBeTruthy();
+  });
+
+  it('renders Toolbar before StatusBar in DOM order', () => {
+    render(() => <App />);
+    const toolbar = screen.getByTestId('toolbar');
+    const statusBar = screen.getByTestId('status-bar');
+    // Toolbar should come before StatusBar in document order
+    const comparison = toolbar.compareDocumentPosition(statusBar);
+    expect(comparison & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
