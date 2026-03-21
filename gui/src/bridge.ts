@@ -25,14 +25,16 @@ export async function getInitialState(): Promise<GuiState> {
   return convertRawGuiState(raw);
 }
 
-/** Set a parameter value by cell ID. */
-export async function setParameter(cellId: string, value: string): Promise<void> {
-  return invoke('set_parameter', { cellId, value });
+/** Set a parameter value by cell ID. Returns the updated GUI state for optional reconciliation. */
+export async function setParameter(cellId: string, value: string): Promise<GuiState> {
+  const raw = await invoke<RawGuiState>('set_parameter', { cellId, value });
+  return convertRawGuiState(raw);
 }
 
-/** Update source file content. */
-export async function updateSource(path: string, content: string): Promise<void> {
-  return invoke('update_source', { path, content });
+/** Update source file content. Returns the updated GUI state for optional reconciliation. */
+export async function updateSource(path: string, content: string): Promise<GuiState> {
+  const raw = await invoke<RawGuiState>('update_source', { path, content });
+  return convertRawGuiState(raw);
 }
 
 /** Save a file to disk. */

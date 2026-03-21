@@ -45,7 +45,8 @@ describe('bridge commands', () => {
   });
 
   it('setParameter calls invoke with cellId and value', async () => {
-    mockInvoke.mockResolvedValue(undefined);
+    const rawState: RawGuiState = { meshes: [], values: [], constraints: [], files: [] };
+    mockInvoke.mockResolvedValue(rawState);
 
     await setParameter('cell_001', '42.0');
 
