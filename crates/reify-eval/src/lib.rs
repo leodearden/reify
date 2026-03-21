@@ -13,9 +13,9 @@ use reify_compiler::{CompiledConstraint, CompiledModule, CompiledPurpose, Topolo
 use reify_types::{
     AutoParam, CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintNodeId,
     ConstraintSolver, ContentHash, DeterminacyState, Diagnostic, ExportFormat,
-    GeometryHandleId, GeometryKernel, PersistentMap, ResolutionProblem, Satisfaction,
-    SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap, VersionId,
-    FIELD_ENTITY_PREFIX,
+    GeometryHandleId, GeometryKernel, OptimizationObjective, PersistentMap, ResolutionProblem,
+    Satisfaction, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap,
+    VersionId, FIELD_ENTITY_PREFIX,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
@@ -90,6 +90,9 @@ pub struct Engine {
     /// Currently active purposes: maps purpose name → injected constraint IDs.
     /// Used by deactivate_purpose to remove the injected constraints.
     active_purposes: HashMap<String, Vec<ConstraintNodeId>>,
+    /// Active optimization objectives injected by purposes.
+    /// Maps purpose name → optimization objective.
+    active_objective_map: HashMap<String, OptimizationObjective>,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
@@ -231,6 +234,7 @@ impl Engine {
             functions: Vec::new(),
             compiled_purposes: Vec::new(),
             active_purposes: HashMap::new(),
+            active_objective_map: HashMap::new(),
         }
     }
 
@@ -318,11 +322,17 @@ impl Engine {
         }
 
         self.active_purposes.insert(purpose_name.to_string(), injected_ids);
+
+        // Inject the optimization objective if the purpose has one
+        if let Some(ref objective) = purpose.objective {
+            self.active_objective_map
+                .insert(purpose_name.to_string(), objective.clone());
+        }
     }
 
     /// Deactivate a purpose by name.
     ///
-    /// Removes the constraints that were injected by `activate_purpose`.
+    /// Removes the constraints and objectives that were injected by `activate_purpose`.
     /// If the purpose is not active, this is a no-op.
     pub fn deactivate_purpose(&mut self, purpose_name: &str) {
         // Look up and remove the injected constraint IDs
@@ -337,11 +347,19 @@ impl Engine {
                 state.snapshot.graph.constraints.remove(constraint_id);
             }
         }
+
+        // Remove the objective if one was injected
+        self.active_objective_map.remove(purpose_name);
     }
 
     /// Check whether a purpose is currently active.
     pub fn is_purpose_active(&self, purpose_name: &str) -> bool {
         self.active_purposes.contains_key(purpose_name)
+    }
+
+    /// Returns the currently active optimization objectives (injected by purposes).
+    pub fn active_objectives(&self) -> Vec<&OptimizationObjective> {
+        self.active_objective_map.values().collect()
     }
 
     /// Prepare state for concurrent evaluation after a parameter change.

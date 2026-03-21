@@ -92,7 +92,7 @@ structure Bracket {
 }
 
 purpose lightweight(subject : Structure) {
-    minimize width + height
+    minimize subject + subject
 }
 "#;
 
