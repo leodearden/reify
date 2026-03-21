@@ -54,6 +54,13 @@ describe('Toast', () => {
     expect(toast.getAttribute('role')).toBe('alert');
     expect(toast.getAttribute('aria-live')).toBe('assertive');
   });
+
+  it('toast element has the animated class for slide-in animation', () => {
+    render(() => <Toast message="OK" type="success" onDismiss={vi.fn()} />);
+    const toast = screen.getByTestId('toast');
+    // CSS module maps class names; check that the animated class is applied
+    expect(toast.className).toContain('animated');
+  });
 });
 
 describe('Toast auto-dismiss', () => {
