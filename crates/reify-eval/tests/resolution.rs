@@ -610,3 +610,52 @@ fn objective_forwarded_to_solver_in_eval() {
         problem.objective
     );
 }
+
+#[test]
+fn objective_forwarded_in_edit_param() {
+    // After eval() with a Minimize objective, edit a regular param that appears
+    // in the auto-param constraint, triggering re-resolution via edit_param().
+    // The spy should capture a problem with the objective still set.
+    // Fails until edit_param() looks up the objective from self.objectives.
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let limit_id = ValueCellId::new("S", "limit");
+
+    // Solver always returns thickness = 5mm
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+
+    let spy = SpyConstraintSolver::new_solved(solved_values);
+    let captured = spy.captured_problem();
+
+    // Template: auto thickness, param limit (default 2mm),
+    // constraint thickness > limit, objective Minimize(thickness)
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
+        .constraint("S", 0, None, gt(value_ref("S", "thickness"), value_ref("S", "limit")))
+        .objective(OptimizationObjective::Minimize(value_ref("S", "thickness")))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(spy));
+
+    // Initial eval: solver called with objective=Some(Minimize(...))
+    engine.eval(&module);
+
+    // Change limit to 3mm — the constraint thickness > limit becomes dirty,
+    // triggering re-resolution with a new ResolutionProblem.
+    let _result = engine.edit_param(limit_id.clone(), mm(3.0)).unwrap();
+
+    // The spy should now hold the problem from the edit_param() call.
+    let guard = captured.lock().unwrap();
+    let problem = guard.as_ref().expect("solver should have been called during edit_param");
+    assert!(
+        matches!(&problem.objective, Some(OptimizationObjective::Minimize(_))),
+        "expected Minimize objective forwarded to solver in edit_param, got {:?}",
+        problem.objective
+    );
+}
