@@ -118,7 +118,12 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     geometry.boundingBox = null;
 
     // Rebuild BVH for the updated geometry
-    (geometry as any).computeBoundsTree();
+    try {
+      (geometry as any).computeBoundsTree();
+    } catch (err) {
+      console.error(`Failed to rebuild BVH for mesh '${mesh.name}'`, err);
+      removeMesh(mesh.name);
+    }
   }
 
   function removeMesh(entityPath: string): void {
