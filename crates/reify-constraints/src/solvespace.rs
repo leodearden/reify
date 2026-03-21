@@ -5,6 +5,12 @@
 //! a fresh solver system per call (stateless), making it trivially
 //! Send + Sync.
 
+#[cfg(slvs_not_found)]
+compile_error!(
+    "libslvs not found. Install with: sudo apt install libslvs1-dev \
+     or set SLVS_LIB_DIR to the directory containing libslvs.so"
+);
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 
