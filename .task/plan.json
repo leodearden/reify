@@ -1,640 +1,301 @@
 {
-<<<<<<< HEAD
-  "task_id": "64",
-  "title": "Counted sub-structures (sub : List<T>)",
-=======
-  "task_id": "78",
-  "title": "Purpose declarations",
->>>>>>> task/78
+  "task_id": "95",
+  "title": "Viewport selection + hover + interaction",
   "files": [
-    "tree-sitter-reify/grammar.js",
-    "tree-sitter-reify/src/parser.c",
-    "tree-sitter-reify/src/grammar.json",
-    "tree-sitter-reify/src/node-types.json",
-    "crates/reify-syntax/src/lib.rs",
-    "crates/reify-syntax/src/ts_parser.rs",
-<<<<<<< HEAD
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/collection_sub_tests.rs",
-    "crates/reify-eval/src/graph.rs",
-    "crates/reify-eval/src/lib.rs",
-    "crates/reify-eval/tests/collection_sub_eval.rs",
-    "crates/reify-test-support/src/builders.rs",
-    "crates/reify-types/src/value.rs"
-=======
-    "crates/reify-syntax/tests/purpose_tests.rs",
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/purpose_compile_tests.rs",
-    "crates/reify-eval/src/lib.rs",
-    "crates/reify-eval/tests/purpose_eval.rs",
-    "crates/reify-stdlib/src/lib.rs",
-    "crates/reify-test-support/src/builders.rs",
-    "examples/m5_purpose.ri"
->>>>>>> task/78
+    "gui/src/viewport/selection.ts",
+    "gui/src/viewport/Viewport.tsx",
+    "gui/src/viewport/index.ts",
+    "gui/src/__tests__/viewport/selection.test.ts",
+    "gui/src/__tests__/viewport/Viewport.test.tsx"
   ],
   "modules": [
-    "tree-sitter-reify",
-    "crates/reify-syntax",
-    "crates/reify-compiler",
-    "crates/reify-eval",
-<<<<<<< HEAD
-    "crates/reify-test-support",
-    "crates/reify-types"
+    "gui/src/viewport",
+    "gui/src/__tests__/viewport"
   ],
-  "analysis": "This task implements counted sub-structure collections (e.g., `sub bolts : List<Bolt>`) with count constraints that trigger schema re-elaboration. The implementation spans 5 modules:\n\n1. **Grammar (tree-sitter-reify)**: The current `sub_declaration` rule only supports `sub name = StructName<TypeArgs>(args)`. The spec requires `sub name : List<StructName>` form. We need to extend the grammar rule to support a collection form using `choice()` \u2014 the existing `=` instantiation form plus a new `:` collection-type form.\n\n2. **Syntax (reify-syntax)**: `SubDecl` needs an `is_collection: bool` field. The parser's `lower_sub()` must detect the collection form (when the grammar produces a node with the colon/List form) and set `is_collection=true`, extracting the element type name as structure_name.\n\n3. **Compiler (reify-compiler)**: `SubComponentDecl` needs `is_collection: bool` and `count_cell: Option<ValueCellId>`. When `is_collection` is true, the compiler must create a synthetic count ValueCell (e.g., `S.__count_bolts`, type Int, Let kind) and recognize `constraint bolts.count == expr` as structure-controlling (adding the count cell to `structure_controlling`). The count cell's expression comes from the constraint RHS.\n\n4. **Eval graph (reify-eval/graph.rs)**: `from_templates()` must handle collection sub-components. If `is_collection` and count is determined (Int(N)), create N scoped instances: `Parent.name[0]`, `Parent.name[1]`, etc. Each instance gets full value cells from the child template. If count is Undef, no instances are created.\n\n5. **Eval engine (reify-eval/lib.rs)**: Count re-elaboration \u2014 when the count ValueCell's value changes, trigger graph topology change: add/remove instances to match new count. This follows the existing guard re-elaboration pattern.\n\n**Review Fix Analysis (steps 21-26):**\n\n- **Issue 1 (unnecessary_full_collection_rebuild)**: The count-change re-elaboration at lib.rs:1625-1630 rebuilds the entire ValueMap O(V_total) on every count change. PersistentMap already has remove(), but ValueMap doesn't expose it. Fix: add ValueMap::remove() and replace the full rebuild with surgical removal of stale instance entries O(count_diff \u00d7 child_cells).\n\n- **Issues 2+4 (incorrect_type_annotation + missing assertion)**: The compiler hardcodes `result_type: Type::Real` at lines 896 and 907 for all indexed collection member accesses regardless of the member's actual type. Fix: extend CompilationScope to store a mapping from (collection_name, member_name) \u2192 Type by looking up already-compiled child templates. Pass `&[TopologyTemplate]` to compile_entity. Use this to resolve the correct member type. The existing test also lacks a result_type assertion.\n\n- **Issue 3 (declaration_order_dependency)**: When `constraint bolts.count == n` appears before `sub bolts : List<Bolt>` in source order, the single-pass member processing can't find the SubComponentDecl to set count_cell (it hasn't been pushed yet). Fix: add a reconciliation sweep after the second pass that backfills count_cell for any unlinked __count_ cells.\n\n**Review Fix Analysis (steps 27-30, blocking issues from second review):**\n\n- **Issue: silent_failure_always_undef** (lines 912-919): Non-literal (dynamic) index access `bolts[n].member` always evaluates to Undef at runtime. The collection base is constructed as `CompiledExpr::literal(Value::Undef, Type::List<StructureRef>)` \u2014 a constant Undef \u2014 rather than a reference to the actual `__list_{name}` cell that the eval engine creates. At eval time, `Undef[n]` \u2192 Undef, then `Undef.member` \u2192 Undef. Fix: Replace `literal(Value::Undef, ...)` with `value_ref(ValueCellId::new(&scope.entity_name, format!(\"__list_{}\", name)), Type::List(...))` so the dynamic index operates on the actual synthetic list cell. Also emit a compiler diagnostic noting dynamic indexing limitation.\n\n- **Issue: missing_compiler_path_for_collection_aggregation** (lines 675-688): Collection sub names are registered in `scope.collection_sub_names` (line 1717) but never in `scope.names`, so using a collection sub as a standalone identifier (`bolts` in `bolts.all(|b| ...)` or `bolts.map(...)`) hits the `ExprKind::Ident` fallback at line 680, emitting 'unresolved name: bolts' and returning Literal(Undef). The step-19 test only passes because it uses the builder API to directly construct a ValueRef to `__list_bolts`, bypassing the compiler. Fix: In the `ExprKind::Ident` handler, after `scope.resolve(name)` returns None, add a fallback check: if `name` is in `scope.collection_sub_names`, return `CompiledExpr::value_ref(ValueCellId::new(&scope.entity_name, format!(\"__list_{}\", name)), Type::List(Box::new(Type::StructureRef(name.clone()))))`. Also add a source-code integration test (not builder API) for `bolts.all(...)` to prevent regression.\n\nKey existing patterns to reuse:\n- Guard re-elaboration pattern (structure_controlling -> dirty check -> re-evaluate)\n- Sub-component scoping pattern (Parent.sub_name -> scoped ValueCellIds)\n- TopologyTemplateBuilder for test construction\n- `.count`, `.map()`, `.all()` method calls already implemented in reify-expr\n- PersistentMap::remove() already exists, just needs ValueMap wrapper\n\nThe `forall b in bolts: predicate` syntax doesn't exist in the grammar; tests will use `.all(|b| predicate)` instead, which is already supported in the expression evaluator.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Extend tree-sitter grammar: add collection form to sub_declaration. Change the rule from a single seq() to choice() with two alternatives: (1) existing `sub name = StructName<TypeArgs>(args)` form, and (2) new `sub name : List < StructName >` form using `:` separator. The collection form rule: seq('sub', field('name', $.identifier), ':', 'List', '<', field('structure_name', $.identifier), '>', optional(field('guard', $.where_clause))). Then run `cd tree-sitter-reify && tree-sitter generate` to regenerate parser.c, grammar.json, and node-types.json. Verify grammar compiles and existing sub tests still parse.",
-      "status": "done",
-      "commit": "a10bcca",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Add `is_collection: bool` field to SubDecl in reify-syntax/src/lib.rs. Initialize to `false` in the existing SubDecl construction site in lower_sub() (ts_parser.rs line 945). This is a prerequisite for TDD steps since the struct change must exist before tests can reference it.",
-      "status": "done",
-      "commit": "e615e92",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Add `is_collection: bool` and `count_cell: Option<ValueCellId>` fields to SubComponentDecl in reify-compiler/src/lib.rs. Initialize to `false`/`None` in all existing SubComponentDecl construction sites: (1) compile_entity Sub handler around line 1883, (2) connector sub in compile_connection around line 2769. Update TopologyTemplateBuilder.sub_component() in reify-test-support/builders.rs to include `is_collection: false, count_cell: None`. Ensure all existing code compiles cleanly with the new fields.",
-      "status": "done",
-      "commit": "3658392",
-=======
-    "crates/reify-stdlib",
-    "crates/reify-test-support"
-  ],
-  "analysis": "Purpose declarations are a new top-level construct for Reify, similar in structure to traits/structures but with distinct semantics: they bind entity references (not values) via parameters, support reflective schema queries on those entities, and can be activated/deactivated to inject/remove constraints and objectives from the evaluation graph.\n\nThe implementation follows the established pattern for adding new language constructs (as seen in traits, fields, ports, connect/chain):\n\n1. **Grammar**: Add `purpose_declaration` to `_declaration` in grammar.js, with `purpose_param` and `purpose_member` rules. The `purpose_member` reuses existing `constraint_declaration`, `let_declaration`, `minimize_declaration`, `maximize_declaration`, and `guarded_block` rules. After grammar change, regenerate parser.c via `tree-sitter generate`.\n\n2. **Parser (reify-syntax)**: Add `Declaration::Purpose(PurposeDef)` to the enum, define `PurposeDef` and `PurposeParam` AST types. Add lowering in `ts_parser.rs` following the trait/structure patterns (lower_purpose, lower_purpose_params, lower_purpose_members).\n\n3. **Compiler (reify-compiler)**: Add `CompiledPurpose` type containing compiled constraints, objectives, and reflective schema query results. Compile purposes in the `compile()` function's pre-pass section. Reflective schema queries (subject.params, subject.geometric_params, etc.) are resolved at compile-time by looking up the bound entity's TopologyTemplate.\n\n4. **Stdlib (reify-stdlib)**: Add determinacy predicates: `determined()`, `constrained()`, `undetermined()`, `partially_determined()`. These inspect DeterminacyState of value cells.\n\n5. **Eval (reify-eval)**: Add purpose activation/deactivation API on Engine. When activated, inject the purpose's compiled constraints/objectives into the evaluation graph; when deactivated, remove them.\n\nKey design consideration: Purposes bind entity references (Structure names), not instances. The reflective queries resolve at compile-time against the TopologyTemplate of the bound structure. Activation at eval-time injects constraints into a specific entity instance.\n\n## Review Fix Analysis\n\nFive blocking issues were identified during review:\n\n1. **api_contract_violation** (builders.rs) \u2014 ALREADY FIXED: `compiled_purposes: Vec::new()` is already present in CompiledModuleBuilder::build() at line 513. No action needed.\n\n2. **missing_assertion** (purpose_compile_tests.rs) \u2014 The `compile_module` helper only checks parse errors but not compile-level Severity::Error diagnostics. Fixed in steps 19-20.\n\n3. **state_consistency** (eval lib.rs) \u2014 Calling eval() a second time replaces eval_state with a fresh snapshot but doesn't clear active_purposes/active_objective_map. Fixed in steps 21-22.\n\n4. **data_loss_silent_failure** (compiler Let arm in compile_purpose) \u2014 The Let arm compiled the expression but discarded it. Fixed in steps 23-24 by emitting Severity::Error diagnostic.\n\n5. **data_loss_silent_failure** (compiler wildcard arm in compile_purpose) \u2014 The `_ => {}` catch-all at line 1434 silently discards all unhandled MemberDecl variants: GuardedGroup, Param, Sub, Port, Connect, Chain, and AssociatedType. The grammar's `purpose_member` reuses `guarded_block`, so a user can write a where-guarded constraint block in a purpose body \u2014 it parses successfully into MemberDecl::GuardedGroup but is silently dropped at compile time with no diagnostic. This is the same category of silent data loss as the Let issue fixed in step 24. Fix: replace the wildcard with explicit arms for each unhandled variant, each emitting a Severity::Error diagnostic. Steps 25-26.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Create example file examples/m5_purpose.ri with purpose declaration syntax for integration tests",
-      "status": "done",
-      "commit": "6e29cfea",
->>>>>>> task/78
-      "tests": []
-    }
-  ],
+  "analysis": "Task 95 adds interactive 3D selection to the viewport. The existing codebase follows a clean factory-function pattern: scene.ts, controls.ts, meshManager.ts each export a `create*` function returning a context object with methods and a dispose. Tests mock three.js via vi.mock('three') with inline mock classes.\n\nThe core new module is `selection.ts` \u2014 a `createSelection` factory that wraps Three.js Raycaster for pointer-based hover/click detection on meshes managed by meshManager. It will: (1) resolve pointer coords to entity paths via raycasting, (2) apply emissive highlight on hover, (3) create WireframeGeometry+LineSegments overlay on selection, (4) provide fitToView to frame all content, and (5) expose dispose for cleanup. Viewport.tsx will be extended to wire selection into the render loop, render a floating tooltip on hover, an evaluating spinner overlay when evalStatus.phase !== idle, and a fit-to-view button.\n\nKey considerations: The meshManager already stores entity_path as mesh.name and exposes getSceneMeshes() returning Map<string, Mesh> \u2014 perfect for raycasting. The selectionStore has selectEntity/hoverEntity. The engineStore has evalStatus with phase 'idle'|'evaluating'|'resolving'. All Three.js dependencies will be mocked in tests following the established pattern.\n\nThe Viewport component currently accepts only {meshes} prop. It will be extended to accept optional callbacks (onHover, onSelect), evalStatus, hoveredEntity, selectedEntity, and a fitToView ref. This keeps the component testable with simple prop injection, matching the existing pattern from task 93 where stores are created in App and passed as props.\n\n--- REVIEW FIX ADDENDUM (round 1) ---\nPost-implementation review identified two blocking issues:\n1. Fit-to-view button broken: onClick calls props.onFitToView?.() but never selection.fitToView(). Fix: mutable ref pattern.\n2. Material resource leak: removeWireframe() disposes WireframeGeometry but not LineBasicMaterial. Fix: add material.dispose().\n\n--- REVIEW FIX ADDENDUM (round 2) ---\nSecond review identified three additional blocking performance/robustness issues:\n3. hot_path_layout_thrashing: getBoundingClientRect() called on every pointermove forces synchronous layout reflow at mouse sampling rate (60-1000 Hz). Fix: cache DOMRect in closure, invalidate lazily on resize via a ResizeObserver or an onResize() method that Viewport.tsx calls from its existing ResizeObserver.\n4. hot_path_missing_raf_throttle: Full raycast (setFromCamera + intersectObjects) runs synchronously on every pointermove with no frame-rate gating. At 1000 Hz with even modest scenes, this saturates the main thread. Fix: store pendingMoveEvent in closure, schedule rAF only if not already queued, consume latest event in rAF callback. Cancel outstanding rAF in dispose().\n5. stale_resource_state: Wireframe overlay uses WireframeGeometry snapshot from construction time. When meshManager.sync() updates geometry after engine re-evaluation, the wireframe shows the old shape. The selectedEntity effect in Viewport.tsx doesn't track mesh data changes. Fix: make the selectedEntity effect also depend on props.meshes so it re-runs setSelected() when geometry changes, rebuilding the wireframe.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-<<<<<<< HEAD
-      "description": "Write failing test in crates/reify-compiler/tests/collection_sub_tests.rs: parse `structure S { sub bolts : List<Bolt> }` using reify_syntax::parse(). Assert the parsed SubDecl has is_collection==true, structure_name=='Bolt', name=='bolts'. Also test that `structure S { sub rib = Rib() }` produces is_collection==false.",
+      "description": "Write failing tests for createSelection factory skeleton: returns object with setHovered, setSelected, fitToView, dispose methods. Mock Three.js Raycaster, WireframeGeometry, LineSegments, LineBasicMaterial, Box3, Vector3, Color. Follow same vi.mock('three') pattern as meshManager.test.ts.",
       "status": "done",
-      "commit": "1afec5e"
-=======
-      "description": "Write failing grammar test: parse a simple purpose declaration (purpose mfg_ready(subject : Structure) { constraint subject.params == subject.params }) and verify the tree-sitter CST contains a purpose_declaration node. Add grammar rule for purpose_declaration, purpose_param, purpose_member to grammar.js.",
-      "status": "done",
-      "commit": "573110e"
->>>>>>> task/78
+      "commit": "7d990f3"
     },
     {
       "id": "step-2",
       "type": "impl",
-<<<<<<< HEAD
-      "description": "Implement collection sub parsing in ts_parser.rs lower_sub(). Detect if the sub_declaration node uses the collection form (has 'List' keyword and ':' separator). This can be detected by checking for a child matching 'List' text or by checking whether the '=' or ':' token is present. When collection form: set is_collection=true and extract structure_name from the element type field. When standard `=` form: set is_collection=false as before.",
+      "description": "Implement createSelection factory skeleton in selection.ts. Accepts {scene, camera, domElement, getMeshes: () => Map<string, Mesh>, onHover: (path: string|null) => void, onSelect: (path: string|null) => void}. Returns SelectionContext with stub methods (setHovered, setSelected, fitToView, dispose). Export from viewport/index.ts.",
       "status": "done",
-      "commit": "7283b0b"
-=======
-      "description": "Add purpose_declaration, purpose_param, purpose_member rules to tree-sitter-reify/grammar.js. Add purpose_declaration to _declaration choice. purpose_member reuses constraint_declaration, let_declaration, minimize_declaration, maximize_declaration, guarded_block. Run tree-sitter generate to regenerate parser.c. Add purpose_param to conflicts array.",
-      "status": "done",
-      "commit": "9bb688f"
->>>>>>> task/78
+      "commit": "89150c5"
     },
     {
       "id": "step-3",
       "type": "test",
-<<<<<<< HEAD
-      "description": "Write failing test: compile `structure Bolt { param diameter : Scalar = 10mm } structure S { sub bolts : List<Bolt> }` and assert the compiled SubComponentDecl has is_collection==true and structure_name=='Bolt'. Also verify existing `sub rib = Rib()` compiles with is_collection==false.",
+      "description": "Write failing tests for pointer-based hover raycasting: simulate pointermove event on domElement, verify Raycaster.setFromCamera called with normalized device coordinates computed from event clientX/Y relative to domElement bounds, and raycaster.intersectObjects called with mesh array from getMeshes(). When intersection found, onHover called with mesh.name. When no intersection, onHover called with null.",
       "status": "done",
-      "commit": "b04728f"
-=======
-      "description": "Write failing syntax test in crates/reify-syntax/tests/purpose_tests.rs: parse 'purpose manufacturing_ready(subject : Structure) { constraint forall p in subject.params: determined(p) }' and assert it produces a Declaration::Purpose(PurposeDef) with name='manufacturing_ready', 1 param (name='subject', entity_kind='Structure'), 1 member (Constraint).",
-      "status": "done",
-      "commit": "0fdd5e2"
->>>>>>> task/78
+      "commit": "762cf48"
     },
     {
       "id": "step-4",
       "type": "impl",
-<<<<<<< HEAD
-      "description": "Propagate is_collection from SubDecl to SubComponentDecl in compiler. In compile_entity() where SubComponentDecl is constructed (around line 1883), copy is_collection from the parsed SubDecl. Collection subs have no args (empty vec) since the `List<T>` form doesn't take constructor args.",
+      "description": "Implement pointermove handler in createSelection: compute NDC from event coords and domElement rect, call raycaster.setFromCamera + intersectObjects on Array.from(getMeshes().values()), call onHover with first intersection's object.name or null. Register handler via domElement.addEventListener('pointermove', ...).",
       "status": "done",
-      "commit": "e4ccdd2"
-=======
-      "description": "Add PurposeDef and PurposeParam AST types to crates/reify-syntax/src/lib.rs. Add Declaration::Purpose variant. Implement lower_purpose, lower_purpose_params, lower_purpose_members in ts_parser.rs. Register 'purpose_declaration' in lower_source_file dispatch.",
-      "status": "done",
-      "commit": "9bb688f"
->>>>>>> task/78
+      "commit": "f5bef73"
     },
     {
       "id": "step-5",
       "type": "test",
-<<<<<<< HEAD
-      "description": "Write failing test: compile `structure S { param n : Int = 4  sub bolts : List<Bolt>  constraint bolts.count == n }`. Assert: (1) a synthetic count ValueCell '__count_bolts' exists in template.value_cells with type Int and Let kind, (2) its ID is in template.structure_controlling, (3) its default_expr is a ValueRef to 'n'.",
+      "description": "Write failing tests for hover emissive highlight: setHovered('A') applies emissive color (theme accent) to mesh A's MeshStandardMaterial. setHovered(null) resets emissive to black (0x000000). Changing hover from A to B resets A's emissive and highlights B's emissive. setHovered with unknown entity path is a no-op.",
       "status": "done",
-      "commit": "fcec8b3"
-=======
-      "description": "Write additional syntax tests: purpose with pub visibility, purpose with type_parameters, purpose with multiple params, purpose with minimize/maximize members, purpose with where guard, purpose with let declarations.",
-      "status": "done",
-      "commit": "ee9c8ea"
->>>>>>> task/78
+      "commit": "d49f9e9"
     },
     {
       "id": "step-6",
       "type": "impl",
-<<<<<<< HEAD
-      "description": "Implement count constraint recognition in the compiler. When compiling constraints in compile_entity(), detect pattern `<collection_name>.count == <expr>` where the LHS is a MemberAccess with member='count' and object matching a collection sub-component name. Create a synthetic Let ValueCell `{entity}.__count_{name}` (Int type, expr = constraint RHS), add it to structure_controlling. Store the count cell ID in SubComponentDecl.count_cell. The constraint itself is still compiled normally.",
+      "description": "Implement setHovered in createSelection: track previousHoveredPath, look up mesh in getMeshes(), reset previous mesh's material.emissive to Color(0x000000), apply highlight Color to new mesh's material.emissive. Store highlight color as constant derived from THEME_TOKENS.accent.",
       "status": "done",
-      "commit": "e006fe4"
-=======
-      "description": "Ensure all purpose_member variants parse correctly - fix any issues with pub keyword detection, type parameters lowering, and member variety.",
-      "status": "done",
-      "commit": "9bb688f"
->>>>>>> task/78
+      "commit": "33e624b"
     },
     {
       "id": "step-7",
       "type": "test",
-<<<<<<< HEAD
-      "description": "Write failing test in crates/reify-eval/tests/collection_sub_eval.rs: Build module with Parent (param n : Int = 4, count_cell __count_bolts with expr=ValueRef(n), collection sub bolts: List<Bolt>) and Child (Bolt with param diameter). Use TopologyTemplateBuilder with new collection_sub_component() method. After EvaluationGraph::from_templates(), assert 4 scoped ValueCellNodes exist: Parent.bolts[0].diameter through Parent.bolts[3].diameter.",
+      "description": "Write failing tests for click-based selection raycasting: simulate pointerdown event on domElement, verify raycaster used same as hover, onSelect called with mesh.name on intersection, onSelect(null) on miss.",
       "status": "done",
-      "commit": "c93fc6c"
-=======
-      "description": "Write failing stdlib test: eval_builtin('determined', &[Value::Scalar{si_value:0.08, dimension:LENGTH}]) should return Value::Bool(true) (stub returns Undef currently). Test determined/undetermined/constrained/partially_determined with various DeterminacyState values.",
-      "status": "done",
-      "commit": "842daa9"
->>>>>>> task/78
+      "commit": "be23945"
     },
     {
       "id": "step-8",
       "type": "impl",
-<<<<<<< HEAD
-      "description": "Add collection_sub_component() method to TopologyTemplateBuilder that creates SubComponentDecl with is_collection=true and count_cell. Add a structure_controlling_cell() method to add arbitrary IDs to structure_controlling. Implement collection elaboration in EvaluationGraph::from_templates(): when sub.is_collection and sub.count_cell is Some, check if the count cell's value can be statically determined (look up the count cell in the graph); for builder-based tests, create N instances based on the count cell's default_expr literal value. Each instance has scoped IDs `Parent.name[i]` with child template value cells.",
+      "description": "Implement pointerdown handler in createSelection: same raycast logic as hover, call onSelect. Register via domElement.addEventListener('pointerdown', ...).",
       "status": "done",
-      "commit": "cd40524"
-=======
-      "description": "Add determinacy predicates to reify-stdlib/src/lib.rs: determined(), constrained(), undetermined(), partially_determined(). These currently return Undef as stubs since the stdlib eval_builtin only receives Value args, not DeterminacyState. Instead, add a new Value variant or use a convention (e.g., Value::DeterminacyTag) to carry determinacy info. The simpler approach: these predicates will be handled at the eval layer (like sample), not in stdlib - add stubs in stdlib that return Undef, and test that the stubs exist.",
-      "status": "done",
-      "commit": "5ce2e49"
->>>>>>> task/78
+      "commit": "4411728"
     },
     {
       "id": "step-9",
       "type": "test",
-<<<<<<< HEAD
-      "description": "Write failing test: Engine.eval() with collection count=4 produces 4 Bolt instances with their own values. Build module with Parent (n=4, collection sub bolts) and Bolt (param diameter=10mm). After eval(), assert Parent.bolts[0].diameter through Parent.bolts[3].diameter have correct values in snapshot. Also assert the count cell __count_bolts has value Int(4).",
+      "description": "Write failing tests for wireframe overlay on selection: setSelected('A') creates WireframeGeometry from mesh A's geometry, creates LineSegments with LineBasicMaterial(accent color), adds LineSegments to scene. setSelected(null) removes LineSegments from scene and disposes WireframeGeometry. Changing selection from A to B removes A's wireframe, creates B's. setSelected with unknown entity is a no-op (no wireframe, no crash).",
       "status": "done",
-      "commit": "36ae413"
-=======
-      "description": "Write failing compiler test in crates/reify-compiler/tests/purpose_compile_tests.rs: compile a module with a purpose declaration and a structure, assert CompiledModule has a compiled_purposes vec with one CompiledPurpose containing the purpose name, param bindings, and compiled constraints.",
-      "status": "done",
-      "commit": "724b8d2"
->>>>>>> task/78
+      "commit": "cbe382c"
     },
     {
       "id": "step-10",
       "type": "impl",
-<<<<<<< HEAD
-      "description": "Implement collection sub-component evaluation in Engine.eval(). In the sub-component elaboration phase (around line 830), handle is_collection subs: (1) evaluate the count cell to determine N, (2) if count is Int(N), elaborate N instances of the child template with scoped entity prefix `Parent.name[i]`, (3) evaluate each instance's params with arg defaults from the child template, (4) evaluate each instance's let bindings. Skip elaboration if count is Undef.",
+      "description": "Implement setSelected in createSelection: track current wireframe LineSegments object. On deselect, remove from scene and dispose geometry. On select, create WireframeGeometry from mesh.geometry, create LineSegments with LineBasicMaterial({color: accent}), add to scene.",
       "status": "done",
-      "commit": "f8b8176"
-=======
-      "description": "Add CompiledPurpose type to reify-compiler/src/lib.rs with fields: name, is_pub, params (Vec<CompiledPurposeParam>), constraints (Vec<CompiledConstraint>), objective (Option<OptimizationObjective>), content_hash. Add compiled_purposes field to CompiledModule. Add compile_purpose function. In compile(), add pre-pass for purpose declarations (after template compilation so reflective queries can resolve).",
-      "status": "done",
-      "commit": "5ac1645"
->>>>>>> task/78
+      "commit": "4b33ead"
     },
     {
       "id": "step-11",
       "type": "test",
-<<<<<<< HEAD
-      "description": "Write failing test: count Undef means no instances. Build module where count cell has no default (or depends on an Undef param). After eval(), assert no scoped value cells exist for bolts[i] instances.",
+      "description": "Write failing tests for fitToView: with meshes in scene, fitToView computes bounding box via Box3.expandByObject for each mesh, calculates center and size, positions camera at appropriate distance based on bounding sphere radius and camera FOV, calls camera.lookAt(center). With no meshes, fitToView is a no-op (no crash).",
       "status": "done",
-      "commit": "ca5ff78"
-=======
-      "description": "Write failing compiler test: compile purpose with reflective schema query 'subject.params' \u2014 verify the compiled purpose resolves the query to a list of ValueCellIds from the bound structure's template.",
-      "status": "done",
-      "commit": "45b7879"
->>>>>>> task/78
+      "commit": "19bbb7f"
     },
     {
       "id": "step-12",
       "type": "impl",
-<<<<<<< HEAD
-      "description": "Handle Undef count in collection elaboration. In both from_templates() and Engine.eval(), when count cell evaluates to Undef or non-Int, skip instance creation. The count cell itself remains in the snapshot with its Undef value.",
+      "description": "Implement fitToView in createSelection: create Box3, iterate getMeshes() calling box.expandByObject(mesh), compute center via box.getCenter, compute size via box.getSize, calculate distance = max(sizeX, sizeY, sizeZ) / (2 * tan(camera.fov/2 * PI/180)), set camera.position to center offset by distance on Z, call camera.lookAt(center), camera.updateProjectionMatrix().",
       "status": "done",
-      "commit": "f8b8176"
-=======
-      "description": "Implement reflective schema query resolution in compile_purpose: when compiling expressions that reference purpose_param.member_access (e.g., subject.params, subject.geometric_params, subject.sub_entities, subject.ports, subject.constraints), resolve them at compile-time by looking up the bound entity's TopologyTemplate and extracting the relevant list of identifiers.",
-      "status": "done",
-      "commit": "c65ee66"
->>>>>>> task/78
+      "commit": "f810587"
     },
     {
       "id": "step-13",
       "type": "test",
-<<<<<<< HEAD
-      "description": "Write failing test: count change 4->6 triggers re-elaboration. Build module with Parent (param n=4, collection sub bolts, count cell __count_bolts = n). Initial eval with n=4 produces 4 instances. edit_param(n, Int(6)). Assert: (1) topology_fingerprint changes, (2) 6 instances now exist (bolts[0] through bolts[5]), (3) new instances bolts[4] and bolts[5] have correct value cells.",
+      "description": "Write failing tests for dispose: verify domElement.removeEventListener called for both 'pointermove' and 'pointerdown' handlers. If wireframe exists, it is removed from scene and disposed.",
       "status": "done",
-      "commit": "7649e25"
-=======
-      "description": "Write failing eval test in crates/reify-eval/tests/purpose_eval.rs: test Engine::activate_purpose injects constraints into the evaluation graph, and deactivate_purpose removes them. Test with a simple structure + purpose.",
-      "status": "done",
-      "commit": "0cbfb4e"
->>>>>>> task/78
+      "commit": "40c861e"
     },
     {
       "id": "step-14",
       "type": "impl",
-<<<<<<< HEAD
-      "description": "Implement count-based re-elaboration in Engine's incremental eval. In the guard re-elaboration phase (around line 1276), extend to also handle collection count cells. When a structure_controlling cell is a count cell and its value changed: (1) determine old vs new count, (2) remove old scoped instances from graph and values, (3) create new instances based on new count, (4) evaluate new instances, (5) recompute topology fingerprint. Also handle in the parallel incremental_eval path (around line 1508).",
+      "description": "Implement dispose in createSelection: remove pointermove and pointerdown listeners from domElement, clean up wireframe if present (remove from scene, dispose geometry).",
       "status": "done",
-      "commit": "3f20328"
-=======
-      "description": "Add activate_purpose(purpose_name, entity_ref) and deactivate_purpose(purpose_name) methods to Engine in reify-eval/src/lib.rs. Activation injects the compiled purpose's constraints and objectives into the current evaluation state. Deactivation removes them. Track active purposes in Engine state.",
-      "status": "done",
-      "commit": "a4e8d1a"
->>>>>>> task/78
+      "commit": "1b0ff69"
     },
     {
       "id": "step-15",
       "type": "test",
-<<<<<<< HEAD
-      "description": "Write failing test: bolts[0].diameter access via compiled expression. Parse and compile `structure Bolt { param diameter : Scalar = 10mm } structure S { sub bolts : List<Bolt>  constraint bolts.count == 4  let d = bolts[0].diameter }`. Assert: the let binding 'd' compiles to a ValueRef or IndexAccess expression that can resolve to Parent.bolts[0].diameter.",
+      "description": "Write failing tests for updated Viewport.tsx: (1) Viewport with onHover/onSelect props wires them through createSelection, (2) tooltip div with data-testid='viewport-tooltip' appears when hoveredEntity prop is set and shows the entity name, (3) tooltip hidden when hoveredEntity is null, (4) spinner overlay with data-testid='viewport-spinner' appears when evalStatus.phase is 'evaluating', (5) spinner hidden when evalStatus.phase is 'idle', (6) fit-to-view button with data-testid='fit-to-view' exists.",
       "status": "done",
-      "commit": "2fb4b45"
-=======
-      "description": "Write eval test: activate purpose with minimize objective \u2192 verify optimization objective is active in the engine. Deactivate \u2192 verify it's removed.",
-      "status": "done",
-      "commit": "b3a20be"
->>>>>>> task/78
+      "commit": "0f460b5"
     },
     {
       "id": "step-16",
       "type": "impl",
-<<<<<<< HEAD
-      "description": "Implement indexed collection member access in the compiler. When compiling expression `name[i].member` where `name` is a collection sub: if `i` is a literal integer, resolve to ValueRef with scoped ID `Parent.name[i].member`. If `i` is a non-literal expression, compile as IndexAccess+MemberAccess chain (dynamic indexing). Register collection sub names in CompilationScope so the compiler can distinguish collection access from regular index access.",
+      "description": "Update Viewport.tsx: extend ViewportProps with optional onHover, onSelect, hoveredEntity, selectedEntity, evalStatus, onFitToView. In onMount, create selection via createSelection, wire onHover/onSelect. Add createEffect watching hoveredEntity \u2192 call selection.setHovered, createEffect watching selectedEntity \u2192 call selection.setSelected. Render tooltip overlay (Show when hoveredEntity), spinner overlay (Show when evalStatus?.phase !== 'idle'), fit-to-view button. Dispose selection in onCleanup. Update viewport/index.ts exports for SelectionContext.",
       "status": "done",
-      "commit": "435b6fe"
-=======
-      "description": "Handle purpose objectives in activate/deactivate: when a purpose has a minimize/maximize member, inject/remove the OptimizationObjective from the engine's active objectives.",
-      "status": "done",
-      "commit": "aa4fb48"
->>>>>>> task/78
+      "commit": "d529fa9"
     },
     {
       "id": "step-17",
       "type": "test",
-<<<<<<< HEAD
-      "description": "Write failing test: `let n = bolts.count` compiles and evaluates to the count value. Parse and compile a structure with collection sub and `let n = bolts.count`. Eval and assert n == Int(4). This should compile bolts.count as a ValueRef to the __count_bolts cell.",
+      "description": "REVIEW FIX: Write failing tests for two issues: (1) In selection.test.ts, add test 'removeWireframe disposes LineBasicMaterial' \u2014 call setSelected('A') then setSelected(null), assert wireframe.material.dispose was called. Add test 'dispose disposes wireframe material if wireframe exists' \u2014 call setSelected('A') then dispose(), assert wireframe.material.dispose was called. Add test 'changing selection disposes previous wireframe material' \u2014 call setSelected('A') then setSelected('B'), assert first wireframe's material.dispose was called. (2) In Viewport.test.tsx, add test 'clicking fit-to-view button calls selection.fitToView' \u2014 render Viewport, find button by data-testid 'fit-to-view', fireEvent.click it, assert mockSelectionFitToView was called. Also assert props.onFitToView callback is still called (both should fire).",
       "status": "done",
-      "commit": "203100b"
-=======
-      "description": "Write integration test: full pipeline parse\u2192compile\u2192eval with purpose declaration. Verify purpose compiles, activating it injects constraints that evaluate correctly against the bound entity's param values.",
-      "status": "done",
-      "commit": "3a10984"
->>>>>>> task/78
+      "commit": "a5d4a7b"
     },
     {
       "id": "step-18",
       "type": "impl",
-<<<<<<< HEAD
-      "description": "Implement bolts.count expression compilation. When the compiler sees MemberAccess with object being a collection sub name and member being 'count', compile it as a ValueRef to the count cell `__count_{name}`. This is simpler than a MethodCall since the count cell already exists as a Let binding.",
+      "description": "REVIEW FIX: Fix both issues: (1) In selection.ts removeWireframe(), add `(currentWireframe.material as LineBasicMaterial).dispose()` after geometry.dispose() and before nulling the reference. This ensures the material is freed on every wireframe removal (deselect, re-select, and dispose). (2) In Viewport.tsx, declare `let doFitToView: (() => void) | undefined` in the Viewport function scope before onMount. Inside onMount, after creating `selection`, assign `doFitToView = () => selection.fitToView()`. Change the button onClick from `() => props.onFitToView?.()` to `() => { doFitToView?.(); props.onFitToView?.(); }`. This bridges the onMount-scoped selection instance to the JSX click handler via a mutable ref while keeping selection private to the mount closure.",
       "status": "done",
-      "commit": "435b6fe"
-=======
-      "description": "Fix any integration issues discovered. Ensure the Declaration::Purpose variant is properly handled in all match statements in the compile function (similar to how Declaration::Trait/Field are handled). Verify no regressions in existing tests.",
-      "status": "done",
-      "commit": "d8a8579"
->>>>>>> task/78
+      "commit": "8d61290"
     },
     {
       "id": "step-19",
       "type": "test",
-<<<<<<< HEAD
-      "description": "Write integration test: collection operations on sub-structure instances. Build module using builders: Parent with collection sub bolts (count=3), Bolt with param grade (default=8.8). Create a let binding that gathers bolt grades into a list and calls .all(). Verify eval produces correct results. Note: this tests that collection method dispatch works on sub-structure instance lists, using the existing .all() method on List values.",
+      "description": "REVIEW FIX (hot_path_layout_thrashing): Write failing tests in selection.test.ts for cached DOMRect behavior. (1) 'computeNDC uses cached rect and does not call getBoundingClientRect on every pointermove' \u2014 dispatch two pointermove events, assert domElement.getBoundingClientRect was called only once (lazy population on first event). (2) 'invalidateRect causes next pointermove to re-read getBoundingClientRect' \u2014 dispatch pointermove (populates cache), call selection.invalidateRect(), dispatch another pointermove, assert getBoundingClientRect was called twice total. (3) 'pointerdown also uses cached rect' \u2014 dispatch pointerdown after pointermove, assert getBoundingClientRect still called only once. Add invalidateRect to the SelectionContext interface assertion in the factory skeleton test. Spy on domElement.getBoundingClientRect to count calls.",
       "status": "done",
-      "commit": "2660c4a"
-=======
-      "description": "REVIEW FIX [missing_assertion]: Write a failing test in purpose_compile_tests.rs that compiles a purpose referencing an unknown identifier (e.g., `constraint nonexistent_var > 0mm`) through the compile_module helper. Currently the test passes silently because compile_module doesn't check for Severity::Error diagnostics. The test should assert that the helper catches compile errors, demonstrating the gap.",
-      "status": "done",
-      "commit": "ca12a08"
->>>>>>> task/78
+      "commit": "6aa71e5"
     },
     {
       "id": "step-20",
       "type": "impl",
-<<<<<<< HEAD
-      "description": "Implement collection value aggregation. When a collection sub name is referenced in an expression context (not as .count or [i].member), create a synthetic List value by gathering instance values. Add logic in Engine.eval() (or as a Let binding in from_templates()) that for each collection sub with determined count, creates a List<StructureRef> value from instance references. This enables .map(), .all(), .any() etc. to work on the collection.",
+      "description": "REVIEW FIX (hot_path_layout_thrashing): In selection.ts, add `let cachedRect: DOMRect | null = null` in the factory closure. Replace `domElement.getBoundingClientRect()` in computeNDC with a helper `getRect()` that returns cachedRect if non-null, otherwise calls `cachedRect = domElement.getBoundingClientRect()` and returns it. Add `invalidateRect()` method that sets `cachedRect = null`. Export invalidateRect on SelectionContext interface. In Viewport.tsx, call `selection.invalidateRect()` inside the existing ResizeObserver callback (alongside the existing `resize(w, h)` call), so the rect cache is invalidated whenever the viewport container resizes.",
       "status": "done",
-      "commit": "2660c4a"
-=======
-      "description": "REVIEW FIX [missing_assertion]: Update the compile_module helper in purpose_compile_tests.rs to check for compile-level diagnostics after calling reify_compiler::compile(). Add: `let errors: Vec<_> = module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect(); assert!(errors.is_empty(), \"compile errors: {:?}\", errors);` \u2014 mirroring the parse_and_compile helper in purpose_eval.rs. Add `use reify_types::Severity;` to imports.",
-      "status": "done",
-      "commit": "c96803e"
->>>>>>> task/78
+      "commit": "bb9e05d"
     },
     {
       "id": "step-21",
       "type": "test",
-<<<<<<< HEAD
-      "description": "[REVIEW FIX: unnecessary_full_collection_rebuild] Write test for ValueMap::remove() in crates/reify-types/src/value.rs (unit test in existing #[cfg(test)] mod tests block). Insert 3 entries, remove the middle one, assert it's gone and the other two remain. Also write an eval test in crates/reify-eval/tests/collection_sub_eval.rs: count change 4\u21922, then verify that bolts[0] and bolts[1] values remain in the snapshot but bolts[2] and bolts[3] are gone (not just overwritten). This catches the O(V_total) rebuild behavior \u2014 the test itself will pass with the current impl since correctness is maintained, but the impl step will replace the rebuild with surgical removal.",
+      "description": "REVIEW FIX (hot_path_missing_raf_throttle): Write failing tests in selection.test.ts for rAF-throttled pointermove raycasting. (1) 'pointermove does not raycast synchronously \u2014 stores pending event and schedules rAF' \u2014 dispatch pointermove, assert raycaster.setFromCamera was NOT called synchronously, assert requestAnimationFrame was called. (2) 'rAF callback performs raycast with latest pending event' \u2014 dispatch pointermove, invoke the captured rAF callback, assert raycaster.setFromCamera was called once and onHover was called. (3) 'multiple rapid pointermoves only schedule one rAF and raycast uses the last event' \u2014 dispatch 3 pointermove events with different clientX, assert requestAnimationFrame was called only once, invoke rAF callback, assert raycaster.setFromCamera called once with NDC from the last event's coords. (4) 'pointerdown still raycasts synchronously (not throttled)' \u2014 dispatch pointerdown, assert raycaster.setFromCamera called immediately without rAF. (5) 'dispose cancels outstanding rAF' \u2014 dispatch pointermove, call dispose(), assert cancelAnimationFrame was called with the rAF id. Mock requestAnimationFrame and cancelAnimationFrame in the test setup.",
       "status": "done",
-      "commit": "ef96277"
-=======
-      "description": "REVIEW FIX [state_consistency]: Write a failing test in purpose_eval.rs that: (1) compiles a module with a structure + purpose, (2) calls engine.eval(), (3) activates the purpose, (4) asserts is_purpose_active() == true, (5) calls engine.eval() again with the same module, (6) asserts is_purpose_active() == false (stale state should be cleared). Currently this fails because eval() doesn't clear active_purposes, so is_purpose_active() still returns true after the second eval() despite the purpose's constraints being gone from the fresh snapshot.",
-      "status": "done",
-      "commit": "d7bc605"
->>>>>>> task/78
+      "commit": "4f4167a"
     },
     {
       "id": "step-22",
       "type": "impl",
-<<<<<<< HEAD
-      "description": "[REVIEW FIX: unnecessary_full_collection_rebuild] Add `pub fn remove(&mut self, id: &ValueCellId)` method to ValueMap in crates/reify-types/src/value.rs, delegating to `self.inner.remove(id)`. Then in crates/reify-eval/src/lib.rs, replace the 7-line full rebuild at lines 1625-1630 (`let mut new_values = ValueMap::new(); for (id, (val, _)) in new_snapshot.values.iter() { new_values.insert(...) } values = new_values;`) with surgical removal: in the old-instance removal loop (lines 1560-1567), add `values.remove(&scoped_id)` alongside the existing `new_snapshot.graph.value_cells.remove()` and `new_snapshot.values.remove()` calls. This reduces per-count-change work from O(V_total) to O(count_diff \u00d7 child_cells).",
+      "description": "REVIEW FIX (hot_path_missing_raf_throttle): In selection.ts, refactor handlePointerMove to use pending-event + rAF throttle pattern. Add closure variables: `let pendingMoveEvent: Event | null = null; let hoverRafId = 0;`. In handlePointerMove, assign `pendingMoveEvent = event`, then only if `hoverRafId === 0`, schedule `hoverRafId = requestAnimationFrame(processHover)`. The `processHover` function reads `pendingMoveEvent`, clears it and `hoverRafId`, then performs the raycast + onHover call. pointerdown handler remains synchronous (click selection should not be delayed). In dispose(), add `if (hoverRafId) cancelAnimationFrame(hoverRafId)` before removing listeners.",
       "status": "done",
-      "commit": "18b0abb"
-=======
-      "description": "REVIEW FIX [state_consistency]: At the start of Engine::eval() in reify-eval/src/lib.rs, add `self.active_purposes.clear(); self.active_objective_map.clear();` immediately after the line `self.compiled_purposes = module.compiled_purposes.clone();` (line 713). This ensures stale purpose state from previous eval() calls is cleared when a fresh snapshot is built. Callers must re-activate purposes after a full eval() call.",
-      "status": "done",
-      "commit": "5f2d303"
->>>>>>> task/78
+      "commit": "0515136"
     },
     {
       "id": "step-23",
       "type": "test",
-<<<<<<< HEAD
-      "description": "[REVIEW FIX: incorrect_type_annotation + missing_meaningful_assertion] In crates/reify-compiler/tests/collection_sub_tests.rs: (1) Update the existing `compile_indexed_collection_member_access` test to add `assert_eq!(expr.result_type, reify_types::Type::Real)` after the ValueRef match \u2014 this documents the current (incorrect) behavior and will be changed to the correct type assertion in the impl step. (2) Add a new test `compile_indexed_collection_member_access_preserves_type` that compiles `structure Bolt { param count_per_row : Int = 4 } structure S { sub bolts : List<Bolt> constraint bolts.count == 4 let c = bolts[0].count_per_row }` and asserts `expr.result_type == Type::Int`. This test will FAIL because the compiler currently hardcodes Type::Real for all indexed member accesses.",
+      "description": "REVIEW FIX (stale_resource_state): Write failing test in Viewport.test.tsx: 'selectedEntity effect re-runs setSelected when props.meshes changes' \u2014 render Viewport with selectedEntity='A' and meshes={initial}, assert mockSelectionSetSelected was called with 'A'. Then update props.meshes to a new object (simulating engine re-evaluation), assert mockSelectionSetSelected was called again with 'A' (rebuilding the wireframe from updated geometry). Use SolidJS createSignal to drive reactive prop changes in the test.",
       "status": "done",
-      "commit": "032793e"
-=======
-      "description": "REVIEW FIX [data_loss_silent_failure]: Write a test in purpose_compile_tests.rs that compiles a purpose containing a let binding (e.g., `let half_w = subject.width / 2; constraint half_w > 10mm`). Assert that the compiler emits a Severity::Error diagnostic indicating that let bindings in purposes are not yet supported. Currently the Let arm discards the compiled expression silently, producing a CompiledPurpose with constraints that reference ValueCellIds with no backing node in the eval graph.",
-      "status": "done",
-      "commit": "52e1900"
->>>>>>> task/78
+      "commit": "beec122"
     },
     {
       "id": "step-24",
       "type": "impl",
-<<<<<<< HEAD
-      "description": "[REVIEW FIX: incorrect_type_annotation] Fix the hardcoded `Type::Real` at lines 896 and 907 of crates/reify-compiler/src/lib.rs. Approach: (1) Add `collection_sub_member_types: HashMap<String, HashMap<String, Type>>` field to CompilationScope (maps collection_name \u2192 { member_name \u2192 Type }). (2) Add `compiled_templates: &[TopologyTemplate]` parameter to compile_entity(). Update both call sites in compile() (lines 1394, 1423) to pass `&templates`. (3) In the first-pass Sub registration (around line 1701), when is_collection is true, look up the child template by structure_name from compiled_templates, iterate its value_cells, and populate collection_sub_member_types. (4) In compile_expr_guarded MemberAccess handling (line 896), replace `Type::Real` with a lookup: `scope.collection_sub_member_types.get(name).and_then(|m| m.get(member)).cloned().unwrap_or(Type::Real)`. Apply the same fix at line 907 for the dynamic-index path. (5) Update the step-23 test assertions: change the existing test's assertion to the correct type (Scalar for diameter), and confirm the Int-typed test passes.",
+      "description": "REVIEW FIX (stale_resource_state): In Viewport.tsx, modify the createEffect that watches selectedEntity to also read props.meshes, so it re-runs when either changes. Change from `createEffect(() => { selection.setSelected(props.selectedEntity ?? null); });` to `createEffect(() => { void props.meshes; selection.setSelected(props.selectedEntity ?? null); });`. This ensures that when meshManager.sync() processes updated geometry (triggered by the meshes effect), the selection effect also re-fires, causing setSelected to rebuild the WireframeGeometry from the now-updated mesh geometry. Also update the Viewport.test.tsx mock for selection module to include invalidateRect (from step-20) so existing tests don't break.",
       "status": "done",
-      "commit": "3bbb27b"
-=======
-      "description": "REVIEW FIX [data_loss_silent_failure]: In compile_purpose() in reify-compiler/src/lib.rs, replace the Let arm's `let _ = compiled_expr;` with a diagnostic emission: `diagnostics.push(Diagnostic { severity: Severity::Error, message: format!(\"let bindings in purpose bodies are not yet supported: '{}'\", let_decl.name), span: let_decl.span.clone() });`. Remove the scope.names.insert() call for the let binding so downstream references will also produce 'unknown identifier' diagnostics, preventing silent generation of dangling ValueCellId references.",
-      "status": "done",
-      "commit": "e6050bf"
->>>>>>> task/78
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-<<<<<<< HEAD
-      "description": "[REVIEW FIX: declaration_order_dependency] In crates/reify-compiler/tests/collection_sub_tests.rs, add test `compile_count_constraint_before_sub_declaration` that compiles: `structure Bolt { param diameter : Scalar = 10mm } structure S { param n : Int = 4  constraint bolts.count == n  sub bolts : List<Bolt> }` (note: constraint appears BEFORE the sub declaration). Assert: (1) the SubComponentDecl for 'bolts' has count_cell == Some with member '__count_bolts', (2) the __count_bolts cell exists in structure_controlling. This test will FAIL because the current single-pass code at line 1874 does `sub_components.iter_mut().find(|s| s.name == coll_name)` which returns None when the sub hasn't been pushed yet.",
-      "status": "done",
-      "commit": "e7c03c6"
-=======
-      "description": "REVIEW FIX [data_loss_silent_failure / wildcard catch-all]: Write a test in purpose_compile_tests.rs that compiles a purpose containing a `where` guarded block (e.g., `where subject.width > 10mm { constraint subject.height > 5mm }`). The grammar's `purpose_member` reuses `guarded_block`, so this parses into MemberDecl::GuardedGroup. Use a dedicated helper (e.g., `compile_module_with_diagnostics`) that returns the CompiledModule AND diagnostics without asserting on errors, so the test can assert the compiler emits a Severity::Error diagnostic for the unsupported guarded block. Currently the `_ => {}` wildcard at line 1434 silently drops the GuardedGroup, producing no diagnostic \u2014 the test should expect an error message like 'guarded blocks in purpose bodies are not yet supported'. Also write a second test case for a purpose containing a `param` member (e.g., `param extra_tolerance : Length`) to verify Param also gets rejected with a diagnostic rather than silently dropped.",
-      "status": "done",
-      "commit": "ce1a04c"
->>>>>>> task/78
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-<<<<<<< HEAD
-      "description": "[REVIEW FIX: declaration_order_dependency] In crates/reify-compiler/src/lib.rs, add a reconciliation sweep after the second member-processing pass (after the `for member in structure.members` loop ends, before the template is constructed). For each ValueCellDecl in value_cells whose member name matches `__count_{name}` pattern, find the corresponding SubComponentDecl in sub_components where sub.name == name AND sub.count_cell.is_none(). If found, backfill sub.count_cell = Some(count_cell_id). This handles the case where the count constraint was processed before the sub declaration was pushed. The reconciliation is O(count_cells \u00d7 sub_components) which is negligible.",
-      "status": "done",
-      "commit": "ed34b1d"
-    },
-    {
-      "id": "step-27",
-      "type": "test",
-      "description": "[REVIEW FIX: silent_failure_always_undef] In crates/reify-compiler/tests/collection_sub_tests.rs, add test `compile_dynamic_index_collection_member_access` that compiles: `structure Bolt { param diameter : Scalar = 10mm } structure S { param idx : Int = 0  sub bolts : List<Bolt>  constraint bolts.count == 4  let d = bolts[idx].diameter }`. Since `idx` is non-literal, the compiler takes the dynamic-index path (lines 912-919). Assert: (1) the let binding 'd' compiles to an expression whose collection base is NOT a Literal(Undef) but rather contains a ValueRef to the `__list_bolts` synthetic cell. Specifically, match the compiled expression tree and verify it contains a ValueRef with entity==`S` and member==`__list_bolts`. This test will FAIL because the current code at line 913 creates `CompiledExpr::literal(Value::Undef, ...)` as the collection base. Also add an eval-level test in crates/reify-eval/tests/collection_sub_eval.rs that does end-to-end compilation + eval of `bolts[idx].diameter` where `idx` is a param, and asserts the result is NOT Undef (should be the actual diameter value).",
-      "status": "done",
-      "commit": "ed67483"
-    },
-    {
-      "id": "step-28",
-      "type": "impl",
-      "description": "[REVIEW FIX: silent_failure_always_undef] In crates/reify-compiler/src/lib.rs at lines 912-919, replace `CompiledExpr::literal(Value::Undef, Type::List(Box::new(Type::StructureRef(name.clone()))))` with `CompiledExpr::value_ref(ValueCellId::new(&scope.entity_name, format!(\"__list_{}\", name)), Type::List(Box::new(Type::StructureRef(name.clone()))))`. This makes the dynamic index operate on the actual synthetic `__list_{name}` cell (created by the eval engine during collection elaboration) rather than a constant Undef. The IndexAccess + method_call chain at lines 917-919 remains the same \u2014 only the collection base changes from a literal Undef to a ValueRef to the real list cell. Also emit a compiler diagnostic (Info severity) noting that dynamic collection indexing is only partially supported, using `diagnostics.push(Diagnostic::info(\"dynamic collection index: bolts[<expr>].member \u2014 result depends on runtime list assembly\"))` or similar.",
-      "status": "done",
-      "commit": "5dcc57f"
-    },
-    {
-      "id": "step-29",
-      "type": "test",
-      "description": "[REVIEW FIX: missing_compiler_path_for_collection_aggregation] In crates/reify-compiler/tests/collection_sub_tests.rs, add test `compile_collection_sub_as_standalone_identifier` that compiles: `structure Bolt { param grade : Scalar = 8.8 } structure S { sub bolts : List<Bolt>  constraint bolts.count == 3  let grades = bolts }`. Assert: (1) no compile errors (currently fails with 'unresolved name: bolts'), (2) the let binding 'grades' compiles to a ValueRef with entity=='S' and member=='__list_bolts', (3) result_type is List(StructureRef(\"bolts\")) or similar List type. Also add a source-code integration test (NOT builder API) `compile_and_eval_collection_aggregate_from_source` that compiles and evaluates: `structure Bolt { param grade : Scalar = 8.8 } structure S { sub bolts : List<Bolt>  constraint bolts.count == 3  let grades = bolts }` end-to-end. Assert grades evaluates to a List of 3 values (not Undef). This test catches the compiler path issue that step-19's builder-based test bypasses.",
-      "status": "done",
-      "commit": "5b793cf"
-    },
-    {
-      "id": "step-30",
-      "type": "impl",
-      "description": "[REVIEW FIX: missing_compiler_path_for_collection_aggregation] In crates/reify-compiler/src/lib.rs, in the `ExprKind::Ident` handler (lines 675-688), after the `scope.resolve(name)` returns None (line 680), add a fallback check before the error diagnostic: `if scope.collection_sub_names.contains(name.as_str()) { let list_id = ValueCellId::new(&scope.entity_name, format!(\"__list_{}\", name)); let list_type = Type::List(Box::new(Type::StructureRef(name.clone()))); return CompiledExpr::value_ref(list_id, list_type); }`. This resolves a bare collection sub name (e.g., `bolts`) to its synthetic `__list_bolts` cell, allowing `bolts.all(|b| ...)`, `bolts.map(...)`, and bare `bolts` references to work correctly from source code. The existing `scope.collection_sub_names` registration at line 1717 already ensures the name is known; this step just adds the resolution path in the identifier handler.",
-      "status": "done",
-      "commit": "2166432"
-=======
-      "description": "REVIEW FIX [data_loss_silent_failure / wildcard catch-all]: In compile_purpose() in reify-compiler/src/lib.rs, replace the `_ => {}` wildcard arm (line 1434) with explicit arms for every remaining MemberDecl variant, each emitting a Severity::Error diagnostic:\n- `MemberDecl::GuardedGroup(g)` \u2192 error: \"guarded blocks in purpose bodies are not yet supported\" with label at g.span\n- `MemberDecl::Param(p)` \u2192 error: \"param declarations in purpose bodies are not supported\" with label at p.span\n- `MemberDecl::Sub(s)` \u2192 error: \"sub declarations in purpose bodies are not supported\" with label at s.span\n- `MemberDecl::Port(p)` \u2192 error: \"port declarations in purpose bodies are not supported\" with label at p.span\n- `MemberDecl::Connect(c)` \u2192 error: \"connect declarations in purpose bodies are not supported\" with label at c.span\n- `MemberDecl::Chain(c)` \u2192 error: \"chain declarations in purpose bodies are not supported\" with label at c.span\n- `MemberDecl::AssociatedType(a)` \u2192 error: \"associated type declarations in purpose bodies are not supported\" with label at a.span\n\nThis ensures no MemberDecl variant is silently discarded, and future grammar additions to MemberDecl will produce a compile error (non-exhaustive match) rather than falling into a silent wildcard.",
-      "status": "done",
-      "commit": "e173d8a"
->>>>>>> task/78
+      "commit": "e7dabe1"
     }
   ],
   "design_decisions": [
     {
-<<<<<<< HEAD
-      "decision": "Extend tree-sitter grammar with dedicated collection sub form using choice() rather than reusing existing = syntax with List as structure_name",
-      "rationale": "The spec defines `sub name : List<StructName>` with `:` syntax, distinct from `sub name = StructName(args)` with `=`. Adding a proper grammar alternative makes the two forms syntactically distinct and avoids conflating List (a collection wrapper) with concrete structure names. The tree-sitter grammar change is straightforward: a choice() between the two seq() alternatives in sub_declaration."
+      "decision": "Create selection.ts as a separate factory module following the same create* pattern as scene.ts, controls.ts, meshManager.ts",
+      "rationale": "Consistent with the established viewport module architecture. Each concern is isolated in its own factory, making testing straightforward with vi.mock."
     },
     {
-      "decision": "Synthetic count ValueCell (`__count_{name}`) as a Let binding in structure_controlling",
-      "rationale": "This follows the existing guard cell pattern where structure_controlling contains ValueCellIds whose changes trigger re-elaboration. The count cell is a Let binding (computed, not externally settable) whose expression comes from the `constraint name.count == expr` pattern. When the expression's dependencies change, the count re-evaluates, triggering re-elaboration if the count value differs."
+      "decision": "Selection module takes callback functions (onHover, onSelect) rather than directly importing selectionStore",
+      "rationale": "Keeps the selection module decoupled from SolidJS stores. The Viewport component wires callbacks to store methods, making the selection module purely Three.js-focused and easier to test without SolidJS reactivity."
     },
     {
-      "decision": "Instance scoping uses bracket notation: Parent.name[i] as the entity prefix",
-      "rationale": "This follows the spec's positional indexing (`vents[0]`, `vents[1]`) and extends the existing scoping pattern (Parent.sub_name becomes Parent.name[i]). Each instance's value cells are: ValueCellId { entity: 'Parent.bolts[0]', member: 'diameter' }. This is natural, unambiguous, and compatible with the existing sub-component scoping."
+      "decision": "Separate setHovered/setSelected from pointer event handlers",
+      "rationale": "Allows the store to drive visual state (highlight/wireframe) independently of pointer events. When selection changes programmatically (e.g., from property editor click), the wireframe and highlight can still be updated via props flowing through Viewport. Also enables easier testing of visual effects vs event handling."
     },
     {
-      "decision": "Count re-elaboration follows the existing guard re-elaboration pattern",
-      "rationale": "The guard re-elaboration code already handles structure_controlling cells changing and triggering topology updates. Collection count changes are analogous: a structure_controlling cell (the count) changes value, requiring the graph topology to change (add/remove instances). Reusing this pattern keeps the implementation consistent and leverages battle-tested code."
+      "decision": "Use pointer events (pointermove, pointerdown) instead of mouse events",
+      "rationale": "Pointer events are the modern standard, work with touch and stylus, and are used by OrbitControls internally. Consistent event model avoids conflicts."
     },
     {
-      "decision": "forall syntax not implemented; use .all(|x| predicate) instead",
-      "rationale": "The `forall b in bolts: predicate` syntax has no grammar production and would require significant grammar/parser/compiler work. The existing .all() method on List values (already implemented in reify-expr eval_method_call) provides equivalent functionality. The spec's forall can be added as a separate syntax sugar task."
+      "decision": "Wireframe uses LineBasicMaterial with theme accent color",
+      "rationale": "Matches the Catppuccin Mocha theme already in use (THEME_TOKENS.accent = '#89b4fa'). WireframeGeometry+LineSegments is the standard Three.js approach for wireframe overlays that don't affect the original mesh material."
     },
     {
-      "decision": "Add count_cell: Option<ValueCellId> to SubComponentDecl rather than a separate lookup table",
-      "rationale": "Keeping the count association co-located with the sub-component declaration avoids a separate lookup structure. For non-collection subs, count_cell is None. For collection subs, it points to the synthetic __count_ ValueCell. This makes graph construction straightforward: the count cell is directly available from the SubComponentDecl."
+      "decision": "fitToView is synchronous camera repositioning (not animated) in the initial implementation",
+      "rationale": "Animation (tweening) requires either a dependency like tween.js or manual interpolation in the render loop. Starting with instant repositioning keeps complexity low; animation can be added later as an enhancement."
     },
     {
-      "decision": "Collection sub args are empty (no constructor arguments in List<T> form)",
-      "rationale": "The `sub name : List<T>` form doesn't take constructor arguments. Individual instances get their defaults from the child template. Per-instance customization would be done through constraints on indexed members (e.g., `constraint bolts[0].grade == 10.9`), not through constructor args at the collection level."
+      "decision": "Tooltip and spinner are absolutely-positioned divs inside the viewport container",
+      "rationale": "CSS absolute positioning over the canvas is the standard pattern for 3D viewport overlays. No extra dependency needed. Styled with existing theme CSS variables."
     },
     {
-      "decision": "Surgical ValueMap removal instead of full rebuild for count-change re-elaboration",
-      "rationale": "The full O(V_total) ValueMap rebuild on every count change is unnecessary. PersistentMap already has a remove() method. Adding ValueMap::remove() and using it to surgically delete stale instance entries reduces per-count-change cost to O(count_diff \u00d7 child_cells). This is important because count changes are expected to be frequent during interactive editing."
+      "decision": "evalStatus, hoveredEntity, selectedEntity passed as props to Viewport",
+      "rationale": "Keeps the component testable with simple prop injection. The parent (App.tsx, from task 93) already has both stores and can thread them through. Avoids premature context coupling. Matches existing pattern where meshes are a prop."
     },
     {
-      "decision": "Look up collection member types from already-compiled templates rather than defaulting to Type::Real",
-      "rationale": "Hardcoding Type::Real for all indexed collection member accesses (bolts[0].diameter) is incorrect when the member has type Int, Bool, Length, etc. The compiler processes templates sequentially, so child templates (e.g., Bolt) are compiled before parents (e.g., S) when declared first. Passing &[TopologyTemplate] to compile_entity allows looking up child member types. For forward-reference cases (child declared after parent), Type::Real remains as a fallback, matching existing forward-reference behavior."
+      "decision": "Use mutable ref (doFitToView) to bridge onMount-scoped selection to JSX button handler",
+      "rationale": "The selection instance is created inside onMount and cannot be directly referenced in JSX (which is returned synchronously before onMount runs). A mutable variable declared in the component function scope, assigned inside onMount, is the standard SolidJS pattern for this. It keeps the selection instance private to the mount closure while exposing only the fitToView action through a stable function pointer."
     },
     {
-      "decision": "Post-pass reconciliation sweep for count_cell backfill rather than a third member pass",
-      "rationale": "When a count constraint appears before the sub declaration in source order, the single-pass processing can't find the SubComponentDecl to set count_cell. A lightweight reconciliation sweep after the member loop (matching __count_{name} cells to sub_components) is simpler and more targeted than restructuring the compiler into multiple passes. The sweep is O(count_cells \u00d7 sub_components) which is negligible."
+      "decision": "Dispose both geometry AND material in removeWireframe()",
+      "rationale": "Three.js materials are GPU-resident resources that must be explicitly disposed. The original code only disposed geometry, leaking LineBasicMaterial on every selection change. This matches the dispose pattern already used in meshManager.ts."
     },
     {
-      "decision": "Resolve dynamic index collection base to __list_{name} ValueRef instead of Literal(Undef)",
-      "rationale": "The eval engine creates a synthetic `__list_{name}` cell during collection elaboration that holds the actual List of instance values. Dynamic indexing (`bolts[n].member`) must reference this cell via ValueRef so the index operation can work on the actual runtime list. Using Literal(Undef) as the base means the index always evaluates to Undef, silently corrupting all downstream computations. The fix is minimal \u2014 one line changed from `literal(...)` to `value_ref(...)` \u2014 and correctly connects the compiler's output to the eval engine's synthetic cell."
+      "decision": "Cache DOMRect in closure with lazy population and explicit invalidation via invalidateRect()",
+      "rationale": "getBoundingClientRect() forces synchronous layout reflow \u2014 calling it on every pointermove (60-1000 Hz) causes significant main-thread jank. Caching the rect and only re-reading on resize eliminates this hot-path thrashing. The invalidateRect() method is exposed on SelectionContext so Viewport.tsx can call it from its existing ResizeObserver, keeping resize handling centralized. Lazy population (first pointer event) avoids a redundant read during construction when the element may not yet be laid out."
     },
     {
-      "decision": "Resolve bare collection sub names via ExprKind::Ident fallback to __list_{name} cell",
-      "rationale": "Collection sub names are registered in `scope.collection_sub_names` for special handling (count constraints, indexed access) but not in `scope.names` because they aren't value cells in the traditional sense. However, when used as standalone identifiers (`bolts` in `bolts.all(...)` or `let x = bolts`), the Ident handler needs to resolve them to the synthetic `__list_{name}` cell. Adding a collection_sub_names fallback in the Ident handler is the minimal fix \u2014 it only triggers when scope.resolve() returns None and the name is a known collection sub, so it doesn't interfere with any existing resolution logic."
-=======
-      "decision": "Purpose declarations are top-level declarations, not members",
-      "rationale": "Purposes are standalone entities that can be activated against any structure, similar to traits. They declare cross-cutting constraints/objectives that apply to entities. The grammar adds purpose_declaration to the _declaration choice, not to _member."
+      "decision": "Use pending-event + rAF throttle for pointermove raycasting only; pointerdown remains synchronous",
+      "rationale": "Raycasting is O(n) in mesh count with per-mesh matrix math. At 1000 Hz mouse sampling, synchronous raycasting on every pointermove saturates the main thread. The rAF pattern caps hover raycasts at ~60/s (one per rendered frame), which is perceptually identical. pointerdown (click selection) remains synchronous because: (a) click events are rare (not a hot path), (b) selection feedback must feel instantaneous \u2014 a one-frame delay on click is perceptible, and (c) the pending-event pattern would discard intermediate clicks if multiple arrive before the next frame."
     },
     {
-      "decision": "Reflective schema queries resolve at compile-time, not eval-time",
-      "rationale": "Since purpose params bind to entity types (Structure names, not instances), the schema queries (subject.params, subject.ports, etc.) can be resolved at compile-time by looking up the bound entity's TopologyTemplate. This is more efficient and catches errors earlier."
-    },
-    {
-      "decision": "Determinacy predicates handled as eval-layer interceptors, not pure stdlib functions",
-      "rationale": "The stdlib eval_builtin receives Value arguments but determinacy predicates need DeterminacyState, which is tracked in the Engine's snapshot, not in the Value itself. Following the pattern of sample() (which is a stub in stdlib, handled in reify-expr), determinacy predicates will be intercepted at the eval layer where snapshot state is available. Stdlib stubs return Undef as fallback."
-    },
-    {
-      "decision": "Purpose activation/deactivation is an Engine API, not automatic",
-      "rationale": "Purposes are activated explicitly via Engine::activate_purpose(), keeping the evaluation deterministic and giving the user control over which purposes are active. This aligns with the headless-first design where the GUI will eventually provide purpose activation controls."
-    },
-    {
-      "decision": "purpose_member reuses existing member rules rather than defining new ones",
-      "rationale": "Purpose bodies contain the same kinds of declarations as structure bodies (constraints, lets, minimize, maximize, where guards). Reusing the existing grammar rules and AST types avoids duplication and ensures consistency."
-    },
-    {
-      "decision": "CompiledPurpose stored as separate field in CompiledModule, not as TopologyTemplate",
-      "rationale": "Purposes are fundamentally different from structures/occurrences - they don't have their own value cells or geometry. They contain constraints and objectives that are injected into other entities. A separate compiled_purposes vec in CompiledModule keeps the semantics clear."
-    },
-    {
-      "decision": "Reject let bindings in purpose bodies with compiler error (review fix)",
-      "rationale": "Let bindings in purposes compile the expression but discard it \u2014 CompiledPurpose has no storage for let binding expressions, and activate_purpose only injects CompiledConstraints. Any constraint referencing a let-bound name would produce a ValueCellId with no backing node in the eval graph, causing silent incorrect evaluation. Emitting a Severity::Error diagnostic is the safest approach until full let-binding support is implemented (which would require adding a let_bindings field to CompiledPurpose and injecting value-cell definition nodes during activate_purpose)."
-    },
-    {
-      "decision": "Clear active purpose state on eval() (review fix)",
-      "rationale": "eval() builds a completely fresh snapshot from the CompiledModule, discarding all purpose-injected constraints. Without clearing active_purposes and active_objective_map, the engine enters an inconsistent state: is_purpose_active() returns true for stale entries, reactivation is blocked by the 'already active' guard, and deactivation tries to remove IDs absent from the new snapshot. Clearing is simpler and safer than re-injecting all active purposes into the new snapshot."
-    },
-    {
-      "decision": "Replace wildcard catch-all with explicit error arms for all unhandled MemberDecl variants (review fix)",
-      "rationale": "The _ => {} wildcard in compile_purpose silently discards GuardedGroup, Param, Sub, Port, Connect, Chain, and AssociatedType variants. GuardedGroup is especially dangerous because the grammar explicitly allows guarded_block in purpose_member, so a user can write where-guarded constraint blocks that parse successfully but are silently dropped at compile time. Explicit arms with Severity::Error diagnostics for each variant ensure (a) no data is silently lost, (b) the user gets actionable feedback, and (c) future MemberDecl additions cause a compile-time exhaustiveness error rather than falling into a silent discard. This follows the same pattern as the Let arm fix in step 24."
->>>>>>> task/78
+      "decision": "Make selectedEntity effect depend on props.meshes to rebuild wireframe on geometry changes",
+      "rationale": "WireframeGeometry snapshots edge data at construction time \u2014 it doesn't track source geometry mutations. When meshManager.sync() updates mesh BufferGeometry after engine re-evaluation, the wireframe becomes stale. By reading props.meshes inside the selectedEntity effect, SolidJS automatically re-runs it whenever meshes change, causing setSelected() to destroy the old wireframe and create a new one from the updated geometry. This is the minimal fix: one added line (`void props.meshes;`) that leverages SolidJS's fine-grained reactivity to solve the staleness without any new mechanism."
     }
   ],
   "reuse": [
     {
-<<<<<<< HEAD
-      "what": "Guard re-elaboration pattern (structure_controlling, dirty check, branch flip)",
-      "where": "crates/reify-eval/src/lib.rs lines 1276-1340",
-      "how": "Extend the existing guard re-elaboration phase to also handle collection count changes. When a structure_controlling cell is a count cell (not a guard cell), apply count-based re-elaboration (add/remove instances) instead of guard branch flipping."
+      "what": "Factory function pattern (createScene, createControls, createMeshManager)",
+      "where": "gui/src/viewport/scene.ts, controls.ts, meshManager.ts",
+      "how": "Follow same pattern for createSelection: take dependencies as arguments, return context object with methods + dispose."
     },
     {
-      "what": "Sub-component scoping pattern (Parent.sub_name entity prefix)",
-      "where": "crates/reify-eval/src/graph.rs lines 136-158, crates/reify-eval/src/lib.rs lines 830-900",
-      "how": "Extend for indexed instances: `Parent.name[i]` instead of `Parent.name`. Each instance follows the same scoping logic: child template's value cells get scoped IDs with the indexed entity prefix."
+      "what": "Three.js vi.mock pattern with inline mock classes",
+      "where": "gui/src/__tests__/viewport/meshManager.test.ts, scene.test.ts, controls.test.ts",
+      "how": "Mock Raycaster, WireframeGeometry, LineSegments, Box3, Vector3, LineBasicMaterial, Color using same vi.mock('three', () => { ... }) pattern."
     },
     {
-      "what": "TopologyTemplateBuilder for test construction",
-      "where": "crates/reify-test-support/src/builders.rs lines 146-372",
-      "how": "Add collection_sub_component() method that creates SubComponentDecl with is_collection=true and a count_cell parameter. Add structure_controlling_cell() to register count cells."
+      "what": "meshManager.getSceneMeshes() returning Map<string, Mesh>",
+      "where": "gui/src/viewport/meshManager.ts",
+      "how": "Selection module uses this map to get raycastable meshes and look up meshes by entity_path for highlight/wireframe. Passed as getMeshes callback."
     },
     {
-      "what": "CompiledModuleBuilder for multi-template test modules",
-      "where": "crates/reify-test-support/src/builders.rs lines 427-517",
-      "how": "Use to build test modules with both parent (collection sub) and child (element structure) templates."
+      "what": "selectionStore.selectEntity/hoverEntity",
+      "where": "gui/src/stores/selectionStore.ts",
+      "how": "Viewport wires selection onHover/onSelect callbacks to these store methods, bridging Three.js events to SolidJS reactive state."
     },
     {
-      "what": "Collection method calls (.count, .map, .all, .sum) in expression evaluator",
-      "where": "crates/reify-expr/src/lib.rs lines 266-460",
-      "how": "The expression evaluator already handles method calls on List values. Once collection instances are gathered into a List value, all existing collection operations (.count, .map, .all, .any, .sum, .fold) work naturally."
+      "what": "THEME_TOKENS for consistent styling",
+      "where": "gui/src/theme.ts",
+      "how": "Use THEME_TOKENS.accent for wireframe color and hover highlight emissive. Use --reify-* CSS variables for tooltip/spinner styling."
     },
     {
-      "what": "compile_no_errors() test helper pattern",
-      "where": "crates/reify-compiler/tests/collection_compile_tests.rs lines 6-27",
-      "how": "Reuse the same parse+compile+assert-no-errors helper pattern for collection sub compilation tests."
+      "what": "mesh.name = entityPath convention",
+      "where": "gui/src/viewport/meshManager.ts line 62",
+      "how": "Raycaster intersection returns the mesh whose .name is the entity_path, providing the key for store updates and getMeshes() lookups."
     },
     {
-      "what": "tree-sitter CLI for grammar regeneration",
-      "where": "~/.local/bin/tree-sitter, tree-sitter-reify/package.json",
-      "how": "Run `cd tree-sitter-reify && tree-sitter generate` after editing grammar.js to regenerate parser.c, grammar.json, and node-types.json."
+      "what": "EvaluationStatus type with phase field",
+      "where": "gui/src/types.ts line 93-96",
+      "how": "Viewport checks evalStatus.phase !== 'idle' to show/hide the spinner overlay."
     },
     {
-      "what": "PersistentMap::remove() for surgical key deletion",
-      "where": "crates/reify-types/src/persistent.rs line 44",
-      "how": "PersistentMap already has a remove() method that delegates to ImHashMap::remove(). ValueMap wraps PersistentMap but doesn't expose remove(). Adding ValueMap::remove() is a one-line delegation."
+      "what": "Viewport.test.tsx mock patterns (ResizeObserver stub, RAF capture, module-level vi.mock for scene/controls/meshManager)",
+      "where": "gui/src/__tests__/viewport/Viewport.test.tsx",
+      "how": "Extend existing mock setup to include selection module mock. Add tests for new overlay elements."
     },
     {
-      "what": "Existing __list_{name} synthetic cell created by eval engine",
-      "where": "crates/reify-eval/src/lib.rs lines 874-890",
-      "how": "The eval engine already creates a `__list_{name}` ValueCell during collection elaboration that holds the List of instance values. Both fixes (steps 28 and 30) reference this cell via ValueRef \u2014 the compiler just needs to emit the correct ValueCellId to point to it."
+      "what": "MockLineBasicMaterial.dispose mock in selection.test.ts",
+      "where": "gui/src/__tests__/viewport/selection.test.ts line 30-36",
+      "how": "The mock LineBasicMaterial already has a dispose = vi.fn() \u2014 the new material disposal tests can assert on wireframe.material.dispose without any mock changes."
+    },
+    {
+      "what": "Existing ResizeObserver in Viewport.tsx for resize handling",
+      "where": "gui/src/viewport/Viewport.tsx lines 59-67",
+      "how": "The ResizeObserver callback already fires on viewport resize. Add selection.invalidateRect() call alongside the existing resize(w, h) call to invalidate the cached DOMRect when the viewport container changes size."
+    },
+    {
+      "what": "requestAnimationFrame / cancelAnimationFrame mock in Viewport.test.tsx",
+      "where": "gui/src/__tests__/viewport/Viewport.test.tsx lines 16-20",
+      "how": "Same rAF mocking pattern will be used in selection.test.ts for the rAF-throttle tests. Capture callbacks via vi.fn() wrapping requestAnimationFrame to verify scheduling and invoke callbacks in tests."
     }
   ],
-  "_session_id": "64-7d937294",
-  "_created_at": "2026-03-21T06:54:17.484995+00:00",
-=======
-      "what": "MemberDecl enum and member lowering",
-      "where": "crates/reify-syntax/src/ts_parser.rs (lower_member function)",
-      "how": "Purpose members use the same member types (Constraint, Let, Minimize, Maximize, GuardedGroup) as structures. The purpose_member grammar rule delegates to existing rules, and lower_purpose_members can call lower_member for each child."
-    },
-    {
-      "what": "CompilationScope and compile_expr",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "compile_purpose creates a CompilationScope for the purpose, registers purpose params as entity references, and uses compile_expr to compile constraint/objective expressions within the purpose body."
-    },
-    {
-      "what": "CompiledConstraint and OptimizationObjective types",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "Purposes reuse the same CompiledConstraint and OptimizationObjective types used by structures. This allows activate_purpose to inject them directly into the evaluation graph."
-    },
-    {
-      "what": "parse_decls test helper pattern",
-      "where": "crates/reify-syntax/tests/trait_tests.rs, port_tests.rs",
-      "how": "All syntax tests follow the same pattern: parse_decls(source) returning (Vec<Declaration>, Vec<ParseError>), then assert on the parsed structure."
-    },
-    {
-      "what": "compile_first_template and compile_module test helpers",
-      "where": "crates/reify-compiler/tests/port_compile_tests.rs",
-      "how": "Compiler tests use the same helper pattern: parse \u2192 assert no parse errors \u2192 compile \u2192 extract template and diagnostics."
-    },
-    {
-      "what": "Engine test setup with MockConstraintChecker",
-      "where": "crates/reify-eval/tests/m5_integration.rs",
-      "how": "Eval tests use MockConstraintChecker from reify-test-support and create Engine instances for testing. Purpose eval tests follow the same pattern."
-    },
-    {
-      "what": "Tree-sitter grammar patterns (commaSep, optional pub, type_parameters)",
-      "where": "tree-sitter-reify/grammar.js",
-      "how": "purpose_declaration follows the same grammar patterns as trait_declaration and structure_definition: optional pub keyword, optional type_parameters, identifier name, braced body."
-    },
-    {
-      "what": "lower_type_parameters, has_pub_keyword, content_hash helper methods",
-      "where": "crates/reify-syntax/src/ts_parser.rs",
-      "how": "Reuse existing Lowering helper methods for extracting pub visibility, type parameters, spans, and content hashes from purpose_declaration nodes."
-    },
-    {
-      "what": "Diagnostic error assertion pattern from purpose_eval.rs parse_and_compile helper",
-      "where": "crates/reify-eval/tests/purpose_eval.rs lines 19-26",
-      "how": "The pattern `let errors: Vec<_> = compiled.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect(); assert!(errors.is_empty(), ...)` is reused in the purpose_compile_tests.rs compile_module helper to ensure compile errors are not silently ignored."
-    },
-    {
-      "what": "Diagnostic::error().with_label() builder pattern from Let arm fix (step 24)",
-      "where": "crates/reify-compiler/src/lib.rs lines 1423-1432",
-      "how": "The explicit error arms for GuardedGroup, Param, Sub, Port, Connect, Chain, and AssociatedType follow the identical Diagnostic::error(...).with_label(DiagnosticLabel::new(span, label)) pattern established by the Let arm diagnostic."
-    }
-  ],
-  "_session_id": "78-4328fe6b",
-  "_created_at": "2026-03-21T07:54:35.164037+00:00",
->>>>>>> task/78
+  "_session_id": "95-50938893",
+  "_created_at": "2026-03-21T07:54:17.619983+00:00",
   "_schema_version": 1
 }
