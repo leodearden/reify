@@ -52,6 +52,7 @@ export function Viewport(props: ViewportProps) {
     });
 
     createEffect(() => {
+      void props.meshes;
       selection.setSelected(props.selectedEntity ?? null);
     });
 
