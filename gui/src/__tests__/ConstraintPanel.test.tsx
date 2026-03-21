@@ -246,3 +246,35 @@ describe('ConstraintPanel onConstraintSelect', () => {
     expect(screen.getByText('width = 50')).toBeTruthy();
   });
 });
+
+describe('ConstraintPanel accessibility', () => {
+  it('constraint list container has role="list"', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', expression: 'x > 0' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const container = screen.getByTestId('constraint-panel');
+    const list = container.querySelector('[role="list"]');
+    expect(list).toBeTruthy();
+  });
+
+  it('each constraint row has role="listitem"', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', expression: 'x > 0' }),
+      n2: makeConstraint({ node_id: 'n2', expression: 'y > 0' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const container = screen.getByTestId('constraint-panel');
+    const listitems = container.querySelectorAll('[role="listitem"]');
+    expect(listitems.length).toBe(2);
+  });
+
+  it('each constraint row has tabindex="0" for keyboard focusability', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', expression: 'x > 0' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const row = screen.getByTestId('constraint-row-n1');
+    expect(row.getAttribute('tabindex')).toBe('0');
+  });
+});
