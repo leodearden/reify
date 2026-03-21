@@ -26,9 +26,11 @@ vi.mock('../viewport', () => ({
   },
 }));
 
-// Mock Editor (requires CodeMirror DOM APIs)
+// Mock Editor (requires CodeMirror DOM APIs) — capture store for dirty-file tests
+let capturedEditorStore: any = null;
 vi.mock('../editor/Editor', () => ({
-  Editor: (_props: any) => {
+  Editor: (props: any) => {
+    capturedEditorStore = props.store;
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'editor-container');
     el.textContent = 'Editor Mock';
@@ -72,6 +74,7 @@ import * as bridge from '../bridge';
 beforeEach(() => {
   vi.clearAllMocks();
   capturedViewportProps = {};
+  capturedEditorStore = null;
   // Reset getInitialState to default empty state
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
 });
@@ -674,6 +677,121 @@ describe('App changedFiles multi-file tracking (R-1)', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('reload-prompt')).toBeNull();
     });
+  });
+});
+
+describe('App dirty-file check before reload (R-4)', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/bracket.ri', content: 'structure Bracket {}' },
+      { path: '/project/gear.ri', content: 'structure Gear {}' },
+    ],
+  };
+
+  let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
+
+  beforeEach(() => {
+    fileChangedCallback = undefined;
+    vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+      fileChangedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+    vi.mocked(bridge.openFile).mockImplementation(async (path: string) => ({
+      path,
+      content: `updated ${path}`,
+    }));
+  });
+
+  it('when no dirty files overlap, handleReload proceeds immediately', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+
+    fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    await waitFor(() => expect(screen.getByTestId('reload-prompt')).toBeTruthy());
+
+    // No dirty files — Reload should proceed immediately
+    fireEvent.click(screen.getByText('Reload'));
+
+    await waitFor(() => {
+      expect(bridge.openFile).toHaveBeenCalledWith('/project/bracket.ri');
+    });
+  });
+
+  it('when dirty files overlap with changed files, shows confirmation warning instead of reloading', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Mark bracket.ri as dirty (unsaved changes)
+    capturedEditorStore.markDirty('/project/bracket.ri');
+
+    // Trigger file change for the dirty file
+    fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    await waitFor(() => expect(screen.getByTestId('reload-prompt')).toBeTruthy());
+
+    // Click Reload — should show confirmation warning, NOT call bridgeOpenFile
+    fireEvent.click(screen.getByText('Reload'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Unsaved changes will be lost/)).toBeTruthy();
+      expect(screen.getByText('Reload Anyway')).toBeTruthy();
+    });
+
+    // bridgeOpenFile should NOT have been called
+    expect(bridge.openFile).not.toHaveBeenCalled();
+  });
+
+  it('confirming Reload Anyway triggers bridgeOpenFile for all changed files', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    capturedEditorStore.markDirty('/project/bracket.ri');
+
+    fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+    await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+    // First click shows warning
+    fireEvent.click(screen.getByText('Reload'));
+    await waitFor(() => expect(screen.getByText('Reload Anyway')).toBeTruthy());
+
+    // Click Reload Anyway — should proceed
+    fireEvent.click(screen.getByText('Reload Anyway'));
+
+    await waitFor(() => {
+      expect(bridge.openFile).toHaveBeenCalledWith('/project/bracket.ri');
+      expect(bridge.openFile).toHaveBeenCalledWith('/project/gear.ri');
+    });
+  });
+
+  it('dismissing confirmation does not reload', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    capturedEditorStore.markDirty('/project/bracket.ri');
+
+    fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    await waitFor(() => expect(screen.getByTestId('reload-prompt')).toBeTruthy());
+
+    // First click shows warning
+    fireEvent.click(screen.getByText('Reload'));
+    await waitFor(() => expect(screen.getByText('Reload Anyway')).toBeTruthy());
+
+    // Click Dismiss
+    fireEvent.click(screen.getByText('Dismiss'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('reload-prompt')).toBeNull();
+    });
+
+    // bridgeOpenFile should NOT have been called
+    expect(bridge.openFile).not.toHaveBeenCalled();
   });
 });
 
