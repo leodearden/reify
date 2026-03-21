@@ -969,3 +969,104 @@ fn guarded_enum_multi_branch() {
         );
     }
 }
+
+// ── collection_with_quantifier ──────────────────────────────────────
+
+/// Parse m5_collection_ops.ri with list literal, .count, .sum, indexing,
+/// and a forall quantifier constraint. The forall compiles but may not
+/// evaluate yet — test verifies compilation and basic collection eval.
+///
+/// This extends existing collection_lambda_operations by adding quantifier
+/// expressions and using an example file rather than inline source.
+#[test]
+fn collection_with_quantifier() {
+    let source = std::fs::read_to_string("../../examples/m5_collection_ops.ri")
+        .expect("examples/m5_collection_ops.ri should exist");
+
+    let compiled = parse_and_compile(&source);
+
+    // Should have an Inventory template
+    assert!(!compiled.templates.is_empty(), "expected at least one template");
+
+    // Eval
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // Check items = [5, 10, 15, 20]
+    let items_id = ValueCellId::new("Inventory", "items");
+    let items_val = result
+        .values
+        .get(&items_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", items_id));
+    match items_val {
+        reify_types::Value::List(elems) => {
+            assert_eq!(elems.len(), 4, "expected 4 elements");
+            assert_eq!(elems[0], reify_types::Value::Int(5));
+            assert_eq!(elems[1], reify_types::Value::Int(10));
+            assert_eq!(elems[2], reify_types::Value::Int(15));
+            assert_eq!(elems[3], reify_types::Value::Int(20));
+        }
+        other => panic!("expected List for items, got {:?}", other),
+    }
+
+    // Check n = items.count = 4
+    let n_id = ValueCellId::new("Inventory", "n");
+    let n_val = result
+        .values
+        .get(&n_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", n_id));
+    assert_eq!(*n_val, reify_types::Value::Int(4), "items.count should be 4");
+
+    // Check total = items.sum = 50
+    let total_id = ValueCellId::new("Inventory", "total");
+    let total_val = result
+        .values
+        .get(&total_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", total_id));
+    assert_eq!(
+        *total_val,
+        reify_types::Value::Int(50),
+        "items.sum should be 50"
+    );
+
+    // Check first = items[0] = 5
+    let first_id = ValueCellId::new("Inventory", "first");
+    let first_val = result
+        .values
+        .get(&first_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", first_id));
+    assert_eq!(
+        *first_val,
+        reify_types::Value::Int(5),
+        "items[0] should be 5"
+    );
+
+    // Check last = items[3] = 20
+    let last_id = ValueCellId::new("Inventory", "last");
+    let last_val = result
+        .values
+        .get(&last_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", last_id));
+    assert_eq!(
+        *last_val,
+        reify_types::Value::Int(20),
+        "items[3] should be 20"
+    );
+
+    // Check constraints — forall may evaluate as Undef but MockConstraintChecker
+    // returns Satisfied for all constraints
+    let result = engine.check(&compiled);
+    assert!(
+        !result.constraint_results.is_empty(),
+        "expected at least one constraint (n > 0)"
+    );
+    for entry in &result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be satisfied",
+            entry.id
+        );
+    }
+}
