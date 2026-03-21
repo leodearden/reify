@@ -1180,3 +1180,86 @@ fn occurrence_manufacturing_chain() {
         );
     }
 }
+
+// ── user_fn_safety_factor ───────────────────────────────────────────
+
+/// Parse m5_function_safety_factor.ri with fn safety_factor using division
+/// (yield_str / applied) and structure Beam with constraint sf >= 2.0.
+/// This tests division in user functions (existing test only uses multiplication)
+/// and constraint on function result.
+///
+/// Verify:
+/// - sf = safety_factor(100, 250) = 2.5
+/// - constraint sf >= 2.0 is satisfied
+#[test]
+fn user_fn_safety_factor() {
+    let source = std::fs::read_to_string("../../examples/m5_function_safety_factor.ri")
+        .expect("examples/m5_function_safety_factor.ri should exist");
+
+    let compiled = parse_and_compile(&source);
+
+    // Should have a Beam template
+    assert!(!compiled.templates.is_empty(), "expected at least one template");
+    let beam = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Beam")
+        .expect("should have a Beam template");
+    assert_eq!(beam.name, "Beam");
+
+    // Eval
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // Check stress = 100
+    let stress_id = ValueCellId::new("Beam", "stress");
+    let stress_val = result
+        .values
+        .get(&stress_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", stress_id));
+    match stress_val {
+        reify_types::Value::Real(v) => {
+            assert!((v - 100.0).abs() < 1e-12, "expected 100.0, got {}", v);
+        }
+        reify_types::Value::Int(v) => {
+            assert_eq!(*v, 100, "expected 100, got {}", v);
+        }
+        other => panic!("expected Real(100) or Int(100) for stress, got {:?}", other),
+    }
+
+    // Check sf = safety_factor(100, 250) = 250/100 = 2.5
+    let sf_id = ValueCellId::new("Beam", "sf");
+    let sf_val = result
+        .values
+        .get(&sf_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found", sf_id));
+    match sf_val {
+        reify_types::Value::Real(v) => {
+            assert!(
+                (v - 2.5).abs() < 1e-9,
+                "expected 2.5, got {}",
+                v
+            );
+        }
+        reify_types::Value::Int(v) => {
+            assert_eq!(*v, 2, "expected 2 (integer division), got {}", v);
+        }
+        other => panic!("expected Real(2.5) or Int for sf, got {:?}", other),
+    }
+
+    // Check constraints — sf >= 2.0 should be satisfied
+    let result = engine.check(&compiled);
+    assert!(
+        !result.constraint_results.is_empty(),
+        "expected at least one constraint (sf >= 2.0)"
+    );
+    for entry in &result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be satisfied",
+            entry.id
+        );
+    }
+}
