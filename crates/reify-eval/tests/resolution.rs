@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use reify_eval::cache::NodeId;
-use reify_eval::Engine;
+use reify_eval::{ConcurrentEditResult, Engine};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver, SpyConstraintSolver,
     TopologyTemplateBuilder,
@@ -656,6 +656,68 @@ fn objective_forwarded_in_edit_param() {
     assert!(
         matches!(&problem.objective, Some(OptimizationObjective::Minimize(_))),
         "expected Minimize objective forwarded to solver in edit_param, got {:?}",
+        problem.objective
+    );
+}
+
+#[test]
+fn objective_forwarded_in_concurrent_edit() {
+    // prepare_concurrent_edit + resolve_concurrent_edit should forward the
+    // template objective to the ResolutionProblem. Fails until ConcurrentEditSetup
+    // carries the objective and resolve_concurrent_edit uses it.
+    use std::collections::HashSet;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let limit_id = ValueCellId::new("S", "limit");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+
+    let spy = SpyConstraintSolver::new_solved(solved_values);
+    let captured = spy.captured_problem();
+
+    // Template: auto thickness, param limit (default 2mm),
+    // constraint thickness > limit, objective Minimize(thickness)
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
+        .constraint("S", 0, None, gt(value_ref("S", "thickness"), value_ref("S", "limit")))
+        .objective(OptimizationObjective::Minimize(value_ref("S", "thickness")))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(spy));
+
+    // Initial eval: solver is called, objectives are cached on the engine
+    engine.eval(&module);
+
+    // Prepare a concurrent edit: change limit to 3mm
+    let setup = engine.prepare_concurrent_edit(limit_id.clone(), mm(3.0)).unwrap();
+
+    // Build a minimal ConcurrentEditResult from the setup values
+    let mut result = ConcurrentEditResult {
+        values: setup.values.clone(),
+        snapshot_values: setup.snapshot_values.clone(),
+        node_results: Vec::new(),
+        actual_eval_set: Vec::new(),
+        skipped: HashSet::new(),
+        resolved_params: HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+
+    // resolve_concurrent_edit should detect dirty constraints and call the solver
+    engine.resolve_concurrent_edit(&setup, &mut result);
+
+    // The spy should now hold the problem from resolve_concurrent_edit
+    let guard = captured.lock().unwrap();
+    let problem = guard.as_ref().expect("solver should have been called during resolve_concurrent_edit");
+    assert!(
+        matches!(&problem.objective, Some(OptimizationObjective::Minimize(_))),
+        "expected Minimize objective forwarded to solver in resolve_concurrent_edit, got {:?}",
         problem.objective
     );
 }
