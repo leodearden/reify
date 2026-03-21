@@ -12,7 +12,7 @@
     "gui/src/viewport",
     "gui/src/__tests__/viewport"
   ],
-  "analysis": "Task 95 adds interactive 3D selection to the viewport. The existing codebase follows a clean factory-function pattern: scene.ts, controls.ts, meshManager.ts each export a `create*` function returning a context object with methods and a dispose. Tests mock three.js via vi.mock('three') with inline mock classes.\n\nThe core new module is `selection.ts` \u2014 a `createSelection` factory that wraps Three.js Raycaster for pointer-based hover/click detection on meshes managed by meshManager. It will: (1) resolve pointer coords to entity paths via raycasting, (2) apply emissive highlight on hover, (3) create WireframeGeometry+LineSegments overlay on selection, (4) provide fitToView to frame all content, and (5) expose dispose for cleanup. Viewport.tsx will be extended to wire selection into the render loop, render a floating tooltip on hover, an evaluating spinner overlay when evalStatus.phase !== idle, and a fit-to-view button.\n\nKey considerations: The meshManager already stores entity_path as mesh.name and exposes getSceneMeshes() returning Map<string, Mesh> \u2014 perfect for raycasting. The selectionStore has selectEntity/hoverEntity. The engineStore has evalStatus with phase 'idle'|'evaluating'|'resolving'. All Three.js dependencies will be mocked in tests following the established pattern.\n\nThe Viewport component currently accepts only {meshes} prop. It will be extended to accept optional callbacks (onHover, onSelect), evalStatus, hoveredEntity, selectedEntity, and a fitToView ref. This keeps the component testable with simple prop injection, matching the existing pattern from task 93 where stores are created in App and passed as props.",
+  "analysis": "Task 95 adds interactive 3D selection to the viewport. The existing codebase follows a clean factory-function pattern: scene.ts, controls.ts, meshManager.ts each export a `create*` function returning a context object with methods and a dispose. Tests mock three.js via vi.mock('three') with inline mock classes.\n\nThe core new module is `selection.ts` \u2014 a `createSelection` factory that wraps Three.js Raycaster for pointer-based hover/click detection on meshes managed by meshManager. It will: (1) resolve pointer coords to entity paths via raycasting, (2) apply emissive highlight on hover, (3) create WireframeGeometry+LineSegments overlay on selection, (4) provide fitToView to frame all content, and (5) expose dispose for cleanup. Viewport.tsx will be extended to wire selection into the render loop, render a floating tooltip on hover, an evaluating spinner overlay when evalStatus.phase !== idle, and a fit-to-view button.\n\nKey considerations: The meshManager already stores entity_path as mesh.name and exposes getSceneMeshes() returning Map<string, Mesh> \u2014 perfect for raycasting. The selectionStore has selectEntity/hoverEntity. The engineStore has evalStatus with phase 'idle'|'evaluating'|'resolving'. All Three.js dependencies will be mocked in tests following the established pattern.\n\nThe Viewport component currently accepts only {meshes} prop. It will be extended to accept optional callbacks (onHover, onSelect), evalStatus, hoveredEntity, selectedEntity, and a fitToView ref. This keeps the component testable with simple prop injection, matching the existing pattern from task 93 where stores are created in App and passed as props.\n\n--- REVIEW FIX ADDENDUM ---\nPost-implementation review identified two blocking issues:\n1. Fit-to-view button broken: onClick calls props.onFitToView?.() but never selection.fitToView(). The selection instance lives inside the onMount closure, inaccessible to JSX. Fix: declare a mutable ref (doFitToView) in the Viewport function scope, assign it inside onMount after creating selection, and call it from the button onClick.\n2. Material resource leak: removeWireframe() in selection.ts disposes WireframeGeometry but not the LineBasicMaterial, leaking GPU memory on every selection change. Fix: add material.dispose() call in removeWireframe().",
   "prerequisites": [],
   "steps": [
     {
@@ -126,6 +126,20 @@
       "description": "Update Viewport.tsx: extend ViewportProps with optional onHover, onSelect, hoveredEntity, selectedEntity, evalStatus, onFitToView. In onMount, create selection via createSelection, wire onHover/onSelect. Add createEffect watching hoveredEntity \u2192 call selection.setHovered, createEffect watching selectedEntity \u2192 call selection.setSelected. Render tooltip overlay (Show when hoveredEntity), spinner overlay (Show when evalStatus?.phase !== 'idle'), fit-to-view button. Dispose selection in onCleanup. Update viewport/index.ts exports for SelectionContext.",
       "status": "done",
       "commit": "d529fa9"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "REVIEW FIX: Write failing tests for two issues: (1) In selection.test.ts, add test 'removeWireframe disposes LineBasicMaterial' \u2014 call setSelected('A') then setSelected(null), assert wireframe.material.dispose was called. Add test 'dispose disposes wireframe material if wireframe exists' \u2014 call setSelected('A') then dispose(), assert wireframe.material.dispose was called. Add test 'changing selection disposes previous wireframe material' \u2014 call setSelected('A') then setSelected('B'), assert first wireframe's material.dispose was called. (2) In Viewport.test.tsx, add test 'clicking fit-to-view button calls selection.fitToView' \u2014 render Viewport, find button by data-testid 'fit-to-view', fireEvent.click it, assert mockSelectionFitToView was called. Also assert props.onFitToView callback is still called (both should fire).",
+      "status": "done",
+      "commit": "a5d4a7b"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "REVIEW FIX: Fix both issues: (1) In selection.ts removeWireframe(), add `(currentWireframe.material as LineBasicMaterial).dispose()` after geometry.dispose() and before nulling the reference. This ensures the material is freed on every wireframe removal (deselect, re-select, and dispose). (2) In Viewport.tsx, declare `let doFitToView: (() => void) | undefined` in the Viewport function scope before onMount. Inside onMount, after creating `selection`, assign `doFitToView = () => selection.fitToView()`. Change the button onClick from `() => props.onFitToView?.()` to `() => { doFitToView?.(); props.onFitToView?.(); }`. This bridges the onMount-scoped selection instance to the JSX click handler via a mutable ref while keeping selection private to the mount closure.",
+      "status": "done",
+      "commit": "8d61290"
     }
   ],
   "design_decisions": [
@@ -160,6 +174,14 @@
     {
       "decision": "evalStatus, hoveredEntity, selectedEntity passed as props to Viewport",
       "rationale": "Keeps the component testable with simple prop injection. The parent (App.tsx, from task 93) already has both stores and can thread them through. Avoids premature context coupling. Matches existing pattern where meshes are a prop."
+    },
+    {
+      "decision": "Use mutable ref (doFitToView) to bridge onMount-scoped selection to JSX button handler",
+      "rationale": "The selection instance is created inside onMount and cannot be directly referenced in JSX (which is returned synchronously before onMount runs). A mutable variable declared in the component function scope, assigned inside onMount, is the standard SolidJS pattern for this. It keeps the selection instance private to the mount closure while exposing only the fitToView action through a stable function pointer."
+    },
+    {
+      "decision": "Dispose both geometry AND material in removeWireframe()",
+      "rationale": "Three.js materials are GPU-resident resources that must be explicitly disposed. The original code only disposed geometry, leaking LineBasicMaterial on every selection change. This matches the dispose pattern already used in meshManager.ts."
     }
   ],
   "reuse": [
@@ -202,8 +224,14 @@
       "what": "Viewport.test.tsx mock patterns (ResizeObserver stub, RAF capture, module-level vi.mock for scene/controls/meshManager)",
       "where": "gui/src/__tests__/viewport/Viewport.test.tsx",
       "how": "Extend existing mock setup to include selection module mock. Add tests for new overlay elements."
+    },
+    {
+      "what": "MockLineBasicMaterial.dispose mock in selection.test.ts",
+      "where": "gui/src/__tests__/viewport/selection.test.ts line 30-36",
+      "how": "The mock LineBasicMaterial already has a dispose = vi.fn() \u2014 the new material disposal tests can assert on wireframe.material.dispose without any mock changes."
     }
   ],
-  "_session_id": "95-82b80107",
-  "_created_at": "2026-03-21T07:24:14.369981+00:00"
+  "_session_id": "95-50938893",
+  "_created_at": "2026-03-21T07:48:22.707657+00:00",
+  "_schema_version": 1
 }
