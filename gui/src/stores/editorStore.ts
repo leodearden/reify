@@ -24,6 +24,15 @@ export function createEditorStore() {
     setState('activeFile', file.path);
   }
 
+  function updateFileContent(path: string, content: string) {
+    setState(
+      'openFiles',
+      (f) => f.path === path,
+      'content',
+      content,
+    );
+  }
+
   function closeFile(path: string) {
     setState('openFiles', (files) => files.filter((f) => f.path !== path));
     setState('dirtyFiles', (dirty) => dirty.filter((p) => p !== path));
@@ -55,5 +64,5 @@ export function createEditorStore() {
     }
   }
 
-  return { state, openFile, closeFile, setActiveFile, markDirty, markClean, setCursorPosition };
+  return { state, openFile, updateFileContent, closeFile, setActiveFile, markDirty, markClean, setCursorPosition };
 }

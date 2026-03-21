@@ -99,3 +99,21 @@ export interface EvaluationStatus {
 export type MeshUpdate = MeshData;
 export type ValueUpdate = ValueData;
 export type ConstraintUpdate = ConstraintData;
+
+/** Supported export formats for geometry. */
+export type ExportFormat = 'step' | 'stl' | '3mf';
+
+/** An entry in the file browser tree. */
+export interface FileEntry {
+  path: string;
+  name: string;
+  isDirectory: boolean;
+  children?: FileEntry[];
+}
+
+/** A toast notification message. */
+export interface ToastMessage {
+  id: string;
+  type: 'success' | 'error' | 'info';
+  message: string;
+}

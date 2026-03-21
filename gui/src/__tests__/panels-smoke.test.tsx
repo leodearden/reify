@@ -1,9 +1,18 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@solidjs/testing-library';
-import { PropertyEditor, ConstraintPanel, Toolbar, StatusBar } from '../panels';
+import {
+  PropertyEditor,
+  ConstraintPanel,
+  Toolbar,
+  StatusBar,
+  Toast,
+  FileBrowser,
+  ExportDialog,
+  ReloadPrompt,
+} from '../panels';
 
 describe('panels smoke integration', () => {
-  it('all four components mount and have expected data-testid attributes', () => {
+  it('all four original components mount and have expected data-testid attributes', () => {
     render(() => (
       <div>
         <PropertyEditor
@@ -25,5 +34,30 @@ describe('panels smoke integration', () => {
     expect(screen.getByTestId('constraint-panel')).toBeTruthy();
     expect(screen.getByTestId('toolbar')).toBeTruthy();
     expect(screen.getByTestId('status-bar')).toBeTruthy();
+  });
+
+  it('new components mount and have expected data-testid attributes', () => {
+    render(() => (
+      <div>
+        <Toast message="Test toast" type="info" onDismiss={vi.fn()} />
+        <FileBrowser files={[]} activeFile={null} onFileClick={vi.fn()} />
+        <ExportDialog
+          open={true}
+          exporting={false}
+          onExport={vi.fn()}
+          onClose={vi.fn()}
+        />
+        <ReloadPrompt
+          filePath="/test/file.ri"
+          onReload={vi.fn()}
+          onDismiss={vi.fn()}
+        />
+      </div>
+    ));
+
+    expect(screen.getByTestId('toast')).toBeTruthy();
+    expect(screen.getByTestId('file-browser')).toBeTruthy();
+    expect(screen.getByTestId('export-dialog')).toBeTruthy();
+    expect(screen.getByTestId('reload-prompt')).toBeTruthy();
   });
 });
