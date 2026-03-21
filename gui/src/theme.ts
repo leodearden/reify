@@ -22,6 +22,18 @@ export const THEME_TOKENS: Record<string, string> = {
   overlay0: '#6c7086',
   green: '#a6e3a1',
   red: '#f38ba8',
+  // Spacing scale
+  spaceXs: '2px',
+  spaceSm: '4px',
+  spaceMd: '8px',
+  spaceLg: '12px',
+  spaceXl: '16px',
+  space2xl: '20px',
+  space3xl: '24px',
+  // Border radii
+  radiusSm: '2px',
+  radiusMd: '4px',
+  radiusLg: '8px',
 };
 
 function camelToKebab(str: string): string {
