@@ -318,6 +318,17 @@ describe('meshManager', () => {
     expect(geom.attributes.normal).toBeUndefined();
   });
 
+  it('sync with empty incoming object removes all existing meshes', () => {
+    const { manager } = setup();
+    manager.sync({ A: makeMeshData('A'), B: makeMeshData('B') });
+    expect(manager.getSceneMeshes().size).toBe(2);
+
+    manager.sync({});
+
+    expect(manager.getSceneMeshes().size).toBe(0);
+    expect(mockSceneRemove).toHaveBeenCalledTimes(2);
+  });
+
   it('sync calls geometry.computeBoundsTree() on newly created mesh', () => {
     const { manager } = setup();
     manager.sync({ A: makeMeshData('A') });
