@@ -4,7 +4,10 @@
 //! that can be used by Tauri command handlers without requiring the Tauri
 //! runtime (for testability).
 
+use std::sync::Arc;
+
 use reify_lsp::bridge::InProcessLsp;
+use reify_lsp::server::NotificationSink;
 
 /// Tauri-side wrapper around the in-process LSP server.
 ///
@@ -19,6 +22,13 @@ impl LspBridge {
     pub fn new() -> Self {
         Self {
             lsp: InProcessLsp::new(),
+        }
+    }
+
+    /// Create a new LSP bridge with a custom notification sink.
+    pub fn with_sink(sink: Arc<dyn NotificationSink>) -> Self {
+        Self {
+            lsp: InProcessLsp::with_sink(sink),
         }
     }
 

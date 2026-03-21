@@ -1,8 +1,11 @@
 //! Tests for the LspBridge Tauri integration.
 
+use std::sync::Arc;
+
 use serde_json::json;
 
 use crate::lsp_bridge::{LspBridge, lsp_request_impl};
+use reify_lsp::test_support::RecordingSink;
 
 #[tokio::test]
 async fn lsp_bridge_can_be_constructed_and_initialized() {
@@ -126,4 +129,60 @@ async fn lsp_bridge_diagnostics_after_syntax_error() {
             .unwrap_or(false)
     });
     assert!(has_error, "should have at least one error diagnostic");
+}
+
+#[tokio::test]
+async fn lsp_bridge_with_sink_routes_diagnostics() {
+    let sink = Arc::new(RecordingSink::default());
+    let bridge = LspBridge::with_sink(sink.clone());
+
+    lsp_request_impl(&bridge, "initialize", "{}".to_string())
+        .await
+        .expect("initialize");
+    lsp_request_impl(&bridge, "initialized", "{}".to_string())
+        .await
+        .expect("initialized");
+
+    // Use broken source so we get error diagnostics — proves the sink is wired
+    let broken_source = "structure {";
+    let uri = "file:///sink_test.ri";
+    let did_open_params = json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "reify",
+            "version": 1,
+            "text": broken_source
+        }
+    });
+    lsp_request_impl(
+        &bridge,
+        "textDocument/didOpen",
+        serde_json::to_string(&did_open_params).unwrap(),
+    )
+    .await
+    .expect("didOpen should succeed");
+
+    // RecordingSink should have captured at least one publish_diagnostics call
+    let calls = sink.take_calls();
+    assert!(
+        !calls.is_empty(),
+        "RecordingSink should have received at least one publish_diagnostics call"
+    );
+
+    // Verify the call has the correct URI
+    assert_eq!(
+        calls[0].0.as_str(),
+        uri,
+        "sink should receive diagnostics for the correct URI"
+    );
+
+    // Verify the diagnostics include an error (broken source)
+    let has_error = calls[0]
+        .1
+        .iter()
+        .any(|d| d.severity == Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR));
+    assert!(
+        has_error,
+        "broken source should produce error diagnostics through the sink"
+    );
 }

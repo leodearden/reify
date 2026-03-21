@@ -9,6 +9,49 @@ use tower_lsp::{Client, LanguageServer};
 use crate::diagnostics::EvalState;
 use crate::document::DocumentStore;
 
+/// Trait for emitting server-initiated notifications to the frontend.
+///
+/// Replaces direct use of `tower_lsp::Client` for notifications, so the
+/// same `ReifyLanguageServer` can work with:
+/// - `NoOpSink` (tests and backward compatibility)
+/// - `ClientSink` (stdio/TCP mode via tower-lsp)
+/// - `TauriNotificationSink` (in-process Tauri mode)
+pub trait NotificationSink: Send + Sync {
+    /// Publish diagnostics for the given document.
+    fn publish_diagnostics(&self, uri: Url, diagnostics: Vec<Diagnostic>, version: Option<i32>);
+}
+
+/// A no-op sink that discards all notifications.
+pub struct NoOpSink;
+
+impl NotificationSink for NoOpSink {
+    fn publish_diagnostics(&self, _uri: Url, _diagnostics: Vec<Diagnostic>, _version: Option<i32>) {}
+}
+
+/// A sink that wraps the tower-lsp [`Client`] for stdio/TCP mode.
+///
+/// Since [`NotificationSink`] methods are synchronous but `Client.publish_diagnostics()`
+/// is async, this implementation spawns a fire-and-forget tokio task for each call.
+pub struct ClientSink {
+    client: Client,
+}
+
+impl ClientSink {
+    /// Create a new `ClientSink` wrapping the given tower-lsp `Client`.
+    pub fn new(client: Client) -> Self {
+        Self { client }
+    }
+}
+
+impl NotificationSink for ClientSink {
+    fn publish_diagnostics(&self, uri: Url, diagnostics: Vec<Diagnostic>, version: Option<i32>) {
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            client.publish_diagnostics(uri, diagnostics, version).await;
+        });
+    }
+}
+
 /// Internal state shared across handler calls.
 ///
 /// Contains document storage and captured diagnostics. The RwLock guards
@@ -31,16 +74,26 @@ impl ServerState {
 /// The Reify language server.
 #[derive(Clone)]
 pub struct ReifyLanguageServer {
+    /// Retained for tower-lsp infrastructure; notifications now go through `sink`.
+    #[allow(dead_code)]
     client: Client,
     state: Arc<RwLock<ServerState>>,
     /// Evaluation state lives outside the RwLock so eval can run without
     /// blocking concurrent LSP requests that only need document state.
     /// Wrapped in Mutex because Engine internals (OpaqueState) are Send but not Sync.
     eval_state: Arc<Mutex<EvalState>>,
+    /// Notification sink for server-initiated messages (diagnostics, etc.).
+    sink: Arc<dyn NotificationSink>,
 }
 
 impl ReifyLanguageServer {
+    /// Create a new server with a [`NoOpSink`] (backward compatibility).
     pub fn new(client: Client) -> Self {
+        Self::with_sink(client, Arc::new(NoOpSink))
+    }
+
+    /// Create a new server with a custom notification sink.
+    pub fn with_sink(client: Client, sink: Arc<dyn NotificationSink>) -> Self {
         Self {
             client,
             state: Arc::new(RwLock::new(ServerState {
@@ -48,6 +101,7 @@ impl ReifyLanguageServer {
                 last_published_diagnostics: HashMap::new(),
             })),
             eval_state: Arc::new(Mutex::new(EvalState::new())),
+            sink,
         }
     }
 
@@ -119,9 +173,7 @@ impl LanguageServer for ReifyLanguageServer {
                 .insert(uri.clone(), diagnostics.clone());
         }
 
-        self.client
-            .publish_diagnostics(uri, diagnostics, Some(version))
-            .await;
+        self.sink.publish_diagnostics(uri, diagnostics, Some(version));
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -168,9 +220,7 @@ impl LanguageServer for ReifyLanguageServer {
                 .insert(uri.clone(), diagnostics.clone());
         }
 
-        self.client
-            .publish_diagnostics(uri, diagnostics, Some(version))
-            .await;
+        self.sink.publish_diagnostics(uri, diagnostics, Some(version));
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -184,9 +234,7 @@ impl LanguageServer for ReifyLanguageServer {
         }
 
         // Clear diagnostics for the closed file
-        self.client
-            .publish_diagnostics(uri, vec![], None)
-            .await;
+        self.sink.publish_diagnostics(uri, vec![], None);
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -241,18 +289,240 @@ impl LanguageServer for ReifyLanguageServer {
     }
 }
 
+/// Test support types exported for cross-crate test use.
+///
+/// Contains [`RecordingSink`], a [`NotificationSink`] implementation that
+/// captures all `publish_diagnostics` calls for assertion in tests.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    use std::sync::Mutex;
+
+    use tower_lsp::lsp_types::{Diagnostic, Url};
+
+    use super::NotificationSink;
+
+    /// A recording sink that captures all `publish_diagnostics` calls.
+    ///
+    /// Use `take_calls()` to inspect what was recorded.
+    #[derive(Default)]
+    pub struct RecordingSink {
+        calls: Mutex<Vec<(Url, Vec<Diagnostic>, Option<i32>)>>,
+    }
+
+    impl NotificationSink for RecordingSink {
+        fn publish_diagnostics(
+            &self,
+            uri: Url,
+            diagnostics: Vec<Diagnostic>,
+            version: Option<i32>,
+        ) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((uri, diagnostics, version));
+        }
+    }
+
+    impl RecordingSink {
+        /// Return a clone of all recorded calls.
+        pub fn take_calls(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i32>)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::test_support::RecordingSink;
     use tower_lsp::LspService;
 
     fn test_uri() -> Url {
         Url::parse("file:///test.ri").unwrap()
     }
 
+    /// Create a test LspService with NoOpSink (reduces boilerplate across tests).
+    fn test_service() -> (LspService<ReifyLanguageServer>, tower_lsp::ClientSocket) {
+        LspService::new(|client| ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink)))
+    }
+
+    #[test]
+    fn noop_sink_implements_notification_sink() {
+        let sink: Arc<dyn NotificationSink> = Arc::new(NoOpSink);
+        // Should not panic
+        sink.publish_diagnostics(
+            Url::parse("file:///test.ri").unwrap(),
+            vec![],
+            None,
+        );
+    }
+
+    #[tokio::test]
+    async fn sink_receives_diagnostics_on_did_open() {
+        let sink = Arc::new(RecordingSink::default());
+        let (service, _socket) = LspService::new(|client| {
+            ReifyLanguageServer::with_sink(client, sink.clone())
+        });
+        let server = service.inner();
+        let uri = test_uri();
+        let source = reify_test_support::bracket_source();
+
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: source.to_string(),
+                },
+            })
+            .await;
+
+        let calls = sink.take_calls();
+        assert_eq!(calls.len(), 1, "sink should receive exactly one publish_diagnostics call");
+        assert_eq!(calls[0].0, uri, "sink should receive the correct URI");
+        assert_eq!(calls[0].2, Some(1), "sink should receive version 1");
+    }
+
+    #[tokio::test]
+    async fn sink_receives_diagnostics_on_did_change() {
+        let sink = Arc::new(RecordingSink::default());
+        let (service, _socket) = LspService::new(|client| {
+            ReifyLanguageServer::with_sink(client, sink.clone())
+        });
+        let server = service.inner();
+        let uri = test_uri();
+
+        // Open with valid source
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: reify_test_support::bracket_source().to_string(),
+                },
+            })
+            .await;
+
+        // Change to broken source
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: "structure {".to_string(),
+                }],
+            })
+            .await;
+
+        let calls = sink.take_calls();
+        assert_eq!(calls.len(), 2, "sink should receive 2 calls (did_open + did_change)");
+
+        // Second call (did_change with broken source) should contain error diagnostics
+        let (_, ref diags, version) = calls[1];
+        assert_eq!(version, Some(2));
+        let has_error = diags
+            .iter()
+            .any(|d| d.severity == Some(DiagnosticSeverity::ERROR));
+        assert!(has_error, "did_change with broken source should produce error diagnostics");
+    }
+
+    #[tokio::test]
+    async fn sink_receives_clear_on_did_close() {
+        let sink = Arc::new(RecordingSink::default());
+        let (service, _socket) = LspService::new(|client| {
+            ReifyLanguageServer::with_sink(client, sink.clone())
+        });
+        let server = service.inner();
+        let uri = test_uri();
+
+        // Open a document
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: "structure Foo {}".to_string(),
+                },
+            })
+            .await;
+
+        // Close it
+        server
+            .did_close(DidCloseTextDocumentParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+            })
+            .await;
+
+        let calls = sink.take_calls();
+        assert_eq!(calls.len(), 2, "sink should receive 2 calls (did_open + did_close)");
+
+        // Last call should be the clear (empty diagnostics, no version)
+        let (ref close_uri, ref close_diags, close_version) = calls[1];
+        assert_eq!(close_uri, &uri, "close should clear the same URI");
+        assert!(close_diags.is_empty(), "close should send empty diagnostics");
+        assert_eq!(close_version, None, "close should send version=None");
+    }
+
+    #[tokio::test]
+    async fn in_process_lsp_with_sink_receives_diagnostics() {
+        use crate::bridge::InProcessLsp;
+
+        let sink = Arc::new(RecordingSink::default());
+        let lsp = InProcessLsp::with_sink(sink.clone());
+
+        let source = reify_test_support::bracket_source();
+        let params = serde_json::json!({
+            "textDocument": {
+                "uri": "file:///test.ri",
+                "languageId": "reify",
+                "version": 1,
+                "text": source
+            }
+        });
+
+        lsp.handle_request("textDocument/didOpen", params)
+            .await
+            .expect("didOpen should succeed");
+
+        let calls = sink.take_calls();
+        assert_eq!(calls.len(), 1, "sink should receive diagnostics from InProcessLsp");
+        assert_eq!(
+            calls[0].0,
+            Url::parse("file:///test.ri").unwrap(),
+            "should receive the correct URI"
+        );
+    }
+
+    #[tokio::test]
+    async fn server_with_sink_initializes() {
+        let (service, _socket) = LspService::new(|client| {
+            ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink))
+        });
+        let server = service.inner();
+        let result = server.initialize(InitializeParams::default()).await.unwrap();
+
+        // Verify same capabilities as the default constructor
+        match result.capabilities.text_document_sync {
+            Some(TextDocumentSyncCapability::Kind(kind)) => {
+                assert_eq!(kind, TextDocumentSyncKind::FULL);
+            }
+            other => panic!("Expected TextDocumentSyncKind::FULL, got {other:?}"),
+        }
+        assert!(result.capabilities.hover_provider.is_some());
+        assert!(result.capabilities.definition_provider.is_some());
+        assert!(result.capabilities.completion_provider.is_some());
+    }
+
     #[tokio::test]
     async fn initialize_returns_full_sync_capability() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
 
         // Get the inner LanguageServer to call initialize directly
         let server = service.inner();
@@ -270,7 +540,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_advertises_hover_definition_completion() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let init_result = server.initialize(InitializeParams::default()).await.unwrap();
 
@@ -291,7 +561,7 @@ mod tests {
 
     #[tokio::test]
     async fn did_open_stores_document_and_runs_pipeline() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
 
         let source = reify_test_support::bracket_source();
@@ -320,7 +590,7 @@ mod tests {
 
     #[tokio::test]
     async fn did_change_updates_document_text() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let uri = test_uri();
 
@@ -382,7 +652,7 @@ mod tests {
 
     #[tokio::test]
     async fn hover_handler_returns_info_for_width() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let uri = open_bracket_source(server).await;
 
@@ -405,7 +675,7 @@ mod tests {
 
     #[tokio::test]
     async fn goto_definition_handler_returns_location_for_thickness() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let uri = open_bracket_source(server).await;
 
@@ -429,7 +699,7 @@ mod tests {
 
     #[tokio::test]
     async fn completion_handler_returns_items() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let uri = open_bracket_source(server).await;
 
@@ -465,7 +735,7 @@ mod tests {
 
     #[tokio::test]
     async fn server_captures_published_diagnostics() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let uri = test_uri();
         let source = reify_test_support::bracket_source();
@@ -501,7 +771,7 @@ mod tests {
 
     #[tokio::test]
     async fn server_recovers_from_eval_state_lock_poisoning() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let uri = test_uri();
 
@@ -550,7 +820,7 @@ mod tests {
 
     #[tokio::test]
     async fn did_close_removes_document_from_store() {
-        let (service, _socket) = LspService::new(ReifyLanguageServer::new);
+        let (service, _socket) = test_service();
         let server = service.inner();
         let uri = test_uri();
 

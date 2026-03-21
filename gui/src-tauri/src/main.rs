@@ -20,6 +20,8 @@ use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
 use reify_gui::watcher::FileWatcher;
 use reify_kernel_occt::OcctKernelHandle;
+use reify_lsp::server::NotificationSink;
+use tower_lsp::lsp_types::{Diagnostic, Url};
 
 // --- Event emission helpers ---
 
@@ -51,6 +53,33 @@ struct IdleGuard(tauri::AppHandle);
 impl Drop for IdleGuard {
     fn drop(&mut self) {
         emit_status(&self.0, "idle");
+    }
+}
+
+/// Notification sink that emits diagnostics as Tauri events.
+///
+/// Created during Tauri `setup()` where the [`tauri::AppHandle`] is available,
+/// then passed into the [`LspBridge`] so the language server can push
+/// diagnostics directly to the frontend without manual polling.
+struct TauriNotificationSink {
+    app: tauri::AppHandle,
+}
+
+impl NotificationSink for TauriNotificationSink {
+    fn publish_diagnostics(&self, uri: Url, diagnostics: Vec<Diagnostic>, _version: Option<i32>) {
+        let diags: Vec<serde_json::Value> = diagnostics
+            .iter()
+            .filter_map(|d| serde_json::to_value(d).ok())
+            .collect();
+        self.app
+            .emit(
+                "diagnostics",
+                serde_json::json!({
+                    "uri": uri.as_str(),
+                    "diagnostics": diags,
+                }),
+            )
+            .ok();
     }
 }
 
@@ -210,39 +239,14 @@ fn focus_entity(app: tauri::AppHandle, entity_path: String) -> Result<(), String
 
 #[tauri::command]
 async fn lsp_request(
-    app: tauri::AppHandle,
     bridge: tauri::State<'_, LspBridge>,
     method: String,
     params: String,
 ) -> Result<String, String> {
-    // Extract URI before dispatch (for diagnostics emission after mutations)
-    let uri = if method == "textDocument/didOpen" || method == "textDocument/didChange" {
-        extract_document_uri(&params)
-    } else {
-        None
-    };
-
+    // Diagnostics are emitted automatically by TauriNotificationSink
+    // during didOpen/didChange/didClose processing — no manual polling needed.
     let result = reify_gui::lsp_bridge::lsp_request_impl(&*bridge, &method, params).await?;
-
-    // After document mutations, emit diagnostics as a Tauri event
-    if let Some(uri) = uri {
-        let diags = bridge.get_diagnostics(&uri).await;
-        app.emit("diagnostics", serde_json::json!({
-            "uri": uri,
-            "diagnostics": diags,
-        }))
-        .ok();
-    }
-
     Ok(result)
-}
-
-/// Extract the document URI from LSP params JSON.
-fn extract_document_uri(params: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(params).ok()?;
-    v["textDocument"]["uri"]
-        .as_str()
-        .map(|s| s.to_string())
 }
 
 fn main() {
@@ -273,12 +277,16 @@ fn main() {
         watcher: Mutex::new(None),
     };
 
-    let lsp_bridge = LspBridge::new();
-
     tauri::Builder::default()
         .manage(app_state)
-        .manage(lsp_bridge)
         .setup(move |app| {
+            // Create LspBridge with TauriNotificationSink now that AppHandle is available
+            let sink = Arc::new(TauriNotificationSink {
+                app: app.handle().clone(),
+            });
+            let lsp_bridge = LspBridge::with_sink(sink);
+            app.manage(lsp_bridge);
+
             // If an initial file was loaded, start watching its parent directory
             if let Some(ref file_path) = initial_file {
                 let watcher = create_watcher(app.handle(), file_path);
