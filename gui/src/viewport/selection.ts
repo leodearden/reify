@@ -24,6 +24,7 @@ export interface SelectionContext {
   setHovered: (path: string | null) => void;
   setSelected: (path: string | null) => void;
   fitToView: () => void;
+  invalidateRect: () => void;
   dispose: () => void;
 }
 
@@ -40,9 +41,21 @@ export function createSelection(options: SelectionOptions): SelectionContext {
   const ndc = new Vector2();
   let previousHoveredPath: string | null = null;
   let currentWireframe: LineSegments | null = null;
+  let cachedRect: DOMRect | null = null;
+
+  function getRect(): DOMRect {
+    if (cachedRect === null) {
+      cachedRect = domElement.getBoundingClientRect();
+    }
+    return cachedRect;
+  }
+
+  function invalidateRect(): void {
+    cachedRect = null;
+  }
 
   function computeNDC(event: MouseEvent): void {
-    const rect = domElement.getBoundingClientRect();
+    const rect = getRect();
     ndc.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     ndc.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   }
@@ -153,5 +166,5 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     removeWireframe();
   }
 
-  return { setHovered, setSelected, fitToView, dispose };
+  return { setHovered, setSelected, fitToView, invalidateRect, dispose };
 }

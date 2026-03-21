@@ -61,6 +61,7 @@ export function Viewport(props: ViewportProps) {
         const { width: w, height: h } = entry.contentRect;
         if (w > 0 && h > 0) {
           resize(w, h);
+          selection.invalidateRect();
         }
       }
     });
