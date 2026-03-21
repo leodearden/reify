@@ -57,7 +57,7 @@ pub enum RequirementKind {
 /// A default member provided by a trait — injected if not overridden.
 #[derive(Debug, Clone)]
 pub struct TraitDefault {
-    pub name: String,
+    pub name: Option<String>,
     pub kind: DefaultKind,
     pub span: SourceSpan,
 }
@@ -1362,7 +1362,7 @@ fn compile_trait(
                 if param.default.is_some() {
                     // Param with default → trait default
                     defaults.push(TraitDefault {
-                        name: param.name.clone(),
+                        name: Some(param.name.clone()),
                         kind: DefaultKind::Param {
                             cell_type: ty,
                             default_decl: param.clone(),
@@ -1402,7 +1402,7 @@ fn compile_trait(
                 };
                 let _ = ty; // type used for future type checking
                 defaults.push(TraitDefault {
-                    name: let_decl.name.clone(),
+                    name: Some(let_decl.name.clone()),
                     kind: DefaultKind::Let(let_decl.clone()),
                     span: let_decl.span,
                 });
@@ -1412,14 +1412,14 @@ fn compile_trait(
                     // Labeled constraint with expression in trait → default
                     // (override detection uses label matching at injection site)
                     defaults.push(TraitDefault {
-                        name: label.clone(),
+                        name: Some(label.clone()),
                         kind: DefaultKind::Constraint(constraint_decl.clone()),
                         span: constraint_decl.span,
                     });
                 } else {
                     // Unlabeled constraint → always injected as default
                     defaults.push(TraitDefault {
-                        name: String::new(),
+                        name: None,
                         kind: DefaultKind::Constraint(constraint_decl.clone()),
                         span: constraint_decl.span,
                     });
@@ -3908,13 +3908,15 @@ fn check_trait_conformance(
     // Pre-register default member names in scope so their expressions can
     // reference each other (e.g., constraint x > 0 references param x from same trait).
     for default in &all_defaults {
-        if !structure_members.contains_key(&default.name) && !default.name.is_empty() {
-            let ty = match &default.kind {
-                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Let(_) => Type::Real,
-                DefaultKind::Constraint(_) => continue,
-            };
-            scope.register(&default.name, ty);
+        if let Some(name) = &default.name {
+            if !structure_members.contains_key(name) {
+                let ty = match &default.kind {
+                    DefaultKind::Param { cell_type, .. } => cell_type.clone(),
+                    DefaultKind::Let(_) => Type::Real,
+                    DefaultKind::Constraint(_) => continue,
+                };
+                scope.register(name, ty);
+            }
         }
     }
 
@@ -3922,11 +3924,12 @@ fn check_trait_conformance(
     for default in &all_defaults {
         match &default.kind {
             DefaultKind::Param { cell_type, default_decl } => {
-                if !structure_members.contains_key(&default.name) {
+                let name = default.name.as_deref().unwrap_or("");
+                if !structure_members.contains_key(name) {
                     // Inject default param into value_cells
                     let cell_id = ValueCellId {
                         entity: structure.name.to_string(),
-                        member: default.name.clone(),
+                        member: name.to_string(),
                     };
 
                     let default_expr = default_decl.default.as_ref().map(|expr| {
@@ -3944,10 +3947,11 @@ fn check_trait_conformance(
                 }
             }
             DefaultKind::Let(let_decl) => {
-                if !structure_members.contains_key(&default.name) {
+                let name = default.name.as_deref().unwrap_or("");
+                if !structure_members.contains_key(name) {
                     let cell_id = ValueCellId {
                         entity: structure.name.to_string(),
-                        member: default.name.clone(),
+                        member: name.to_string(),
                     };
 
                     let compiled_expr = compile_expr(
@@ -4072,10 +4076,10 @@ fn collect_all_requirements(
 
     // Collect defaults from this trait, deduplicating by name.
     for default in &compiled_trait.defaults {
-        if default.name.is_empty() {
+        if default.name.is_none() {
             // Unnamed defaults (e.g., unlabeled constraints) — always push.
             defaults.push(default.clone());
-        } else {
+        } else if let Some(name) = &default.name {
             // Extract type for dedup comparison.
             let default_type = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
@@ -4083,15 +4087,15 @@ fn collect_all_requirements(
                 DefaultKind::Constraint(_) => Type::Bool, // sentinel for constraint label dedup
             };
 
-            if let Some(existing_type) = seen_defaults.get(&default.name) {
+            if let Some(existing_type) = seen_defaults.get(name.as_str()) {
                 if existing_type != &default_type
-                    && !structure_members.contains_key(&default.name)
+                    && !structure_members.contains_key(name.as_str())
                 {
                     // Same name + different type + not overridden → conflict
                     diagnostics.push(
                         Diagnostic::error(format!(
                             "conflicting trait defaults for '{}': {} vs {}",
-                            default.name, existing_type, default_type
+                            name, existing_type, default_type
                         ))
                         .with_label(DiagnosticLabel::new(span, "conflicting trait defaults")),
                     );
@@ -4099,7 +4103,7 @@ fn collect_all_requirements(
                 // Same name already seen → skip (deduplicate).
                 continue;
             }
-            seen_defaults.insert(default.name.clone(), default_type);
+            seen_defaults.insert(name.clone(), default_type);
             defaults.push(default.clone());
         }
     }

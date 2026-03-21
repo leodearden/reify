@@ -109,10 +109,10 @@ fn unlabeled_constraint_in_trait_uses_option_none() {
     // A trait with an unlabeled constraint should compile its default
     // with `name: None` (not an empty string sentinel).
     let source = r#"
-        trait Bounded {
-            param x : Scalar
-            constraint : x > 0
-        }
+trait Bounded {
+    param x : Length
+    constraint x > 0mm
+}
     "#;
     let module = compile_module(source);
     let errors = error_diagnostics(&module);
