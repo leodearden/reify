@@ -71,12 +71,12 @@ impl ConcurrentEvalAdapter {
 
     /// Get a snapshot of the current values (for testing/inspection).
     pub fn values(&self) -> ValueMap {
-        self.values.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.values.read().unwrap().clone()
     }
 
     /// Take the collected results (for testing/inspection).
     pub fn take_results(&self) -> Vec<ConcurrentNodeResult> {
-        self.results.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.results.lock().unwrap().clone()
     }
 
     /// Build a `ConcurrentEditResult` via shared references (cloning).
@@ -87,9 +87,9 @@ impl ConcurrentEvalAdapter {
     ///
     /// The `skipped` set is provided by the scheduler's `SchedulerResult`.
     pub fn build_result_shared(&self, eval_set: &[NodeId], skipped: HashSet<NodeId>) -> ConcurrentEditResult {
-        let values = self.values.read().unwrap_or_else(|e| e.into_inner()).clone();
-        let snapshot_values = self.snapshot_values.read().unwrap_or_else(|e| e.into_inner()).clone();
-        let node_results = self.results.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let values = self.values.read().unwrap().clone();
+        let snapshot_values = self.snapshot_values.read().unwrap().clone();
+        let node_results = self.results.lock().unwrap().clone();
 
         let actual_eval_set: Vec<NodeId> = eval_set
             .iter()
@@ -114,16 +114,16 @@ impl ConcurrentEvalAdapter {
     /// The `skipped` set is provided by the scheduler's `SchedulerResult`.
     pub fn into_result(self, eval_set: &[NodeId], skipped: HashSet<NodeId>) -> ConcurrentEditResult {
         let values = match Arc::try_unwrap(self.values) {
-            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
-            Err(arc) => arc.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            Ok(lock) => lock.into_inner().unwrap(),
+            Err(arc) => arc.read().unwrap().clone(),
         };
         let snapshot_values = match Arc::try_unwrap(self.snapshot_values) {
-            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
-            Err(arc) => arc.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            Ok(lock) => lock.into_inner().unwrap(),
+            Err(arc) => arc.read().unwrap().clone(),
         };
         let node_results = match Arc::try_unwrap(self.results) {
-            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
-            Err(arc) => arc.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            Ok(lock) => lock.into_inner().unwrap(),
+            Err(arc) => arc.lock().unwrap().clone(),
         };
 
         // actual_eval_set = eval_set nodes that weren't skipped
@@ -195,7 +195,7 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
 
             // Read current values (brief read lock)
             let current_values = {
-                self.values.read().unwrap_or_else(|e| e.into_inner()).clone()
+                self.values.read().unwrap().clone()
             };
 
             // Evaluate expression (pure, no lock held)
@@ -225,13 +225,13 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
 
             // Write result to shared values (brief write lock)
             {
-                let mut values = self.values.write().unwrap_or_else(|e| e.into_inner());
+                let mut values = self.values.write().unwrap();
                 values.insert(vcid.clone(), val.clone());
             }
 
             // Write to snapshot values (brief write lock)
             {
-                let mut sv = self.snapshot_values.write().unwrap_or_else(|e| e.into_inner());
+                let mut sv = self.snapshot_values.write().unwrap();
                 sv.insert(
                     vcid.clone(),
                     (val.clone(), DeterminacyState::Determined),
@@ -240,7 +240,7 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
 
             // Record result (no early cutoff propagation — skip decisions
             // are made by the scheduler using pre-computed changed_vcids)
-            self.results.lock().unwrap_or_else(|e| e.into_inner()).push(ConcurrentNodeResult {
+            self.results.lock().unwrap().push(ConcurrentNodeResult {
                 node: node.clone(),
                 value: val,
                 determinacy: DeterminacyState::Determined,
