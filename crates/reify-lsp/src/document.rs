@@ -94,6 +94,14 @@ mod tests {
     }
 
     #[test]
+    fn update_unopened_document_returns_false() {
+        let mut store = DocumentStore::new();
+        let uri = test_uri("unknown");
+        let found = store.update(&uri, "text".to_string(), 1);
+        assert!(!found, "update on unopened URI should return false");
+    }
+
+    #[test]
     fn open_two_documents_independently() {
         let mut store = DocumentStore::new();
         let uri_a = test_uri("a");
