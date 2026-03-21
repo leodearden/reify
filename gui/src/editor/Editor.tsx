@@ -9,7 +9,7 @@ import { reifyLanguage } from './reifyLanguage';
 import { updateSource, saveFile } from '../bridge';
 import { createLspClient } from './lspClient';
 import { reifyCompletionSource } from './completions';
-import { createDiagnosticsListener, lspDiagnosticToCodeMirror } from './diagnostics';
+import { createDiagnosticsListener, lspDiagnosticToCodeMirror, type CmDiagnostic } from './diagnostics';
 import { reifyHoverTooltip } from './hover';
 import { reifyGotoDefinition } from './gotoDefinition';
 import type { createEditorStore } from '../stores/editorStore';
@@ -131,7 +131,7 @@ export function Editor(props: EditorProps) {
             return null;
           }
         })
-        .filter((d): d is Diagnostic => d !== null);
+        .filter((d): d is CmDiagnostic => d !== null);
 
       // Apply diagnostics to the editor via setDiagnostics
       view!.dispatch(setDiagnostics(view!.state, diagnostics));

@@ -70,7 +70,6 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     const posAttr = geometry.getAttribute('position') as BufferAttribute | null;
     if (posAttr) {
       posAttr.array = data.vertices;
-      posAttr.count = data.vertices.length / 3;
       posAttr.needsUpdate = true;
     } else {
       geometry.setAttribute('position', new BufferAttribute(data.vertices, 3));
@@ -79,7 +78,6 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     const indexAttr = geometry.index;
     if (indexAttr) {
       indexAttr.array = data.indices;
-      indexAttr.count = data.indices.length;
       indexAttr.needsUpdate = true;
     } else {
       geometry.setIndex(new BufferAttribute(data.indices, 1));
@@ -89,7 +87,6 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
       const normalAttr = geometry.getAttribute('normal') as BufferAttribute | null;
       if (normalAttr) {
         normalAttr.array = data.normals;
-        normalAttr.count = data.normals.length / 3;
         normalAttr.needsUpdate = true;
       } else {
         geometry.setAttribute('normal', new BufferAttribute(data.normals, 3));
