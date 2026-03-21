@@ -643,3 +643,46 @@ describe('App file picker integration (E-6)', () => {
     expect(screen.getByTestId('export-dialog')).toBeTruthy();
   });
 });
+
+describe('App pickSavePath error boundary', () => {
+  it('shows error toast and keeps dialog open when pickSavePath rejects', async () => {
+    vi.mocked(bridge.pickSavePath).mockRejectedValue(new Error('Plugin not registered'));
+    vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
+
+    render(() => <App />);
+
+    // Open the export dialog
+    fireEvent.click(screen.getByText('Export'));
+    await waitFor(() => {
+      expect(screen.getByTestId('export-dialog')).toBeTruthy();
+    });
+
+    // Click Export inside the dialog
+    const dialog = screen.getByRole('dialog');
+    const exportBtn = dialog.querySelector('button:last-of-type') as HTMLButtonElement;
+    fireEvent.click(exportBtn);
+
+    // Wait for the rejection to be handled
+    await waitFor(() => {
+      expect(bridge.pickSavePath).toHaveBeenCalled();
+    });
+
+    // Give time for any async handling
+    await new Promise((r) => setTimeout(r, 50));
+
+    // (1) Error toast should be shown with message about save dialog failure
+    await waitFor(() => {
+      expect(screen.getByText(/Could not open save dialog/)).toBeTruthy();
+    });
+
+    // (2) bridgeExportGeometry should NOT have been called
+    expect(bridge.exportGeometry).not.toHaveBeenCalled();
+
+    // (3) Dialog should still be open and NOT in exporting state (no spinner)
+    expect(screen.getByTestId('export-dialog')).toBeTruthy();
+    expect(screen.queryByTestId('export-spinner')).toBeNull();
+
+    // (4) Dialog remains open for user to retry or cancel
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+});
