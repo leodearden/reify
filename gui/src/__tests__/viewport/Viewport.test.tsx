@@ -329,6 +329,26 @@ describe('Viewport', () => {
     expect(opts.controls).toBeDefined();
     expect(typeof opts.controls.addEventListener).toBe('function');
   });
+
+  it('calls fitToViewRef callback with a function on mount', () => {
+    const fitToViewRef = vi.fn();
+    render(() => <Viewport meshes={{}} fitToViewRef={fitToViewRef} />);
+    expect(fitToViewRef).toHaveBeenCalledTimes(1);
+    expect(typeof fitToViewRef.mock.calls[0][0]).toBe('function');
+  });
+
+  it('fitToViewRef function delegates to selection.fitToView', () => {
+    let capturedFn: (() => void) | undefined;
+    const fitToViewRef = vi.fn((fn: () => void) => {
+      capturedFn = fn;
+    });
+    render(() => <Viewport meshes={{}} fitToViewRef={fitToViewRef} />);
+
+    expect(capturedFn).toBeDefined();
+    mockSelectionFitToView.mockClear();
+    capturedFn!();
+    expect(mockSelectionFitToView).toHaveBeenCalled();
+  });
 });
 
 describe('Viewport accessibility', () => {

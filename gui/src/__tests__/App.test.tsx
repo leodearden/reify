@@ -12,12 +12,17 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 // Capture Viewport props for navigation tests
 let capturedViewportProps: any = {};
+const mockViewportFitToView = vi.fn();
 vi.mock('../viewport', () => ({
   Viewport: (props: any) => {
     capturedViewportProps = props;
     // Invoke flyToEntityRef with a mock function if provided
     if (props.flyToEntityRef) {
       props.flyToEntityRef((_path: string) => {});
+    }
+    // Invoke fitToViewRef with a trackable mock function if provided
+    if (props.fitToViewRef) {
+      props.fitToViewRef(mockViewportFitToView);
     }
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'viewport-container');
@@ -74,6 +79,7 @@ import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 beforeEach(() => {
   vi.clearAllMocks();
   capturedViewportProps = {};
+  mockViewportFitToView.mockClear();
   localStorage.clear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
@@ -1201,6 +1207,27 @@ describe('App splitter max bounds', () => {
     const heightPx = parseInt(rows.split('px')[0], 10);
     expect(heightPx).toBeLessThanOrEqual(600 - 80 - 4);
     expect(heightPx).toBeGreaterThan(0);
+  });
+});
+
+describe('App fit-to-view wiring', () => {
+  it('capturedViewportProps.fitToViewRef is defined', async () => {
+    await renderAndWaitForReady();
+    expect(capturedViewportProps.fitToViewRef).toBeDefined();
+    expect(typeof capturedViewportProps.fitToViewRef).toBe('function');
+  });
+
+  it('Toolbar Fit to View click triggers viewport fitToView via fitToViewRef', async () => {
+    await renderAndWaitForReady();
+
+    // The Viewport mock invokes fitToViewRef with mockViewportFitToView.
+    // App stores it. Clicking Fit to View in Toolbar should call it.
+    mockViewportFitToView.mockClear();
+
+    const fitBtn = screen.getByText('Fit to View');
+    fireEvent.click(fitBtn);
+
+    expect(mockViewportFitToView).toHaveBeenCalled();
   });
 });
 
