@@ -131,3 +131,32 @@ field def bad_compose : Point3 -> Scalar { source = composed { |p| f2(f1(p)) } }
         module.diagnostics
     );
 }
+
+// ── Step 29: compose type check nested in match ─────────────────────────
+
+#[test]
+fn compose_type_check_nested_in_match() {
+    // Field composition mismatch nested inside a match arm body.
+    // The current walk_field_composition misses Match variants;
+    // after rewriting to use CompiledExpr::walk, it will be caught.
+    let module = compile_module(
+        r#"
+enum Mode { A B }
+
+field def f1 : Point3 -> Vector3 { source = analytical { |p| p } }
+field def f2 : Scalar -> Scalar { source = analytical { |x| x } }
+field def bad_nested : Point3 -> Scalar {
+    source = composed { |p| match Mode.A { A => f2(f1(p)) B => f2(f1(p)) } }
+}
+"#,
+    );
+    // Should detect the type mismatch even though it's inside a match arm
+    let has_mismatch_error = module.diagnostics.iter().any(|d| {
+        d.message.contains("mismatch") || d.message.contains("compose") || d.message.contains("field")
+    });
+    assert!(
+        has_mismatch_error,
+        "expected field composition type mismatch diagnostic inside match arm, got: {:?}",
+        module.diagnostics
+    );
+}
