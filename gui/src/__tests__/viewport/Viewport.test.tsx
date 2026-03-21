@@ -281,24 +281,26 @@ describe('Viewport', () => {
       constructor(cb: ResizeObserverCallback) { roCallback = cb; }
     } as any;
 
-    render(() => <Viewport meshes={{}} />);
+    try {
+      render(() => <Viewport meshes={{}} />);
 
-    // Fire first rAF callback (initial render)
-    const firstCb = rafCallbacks[0];
-    firstCb(performance.now());
-    mockRendererRender.mockClear();
+      // Fire first rAF callback (initial render)
+      const firstCb = rafCallbacks[0];
+      firstCb(performance.now());
+      mockRendererRender.mockClear();
 
-    // Simulate resize
-    roCallback!([{ contentRect: { width: 1024, height: 768 } }] as any, {} as any);
+      // Simulate resize
+      roCallback!([{ contentRect: { width: 1024, height: 768 } }] as any, {} as any);
 
-    // Fire next rAF — should render since resize sets dirty flag
-    const nextCb = rafCallbacks[rafCallbacks.length - 1];
-    nextCb(performance.now());
+      // Fire next rAF — should render since resize sets dirty flag
+      const nextCb = rafCallbacks[rafCallbacks.length - 1];
+      nextCb(performance.now());
 
-    expect(mockRendererRender).toHaveBeenCalledTimes(1);
-
-    // Restore original ResizeObserver
-    globalThis.ResizeObserver = OrigRO;
+      expect(mockRendererRender).toHaveBeenCalledTimes(1);
+    } finally {
+      // Restore original ResizeObserver regardless of assertion failures
+      globalThis.ResizeObserver = OrigRO;
+    }
   });
 
   it('passes controls to createSelection for orbit target updates', () => {
