@@ -1242,10 +1242,7 @@ fn user_fn_safety_factor() {
                 v
             );
         }
-        reify_types::Value::Int(v) => {
-            assert_eq!(*v, 2, "expected 2 (integer division), got {}", v);
-        }
-        other => panic!("expected Real(2.5) or Int for sf, got {:?}", other),
+        other => panic!("expected Real(2.5) for sf, got {:?}", other),
     }
 
     // Check constraints — sf >= 2.0 should be satisfied
@@ -1293,10 +1290,10 @@ fn geometry_flange_with_pattern() {
         !flange.realizations.is_empty(),
         "BoltFlange should have realization declarations from geometry lets"
     );
-    // Should have at least 2 realizations (body cylinder + holes circular_pattern)
+    // Should have at least 3 realizations (body cylinder + hole cylinder + holes circular_pattern)
     assert!(
-        flange.realizations.len() >= 2,
-        "expected at least 2 realizations (cylinder + circular_pattern), got {}",
+        flange.realizations.len() >= 3,
+        "expected at least 3 realizations (body cylinder + hole cylinder + circular_pattern), got {}",
         flange.realizations.len()
     );
 

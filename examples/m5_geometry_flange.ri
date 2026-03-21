@@ -9,5 +9,6 @@ structure def BoltFlange {
     constraint hole_count > 0
 
     let body = cylinder(outer_radius, height)
-    let holes = circular_pattern(outer_radius, 0, 0, 0, 0, 0, 1, hole_count, 360)
+    let hole = cylinder(hole_radius, height)
+    let holes = circular_pattern(hole_radius, 0, 0, 0, 0, 0, 1, hole_count, 360)
 }
