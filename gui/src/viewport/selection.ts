@@ -7,9 +7,14 @@ import {
   EdgesGeometry,
   LineSegments,
   LineBasicMaterial,
+  Mesh,
 } from 'three';
-import type { Scene, PerspectiveCamera, Mesh, MeshStandardMaterial } from 'three';
+import type { Scene, PerspectiveCamera, MeshStandardMaterial } from 'three';
+import { acceleratedRaycast } from 'three-mesh-bvh';
 import { THEME_TOKENS } from '../theme';
+
+// Patch Mesh prototype for BVH-accelerated raycasting
+Mesh.prototype.raycast = acceleratedRaycast;
 
 export interface SelectionOptions {
   scene: Scene;
@@ -40,6 +45,7 @@ const HIGHLIGHT_COLOR = THEME_TOKENS.accent;
 export function createSelection(options: SelectionOptions): SelectionContext {
   const { scene, camera, domElement, getMeshes, onHover, onSelect, controls } = options;
   const raycaster = new Raycaster();
+  (raycaster as any).firstHitOnly = true;
   const ndc = new Vector2();
   let previousHoveredPath: string | null = null;
   let currentWireframe: LineSegments | null = null;
