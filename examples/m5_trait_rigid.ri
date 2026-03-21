@@ -1,0 +1,10 @@
+trait Rigid {
+    param mass : Mass
+    constraint mass > 0kg
+}
+
+structure def Bracket : Rigid {
+    param mass : Mass = 0.5kg
+    param width : Length = 80mm
+    constraint width > 0mm
+}

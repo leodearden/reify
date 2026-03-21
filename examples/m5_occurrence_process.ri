@@ -1,0 +1,21 @@
+trait WorkPort {
+    param tolerance : Length
+}
+
+occurrence def Machining {
+    port blank : in WorkPort { param tolerance : Length = 0.1mm }
+    port finished : out WorkPort { param tolerance : Length = 0.1mm }
+    param feed_rate : Real = 100
+}
+
+occurrence def HeatTreat {
+    port workpiece : in WorkPort { param tolerance : Length = 0.5mm }
+    port treated : out WorkPort { param tolerance : Length = 0.5mm }
+    param temperature : Real = 850
+}
+
+structure def ManufacturingProcess {
+    sub machining = Machining()
+    sub heat_treat = HeatTreat()
+    chain machining.finished -> heat_treat.workpiece
+}

@@ -1,0 +1,8 @@
+fn safety_factor(applied: Real, yield_str: Real) -> Real { yield_str / applied }
+
+structure def Beam {
+    param stress : Real = 100
+    param material_yield : Real = 250
+    let sf = safety_factor(stress, material_yield)
+    constraint sf >= 2.0
+}

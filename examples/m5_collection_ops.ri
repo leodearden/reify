@@ -1,0 +1,12 @@
+structure def Inventory {
+    let items = [5, 10, 15, 20]
+    let n = items.count
+    let total = items.sum
+    let first = items[0]
+    let last = items[3]
+
+    constraint n > 0
+
+    // forall compiles but may not evaluate yet
+    constraint forall x in items: x > 0
+}
