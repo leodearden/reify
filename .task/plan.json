@@ -5,17 +5,19 @@
     "crates/reify-constraints/Cargo.toml",
     "crates/reify-constraints/src/lib.rs",
     "crates/reify-constraints/src/solvespace.rs",
+    "crates/reify-constraints/src/slvs_sys.rs",
+    "crates/reify-constraints/build.rs",
     "crates/reify-constraints/tests/solvespace_tests.rs",
     "crates/reify-constraints/tests/registry_tests.rs"
   ],
   "modules": [
     "crates/reify-constraints"
   ],
-  "analysis": "This task integrates the SolveSpace libslvs geometric constraint solver into reify-constraints via the existing `slvs` crate (v0.6.0), which provides safe Rust bindings around the libslvs C API with phantom-typed handles. The crate compiles SolveSpace from source via the `cc` crate — no system dependency needed.\n\nThe existing infrastructure already supports this integration:\n- `SolverRegistry` has an `Option<Box<dyn ConstraintSolver>>` geometric slot\n- `ConstraintClassifier` classifies expressions with `std::geo::*` / `std::geometry::*` / `std::distance` / `std::angle_between` / `std::parallel` function calls as `ConstraintDomain::Geometric`\n- `decompose_into_components` groups constraints by domain and routes to the correct solver\n\nThe implementation needs:\n1. Add `slvs` crate dependency to reify-constraints\n2. Create `SolveSpaceSolver` struct implementing `ConstraintSolver` trait\n3. Map Reify's `ResolutionProblem` (auto params + compiled constraint expressions) to slvs entities and constraints\n4. Pattern-match on `CompiledExpr` trees to identify geometric constraint patterns (distance, angle, parallel, perpendicular, coincident, etc.)\n5. Extract solved parameter values from slvs back to Reify's `Value` type\n6. Export `SolveSpaceSolver` from the crate and wire into `SolverRegistry`\n\nKey challenge: The constraint expressions in `ResolutionProblem` are generic `CompiledExpr` trees. The SolveSpace solver needs to pattern-match these to identify which libslvs constraint type to create. For example, `eq(distance_call(a, b), literal(10mm))` must be recognized as a point-to-point distance constraint. This requires a constraint pattern recognition layer.\n\nThe `slvs` crate API works with `System`, groups, entities (Point, LineSegment, etc.), and constraints (PtPtDistance, Angle, Parallel, Perpendicular, PointsCoincident, etc.). Auto params map to slvs parameters, and after solving, we read back the resolved values.\n\nSince `ConstraintSolver: Send + Sync`, the `SolveSpaceSolver` must be Send + Sync. The solver creates a fresh `slvs::System` per solve call (stateless), so this is naturally satisfied — no persistent mutable state.\n\nThe `slvs` crate requires a C compiler and libclang (for bindgen). These should already be available since the project already compiles C++ code via the OCCT kernel.",
+  "analysis": "This task integrates the SolveSpace libslvs geometric constraint solver into reify-constraints via the existing `slvs` crate (v0.6.0), which provides safe Rust bindings around the libslvs C API with phantom-typed handles. The crate compiles SolveSpace from source via the `cc` crate \u2014 no system dependency needed.\n\nThe existing infrastructure already supports this integration:\n- `SolverRegistry` has an `Option<Box<dyn ConstraintSolver>>` geometric slot\n- `ConstraintClassifier` classifies expressions with `std::geo::*` / `std::geometry::*` / `std::distance` / `std::angle_between` / `std::parallel` function calls as `ConstraintDomain::Geometric`\n- `decompose_into_components` groups constraints by domain and routes to the correct solver\n\nThe implementation needs:\n1. Add `slvs` crate dependency to reify-constraints\n2. Create `SolveSpaceSolver` struct implementing `ConstraintSolver` trait\n3. Map Reify's `ResolutionProblem` (auto params + compiled constraint expressions) to slvs entities and constraints\n4. Pattern-match on `CompiledExpr` trees to identify geometric constraint patterns (distance, angle, parallel, perpendicular, coincident, etc.)\n5. Extract solved parameter values from slvs back to Reify's `Value` type\n6. Export `SolveSpaceSolver` from the crate and wire into `SolverRegistry`\n\nKey challenge: The constraint expressions in `ResolutionProblem` are generic `CompiledExpr` trees. The SolveSpace solver needs to pattern-match these to identify which libslvs constraint type to create. For example, `eq(distance_call(a, b), literal(10mm))` must be recognized as a point-to-point distance constraint. This requires a constraint pattern recognition layer.\n\nThe `slvs` crate API works with `System`, groups, entities (Point, LineSegment, etc.), and constraints (PtPtDistance, Angle, Parallel, Perpendicular, PointsCoincident, etc.). Auto params map to slvs parameters, and after solving, we read back the resolved values.\n\nSince `ConstraintSolver: Send + Sync`, the `SolveSpaceSolver` must be Send + Sync. The solver creates a fresh `slvs::System` per solve call (stateless), so this is naturally satisfied \u2014 no persistent mutable state.\n\nThe `slvs` crate requires a C compiler and libclang (for bindgen). These should already be available since the project already compiles C++ code via the OCCT kernel.\n\n## Review Fix Analysis\n\nFive blocking issues were raised, all stemming from the same root cause: the implementation deviated from the plan by hand-writing 234 lines of raw FFI bindings (`slvs_sys.rs`) and a `build.rs` linking against a system `libslvs1-dev` package, instead of using the `slvs` crate as specified. This introduces:\n1. A hard system dependency on `libslvs1-dev` (breaks CI and developer machines)\n2. Untyped u32 handles (Slvs_hParam vs Slvs_hEntity interchangeable by mistake)\n3. Unsafe `sys.faileds` cast from c_int to usize without bounds checking\n4. Unsafe Vec length casts to i32 without overflow checking\n5. No diagnostic on missing system library\n\nAll five issues are resolved by switching to the `slvs` crate as originally planned:\n- The `slvs` crate bundles SolveSpace source and compiles via cc/bindgen (no system dependency)\n- It uses phantom-typed `EntityHandle<Point>` / `EntityHandle<LineSegment>` (no handle confusion)\n- Its `System::solve()` handles all FFI boundary safety internally (no manual casts)\n- It manages thread safety via its own internal `SolverGuard` mutex\n\nThe pattern recognition layer (GeometricPattern enum, recognize_pattern, extract_point_ref, etc.) is retained unchanged \u2014 only the solver backend changes.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add `slvs = \"0.6.0\"` dependency to crates/reify-constraints/Cargo.toml under [dependencies]. Run `cargo check -p reify-constraints` to verify it compiles. The slvs crate bundles SolveSpace source and compiles it via cc/bindgen — no system library needed.",
+      "description": "Add `slvs = \"0.6.0\"` dependency to crates/reify-constraints/Cargo.toml under [dependencies]. Run `cargo check -p reify-constraints` to verify it compiles. The slvs crate bundles SolveSpace source and compiles it via cc/bindgen \u2014 no system library needed.",
       "status": "done",
       "commit": "2613a84",
       "tests": []
@@ -53,7 +55,7 @@
     {
       "id": "step-5",
       "type": "impl",
-      "description": "Implement the core solve method for SolveSpaceSolver. For each constraint in the ResolutionProblem: (1) recognize the geometric pattern, (2) create slvs entities (3D points from auto params, lines from point pairs), (3) add the corresponding slvs constraint (PtPtDistance, Angle, Parallel, etc.), (4) call sys.solve(), (5) read back solved point coordinates and map to ValueCellId→Value entries. Handle the mapping between Reify's ValueCellId-based auto params and slvs's entity/parameter system. Use a fresh slvs::System per solve call. Make the simple distance test pass.",
+      "description": "Implement the core solve method for SolveSpaceSolver. For each constraint in the ResolutionProblem: (1) recognize the geometric pattern, (2) create slvs entities (3D points from auto params, lines from point pairs), (3) add the corresponding slvs constraint (PtPtDistance, Angle, Parallel, etc.), (4) call sys.solve(), (5) read back solved point coordinates and map to ValueCellId\u2192Value entries. Handle the mapping between Reify's ValueCellId-based auto params and slvs's entity/parameter system. Use a fresh slvs::System per solve call. Make the simple distance test pass.",
       "status": "done",
       "commit": "29e04da"
     },
@@ -81,7 +83,7 @@
     {
       "id": "step-9",
       "type": "impl",
-      "description": "Add parallel constraint pattern recognition: match FunctionCall with qualified_name containing 'parallel'. Map to slvs Parallel constraint (no value parameter needed — it's a boolean geometric relationship). Make the parallel test pass.",
+      "description": "Add parallel constraint pattern recognition: match FunctionCall with qualified_name containing 'parallel'. Map to slvs Parallel constraint (no value parameter needed \u2014 it's a boolean geometric relationship). Make the parallel test pass.",
       "status": "done",
       "commit": "47b5cbd"
     },
@@ -109,14 +111,14 @@
     {
       "id": "step-13",
       "type": "impl",
-      "description": "Handle slvs solve failures. When sys.solve() returns SolveResult::Fail, map the FailReason (Inconsistent → Infeasible with diagnostic listing failed constraints, Nonconvergent → NoProgress). Make the overconstrained test pass.",
+      "description": "Handle slvs solve failures. When sys.solve() returns SolveResult::Fail, map the FailReason (Inconsistent \u2192 Infeasible with diagnostic listing failed constraints, Nonconvergent \u2192 NoProgress). Make the overconstrained test pass.",
       "status": "done",
       "commit": "47b5cbd"
     },
     {
       "id": "step-14",
       "type": "test",
-      "description": "Write failing test: `solve_underconstrained_solves_with_dof`. Create a problem with a single point and only one distance constraint (underconstrained — point can be anywhere on a sphere). Expect SolveResult::Solved (solver finds a valid position) with remaining degrees of freedom.",
+      "description": "Write failing test: `solve_underconstrained_solves_with_dof`. Create a problem with a single point and only one distance constraint (underconstrained \u2014 point can be anywhere on a sphere). Expect SolveResult::Solved (solver finds a valid position) with remaining degrees of freedom.",
       "status": "done",
       "commit": "47b5cbd"
     },
@@ -151,7 +153,7 @@
     {
       "id": "step-19",
       "type": "impl",
-      "description": "Ensure SolveSpaceSolver is properly exported and can be wired into SolverRegistry. Update lib.rs exports if needed. The test should pass with the existing SolverRegistry infrastructure — it already has the geometric slot and solver_for() dispatch logic. Verify the full integration test passes.",
+      "description": "Ensure SolveSpaceSolver is properly exported and can be wired into SolverRegistry. Update lib.rs exports if needed. The test should pass with the existing SolverRegistry infrastructure \u2014 it already has the geometric slot and solver_for() dispatch logic. Verify the full integration test passes.",
       "status": "done",
       "commit": "c722114"
     },
@@ -168,12 +170,33 @@
       "description": "Verify the mixed-domain decomposition and dispatch works end-to-end. The decompose_into_components function already handles multi-domain decomposition, and SolverRegistry merges results. Fix any issues that arise. Run the full test suite to ensure no regressions.",
       "status": "done",
       "commit": "c722114"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "REVIEW FIX (issues 1,2,5): Remove the hand-written FFI infrastructure that deviates from the plan's design decision. (a) Delete `crates/reify-constraints/build.rs` (the 4-line build script that links against system `libslvs`, creating the system dependency). (b) Delete `crates/reify-constraints/src/slvs_sys.rs` (234 lines of hand-rolled FFI bindings with untyped u32 handles). (c) Remove `mod slvs_sys;` from `crates/reify-constraints/src/lib.rs`. (d) Ensure `slvs = \"0.6.0\"` is present in `crates/reify-constraints/Cargo.toml` under [dependencies] \u2014 the crate bundles SolveSpace source and compiles via cc/bindgen, requiring no system library. Verify `cargo check -p reify-constraints` compiles (it will fail on solvespace.rs imports, which is expected \u2014 fixed in step-23).",
+      "status": "done",
+      "commit": "23f51db"
+    },
+    {
+      "id": "step-23",
+      "type": "impl",
+      "description": "REVIEW FIX (issues 1,2,3,4,5): Rewrite `solvespace.rs` to use the `slvs` crate's safe phantom-typed API. Key changes:\n\n1. **Replace SystemBuilder with slvs::System**: Use `System::new()`, `sys.add_group()` for group creation, `sys.sketch(Point::new_in_3d(group, [x, y, z]))` for 3D points, `sys.sketch(LineSegment::new(group, pt_a, pt_b))` for line segments.\n\n2. **Use phantom-typed handles**: `EntityHandle<Point>` and `EntityHandle<LineSegment>` prevent the handle type confusion flagged by reviewers (slvs_sys used bare u32 for all handles).\n\n3. **Use typed constraints**: `sys.constrain(PtPtDistance::new(group, pt_a, pt_b, distance, None))`, `sys.constrain(Angle::new(group, line_a, line_b, angle_deg, workplane, false))`, `sys.constrain(Parallel::new(group, line_a, line_b, workplane))`, `sys.constrain(Perpendicular::new(group, line_a, line_b, workplane))`, `sys.constrain(PointsCoincident::new(group, pt_a, pt_b, None))`.\n\n4. **Read results safely**: `sys.entity_data(&handle)` returns `Point::In3d { coords: [x, y, z], .. }` \u2014 no manual parameter indexing, no unsafe `faileds` cast (issue 3), no Vec-length-to-i32 overflow (issue 4).\n\n5. **Remove global SLVS_LOCK mutex**: The slvs crate manages thread safety internally via its own `SolverGuard` with a static `Mutex<()>`.\n\n6. **Workplane for 2D constraints**: Create an XY workplane (origin + normal with identity quaternion via `slvs::utils::make_quaternion`) in a fixed group for Parallel, Perpendicular, and Angle constraints, since Parallel in 3D is documented as broken in the slvs crate.\n\n7. **Use two groups**: Group 1 (fixed) for reference entities (origin, workplane, fixed points). Group 2 (solve) for auto-param entities and constraints. Solve group 2.\n\n8. **Point deduplication**: Keep HashMap<PointKey, EntityHandle<Point>> to avoid creating duplicate point entities for the same auto params.\n\n9. **Retain pattern recognition layer unchanged**: The GeometricPattern enum, recognize_pattern(), extract_point_ref(), extract_line_ref(), extract_scalar_si(), try_distance_eq(), try_angle_eq(), try_line_pair_constraint() functions are kept as-is \u2014 they operate on CompiledExpr trees and are independent of the solver backend.\n\nAll five blocking review issues are resolved: no system dependency, no hand-rolled FFI, phantom-typed handles prevent confusion, no unsafe FFI boundary code, no missing dependency check needed.",
+      "status": "done",
+      "commit": "714423d"
+    },
+    {
+      "id": "step-24",
+      "type": "test",
+      "description": "REVIEW FIX verification: Run the full existing test suite (`cargo test -p reify-constraints`) to verify the slvs crate rewrite preserves all behavior. All existing tests must pass unchanged: solvespace_solver_is_send_sync, solvespace_solver_as_trait_object, solve_simple_point_distance_constraint, solve_angle_constraint, solve_parallel_constraint, solve_coincident_constraint, solve_overconstrained_returns_infeasible, solve_underconstrained_solves_with_dof, solve_unrecognized_pattern_falls_through, registry_dispatches_geometric_to_solvespace, registry_mixed_dimensional_and_geometric, and all pre-existing registry/solver/classifier tests. No test modifications expected \u2014 the tests verify external behavior which is unchanged by the backend swap.",
+      "status": "done",
+      "commit": "714423d"
     }
   ],
   "design_decisions": [
     {
       "decision": "Use the `slvs` crate (v0.6.0) instead of raw FFI bindings",
-      "rationale": "The slvs crate provides safe Rust wrappers with phantom-typed handles around the libslvs C API. It bundles the SolveSpace source and compiles from source via cc/bindgen — no system dependency needed. This follows the principle of using well-maintained community crates over hand-rolled FFI, similar to how argmin is used for the DimensionalSolver."
+      "rationale": "The slvs crate provides safe Rust wrappers with phantom-typed handles around the libslvs C API. It bundles the SolveSpace source and compiles from source via cc/bindgen \u2014 no system dependency needed. This follows the principle of using well-maintained community crates over hand-rolled FFI, similar to how argmin is used for the DimensionalSolver."
     },
     {
       "decision": "Create a fresh slvs::System per solve() call (stateless solver)",
@@ -181,7 +204,7 @@
     },
     {
       "decision": "Pattern recognition layer to map CompiledExpr to geometric constraint types",
-      "rationale": "Reify's constraint expressions are generic CompiledExpr trees, but libslvs needs specific constraint types (PtPtDistance, Angle, Parallel, etc.). A pattern recognition function matches known expression shapes (e.g., eq(distance_call(...), literal)) to specific GeometricConstraintPattern variants. This is extensible — new patterns can be added without changing the solve logic."
+      "rationale": "Reify's constraint expressions are generic CompiledExpr trees, but libslvs needs specific constraint types (PtPtDistance, Angle, Parallel, etc.). A pattern recognition function matches known expression shapes (e.g., eq(distance_call(...), literal)) to specific GeometricConstraintPattern variants. This is extensible \u2014 new patterns can be added without changing the solve logic."
     },
     {
       "decision": "Map auto params to 3D points in slvs, even for 2D problems",
@@ -194,9 +217,22 @@
     {
       "decision": "Point-based entity model: auto params map to point coordinates",
       "rationale": "Reify's auto params are scalar ValueCellIds (e.g., 'Point.x', 'Point.y', 'Point.z'). These naturally map to slvs 3D point coordinates. Lines are derived from point pairs referenced in constraint expressions. This mapping is straightforward and matches how CAD constraint solvers typically work."
+    },
+    {
+      "decision": "Use workplane for Parallel, Perpendicular, and Angle constraints",
+      "rationale": "The slvs crate documents that Parallel in 3D space is broken (the test is #[ignore]d in the upstream crate). To ensure correct behavior, these constraints are projected onto an XY workplane created in a fixed group. This matches the existing implementation's approach and is safe because the current constraint patterns operate in 2D (z=0)."
+    },
+    {
+      "decision": "Rely on slvs crate's internal SolverGuard mutex for thread safety",
+      "rationale": "The slvs crate already contains a static Mutex<()> in SolverGuard that serializes all Slvs_Solve calls. Adding our own global mutex is redundant and adds unnecessary lock contention. The crate's mutex ensures exactly-once access to the global SolveSpace state."
     }
   ],
   "reuse": [
+    {
+      "what": "slvs crate (v0.6.0) safe Rust bindings",
+      "where": "https://crates.io/crates/slvs/0.6.0",
+      "how": "Use System::new(), sys.add_group(), sys.sketch(Point::new_in_3d(...)), sys.sketch(LineSegment::new(...)), sys.constrain(PtPtDistance::new(...)), sys.solve(&group), sys.entity_data(&handle). Provides phantom-typed EntityHandle<T>, internal thread safety via SolverGuard, and bundles SolveSpace source (no system dependency)."
+    },
     {
       "what": "SolverRegistry with geometric slot",
       "where": "crates/reify-constraints/src/registry.rs",
@@ -227,5 +263,8 @@
       "where": "crates/reify-constraints/tests/",
       "how": "Follow the established test patterns: construct ResolutionProblem, call solver.solve(), match on SolveResult, assert values are within expected ranges. Use the same helpers (vcid, cnid, mm, etc.)."
     }
-  ]
+  ],
+  "_schema_version": 1,
+  "_session_id": "76-d518e9b2",
+  "_created_at": "2026-03-21T07:48:22.762497+00:00"
 }
