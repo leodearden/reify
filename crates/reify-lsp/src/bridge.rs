@@ -5,11 +5,13 @@
 //! appropriate [`LanguageServer`] trait methods directly, avoiding
 //! JSON-RPC serialization overhead.
 
+use std::sync::Arc;
+
 use serde_json::Value;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{LanguageServer, LspService};
 
-use crate::server::ReifyLanguageServer;
+use crate::server::{NotificationSink, NoOpSink, ReifyLanguageServer};
 
 /// An in-process LSP server that can be called directly without I/O streams.
 ///
@@ -25,9 +27,16 @@ pub struct InProcessLsp {
 }
 
 impl InProcessLsp {
-    /// Create a new in-process LSP server.
+    /// Create a new in-process LSP server with a [`NoOpSink`].
     pub fn new() -> Self {
-        let (service, socket) = LspService::new(ReifyLanguageServer::new);
+        Self::with_sink(Arc::new(NoOpSink))
+    }
+
+    /// Create a new in-process LSP server with a custom notification sink.
+    pub fn with_sink(sink: Arc<dyn NotificationSink>) -> Self {
+        let (service, socket) = LspService::new(|client| {
+            ReifyLanguageServer::with_sink(client, sink.clone())
+        });
         let server = service.inner().clone();
         Self {
             server,
