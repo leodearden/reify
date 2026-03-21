@@ -186,4 +186,61 @@ describe('createScene', () => {
     const cameraInScene = addedObjects.find((obj: any) => obj?.fov !== undefined);
     expect(cameraInScene).toBeDefined();
   });
+
+  it('exposes adjustClipping method (V-11)', () => {
+    const result = setup();
+    expect(result).toHaveProperty('adjustClipping');
+    expect(typeof result.adjustClipping).toBe('function');
+  });
+
+  it('adjustClipping updates camera.near, camera.far and calls updateProjectionMatrix (V-11)', () => {
+    const { camera, adjustClipping } = setup();
+    camera.updateProjectionMatrix.mockClear();
+
+    // Mock a Box3-like bounds object: center at (10, 10, 10), size 20x20x20
+    const bounds = {
+      isEmpty: () => false,
+      getCenter: (target: any) => {
+        target.x = 10; target.y = 10; target.z = 10;
+        return target;
+      },
+      getSize: (target: any) => {
+        target.x = 20; target.y = 20; target.z = 20;
+        return target;
+      },
+    };
+
+    // Camera is at (5,5,5) by default via position.set mock
+    // We need the camera.position to be readable for distance computation
+    camera.position.x = 5;
+    camera.position.y = 5;
+    camera.position.z = 5;
+
+    adjustClipping(bounds as any);
+
+    // near should be > 0 and less than far
+    expect(camera.near).toBeGreaterThan(0);
+    expect(camera.far).toBeGreaterThan(camera.near);
+    expect(camera.updateProjectionMatrix).toHaveBeenCalled();
+  });
+
+  it('adjustClipping with empty bounds is a no-op (V-11)', () => {
+    const { camera, adjustClipping } = setup();
+    const origNear = camera.near;
+    const origFar = camera.far;
+    camera.updateProjectionMatrix.mockClear();
+
+    const emptyBounds = {
+      isEmpty: () => true,
+      getCenter: vi.fn(),
+      getSize: vi.fn(),
+    };
+
+    adjustClipping(emptyBounds as any);
+
+    // Should not modify clipping planes
+    expect(camera.near).toBe(origNear);
+    expect(camera.far).toBe(origFar);
+    expect(camera.updateProjectionMatrix).not.toHaveBeenCalled();
+  });
 });
