@@ -103,3 +103,63 @@ structure S {}
   (block_comment)
   (structure_definition
     name: (identifier)))
+
+================================================================================
+Doc-style triple-slash comment
+================================================================================
+
+/// doc-style comment
+structure S {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (line_comment)
+  (structure_definition
+    name: (identifier)))
+
+================================================================================
+Empty line comment
+================================================================================
+
+//
+structure S {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (line_comment)
+  (structure_definition
+    name: (identifier)))
+
+================================================================================
+Line comment with special characters
+================================================================================
+
+// <=>{}[]
+structure S {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (line_comment)
+  (structure_definition
+    name: (identifier)))
+
+================================================================================
+Block comment immediately before and after tokens
+================================================================================
+
+structure S {/* before */param x : Float/* after */}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (block_comment)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier)))
+    (block_comment)))
