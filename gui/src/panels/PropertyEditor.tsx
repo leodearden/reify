@@ -83,6 +83,11 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     }
   }
 
+  function handleBlur(cellId: string, e: FocusEvent) {
+    const input = e.target as HTMLInputElement;
+    props.onSetParameter(cellId, input.value);
+  }
+
   return (
     <div data-testid="property-editor" class={styles.container}>
       <input
@@ -133,6 +138,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                               class={styles.valueInput}
                               value={val.value}
                               onKeyDown={(e) => handleKeyDown(val.cell_id, e)}
+                              onBlur={(e) => handleBlur(val.cell_id, e)}
                             />
                           </Show>
                           <Show when={val.unit}>
