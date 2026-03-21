@@ -141,8 +141,8 @@
       "id": "step-15",
       "type": "test",
       "description": "Final re-verification: run `cargo test -p reify-cli` to ensure all CLI tests pass with the REIFY_GUI_SKIP_LAUNCH fix. Verify that gui_with_valid_ri_file_attempts_launch passes deterministically. Also verify the other gui tests (no file, nonexistent file, non-.ri file) still pass unaffected since they fail before reaching the launch gate.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5d47b8c"
     }
   ],
   "design_decisions": [
