@@ -139,7 +139,7 @@ describe('Editor save (Ctrl+S)', () => {
     expect(saveSpy).toHaveBeenCalledWith(file1.path);
   });
 
-  it('save clears dirty flag', () => {
+  it('save clears dirty flag', async () => {
     const store = setupStore();
     store.markDirty(file1.path);
     vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
@@ -157,7 +157,10 @@ describe('Editor save (Ctrl+S)', () => {
     });
     view.contentDOM.dispatchEvent(event);
 
-    expect(store.state.dirtyFiles).not.toContain(file1.path);
+    // markClean now runs after the saveFile promise resolves
+    await vi.waitFor(() => {
+      expect(store.state.dirtyFiles).not.toContain(file1.path);
+    });
   });
 });
 

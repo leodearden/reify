@@ -17,6 +17,7 @@ export function Editor(props: EditorProps) {
   let view: EditorView | undefined;
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   let previousActiveFile: string | null = null;
+  let isSwitching = false;
 
   onMount(() => {
     const activeFile = props.store.state.activeFile;
@@ -37,8 +38,9 @@ export function Editor(props: EditorProps) {
             run: () => {
               const path = props.store.state.activeFile;
               if (path) {
-                saveFile(path);
-                props.store.markClean(path);
+                saveFile(path)
+                  .then(() => props.store.markClean(path))
+                  .catch((err: unknown) => console.error('Failed to save file:', err));
               }
               return true;
             },
@@ -48,13 +50,15 @@ export function Editor(props: EditorProps) {
           ...historyKeymap,
         ]),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) {
+          if (update.docChanged && !isSwitching) {
             const path = props.store.state.activeFile;
             if (path) {
               props.store.markDirty(path);
               clearTimeout(debounceTimer);
               debounceTimer = setTimeout(() => {
-                updateSource(path, update.state.doc.toString());
+                updateSource(path, update.state.doc.toString()).catch((err: unknown) =>
+                  console.error('Failed to update source:', err),
+                );
               }, 300);
             }
           }
@@ -79,10 +83,12 @@ export function Editor(props: EditorProps) {
     const file = props.store.state.openFiles.find((f) => f.path === activeFile);
     const newContent = file?.content ?? '';
 
+    isSwitching = true;
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: newContent },
       selection: { anchor: 0 },
     });
+    isSwitching = false;
   });
 
   onCleanup(() => {
