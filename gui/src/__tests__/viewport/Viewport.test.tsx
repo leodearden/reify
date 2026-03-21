@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
+import type { MeshData } from '../../types';
 
 // Stub ResizeObserver for jsdom (which doesn't support it)
 globalThis.ResizeObserver = class ResizeObserver {
@@ -146,6 +148,32 @@ describe('Viewport', () => {
     expect(mockSelectionFitToView).toHaveBeenCalled();
     // The onFitToView prop callback should also be called
     expect(onFitToView).toHaveBeenCalled();
+  });
+
+  it('selectedEntity effect re-runs setSelected when props.meshes changes', () => {
+    const initialMeshes: Record<string, MeshData> = {
+      'bracket/plate': { vertices: new Float32Array([0, 0, 0]), indices: new Uint32Array([0]) },
+    };
+    const updatedMeshes: Record<string, MeshData> = {
+      'bracket/plate': { vertices: new Float32Array([1, 1, 1]), indices: new Uint32Array([0]) },
+    };
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>(initialMeshes);
+
+    render(() => <Viewport meshes={meshes()} selectedEntity="bracket/plate" />);
+
+    // After initial render, setSelected should have been called with the entity
+    expect(mockSelectionSetSelected).toHaveBeenCalledWith('bracket/plate');
+    const initialCallCount = mockSelectionSetSelected.mock.calls.length;
+
+    // Update meshes (simulating engine re-evaluation)
+    setMeshes(updatedMeshes);
+
+    // setSelected should be called again (to rebuild wireframe from updated geometry)
+    expect(mockSelectionSetSelected.mock.calls.length).toBeGreaterThan(initialCallCount);
+    // The last call should still be with the same entity
+    const lastCall = mockSelectionSetSelected.mock.calls[mockSelectionSetSelected.mock.calls.length - 1];
+    expect(lastCall[0]).toBe('bracket/plate');
   });
 
   it('animate loop does not call renderer.render after cleanup/dispose', () => {
