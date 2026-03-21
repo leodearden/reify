@@ -18,6 +18,7 @@ export interface ViewportProps {
 export function Viewport(props: ViewportProps) {
   let canvasRef!: HTMLCanvasElement;
   let containerRef!: HTMLDivElement;
+  let doFitToView: (() => void) | undefined;
 
   onMount(() => {
     const rect = containerRef.getBoundingClientRect();
@@ -37,6 +38,8 @@ export function Viewport(props: ViewportProps) {
       onHover: (path) => props.onHover?.(path),
       onSelect: (path) => props.onSelect?.(path),
     });
+
+    doFitToView = () => selection.fitToView();
 
     // Sync meshes reactively
     createEffect(() => {
@@ -139,7 +142,7 @@ export function Viewport(props: ViewportProps) {
       {/* Fit-to-view button */}
       <button
         data-testid="fit-to-view"
-        onClick={() => props.onFitToView?.()}
+        onClick={() => { doFitToView?.(); props.onFitToView?.(); }}
         style={{
           position: 'absolute',
           bottom: '12px',

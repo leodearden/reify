@@ -100,6 +100,7 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     if (currentWireframe) {
       scene.remove(currentWireframe);
       currentWireframe.geometry.dispose();
+      (currentWireframe.material as LineBasicMaterial).dispose();
       currentWireframe = null;
     }
   }
