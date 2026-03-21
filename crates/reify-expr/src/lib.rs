@@ -968,7 +968,7 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{DimensionVector, Type, ValueCellId};
+    use reify_types::{CompiledMatchArm, DimensionVector, Type, ValueCellId};
 
     // Helper to build a literal expression
     fn lit(v: Value, ty: Type) -> CompiledExpr {
@@ -2115,5 +2115,36 @@ mod tests {
             Value::Real(v) => assert!((v - 7.0).abs() < 1e-12, "expected 7.0, got {}", v),
             other => panic!("expected Real(7.0), got {:?}", other),
         }
+    }
+
+    // ── Match non-enum discriminant ──────────────────────────────
+
+    #[test]
+    fn match_non_enum_discriminant_returns_undef() {
+        // match Int(42) { [In] => 1, [Out] => 2 } → Undef
+        let discriminant = lit(Value::Int(42), Type::Int);
+        let arms = vec![
+            CompiledMatchArm {
+                patterns: vec!["In".to_string()],
+                body: lit(Value::Int(1), Type::Int),
+            },
+            CompiledMatchArm {
+                patterns: vec!["Out".to_string()],
+                body: lit(Value::Int(2), Type::Int),
+            },
+        ];
+        let expr = CompiledExpr {
+            content_hash: ContentHash::of(&[200]),
+            result_type: Type::Int,
+            kind: CompiledExprKind::Match {
+                discriminant: Box::new(discriminant),
+                arms,
+            },
+        };
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "matching on non-enum value should return Undef"
+        );
     }
 }
