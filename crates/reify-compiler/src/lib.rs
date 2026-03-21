@@ -2612,10 +2612,10 @@ fn compile_entity(
     // whose count constraint was processed before the sub declaration.
     // Match __count_{name} cells in value_cells to sub_components where count_cell is None.
     for vc in &value_cells {
-        if let Some(coll_name) = vc.id.member.strip_prefix("__count_") {
-            if let Some(sub) = sub_components.iter_mut().find(|s| s.name == coll_name && s.count_cell.is_none()) {
-                sub.count_cell = Some(vc.id.clone());
-            }
+        if let Some(coll_name) = vc.id.member.strip_prefix("__count_")
+            && let Some(sub) = sub_components.iter_mut().find(|s| s.name == coll_name && s.count_cell.is_none())
+        {
+            sub.count_cell = Some(vc.id.clone());
         }
     }
 
