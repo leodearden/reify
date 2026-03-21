@@ -106,6 +106,17 @@ impl InProcessLsp {
                 serde_json::to_value(result)
                     .map_err(|e| format!("serialize error: {e}"))
             }
+            "textDocument/definition" => {
+                let p: GotoDefinitionParams =
+                    serde_json::from_value(params)
+                        .map_err(|e| format!("definition params error: {e}"))?;
+                let result = server
+                    .goto_definition(p)
+                    .await
+                    .map_err(|e| format!("definition error: {e}"))?;
+                serde_json::to_value(result)
+                    .map_err(|e| format!("serialize error: {e}"))
+            }
             "shutdown" => {
                 server
                     .shutdown()
