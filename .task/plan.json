@@ -224,8 +224,8 @@
       "id": "step-29",
       "type": "test",
       "description": "REVIEW FIX (round 2) verification: Run the full test suite (`cargo test -p reify-constraints`) to verify all existing tests still pass after the panic-removal, mutex-safety, and build.rs improvements. Confirm no regressions in: solvespace_solver_is_send_sync, solve_simple_point_distance_constraint, solve_angle_constraint, solve_parallel_constraint, solve_coincident_constraint, solve_overconstrained_returns_infeasible, solve_underconstrained_solves_with_dof, solve_unrecognized_pattern_falls_through, registry_dispatches_geometric_to_solvespace, registry_mixed_dimensional_and_geometric, plus the new no-panic tests from step-25.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "851dddf"
     }
   ],
   "design_decisions": [
