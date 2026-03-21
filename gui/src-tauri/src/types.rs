@@ -121,10 +121,10 @@ pub fn format_value(v: &Value) -> (String, String) {
 /// Format a DeterminacyState as a string.
 pub fn format_determinacy(d: DeterminacyState) -> String {
     match d {
-        DeterminacyState::Determined => "Determined".to_string(),
-        DeterminacyState::Undetermined => "Undetermined".to_string(),
-        DeterminacyState::Provisional => "Provisional".to_string(),
-        DeterminacyState::Auto => "Auto".to_string(),
+        DeterminacyState::Determined => "determined".to_string(),
+        DeterminacyState::Undetermined => "undetermined".to_string(),
+        DeterminacyState::Provisional => "provisional".to_string(),
+        DeterminacyState::Auto => "auto".to_string(),
     }
 }
 

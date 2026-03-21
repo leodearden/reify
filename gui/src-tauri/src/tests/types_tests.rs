@@ -40,7 +40,7 @@ fn value_data_serializes_with_expected_fields() {
         name: "width".to_string(),
         value: "80".to_string(),
         unit: "mm".to_string(),
-        determinacy: "Determined".to_string(),
+        determinacy: "determined".to_string(),
         entity_path: "Bracket".to_string(),
         kind: "Param".to_string(),
     };
@@ -49,7 +49,7 @@ fn value_data_serializes_with_expected_fields() {
     assert_eq!(v["name"], json!("width"));
     assert_eq!(v["value"], json!("80"));
     assert_eq!(v["unit"], json!("mm"));
-    assert_eq!(v["determinacy"], json!("Determined"));
+    assert_eq!(v["determinacy"], json!("determined"));
     assert_eq!(v["entity_path"], json!("Bracket"));
     assert_eq!(v["kind"], json!("Param"));
 }
