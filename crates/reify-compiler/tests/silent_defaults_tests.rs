@@ -68,6 +68,40 @@ fn compile_field_returns_direct_value() {
     assert_eq!(module.fields[0].name, "temp");
 }
 
+// ── L1: duplicate function signature diagnostic has context ─────────────
+
+#[test]
+fn duplicate_function_signature_diagnostic_has_context() {
+    // Two functions with the same name and param types should produce a
+    // diagnostic that includes the function name and parameter types.
+    let source = r#"
+        fn add(a: Scalar, b: Scalar) -> Scalar { a + b }
+        fn add(a: Scalar, b: Scalar) -> Scalar { a - b }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let dup_error = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate function signature"));
+    assert!(
+        dup_error.is_some(),
+        "expected 'duplicate function signature' diagnostic, got: {:?}",
+        errors
+    );
+    let msg = &dup_error.unwrap().message;
+    assert!(
+        msg.contains("add"),
+        "diagnostic should mention function name 'add', got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("Scalar"),
+        "diagnostic should mention parameter type 'Scalar', got: {}",
+        msg
+    );
+}
+
 // ── H3: geometry call diagnostics ──────────────────────────────────────
 
 #[test]
