@@ -891,3 +891,54 @@ describe('App export with save dialog', () => {
     });
   });
 });
+
+describe('App end-to-end toast integration', () => {
+  it('App renders, loads state (ready), then setParameter failure shows toast with correct message', async () => {
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      vi.mocked(bridge.setParameter).mockRejectedValue(new Error('backend unavailable'));
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        meshes: [],
+        values: [{
+          cell_id: 'c1',
+          name: 'width',
+          value: '80',
+          unit: 'mm',
+          determinacy: 'determined',
+          entity_path: 'Bracket.width',
+        }],
+        constraints: [],
+        files: [],
+      });
+
+      render(() => <App />);
+
+      // Wait for ready state
+      await waitFor(() => {
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+      });
+
+      // Verify no toast is visible initially
+      expect(screen.queryByTestId('toast')).toBeNull();
+
+      // Trigger setParameter failure
+      const row = screen.getByTestId('prop-row-c1');
+      const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+      expect(input).toBeTruthy();
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // Wait for error toast to appear with correct message
+      await waitFor(() => {
+        const toastEl = screen.getByTestId('toast');
+        expect(toastEl).toBeTruthy();
+        expect(toastEl.dataset.type).toBe('error');
+        expect(toastEl.textContent).toContain('Parameter update failed');
+        expect(toastEl.textContent).toContain('backend unavailable');
+      });
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+    }
+  });
+});
