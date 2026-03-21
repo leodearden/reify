@@ -144,6 +144,20 @@
       "description": "Final cleanup: Rename with_sink to new and old new to new_default (or remove if all callers migrated). Update all remaining LspService::new(ReifyLanguageServer::new) patterns in server.rs tests to use a test helper fn: fn test_service() -> (LspService<ReifyLanguageServer>, tower_lsp::ClientSocket) { LspService::new(|c| ReifyLanguageServer::new(c, Arc::new(NoOpSink))) }. This reduces boilerplate across 10 test call sites. Verify all tests pass.",
       "status": "done",
       "commit": "91a97d2"
+    },
+    {
+      "id": "step-18",
+      "type": "test",
+      "description": "Fix lsp_bridge_with_sink_routes_diagnostics test: Replace NoOpSink with RecordingSink to actually verify the sink wiring. The test currently uses NoOpSink which discards all notifications, then only checks get_diagnostics() which reads from internal ServerState \u2014 completely independent of the sink. This gives false confidence that LspBridge::with_sink wiring works. The new test must: (1) create a RecordingSink, (2) create LspBridge::with_sink(recording_sink.clone()), (3) send didOpen with broken source (to get error diagnostics), (4) assert RecordingSink received at least one publish_diagnostics call with the correct URI. This requires exporting RecordingSink from reify-lsp for cross-crate test use.",
+      "status": "done",
+      "commit": "2a6f483"
+    },
+    {
+      "id": "step-19",
+      "type": "impl",
+      "description": "Export RecordingSink for cross-crate test use: Move RecordingSink definition out of the private #[cfg(test)] mod tests in server.rs into a new pub module (e.g., pub mod test_support gated by #[cfg(test)] or behind a feature flag like 'test-support'). The struct needs to be pub with a pub take_calls() method and pub Default impl. Re-export from lib.rs so the gui crate can import it as reify_lsp::test_support::RecordingSink (or reify_lsp::server::RecordingSink if kept in server.rs under a top-level #[cfg(test)] pub block). Update the server.rs tests module to use the now-public RecordingSink. Update lsp_bridge_tests.rs to import and use RecordingSink, completing the fix from step-18. Verify the test actually fails if sink wiring is broken (e.g., temporarily passing NoOpSink instead of the provided sink in InProcessLsp::with_sink should cause the test to fail).",
+      "status": "done",
+      "commit": "1b2a124"
     }
   ],
   "design_decisions": [
@@ -174,6 +188,10 @@
     {
       "decision": "NotificationSink trait lives in server.rs alongside ReifyLanguageServer",
       "rationale": "The trait is tightly coupled to the server's notification mechanism. Keeping it in server.rs avoids a separate file and matches the existing crate structure. It's re-exported from lib.rs for external use."
+    },
+    {
+      "decision": "Export RecordingSink via a #[cfg(test)] pub module rather than a cargo feature flag",
+      "rationale": "RecordingSink is only needed by tests within the workspace (server.rs tests, bridge tests, lsp_bridge_tests). Using #[cfg(test)] keeps it out of production builds without requiring Cargo.toml changes. Since the gui crate's tests compile with cfg(test), the import chain works: server.rs -> lib.rs -> gui crate test. This mirrors the existing pattern of #[cfg(test)] pub(crate) fn eval_state() in server.rs."
     }
   ],
   "reuse": [
@@ -206,8 +224,13 @@
       "what": "InProcessLsp::get_diagnostics() for test verification",
       "where": "lsp_bridge_tests.rs, bridge.rs",
       "how": "Existing get_diagnostics() via ServerState.last_published_diagnostics still works as the internal capture mechanism, independent of sink routing."
+    },
+    {
+      "what": "Existing RecordingSink pattern from server.rs tests",
+      "where": "server.rs #[cfg(test)] mod tests",
+      "how": "The same RecordingSink struct (Default derive, Mutex<Vec<...>> calls, take_calls() method) is promoted to a pub export so it can be reused in lsp_bridge_tests.rs for end-to-end sink verification at the LspBridge layer."
     }
   ],
   "_session_id": "124-bb673759",
-  "_created_at": "2026-03-21T17:11:41.092767+00:00"
+  "_created_at": "2026-03-21T17:33:29.156825+00:00"
 }
