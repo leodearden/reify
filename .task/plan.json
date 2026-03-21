@@ -1,53 +1,37 @@
 {
-  "task_id": "80",
-  "title": "M5 integration tests",
+  "task_id": "79",
+  "title": "Field declarations",
   "files": [
-    "crates/reify-eval/tests/m5_integration.rs",
-    "examples/m5_trait_structure.ri",
-    "examples/m5_guarded_enum.ri",
-    "examples/m5_connect_chain.ri",
-    "examples/m5_user_function.ri",
-    "examples/m5_geometry.ri"
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/field_tests.rs",
+    "crates/reify-types/src/ty.rs",
+    "crates/reify-types/src/value.rs",
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/field_compile_tests.rs",
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/tests/field_eval_tests.rs",
+    "crates/reify-stdlib/src/lib.rs",
+    "crates/reify-expr/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-eval/tests",
-    "examples"
+    "tree-sitter-reify",
+    "crates/reify-syntax",
+    "crates/reify-types",
+    "crates/reify-compiler",
+    "crates/reify-eval",
+    "crates/reify-stdlib",
+    "crates/reify-expr"
   ],
-  "analysis": "This task creates comprehensive end-to-end integration tests exercising multiple M5 features together through the full pipeline (parse \u2192 compile \u2192 eval/check \u2192 verify). All individual M5 features (traits, enums, guards, collections, lambdas, occurrences, connect/chain, ports, user functions, geometry ops) are already implemented across the reify-syntax, reify-compiler, reify-eval, and reify-expr crates.\n\nThe existing e2e test pattern (see crates/reify-eval/tests/e2e_bracket.rs, fn_eval.rs, occurrence_eval.rs, connect_eval.rs, guard_eval.rs) uses: (1) parse source via reify_syntax::parse(), (2) compile via reify_compiler::compile(), (3) eval/check via Engine::new(checker, planner).eval/check(), (4) assert on values/constraints.\n\nKey adaptations from the task description to actual implementation:\n- No 'Mass' or 'Pressure' dimension types \u2192 use Length, Scalar, Real, Int instead\n- No 'forall' keyword \u2192 use .all(|b| ...) method call on collections\n- No 'realize {}' block \u2192 geometry is produced via let bindings calling geometry functions (e.g., let body = cylinder(...))\n- circular_pattern takes 9 positional args: (target, ox, oy, oz, ax, ay, az, count, angle)\n- No 'module' declaration in parser \u2192 multi-module test uses filesystem temp dirs with ModuleResolver\n- 'structure def' (with 'def') is valid syntax for definitions vs instances\n\nTests go in crates/reify-eval/tests/m5_integration.rs following the existing convention where integration tests live alongside other eval integration tests. Example .ri files go in examples/.\n\n**Post-review fix (step-17/step-18):** The connect_occurrence_chain test at lines 283-302 uses `if let Some(...)` to look up Pipe and Pipeline templates, which silently skips all assertions if the templates aren't found. This must be replaced with `.expect()` so a missing template causes a hard test failure rather than a vacuous pass.",
+  "analysis": "This task adds field declarations to Reify \u2014 a new top-level declaration type representing typed mathematical fields (domain -> codomain mappings) with multiple source kinds (analytical, sampled, composed, imported). The implementation spans all layers: grammar, parser, types, compiler, evaluator, and stdlib.\n\nExisting patterns to follow:\n- Grammar: top-level declarations are listed in `_declaration` choice, member constructs follow seq() patterns with optional pub, keyword, name, etc.\n- Parser (ts_parser.rs): CST->AST lowering via `Lowering` struct with `lower_*` methods, dispatched from `lower_source_file`.\n- Syntax AST (lib.rs): Enums for declarations, structs for each decl type with name, is_pub, span, content_hash.\n- Types (ty.rs): Type enum with variants like List(Box<Type>), Function{params, return_type}.\n- Compiler (lib.rs): compile() function with pre-passes for enums/functions/traits, then main loop over declarations. compile_entity() handles structure/occurrence members.\n- Eval (lib.rs): Engine::eval() processes templates with multi-pass (params -> lets -> guards).\n- Stdlib (lib.rs): eval_builtin() dispatches by function name.\n\nField declarations are top-level (like structures, functions, traits), not member-level. The task specifies `field def name : DomainType -> CodomainType { source = kind { ... } }`. Fields evaluate to Value::Field values that wrap lambdas or sample data. Composition (Field<A,B> compose Field<B,C>) requires type checking that the codomain of the first matches the domain of the second.\n\nKey design decisions:\n1. Fields are top-level declarations (not members), added to `_declaration` in grammar and `Declaration` enum.\n2. Type::Field { domain, codomain } added to the type system for type checking composition.\n3. Value::Field variant added for runtime field values.\n4. Field operations (gradient, divergence, curl, sample) added to stdlib.\n5. Compiler produces CompiledField entries in CompiledModule (new vec alongside functions, traits, etc.).\n6. Eval evaluates field declarations into Value::Field, storing them accessible by name.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create examples/m5_trait_structure.ri \u2014 structure implementing a trait with conformance checking",
+      "description": "Create test file skeletons: crates/reify-syntax/tests/field_tests.rs, crates/reify-compiler/tests/field_compile_tests.rs, crates/reify-eval/tests/field_eval_tests.rs with module imports and helper functions following existing test patterns",
       "status": "done",
-      "commit": "ee9f67e",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Create examples/m5_guarded_enum.ri \u2014 guarded declarations with enum matching (where clause + enum variant comparison)",
-      "status": "done",
-      "commit": "55bed87",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Create examples/m5_connect_chain.ri \u2014 occurrence definitions with ports, connect, and chain desugaring",
-      "status": "done",
-      "commit": "96ea604",
-      "tests": []
-    },
-    {
-      "id": "pre-4",
-      "description": "Create examples/m5_user_function.ri \u2014 user-defined function called in let binding, result used in constraint",
-      "status": "done",
-      "commit": "7895035",
-      "tests": []
-    },
-    {
-      "id": "pre-5",
-      "description": "Create examples/m5_geometry.ri \u2014 cylinder + circular_pattern geometry through full pipeline",
-      "status": "done",
-      "commit": "d54d613",
+      "commit": "c01710a",
       "tests": []
     }
   ],
@@ -55,184 +39,254 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write test: trait_implementing_structure \u2014 parse m5_trait_structure.ri, compile, verify no errors, eval, check trait conformance (trait with required param + constraint, structure satisfying it). Assert: parse OK, compile OK (no error diagnostics), eval produces correct param values, constraint from trait is satisfied.",
+      "description": "Write failing parse test: parse_analytical_field \u2014 parse `field def temp : Point3 -> Scalar { source = analytical { |p| p } }` and verify Declaration::Field is produced with correct name, domain type, codomain type, and FieldSource::Analytical variant",
       "status": "done",
-      "commit": "d84c3cf"
+      "commit": "de4939f"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix trait_implementing_structure test if needed \u2014 adjust .ri syntax or assertions to match actual parser/compiler behavior. Verify test passes.",
+      "description": "Add field_definition to tree-sitter grammar (grammar.js) as a new top-level _declaration choice with field_source rule supporting analytical/sampled/composed/imported variants. Run tree-sitter generate. Add FieldDef and FieldSource structs to reify-syntax/src/lib.rs, Declaration::Field variant. Add lower_field to ts_parser.rs dispatched from lower_source_file. Tests pass.",
       "status": "done",
-      "commit": "d84c3cf"
+      "commit": "231cfee"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test: multi_module_import \u2014 create temp dir with two .ri files (one defining a structure, one importing it), use ModuleResolver + compile_project to compile both modules, verify import resolution succeeds, sub-component from imported structure is compiled correctly.",
+      "description": "Write failing parse test: parse_sampled_field \u2014 parse `field def pressure : Point3 -> Scalar { source = sampled { resolution = 100 interpolation = linear } }` and verify FieldSource::Sampled with correct config key-value pairs",
       "status": "done",
-      "commit": "3f7a449"
+      "commit": "e5ffb13"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix multi_module_import test if needed \u2014 adjust source syntax, resolver paths, or assertions. Verify test passes.",
+      "description": "Ensure sampled field source parsing works in ts_parser.rs lower_field_source method \u2014 handle field_sample_config children. Make parse_sampled_field test pass.",
       "status": "done",
-      "commit": "3f7a449"
+      "commit": "e5ffb13"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test: guarded_enum_declarations \u2014 parse m5_guarded_enum.ri, compile, eval with guard true/false. Verify: enum compiles, where-clause with enum comparison creates guarded groups, conditional member activation works, match expression evaluates correctly.",
+      "description": "Write failing parse test: parse_composed_field \u2014 parse `field def combined : Point3 -> Vector3 { source = composed { |f, g| |p| f(g(p)) } }` and verify FieldSource::Composed with lambda body",
       "status": "done",
-      "commit": "b816861"
+      "commit": "9e18473"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Fix guarded_enum_declarations test if needed \u2014 adjust enum/guard/match syntax or assertions. Verify test passes.",
+      "description": "Ensure composed and imported field source parsing works. Make parse_composed_field test pass.",
       "status": "done",
-      "commit": "b816861"
+      "commit": "9e18473"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test: collection_lambda_operations \u2014 inline source with list literal, .map(|x| ...) method call, .count property, and .all(|x| ...) quantifier. Parse, compile, eval, verify: list is created, map produces transformed list, count returns correct int, all/any returns correct bool.",
+      "description": "Write failing parse test: parse_pub_field \u2014 parse `pub field def temp : Point3 -> Scalar { source = analytical { |p| p } }` and verify is_pub=true",
       "status": "done",
-      "commit": "12f087a"
+      "commit": "b46b52b"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Fix collection_lambda_operations test if needed \u2014 adjust collection syntax, lambda syntax, or method call names. Verify test passes.",
+      "description": "Ensure pub keyword handling in field parsing. Make parse_pub_field test pass.",
       "status": "done",
-      "commit": "12f087a"
+      "commit": "b46b52b"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test: connect_occurrence_chain \u2014 parse m5_connect_chain.ri with occurrence definitions having ports, and a structure containing sub occurrences with chain desugaring. Verify: occurrences compile with EntityKind::Occurrence, chain produces correct number of connections, compatibility constraints are all Satisfied.",
+      "description": "Write failing test: type_field_variant \u2014 verify Type::Field { domain, codomain } can be constructed, displayed, compared for equality, and is not numeric",
       "status": "done",
-      "commit": "b0efe16"
+      "commit": "2e737d8"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Fix connect_occurrence_chain test if needed \u2014 adjust port/chain/connect syntax or assertions. Verify test passes.",
+      "description": "Add Type::Field { domain: Box<Type>, codomain: Box<Type> } variant to reify-types/src/ty.rs. Update Display impl, is_numeric(), as_name(). Make test pass.",
       "status": "done",
-      "commit": "b0efe16"
+      "commit": "bb79921"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test: user_fn_with_constraint \u2014 parse m5_user_function.ri defining a function and a structure that calls it in a let binding, with a constraint on the result. Verify: function compiles, let binding evaluates to correct value, constraint evaluates correctly (satisfied or violated as designed).",
+      "description": "Write failing test: value_field_variant \u2014 verify Value::Field can be constructed with analytical lambda source and has correct content_hash behavior",
       "status": "done",
-      "commit": "8b25061"
+      "commit": "b17bb83"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Fix user_fn_with_constraint test if needed \u2014 adjust function syntax, type annotations, or assertions. Verify test passes.",
+      "description": "Add Value::Field variant to reify-types/src/value.rs with domain_type, codomain_type, source kind, and stored lambda/data. Update content_hash, Display, PartialEq/Ord impls. Make test pass.",
       "status": "done",
-      "commit": "8b25061"
+      "commit": "6412baf"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write test: geometry_cylinder_pattern \u2014 parse m5_geometry.ri with cylinder + circular_pattern through the full build pipeline (with OCCT kernel). Verify: geometry let bindings compile into realization ops, build produces valid STEP output containing ISO-10303-21 header. (Mirror e2e_bracket.rs pattern with real kernel.)",
+      "description": "Write failing compile test: compile_field_analytical \u2014 compile a field def with analytical source, verify CompiledModule has the field with correct domain/codomain types and compiled lambda expression",
       "status": "done",
-      "commit": "1fa7515"
+      "commit": "92ef5f9"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Fix geometry_cylinder_pattern test if needed \u2014 adjust geometry function call syntax (positional args for circular_pattern), kernel setup, or assertions. Verify test passes.",
+      "description": "Add CompiledField struct to reify-compiler. Add fields vec to CompiledModule. Add field compilation in compile() function \u2014 resolve domain/codomain types, compile source expression (analytical -> lambda compilation). Dispatch Declaration::Field in compile(). Make test pass.",
       "status": "done",
-      "commit": "1fa7515"
+      "commit": "144a461"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write test: combined_m5_features \u2014 a single larger test combining multiple M5 features: enum + trait + guarded declaration + function call + constraint. Parse inline source, compile, eval, check. This exercises feature interaction paths that individual tests may miss.",
+      "description": "Write failing compile test: compile_field_sampled \u2014 compile a field with sampled source, verify configs are compiled correctly",
       "status": "done",
-      "commit": "ed5fe8f"
+      "commit": "472ca21"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Fix combined_m5_features test if needed \u2014 adjust syntax or assertions for the combined scenario. Verify test passes.",
+      "description": "Handle sampled field source compilation \u2014 compile config key-value pairs. Make test pass.",
       "status": "done",
-      "commit": "ed5fe8f"
+      "commit": "f819e0b"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Fix silent-pass bug in connect_occurrence_chain (review feedback: silent_pass_on_missing_fixture / silent_test_vacuity). Replace `if let Some(pipe) = pipe_template { ... }` (line 283) with `let pipe = pipe_template.expect(\"should have a Pipe template\");` so missing Pipe template is a hard failure. Replace `if let Some(pipeline) = pipeline_template { ... }` (line 296) with `let pipeline = pipeline_template.expect(\"should have a Pipeline template\");` so missing Pipeline template is a hard failure. Both assertion blocks (EntityKind::Occurrence check and connections non-empty check) must execute unconditionally. Verify the test still passes after the change.",
+      "description": "Write failing compile test: compile_field_compose_type_check_valid \u2014 compose Field<A,B> with Field<B,C> should type-check and produce Field<A,C>",
       "status": "done",
-      "commit": "aa82183"
+      "commit": "f1b0983"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Verify connect_occurrence_chain passes with the .expect() changes. If the templates are not found (indicating a real bug), investigate and fix the .ri source or template name matching. Run the full m5_integration test suite to confirm no regressions.",
+      "description": "Implement field composition type checking in compiler \u2014 when a composed field references two other fields, verify codomain of first matches domain of second. Make test pass.",
       "status": "done",
-      "commit": "aa82183"
+      "commit": "382d461"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing compile test: compile_field_compose_type_mismatch \u2014 compose Field<A,B> with Field<C,D> where B!=C should produce a type error diagnostic",
+      "status": "done",
+      "commit": "302b9c3"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Emit diagnostic error when field composition has mismatched types. Make test pass.",
+      "status": "done",
+      "commit": "382d461"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing eval test: eval_analytical_field_at_point \u2014 define an analytical field, evaluate it (should produce a Value::Field), then call sample(field, point) and verify the result",
+      "status": "done",
+      "commit": "461a20f"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Add field evaluation in Engine::eval() \u2014 process compiled fields, evaluate analytical source lambda, store as Value::Field. Add 'sample' to stdlib that applies a field's lambda to a point argument. Make test pass.",
+      "status": "done",
+      "commit": "242285d"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write failing eval test: eval_sample_field_point \u2014 use sample(field, point) stdlib function and verify it returns the codomain value correctly",
+      "status": "done",
+      "commit": "242285d"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Complete the sample() stdlib implementation to properly invoke the field's stored lambda with the given point argument. Make test pass.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Write failing stdlib test: gradient_scalar_field \u2014 gradient(field) on a scalar field should return a vector field (or Undef as initial stub)",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Add gradient, divergence, curl field operations to stdlib. These are stub implementations that return Undef for now (numeric differentiation requires further infrastructure), but the dispatch and type signature are correct. Make test pass.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Place integration tests in crates/reify-eval/tests/m5_integration.rs rather than workspace-root tests/",
-      "rationale": "The workspace has no root-level lib.rs/main.rs, so workspace-level integration tests won't compile. All existing e2e tests (e2e_bracket.rs, fn_eval.rs, etc.) live in crates/reify-eval/tests/ \u2014 this follows that established convention."
+      "decision": "Field declarations are top-level, not member-level",
+      "rationale": "The task spec shows `field def name : Domain -> Codomain { ... }` which matches the pattern of structure/function/trait declarations. Fields define standalone typed mappings, not structure members. They can be referenced by structures but exist independently."
     },
     {
-      "decision": "Adapt task description syntax to match actual parser/compiler capabilities",
-      "rationale": "The task description uses hypothetical syntax (Mass type, Pressure type, forall keyword, realize block, named-arg geometry calls) that doesn't match the implemented grammar. Tests must use what actually works: Length/Scalar/Real types, .all() method instead of forall, let-binding geometry calls, positional circular_pattern args."
+      "decision": "Value::Field stores the lambda closure + type metadata rather than pre-computed data",
+      "rationale": "Analytical fields are inherently lazy (evaluated at query points). Sampled fields store grid data. Both benefit from storing the source representation and evaluating on-demand via sample()."
     },
     {
-      "decision": "Use MockConstraintChecker for most tests, real SimpleConstraintChecker + OCCT kernel only for geometry test",
-      "rationale": "Following existing patterns: fn_eval.rs and occurrence_eval.rs use MockConstraintChecker for speed. Only e2e_bracket.rs and connect_eval.rs (incompatible test) use real checkers. Geometry test needs OCCT for real STEP export verification."
+      "decision": "Field composition type checking done at compile time, not eval time",
+      "rationale": "Type mismatches in composition (codomain of first != domain of second) are static errors. Catching them at compile time follows the existing pattern where the compiler produces diagnostics for type errors."
     },
     {
-      "decision": "Multi-module test uses temp directory with ModuleResolver, not example .ri files",
-      "rationale": "Multi-module import requires filesystem structure that ModuleResolver can traverse. Using tempdir within the test (following import_resolve_tests.rs pattern) ensures test isolation and avoids coupling example files to internal module paths."
+      "decision": "Gradient/divergence/curl are initial stubs returning Undef",
+      "rationale": "Full numeric differentiation requires either symbolic differentiation or finite-difference infrastructure. The stdlib entry points and type signatures can be established now; actual computation can be implemented in a follow-up task."
     },
     {
-      "decision": "One test file with all scenarios rather than separate files",
-      "rationale": "All 7+ scenarios share the same dependency set (reify-syntax, reify-compiler, reify-eval, reify-constraints). A single m5_integration.rs file with helper functions is cleaner than 7 separate files, and follows the task description's file organization."
+      "decision": "CompiledField stored in a new vec on CompiledModule, parallel to functions/traits",
+      "rationale": "Fields are not topology templates (they don't have value cells, constraints, realizations). They are more like functions \u2014 standalone compiled entities. A separate vec keeps the data model clean."
     },
     {
-      "decision": "Use .expect() instead of if-let for template lookups in tests",
-      "rationale": "Review feedback identified that `if let Some(...)` silently skips assertions when templates aren't found, making the test vacuously pass. Using `.expect()` ensures a missing template is a hard, visible failure. This matches the pattern used elsewhere in the test file (e.g., flange/panel lookups) and is the standard Rust testing convention for asserting presence before inspecting fields."
+      "decision": "Field grammar uses 'field def' keyword pair (not just 'field') to avoid ambiguity",
+      "rationale": "The task spec shows `field def name`, matching the `structure def` pattern. The 'def' keyword disambiguates from potential future uses of 'field' keyword in other contexts."
     }
   ],
   "reuse": [
     {
-      "what": "parse \u2192 compile \u2192 eval/check pipeline pattern",
-      "where": "crates/reify-eval/tests/e2e_bracket.rs, fn_eval.rs, occurrence_eval.rs, connect_eval.rs",
-      "how": "Extract common helper: parse source, assert no parse errors, compile, assert no error diagnostics, eval/check via Engine. Identical to run_bracket_e2e() and the pattern in fn_eval.rs."
+      "what": "Tree-sitter grammar patterns (seq, optional, choice)",
+      "where": "tree-sitter-reify/grammar.js",
+      "how": "Follow the same pattern as structure_definition, function_definition for field_definition: optional('pub'), keyword seq, identifier, type expressions, braced body"
     },
     {
-      "what": "MockConstraintChecker",
-      "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "Use MockConstraintChecker::new() for tests that don't need real constraint evaluation (default returns Satisfied)."
+      "what": "CST->AST lowering pattern in ts_parser.rs",
+      "where": "crates/reify-syntax/src/ts_parser.rs",
+      "how": "Add lower_field method following the pattern of lower_structure/lower_function: extract named fields, handle optional children, create FieldDef struct"
     },
     {
-      "what": "SimpleConstraintChecker + OcctKernelHandle + DispatchPlanner",
-      "where": "crates/reify-eval/tests/e2e_bracket.rs",
-      "how": "For the geometry test, use the real constraint checker and OCCT kernel following the e2e_bracket pattern."
+      "what": "Type resolution (resolve_type_name, resolve_type_with_params)",
+      "where": "crates/reify-compiler/src/lib.rs",
+      "how": "Reuse existing type resolution for field domain/codomain types; types like Length, Scalar, Real already supported"
     },
     {
-      "what": "ModuleResolver + compile_project",
-      "where": "crates/reify-compiler/src/module_dag.rs, crates/reify-compiler/tests/import_resolve_tests.rs",
-      "how": "For multi-module test, create temp dirs with .ri files and use ModuleResolver::new() + compile_project() to test import resolution end-to-end."
+      "what": "Lambda expression compilation (compile_expr for ExprKind::Lambda)",
+      "where": "crates/reify-compiler/src/lib.rs",
+      "how": "Analytical and composed field sources contain lambda expressions \u2014 reuse the existing lambda compilation path that produces CompiledExprKind::Lambda"
     },
     {
-      "what": "Value constructors (mm, meters, etc.) and ID helpers (vcid, cnid)",
-      "where": "crates/reify-test-support/src/values.rs",
-      "how": "Use mm(), meters(), vcid() etc. for constructing expected values in assertions."
+      "what": "Lambda evaluation (Value::Lambda, eval_expr Lambda case)",
+      "where": "crates/reify-expr/src/lib.rs",
+      "how": "Field evaluation for analytical sources produces Value::Lambda; sample() invokes it using the same lambda application mechanism"
+    },
+    {
+      "what": "Stdlib eval_builtin dispatch pattern",
+      "where": "crates/reify-stdlib/src/lib.rs",
+      "how": "Add gradient/divergence/curl/sample as new match arms in eval_builtin, following the unary/binary helper pattern"
+    },
+    {
+      "what": "Test helpers (parse_decls, compile_module, compile_first_template)",
+      "where": "Existing test files (port_tests.rs, port_compile_tests.rs)",
+      "how": "Copy the parse helper pattern for field_tests.rs; copy the compile helper pattern for field_compile_tests.rs"
+    },
+    {
+      "what": "ContentHash, SourceSpan, Visibility patterns",
+      "where": "crates/reify-types, crates/reify-compiler",
+      "how": "FieldDef and CompiledField use the same span/hash/visibility patterns as other declaration types"
     }
   ],
-  "_schema_version": 1,
-  "_session_id": "80-dff44d94",
-  "_created_at": "2026-03-20T22:18:12.902965+00:00"
+  "_session_id": "79-cdc15691",
+  "_created_at": "2026-03-21T00:30:30.809706+00:00"
 }

@@ -1361,13 +1361,30 @@ pub fn compile(
         .map(|t| (t.name.clone(), t))
         .collect();
 
+    // Pre-pass: compile ALL field definitions before processing structures.
+    // This ensures fields can be referenced by name within structure expressions
+    // (e.g., `sample(my_field, point)`).
+    for decl in &parsed.declarations {
+        if let reify_syntax::Declaration::Field(field_def) = decl {
+            if let Some(compiled) = compile_field(field_def, &enum_defs, &functions, &mut diagnostics) {
+                fields.push(compiled);
+            }
+        }
+    }
+
+    // Build a field registry so entity scopes can resolve field names.
+    let field_registry: HashMap<String, &CompiledField> = fields
+        .iter()
+        .map(|f| (f.name.clone(), f))
+        .collect();
+
     let mut pending_bound_checks: Vec<PendingBoundCheck> = Vec::new();
 
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
                 let entity_ref = EntityDefRef::from(structure);
-                let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &mut pending_bound_checks, &mut diagnostics);
+                let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics);
                 templates.push(template);
             }
             reify_syntax::Declaration::Enum(_) => {
@@ -1396,13 +1413,11 @@ pub fn compile(
             }
             reify_syntax::Declaration::Occurrence(occurrence) => {
                 let entity_ref = EntityDefRef::from(occurrence);
-                let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &mut pending_bound_checks, &mut diagnostics);
+                let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics);
                 templates.push(template);
             }
-            reify_syntax::Declaration::Field(field_def) => {
-                if let Some(compiled) = compile_field(field_def, &enum_defs, &functions, &mut diagnostics) {
-                    fields.push(compiled);
-                }
+            reify_syntax::Declaration::Field(_) => {
+                // Already compiled in field pre-pass above.
             }
         }
     }
@@ -1585,6 +1600,7 @@ fn compile_entity(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
+    field_registry: &HashMap<String, &CompiledField>,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> TopologyTemplate {
@@ -1611,6 +1627,17 @@ fn compile_entity(
         .iter()
         .map(|tp| tp.name.clone())
         .collect();
+
+    // Register field names into the scope so expressions can reference fields
+    // (e.g., `sample(my_field, point)`). Fields use a `__field` entity prefix.
+    for (field_name, field) in field_registry {
+        let field_id = ValueCellId::new("__field", field_name);
+        let field_type = Type::Field {
+            domain: Box::new(field.domain_type.clone()),
+            codomain: Box::new(field.codomain_type.clone()),
+        };
+        scope.names.insert(field_name.clone(), (field_id, field_type, None));
+    }
 
     // First pass: register all param and let names into the scope so they can
     // reference each other (forward references within the structure).

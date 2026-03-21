@@ -642,6 +642,53 @@ impl Engine {
         }
         demand.rebuild_cone(&snapshot.graph);
 
+        // Evaluate field declarations first: they must be available in the
+        // values map before templates are evaluated, because structure
+        // expressions may reference fields (e.g., `sample(my_field, point)`).
+        for field in &module.fields {
+            let lambda_value = match &field.source {
+                reify_compiler::CompiledFieldSource::Analytical { expr } => {
+                    let ctx = reify_expr::EvalContext::new(&values, functions);
+                    let val = reify_expr::eval_expr(expr, &ctx);
+                    Box::new(val)
+                }
+                reify_compiler::CompiledFieldSource::Composed { expr } => {
+                    let ctx = reify_expr::EvalContext::new(&values, functions);
+                    let val = reify_expr::eval_expr(expr, &ctx);
+                    Box::new(val)
+                }
+                reify_compiler::CompiledFieldSource::Sampled { .. }
+                | reify_compiler::CompiledFieldSource::Imported => {
+                    Box::new(Value::Undef)
+                }
+            };
+
+            let source_kind = match &field.source {
+                reify_compiler::CompiledFieldSource::Analytical { .. } => {
+                    reify_types::FieldSourceKind::Analytical
+                }
+                reify_compiler::CompiledFieldSource::Sampled { .. } => {
+                    reify_types::FieldSourceKind::Sampled
+                }
+                reify_compiler::CompiledFieldSource::Composed { .. } => {
+                    reify_types::FieldSourceKind::Composed
+                }
+                reify_compiler::CompiledFieldSource::Imported => {
+                    reify_types::FieldSourceKind::Imported
+                }
+            };
+
+            let field_value = Value::Field {
+                domain_type: field.domain_type.clone(),
+                codomain_type: field.codomain_type.clone(),
+                source: source_kind,
+                lambda: lambda_value,
+            };
+
+            let field_id = ValueCellId::new("__field", &field.name);
+            values.insert(field_id, field_value);
+        }
+
         // Two-pass evaluation (same logic as before)
         for template in &module.templates {
             // First pass: evaluate Param defaults and Auto cells to populate the value map
@@ -1114,52 +1161,6 @@ impl Engine {
         });
         self.demand = demand;
         self.last_eval_set = Vec::new(); // Cold start: no incremental eval set
-
-        // Evaluate field declarations: compile each field into a Value::Field
-        // and store it in the values map under a __field entity key.
-        for field in &module.fields {
-            let lambda_value = match &field.source {
-                reify_compiler::CompiledFieldSource::Analytical { expr } => {
-                    let ctx = reify_expr::EvalContext::new(&values, functions);
-                    let val = reify_expr::eval_expr(expr, &ctx);
-                    Box::new(val)
-                }
-                reify_compiler::CompiledFieldSource::Composed { expr } => {
-                    let ctx = reify_expr::EvalContext::new(&values, functions);
-                    let val = reify_expr::eval_expr(expr, &ctx);
-                    Box::new(val)
-                }
-                reify_compiler::CompiledFieldSource::Sampled { .. }
-                | reify_compiler::CompiledFieldSource::Imported => {
-                    Box::new(Value::Undef)
-                }
-            };
-
-            let source_kind = match &field.source {
-                reify_compiler::CompiledFieldSource::Analytical { .. } => {
-                    reify_types::FieldSourceKind::Analytical
-                }
-                reify_compiler::CompiledFieldSource::Sampled { .. } => {
-                    reify_types::FieldSourceKind::Sampled
-                }
-                reify_compiler::CompiledFieldSource::Composed { .. } => {
-                    reify_types::FieldSourceKind::Composed
-                }
-                reify_compiler::CompiledFieldSource::Imported => {
-                    reify_types::FieldSourceKind::Imported
-                }
-            };
-
-            let field_value = Value::Field {
-                domain_type: field.domain_type.clone(),
-                codomain_type: field.codomain_type.clone(),
-                source: source_kind,
-                lambda: lambda_value,
-            };
-
-            let field_id = ValueCellId::new("__field", &field.name);
-            values.insert(field_id, field_value);
-        }
 
         EvalResult { values, diagnostics, resolved_params }
     }
