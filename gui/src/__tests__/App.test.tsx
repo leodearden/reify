@@ -586,6 +586,96 @@ describe('App toast queue (TO-2)', () => {
   });
 });
 
+describe('App changedFiles multi-file tracking (R-1)', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/bracket.ri', content: 'structure Bracket {}' },
+      { path: '/project/gear.ri', content: 'structure Gear {}' },
+    ],
+  };
+
+  let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
+
+  beforeEach(() => {
+    fileChangedCallback = undefined;
+    vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+      fileChangedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+    vi.mocked(bridge.openFile).mockImplementation(async (path: string) => ({
+      path,
+      content: `updated ${path}`,
+    }));
+  });
+
+  it('two different file changes show both in reload prompt', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+
+    // Simulate two different files changing
+    fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 files changed/)).toBeTruthy();
+    });
+  });
+
+  it('same file changed twice results in only one entry', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+
+    fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('reload-prompt')).toBeTruthy();
+    });
+    // Should show single file, not "2 files changed"
+    expect(screen.getByText(/bracket\.ri/)).toBeTruthy();
+    expect(screen.queryByText(/2 files changed/)).toBeNull();
+  });
+
+  it('handleReload reloads all files in the changed set', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+
+    fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+
+    await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+    // Click Reload
+    fireEvent.click(screen.getByText('Reload'));
+
+    await waitFor(() => {
+      expect(bridge.openFile).toHaveBeenCalledWith('/project/bracket.ri');
+      expect(bridge.openFile).toHaveBeenCalledWith('/project/gear.ri');
+    });
+  });
+
+  it('handleDismissReload clears all changed files', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+
+    fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+
+    await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+    // Click Dismiss
+    fireEvent.click(screen.getByText('Dismiss'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('reload-prompt')).toBeNull();
+    });
+  });
+});
+
 describe('App handleSetParameter error handling', () => {
   it('logs error when bridge.setParameter rejects', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
