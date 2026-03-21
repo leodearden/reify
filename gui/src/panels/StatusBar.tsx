@@ -28,7 +28,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
   });
 
   return (
-    <div data-testid="status-bar" class={styles.container}>
+    <div data-testid="status-bar" class={styles.container} role="status" aria-live="polite">
       <span class={styles.section}>
         <span class={styles.label}>Status:</span>
         <span class={styles.phase} data-phase={props.evalStatus.phase}>
