@@ -3,6 +3,7 @@ import {
   BufferAttribute,
   Mesh,
   MeshStandardMaterial,
+  DoubleSide,
   Color,
   type Scene,
 } from 'three';
@@ -58,6 +59,7 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
 
     const material = new MeshStandardMaterial({
       color: colorForEntity(entityPath),
+      side: DoubleSide,
     });
 
     const mesh = new Mesh(geometry, material);
