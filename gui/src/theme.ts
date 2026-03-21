@@ -15,6 +15,13 @@ export const THEME_TOKENS: Record<string, string> = {
   viewportBg: '#181825',
   panelBg: '#2a2a3a',
   fontMono: '"JetBrains Mono", "Fira Code", "Cascadia Code", monospace',
+  surface0: '#313244',
+  surface1: '#45475a',
+  surface2: '#585b70',
+  subtext: '#a6adc8',
+  overlay0: '#6c7086',
+  green: '#a6e3a1',
+  red: '#f38ba8',
 };
 
 function camelToKebab(str: string): string {
