@@ -731,4 +731,96 @@ mod tests {
         );
     }
 
+    // --- compute_levels tests ---
+
+    #[test]
+    fn compute_levels_empty_input() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::compute_levels;
+        use std::collections::HashMap;
+
+        let nodes: HashSet<NodeId> = HashSet::new();
+        let traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        let levels = compute_levels(&nodes, &traces);
+        assert!(levels.is_empty());
+    }
+
+    #[test]
+    fn compute_levels_fan_out() {
+        // a -> b, a -> c => levels: [[a], [b, c]]
+        use crate::deps::DependencyTrace;
+        use crate::dirty::compute_levels;
+        use std::collections::HashMap;
+
+        let a = NodeId::Value(ValueCellId::new("X", "a"));
+        let b = NodeId::Value(ValueCellId::new("X", "b"));
+        let c = NodeId::Value(ValueCellId::new("X", "c"));
+
+        let mut nodes = HashSet::new();
+        nodes.insert(a.clone());
+        nodes.insert(b.clone());
+        nodes.insert(c.clone());
+
+        let mut traces = HashMap::new();
+        traces.insert(a.clone(), DependencyTrace::default());
+        traces.insert(
+            b.clone(),
+            DependencyTrace {
+                reads: vec![ValueCellId::new("X", "a")],
+            },
+        );
+        traces.insert(
+            c.clone(),
+            DependencyTrace {
+                reads: vec![ValueCellId::new("X", "a")],
+            },
+        );
+
+        let levels = compute_levels(&nodes, &traces);
+        assert_eq!(levels.len(), 2, "expected 2 levels, got {:?}", levels);
+        assert_eq!(levels[0], vec![a.clone()]);
+        // b and c should both be in level 1 (order determined by DebugOrd)
+        assert_eq!(levels[1].len(), 2);
+        assert!(levels[1].contains(&b));
+        assert!(levels[1].contains(&c));
+    }
+
+    #[test]
+    fn compute_levels_chain() {
+        // a -> b -> c => levels: [[a], [b], [c]]
+        use crate::deps::DependencyTrace;
+        use crate::dirty::compute_levels;
+        use std::collections::HashMap;
+
+        let a = NodeId::Value(ValueCellId::new("X", "a"));
+        let b = NodeId::Value(ValueCellId::new("X", "b"));
+        let c = NodeId::Value(ValueCellId::new("X", "c"));
+
+        let mut nodes = HashSet::new();
+        nodes.insert(a.clone());
+        nodes.insert(b.clone());
+        nodes.insert(c.clone());
+
+        let mut traces = HashMap::new();
+        traces.insert(a.clone(), DependencyTrace::default());
+        traces.insert(
+            b.clone(),
+            DependencyTrace {
+                reads: vec![ValueCellId::new("X", "a")],
+            },
+        );
+        traces.insert(
+            c.clone(),
+            DependencyTrace {
+                reads: vec![ValueCellId::new("X", "b")],
+            },
+        );
+
+        let levels = compute_levels(&nodes, &traces);
+        assert_eq!(levels.len(), 3, "expected 3 levels, got {:?}", levels);
+        assert_eq!(levels[0], vec![a]);
+        assert_eq!(levels[1], vec![b]);
+        assert_eq!(levels[2], vec![c]);
+    }
+
 }
