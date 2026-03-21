@@ -22,10 +22,13 @@ impl DocumentStore {
         self.documents.insert(uri, DocumentState { text, version });
     }
 
-    pub fn update(&mut self, uri: &Url, text: String, version: i32) {
+    pub fn update(&mut self, uri: &Url, text: String, version: i32) -> bool {
         if let Some(doc) = self.documents.get_mut(uri) {
             doc.text = text;
             doc.version = version;
+            true
+        } else {
+            false
         }
     }
 
