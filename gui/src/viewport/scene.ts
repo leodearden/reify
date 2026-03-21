@@ -58,6 +58,7 @@ export function createScene(
   function resize(w: number, h: number) {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    renderer.setPixelRatio(window.devicePixelRatio ?? 1);
     renderer.setSize(w, h);
   }
 
