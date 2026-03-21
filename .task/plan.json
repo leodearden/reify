@@ -12,7 +12,7 @@
     "gui/src/viewport",
     "gui/src/__tests__/viewport"
   ],
-  "analysis": "Task 95 adds interactive 3D selection to the viewport. The existing codebase follows a clean factory-function pattern: scene.ts, controls.ts, meshManager.ts each export a `create*` function returning a context object with methods and a dispose. Tests mock three.js via vi.mock('three') with inline mock classes.\n\nThe core new module is `selection.ts` \u2014 a `createSelection` factory that wraps Three.js Raycaster for pointer-based hover/click detection on meshes managed by meshManager. It will: (1) resolve pointer coords to entity paths via raycasting, (2) apply emissive highlight on hover, (3) create WireframeGeometry+LineSegments overlay on selection, (4) provide fitToView to frame all content, and (5) expose dispose for cleanup. Viewport.tsx will be extended to wire selection into the render loop, render a floating tooltip on hover, an evaluating spinner overlay when evalStatus.phase !== idle, and a fit-to-view button.\n\nKey considerations: The meshManager already stores entity_path as mesh.name and exposes getSceneMeshes() returning Map<string, Mesh> \u2014 perfect for raycasting. The selectionStore has selectEntity/hoverEntity. The engineStore has evalStatus with phase 'idle'|'evaluating'|'resolving'. All Three.js dependencies will be mocked in tests following the established pattern.\n\nThe Viewport component currently accepts only {meshes} prop. It will be extended to accept optional callbacks (onHover, onSelect), evalStatus, hoveredEntity, selectedEntity, and a fitToView ref. This keeps the component testable with simple prop injection, matching the existing pattern from task 93 where stores are created in App and passed as props.\n\n--- REVIEW FIX ADDENDUM ---\nPost-implementation review identified two blocking issues:\n1. Fit-to-view button broken: onClick calls props.onFitToView?.() but never selection.fitToView(). The selection instance lives inside the onMount closure, inaccessible to JSX. Fix: declare a mutable ref (doFitToView) in the Viewport function scope, assign it inside onMount after creating selection, and call it from the button onClick.\n2. Material resource leak: removeWireframe() in selection.ts disposes WireframeGeometry but not the LineBasicMaterial, leaking GPU memory on every selection change. Fix: add material.dispose() call in removeWireframe().",
+  "analysis": "Task 95 adds interactive 3D selection to the viewport. The existing codebase follows a clean factory-function pattern: scene.ts, controls.ts, meshManager.ts each export a `create*` function returning a context object with methods and a dispose. Tests mock three.js via vi.mock('three') with inline mock classes.\n\nThe core new module is `selection.ts` \u2014 a `createSelection` factory that wraps Three.js Raycaster for pointer-based hover/click detection on meshes managed by meshManager. It will: (1) resolve pointer coords to entity paths via raycasting, (2) apply emissive highlight on hover, (3) create WireframeGeometry+LineSegments overlay on selection, (4) provide fitToView to frame all content, and (5) expose dispose for cleanup. Viewport.tsx will be extended to wire selection into the render loop, render a floating tooltip on hover, an evaluating spinner overlay when evalStatus.phase !== idle, and a fit-to-view button.\n\nKey considerations: The meshManager already stores entity_path as mesh.name and exposes getSceneMeshes() returning Map<string, Mesh> \u2014 perfect for raycasting. The selectionStore has selectEntity/hoverEntity. The engineStore has evalStatus with phase 'idle'|'evaluating'|'resolving'. All Three.js dependencies will be mocked in tests following the established pattern.\n\nThe Viewport component currently accepts only {meshes} prop. It will be extended to accept optional callbacks (onHover, onSelect), evalStatus, hoveredEntity, selectedEntity, and a fitToView ref. This keeps the component testable with simple prop injection, matching the existing pattern from task 93 where stores are created in App and passed as props.\n\n--- REVIEW FIX ADDENDUM (round 1) ---\nPost-implementation review identified two blocking issues:\n1. Fit-to-view button broken: onClick calls props.onFitToView?.() but never selection.fitToView(). Fix: mutable ref pattern.\n2. Material resource leak: removeWireframe() disposes WireframeGeometry but not LineBasicMaterial. Fix: add material.dispose().\n\n--- REVIEW FIX ADDENDUM (round 2) ---\nSecond review identified three additional blocking performance/robustness issues:\n3. hot_path_layout_thrashing: getBoundingClientRect() called on every pointermove forces synchronous layout reflow at mouse sampling rate (60-1000 Hz). Fix: cache DOMRect in closure, invalidate lazily on resize via a ResizeObserver or an onResize() method that Viewport.tsx calls from its existing ResizeObserver.\n4. hot_path_missing_raf_throttle: Full raycast (setFromCamera + intersectObjects) runs synchronously on every pointermove with no frame-rate gating. At 1000 Hz with even modest scenes, this saturates the main thread. Fix: store pendingMoveEvent in closure, schedule rAF only if not already queued, consume latest event in rAF callback. Cancel outstanding rAF in dispose().\n5. stale_resource_state: Wireframe overlay uses WireframeGeometry snapshot from construction time. When meshManager.sync() updates geometry after engine re-evaluation, the wireframe shows the old shape. The selectedEntity effect in Viewport.tsx doesn't track mesh data changes. Fix: make the selectedEntity effect also depend on props.meshes so it re-runs setSelected() when geometry changes, rebuilding the wireframe.",
   "prerequisites": [],
   "steps": [
     {
@@ -140,6 +140,48 @@
       "description": "REVIEW FIX: Fix both issues: (1) In selection.ts removeWireframe(), add `(currentWireframe.material as LineBasicMaterial).dispose()` after geometry.dispose() and before nulling the reference. This ensures the material is freed on every wireframe removal (deselect, re-select, and dispose). (2) In Viewport.tsx, declare `let doFitToView: (() => void) | undefined` in the Viewport function scope before onMount. Inside onMount, after creating `selection`, assign `doFitToView = () => selection.fitToView()`. Change the button onClick from `() => props.onFitToView?.()` to `() => { doFitToView?.(); props.onFitToView?.(); }`. This bridges the onMount-scoped selection instance to the JSX click handler via a mutable ref while keeping selection private to the mount closure.",
       "status": "done",
       "commit": "8d61290"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "REVIEW FIX (hot_path_layout_thrashing): Write failing tests in selection.test.ts for cached DOMRect behavior. (1) 'computeNDC uses cached rect and does not call getBoundingClientRect on every pointermove' \u2014 dispatch two pointermove events, assert domElement.getBoundingClientRect was called only once (lazy population on first event). (2) 'invalidateRect causes next pointermove to re-read getBoundingClientRect' \u2014 dispatch pointermove (populates cache), call selection.invalidateRect(), dispatch another pointermove, assert getBoundingClientRect was called twice total. (3) 'pointerdown also uses cached rect' \u2014 dispatch pointerdown after pointermove, assert getBoundingClientRect still called only once. Add invalidateRect to the SelectionContext interface assertion in the factory skeleton test. Spy on domElement.getBoundingClientRect to count calls.",
+      "status": "done",
+      "commit": "6aa71e5"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "REVIEW FIX (hot_path_layout_thrashing): In selection.ts, add `let cachedRect: DOMRect | null = null` in the factory closure. Replace `domElement.getBoundingClientRect()` in computeNDC with a helper `getRect()` that returns cachedRect if non-null, otherwise calls `cachedRect = domElement.getBoundingClientRect()` and returns it. Add `invalidateRect()` method that sets `cachedRect = null`. Export invalidateRect on SelectionContext interface. In Viewport.tsx, call `selection.invalidateRect()` inside the existing ResizeObserver callback (alongside the existing `resize(w, h)` call), so the rect cache is invalidated whenever the viewport container resizes.",
+      "status": "done",
+      "commit": "bb9e05d"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "REVIEW FIX (hot_path_missing_raf_throttle): Write failing tests in selection.test.ts for rAF-throttled pointermove raycasting. (1) 'pointermove does not raycast synchronously \u2014 stores pending event and schedules rAF' \u2014 dispatch pointermove, assert raycaster.setFromCamera was NOT called synchronously, assert requestAnimationFrame was called. (2) 'rAF callback performs raycast with latest pending event' \u2014 dispatch pointermove, invoke the captured rAF callback, assert raycaster.setFromCamera was called once and onHover was called. (3) 'multiple rapid pointermoves only schedule one rAF and raycast uses the last event' \u2014 dispatch 3 pointermove events with different clientX, assert requestAnimationFrame was called only once, invoke rAF callback, assert raycaster.setFromCamera called once with NDC from the last event's coords. (4) 'pointerdown still raycasts synchronously (not throttled)' \u2014 dispatch pointerdown, assert raycaster.setFromCamera called immediately without rAF. (5) 'dispose cancels outstanding rAF' \u2014 dispatch pointermove, call dispose(), assert cancelAnimationFrame was called with the rAF id. Mock requestAnimationFrame and cancelAnimationFrame in the test setup.",
+      "status": "done",
+      "commit": "4f4167a"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "REVIEW FIX (hot_path_missing_raf_throttle): In selection.ts, refactor handlePointerMove to use pending-event + rAF throttle pattern. Add closure variables: `let pendingMoveEvent: Event | null = null; let hoverRafId = 0;`. In handlePointerMove, assign `pendingMoveEvent = event`, then only if `hoverRafId === 0`, schedule `hoverRafId = requestAnimationFrame(processHover)`. The `processHover` function reads `pendingMoveEvent`, clears it and `hoverRafId`, then performs the raycast + onHover call. pointerdown handler remains synchronous (click selection should not be delayed). In dispose(), add `if (hoverRafId) cancelAnimationFrame(hoverRafId)` before removing listeners.",
+      "status": "done",
+      "commit": "0515136"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "REVIEW FIX (stale_resource_state): Write failing test in Viewport.test.tsx: 'selectedEntity effect re-runs setSelected when props.meshes changes' \u2014 render Viewport with selectedEntity='A' and meshes={initial}, assert mockSelectionSetSelected was called with 'A'. Then update props.meshes to a new object (simulating engine re-evaluation), assert mockSelectionSetSelected was called again with 'A' (rebuilding the wireframe from updated geometry). Use SolidJS createSignal to drive reactive prop changes in the test.",
+      "status": "done",
+      "commit": "beec122"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "REVIEW FIX (stale_resource_state): In Viewport.tsx, modify the createEffect that watches selectedEntity to also read props.meshes, so it re-runs when either changes. Change from `createEffect(() => { selection.setSelected(props.selectedEntity ?? null); });` to `createEffect(() => { void props.meshes; selection.setSelected(props.selectedEntity ?? null); });`. This ensures that when meshManager.sync() processes updated geometry (triggered by the meshes effect), the selection effect also re-fires, causing setSelected to rebuild the WireframeGeometry from the now-updated mesh geometry. Also update the Viewport.test.tsx mock for selection module to include invalidateRect (from step-20) so existing tests don't break.",
+      "status": "done",
+      "commit": "e7dabe1"
     }
   ],
   "design_decisions": [
@@ -182,6 +224,18 @@
     {
       "decision": "Dispose both geometry AND material in removeWireframe()",
       "rationale": "Three.js materials are GPU-resident resources that must be explicitly disposed. The original code only disposed geometry, leaking LineBasicMaterial on every selection change. This matches the dispose pattern already used in meshManager.ts."
+    },
+    {
+      "decision": "Cache DOMRect in closure with lazy population and explicit invalidation via invalidateRect()",
+      "rationale": "getBoundingClientRect() forces synchronous layout reflow \u2014 calling it on every pointermove (60-1000 Hz) causes significant main-thread jank. Caching the rect and only re-reading on resize eliminates this hot-path thrashing. The invalidateRect() method is exposed on SelectionContext so Viewport.tsx can call it from its existing ResizeObserver, keeping resize handling centralized. Lazy population (first pointer event) avoids a redundant read during construction when the element may not yet be laid out."
+    },
+    {
+      "decision": "Use pending-event + rAF throttle for pointermove raycasting only; pointerdown remains synchronous",
+      "rationale": "Raycasting is O(n) in mesh count with per-mesh matrix math. At 1000 Hz mouse sampling, synchronous raycasting on every pointermove saturates the main thread. The rAF pattern caps hover raycasts at ~60/s (one per rendered frame), which is perceptually identical. pointerdown (click selection) remains synchronous because: (a) click events are rare (not a hot path), (b) selection feedback must feel instantaneous \u2014 a one-frame delay on click is perceptible, and (c) the pending-event pattern would discard intermediate clicks if multiple arrive before the next frame."
+    },
+    {
+      "decision": "Make selectedEntity effect depend on props.meshes to rebuild wireframe on geometry changes",
+      "rationale": "WireframeGeometry snapshots edge data at construction time \u2014 it doesn't track source geometry mutations. When meshManager.sync() updates mesh BufferGeometry after engine re-evaluation, the wireframe becomes stale. By reading props.meshes inside the selectedEntity effect, SolidJS automatically re-runs it whenever meshes change, causing setSelected() to destroy the old wireframe and create a new one from the updated geometry. This is the minimal fix: one added line (`void props.meshes;`) that leverages SolidJS's fine-grained reactivity to solve the staleness without any new mechanism."
     }
   ],
   "reuse": [
@@ -229,9 +283,19 @@
       "what": "MockLineBasicMaterial.dispose mock in selection.test.ts",
       "where": "gui/src/__tests__/viewport/selection.test.ts line 30-36",
       "how": "The mock LineBasicMaterial already has a dispose = vi.fn() \u2014 the new material disposal tests can assert on wireframe.material.dispose without any mock changes."
+    },
+    {
+      "what": "Existing ResizeObserver in Viewport.tsx for resize handling",
+      "where": "gui/src/viewport/Viewport.tsx lines 59-67",
+      "how": "The ResizeObserver callback already fires on viewport resize. Add selection.invalidateRect() call alongside the existing resize(w, h) call to invalidate the cached DOMRect when the viewport container changes size."
+    },
+    {
+      "what": "requestAnimationFrame / cancelAnimationFrame mock in Viewport.test.tsx",
+      "where": "gui/src/__tests__/viewport/Viewport.test.tsx lines 16-20",
+      "how": "Same rAF mocking pattern will be used in selection.test.ts for the rAF-throttle tests. Capture callbacks via vi.fn() wrapping requestAnimationFrame to verify scheduling and invoke callbacks in tests."
     }
   ],
   "_session_id": "95-50938893",
-  "_created_at": "2026-03-21T07:48:22.707657+00:00",
+  "_created_at": "2026-03-21T07:54:17.619983+00:00",
   "_schema_version": 1
 }
