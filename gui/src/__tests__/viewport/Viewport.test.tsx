@@ -44,6 +44,9 @@ const mockMeshSync = vi.fn();
 const mockMeshDispose = vi.fn();
 const mockMeshGetSceneMeshes = vi.fn(() => new Map());
 
+const mockGrid = { type: 'GridHelper', visible: true };
+const mockAxes = { type: 'AxesHelper', visible: true };
+
 vi.mock('../../viewport/scene', () => ({
   createScene: vi.fn(() => ({
     scene: { type: 'Scene' },
@@ -56,6 +59,8 @@ vi.mock('../../viewport/scene', () => ({
     },
     resize: mockResize,
     adjustClipping: vi.fn(),
+    grid: mockGrid,
+    axes: mockAxes,
   })),
 }));
 
@@ -112,6 +117,8 @@ beforeEach(() => {
   rafCallbacks = [];
   rafIdCounter = 1;
   controlsListeners = {};
+  mockGrid.visible = true;
+  mockAxes.visible = true;
 });
 
 describe('Viewport', () => {
@@ -348,6 +355,30 @@ describe('Viewport', () => {
     mockSelectionFitToView.mockClear();
     capturedFn!();
     expect(mockSelectionFitToView).toHaveBeenCalled();
+  });
+
+  it('renders a grid toggle button with data-testid toggle-grid', () => {
+    render(() => <Viewport meshes={{}} />);
+    const btn = screen.getByTestId('toggle-grid');
+    expect(btn).toBeTruthy();
+  });
+
+  it('clicking toggle-grid button toggles grid and axes visible state', () => {
+    render(() => <Viewport meshes={{}} />);
+    const btn = screen.getByTestId('toggle-grid');
+
+    expect(mockGrid.visible).toBe(true);
+    expect(mockAxes.visible).toBe(true);
+
+    fireEvent.click(btn);
+
+    expect(mockGrid.visible).toBe(false);
+    expect(mockAxes.visible).toBe(false);
+
+    fireEvent.click(btn);
+
+    expect(mockGrid.visible).toBe(true);
+    expect(mockAxes.visible).toBe(true);
   });
 });
 
