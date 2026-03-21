@@ -30,6 +30,7 @@ reify-geometry.workspace = true
 reify-kernel-occt = { workspace = true, optional = true }
 reify-stdlib.workspace = true
 reify-lsp.workspace = true
+tower-lsp.workspace = true
 tauri = { workspace = true, optional = true }
 tokio.workspace = true
 serde = { version = "1", features = ["derive"] }
