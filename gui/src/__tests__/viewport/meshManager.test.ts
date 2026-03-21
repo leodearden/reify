@@ -15,6 +15,10 @@ vi.mock('three', () => {
     attributes: Record<string, any> = {};
     index: any = null;
     dispose = vi.fn();
+    computeBoundsTree = vi.fn();
+    disposeBoundsTree = vi.fn();
+    boundingSphere: any = null;
+    boundingBox: any = null;
 
     setAttribute(name: string, attr: any) {
       this.attributes[name] = attr;
@@ -86,6 +90,12 @@ vi.mock('three', () => {
     Color: MockColor,
   };
 });
+
+vi.mock('three-mesh-bvh', () => ({
+  computeBoundsTree: vi.fn(),
+  disposeBoundsTree: vi.fn(),
+  acceleratedRaycast: vi.fn(),
+}));
 
 import { createMeshManager } from '../../viewport/meshManager';
 import { Scene } from 'three';
@@ -306,5 +316,40 @@ describe('meshManager', () => {
 
     // Normal attribute should be removed
     expect(geom.attributes.normal).toBeUndefined();
+  });
+
+  it('sync calls geometry.computeBoundsTree() on newly created mesh', () => {
+    const { manager } = setup();
+    manager.sync({ A: makeMeshData('A') });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+    expect((mesh.geometry as any).computeBoundsTree).toHaveBeenCalledTimes(1);
+  });
+
+  it('sync calls geometry.computeBoundsTree() after updating existing mesh geometry', () => {
+    const { manager } = setup();
+    manager.sync({ A: makeMeshData('A') });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+    (mesh.geometry as any).computeBoundsTree.mockClear();
+
+    // Update with new vertices
+    const newVerts = new Float32Array([9, 8, 7, 6, 5, 4]);
+    manager.sync({ A: makeMeshData('A', newVerts) });
+
+    expect((mesh.geometry as any).computeBoundsTree).toHaveBeenCalledTimes(1);
+  });
+
+  it('removeMesh calls geometry.disposeBoundsTree() before disposing geometry', () => {
+    const { manager } = setup();
+    manager.sync({ A: makeMeshData('A') });
+
+    const mesh = manager.getSceneMeshes().get('A')!;
+
+    // Remove A
+    manager.sync({});
+
+    expect((mesh.geometry as any).disposeBoundsTree).toHaveBeenCalledTimes(1);
+    expect((mesh.geometry as any).dispose).toHaveBeenCalledTimes(1);
   });
 });
