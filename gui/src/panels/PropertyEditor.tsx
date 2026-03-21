@@ -184,6 +184,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                               type="text"
                               class={styles.valueInput}
                               value={editingCellId() === val.cell_id ? editValue() : val.value}
+                              title={val.value}
                               onFocus={(e) => handleFocus(val.cell_id, e)}
                               onInput={(e) => handleInput(val.cell_id, e)}
                               onKeyDown={(e) => handleKeyDown(val.cell_id, e)}

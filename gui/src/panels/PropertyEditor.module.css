@@ -105,7 +105,8 @@
 }
 
 .valueInput {
-  width: 70px;
+  min-width: 50px;
+  flex: 0 1 auto;
   padding: 2px 4px;
   background: var(--reify-surface, #2a2a3a);
   border: 1px solid var(--reify-border, #45475a);
@@ -125,7 +126,8 @@
 }
 
 .valueReadonly {
-  width: 70px;
+  min-width: 50px;
+  flex: 0 1 auto;
   padding: 2px 4px;
   text-align: right;
   color: var(--reify-text-muted, #6c7086);
