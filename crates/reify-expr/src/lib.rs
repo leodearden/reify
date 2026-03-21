@@ -1,4 +1,4 @@
-use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, QuantifierKind, UnOp, Value, ValueCellId, ValueMap};
+use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -197,7 +197,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 return Value::Undef;
             }
             let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
-            eval_method_call(&obj, method, &evaluated_args, ctx)
+            eval_method_call(&obj, method, &evaluated_args, &expr.result_type, ctx)
         }
 
         CompiledExprKind::Quantifier { kind, variable_id, collection, predicate, .. } => {
@@ -332,7 +332,7 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 }
 
 /// Evaluate a method call on a collection value.
-fn eval_method_call(obj: &Value, method: &str, args: &[Value], ctx: &EvalContext) -> Value {
+fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Type, ctx: &EvalContext) -> Value {
     match method {
         "count" => match obj {
             Value::List(items) => Value::Int(items.len() as i64),
@@ -408,7 +408,15 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], ctx: &EvalContext
         "sum" => match obj {
             Value::List(items) => {
                 if items.is_empty() {
-                    return Value::Int(0);
+                    return match result_type {
+                        Type::Int => Value::Int(0),
+                        Type::Real => Value::Real(0.0),
+                        Type::Scalar { dimension } => Value::Scalar {
+                            si_value: 0.0,
+                            dimension: *dimension,
+                        },
+                        _ => Value::Undef,
+                    };
                 }
                 let mut acc = items[0].clone();
                 if acc.is_undef() {
