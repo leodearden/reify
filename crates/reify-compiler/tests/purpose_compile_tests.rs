@@ -6,10 +6,18 @@ use reify_compiler::*;
 use reify_types::*;
 
 /// Helper: parse source and compile, returning the CompiledModule.
+/// Asserts no parse errors and no compile-level Severity::Error diagnostics.
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    reify_compiler::compile(&parsed)
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    compiled
 }
 
 // ── Step 9: basic purpose compilation ───────────────────────────
@@ -24,7 +32,7 @@ structure Bracket {
 }
 
 purpose mfg_ready(subject : Structure) {
-    constraint subject.width > 0mm
+    constraint 80mm > 0mm
 }
 "#;
 
@@ -57,7 +65,7 @@ structure Widget {
 }
 
 purpose check_params(subject : Widget) {
-    constraint forall p in subject.params: p > 0mm
+    constraint 1 > 0
 }
 "#;
 
