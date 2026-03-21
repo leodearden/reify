@@ -1851,7 +1851,7 @@ pub fn compile(
                 f.name.clone(),
                 f.params.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>(),
             );
-            if let Some(prev_idx) = seen.get(&key) {
+            if seen.contains_key(&key) {
                 diagnostics.push(
                     Diagnostic::error(format!(
                         "duplicate function signature: {}({})",
@@ -1863,8 +1863,6 @@ pub fn compile(
                             .join(", ")
                     )),
                 );
-                let _ = prev_idx;
-                let _ = idx;
             } else {
                 seen.insert(key, idx);
             }
