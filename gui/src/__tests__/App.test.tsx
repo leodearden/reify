@@ -69,10 +69,12 @@ vi.mock('../bridge', () => ({
 
 import App from '../App';
 import * as bridge from '../bridge';
+import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 
 beforeEach(() => {
   vi.clearAllMocks();
   capturedViewportProps = {};
+  localStorage.clear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
@@ -1057,6 +1059,53 @@ describe('App initApp concurrent execution guard', () => {
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
+  });
+});
+
+describe('App layout persistence', () => {
+  it('panel widths initialize from localStorage when valid data exists', async () => {
+    const layout = { editorWidth: 400, sideWidth: 350, propertyHeight: 250 };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(layout));
+
+    await renderAndWaitForReady();
+
+    const main = screen.getByTestId('app-layout').querySelector('[class*="main"]') as HTMLElement;
+    expect(main).toBeTruthy();
+    // Grid columns should reflect stored values
+    expect(main.style.gridTemplateColumns).toContain('400px');
+    expect(main.style.gridTemplateColumns).toContain('350px');
+  });
+
+  it('missing localStorage falls back to defaults (300/300/200)', async () => {
+    await renderAndWaitForReady();
+
+    const main = screen.getByTestId('app-layout').querySelector('[class*="main"]') as HTMLElement;
+    expect(main).toBeTruthy();
+    expect(main.style.gridTemplateColumns).toContain('300px');
+    // Side panel should also default to 300px
+    const cols = main.style.gridTemplateColumns;
+    // Should have 300px ... 300px (editor and side panel widths)
+    const matches = cols.match(/(\d+)px/g);
+    expect(matches).toContain('300px');
+  });
+
+  it('resizing left splitter writes updated layout to localStorage', async () => {
+    await renderAndWaitForReady();
+
+    const splitter = screen.getByTestId('splitter-left');
+
+    // Drag right by 50px
+    fireEvent.mouseDown(splitter, { clientX: 300, clientY: 200 });
+    fireEvent.mouseMove(document, { clientX: 350, clientY: 200 });
+    fireEvent.mouseUp(document);
+
+    // Wait for debounced save (300ms debounce + margin)
+    await new Promise((r) => setTimeout(r, 400));
+
+    const stored = localStorage.getItem(STORAGE_KEY);
+    expect(stored).not.toBeNull();
+    const parsed = JSON.parse(stored!);
+    expect(parsed.editorWidth).toBe(350);
   });
 });
 
