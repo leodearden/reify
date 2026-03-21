@@ -546,8 +546,12 @@ impl<'a> Lowering<'a> {
             "field_source_imported" => {
                 let path_node = inner.child_by_field_name("path")?;
                 let raw = self.node_text(path_node);
-                // Strip surrounding quotes
-                let path = raw.trim_matches('"').to_string();
+                // Strip only the outer pair of quotes (trim_matches strips ALL matching chars)
+                let path = raw
+                    .strip_prefix('"')
+                    .and_then(|s| s.strip_suffix('"'))
+                    .unwrap_or(raw)
+                    .to_string();
                 Some(FieldSource::Imported { path })
             }
             _ => None,
