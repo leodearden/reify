@@ -17,7 +17,7 @@ describe('ExportDialog', () => {
     expect(screen.queryByTestId('export-dialog')).toBeNull();
   });
 
-  it('format selector has STEP/STL/3MF options', () => {
+  it('format selector has only STEP and STL options (no 3MF)', () => {
     render(() => (
       <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
     ));
@@ -26,7 +26,8 @@ describe('ExportDialog', () => {
     const values = options.map((o) => o.value);
     expect(values).toContain('step');
     expect(values).toContain('stl');
-    expect(values).toContain('3mf');
+    expect(values).not.toContain('3mf');
+    expect(values).toHaveLength(2);
   });
 
   it('default selected format is "step"', () => {
