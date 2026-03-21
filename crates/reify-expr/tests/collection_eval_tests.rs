@@ -713,6 +713,33 @@ fn eval_method_fold_with_initial() {
     assert_eq!(result, Value::Int(16));
 }
 
+#[test]
+fn eval_method_fold_wrong_arity_lambda_empty_list() {
+    // [].fold(0, |x| x + 1) → should be Undef (lambda has 1 param, fold needs 2)
+    // On empty lists, fold currently returns init without validating lambda arity
+    let x_id = ValueCellId::new("$lambda_fold_bad.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(1), Type::Int),
+        Type::Int,
+    );
+    // 1-param lambda (fold requires 2)
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let init = CompiledExpr::literal(Value::Int(0), Type::Int);
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let expr = CompiledExpr::method_call(
+        list,
+        "fold".to_string(),
+        vec![init, lambda_arg],
+        Type::Int,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "fold with wrong-arity lambda should return Undef even on empty list");
+}
+
 // ─── step-19/20: MethodCall .all and .any ───
 
 #[test]
