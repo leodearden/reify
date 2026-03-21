@@ -79,6 +79,18 @@ vi.mock('three', () => {
       this.z = v.z;
       return this;
     }
+    sub(v: any) {
+      this.x -= v.x;
+      this.y -= v.y;
+      this.z -= v.z;
+      return this;
+    }
+    multiplyScalar(s: number) {
+      this.x *= s;
+      this.y *= s;
+      this.z *= s;
+      return this;
+    }
   }
 
   class MockVector2 {
@@ -136,6 +148,13 @@ vi.mock('three', () => {
     position = new MockVector3(5, 5, 5);
     lookAt = vi.fn();
     updateProjectionMatrix = vi.fn();
+    getWorldDirection = vi.fn((target: any) => {
+      // Default: looking along -Z axis (Three.js convention)
+      target.x = 0;
+      target.y = 0;
+      target.z = -1;
+      return target;
+    });
   }
 
   class MockBufferGeometry {
