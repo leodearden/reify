@@ -1,0 +1,50 @@
+================================================================================
+Standalone line comment
+================================================================================
+
+// this is a comment
+structure S {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (line_comment)
+  (structure_definition
+    name: (identifier)))
+
+================================================================================
+Inline line comment after param declaration
+================================================================================
+
+structure S {
+  param x : Float // inline comment
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier)))
+    (line_comment)))
+
+================================================================================
+Multiple consecutive line comments
+================================================================================
+
+// first comment
+// second comment
+// third comment
+structure S {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (line_comment)
+  (line_comment)
+  (line_comment)
+  (structure_definition
+    name: (identifier)))
