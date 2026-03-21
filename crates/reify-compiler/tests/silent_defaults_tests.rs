@@ -102,6 +102,42 @@ fn duplicate_function_signature_diagnostic_has_context() {
     );
 }
 
+// ── L6: unlabeled constraint in trait uses Option<String> ────────────────
+
+#[test]
+fn unlabeled_constraint_in_trait_uses_option_none() {
+    // A trait with an unlabeled constraint should compile its default
+    // with `name: None` (not an empty string sentinel).
+    let source = r#"
+        trait Bounded {
+            param x : Scalar
+            constraint : x > 0
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    let trait_def = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Bounded")
+        .expect("should have trait Bounded");
+
+    // Find the unlabeled constraint default
+    let constraint_default = trait_def
+        .defaults
+        .iter()
+        .find(|d| matches!(d.kind, reify_compiler::DefaultKind::Constraint(_)))
+        .expect("trait should have a constraint default");
+
+    assert!(
+        constraint_default.name.is_none(),
+        "unlabeled constraint should have name: None, got: {:?}",
+        constraint_default.name
+    );
+}
+
 // ── H3: geometry call diagnostics ──────────────────────────────────────
 
 #[test]
