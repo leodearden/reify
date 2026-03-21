@@ -176,4 +176,36 @@ describe('ExportDialog', () => {
     fireEvent.keyDown(overlay, { key: 'Escape' });
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  // ── Overlay click dismiss (E-3) ───────────────────────────────────
+
+  it('clicking overlay background calls onClose', () => {
+    const onClose = vi.fn();
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={onClose} />
+    ));
+    const overlay = screen.getByTestId('export-dialog');
+    fireEvent.click(overlay);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('clicking inside dialog does NOT call onClose', () => {
+    const onClose = vi.fn();
+    render(() => (
+      <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={onClose} />
+    ));
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(dialog);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('clicking overlay does NOT call onClose when exporting', () => {
+    const onClose = vi.fn();
+    render(() => (
+      <ExportDialog open={true} exporting={true} onExport={vi.fn()} onClose={onClose} />
+    ));
+    const overlay = screen.getByTestId('export-dialog');
+    fireEvent.click(overlay);
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });
