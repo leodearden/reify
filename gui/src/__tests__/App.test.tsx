@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@solidjs/testing-library';
+import { render, screen, fireEvent, waitFor, cleanup } from '@solidjs/testing-library';
 import type { GuiState } from '../types';
 
 // Mock Tauri APIs before any component imports
@@ -12,38 +12,59 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 // Mock Viewport (requires Three.js / WebGL which jsdom doesn't support)
 vi.mock('../viewport', () => ({
-  Viewport: (props: any) => <div data-testid="viewport-container">Viewport Mock</div>,
+  Viewport: (_props: any) => {
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'viewport-container');
+    el.textContent = 'Viewport Mock';
+    return el;
+  },
 }));
 
 // Mock Editor (requires CodeMirror DOM APIs)
 vi.mock('../editor/Editor', () => ({
-  Editor: (props: any) => <div data-testid="editor-container">Editor Mock</div>,
+  Editor: (_props: any) => {
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'editor-container');
+    el.textContent = 'Editor Mock';
+    return el;
+  },
 }));
 
 // Mock FileTabs
 vi.mock('../editor/FileTabs', () => ({
-  FileTabs: (props: any) => <div data-testid="file-tabs">FileTabs Mock</div>,
+  FileTabs: (_props: any) => {
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'file-tabs');
+    el.textContent = 'FileTabs Mock';
+    return el;
+  },
 }));
 
 // Mock bridge functions
-vi.mock('../bridge', async (importOriginal) => {
-  const original = await importOriginal<typeof import('../bridge')>();
-  return {
-    ...original,
-    getInitialState: vi.fn(),
-    setParameter: vi.fn(),
-  };
-});
+const emptyState: GuiState = { meshes: [], values: [], constraints: [], files: [] };
+vi.mock('../bridge', () => ({
+  getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
+  setParameter: vi.fn().mockResolvedValue(undefined),
+  onMeshUpdate: vi.fn().mockResolvedValue(() => {}),
+  onValueUpdate: vi.fn().mockResolvedValue(() => {}),
+  onConstraintUpdate: vi.fn().mockResolvedValue(() => {}),
+  onEvaluationStatus: vi.fn().mockResolvedValue(() => {}),
+  onMeshRemoved: vi.fn().mockResolvedValue(() => {}),
+  onValueRemoved: vi.fn().mockResolvedValue(() => {}),
+  onConstraintRemoved: vi.fn().mockResolvedValue(() => {}),
+}));
 
 import App from '../App';
 import * as bridge from '../bridge';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Reset getInitialState to default empty state
+  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
 });
 
 afterEach(() => {
-  vi.restoreAllMocks();
+  cleanup();
 });
 
 describe('App layout wiring', () => {
