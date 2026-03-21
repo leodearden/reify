@@ -1,197 +1,236 @@
 {
-  "task_id": "112",
-  "title": "Viewport rendering: normals fallback, double-sided materials, data validation, buffer updates",
+  "task_id": "109",
+  "title": "Toast and ReloadPrompt improvements: auto-dismiss, queue, dirty-check, ARIA",
   "files": [
-    "gui/src/viewport/meshManager.ts",
-    "gui/src/viewport/selection.ts",
-    "gui/src/viewport/scene.ts",
-    "gui/src/viewport/Viewport.tsx",
-    "gui/src/__tests__/viewport/meshManager.test.ts",
-    "gui/src/__tests__/viewport/selection.test.ts",
-    "gui/src/__tests__/viewport/scene.test.ts"
+    "gui/src/panels/Toast.tsx",
+    "gui/src/panels/Toast.module.css",
+    "gui/src/panels/ReloadPrompt.tsx",
+    "gui/src/panels/ReloadPrompt.module.css",
+    "gui/src/App.tsx",
+    "gui/src/App.module.css",
+    "gui/src/__tests__/Toast.test.tsx",
+    "gui/src/__tests__/ReloadPrompt.test.tsx",
+    "gui/src/__tests__/App.test.tsx",
+    "gui/src/hooks/useKeyboardShortcuts.ts",
+    "gui/src/__tests__/useKeyboardShortcuts.test.ts"
   ],
   "modules": [
-    "gui/src/viewport",
-    "gui/src/__tests__/viewport"
+    "gui/src/panels",
+    "gui/src/__tests__",
+    "gui/src",
+    "gui/src/hooks"
   ],
-  "analysis": "This task fixes 8 viewport rendering issues across 3 source files (meshManager.ts, selection.ts, scene.ts) with coordination in Viewport.tsx. The codebase uses a factory-function pattern (createScene, createMeshManager, createSelection) with Three.js fully mocked via vi.mock in vitest tests (jsdom environment).\n\nCurrent bugs and fixes:\n1. V-04 (meshManager.ts:53-55): When data.normals is null, no computeVertexNormals() fallback — causes flat-black faces. Fix: call geometry.computeVertexNormals() when normals are null in both createMeshFromData and updateMeshGeometry.\n2. V-05 (meshManager.ts:57-59): MeshStandardMaterial lacks DoubleSide — invisible back-faces on thin CAD shells. Fix: add side: THREE.DoubleSide to material constructor.\n3. V-06 (meshManager.ts): No validation of mesh data before BufferGeometry creation. Fix: validate vertices.length % 3 === 0 and indices in bounds before creating/updating geometry.\n4. V-07 (meshManager.ts:66-105): updateMeshGeometry mutates BufferAttribute internals (array + count) unsafely — when array length changes, the WebGL buffer size is fixed, causing errors. Fix: create new BufferAttribute when array length differs.\n5. V-08 (selection.ts:139-153): Selection wireframe not synced after geometry updates. Fix: add refreshSelected() to SelectionContext and call it from Viewport.tsx after mesh sync.\n6. V-11 (scene.ts:34): Fixed camera clipping planes (0.1, 10000). Fix: add adjustClipping(sceneBounds) method to SceneContext that computes near/far from camera-to-scene distance.\n7. V-13 (scene.ts:44-49): Single directional light with no camera-following headlight. Fix: add a headlight as a child of the camera.\n8. V-15 (scene.ts:58-62): setPixelRatio not updated on display change/resize. Fix: call renderer.setPixelRatio(window.devicePixelRatio) in resize handler.\n\nThe existing test infrastructure provides extensive mock classes. The MockBufferGeometry needs computeVertexNormals added. The three mock in meshManager.test.ts needs DoubleSide and FrontSide constants. Scene tests need MockPerspectiveCamera.add method. The existing Viewport.tsx effect pattern (createEffect depending on props.meshes) provides the coordination point for calling refreshSelected and adjustClipping after mesh sync.",
-  "prerequisites": [],
+  "analysis": "This task covers 9 improvements across Toast and ReloadPrompt components.\n\n**Toast (5 issues):**\n- TO-1: No auto-dismiss timeout. Toast stays forever. Fix: add setTimeout auto-dismiss (3s success/info, 5s error) inside the Toast component using onMount/onCleanup.\n- TO-2: Only one toast at a time (single string signal). Fix: Convert App.tsx toastMessage/toastType to a ToastMessage[] array signal. ToastMessage type already exists in types.ts with {id, type, message}. Toast component renders from queue, individual dismiss removes by id.\n- TO-3: No aria-live region. Fix: Add role='alert' and aria-live='assertive' to the toast root div.\n- TO-4: Close button lacks accessible label. Fix: Add aria-label='Close' to the x button.\n- TO-5: No enter/exit animation. Fix: Add CSS keyframe animation for slide-in from right.\n\n**ReloadPrompt (3 issues):**\n- R-1: Only one file tracked (single string signal). Fix: Convert changedFile to a Set<string> signal. ReloadPrompt props change from filePath: string|null to filePaths: string[]. Show count for multiple files.\n- R-2: No keyboard shortcut for accept/dismiss. Fix: Add Ctrl+Shift+R for reload and Escape for dismiss via useKeyboardShortcuts hook.\n- R-4: Reload destroys unsaved editor changes without warning. Fix: Check editorStore.state.dirtyFiles before reload. If dirty files overlap with changed files, show a confirmation warning.\n\n**Key observations:**\n- ToastMessage type already exists in types.ts with {id, type, message} \u2014 use directly for queue.\n- editorStore already has dirtyFiles: string[] \u2014 check intersection with changedFiles for R-4.\n- useKeyboardShortcuts hook has a clean pattern for adding shortcuts \u2014 extend for R-2.\n- Existing tests use @solidjs/testing-library with vitest, JSDOM environment.\n- App.test.tsx has comprehensive mocking of bridge/viewport/editor \u2014 will extend existing patterns.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Verify vitest and @solidjs/testing-library work in the worktree by running existing Toast and ReloadPrompt tests",
+      "status": "done",
+      "commit": null,
+      "tests": [
+        "gui/src/__tests__/Toast.test.tsx",
+        "gui/src/__tests__/ReloadPrompt.test.tsx"
+      ]
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in meshManager.test.ts: when data.normals is null, createMeshFromData calls geometry.computeVertexNormals() (V-04). Add computeVertexNormals mock to MockBufferGeometry. Test: sync with null normals, assert computeVertexNormals was called. Also test: sync with provided normals, assert computeVertexNormals was NOT called.",
-      "status": "done",
-      "commit": "cd74b48"
+      "description": "Write failing test for TO-4: Toast close button should have aria-label='Close'. Assert that the button inside the toast has the correct aria-label attribute.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement V-04 in meshManager.ts: In createMeshFromData, add else branch after the normals check — when data.normals is null, call geometry.computeVertexNormals(). In updateMeshGeometry, in the else-if branch where normals are removed (line 97-98), call geometry.computeVertexNormals() after deleteAttribute.",
-      "status": "done",
-      "commit": "7d8fbc6"
+      "description": "Add aria-label='Close' to the x button in Toast.tsx",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test in meshManager.test.ts: material is created with side: THREE.DoubleSide (V-05). Add DoubleSide constant to mock. Assert that the material's side property equals DoubleSide (2).",
-      "status": "done",
-      "commit": "0e7398b"
+      "description": "Write failing test for TO-3: Toast root div should have role='alert' and aria-live='assertive'. Assert both attributes exist on the toast element.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement V-05 in meshManager.ts: Import DoubleSide from 'three'. Add side: DoubleSide to the MeshStandardMaterial constructor options.",
-      "status": "done",
-      "commit": "e28a18b"
+      "description": "Add role='alert' and aria-live='assertive' to the toast root div in Toast.tsx",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests in meshManager.test.ts for mesh data validation (V-06). Tests: (1) sync with vertices.length not divisible by 3 does not add mesh to scene, (2) sync with an index >= vertex count does not add mesh, (3) valid data still works normally. Also test update path: update with invalid data skips the update.",
-      "status": "done",
-      "commit": "04f8b53"
+      "description": "Write failing tests for TO-1: Toast auto-dismiss. Use vi.useFakeTimers. Tests: (1) success toast calls onDismiss after 3000ms, (2) error toast calls onDismiss after 5000ms, (3) info toast calls onDismiss after 3000ms, (4) manual dismiss before timeout does not double-call onDismiss (clearTimeout on cleanup).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement V-06 in meshManager.ts: Add validateMeshData(data: MeshData): boolean that checks vertices.length % 3 === 0 and max(indices) < vertices.length / 3. Guard createMeshFromData and updateMeshGeometry calls in sync() with this validation, logging a console.warn for invalid data.",
-      "status": "done",
-      "commit": "5a4df9c"
+      "description": "Add auto-dismiss setTimeout in Toast.tsx using onMount/onCleanup. Compute timeout from props.type (3000ms for success/info, 5000ms for error). Call props.onDismiss() on timeout. Clear timeout in onCleanup.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests in meshManager.test.ts for safe buffer updates when array length changes (V-07). Tests: (1) update with same-length arrays reuses existing BufferAttribute (identity check — existing test), (2) update with different-length vertex array creates a new BufferAttribute (not same reference), (3) update with different-length index array creates new index BufferAttribute, (4) new BufferAttribute has correct array and count.",
-      "status": "done",
-      "commit": "dafa7ec"
+      "description": "Write failing test for TO-5: Toast should have a CSS animation applied. Verify the toast element's computed/applied class includes the animation styling (check for animation-name or that the CSS module class is applied correctly).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement V-07 in meshManager.ts: In updateMeshGeometry, before reusing posAttr, check if posAttr.array.length !== data.vertices.length — if so, create new BufferAttribute via setAttribute instead of mutating. Same logic for index and normals.",
-      "status": "done",
-      "commit": "8567bea"
+      "description": "Add @keyframes slideIn animation to Toast.module.css (translateX(100%) + opacity 0 -> translateX(0) + opacity 1 over 200ms ease-out). Apply animation property to .toast class.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test in scene.test.ts: resize handler calls renderer.setPixelRatio with window.devicePixelRatio (V-15). Call resize(), assert mockSetPixelRatio was called. Verify it uses the current devicePixelRatio value.",
-      "status": "done",
-      "commit": "d9c1848"
+      "description": "Write failing tests for TO-2: Toast queue support in App. Tests: (1) showToast adds a ToastMessage to the toasts array, (2) two sequential showToast calls result in two toasts rendered, (3) dismissing one toast by id removes only that toast, (4) handleDoExport success creates a toast in the queue. This requires refactoring App.tsx toast state from single signal to array.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement V-15 in scene.ts: In the resize() function, add renderer.setPixelRatio(window.devicePixelRatio ?? 1) before renderer.setSize().",
-      "status": "done",
-      "commit": "ed797d5"
+      "description": "In App.tsx: Replace toastMessage/toastType signals with a toasts signal of ToastMessage[]. Add showToast(message, type) helper that generates unique id (counter-based) and appends. Update handleDismissToast to accept id and filter. Update handleDoExport to use showToast(). Render with <For> over toasts array, each rendering a <Toast>. Update Toast props to accept ToastMessage (id + message + type). Update App.module.css toastContainer to stack with flex-direction: column-reverse and gap: 8px.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test in scene.test.ts: scene has a camera-following headlight (V-13). Add camera.add mock to MockPerspectiveCamera. Assert that a DirectionalLight is added as a child of the camera (via camera.add), and that the camera itself is added to the scene (scene.add(camera)).",
-      "status": "done",
-      "commit": "4c37494"
+      "description": "Write failing tests for R-1: ReloadPrompt multi-file tracking. Tests: (1) renders nothing when filePaths is empty array, (2) renders single file basename when filePaths has one entry, (3) renders 'N files changed on disk' when filePaths has 2+ entries, (4) Reload and Dismiss buttons still work.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement V-13 in scene.ts: Create a second DirectionalLight (headlight) at position (0, 0, 1) relative to camera with intensity ~0.6. Call camera.add(headlight) to make it follow the camera. Call scene.add(camera) so camera children are rendered in the scene graph.",
-      "status": "done",
-      "commit": "b2bec91"
+      "description": "Update ReloadPrompt props from filePath: string|null to filePaths: string[]. Show when array is non-empty. Display basename for single file, 'N files changed on disk. Reload?' for multiple. Update existing tests to use new prop name.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test in scene.test.ts: SceneContext exposes adjustClipping method (V-11). Test that adjustClipping(bounds) updates camera.near and camera.far based on scene size and that updateProjectionMatrix is called.",
-      "status": "done",
-      "commit": "8f5d6f3"
+      "description": "Write failing tests for R-1 App integration: In App.tsx, changedFiles should be a Set<string> signal. Tests: (1) onFileChanged with two different files adds both to the set, (2) onFileChanged with same file twice only has one entry, (3) handleReload reloads all files in set, (4) handleDismissReload clears the set. Update existing App.test.tsx tests that reference changedFile/filePath.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement V-11 in scene.ts: Add adjustClipping(sceneBounds: Box3) to SceneContext interface. Implementation computes camera-to-center distance, sets near = max(distance * 0.001, 0.01) and far = max(distance * 10, 100), calls camera.updateProjectionMatrix(). Export from createScene return. Update Viewport.tsx to call adjustClipping after mesh sync.",
-      "status": "done",
-      "commit": "7bd0fac"
+      "description": "In App.tsx: Convert changedFile signal to changedFiles as createSignal<Set<string>>(new Set()). Update onFileChanged handler to add to set via new Set([...prev, path]). Pass Array.from(changedFiles()) as filePaths to ReloadPrompt. Update handleReload to iterate all files in set, calling bridgeOpenFile for each. Update handleDismissReload to reset to empty set. Fix any broken existing App tests.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test in selection.test.ts: SelectionContext exposes refreshSelected() that rebuilds wireframe for current selection (V-08). Tests: (1) refreshSelected with active selection removes old wireframe and creates new one, (2) refreshSelected with no selection is a no-op, (3) refreshSelected reflects updated geometry.",
-      "status": "done",
-      "commit": "77b1c18"
+      "description": "Write failing tests for R-4: dirty-file check before reload. Tests: (1) when no dirty files overlap, handleReload proceeds immediately (bridgeOpenFile called), (2) when dirty files overlap with changed files, handleReload shows a confirmation warning (does NOT call bridgeOpenFile immediately), (3) confirming 'Reload Anyway' triggers bridgeOpenFile for all changed files, (4) dismissing confirmation does not reload.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement V-08 in selection.ts: Track currentSelectedPath in a closure variable. Add refreshSelected() method that calls setSelected(currentSelectedPath) to rebuild wireframe from current geometry. Export in SelectionContext. Update Viewport.tsx to call selection.refreshSelected() after meshManager.sync() in the mesh sync effect.",
-      "status": "done",
-      "commit": "3acf530"
+      "description": "In App.tsx handleReload: Check intersection of changedFiles with editorStore.state.dirtyFiles. If overlap exists, set a confirmReload signal to true. In ReloadPrompt: accept optional hasDirtyFiles prop. When true, show warning text 'Unsaved changes will be lost' and change Reload button text to 'Reload Anyway'. When false or absent, show normal UI. In App.tsx, pass hasDirtyFiles computed from intersection. handleReload only proceeds to bridgeOpenFile when confirmReload is set or no dirty overlap. Update ReloadPrompt.module.css with warning styling.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing tests for R-2: keyboard shortcuts. Tests: (1) Ctrl+Shift+R dispatched on document calls onReloadShortcut callback, (2) Escape dispatched on document calls onDismissReload callback, (3) shortcuts are skipped when target is an input element.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Extend KeyboardShortcutCallbacks in useKeyboardShortcuts.ts with onReloadShortcut and onDismissReload. Add handlers: Ctrl+Shift+R -> onReloadShortcut, Escape -> onDismissReload. In App.tsx, wire onReloadShortcut to handleReload (only when changedFiles non-empty) and onDismissReload to handleDismissReload (only when reload prompt visible).",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Camera headlight is added as a child of the camera object via camera.add() rather than updating position each frame",
-      "rationale": "Three.js automatically transforms child objects in the parent's local space, so a light added to camera follows it without manual position updates in the render loop. This is the standard Three.js pattern for headlights and avoids polluting the animation loop."
+      "decision": "Use existing ToastMessage type from types.ts for the toast queue",
+      "rationale": "The type already has {id, type, message} which is exactly what we need for a queue. Reusing it avoids type duplication."
     },
     {
-      "decision": "Dynamic clipping is exposed as an adjustClipping(sceneBounds: Box3) method called after mesh sync, not computed every frame",
-      "rationale": "Computing scene bounds every frame via Box3 traversal is expensive. Clipping only needs adjustment when mesh data changes (during sync), which is the only time bounds change. This keeps the render loop lightweight."
+      "decision": "Auto-dismiss timeouts: 3s for success/info, 5s for error",
+      "rationale": "Success messages are informational and can disappear quickly. Error messages need more reading time. These are standard UX timeouts."
     },
     {
-      "decision": "Mesh data validation logs console.warn and skips invalid data rather than throwing",
-      "rationale": "The viewport should be resilient to bad data from the engine. Throwing would crash the entire render pipeline. A console.warn is sufficient for debugging while keeping the UI responsive. This follows the existing project preference for noisy errors on logic bugs (feedback_silent_defaults_pattern.md) while still being resilient."
+      "decision": "Toast auto-dismiss via onMount/onCleanup inside Toast component rather than in App",
+      "rationale": "Keeps the timer lifecycle tied to the component lifecycle. Each Toast manages its own timeout, which is cleaner for a queue where toasts have independent lifetimes."
     },
     {
-      "decision": "New BufferAttribute is created when array length changes; existing attribute is mutated only when length matches",
-      "rationale": "WebGL buffers have a fixed size allocated on the GPU. Mutating .array and .count on an existing BufferAttribute when the size differs causes WebGL errors because the underlying GPU buffer cannot be resized. When sizes match, reusing the attribute avoids GPU buffer reallocation overhead — this is the intended Three.js pattern."
+      "decision": "Convert changedFile to a Set<string> signal rather than an array",
+      "rationale": "Prevents duplicates when the same file changes multiple times before the user acts. Set semantics are correct for 'which files have changed'."
     },
     {
-      "decision": "refreshSelected() method added to SelectionContext rather than coupling meshManager directly to selection",
-      "rationale": "Keeps modules decoupled. Viewport.tsx already coordinates between meshManager and selection via reactive effects. Adding a refresh method is the minimal change that preserves this clean architecture. refreshSelected internally just calls setSelected(currentSelectedPath)."
+      "decision": "Dirty-file check shows a warning state in ReloadPrompt via hasDirtyFiles prop rather than a separate modal",
+      "rationale": "Keeps the UX lightweight and non-modal. The ReloadPrompt already occupies the right screen area for this warning. Adding a 'Reload Anyway' variant is less disruptive than a modal dialog."
     },
     {
-      "decision": "computeVertexNormals() is called in both createMeshFromData and updateMeshGeometry when normals are null",
-      "rationale": "Both code paths can receive null normals. The fallback must be applied consistently in creation and update paths to prevent flat-black faces in any scenario."
+      "decision": "Add keyboard shortcuts via extending useKeyboardShortcuts rather than local listeners",
+      "rationale": "Centralizes all keyboard shortcuts in one place, consistent with existing pattern. Avoids scattered event listeners."
     },
     {
-      "decision": "scene.add(camera) is called to support camera children (headlight)",
-      "rationale": "Three.js requires parent objects to be in the scene graph for their children to be rendered. Without scene.add(camera), the headlight attached via camera.add() would not be visible. The camera itself renders fine without being in the scene, but its children do not."
+      "decision": "Toast animation via CSS @keyframes rather than JS animation library",
+      "rationale": "CSS animations are performant and don't add bundle size. The animation is simple (slide-in from right) and doesn't need JS orchestration."
+    },
+    {
+      "decision": "Stack toasts with flex-direction column-reverse in the container",
+      "rationale": "Newest toasts appear at the bottom (closest to the container's anchor point at bottom-right). This is the standard toast stack UX pattern."
+    },
+    {
+      "decision": "Toast id generation uses a simple incrementing counter rather than crypto.randomUUID",
+      "rationale": "Counter is deterministic and testable. UUIDs are overkill for in-memory component state that doesn't persist."
     }
   ],
   "reuse": [
     {
-      "what": "Existing vi.mock('three') patterns and MockXxx classes in all viewport test files",
-      "where": "gui/src/__tests__/viewport/meshManager.test.ts, scene.test.ts, selection.test.ts",
-      "how": "Extend existing mock blocks with additional methods/properties: computeVertexNormals on MockBufferGeometry, DoubleSide/FrontSide constants, camera.add method on MockPerspectiveCamera. Follow the exact same mock class patterns."
+      "what": "ToastMessage type",
+      "where": "gui/src/types.ts (lines 116-120)",
+      "how": "Already defined with {id, type, message}. Use directly for the toast queue array signal in App.tsx. Import in Toast.tsx for props."
     },
     {
-      "what": "makeMeshData() test helper in meshManager.test.ts",
-      "where": "gui/src/__tests__/viewport/meshManager.test.ts:100-112",
-      "how": "Reuse for all new meshManager tests to create MeshData objects with optional vertices, indices, normals parameters."
+      "what": "editorStore.state.dirtyFiles",
+      "where": "gui/src/stores/editorStore.ts (line 7)",
+      "how": "Already tracks dirty files as string[]. Check intersection with changedFiles for R-4 dirty-file check before reload."
     },
     {
-      "what": "setup() function pattern in each test file",
-      "where": "All viewport test files",
-      "how": "Follow the existing setup() function pattern that creates mocks and returns an object with all test dependencies. Extend as needed."
+      "what": "useKeyboardShortcuts hook pattern",
+      "where": "gui/src/hooks/useKeyboardShortcuts.ts",
+      "how": "Extend KeyboardShortcutCallbacks interface with onReloadShortcut and onDismissReload. Add Ctrl+Shift+R and Escape handlers following the existing Ctrl+O, F5, Ctrl+E pattern."
     },
     {
-      "what": "SceneContext interface and return pattern",
-      "where": "gui/src/viewport/scene.ts:13-18, 64",
-      "how": "Extend SceneContext interface with adjustClipping method. Add to the return object from createScene, following the same pattern as resize()."
+      "what": "App.test.tsx bridge mocking pattern",
+      "where": "gui/src/__tests__/App.test.tsx (lines 6-67)",
+      "how": "Reuse the same vi.mock setup for bridge, viewport, editor mocks when testing new App integration features (toast queue, multi-file reload, dirty check)."
     },
     {
-      "what": "SelectionContext interface",
-      "where": "gui/src/viewport/selection.ts:24-31",
-      "how": "Extend with refreshSelected() method following the same interface pattern. Add to return object from createSelection."
+      "what": "@solidjs/testing-library patterns",
+      "where": "gui/src/__tests__/Toast.test.tsx, ReloadPrompt.test.tsx",
+      "how": "Follow same render/screen/fireEvent patterns for new tests. Use vi.useFakeTimers for timeout tests."
     },
     {
-      "what": "Viewport.tsx createEffect for mesh sync",
-      "where": "gui/src/viewport/Viewport.tsx:48-50",
-      "how": "Add refreshSelected() and adjustClipping() calls within the existing mesh sync effect, after meshManager.sync(). This is the natural coordination point between mesh updates and dependent systems."
+      "what": "CSS variable naming convention",
+      "where": "gui/src/panels/Toast.module.css",
+      "how": "Continue using --reify-* CSS custom properties for theming consistency in any new styles."
     }
   ],
-  "_session_id": "112-bacae8cf",
-  "_created_at": "2026-03-21T17:33:37.820402+00:00"
+  "_session_id": "109-446fc70c",
+  "_created_at": "2026-03-21T19:47:08.895648+00:00"
 }

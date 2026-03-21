@@ -41,4 +41,10 @@ describe('Toast', () => {
     fireEvent.click(btn);
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
+
+  it('close button has aria-label="Close"', () => {
+    render(() => <Toast message="Done" type="success" onDismiss={vi.fn()} />);
+    const btn = screen.getByTestId('toast').querySelector('button')!;
+    expect(btn.getAttribute('aria-label')).toBe('Close');
+  });
 });
