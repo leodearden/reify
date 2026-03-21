@@ -193,11 +193,11 @@ fn compile_indexed_collection_member_access() {
             other
         ),
     }
-    // Result type should be Scalar (length) — currently hardcoded to Real (see step-24 fix)
+    // Result type should be Scalar (length) — resolved from child template's member type
     assert_eq!(
         expr.result_type,
-        reify_types::Type::Real,
-        "currently hardcoded to Real — step-24 will fix to correct type"
+        reify_types::Type::length(),
+        "indexed collection member access should preserve the member's actual type (Scalar/length)"
     );
 }
 

@@ -605,6 +605,10 @@ struct CompilationScope {
     port_names: HashSet<String>,
     /// Names of collection sub-components (sub name : List<T>), for count expression handling.
     collection_sub_names: HashSet<String>,
+    /// Member types for collection sub-components: collection_name → { member_name → Type }.
+    /// Populated from already-compiled child templates to resolve correct types for
+    /// indexed member access (e.g., bolts[0].diameter → Type::length()).
+    collection_sub_member_types: HashMap<String, HashMap<String, Type>>,
 }
 
 impl CompilationScope {
@@ -614,6 +618,7 @@ impl CompilationScope {
             names: HashMap::new(),
             port_names: HashSet::new(),
             collection_sub_names: HashSet::new(),
+            collection_sub_member_types: HashMap::new(),
         }
     }
 
@@ -910,6 +915,13 @@ fn compile_expr_guarded(
                 && let reify_syntax::ExprKind::Ident(name) = &idx_obj.kind
                 && scope.collection_sub_names.contains(name.as_str())
             {
+                // Resolve member type from pre-populated collection_sub_member_types
+                let member_type = scope.collection_sub_member_types
+                    .get(name.as_str())
+                    .and_then(|m| m.get(member.as_str()))
+                    .cloned()
+                    .unwrap_or(Type::Real);
+
                 // For literal integer index, resolve directly to a scoped ValueRef
                 if let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind {
                     let i = *n as i64;
@@ -918,7 +930,7 @@ fn compile_expr_guarded(
                     let content_hash = ContentHash::of_str(&format!("ref:{}.{}[{}].{}", scope.entity_name, name, i, member));
                     return CompiledExpr {
                         kind: CompiledExprKind::ValueRef(scoped_id),
-                        result_type: Type::Real,
+                        result_type: member_type,
                         content_hash,
                     };
                 }
@@ -929,7 +941,7 @@ fn compile_expr_guarded(
                 );
                 let compiled_idx = compile_expr_guarded(index, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
                 let idx_access = CompiledExpr::index_access(collection_ref, compiled_idx, Type::StructureRef(name.clone()));
-                return CompiledExpr::method_call(idx_access, member.clone(), vec![], Type::Real);
+                return CompiledExpr::method_call(idx_access, member.clone(), vec![], member_type);
             }
 
             // Check if this is a collection sub member access: collection.count
@@ -1491,7 +1503,7 @@ pub fn compile(
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
                 let entity_ref = EntityDefRef::from(structure);
-                let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics);
+                let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
                 templates.push(template);
             }
             reify_syntax::Declaration::Enum(_) => {
@@ -1520,7 +1532,7 @@ pub fn compile(
             }
             reify_syntax::Declaration::Occurrence(occurrence) => {
                 let entity_ref = EntityDefRef::from(occurrence);
-                let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics);
+                let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
                 templates.push(template);
             }
             reify_syntax::Declaration::Field(_) => {
@@ -1715,6 +1727,7 @@ fn compile_entity(
     field_registry: &HashMap<String, &CompiledField>,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     diagnostics: &mut Vec<Diagnostic>,
+    compiled_templates: &[TopologyTemplate],
 ) -> TopologyTemplate {
     let entity_name = structure.name;
     let mut scope = CompilationScope::new(entity_name);
@@ -1842,6 +1855,15 @@ fn compile_entity(
             reify_syntax::MemberDecl::Sub(sub) => {
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());
+                    // Populate member types from already-compiled child template
+                    if let Some(child_tmpl) = compiled_templates.iter().find(|t| t.name == sub.structure_name) {
+                        let member_types: HashMap<String, Type> = child_tmpl
+                            .value_cells
+                            .iter()
+                            .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
+                            .collect();
+                        scope.collection_sub_member_types.insert(sub.name.clone(), member_types);
+                    }
                 }
             }
             _ => {}
