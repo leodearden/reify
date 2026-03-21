@@ -6,6 +6,7 @@ describe('THEME_TOKENS', () => {
     const requiredKeys = [
       'background', 'surface', 'text', 'accent', 'border',
       'error', 'warning', 'success', 'textMuted', 'fontMono',
+      'surface0', 'surface1', 'surface2', 'subtext', 'overlay0', 'green', 'red',
     ];
     for (const key of requiredKeys) {
       expect(THEME_TOKENS[key], `missing key: ${key}`).toBeTruthy();
@@ -18,6 +19,16 @@ describe('THEME_TOKENS', () => {
     expect(THEME_TOKENS.text).toBe('#cdd6f4');
     expect(THEME_TOKENS.accent).toBe('#89b4fa');
     expect(THEME_TOKENS.border).toBe('#45475a');
+  });
+
+  it('has correct Catppuccin Mocha values for surface/accent tokens', () => {
+    expect(THEME_TOKENS.surface0).toBe('#313244');
+    expect(THEME_TOKENS.surface1).toBe('#45475a');
+    expect(THEME_TOKENS.surface2).toBe('#585b70');
+    expect(THEME_TOKENS.subtext).toBe('#a6adc8');
+    expect(THEME_TOKENS.overlay0).toBe('#6c7086');
+    expect(THEME_TOKENS.green).toBe('#a6e3a1');
+    expect(THEME_TOKENS.red).toBe('#f38ba8');
   });
 
   it('all color tokens are valid hex', () => {
