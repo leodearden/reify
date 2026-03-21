@@ -14,6 +14,7 @@
     "crates/reify-eval/src/lib.rs",
     "crates/reify-eval/tests/purpose_eval.rs",
     "crates/reify-stdlib/src/lib.rs",
+    "crates/reify-test-support/src/builders.rs",
     "examples/m5_purpose.ri"
   ],
   "modules": [
@@ -21,9 +22,10 @@
     "crates/reify-syntax",
     "crates/reify-compiler",
     "crates/reify-eval",
-    "crates/reify-stdlib"
+    "crates/reify-stdlib",
+    "crates/reify-test-support"
   ],
-  "analysis": "Purpose declarations are a new top-level construct for Reify, similar in structure to traits/structures but with distinct semantics: they bind entity references (not values) via parameters, support reflective schema queries on those entities, and can be activated/deactivated to inject/remove constraints and objectives from the evaluation graph.\n\nThe implementation follows the established pattern for adding new language constructs (as seen in traits, fields, ports, connect/chain):\n\n1. **Grammar**: Add `purpose_declaration` to `_declaration` in grammar.js, with `purpose_param` and `purpose_member` rules. The `purpose_member` reuses existing `constraint_declaration`, `let_declaration`, `minimize_declaration`, `maximize_declaration`, and `guarded_block` rules. After grammar change, regenerate parser.c via `tree-sitter generate`.\n\n2. **Parser (reify-syntax)**: Add `Declaration::Purpose(PurposeDef)` to the enum, define `PurposeDef` and `PurposeParam` AST types. Add lowering in `ts_parser.rs` following the trait/structure patterns (lower_purpose, lower_purpose_params, lower_purpose_members).\n\n3. **Compiler (reify-compiler)**: Add `CompiledPurpose` type containing compiled constraints, objectives, and reflective schema query results. Compile purposes in the `compile()` function's pre-pass section. Reflective schema queries (subject.params, subject.geometric_params, etc.) are resolved at compile-time by looking up the bound entity's TopologyTemplate.\n\n4. **Stdlib (reify-stdlib)**: Add determinacy predicates: `determined()`, `constrained()`, `undetermined()`, `partially_determined()`. These inspect DeterminacyState of value cells.\n\n5. **Eval (reify-eval)**: Add purpose activation/deactivation API on Engine. When activated, inject the purpose's compiled constraints/objectives into the evaluation graph; when deactivated, remove them.\n\nKey design consideration: Purposes bind entity references (Structure names), not instances. The reflective queries resolve at compile-time against the TopologyTemplate of the bound structure. Activation at eval-time injects constraints into a specific entity instance.",
+  "analysis": "Purpose declarations are a new top-level construct for Reify, similar in structure to traits/structures but with distinct semantics: they bind entity references (not values) via parameters, support reflective schema queries on those entities, and can be activated/deactivated to inject/remove constraints and objectives from the evaluation graph.\n\nThe implementation follows the established pattern for adding new language constructs (as seen in traits, fields, ports, connect/chain):\n\n1. **Grammar**: Add `purpose_declaration` to `_declaration` in grammar.js, with `purpose_param` and `purpose_member` rules. The `purpose_member` reuses existing `constraint_declaration`, `let_declaration`, `minimize_declaration`, `maximize_declaration`, and `guarded_block` rules. After grammar change, regenerate parser.c via `tree-sitter generate`.\n\n2. **Parser (reify-syntax)**: Add `Declaration::Purpose(PurposeDef)` to the enum, define `PurposeDef` and `PurposeParam` AST types. Add lowering in `ts_parser.rs` following the trait/structure patterns (lower_purpose, lower_purpose_params, lower_purpose_members).\n\n3. **Compiler (reify-compiler)**: Add `CompiledPurpose` type containing compiled constraints, objectives, and reflective schema query results. Compile purposes in the `compile()` function's pre-pass section. Reflective schema queries (subject.params, subject.geometric_params, etc.) are resolved at compile-time by looking up the bound entity's TopologyTemplate.\n\n4. **Stdlib (reify-stdlib)**: Add determinacy predicates: `determined()`, `constrained()`, `undetermined()`, `partially_determined()`. These inspect DeterminacyState of value cells.\n\n5. **Eval (reify-eval)**: Add purpose activation/deactivation API on Engine. When activated, inject the purpose's compiled constraints/objectives into the evaluation graph; when deactivated, remove them.\n\nKey design consideration: Purposes bind entity references (Structure names), not instances. The reflective queries resolve at compile-time against the TopologyTemplate of the bound structure. Activation at eval-time injects constraints into a specific entity instance.\n\n## Review Fix Analysis\n\nFour blocking issues were identified during review:\n\n1. **api_contract_violation** (builders.rs) \u2014 ALREADY FIXED: `compiled_purposes: Vec::new()` is already present in CompiledModuleBuilder::build() at line 513. No action needed.\n\n2. **missing_assertion** (purpose_compile_tests.rs) \u2014 The `compile_module` helper only checks parse errors but not compile-level Severity::Error diagnostics. A purpose with a compile error (bad expression, unknown identifier) would silently produce a passing test. Fix: add diagnostic error check mirroring the `parse_and_compile` helper in purpose_eval.rs.\n\n3. **state_consistency** (eval lib.rs) \u2014 Calling eval() a second time replaces eval_state with a fresh snapshot but doesn't clear active_purposes/active_objective_map. This creates stale state: is_purpose_active() returns true for purposes whose constraints are gone, reactivation is blocked by the 'already active' guard, and deactivation silently no-ops. Fix: clear active_purposes and active_objective_map at the start of eval().\n\n4. **data_loss_silent_failure** (compiler Let arm in compile_purpose) \u2014 The Let arm compiles the expression but discards it with `let _ = compiled_expr`. CompiledPurpose never stores the expression, and activate_purpose() only injects constraints. Any constraint referencing a let-bound name will produce a ValueCellId with no backing node in the eval graph. Fix: emit Severity::Error diagnostic rejecting Let members in purposes until they are fully supported, preventing silent incorrect evaluation.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -159,6 +161,48 @@
       "description": "Fix any integration issues discovered. Ensure the Declaration::Purpose variant is properly handled in all match statements in the compile function (similar to how Declaration::Trait/Field are handled). Verify no regressions in existing tests.",
       "status": "done",
       "commit": "d8a8579"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "REVIEW FIX [missing_assertion]: Write a failing test in purpose_compile_tests.rs that compiles a purpose referencing an unknown identifier (e.g., `constraint nonexistent_var > 0mm`) through the compile_module helper. Currently the test passes silently because compile_module doesn't check for Severity::Error diagnostics. The test should assert that the helper catches compile errors, demonstrating the gap.",
+      "status": "done",
+      "commit": "ca12a08"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "REVIEW FIX [missing_assertion]: Update the compile_module helper in purpose_compile_tests.rs to check for compile-level diagnostics after calling reify_compiler::compile(). Add: `let errors: Vec<_> = module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect(); assert!(errors.is_empty(), \"compile errors: {:?}\", errors);` \u2014 mirroring the parse_and_compile helper in purpose_eval.rs. Add `use reify_types::Severity;` to imports.",
+      "status": "done",
+      "commit": "c96803e"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "REVIEW FIX [state_consistency]: Write a failing test in purpose_eval.rs that: (1) compiles a module with a structure + purpose, (2) calls engine.eval(), (3) activates the purpose, (4) asserts is_purpose_active() == true, (5) calls engine.eval() again with the same module, (6) asserts is_purpose_active() == false (stale state should be cleared). Currently this fails because eval() doesn't clear active_purposes, so is_purpose_active() still returns true after the second eval() despite the purpose's constraints being gone from the fresh snapshot.",
+      "status": "done",
+      "commit": "d7bc605"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "REVIEW FIX [state_consistency]: At the start of Engine::eval() in reify-eval/src/lib.rs, add `self.active_purposes.clear(); self.active_objective_map.clear();` immediately after the line `self.compiled_purposes = module.compiled_purposes.clone();` (line 713). This ensures stale purpose state from previous eval() calls is cleared when a fresh snapshot is built. Callers must re-activate purposes after a full eval() call.",
+      "status": "done",
+      "commit": "5f2d303"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "REVIEW FIX [data_loss_silent_failure]: Write a test in purpose_compile_tests.rs that compiles a purpose containing a let binding (e.g., `let half_w = subject.width / 2; constraint half_w > 10mm`). Assert that the compiler emits a Severity::Error diagnostic indicating that let bindings in purposes are not yet supported. Currently the Let arm discards the compiled expression silently, producing a CompiledPurpose with constraints that reference ValueCellIds with no backing node in the eval graph.",
+      "status": "done",
+      "commit": "52e1900"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "REVIEW FIX [data_loss_silent_failure]: In compile_purpose() in reify-compiler/src/lib.rs, replace the Let arm's `let _ = compiled_expr;` with a diagnostic emission: `diagnostics.push(Diagnostic { severity: Severity::Error, message: format!(\"let bindings in purpose bodies are not yet supported: '{}'\", let_decl.name), span: let_decl.span.clone() });`. Remove the scope.names.insert() call for the let binding so downstream references will also produce 'unknown identifier' diagnostics, preventing silent generation of dangling ValueCellId references.",
+      "status": "done",
+      "commit": "e6050bf"
     }
   ],
   "design_decisions": [
@@ -185,6 +229,14 @@
     {
       "decision": "CompiledPurpose stored as separate field in CompiledModule, not as TopologyTemplate",
       "rationale": "Purposes are fundamentally different from structures/occurrences - they don't have their own value cells or geometry. They contain constraints and objectives that are injected into other entities. A separate compiled_purposes vec in CompiledModule keeps the semantics clear."
+    },
+    {
+      "decision": "Reject let bindings in purpose bodies with compiler error (review fix)",
+      "rationale": "Let bindings in purposes compile the expression but discard it \u2014 CompiledPurpose has no storage for let binding expressions, and activate_purpose only injects CompiledConstraints. Any constraint referencing a let-bound name would produce a ValueCellId with no backing node in the eval graph, causing silent incorrect evaluation. Emitting a Severity::Error diagnostic is the safest approach until full let-binding support is implemented (which would require adding a let_bindings field to CompiledPurpose and injecting value-cell definition nodes during activate_purpose)."
+    },
+    {
+      "decision": "Clear active purpose state on eval() (review fix)",
+      "rationale": "eval() builds a completely fresh snapshot from the CompiledModule, discarding all purpose-injected constraints. Without clearing active_purposes and active_objective_map, the engine enters an inconsistent state: is_purpose_active() returns true for stale entries, reactivation is blocked by the 'already active' guard, and deactivation tries to remove IDs absent from the new snapshot. Clearing is simpler and safer than re-injecting all active purposes into the new snapshot."
     }
   ],
   "reuse": [
@@ -227,8 +279,13 @@
       "what": "lower_type_parameters, has_pub_keyword, content_hash helper methods",
       "where": "crates/reify-syntax/src/ts_parser.rs",
       "how": "Reuse existing Lowering helper methods for extracting pub visibility, type parameters, spans, and content hashes from purpose_declaration nodes."
+    },
+    {
+      "what": "Diagnostic error assertion pattern from purpose_eval.rs parse_and_compile helper",
+      "where": "crates/reify-eval/tests/purpose_eval.rs lines 19-26",
+      "how": "The pattern `let errors: Vec<_> = compiled.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect(); assert!(errors.is_empty(), ...)` is reused in the purpose_compile_tests.rs compile_module helper to ensure compile errors are not silently ignored."
     }
   ],
   "_session_id": "78-4779d406",
-  "_created_at": "2026-03-21T07:09:29.674454+00:00"
+  "_created_at": "2026-03-21T07:41:02.237070+00:00"
 }
