@@ -14,7 +14,7 @@ use reify_types::{
     AutoParam, CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintSolver, ContentHash,
     DeterminacyState, Diagnostic, ExportFormat, GeometryHandleId, GeometryKernel,
     PersistentMap, ResolutionProblem, Satisfaction, SnapshotId, SnapshotProvenance,
-    SolveResult, Value, ValueCellId, ValueMap, VersionId,
+    SolveResult, Value, ValueCellId, ValueMap, VersionId, FIELD_ENTITY_PREFIX,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
@@ -685,7 +685,7 @@ impl Engine {
                 lambda: lambda_value,
             };
 
-            let field_id = ValueCellId::new("__field", &field.name);
+            let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &field.name);
             values.insert(field_id, field_value);
         }
 

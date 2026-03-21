@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ConstraintDomain, ConstraintNodeId, ContentHash,
     DimensionVector, Diagnostic, DiagnosticLabel, OptimizationObjective, RealizationNodeId,
-    ResolvedFunction, SourceSpan, Type, UnOp, Value, ValueCellId,
+    ResolvedFunction, SourceSpan, Type, UnOp, Value, ValueCellId, FIELD_ENTITY_PREFIX,
 };
 
 /// A compiled import declaration.
@@ -1630,9 +1630,9 @@ fn compile_entity(
         .collect();
 
     // Register field names into the scope so expressions can reference fields
-    // (e.g., `sample(my_field, point)`). Fields use a `__field` entity prefix.
+    // (e.g., `sample(my_field, point)`). Fields use the FIELD_ENTITY_PREFIX.
     for (field_name, field) in field_registry {
-        let field_id = ValueCellId::new("__field", field_name);
+        let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, field_name);
         let field_type = Type::Field {
             domain: Box::new(field.domain_type.clone()),
             codomain: Box::new(field.codomain_type.clone()),

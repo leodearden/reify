@@ -32,7 +32,7 @@ fn eval_analytical_field_at_point() {
     );
 
     // The field should be stored in the values map
-    let field_id = ValueCellId::new("__field", "temp");
+    let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "temp");
     let field_val = result
         .values
         .get(&field_id)

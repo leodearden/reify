@@ -49,6 +49,11 @@ impl fmt::Display for MemberName {
     }
 }
 
+/// Entity prefix used for field declarations in the value cell namespace.
+/// Fields are top-level declarations (not structure members), so they use
+/// this prefix as the entity portion of their ValueCellId.
+pub const FIELD_ENTITY_PREFIX: &str = "__field";
+
 /// Identifies a value cell in the topology graph.
 /// A value cell corresponds to a single param, let binding, or computed property.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
