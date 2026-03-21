@@ -95,7 +95,7 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
                     </span>
                   </Show>
                   <span class={styles.expression}>{constraint.expression}</span>
-                  <span class={styles.statusBadge} data-status={constraint.status}>
+                  <span class={styles.statusBadge} data-status={constraint.status} aria-label={constraint.status}>
                     {statusIcon(constraint.status)}
                   </span>
                 </div>
