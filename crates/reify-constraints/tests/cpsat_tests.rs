@@ -4,7 +4,7 @@ use reify_constraints::CpSatSolver;
 use reify_test_support::builders::*;
 use reify_test_support::values::*;
 use reify_types::{
-    AutoParam, ConstraintSolver, ResolutionProblem, SolveResult, Type, Value, ValueMap,
+    AutoParam, ConstraintSolver, Diagnostic, ResolutionProblem, SolveResult, Type, Value, ValueMap,
 };
 
 // ---------------------------------------------------------------------------
@@ -62,5 +62,41 @@ fn boolean_sat_3_params() {
             assert!(b || !c, "expected b || !c, got b={b}, c={c}");
         }
         other => panic!("expected Solved, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// step-3: infeasible boolean problem `a && !a`
+// ---------------------------------------------------------------------------
+
+/// `a && !a` — contradictory constraint, must return Infeasible.
+#[test]
+fn boolean_infeasible_contradiction() {
+    let solver = CpSatSolver;
+
+    let a_id = vcid("Part", "a");
+    let a_ref = value_ref_typed("Part", "a", Type::Bool);
+
+    // constraint: a && !a
+    let constraint_expr = and(a_ref.clone(), not(a_ref));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: a_id.clone(),
+            param_type: Type::Bool,
+            bounds: None,
+        }],
+        constraints: vec![(cnid("Part", 0), constraint_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(!diagnostics.is_empty(), "expected non-empty diagnostics");
+        }
+        other => panic!("expected Infeasible, got {:?}", other),
     }
 }
