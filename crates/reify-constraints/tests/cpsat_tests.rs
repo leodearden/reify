@@ -251,3 +251,65 @@ fn cardinality_at_most_2_of_4() {
         other => panic!("expected Solved, got {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// step-9: enum constraint
+// ---------------------------------------------------------------------------
+
+/// Enum param x (Material): x != A and (x == B or x == C). Expect x = B or C.
+#[test]
+fn enum_constraint_excludes_one_variant() {
+    use reify_types::CompiledExpr;
+
+    let solver = CpSatSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref_typed("Part", "x", Type::Enum("Material".into()));
+
+    // Enum literals
+    let enum_a = CompiledExpr::literal(
+        Value::Enum { type_name: "Material".into(), variant: "A".into() },
+        Type::Enum("Material".into()),
+    );
+    let enum_b = CompiledExpr::literal(
+        Value::Enum { type_name: "Material".into(), variant: "B".into() },
+        Type::Enum("Material".into()),
+    );
+    let enum_c = CompiledExpr::literal(
+        Value::Enum { type_name: "Material".into(), variant: "C".into() },
+        Type::Enum("Material".into()),
+    );
+
+    // Constraints: x != A, and (x == B or x == C)
+    let c1 = ne(x_ref.clone(), enum_a);
+    let c2 = or(eq(x_ref.clone(), enum_b), eq(x_ref.clone(), enum_c));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::Enum("Material".into()),
+            bounds: None,
+        }],
+        constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let x_val = values.get(&x_id).unwrap();
+            match x_val {
+                Value::Enum { variant, .. } => {
+                    assert!(
+                        variant == "B" || variant == "C",
+                        "expected B or C, got {variant}"
+                    );
+                }
+                other => panic!("expected Enum value, got {:?}", other),
+            }
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
