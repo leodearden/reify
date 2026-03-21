@@ -88,22 +88,27 @@ fn gui_with_valid_ri_file_attempts_launch() {
     assert!(fixture.exists(), "fixture file should exist");
 
     let output = reify_cmd()
+        .env("REIFY_GUI_SKIP_LAUNCH", "1")
         .args(["gui", fixture.to_str().unwrap()])
         .output()
         .expect("failed to execute reify binary");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // The command should fail because reify-gui binary is not available,
-    // but the error should be about the gui binary not being found --
+    // The command should fail because the launch is skipped via env var,
+    // but the error should be about the gui binary not being launched --
     // NOT about argument validation (file exists and has .ri extension).
     assert!(
         !output.status.success(),
-        "should exit non-zero when gui binary is not found"
+        "should exit non-zero when gui launch is skipped"
     );
     assert!(
         stderr.contains("could not launch reify-gui"),
-        "error should be about gui binary not found (not arg validation), got: {stderr}"
+        "error should be about gui binary not launched (not arg validation), got: {stderr}"
+    );
+    assert!(
+        stderr.contains("REIFY_GUI_SKIP_LAUNCH"),
+        "error should mention REIFY_GUI_SKIP_LAUNCH env var, got: {stderr}"
     );
 }
 
