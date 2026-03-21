@@ -58,6 +58,7 @@ vi.mock('../bridge', () => ({
   setParameter: vi.fn().mockResolvedValue(undefined),
   exportGeometry: vi.fn().mockResolvedValue(undefined),
   pickSavePath: vi.fn().mockResolvedValue('/user/chosen/path.step'),
+  pickOpenPath: vi.fn().mockResolvedValue(null),
   updateSource: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
   getSourceLocation: vi.fn().mockResolvedValue({ file: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
@@ -1228,6 +1229,36 @@ describe('App fit-to-view wiring', () => {
     fireEvent.click(fitBtn);
 
     expect(mockViewportFitToView).toHaveBeenCalled();
+  });
+});
+
+describe('App Ctrl+O open file', () => {
+  it('dispatching Ctrl+O triggers pickOpenPath then openFile', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [], values: [], constraints: [],
+      files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+    });
+
+    // Mock pickOpenPath to return a path
+    vi.mocked((bridge as any).pickOpenPath).mockResolvedValue('/project/other.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/other.ri', content: 'structure Other {}' });
+
+    render(() => <App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // Press Ctrl+O
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+
+    // Should call pickOpenPath, then openFile with the returned path
+    await waitFor(() => {
+      expect((bridge as any).pickOpenPath).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      expect(bridge.openFile).toHaveBeenCalledWith('/project/other.ri');
+    });
   });
 });
 

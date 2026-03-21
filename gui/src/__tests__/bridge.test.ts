@@ -10,6 +10,11 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(),
 }));
 
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+  save: vi.fn(),
+  open: vi.fn(),
+}));
+
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
@@ -21,7 +26,11 @@ import {
   refreshFullState,
   onMeshUpdate,
   onEvaluationStatus,
+  pickOpenPath,
 } from '../bridge';
+import { open } from '@tauri-apps/plugin-dialog';
+
+const mockOpen = vi.mocked(open);
 
 const mockInvoke = vi.mocked(invoke);
 const mockListen = vi.mocked(listen);
@@ -135,6 +144,27 @@ describe('bridge commands', () => {
     expect(result.meshes[0].vertices).toBeInstanceOf(Float32Array);
     expect(result.meshes[0].indices).toBeInstanceOf(Uint32Array);
     expect(result.files).toHaveLength(1);
+  });
+});
+
+describe('pickOpenPath', () => {
+  it('calls Tauri dialog open() and returns selected path string', async () => {
+    mockOpen.mockResolvedValue('/home/user/project/bracket.ri' as any);
+
+    const result = await pickOpenPath();
+
+    expect(mockOpen).toHaveBeenCalledWith({
+      filters: [{ name: 'Reify files', extensions: ['ri'] }],
+    });
+    expect(result).toBe('/home/user/project/bracket.ri');
+  });
+
+  it('returns null when user cancels the dialog', async () => {
+    mockOpen.mockResolvedValue(null as any);
+
+    const result = await pickOpenPath();
+
+    expect(result).toBeNull();
   });
 });
 
