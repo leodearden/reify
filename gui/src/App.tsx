@@ -225,18 +225,34 @@ const App: Component = () => {
       return; // Show warning, don't reload yet
     }
 
-    const promises = Array.from(files).map((path) =>
+    const filePaths = Array.from(files);
+    const promises = filePaths.map((path) =>
       bridgeOpenFile(path)
         .then((fileData) => {
           editorStore.updateFileContent(fileData.path, fileData.content);
+          return path;
         }),
     );
-    Promise.all(promises)
-      .then(() => {
-        setChangedFiles(new Set());
+    Promise.allSettled(promises)
+      .then((results) => {
+        const failedPaths: string[] = [];
+        for (let i = 0; i < results.length; i++) {
+          if (results[i].status === 'rejected') {
+            failedPaths.push(filePaths[i]);
+          }
+        }
+        if (failedPaths.length > 0) {
+          setChangedFiles(new Set(failedPaths));
+          const count = failedPaths.length;
+          showToast(
+            `${count} file${count > 1 ? 's' : ''} failed to reload`,
+            'error',
+          );
+        } else {
+          setChangedFiles(new Set());
+        }
         setConfirmReload(false);
-      })
-      .catch((err) => console.error('Reload failed:', err));
+      });
   }
 
   function handleDismissReload() {
