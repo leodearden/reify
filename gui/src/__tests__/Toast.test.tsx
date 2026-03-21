@@ -47,4 +47,11 @@ describe('Toast', () => {
     const btn = screen.getByTestId('toast').querySelector('button')!;
     expect(btn.getAttribute('aria-label')).toBe('Close');
   });
+
+  it('toast root has role="alert" and aria-live="assertive"', () => {
+    render(() => <Toast message="Done" type="success" onDismiss={vi.fn()} />);
+    const toast = screen.getByTestId('toast');
+    expect(toast.getAttribute('role')).toBe('alert');
+    expect(toast.getAttribute('aria-live')).toBe('assertive');
+  });
 });
