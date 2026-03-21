@@ -129,3 +129,52 @@ async fn hover_returns_info_for_known_symbol() {
         "hover result should have contents"
     );
 }
+
+#[tokio::test]
+async fn goto_definition_returns_location() {
+    let lsp = InProcessLsp::new();
+
+    lsp.handle_request("initialize", json!({}))
+        .await
+        .unwrap();
+    lsp.handle_request("initialized", json!({}))
+        .await
+        .unwrap();
+
+    let source = reify_test_support::bracket_source();
+    lsp.handle_request(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": "file:///test.ri",
+                "languageId": "reify",
+                "version": 1,
+                "text": source
+            }
+        }),
+    )
+    .await
+    .unwrap();
+
+    // Position on 'thickness' in a constraint line (line 9, col 15)
+    let result = lsp
+        .handle_request(
+            "textDocument/definition",
+            json!({
+                "textDocument": { "uri": "file:///test.ri" },
+                "position": { "line": 9, "character": 15 }
+            }),
+        )
+        .await
+        .expect("goto-definition should succeed");
+
+    // Should return a location (or null if not found — but for thickness it should find it)
+    assert!(
+        !result.is_null(),
+        "goto-definition should return a location for 'thickness'"
+    );
+    assert!(
+        result["uri"].is_string() || result["targetUri"].is_string(),
+        "goto-definition result should have a URI"
+    );
+}
