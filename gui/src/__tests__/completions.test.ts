@@ -74,4 +74,36 @@ describe('reifyCompletionSource', () => {
     // Empty completions should return null
     expect(result).toBeNull();
   });
+
+  it('accepts a () => string getter and uses current URI for each request', async () => {
+    let currentUri = 'file:///first.ri';
+    const mockItems = [{ label: 'x', kind: 6 }];
+    mockInvoke.mockResolvedValue(JSON.stringify(mockItems));
+
+    const source = reifyCompletionSource(() => currentUri);
+
+    const context = {
+      state: {
+        doc: { lineAt: () => ({ number: 1, from: 0, to: 10 }) },
+        selection: { main: { head: 5 } },
+      },
+      pos: 5,
+      explicit: true,
+    } as any;
+
+    // First request uses first URI
+    await source(context);
+    let params = JSON.parse((mockInvoke.mock.calls[0][1] as { params: string }).params);
+    expect(params.textDocument.uri).toBe('file:///first.ri');
+
+    // Switch URI
+    currentUri = 'file:///second.ri';
+    mockInvoke.mockClear();
+    mockInvoke.mockResolvedValue(JSON.stringify(mockItems));
+
+    // Second request uses updated URI
+    await source(context);
+    params = JSON.parse((mockInvoke.mock.calls[0][1] as { params: string }).params);
+    expect(params.textDocument.uri).toBe('file:///second.ri');
+  });
 });
