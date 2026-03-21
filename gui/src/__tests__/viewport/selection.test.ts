@@ -286,6 +286,68 @@ describe('createSelection', () => {
     });
   });
 
+  describe('wireframe overlay on selection', () => {
+    it('setSelected creates WireframeGeometry from mesh geometry and adds LineSegments to scene', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      selection.setSelected('A');
+
+      // scene.add should have been called with a LineSegments object
+      expect(mockSceneAdd).toHaveBeenCalled();
+      const addedObj = mockSceneAdd.mock.calls[0][0];
+      // The added object should be a LineSegments (has geometry and material)
+      expect(addedObj.geometry).toBeDefined();
+      expect(addedObj.material).toBeDefined();
+    });
+
+    it('setSelected(null) removes LineSegments from scene and disposes wireframe', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      selection.setSelected('A');
+      const wireframe = mockSceneAdd.mock.calls[0][0];
+
+      selection.setSelected(null);
+
+      expect(mockSceneRemove).toHaveBeenCalledWith(wireframe);
+      expect(wireframe.geometry.dispose).toHaveBeenCalled();
+    });
+
+    it('changing selection from A to B removes A wireframe and creates B wireframe', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection } = setup(meshMap);
+
+      selection.setSelected('A');
+      const wireframeA = mockSceneAdd.mock.calls[0][0];
+
+      selection.setSelected('B');
+
+      // A wireframe should be removed
+      expect(mockSceneRemove).toHaveBeenCalledWith(wireframeA);
+      expect(wireframeA.geometry.dispose).toHaveBeenCalled();
+
+      // B wireframe should be added (second call to scene.add)
+      expect(mockSceneAdd).toHaveBeenCalledTimes(2);
+      const wireframeB = mockSceneAdd.mock.calls[1][0];
+      expect(wireframeB.geometry).toBeDefined();
+    });
+
+    it('setSelected with unknown entity is a no-op', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      // Should not throw or add anything to scene
+      selection.setSelected('Unknown');
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+    });
+  });
+
   describe('click-based selection raycasting', () => {
     it('calls onSelect with mesh.name on pointerdown intersection', () => {
       const meshA = createMockMesh('A');
