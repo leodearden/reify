@@ -1245,6 +1245,32 @@ mod tests {
         assert_ne!(pos.content_hash(), neg.content_hash());
     }
 
+    // --- Field tests (step-11) ---
+
+    #[test]
+    fn value_field_variant() {
+        use crate::ty::Type;
+        let field_val = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Analytical,
+            lambda: Box::new(Value::Undef),
+        };
+        // Display
+        let display = format!("{}", field_val);
+        assert!(display.contains("Field"), "expected display to contain 'Field', got: {}", display);
+        // Content hash determinism
+        let field_val2 = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Analytical,
+            lambda: Box::new(Value::Undef),
+        };
+        assert_eq!(field_val.content_hash(), field_val2.content_hash());
+        // Not equal to Undef
+        assert_ne!(field_val, Value::Undef);
+    }
+
     #[test]
     fn value_display_nested() {
         // List containing Option and Enum values
