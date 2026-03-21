@@ -31,6 +31,8 @@ pub enum Type {
     /// (e.g., `Bolt` in `Box<Bolt>()`). Distinct from TypeParam which
     /// represents unresolved type variables needing substitution.
     StructureRef(String),
+    /// Field type: a mapping from domain to codomain (e.g., Field<Point3, Scalar>).
+    Field { domain: Box<Type>, codomain: Box<Type> },
 }
 
 impl Type {
@@ -198,6 +200,7 @@ impl std::fmt::Display for Type {
             }
             Type::TypeParam(name) => write!(f, "{}", name),
             Type::StructureRef(name) => write!(f, "{}", name),
+            Type::Field { domain, codomain } => write!(f, "Field<{}, {}>", domain, codomain),
         }
     }
 }
