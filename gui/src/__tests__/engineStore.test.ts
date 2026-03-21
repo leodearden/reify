@@ -439,4 +439,72 @@ describe('engineStore', () => {
       dispose();
     });
   });
+
+  // S8 integration: onEntityRemoved callback fires on removal
+  it('onEntityRemoved callback fires when removeMesh is called', () => {
+    createRoot((dispose) => {
+      const spy = vi.fn();
+      const { applyMeshUpdate, removeMesh } = createEngineStore({ onEntityRemoved: spy });
+      applyMeshUpdate(sampleMesh);
+      removeMesh('Bracket.body');
+      expect(spy).toHaveBeenCalledWith('Bracket.body');
+      dispose();
+    });
+  });
+
+  it('onEntityRemoved callback fires when removeValue is called', () => {
+    createRoot((dispose) => {
+      const spy = vi.fn();
+      const { applyValueUpdates, removeValue } = createEngineStore({ onEntityRemoved: spy });
+      applyValueUpdates([sampleValue]);
+      removeValue('cell_001');
+      expect(spy).toHaveBeenCalledWith('cell_001');
+      dispose();
+    });
+  });
+
+  it('onEntityRemoved callback fires when removeConstraint is called', () => {
+    createRoot((dispose) => {
+      const spy = vi.fn();
+      const { applyConstraintUpdates, removeConstraint } = createEngineStore({ onEntityRemoved: spy });
+      applyConstraintUpdates([sampleConstraint]);
+      removeConstraint('constraint_001');
+      expect(spy).toHaveBeenCalledWith('constraint_001');
+      dispose();
+    });
+  });
+
+  it('onEntityRemoved callback fires for event-driven removals via subscribeToEvents', async () => {
+    await createRoot(async (dispose) => {
+      const spy = vi.fn();
+
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      // Capture the removal callbacks when subscribeToEvents registers them
+      let meshRemovedCb: ((entityPath: string) => void) | undefined;
+      let valueRemovedCb: ((cellId: string) => void) | undefined;
+      let constraintRemovedCb: ((nodeId: string) => void) | undefined;
+      mockOnMeshRemoved.mockImplementation(async (cb) => { meshRemovedCb = cb; return vi.fn(); });
+      mockOnValueRemoved.mockImplementation(async (cb) => { valueRemovedCb = cb; return vi.fn(); });
+      mockOnConstraintRemoved.mockImplementation(async (cb) => { constraintRemovedCb = cb; return vi.fn(); });
+
+      const store = createEngineStore({ onEntityRemoved: spy });
+      await store.subscribeToEvents();
+
+      // Simulate event-driven removals
+      meshRemovedCb!('Bracket.body');
+      expect(spy).toHaveBeenCalledWith('Bracket.body');
+
+      valueRemovedCb!('cell_001');
+      expect(spy).toHaveBeenCalledWith('cell_001');
+
+      constraintRemovedCb!('constraint_001');
+      expect(spy).toHaveBeenCalledWith('constraint_001');
+
+      expect(spy).toHaveBeenCalledTimes(3);
+      dispose();
+    });
+  });
 });
