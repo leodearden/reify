@@ -107,6 +107,17 @@ pub struct CompiledPurposeParam {
     pub entity_kind: String,
 }
 
+/// A resolved reflective schema query — e.g., `subject.params` resolved to concrete ValueCellIds.
+#[derive(Debug, Clone)]
+pub struct ResolvedSchemaQuery {
+    /// The purpose parameter name this query was on (e.g., "subject").
+    pub param_name: String,
+    /// The kind of schema query (e.g., "params", "geometric_params", "ports").
+    pub query_kind: String,
+    /// The resolved ValueCellIds from the bound entity's TopologyTemplate.
+    pub resolved_ids: Vec<ValueCellId>,
+}
+
 /// A compiled purpose declaration.
 #[derive(Debug, Clone)]
 pub struct CompiledPurpose {
@@ -115,6 +126,8 @@ pub struct CompiledPurpose {
     pub params: Vec<CompiledPurposeParam>,
     pub constraints: Vec<CompiledConstraint>,
     pub objective: Option<OptimizationObjective>,
+    /// Reflective schema queries resolved at compile time.
+    pub resolved_queries: Vec<ResolvedSchemaQuery>,
     pub content_hash: ContentHash,
 }
 
@@ -1356,6 +1369,7 @@ fn compile_purpose(
     purpose_def: &reify_syntax::PurposeDef,
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
+    template_registry: &HashMap<String, &TopologyTemplate>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledPurpose {
     let purpose_name = &purpose_def.name;
@@ -1421,7 +1435,7 @@ fn compile_purpose(
         }
     }
 
-    let params = purpose_def
+    let params: Vec<CompiledPurposeParam> = purpose_def
         .params
         .iter()
         .map(|p| CompiledPurposeParam {
@@ -1430,12 +1444,35 @@ fn compile_purpose(
         })
         .collect();
 
+    // Resolve reflective schema queries for each purpose param.
+    // Look up the bound entity's TopologyTemplate and extract relevant ValueCellIds.
+    let mut resolved_queries = Vec::new();
+    for param in &params {
+        if let Some(template) = template_registry.get(&param.entity_kind) {
+            // Resolve "params" query: all Param and Auto value cells
+            let param_ids: Vec<ValueCellId> = template
+                .value_cells
+                .iter()
+                .filter(|vc| matches!(vc.kind, ValueCellKind::Param | ValueCellKind::Auto))
+                .map(|vc| vc.id.clone())
+                .collect();
+            if !param_ids.is_empty() {
+                resolved_queries.push(ResolvedSchemaQuery {
+                    param_name: param.name.clone(),
+                    query_kind: "params".to_string(),
+                    resolved_ids: param_ids,
+                });
+            }
+        }
+    }
+
     CompiledPurpose {
         name: purpose_def.name.clone(),
         is_pub: purpose_def.is_pub,
         params,
         constraints,
         objective,
+        resolved_queries,
         content_hash: purpose_def.content_hash,
     }
 }
@@ -1674,14 +1711,28 @@ pub fn compile(
     }
 
     // Purpose compilation pass: compile after templates so reflective schema queries
-    // could resolve against TopologyTemplates (full resolution in a later step).
-    let mut compiled_purposes = Vec::new();
-    for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Purpose(purpose_def) = decl {
-            let compiled = compile_purpose(purpose_def, &enum_defs, &functions, &mut diagnostics);
-            compiled_purposes.push(compiled);
+    // can resolve against TopologyTemplates.
+    let compiled_purposes = {
+        let purpose_template_registry: HashMap<String, &TopologyTemplate> = templates
+            .iter()
+            .map(|t: &TopologyTemplate| (t.name.clone(), t))
+            .collect();
+
+        let mut purposes = Vec::new();
+        for decl in &parsed.declarations {
+            if let reify_syntax::Declaration::Purpose(purpose_def) = decl {
+                let compiled = compile_purpose(
+                    purpose_def,
+                    &enum_defs,
+                    &functions,
+                    &purpose_template_registry,
+                    &mut diagnostics,
+                );
+                purposes.push(compiled);
+            }
         }
-    }
+        purposes
+    };
 
     // Build a content-sensitive hash by combining the path with all compiled content.
     let content_hash = {
