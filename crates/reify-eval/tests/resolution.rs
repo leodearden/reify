@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use reify_constraints::DimensionalSolver;
 use reify_eval::cache::NodeId;
 use reify_eval::{ConcurrentEditResult, Engine};
 use reify_test_support::{
@@ -772,4 +773,62 @@ fn no_objective_backward_compatible() {
             problem.objective
         );
     }
+}
+
+#[test]
+fn e2e_minimize_through_real_solver() {
+    // End-to-end integration test: uses the real DimensionalSolver with a
+    // Minimize objective. With constraint thickness < 20mm and objective
+    // Minimize(thickness), the solver converges near the effective lower bound
+    // (~1 micron, from DimensionalSolver's default length bounds).
+    //
+    // Without the objective the solver exits early (initial point 10mm is already
+    // feasible), returning ~10mm. With the objective it runs Nelder-Mead and
+    // minimises to near 0. Asserting thickness < 5mm proves the objective is
+    // wired through and affects the solve result.
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    // Template: auto thickness, constraint thickness < 20mm, minimize thickness.
+    // Single upper-bound constraint avoids floating-point boundary issues at the lower bound.
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint("S", 0, None, lt(value_ref("S", "thickness"), literal(mm(20.0))))
+        .objective(OptimizationObjective::Minimize(value_ref("S", "thickness")))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+
+    let result = engine.eval(&module);
+
+    // Solver must succeed — no diagnostics expected
+    assert!(
+        result.diagnostics.is_empty(),
+        "unexpected diagnostics from eval: {:?}",
+        result.diagnostics
+    );
+
+    // Thickness should be in values (auto param resolved by the solver)
+    let thickness_val = result.values.get(&thickness_id)
+        .expect("thickness should be in values after resolution");
+
+    let si_value = match thickness_val {
+        Value::Scalar { si_value, .. } => *si_value,
+        other => panic!("expected Scalar for thickness, got {:?}", other),
+    };
+
+    // The Nelder-Mead minimiser should push thickness well below the initial guess
+    // of 10mm (0.01m). Any value <= 5mm (0.005m) demonstrates that the Minimize
+    // objective actually influenced the result.
+    let five_mm_si = 5.0 * 0.001;
+    assert!(
+        si_value <= five_mm_si,
+        "expected thickness <= 5mm when minimizing, got {:.6}m ({:.3}mm)",
+        si_value,
+        si_value * 1000.0,
+    );
 }
