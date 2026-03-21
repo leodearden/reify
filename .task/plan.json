@@ -1,197 +1,212 @@
 {
-  "task_id": "112",
-  "title": "Viewport rendering: normals fallback, double-sided materials, data validation, buffer updates",
+  "task_id": "108",
+  "title": "ExportDialog UX: focus trap, Escape, ARIA, overlay click, file picker, 3MF removal",
   "files": [
-    "gui/src/viewport/meshManager.ts",
-    "gui/src/viewport/selection.ts",
-    "gui/src/viewport/scene.ts",
-    "gui/src/viewport/Viewport.tsx",
-    "gui/src/__tests__/viewport/meshManager.test.ts",
-    "gui/src/__tests__/viewport/selection.test.ts",
-    "gui/src/__tests__/viewport/scene.test.ts"
+    "gui/src/panels/ExportDialog.tsx",
+    "gui/src/panels/ExportDialog.module.css",
+    "gui/src/__tests__/ExportDialog.test.tsx",
+    "gui/src/types.ts",
+    "gui/src/App.tsx",
+    "gui/src/bridge.ts",
+    "gui/src/__tests__/App.test.tsx",
+    "gui/package.json"
   ],
   "modules": [
-    "gui/src/viewport",
-    "gui/src/__tests__/viewport"
+    "gui/src/panels",
+    "gui/src/__tests__",
+    "gui/src"
   ],
-  "analysis": "This task fixes 8 viewport rendering issues across 3 source files (meshManager.ts, selection.ts, scene.ts) with coordination in Viewport.tsx. The codebase uses a factory-function pattern (createScene, createMeshManager, createSelection) with Three.js fully mocked via vi.mock in vitest tests (jsdom environment).\n\nCurrent bugs and fixes:\n1. V-04 (meshManager.ts:53-55): When data.normals is null, no computeVertexNormals() fallback — causes flat-black faces. Fix: call geometry.computeVertexNormals() when normals are null in both createMeshFromData and updateMeshGeometry.\n2. V-05 (meshManager.ts:57-59): MeshStandardMaterial lacks DoubleSide — invisible back-faces on thin CAD shells. Fix: add side: THREE.DoubleSide to material constructor.\n3. V-06 (meshManager.ts): No validation of mesh data before BufferGeometry creation. Fix: validate vertices.length % 3 === 0 and indices in bounds before creating/updating geometry.\n4. V-07 (meshManager.ts:66-105): updateMeshGeometry mutates BufferAttribute internals (array + count) unsafely — when array length changes, the WebGL buffer size is fixed, causing errors. Fix: create new BufferAttribute when array length differs.\n5. V-08 (selection.ts:139-153): Selection wireframe not synced after geometry updates. Fix: add refreshSelected() to SelectionContext and call it from Viewport.tsx after mesh sync.\n6. V-11 (scene.ts:34): Fixed camera clipping planes (0.1, 10000). Fix: add adjustClipping(sceneBounds) method to SceneContext that computes near/far from camera-to-scene distance.\n7. V-13 (scene.ts:44-49): Single directional light with no camera-following headlight. Fix: add a headlight as a child of the camera.\n8. V-15 (scene.ts:58-62): setPixelRatio not updated on display change/resize. Fix: call renderer.setPixelRatio(window.devicePixelRatio) in resize handler.\n\nThe existing test infrastructure provides extensive mock classes. The MockBufferGeometry needs computeVertexNormals added. The three mock in meshManager.test.ts needs DoubleSide and FrontSide constants. Scene tests need MockPerspectiveCamera.add method. The existing Viewport.tsx effect pattern (createEffect depending on props.meshes) provides the coordination point for calling refreshSelected and adjustClipping after mesh sync.",
-  "prerequisites": [],
+  "analysis": "This task addresses 9 UX issues in the ExportDialog modal. The current ExportDialog.tsx is a simple SolidJS component using <Show when={props.open}> for visibility. It renders an overlay div with an inner dialog div containing a format selector (STEP/STL/3MF), Cancel/Export buttons, and a text-only progress indicator.\n\nKey findings from code analysis:\n1. **No ARIA attributes**: The dialog div lacks role='dialog', aria-modal='true', aria-labelledby. The label has no htmlFor, the select has no id.\n2. **No keyboard handling**: No Escape key handler, no focus trap. Tab freely escapes the modal.\n3. **No overlay dismiss**: Clicking the overlay background doesn't close the dialog.\n4. **3MF unsupported**: The backend ExportFormat enum only has Step/Stl/Obj (no 3MF). The Tauri command handler (commands.rs:54-57) explicitly rejects unknown formats. The frontend ExportFormat type includes '3mf' but it will always fail.\n5. **Hardcoded path**: App.tsx handleDoExport (line 182) uses `export.${format}` as a hardcoded path. No native file picker.\n6. **No spinner**: Progress indicator (line 22-25) is text-only 'Exporting...' with no visual spinner.\n7. **Format persistence**: The createSignal<ExportFormat>('step') is at component level, so format SHOULD persist across open/close since the component is always mounted in App.tsx. But the task reports it resets \u2014 this may be a SolidJS <Show> subtlety or a perceived issue. Will add regression test.\n\nTesting stack: vitest + @solidjs/testing-library + jsdom. All Tauri APIs are mocked via vi.mock. Existing ExportDialog tests cover basic rendering, format selection, button clicks, and disabled states.\n\nFor the file picker (E-6), I'll add a `pickSavePath` function to bridge.ts that wraps `@tauri-apps/plugin-dialog`'s save() function. In tests, this is mocked. App.tsx handleDoExport will call pickSavePath first, and if the user cancels (returns null), skip the export.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add @tauri-apps/plugin-dialog to gui/package.json dependencies for native save file picker. Run npm/pnpm install to ensure it's available for import in bridge.ts.",
+      "status": "done",
+      "commit": "63023e4",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in meshManager.test.ts: when data.normals is null, createMeshFromData calls geometry.computeVertexNormals() (V-04). Add computeVertexNormals mock to MockBufferGeometry. Test: sync with null normals, assert computeVertexNormals was called. Also test: sync with provided normals, assert computeVertexNormals was NOT called.",
+      "description": "Write failing tests for ARIA attributes (E-4): (1) inner dialog div has role='dialog', (2) inner dialog div has aria-modal='true', (3) inner dialog div has aria-labelledby matching the title element's id. These test that the dialog element has proper accessibility semantics.",
       "status": "done",
-      "commit": "cd74b48"
+      "commit": "4a71dc6"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement V-04 in meshManager.ts: In createMeshFromData, add else branch after the normals check — when data.normals is null, call geometry.computeVertexNormals(). In updateMeshGeometry, in the else-if branch where normals are removed (line 97-98), call geometry.computeVertexNormals() after deleteAttribute.",
+      "description": "Add ARIA attributes to ExportDialog.tsx: add id='export-dialog-title' to the h2 title, add role='dialog', aria-modal='true', aria-labelledby='export-dialog-title' to the inner .dialog div.",
       "status": "done",
-      "commit": "7d8fbc6"
+      "commit": "9872394"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test in meshManager.test.ts: material is created with side: THREE.DoubleSide (V-05). Add DoubleSide constant to mock. Assert that the material's side property equals DoubleSide (2).",
+      "description": "Write failing test for label-select association (E-5): the <label> element has a for/htmlFor attribute whose value matches the <select> element's id attribute.",
       "status": "done",
-      "commit": "0e7398b"
+      "commit": "9ef499e"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement V-05 in meshManager.ts: Import DoubleSide from 'three'. Add side: DoubleSide to the MeshStandardMaterial constructor options.",
+      "description": "Add id='export-format-select' to the <select> element and for='export-format-select' (htmlFor in JSX) to the <label> element in ExportDialog.tsx.",
       "status": "done",
-      "commit": "e28a18b"
+      "commit": "601b21e"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests in meshManager.test.ts for mesh data validation (V-06). Tests: (1) sync with vertices.length not divisible by 3 does not add mesh to scene, (2) sync with an index >= vertex count does not add mesh, (3) valid data still works normally. Also test update path: update with invalid data skips the update.",
+      "description": "Write failing test for Escape key closes dialog (E-2): render open dialog, fire keyDown event with key='Escape' on the dialog, assert onClose was called once.",
       "status": "done",
-      "commit": "04f8b53"
+      "commit": "6b4fd93"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement V-06 in meshManager.ts: Add validateMeshData(data: MeshData): boolean that checks vertices.length % 3 === 0 and max(indices) < vertices.length / 3. Guard createMeshFromData and updateMeshGeometry calls in sync() with this validation, logging a console.warn for invalid data.",
+      "description": "Add onKeyDown handler to the overlay div in ExportDialog.tsx that checks for e.key === 'Escape' and calls props.onClose() when not exporting. Ensure the overlay is focusable or the handler is on document level.",
       "status": "done",
-      "commit": "5a4df9c"
+      "commit": "a253b63"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests in meshManager.test.ts for safe buffer updates when array length changes (V-07). Tests: (1) update with same-length arrays reuses existing BufferAttribute (identity check — existing test), (2) update with different-length vertex array creates a new BufferAttribute (not same reference), (3) update with different-length index array creates new index BufferAttribute, (4) new BufferAttribute has correct array and count.",
+      "description": "Write failing tests for overlay click dismiss (E-3): (1) clicking the overlay background calls onClose, (2) clicking inside the inner dialog div does NOT call onClose (event propagation is stopped).",
       "status": "done",
-      "commit": "dafa7ec"
+      "commit": "73ef1a2"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement V-07 in meshManager.ts: In updateMeshGeometry, before reusing posAttr, check if posAttr.array.length !== data.vertices.length — if so, create new BufferAttribute via setAttribute instead of mutating. Same logic for index and normals.",
+      "description": "Add onClick handler to the overlay div that calls props.onClose() when not exporting. Add onClick={e => e.stopPropagation()} to the inner .dialog div to prevent clicks inside from bubbling to the overlay.",
       "status": "done",
-      "commit": "8567bea"
+      "commit": "40ab980"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test in scene.test.ts: resize handler calls renderer.setPixelRatio with window.devicePixelRatio (V-15). Call resize(), assert mockSetPixelRatio was called. Verify it uses the current devicePixelRatio value.",
+      "description": "Write failing tests for focus trap (E-1): (1) when dialog opens, the first focusable element (Cancel button or select) receives focus, (2) pressing Tab on the last focusable element cycles focus back to the first focusable element, (3) pressing Shift+Tab on the first focusable element cycles to the last.",
       "status": "done",
-      "commit": "d9c1848"
+      "commit": "2f2a75e"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement V-15 in scene.ts: In the resize() function, add renderer.setPixelRatio(window.devicePixelRatio ?? 1) before renderer.setSize().",
+      "description": "Implement focus trap in ExportDialog.tsx: use a ref on the inner dialog div. On mount (inside a createEffect triggered by props.open becoming true), query all focusable elements and focus the first one. Add a keydown handler that intercepts Tab/Shift+Tab and wraps focus within the dialog's focusable elements.",
       "status": "done",
-      "commit": "ed797d5"
+      "commit": "9cbdc87"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test in scene.test.ts: scene has a camera-following headlight (V-13). Add camera.add mock to MockPerspectiveCamera. Assert that a DirectionalLight is added as a child of the camera (via camera.add), and that the camera itself is added to the scene (scene.add(camera)).",
+      "description": "Write failing test for 3MF removal (I7): (1) format selector does NOT contain a '3mf' option, (2) format selector contains only 'step' and 'stl' options. Update the existing test 'format selector has STEP/STL/3MF options' to expect only STEP/STL.",
       "status": "done",
-      "commit": "4c37494"
+      "commit": "9d605bf"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement V-13 in scene.ts: Create a second DirectionalLight (headlight) at position (0, 0, 1) relative to camera with intensity ~0.6. Call camera.add(headlight) to make it follow the camera. Call scene.add(camera) so camera children are rendered in the scene graph.",
+      "description": "Remove the <option value='3mf'>3MF</option> from ExportDialog.tsx. Update ExportFormat type in gui/src/types.ts from 'step' | 'stl' | '3mf' to 'step' | 'stl'. Verify no other frontend code references '3mf'.",
       "status": "done",
-      "commit": "b2bec91"
+      "commit": "b7825ce"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test in scene.test.ts: SceneContext exposes adjustClipping method (V-11). Test that adjustClipping(bounds) updates camera.near and camera.far based on scene size and that updateProjectionMatrix is called.",
+      "description": "Write failing test for CSS spinner during export (E-8): when exporting=true, the progress indicator contains an element with a spinner class (data-testid='export-spinner' or class check). The spinner element should be present only during export.",
       "status": "done",
-      "commit": "8f5d6f3"
+      "commit": "3bfe6c0"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement V-11 in scene.ts: Add adjustClipping(sceneBounds: Box3) to SceneContext interface. Implementation computes camera-to-center distance, sets near = max(distance * 0.001, 0.01) and far = max(distance * 10, 100), calls camera.updateProjectionMatrix(). Export from createScene return. Update Viewport.tsx to call adjustClipping after mesh sync.",
+      "description": "Add a spinner element inside the progress div in ExportDialog.tsx \u2014 a <span> with class styles.spinner. Add CSS @keyframes spin animation in ExportDialog.module.css: .spinner { width: 16px; height: 16px; border: 2px solid; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }",
       "status": "done",
-      "commit": "7bd0fac"
+      "commit": "78d8449"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test in selection.test.ts: SelectionContext exposes refreshSelected() that rebuilds wireframe for current selection (V-08). Tests: (1) refreshSelected with active selection removes old wireframe and creates new one, (2) refreshSelected with no selection is a no-op, (3) refreshSelected reflects updated geometry.",
+      "description": "Write test for format persistence across open/close (E-7): render dialog, change format to 'stl', close dialog (set open=false), reopen (set open=true), assert select value is still 'stl'. This verifies the signal persists since the component stays mounted.",
       "status": "done",
-      "commit": "77b1c18"
+      "commit": "0e97227"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement V-08 in selection.ts: Track currentSelectedPath in a closure variable. Add refreshSelected() method that calls setSelected(currentSelectedPath) to rebuild wireframe from current geometry. Export in SelectionContext. Update Viewport.tsx to call selection.refreshSelected() after meshManager.sync() in the mesh sync effect.",
+      "description": "If step-15 test fails: lift the format signal to be preserved across Show renders, or restructure so the signal outlives the Show block. If test passes, this step is a no-op (format already persists due to component-level signal). Mark done either way.",
       "status": "done",
-      "commit": "3acf530"
+      "commit": "0e97227"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing tests in App.test.tsx for file picker integration (E-6): (1) mock bridge.pickSavePath to return a path string, click Export in dialog, assert pickSavePath was called with expected default name and format filters, then assert bridgeExportGeometry was called with the returned path. (2) mock pickSavePath to return null (user cancelled), assert bridgeExportGeometry was NOT called and dialog stays open.",
+      "status": "done",
+      "commit": "9668030"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Add pickSavePath(defaultName: string, formatExtension: string) function to bridge.ts that imports save() from @tauri-apps/plugin-dialog. Returns Promise<string | null>. Modify handleDoExport in App.tsx: before calling bridgeExportGeometry, call pickSavePath to get the user-chosen path. If null (cancelled), return early without exporting. Pass the chosen path to bridgeExportGeometry instead of the hardcoded default.",
+      "status": "done",
+      "commit": "77506fd"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Camera headlight is added as a child of the camera object via camera.add() rather than updating position each frame",
-      "rationale": "Three.js automatically transforms child objects in the parent's local space, so a light added to camera follows it without manual position updates in the render loop. This is the standard Three.js pattern for headlights and avoids polluting the animation loop."
+      "decision": "Focus trap implemented manually rather than using a third-party library",
+      "rationale": "The project has no focus-trap library (e.g., focus-trap-react). The ExportDialog has only 3 focusable elements (select, Cancel, Export), making a manual implementation trivial and avoiding a new dependency. Query focusable elements via dialog.querySelectorAll('button, select, input, [tabindex]')."
     },
     {
-      "decision": "Dynamic clipping is exposed as an adjustClipping(sceneBounds: Box3) method called after mesh sync, not computed every frame",
-      "rationale": "Computing scene bounds every frame via Box3 traversal is expensive. Clipping only needs adjustment when mesh data changes (during sync), which is the only time bounds change. This keeps the render loop lightweight."
+      "decision": "Escape key handler placed on the overlay div via onKeyDown rather than a document-level listener",
+      "rationale": "A component-level handler is cleaner and automatically scoped to the dialog's lifecycle. The overlay receives focus management from the focus trap, so keyDown events will bubble up to it. This avoids global listener registration/cleanup complexity."
     },
     {
-      "decision": "Mesh data validation logs console.warn and skips invalid data rather than throwing",
-      "rationale": "The viewport should be resilient to bad data from the engine. Throwing would crash the entire render pipeline. A console.warn is sufficient for debugging while keeping the UI responsive. This follows the existing project preference for noisy errors on logic bugs (feedback_silent_defaults_pattern.md) while still being resilient."
+      "decision": "pickSavePath abstracted in bridge.ts rather than importing @tauri-apps/plugin-dialog directly in App.tsx",
+      "rationale": "All Tauri IPC interactions go through bridge.ts (existing pattern). This keeps App.tsx decoupled from Tauri specifics and makes testing straightforward \u2014 tests mock bridge.pickSavePath rather than the plugin directly."
     },
     {
-      "decision": "New BufferAttribute is created when array length changes; existing attribute is mutated only when length matches",
-      "rationale": "WebGL buffers have a fixed size allocated on the GPU. Mutating .array and .count on an existing BufferAttribute when the size differs causes WebGL errors because the underlying GPU buffer cannot be resized. When sizes match, reusing the attribute avoids GPU buffer reallocation overhead — this is the intended Three.js pattern."
+      "decision": "Remove 3MF from frontend ExportFormat type entirely rather than disabling the option",
+      "rationale": "The backend ExportFormat enum has Step/Stl/Obj but NO 3MF variant. The Tauri command handler rejects unknown format strings. Showing a disabled 3MF option would confuse users. Clean removal is better \u2014 it can be added back when backend support exists."
     },
     {
-      "decision": "refreshSelected() method added to SelectionContext rather than coupling meshManager directly to selection",
-      "rationale": "Keeps modules decoupled. Viewport.tsx already coordinates between meshManager and selection via reactive effects. Adding a refresh method is the minimal change that preserves this clean architecture. refreshSelected internally just calls setSelected(currentSelectedPath)."
+      "decision": "Overlay click dismiss checks props.exporting before closing",
+      "rationale": "Consistent with Cancel button behavior \u2014 clicking overlay while export is in progress should not close the dialog and potentially leave the export in an ambiguous state."
     },
     {
-      "decision": "computeVertexNormals() is called in both createMeshFromData and updateMeshGeometry when normals are null",
-      "rationale": "Both code paths can receive null normals. The fallback must be applied consistently in creation and update paths to prevent flat-black faces in any scenario."
-    },
-    {
-      "decision": "scene.add(camera) is called to support camera children (headlight)",
-      "rationale": "Three.js requires parent objects to be in the scene graph for their children to be rendered. Without scene.add(camera), the headlight attached via camera.add() would not be visible. The camera itself renders fine without being in the scene, but its children do not."
+      "decision": "CSS-only spinner animation rather than SVG or animated icon library",
+      "rationale": "No icon library is in the project dependencies. A CSS border-animation spinner is lightweight, theme-compatible (uses CSS variables), and sufficient for the simple 'Exporting...' state indicator."
     }
   ],
   "reuse": [
     {
-      "what": "Existing vi.mock('three') patterns and MockXxx classes in all viewport test files",
-      "where": "gui/src/__tests__/viewport/meshManager.test.ts, scene.test.ts, selection.test.ts",
-      "how": "Extend existing mock blocks with additional methods/properties: computeVertexNormals on MockBufferGeometry, DoubleSide/FrontSide constants, camera.add method on MockPerspectiveCamera. Follow the exact same mock class patterns."
+      "what": "Existing ExportDialog test patterns (render with props, fireEvent.click, screen.getByTestId)",
+      "where": "gui/src/__tests__/ExportDialog.test.tsx",
+      "how": "Follow the exact same render pattern: render(() => <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />). Use fireEvent for keyboard and click events. Use screen queries for assertions."
     },
     {
-      "what": "makeMeshData() test helper in meshManager.test.ts",
-      "where": "gui/src/__tests__/viewport/meshManager.test.ts:100-112",
-      "how": "Reuse for all new meshManager tests to create MeshData objects with optional vertices, indices, normals parameters."
+      "what": "App.test.tsx mock patterns for Tauri APIs and bridge module",
+      "where": "gui/src/__tests__/App.test.tsx lines 6-67",
+      "how": "Add pickSavePath to the existing bridge mock block (vi.mock('../bridge')). Follow the same mockResolvedValue pattern. Add @tauri-apps/plugin-dialog mock alongside existing @tauri-apps/api mocks if needed."
     },
     {
-      "what": "setup() function pattern in each test file",
-      "where": "All viewport test files",
-      "how": "Follow the existing setup() function pattern that creates mocks and returns an object with all test dependencies. Extend as needed."
+      "what": "bridge.ts invoke/listen wrapper pattern",
+      "where": "gui/src/bridge.ts",
+      "how": "Add pickSavePath following the same async function pattern with JSDoc comment. Import from @tauri-apps/plugin-dialog instead of @tauri-apps/api/core since it's a separate plugin."
     },
     {
-      "what": "SceneContext interface and return pattern",
-      "where": "gui/src/viewport/scene.ts:13-18, 64",
-      "how": "Extend SceneContext interface with adjustClipping method. Add to the return object from createScene, following the same pattern as resize()."
+      "what": "ExportDialog.module.css variable naming convention",
+      "where": "gui/src/panels/ExportDialog.module.css",
+      "how": "Use existing CSS variable names (--reify-accent, --reify-subtext, etc.) for spinner colors. Follow the existing class naming pattern (.spinner alongside .progress, .button, etc.)."
     },
     {
-      "what": "SelectionContext interface",
-      "where": "gui/src/viewport/selection.ts:24-31",
-      "how": "Extend with refreshSelected() method following the same interface pattern. Add to return object from createSelection."
-    },
-    {
-      "what": "Viewport.tsx createEffect for mesh sync",
-      "where": "gui/src/viewport/Viewport.tsx:48-50",
-      "how": "Add refreshSelected() and adjustClipping() calls within the existing mesh sync effect, after meshManager.sync(). This is the natural coordination point between mesh updates and dependent systems."
+      "what": "Existing SolidJS createEffect/onMount patterns for lifecycle hooks",
+      "where": "gui/src/panels/ExportDialog.tsx and other panel components",
+      "how": "Use createEffect to react to props.open changes for focus management. Use onCleanup for any event listener cleanup. Follow the same import pattern from 'solid-js'."
     }
   ],
-  "_session_id": "112-bacae8cf",
-  "_created_at": "2026-03-21T17:33:37.820402+00:00"
+  "_session_id": "108-dd9cabba",
+  "_created_at": "2026-03-21T19:47:24.704427+00:00"
 }
