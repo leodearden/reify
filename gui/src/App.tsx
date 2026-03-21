@@ -12,8 +12,10 @@ import { getInitialState, setParameter as bridgeSetParameter } from './bridge';
 import styles from './App.module.css';
 
 const MIN_PANEL_WIDTH = 150;
+const MIN_PANEL_HEIGHT = 80;
 const DEFAULT_EDITOR_WIDTH = 300;
 const DEFAULT_SIDE_WIDTH = 300;
+const DEFAULT_PROPERTY_HEIGHT = 200;
 
 const App: Component = () => {
   const engineStore = createEngineStore();
@@ -22,6 +24,7 @@ const App: Component = () => {
 
   const [editorWidth, setEditorWidth] = createSignal(DEFAULT_EDITOR_WIDTH);
   const [sideWidth, setSideWidth] = createSignal(DEFAULT_SIDE_WIDTH);
+  const [propertyHeight, setPropertyHeight] = createSignal(DEFAULT_PROPERTY_HEIGHT);
 
   // Reactively update window title based on active file and eval status
   createEffect(() => {
@@ -87,6 +90,10 @@ const App: Component = () => {
     setSideWidth((w) => Math.max(MIN_PANEL_WIDTH, w - delta));
   }
 
+  function handleSideResize(delta: number) {
+    setPropertyHeight((h) => Math.max(MIN_PANEL_HEIGHT, h + delta));
+  }
+
   return (
     <div data-testid="app-layout" class={styles.layout}>
       <Toolbar onExport={handleExport} onFitToView={handleFitToView} />
@@ -103,12 +110,17 @@ const App: Component = () => {
           <Viewport meshes={engineStore.state.meshes} />
         </div>
         <Splitter orientation="vertical" onResize={handleRightResize} data-testid="splitter-right" />
-        <div data-testid="side-panel" class={styles.sidePanel}>
+        <div
+          data-testid="side-panel"
+          class={styles.sidePanel}
+          style={{ 'grid-template-rows': `${propertyHeight()}px 4px 1fr` }}
+        >
           <PropertyEditor
             values={engineStore.state.values}
             selectedEntity={selectionStore.state.selectedEntity}
             onSetParameter={handleSetParameter}
           />
+          <Splitter orientation="horizontal" onResize={handleSideResize} data-testid="splitter-side" />
           <ConstraintPanel
             constraints={engineStore.state.constraints}
             values={engineStore.state.values}

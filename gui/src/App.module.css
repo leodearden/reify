@@ -27,7 +27,7 @@
 }
 
 .sidePanel {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  /* grid-template-rows set inline via style for resizable split */
   overflow: hidden;
 }
