@@ -618,6 +618,34 @@ mod tests {
         }
     }
 
+    // --- Determinacy predicate stubs (step-7) ---
+
+    #[test]
+    fn determined_stub_returns_undef() {
+        // determined() is handled at the eval layer where DeterminacyState is available.
+        // The stdlib stub returns Undef as a fallback.
+        let result = eval_builtin("determined", &[Value::Real(42.0)]);
+        assert!(result.is_undef(), "determined stub should return Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn undetermined_stub_returns_undef() {
+        let result = eval_builtin("undetermined", &[Value::Real(42.0)]);
+        assert!(result.is_undef(), "undetermined stub should return Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn constrained_stub_returns_undef() {
+        let result = eval_builtin("constrained", &[Value::Real(42.0)]);
+        assert!(result.is_undef(), "constrained stub should return Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn partially_determined_stub_returns_undef() {
+        let result = eval_builtin("partially_determined", &[Value::Real(42.0)]);
+        assert!(result.is_undef(), "partially_determined stub should return Undef, got {:?}", result);
+    }
+
     // --- Field operation stubs (step-25) ---
 
     #[test]
