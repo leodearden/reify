@@ -77,13 +77,12 @@ fn build_variable_domain(
                         type_name: tn,
                         variant,
                     }) = &node.kind
+                        && tn == type_name && seen.insert(variant.clone())
                     {
-                        if tn == type_name && seen.insert(variant.clone()) {
-                            variants.push(Value::Enum {
-                                type_name: tn.clone(),
-                                variant: variant.clone(),
-                            });
-                        }
+                        variants.push(Value::Enum {
+                            type_name: tn.clone(),
+                            variant: variant.clone(),
+                        });
                     }
                 });
             }
@@ -157,17 +156,17 @@ fn backtrack(
             }
         }
 
-        if feasible {
-            if let Some(solution) = backtrack(
+        if feasible
+            && let Some(solution) = backtrack(
                 variables,
                 var_index + 1,
                 assignment,
                 constraints,
                 auto_param_ids,
                 functions,
-            ) {
-                return Some(solution);
-            }
+            )
+        {
+            return Some(solution);
         }
     }
 
