@@ -4,7 +4,7 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { save } from '@tauri-apps/plugin-dialog';
+import { save, open } from '@tauri-apps/plugin-dialog';
 import type {
   GuiState,
   MeshData,
@@ -71,6 +71,19 @@ export async function pickSavePath(defaultName: string, formatExtension: string)
     ],
   });
   return result ?? null;
+}
+
+/** Open a native open-file dialog. Returns the chosen path, or null if cancelled. */
+export async function pickOpenPath(): Promise<string | null> {
+  const result = await open({
+    filters: [
+      {
+        name: 'Reify files',
+        extensions: ['ri'],
+      },
+    ],
+  });
+  return (result as string) ?? null;
 }
 
 /** Get the source location for an entity. */

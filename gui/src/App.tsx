@@ -23,6 +23,7 @@ import {
   setParameter as bridgeSetParameter,
   exportGeometry as bridgeExportGeometry,
   pickSavePath,
+  pickOpenPath,
   updateSource as bridgeUpdateSource,
   openFile as bridgeOpenFile,
   onFileChanged,
@@ -111,9 +112,15 @@ const App: Component = () => {
 
   // Keyboard shortcuts
   useKeyboardShortcuts({
-    onOpen: () => {
-      // Open file via bridge (placeholder — would use native dialog in full app)
-      // For now, this is a stub that can be wired to a native file picker
+    onOpen: async () => {
+      try {
+        const path = await pickOpenPath();
+        if (!path) return;
+        const fileData = await bridgeOpenFile(path);
+        editorStore.openFile(fileData);
+      } catch (err) {
+        toast.showToast(`Open file failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      }
     },
     onReEvaluate: () => {
       // Re-evaluate the active file
