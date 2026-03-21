@@ -25,6 +25,14 @@ impl Rational {
         }
     }
 
+    pub fn num(&self) -> i16 {
+        self.num
+    }
+
+    pub fn den(&self) -> i16 {
+        self.den
+    }
+
     pub fn is_zero(self) -> bool {
         self.num == 0
     }
