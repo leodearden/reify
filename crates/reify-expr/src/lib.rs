@@ -178,6 +178,9 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             }
             match (&obj, &idx) {
                 (Value::List(items), Value::Int(i)) => {
+                    if *i < 0 {
+                        return Value::Undef;
+                    }
                     let i = *i as usize;
                     items.get(i).cloned().unwrap_or(Value::Undef)
                 }
