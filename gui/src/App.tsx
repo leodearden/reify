@@ -142,7 +142,7 @@ const App: Component = () => {
       }
       unsub = u;
     } catch (err) {
-      console.error('Failed to subscribe to events:', err);
+      toast.showToast('Event subscription failed — some updates may not appear', 'error');
     }
 
     // Subscribe to file-changed events
@@ -159,8 +159,8 @@ const App: Component = () => {
         return;
       }
       fileChangedUnsub = unlistenFileChanged;
-    } catch (err) {
-      console.error('Failed to subscribe to file changes:', err);
+    } catch (_err) {
+      toast.showToast('File change monitoring unavailable — external edits may not be detected', 'error');
     }
   }
 
