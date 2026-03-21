@@ -45,9 +45,9 @@ export async function openFile(path: string): Promise<FileData> {
   return invoke<FileData>('open_file', { path });
 }
 
-/** Export geometry to a file (e.g., STEP format). */
-export async function exportGeometry(entityPath: string, outputPath: string): Promise<void> {
-  return invoke('export_geometry', { entityPath, outputPath });
+/** Export geometry to a file in the specified format. */
+export async function exportGeometry(format: string, outputPath: string): Promise<void> {
+  return invoke('export', { format, path: outputPath });
 }
 
 /** Get the source location for an entity. */
