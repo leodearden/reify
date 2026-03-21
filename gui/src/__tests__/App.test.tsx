@@ -795,6 +795,198 @@ describe('App dirty-file check before reload (R-4)', () => {
   });
 });
 
+describe('App handleReload partial failure', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/bracket.ri', content: 'structure Bracket {}' },
+      { path: '/project/gear.ri', content: 'structure Gear {}' },
+    ],
+  };
+
+  let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
+
+  beforeEach(() => {
+    fileChangedCallback = undefined;
+    vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+      fileChangedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+  });
+
+  it('when one file succeeds and another fails, only the failed file remains in changedFiles', async () => {
+    // bracket.ri succeeds, gear.ri fails
+    vi.mocked(bridge.openFile).mockImplementation(async (path: string) => {
+      if (path === '/project/gear.ri') {
+        throw new Error('disk read error');
+      }
+      return { path, content: `updated ${path}` };
+    });
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      render(() => <App />);
+      await waitFor(() => expect(fileChangedCallback).toBeDefined());
+
+      fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+      fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+      await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+      fireEvent.click(screen.getByText('Reload'));
+
+      // After allSettled, only gear.ri should remain (bracket.ri succeeded)
+      await waitFor(() => {
+        const prompt = screen.getByTestId('reload-prompt');
+        expect(prompt.textContent).toMatch(/gear\.ri/);
+        expect(prompt.textContent).not.toMatch(/bracket\.ri/);
+        expect(prompt.textContent).not.toMatch(/2 files changed/);
+      });
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('when one file fails, confirmReload is still reset to false', async () => {
+    vi.mocked(bridge.openFile).mockImplementation(async (path: string) => {
+      if (path === '/project/gear.ri') {
+        throw new Error('disk read error');
+      }
+      return { path, content: `updated ${path}` };
+    });
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      render(() => <App />);
+      await waitFor(() => expect(fileChangedCallback).toBeDefined());
+      await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+      // Mark gear.ri as dirty so we enter confirmReload flow
+      capturedEditorStore.markDirty('/project/gear.ri');
+
+      fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+      fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+      await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+      // First click shows confirmation warning
+      fireEvent.click(screen.getByText('Reload'));
+      await waitFor(() => expect(screen.getByText('Reload Anyway')).toBeTruthy());
+
+      // Confirm reload
+      fireEvent.click(screen.getByText('Reload Anyway'));
+
+      // After partial failure, confirmReload should be reset
+      // (so the remaining gear.ri prompt shows normal Reload, not Reload Anyway)
+      await waitFor(() => {
+        const prompt = screen.getByTestId('reload-prompt');
+        // gear.ri remains but confirmReload was reset — should NOT show 'Reload Anyway'
+        expect(prompt.textContent).toMatch(/gear\.ri/);
+        expect(prompt.textContent).not.toMatch(/Reload Anyway/);
+      });
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('when one file fails, an error toast is shown mentioning the failure count', async () => {
+    vi.mocked(bridge.openFile).mockImplementation(async (path: string) => {
+      if (path === '/project/gear.ri') {
+        throw new Error('disk read error');
+      }
+      return { path, content: `updated ${path}` };
+    });
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      render(() => <App />);
+      await waitFor(() => expect(fileChangedCallback).toBeDefined());
+
+      fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+      fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+      await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+      fireEvent.click(screen.getByText('Reload'));
+
+      // An error toast should appear indicating reload failure
+      await waitFor(() => {
+        const toasts = screen.getAllByTestId('toast');
+        const errorToast = toasts.find((t) => t.textContent?.match(/failed.*reload/i));
+        expect(errorToast).toBeTruthy();
+      });
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('when all files succeed, changedFiles is cleared completely', async () => {
+    vi.mocked(bridge.openFile).mockImplementation(async (path: string) => ({
+      path,
+      content: `updated ${path}`,
+    }));
+
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+
+    fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+    await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Reload'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('reload-prompt')).toBeNull();
+    });
+  });
+
+  it('when all files fail, all files remain in changedFiles', async () => {
+    vi.mocked(bridge.openFile).mockImplementation(async (_path: string) => {
+      throw new Error('disk error');
+    });
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      render(() => <App />);
+      await waitFor(() => expect(fileChangedCallback).toBeDefined());
+
+      fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+      fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+      await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+      fireEvent.click(screen.getByText('Reload'));
+
+      // After all failures, both files should remain and an error toast should appear
+      await waitFor(() => {
+        const toasts = screen.getAllByTestId('toast');
+        const errorToast = toasts.find((t) => t.textContent?.match(/failed.*reload/i));
+        expect(errorToast).toBeTruthy();
+      });
+
+      // Both files should still be in changedFiles
+      expect(screen.getByText(/2 files changed/)).toBeTruthy();
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+      errorSpy.mockRestore();
+    }
+  });
+});
+
 describe('App handleSetParameter error handling', () => {
   it('logs error when bridge.setParameter rejects', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
