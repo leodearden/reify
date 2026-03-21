@@ -364,4 +364,79 @@ describe('engineStore', () => {
       dispose();
     });
   });
+
+  // S4: phantom key tests — removed keys must not linger in Object.keys
+  it('removeMesh leaves no phantom key in Object.keys(state.meshes)', () => {
+    createRoot((dispose) => {
+      const { state, applyMeshUpdate, removeMesh } = createEngineStore();
+      applyMeshUpdate(sampleMesh);
+      removeMesh('Bracket.body');
+
+      expect(Object.keys(state.meshes)).not.toContain('Bracket.body');
+      expect(Object.keys(state.meshes)).toHaveLength(0);
+      dispose();
+    });
+  });
+
+  it('removeValue leaves no phantom key in Object.keys(state.values)', () => {
+    createRoot((dispose) => {
+      const { state, applyValueUpdates, removeValue } = createEngineStore();
+      applyValueUpdates([sampleValue]);
+      removeValue('cell_001');
+
+      expect(Object.keys(state.values)).not.toContain('cell_001');
+      expect(Object.keys(state.values)).toHaveLength(0);
+      dispose();
+    });
+  });
+
+  it('removeConstraint leaves no phantom key in Object.keys(state.constraints)', () => {
+    createRoot((dispose) => {
+      const { state, applyConstraintUpdates, removeConstraint } = createEngineStore();
+      applyConstraintUpdates([sampleConstraint]);
+      removeConstraint('constraint_001');
+
+      expect(Object.keys(state.constraints)).not.toContain('constraint_001');
+      expect(Object.keys(state.constraints)).toHaveLength(0);
+      dispose();
+    });
+  });
+
+  it('Object.values after removeMesh contains no undefined entries', () => {
+    createRoot((dispose) => {
+      const { state, applyMeshUpdate, removeMesh } = createEngineStore();
+      applyMeshUpdate(sampleMesh);
+      removeMesh('Bracket.body');
+
+      const values = Object.values(state.meshes);
+      expect(values).toHaveLength(0);
+      expect(values.every((v) => v !== undefined)).toBe(true);
+      dispose();
+    });
+  });
+
+  it('iterating Object.values after removal does not crash on property access', () => {
+    createRoot((dispose) => {
+      const { state, applyMeshUpdate, removeMesh } = createEngineStore();
+      const mesh2: MeshData = {
+        entity_path: 'Mount.body',
+        vertices: new Float32Array([1, 2, 3]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: null,
+      };
+      applyMeshUpdate(sampleMesh);
+      applyMeshUpdate(mesh2);
+
+      removeMesh('Bracket.body');
+
+      // This simulates what StatusBar does: iterate values and access .indices.length
+      // With phantom keys, this would crash on undefined.indices
+      const totalTriangles = Object.values(state.meshes).reduce(
+        (sum, mesh) => sum + mesh.indices.length / 3,
+        0,
+      );
+      expect(totalTriangles).toBe(1); // Only Mount.body remains
+      dispose();
+    });
+  });
 });
