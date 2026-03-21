@@ -50,9 +50,29 @@ fn build_variable_domain(
         Type::Bool => Ok(vec![Value::Bool(true), Value::Bool(false)]),
         Type::Int => {
             if let Some((lo, hi)) = param.bounds {
+                // Validate bounds are finite (rejects infinity and NaN)
+                if !lo.is_finite() || !hi.is_finite() {
+                    return Err(format!(
+                        "integer auto param {} has non-finite bounds [{}, {}]",
+                        param.id, lo, hi
+                    ));
+                }
+                // Validate bounds are representable as i64 (i64::MAX ≈ 9.22e18)
+                const I64_MIN_F: f64 = i64::MIN as f64;
+                const I64_MAX_F: f64 = i64::MAX as f64;
+                if lo < I64_MIN_F || lo > I64_MAX_F || hi < I64_MIN_F || hi > I64_MAX_F {
+                    return Err(format!(
+                        "integer auto param {} bounds [{}, {}] exceed i64 range",
+                        param.id, lo, hi
+                    ));
+                }
                 let lo_i = lo as i64;
                 let hi_i = hi as i64;
-                let size = hi_i - lo_i + 1;
+                // Use checked arithmetic to prevent overflow
+                let size = hi_i
+                    .checked_sub(lo_i)
+                    .and_then(|d| d.checked_add(1))
+                    .unwrap_or(i64::MAX);
                 if size > MAX_INT_DOMAIN || size <= 0 {
                     return Err(format!(
                         "integer domain for {} too large: [{}, {}] has {} values (max {})",

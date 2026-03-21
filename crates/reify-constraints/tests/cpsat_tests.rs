@@ -4,7 +4,7 @@ use reify_constraints::CpSatSolver;
 use reify_test_support::builders::*;
 use reify_test_support::values::*;
 use reify_types::{
-    AutoParam, ConstraintSolver, Diagnostic, ResolutionProblem, SolveResult, Type, Value, ValueMap,
+    AutoParam, ConstraintSolver, ResolutionProblem, SolveResult, Type, Value, ValueMap,
 };
 
 // ---------------------------------------------------------------------------
