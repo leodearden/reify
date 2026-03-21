@@ -27,6 +27,9 @@ function groupByEntity(values: Record<string, ValueData>): Record<string, ValueD
 export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   const [filterText, setFilterText] = createSignal('');
   const [collapsedGroups, setCollapsedGroups] = createSignal<Set<string>>(new Set());
+  const [editingCellId, setEditingCellId] = createSignal<string | null>(null);
+  const [editValue, setEditValue] = createSignal('');
+  let escapingRef = false;
 
   const filteredGroups = createMemo(() => {
     const filter = filterText().toLowerCase();
@@ -76,16 +79,41 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     return props.selectedEntity !== null && entityMatchesGroup(props.selectedEntity, name);
   }
 
+  function handleFocus(cellId: string, e: FocusEvent) {
+    const input = e.target as HTMLInputElement;
+    setEditingCellId(cellId);
+    setEditValue(input.value);
+  }
+
+  function handleInput(cellId: string, e: InputEvent) {
+    const input = e.target as HTMLInputElement;
+    setEditValue(input.value);
+  }
+
   function handleKeyDown(cellId: string, e: KeyboardEvent) {
     if (e.key === 'Enter') {
       const input = e.target as HTMLInputElement;
       props.onSetParameter(cellId, input.value);
+      setEditingCellId(null);
+      input.blur();
+    } else if (e.key === 'Escape') {
+      const input = e.target as HTMLInputElement;
+      // Find the original prop value for this cell
+      const propValue = props.values[cellId]?.value ?? '';
+      input.value = propValue;
+      setEditValue(propValue);
+      setEditingCellId(null);
+      escapingRef = true;
+      input.blur();
+      escapingRef = false;
     }
   }
 
   function handleBlur(cellId: string, e: FocusEvent) {
+    if (escapingRef) return;
     const input = e.target as HTMLInputElement;
     props.onSetParameter(cellId, input.value);
+    setEditingCellId(null);
   }
 
   return (
@@ -136,7 +164,9 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                             <input
                               type="text"
                               class={styles.valueInput}
-                              value={val.value}
+                              value={editingCellId() === val.cell_id ? editValue() : val.value}
+                              onFocus={(e) => handleFocus(val.cell_id, e)}
+                              onInput={(e) => handleInput(val.cell_id, e)}
                               onKeyDown={(e) => handleKeyDown(val.cell_id, e)}
                               onBlur={(e) => handleBlur(val.cell_id, e)}
                             />
