@@ -138,6 +138,51 @@ trait Bounded {
     );
 }
 
+// ── L6 regression: param and let defaults always have Some(name) ──────
+
+#[test]
+fn trait_default_param_and_let_always_have_name() {
+    // A trait with both param and let defaults should have `name.is_some()`
+    // for each Param and Let entry. This is a regression guard confirming
+    // the invariant before hardening with .expect() in step-14.
+    let source = r#"
+trait Configurable {
+    param width : Length = 100mm
+    param height : Length = 50mm
+    let area = width * height
+}
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    let trait_def = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Configurable")
+        .expect("should have trait Configurable");
+
+    for default in &trait_def.defaults {
+        match &default.kind {
+            reify_compiler::DefaultKind::Param { .. } => {
+                assert!(
+                    default.name.is_some(),
+                    "DefaultKind::Param should always have Some(name), got None"
+                );
+            }
+            reify_compiler::DefaultKind::Let(_) => {
+                assert!(
+                    default.name.is_some(),
+                    "DefaultKind::Let should always have Some(name), got None"
+                );
+            }
+            reify_compiler::DefaultKind::Constraint(_) => {
+                // Constraints may or may not have names — not checked here
+            }
+        }
+    }
+}
+
 // ── H3: geometry call diagnostics ──────────────────────────────────────
 
 #[test]
