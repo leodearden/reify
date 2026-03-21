@@ -1380,15 +1380,8 @@ impl<'a> Lowering<'a> {
                 }
                 None
             }
-            _ => {
-                // Fallback: try to lower as an expression if it's a named node
-                if node.is_named() {
-                    // Unknown named node — skip
-                    None
-                } else {
-                    None
-                }
-            }
+            // Unknown node kind — skip
+            _ => None,
         }
     }
 
