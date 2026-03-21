@@ -1,0 +1,90 @@
+.overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.dialog {
+  background: var(--reify-surface0, #313244);
+  color: var(--reify-text, #cdd6f4);
+  border-radius: 8px;
+  padding: 20px;
+  min-width: 320px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 16px 0;
+}
+
+.field {
+  margin-bottom: 16px;
+}
+
+.label {
+  display: block;
+  font-size: 12px;
+  margin-bottom: 4px;
+  color: var(--reify-subtext, #a6adc8);
+}
+
+.select {
+  width: 100%;
+  padding: 6px 8px;
+  background: var(--reify-background, #1e1e2e);
+  color: var(--reify-text, #cdd6f4);
+  border: 1px solid var(--reify-surface1, #45475a);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.button {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.primary {
+  background: var(--reify-accent, #89b4fa);
+  color: var(--reify-background, #1e1e2e);
+  font-weight: 500;
+}
+
+.primary:hover {
+  background: var(--reify-accent-hover, #74c7ec);
+}
+
+.secondary {
+  background: var(--reify-surface1, #45475a);
+  color: var(--reify-text, #cdd6f4);
+}
+
+.secondary:hover {
+  background: var(--reify-surface2, #585b70);
+}
+
+.progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--reify-subtext, #a6adc8);
+}
