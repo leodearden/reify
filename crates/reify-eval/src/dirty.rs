@@ -44,10 +44,28 @@ pub fn compute_dirty_cone(
 ///
 /// Only considers edges within the node set (external dependencies are ignored).
 /// Tie-breaking uses Debug representation for deterministic output.
+///
+/// This is a convenience wrapper around [`compute_levels`] that flattens the
+/// leveled output into a single ordered vector.
 pub fn topological_sort(
     nodes: &HashSet<NodeId>,
     traces: &HashMap<NodeId, DependencyTrace>,
 ) -> Vec<NodeId> {
+    compute_levels(nodes, traces).into_iter().flatten().collect()
+}
+
+/// Compute topological levels from a set of nodes using Kahn's algorithm.
+///
+/// Each level contains nodes whose in-set dependencies have all been placed
+/// in earlier levels. Nodes within a level have no dependencies on each other
+/// and can safely execute concurrently.
+///
+/// Only considers edges within the node set (external dependencies are ignored).
+/// Tie-breaking uses Debug representation for deterministic output within each level.
+pub fn compute_levels(
+    nodes: &HashSet<NodeId>,
+    traces: &HashMap<NodeId, DependencyTrace>,
+) -> Vec<Vec<NodeId>> {
     if nodes.is_empty() {
         return Vec::new();
     }
@@ -76,28 +94,35 @@ pub fn topological_sort(
         .map(|(n, _)| DebugOrd(n.clone()))
         .collect();
 
-    let mut result = Vec::with_capacity(nodes.len());
+    let mut levels = Vec::new();
 
-    while let Some(DebugOrd(node)) = ready.pop_first() {
-        result.push(node.clone());
+    while !ready.is_empty() {
+        // All nodes currently ready form one level
+        let current_level: Vec<NodeId> = ready.iter().map(|d| d.0.clone()).collect();
+        ready.clear();
 
-        // Find all nodes in the set that depend on this node
-        if let NodeId::Value(ref vcid) = node {
-            for candidate in nodes {
-                if let Some(trace) = traces.get(candidate)
-                    && trace.reads.contains(vcid)
-                {
-                    let deg = in_degree.get_mut(candidate).unwrap();
-                    *deg -= 1;
-                    if *deg == 0 {
-                        ready.insert(DebugOrd(candidate.clone()));
+        // Decrement in-degree for dependents of nodes in this level
+        for node in &current_level {
+            if let NodeId::Value(vcid) = node {
+                for candidate in nodes {
+                    if let Some(trace) = traces.get(candidate)
+                        && trace.reads.contains(vcid)
+                    {
+                        let deg = in_degree.get_mut(candidate).unwrap();
+                        debug_assert!(*deg > 0, "in-degree underflow: node {:?}", candidate);
+                        *deg -= 1;
+                        if *deg == 0 {
+                            ready.insert(DebugOrd(candidate.clone()));
+                        }
                     }
                 }
             }
         }
+
+        levels.push(current_level);
     }
 
-    result
+    levels
 }
 
 /// Compute the evaluation set: intersection of dirty cone and demand cone,
