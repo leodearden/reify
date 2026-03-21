@@ -463,6 +463,26 @@ describe('PropertyEditor validation - non-parseable', () => {
   });
 });
 
+describe('PropertyEditor validation - valid number', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it("'42.5' on Enter calls onSetParameter and input does NOT have data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '42.5' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', '42.5');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+});
+
 describe('PropertyEditor accessibility', () => {
   const values: Record<string, ValueData> = {
     c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width' }),
