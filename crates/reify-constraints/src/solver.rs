@@ -451,7 +451,6 @@ impl ConstraintSolver for DimensionalSolver {
             }
         };
 
-        let _best_cost = result.state().get_best_cost();
         let best_param: Vec<f64> = match result.state().get_best_param() {
             Some(p) => p.clone(),
             None => {
