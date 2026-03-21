@@ -147,7 +147,9 @@ export function createSelection(options: SelectionOptions): SelectionContext {
   }
 
   function dispose(): void {
-    // stub
+    domElement.removeEventListener('pointermove', handlePointerMove);
+    domElement.removeEventListener('pointerdown', handlePointerDown);
+    removeWireframe();
   }
 
   return { setHovered, setSelected, fitToView, dispose };
