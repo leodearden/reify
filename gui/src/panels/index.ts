@@ -5,3 +5,4 @@ export { StatusBar } from './StatusBar';
 export { Toast } from './Toast';
 export { FileBrowser } from './FileBrowser';
 export { ExportDialog } from './ExportDialog';
+export { ReloadPrompt } from './ReloadPrompt';

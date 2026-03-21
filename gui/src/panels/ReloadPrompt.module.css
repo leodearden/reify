@@ -1,0 +1,47 @@
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--reify-surface1, #45475a);
+  color: var(--reify-text, #cdd6f4);
+  font-size: 13px;
+  border-bottom: 1px solid var(--reify-surface2, #585b70);
+}
+
+.message {
+  flex: 1;
+}
+
+.actions {
+  display: flex;
+  gap: 6px;
+}
+
+.button {
+  padding: 3px 10px;
+  border: none;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.reload {
+  background: var(--reify-accent, #89b4fa);
+  color: var(--reify-background, #1e1e2e);
+  font-weight: 500;
+}
+
+.reload:hover {
+  background: var(--reify-accent-hover, #74c7ec);
+}
+
+.dismiss {
+  background: var(--reify-surface2, #585b70);
+  color: var(--reify-text, #cdd6f4);
+}
+
+.dismiss:hover {
+  background: var(--reify-overlay0, #6c7086);
+}
