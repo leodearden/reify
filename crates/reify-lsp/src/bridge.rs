@@ -36,6 +36,34 @@ impl InProcessLsp {
         self.service.inner()
     }
 
+    /// Retrieve the last published diagnostics for a given URI.
+    ///
+    /// Returns a JSON array of LSP Diagnostic objects. The diagnostics
+    /// are captured by the server after each didOpen/didChange.
+    pub fn get_diagnostics(&self, uri: &str) -> Vec<Value> {
+        let server = self.service.inner();
+        let state = server.state();
+
+        // Use try_read to avoid blocking; return empty if locked
+        let guard = match state.try_read() {
+            Ok(g) => g,
+            Err(_) => return vec![],
+        };
+
+        let url = match Url::parse(uri) {
+            Ok(u) => u,
+            Err(_) => return vec![],
+        };
+
+        match guard.last_diagnostics_for(&url) {
+            Some(diags) => diags
+                .iter()
+                .filter_map(|d| serde_json::to_value(d).ok())
+                .collect(),
+            None => vec![],
+        }
+    }
+
     /// Handle an LSP request or notification by method name.
     ///
     /// For requests (initialize, completion, hover, definition, shutdown),
