@@ -57,7 +57,7 @@ pub enum RequirementKind {
 /// A default member provided by a trait — injected if not overridden.
 #[derive(Debug, Clone)]
 pub struct TraitDefault {
-    pub name: String,
+    pub name: Option<String>,
     pub kind: DefaultKind,
     pub span: SourceSpan,
 }
@@ -958,11 +958,23 @@ fn compile_expr_guarded(
                 && scope.collection_sub_names.contains(name.as_str())
             {
                 // Resolve member type from pre-populated collection_sub_member_types
-                let member_type = scope.collection_sub_member_types
+                let member_type = match scope.collection_sub_member_types
                     .get(name.as_str())
                     .and_then(|m| m.get(member.as_str()))
                     .cloned()
-                    .unwrap_or(Type::Real);
+                {
+                    Some(ty) => ty,
+                    None => {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unknown member '{}' on collection sub '{}'",
+                                member, name
+                            ))
+                            .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
+                        );
+                        Type::Real // fallback to allow continued compilation
+                    }
+                };
 
                 // For literal integer index, resolve directly to a scoped ValueRef
                 if let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind {
@@ -1350,7 +1362,7 @@ fn compile_trait(
                 if param.default.is_some() {
                     // Param with default → trait default
                     defaults.push(TraitDefault {
-                        name: param.name.clone(),
+                        name: Some(param.name.clone()),
                         kind: DefaultKind::Param {
                             cell_type: ty,
                             default_decl: param.clone(),
@@ -1390,7 +1402,7 @@ fn compile_trait(
                 };
                 let _ = ty; // type used for future type checking
                 defaults.push(TraitDefault {
-                    name: let_decl.name.clone(),
+                    name: Some(let_decl.name.clone()),
                     kind: DefaultKind::Let(let_decl.clone()),
                     span: let_decl.span,
                 });
@@ -1400,14 +1412,14 @@ fn compile_trait(
                     // Labeled constraint with expression in trait → default
                     // (override detection uses label matching at injection site)
                     defaults.push(TraitDefault {
-                        name: label.clone(),
+                        name: Some(label.clone()),
                         kind: DefaultKind::Constraint(constraint_decl.clone()),
                         span: constraint_decl.span,
                     });
                 } else {
                     // Unlabeled constraint → always injected as default
                     defaults.push(TraitDefault {
-                        name: String::new(),
+                        name: None,
                         kind: DefaultKind::Constraint(constraint_decl.clone()),
                         span: constraint_decl.span,
                     });
@@ -1726,9 +1738,8 @@ pub fn compile(
 
     // 3. Fields (need all enum_defs + all compiled functions)
     for field_def in &field_refs {
-        if let Some(compiled) = compile_field(field_def, &enum_defs, &functions, &mut diagnostics) {
-            fields.push(compiled);
-        }
+        let compiled = compile_field(field_def, &enum_defs, &functions, &mut diagnostics);
+        fields.push(compiled);
     }
 
     // Build a field registry so entity scopes can resolve field names.
@@ -1840,7 +1851,9 @@ pub fn compile(
                 f.name.clone(),
                 f.params.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>(),
             );
-            if let Some(prev_idx) = seen.get(&key) {
+            if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(key) {
+                e.insert(idx);
+            } else {
                 diagnostics.push(
                     Diagnostic::error(format!(
                         "duplicate function signature: {}({})",
@@ -1852,10 +1865,6 @@ pub fn compile(
                             .join(", ")
                     )),
                 );
-                let _ = prev_idx;
-                let _ = idx;
-            } else {
-                seen.insert(key, idx);
             }
         }
     }
@@ -3899,13 +3908,15 @@ fn check_trait_conformance(
     // Pre-register default member names in scope so their expressions can
     // reference each other (e.g., constraint x > 0 references param x from same trait).
     for default in &all_defaults {
-        if !structure_members.contains_key(&default.name) && !default.name.is_empty() {
+        if let Some(name) = &default.name
+            && !structure_members.contains_key(name)
+        {
             let ty = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
                 DefaultKind::Let(_) => Type::Real,
                 DefaultKind::Constraint(_) => continue,
             };
-            scope.register(&default.name, ty);
+            scope.register(name, ty);
         }
     }
 
@@ -3913,11 +3924,12 @@ fn check_trait_conformance(
     for default in &all_defaults {
         match &default.kind {
             DefaultKind::Param { cell_type, default_decl } => {
-                if !structure_members.contains_key(&default.name) {
+                let name = default.name.as_deref().expect("DefaultKind::Param always has Some(name)");
+                if !structure_members.contains_key(name) {
                     // Inject default param into value_cells
                     let cell_id = ValueCellId {
                         entity: structure.name.to_string(),
-                        member: default.name.clone(),
+                        member: name.to_string(),
                     };
 
                     let default_expr = default_decl.default.as_ref().map(|expr| {
@@ -3935,10 +3947,11 @@ fn check_trait_conformance(
                 }
             }
             DefaultKind::Let(let_decl) => {
-                if !structure_members.contains_key(&default.name) {
+                let name = default.name.as_deref().expect("DefaultKind::Let always has Some(name)");
+                if !structure_members.contains_key(name) {
                     let cell_id = ValueCellId {
                         entity: structure.name.to_string(),
-                        member: default.name.clone(),
+                        member: name.to_string(),
                     };
 
                     let compiled_expr = compile_expr(
@@ -4063,10 +4076,10 @@ fn collect_all_requirements(
 
     // Collect defaults from this trait, deduplicating by name.
     for default in &compiled_trait.defaults {
-        if default.name.is_empty() {
+        if default.name.is_none() {
             // Unnamed defaults (e.g., unlabeled constraints) — always push.
             defaults.push(default.clone());
-        } else {
+        } else if let Some(name) = &default.name {
             // Extract type for dedup comparison.
             let default_type = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
@@ -4074,15 +4087,15 @@ fn collect_all_requirements(
                 DefaultKind::Constraint(_) => Type::Bool, // sentinel for constraint label dedup
             };
 
-            if let Some(existing_type) = seen_defaults.get(&default.name) {
+            if let Some(existing_type) = seen_defaults.get(name.as_str()) {
                 if existing_type != &default_type
-                    && !structure_members.contains_key(&default.name)
+                    && !structure_members.contains_key(name.as_str())
                 {
                     // Same name + different type + not overridden → conflict
                     diagnostics.push(
                         Diagnostic::error(format!(
                             "conflicting trait defaults for '{}': {} vs {}",
-                            default.name, existing_type, default_type
+                            name, existing_type, default_type
                         ))
                         .with_label(DiagnosticLabel::new(span, "conflicting trait defaults")),
                     );
@@ -4090,7 +4103,7 @@ fn collect_all_requirements(
                 // Same name already seen → skip (deduplicate).
                 continue;
             }
-            seen_defaults.insert(default.name.clone(), default_type);
+            seen_defaults.insert(name.clone(), default_type);
             defaults.push(default.clone());
         }
     }
@@ -4207,7 +4220,7 @@ fn compile_field(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<CompiledField> {
+) -> CompiledField {
     let domain_type = resolve_field_type_name(&field_def.domain_type.name, field_def.domain_type.span, diagnostics);
     let codomain_type = resolve_field_type_name(&field_def.codomain_type.name, field_def.codomain_type.span, diagnostics);
 
@@ -4267,14 +4280,14 @@ fn compile_field(
         ContentHash::combine_all([name_hash, domain_hash, codomain_hash, source_hash])
     };
 
-    Some(CompiledField {
+    CompiledField {
         name: field_def.name.clone(),
         is_pub: field_def.is_pub,
         domain_type,
         codomain_type,
         source,
         content_hash,
-    })
+    }
 }
 
 /// Check field composition types in a composed field expression.
@@ -4558,7 +4571,13 @@ fn compile_geometry_call(
                 ],
             }])
         }
-        _ => None,
+        _ => {
+            diagnostics.push(Diagnostic::error(format!(
+                "unsupported geometry function: {}",
+                name
+            )));
+            None
+        }
     }
 }
 
@@ -4810,6 +4829,38 @@ mod tests {
             matches!(op, CompiledGeometryOp::Pattern { kind: PatternKind::Circular, .. }),
             "expected Pattern(Circular), got {:?}",
             op
+        );
+    }
+
+    // --- Step 11: Directly test the catch-all branch in compile_geometry_call ---
+
+    #[test]
+    fn unsupported_geometry_fn_emits_diagnostic() {
+        // Fabricate a FunctionCall expr with a name that is NOT in the
+        // compile_geometry_call match arms (e.g., "make_cube").  This directly
+        // exercises the `_ =>` catch-all branch added in step-4.
+        let expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "make_cube".to_string(),
+                args: vec![reify_syntax::Expr {
+                    kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                    span: reify_types::SourceSpan::new(0, 1),
+                }],
+            },
+            span: reify_types::SourceSpan::new(0, 10),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let result = compile_geometry_call(&expr, &scope, &enum_defs, &functions, &mut diagnostics);
+
+        assert!(result.is_none(), "unrecognized geometry fn should return None");
+        assert!(
+            diagnostics.iter().any(|d| d.message.contains("unsupported geometry function")),
+            "expected 'unsupported geometry function' diagnostic, got: {:?}",
+            diagnostics
         );
     }
 }

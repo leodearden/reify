@@ -1,163 +1,167 @@
 {
-  "task_id": "104",
-  "title": "Fix state management bugs: phantom keys, stale closures, missing reconciliation",
+  "task_id": "117",
+  "title": "Fix silent type defaults and missing diagnostics in compiler",
   "files": [
-    "gui/src/stores/engineStore.ts",
-    "gui/src/stores/editorStore.ts",
-    "gui/src/stores/selectionStore.ts",
-    "gui/src/bridge.ts",
-    "gui/src/App.tsx",
-    "gui/src/__tests__/engineStore.test.ts",
-    "gui/src/__tests__/editorStore.test.ts",
-    "gui/src/__tests__/selectionStore.test.ts",
-    "gui/src/__tests__/bridge.test.ts"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/silent_defaults_tests.rs"
   ],
   "modules": [
-    "gui/src/stores",
-    "gui/src",
-    "gui/src/__tests__"
+    "crates/reify-compiler"
   ],
-  "analysis": "5 state management issues identified across 4 source files:\n\n**S4 (phantom keys):** engineStore's removeMesh/removeValue/removeConstraint use `setState('meshes', key, undefined!)` which sets the value to undefined but leaves the key in the object. When StatusBar iterates `Object.values(props.meshes)` it encounters undefined entries and crashes on `mesh.indices.length`. Similarly, meshManager.sync() uses `Object.entries(meshes)` which would include phantom entries. Fix: use `produce()` from solid-js/store to `delete` keys properly.\n\n**S3 (stale closure):** editorStore's closeFile first updates `state.openFiles` via setState, then reads `state.openFiles` to compute the fallback active file. In batched reactive contexts, the read may return stale data. Fix: compute remaining files locally before any setState calls, then use the local variable for both the openFiles update and the fallback computation.\n\n**S5/S6 (discarded return):** bridge.ts declares setParameter and updateSource as returning `Promise<void>`, but the Rust Tauri commands return `Result<GuiState, String>`. The returned state is silently discarded. The backend already emits delta events, but having the return value available enables reconciliation. Fix: change return types to `Promise<GuiState>` with proper wire-format conversion.\n\n**S7 (missed event recovery):** No mechanism exists to recover from missed Tauri events (e.g., temporary disconnection). Fix: add a `refreshFullState()` function to bridge.ts that fetches full state via getInitialState and returns it for reconciliation. The App component can expose this for manual or periodic recovery.\n\n**S8 (stale selection):** selectionStore's selectedEntity/hoveredEntity may reference entities that have been removed from engineStore. Fix: add a `clearIfRemoved(entityPath)` method to selectionStore, and wire it into engineStore's removal flow via an `onEntityRemoved` callback.",
+  "analysis": "This task fixes 5 issues in reify-compiler/src/lib.rs where the compiler silently swallows errors or uses misleading types:\n\n1. **H2 (line 961-965)**: Collection member type silently defaults to `Type::Real` via `unwrap_or(Type::Real)` when a collection member name isn't found. The collection name *is* validated (via `collection_sub_names.contains`), but the member name within it is not. Fix: when `collection_sub_member_types.get(name).and_then(|m| m.get(member))` returns None, emit a diagnostic instead of silently defaulting.\n\n2. **H3 (line 2645)**: When `compile_geometry_call()` returns None for the `_ => None` catch-all (unrecognized geometry function \u2014 this shouldn't happen since `is_geometry_let` guards it, but the catch-all exists), the caller at line 2645 silently skips via `if let Some(ops)`. The inner function already emits diagnostics for arg count mismatches, but the `_ => None` branch at line 4561 emits nothing. Fix: add a diagnostic in the `_ => None` branch of `compile_geometry_call` for unrecognized geometry functions.\n\n3. **M7 (line 4205-4277)**: `compile_field()` always returns `Some(...)` \u2014 the `Option` return type is misleading. Fix: change return type to `CompiledField` directly and update the single caller at line 1729.\n\n4. **L1 (line 1855-1856)**: `prev_idx` and `idx` are explicitly suppressed with `let _ = ...` but could be useful in the duplicate function diagnostic. Fix: include both span/index references in the diagnostic message, or remove the unused bindings.\n\n5. **L6 (line 1410)**: Empty string `String::new()` used as sentinel for unlabeled constraints in `TraitDefault.name`. This is checked via `.is_empty()` at lines 3902 and 4066. Fix: change `TraitDefault.name` to `Option<String>` and update all creation sites and consumers.\n\nAll 5 fixes are in a single file. A new test file will verify the diagnostic behavior changes.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for S4: after removeMesh/removeValue/removeConstraint, verify (1) the removed key is NOT present in Object.keys, (2) Object.values contains no undefined entries, and (3) iterating values to access properties (e.g., mesh.indices.length) does not crash. Add 3 test cases to engineStore.test.ts.",
+      "description": "Write failing test: misspelled collection member name should produce a diagnostic. Create `tests/silent_defaults_tests.rs` with test `collection_member_typo_produces_diagnostic` \u2014 compile a structure with `sub bolts : List<Bolt>` referencing `bolts[0].diametr` (typo). Assert an error diagnostic is emitted containing 'unknown member'. Currently this will pass silently with Type::Real.",
       "status": "done",
-      "commit": "c376fc1"
+      "commit": "3a30307"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix removeMesh, removeValue, removeConstraint in engineStore.ts to use `produce()` from solid-js/store with `delete` operator instead of setting to undefined. Import produce from solid-js/store. Each function becomes: setState(produce((s) => { delete s.meshes[key]; })). This properly removes the key from the store object.",
+      "description": "Fix H2: In lib.rs around line 961-965, replace `.unwrap_or(Type::Real)` with a match that emits `Diagnostic::error(format!(\"unknown member '{}' on collection sub '{}'\", member, name))` when the member name is not found in `collection_sub_member_types`, then falls back to `Type::Real` so compilation can continue. This makes the test pass.",
       "status": "done",
-      "commit": "7ae8fac"
+      "commit": "2a6bbff"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test for S3: closeFile should compute fallback active file from the locally-filtered remaining list, not from reactive state. Test scenario: open 3 files (A, B, C), set C active, close C — active should become A (first remaining). Add a batch() wrapper test case to demonstrate the stale-read scenario.",
+      "description": "Write failing test: geometry call with wrong arg count produces a diagnostic AND the caller doesn't silently swallow it. Add test `geometry_call_wrong_arg_count_produces_diagnostic` \u2014 compile a structure with `let shape = box(1, 2)` (missing 3rd arg). Assert error diagnostic contains 'expects 3 arguments'. Also add test `unrecognized_geometry_function_produces_diagnostic` testing the `_ => None` branch \u2014 this requires ensuring `is_geometry_function` returns true but `compile_geometry_call` doesn't match (currently impossible due to sync, but we should still add a diagnostic in the catch-all).",
       "status": "done",
-      "commit": "210eeae"
+      "commit": "0fec7b3"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix closeFile in editorStore.ts: compute `const remaining = state.openFiles.filter(f => f.path !== path)` first, then use it for both `setState('openFiles', remaining)` and the fallback active file computation. This eliminates the dependency on reading reactive state after mutation.",
+      "description": "Fix H3: In compile_geometry_call's `_ => None` match arm (line 4561), add `diagnostics.push(Diagnostic::error(format!(\"unsupported geometry function: {}\", name)));` before returning None. This ensures the catch-all branch is never truly silent. The wrong-arg-count test should already pass since inner diagnostics are emitted; verify both tests pass.",
       "status": "done",
-      "commit": "2f100b3"
+      "commit": "06dabf1"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for S5/S6 in bridge.test.ts: (1) setParameter should return a GuiState (not void) — mock invoke to return a RawGuiState and verify the bridge function resolves with a converted GuiState containing typed arrays. (2) Same for updateSource.",
+      "description": "Write test: `compile_field_returns_direct_value` \u2014 call compile through the public API with a field definition and verify the field is present in `compiled.fields`. This test should pass before AND after the refactor, serving as a regression guard for the M7 change.",
       "status": "done",
-      "commit": "16be44d"
+      "commit": "40e8f05"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Fix bridge.ts: change setParameter to `invoke<RawGuiState>('set_parameter', ...)` and return `convertRawGuiState(raw)`. Change updateSource similarly. Update return types from `Promise<void>` to `Promise<GuiState>`. Note: callers (App.tsx handleSetParameter, keyboard shortcut re-evaluate) don't need to use the return value — it's available for optional reconciliation.",
+      "description": "Fix M7: Change `compile_field()` return type from `Option<CompiledField>` to `CompiledField`. Remove the `Some(...)` wrapper at line 4270. Update the caller at line 1729 from `if let Some(compiled) = compile_field(...)` to a direct `let compiled = compile_field(...)` followed by `fields.push(compiled)`. Verify all existing field_compile_tests still pass.",
       "status": "done",
-      "commit": "900a247"
+      "commit": "66e131c"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test for S7 in bridge.test.ts: verify a `refreshFullState()` function exists that calls invoke('get_initial_state') and returns a converted GuiState. Mock invoke to return a RawGuiState and assert the return value.",
+      "description": "Write test: `duplicate_function_signature_diagnostic_has_context` \u2014 compile source with two functions of same signature and verify the error diagnostic message mentions the function name and parameter types. This validates step-8's improvement.",
       "status": "done",
-      "commit": "55fc364"
+      "commit": "292abee"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add refreshFullState() to bridge.ts — identical to getInitialState (calls invoke('get_initial_state') and converts). Export it alongside getInitialState. This provides a semantic alias that callers can use for periodic or on-demand recovery from missed events.",
+      "description": "Fix L1: At lines 1855-1856, remove `let _ = prev_idx;` and `let _ = idx;`. Either use `idx` and `prev_idx` to enrich the diagnostic (e.g., add index info or note which is the duplicate), or simply remove the dead bindings if the diagnostic is already sufficient. The simplest fix is to remove both `let _ = ...;` lines since the diagnostic already includes the function name and signature.",
       "status": "done",
-      "commit": "14a9980"
+      "commit": "41ea166"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for S8 in selectionStore.test.ts: (1) clearIfRemoved(entityPath) clears selectedEntity when it matches the removed path. (2) clearIfRemoved clears hoveredEntity when it matches. (3) clearIfRemoved does NOT clear selection/hover when the path doesn't match. (4) clearIfRemoved clears both selectedEntity and hoveredEntity when both match.",
+      "description": "Write test: `unlabeled_constraint_in_trait_uses_option_none` \u2014 compile a trait with an unlabeled constraint (`constraint : x > 0`) and verify the compiled trait's default has `name: None` (not empty string). This will fail until the Option<String> refactor is done.",
       "status": "done",
-      "commit": "e8cef82"
+      "commit": "dc4e4b0"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Add clearIfRemoved(entityPath: string) to selectionStore.ts: if state.selectedEntity === entityPath, call selectEntity(null). If state.hoveredEntity === entityPath, call hoverEntity(null). Export it in the returned API object.",
+      "description": "Fix L6: Change `TraitDefault.name` field type from `String` to `Option<String>`. Update all creation sites: (1) line 1353: `name: Some(param.name.clone())`, (2) line 1393: `name: Some(let_decl.name.clone())`, (3) line 1403: `name: Some(label.clone())`, (4) line 1410: `name: None` (was `String::new()`). Update all consumers: (a) line 3902: change `!default.name.is_empty()` to `default.name.is_some()`, (b) line 3916/3938: `contains_key` checks use `default.name.as_deref()` or `default.name.as_ref().map(|n| ...)`, (c) line 3920/3941: `.clone()` calls use `.clone().unwrap_or_default()` or extract from Some, (d) line 4066: change `default.name.is_empty()` to `default.name.is_none()`, (e) line 4077-4093: `seen_defaults.get/insert` use the name value. Verify all trait_conformance_tests and trait_bounds_tests still pass.",
       "status": "done",
-      "commit": "6730c00"
+      "commit": "138ae72"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test for S8 integration in engineStore.test.ts: createEngineStore({ onEntityRemoved: spy }) — verify the spy is called with the correct entity path when removeMesh, removeValue, or removeConstraint is called. Also verify the callback fires for event-driven removals via subscribeToEvents.",
+      "description": "Fix review issue [wrong_code_path_tested]: Add an internal unit test `unsupported_geometry_fn_emits_diagnostic` in lib.rs's `#[cfg(test)] mod tests` that directly calls `compile_geometry_call` with a fabricated `Expr` containing `ExprKind::FunctionCall { name: \"make_cube\".to_string(), args: vec![...] }` \u2014 a function name NOT in `is_geometry_function`. Assert the returned diagnostics contain `\"unsupported geometry function\"`. This directly exercises the `_ =>` catch-all branch added in step-4, which the existing integration test `geometry_call_wrong_arg_count_produces_diagnostic` does NOT cover (that test hits the pre-existing `\"box\"` match arm). Also rename `geometry_call_wrong_arg_count_produces_diagnostic` in silent_defaults_tests.rs to `box_wrong_arg_count_produces_preexisting_diagnostic` to accurately reflect it covers the pre-existing argument-count check, not the new catch-all branch.",
       "status": "done",
-      "commit": "aa95cb0"
+      "commit": "30564e4"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Add optional `onEntityRemoved` callback to createEngineStore options parameter. Call it from removeMesh (with entityPath), removeValue (with cellId), removeConstraint (with nodeId). Update createEngineStore signature to accept `options?: { onEntityRemoved?: (id: string) => void }`. Wire it in App.tsx: pass `{ onEntityRemoved: (id) => selectionStore.clearIfRemoved(id) }` to createEngineStore.",
+      "description": "Verify step-11 test passes (the `_ =>` branch diagnostic was already added in step-4, so the new unit test should pass immediately). No lib.rs code change needed \u2014 this step is verification-only. If the test fails for any reason (e.g., `compile_geometry_call` is not accessible from the internal test module, or the fabricated Expr doesn't work), fix the test setup.",
       "status": "done",
-      "commit": "f196001"
+      "commit": "30564e4"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Fix review issue [silent_error_swallowing]: Add test `trait_default_param_and_let_always_have_name` in silent_defaults_tests.rs that compiles a trait with both param and let defaults, retrieves the compiled TraitDef, and asserts that all DefaultKind::Param and DefaultKind::Let entries have `name.is_some()`. This is a regression guard confirming the invariant before we harden it with `.expect()`.",
+      "status": "done",
+      "commit": "2d5bc3d"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Fix review issue [silent_error_swallowing]: In `check_trait_conformance` at line 3927, replace `default.name.as_deref().unwrap_or(\"\")` with `default.name.as_deref().expect(\"DefaultKind::Param always has Some(name)\")`. At line 3950, replace `default.name.as_deref().unwrap_or(\"\")` with `default.name.as_deref().expect(\"DefaultKind::Let always has Some(name)\")`. This enforces the invariant loudly per the project's 'logic errors should be noisy' convention (feedback_silent_defaults_pattern), preventing silent ghost-member injection if the invariant is ever violated by future refactoring. Verify all existing tests still pass.",
+      "status": "done",
+      "commit": "557e061"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use produce() from solid-js/store for key deletion instead of spreading a new object",
-      "rationale": "produce() is SolidJS's recommended way to do Immer-style mutations on stores. It handles the proxy/tracking properly and is more readable than constructing new objects. It's already available in the solid-js package used by the project (v1.9+). Alternative of spreading `const { [key]: _, ...rest } = state.meshes; setState('meshes', rest)` works but is less ergonomic and creates a full shallow copy."
+      "decision": "Keep Type::Real as fallback even after emitting diagnostic for unknown collection member",
+      "rationale": "The compiler needs to continue compiling after errors to report multiple diagnostics in a single pass. Using Type::Real as fallback allows downstream compilation to proceed, matching the existing pattern used elsewhere (e.g., unresolved type names at line 1343, 4116)."
     },
     {
-      "decision": "Compute remaining files locally in closeFile rather than reading from reactive state",
-      "rationale": "Reading state.openFiles after setState may return stale data inside SolidJS batch() contexts. Computing the filtered list once and using it for both the state update and the fallback computation eliminates this class of bug entirely. This is a defensive-correctness pattern."
+      "decision": "Add diagnostic in compile_geometry_call's catch-all branch rather than in the caller",
+      "rationale": "The `_ => None` branch in compile_geometry_call is the right place because: (1) the function already pushes diagnostics for arg count errors, (2) it has access to the function name, and (3) the catch-all should theoretically never be reached (since is_geometry_let guards the caller), but if it is, it should be noisy per the project's 'no silent defaults' norm."
     },
     {
-      "decision": "Change bridge setParameter/updateSource to return Promise<GuiState> but don't force callers to handle it",
-      "rationale": "The Rust backend already returns GuiState from these commands. Making the bridge pass it through enables optional reconciliation without forcing existing callers to change. App.tsx's handleSetParameter can continue to .catch() without using the return value. This is backward-compatible and provides a path for future reconciliation logic."
+      "decision": "Change compile_field return type to direct CompiledField rather than adding None paths",
+      "rationale": "The function never returns None and has no failure path that would warrant it. Adding artificial None paths would be misleading. The simpler fix is to make the type honest about what the function does."
     },
     {
-      "decision": "Add refreshFullState() as a semantic alias rather than a separate mechanism",
-      "rationale": "refreshFullState() is functionally identical to getInitialState() — both fetch the full state snapshot. Having a distinct name makes the intent clear at call sites (recovery vs. initialization) without adding complexity. A periodic timer-based approach was considered but deferred as over-engineering for the current scope."
+      "decision": "Use Option<String> for TraitDefault.name rather than a newtype or enum",
+      "rationale": "Option<String> is idiomatic Rust for 'may or may not have a name' and is the standard replacement for empty-string-as-sentinel. It makes the code self-documenting and leverages the type system to prevent bugs."
     },
     {
-      "decision": "Use callback-based onEntityRemoved hook on createEngineStore rather than coupling stores directly",
-      "rationale": "Stores are designed to be independent and composed at the App level. Passing a callback keeps this separation clean — engineStore doesn't import or know about selectionStore. The App component acts as the composition root and wires the two together. This is the standard pattern in SolidJS applications."
+      "decision": "Create a single new test file rather than spreading across existing test files",
+      "rationale": "The 5 fixes are related (silent defaults / missing diagnostics) and having them in one test file makes the task's scope clear. Existing test files like collection_sub_tests.rs and field_compile_tests.rs have their own task-specific focus."
     },
     {
-      "decision": "clearIfRemoved checks both selectedEntity and hoveredEntity",
-      "rationale": "Both selectedEntity and hoveredEntity can reference entities that get removed. A hovered entity that no longer exists could cause highlight artifacts in the viewport or crashes in property lookups. Clearing both ensures no stale references survive removal."
+      "decision": "Use internal unit test in lib.rs for the geometry catch-all branch, not an integration test",
+      "rationale": "The `_ =>` catch-all branch in `compile_geometry_call` is unreachable through the public compile API because `is_geometry_let` filters upstream. The only way to exercise it is to call `compile_geometry_call` directly, which requires access to private functions \u2014 hence the test must be in the internal `#[cfg(test)] mod tests` in lib.rs."
+    },
+    {
+      "decision": "Replace unwrap_or(\"\") with .expect() rather than adding a diagnostic path",
+      "rationale": "DefaultKind::Param and DefaultKind::Let are always constructed with `name: Some(...)` (enforced in step-10's refactor). A None value would be a logic error / broken invariant, not a user input error. Per the project's 'logic errors should be noisy' convention, .expect() is the right choice \u2014 it panics immediately with a clear message rather than silently injecting a ghost member with empty-string name."
     }
   ],
   "reuse": [
     {
-      "what": "convertRawGuiState and RawGuiState type",
-      "where": "gui/src/types.ts",
-      "how": "Use in bridge.ts for setParameter/updateSource return type conversion, same pattern as existing getInitialState"
+      "what": "compile_module / compile_no_errors test helper pattern",
+      "where": "crates/reify-compiler/tests/collection_sub_tests.rs, trait_conformance_tests.rs",
+      "how": "Reuse the same parse \u2192 compile \u2192 check diagnostics pattern in the new test file. Parse with reify_syntax::parse, compile with reify_compiler::compile, filter diagnostics by Severity::Error."
     },
     {
-      "what": "getInitialState bridge function",
-      "where": "gui/src/bridge.ts",
-      "how": "refreshFullState is functionally identical — can reuse the same invoke + convert pattern"
+      "what": "Diagnostic::error(...).with_label(...) pattern",
+      "where": "Throughout lib.rs (lines 753, 970, 1334, etc.)",
+      "how": "Use the same diagnostic builder pattern for the new collection member and geometry function diagnostics."
     },
     {
-      "what": "Existing test patterns with createRoot, vi.mock, vi.fn",
-      "where": "gui/src/__tests__/*.test.ts",
-      "how": "Follow the same SolidJS reactive root wrapping, vitest mocking patterns, and assertion styles already established in the test suite"
+      "what": "Type::Real fallback after diagnostic pattern",
+      "where": "lib.rs lines 1343, 4116",
+      "how": "After emitting an 'unresolved type' diagnostic, the code falls back to Type::Real to allow continued compilation. Use the same pattern for the collection member type fix."
     },
     {
-      "what": "produce() from solid-js/store",
-      "where": "solid-js/store (modifiers.d.ts export)",
-      "how": "Import and use for Immer-style mutation in setState calls to properly delete object keys"
-    },
-    {
-      "what": "Existing engineStore initFromState pattern",
-      "where": "gui/src/stores/engineStore.ts lines 35-52",
-      "how": "For refreshFullState integration, the same initFromState function can be called with the refreshed GuiState"
+      "what": "Internal unit test pattern for compile_geometry_call",
+      "where": "lib.rs #[cfg(test)] mod tests (line 4622+)",
+      "how": "Existing internal tests directly call private functions like `is_geometry_function`. The new test for the catch-all branch follows the same pattern, directly calling `compile_geometry_call` with a fabricated Expr."
     }
   ],
-  "_session_id": "104-2dc32423",
-  "_created_at": "2026-03-21T17:12:37.979477+00:00"
+  "_session_id": "117-bdea6df7",
+  "_created_at": "2026-03-21T17:30:06.953004+00:00"
 }
