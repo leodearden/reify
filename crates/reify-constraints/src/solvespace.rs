@@ -639,32 +639,27 @@ impl SystemBuilder {
         }
 
         // --- Overflow checks for vec lengths → c_int (i32) ---
-        let n_params = i32::try_from(self.params.len()).unwrap_or_else(|_| {
-            panic!(
-                "too many SolveSpace params: {} exceeds i32::MAX",
-                self.params.len()
-            )
-        });
-        let n_entities = i32::try_from(self.entities.len()).unwrap_or_else(|_| {
-            panic!(
-                "too many SolveSpace entities: {} exceeds i32::MAX",
-                self.entities.len()
-            )
-        });
-        let n_constraints = i32::try_from(self.constraints.len()).unwrap_or_else(|_| {
-            panic!(
-                "too many SolveSpace constraints: {} exceeds i32::MAX",
-                self.constraints.len()
-            )
-        });
+        // Return TooLarge instead of panicking — panics here would
+        // unwind through callers, corrupt partial state, and poison
+        // SLVS_LOCK.
+        let n_params = match i32::try_from(self.params.len()) {
+            Ok(n) => n,
+            Err(_) => return SlvsSolveResult::TooLarge,
+        };
+        let n_entities = match i32::try_from(self.entities.len()) {
+            Ok(n) => n,
+            Err(_) => return SlvsSolveResult::TooLarge,
+        };
+        let n_constraints = match i32::try_from(self.constraints.len()) {
+            Ok(n) => n,
+            Err(_) => return SlvsSolveResult::TooLarge,
+        };
 
         let mut failed: Vec<Slvs_hConstraint> = vec![Slvs_hConstraint(0); self.constraints.len()];
-        let n_failed_buf = i32::try_from(failed.len()).unwrap_or_else(|_| {
-            panic!(
-                "failed buffer length {} exceeds i32::MAX",
-                failed.len()
-            )
-        });
+        let n_failed_buf = match i32::try_from(failed.len()) {
+            Ok(n) => n,
+            Err(_) => return SlvsSolveResult::TooLarge,
+        };
 
         let mut sys = Slvs_System {
             param: self.params.as_mut_ptr(),
@@ -727,6 +722,10 @@ enum SlvsSolveResult {
     },
     DidntConverge,
     TooManyUnknowns,
+    /// Vec lengths exceeded i32::MAX — can't pass to the C API.
+    TooLarge,
+    /// The global SLVS_LOCK mutex was poisoned by a prior panic.
+    LockPoisoned,
     UnknownError(i32),
 }
 
@@ -821,6 +820,14 @@ impl ConstraintSolver for SolveSpaceSolver {
             },
             SlvsSolveResult::TooManyUnknowns => SolveResult::NoProgress {
                 reason: "too many unknowns for SolveSpace solver".to_string(),
+            },
+            SlvsSolveResult::TooLarge => SolveResult::NoProgress {
+                reason: "constraint system too large for SolveSpace (exceeds i32::MAX entities)"
+                    .to_string(),
+            },
+            SlvsSolveResult::LockPoisoned => SolveResult::NoProgress {
+                reason: "solver lock poisoned by earlier panic — libslvs global state may be corrupted"
+                    .to_string(),
             },
             SlvsSolveResult::UnknownError(code) => SolveResult::NoProgress {
                 reason: format!("SolveSpace solver returned unknown error code {}", code),
