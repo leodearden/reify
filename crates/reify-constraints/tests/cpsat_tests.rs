@@ -441,3 +441,50 @@ fn all_different_3_ints() {
         other => panic!("expected Solved, got {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// step-15: SolverRegistry integration
+// ---------------------------------------------------------------------------
+
+/// CpSatSolver plugged into SolverRegistry as the logical solver.
+/// Bool auto params with And constraint should route to logical solver.
+#[test]
+fn registry_integration_logical_solver() {
+    use reify_constraints::{DimensionalSolver, SolverRegistry};
+
+    let registry = SolverRegistry::with_solvers(
+        Box::new(DimensionalSolver),
+        None,
+        Some(Box::new(CpSatSolver)),
+        None,
+    );
+
+    let a_id = vcid("Part", "a");
+    let b_id = vcid("Part", "b");
+
+    let a_ref = value_ref_typed("Part", "a", Type::Bool);
+    let b_ref = value_ref_typed("Part", "b", Type::Bool);
+
+    // constraint: a && b
+    let constraint_expr = and(a_ref, b_ref);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam { id: a_id.clone(), param_type: Type::Bool, bounds: None },
+            AutoParam { id: b_id.clone(), param_type: Type::Bool, bounds: None },
+        ],
+        constraints: vec![(cnid("Part", 0), constraint_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = registry.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            assert_eq!(values.get(&a_id), Some(&Value::Bool(true)));
+            assert_eq!(values.get(&b_id), Some(&Value::Bool(true)));
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
