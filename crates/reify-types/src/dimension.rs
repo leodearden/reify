@@ -15,7 +15,7 @@ impl Rational {
     pub const ZERO: Rational = Rational { num: 0, den: 1 };
     pub const ONE: Rational = Rational { num: 1, den: 1 };
 
-    pub fn new(num: i16, den: i16) -> Self {
+    pub const fn new(num: i16, den: i16) -> Self {
         assert!(den != 0, "denominator must not be zero");
         let g = gcd(num.unsigned_abs(), den.unsigned_abs()) as i16;
         let sign = if den < 0 { -1 } else { 1 };
@@ -25,11 +25,11 @@ impl Rational {
         }
     }
 
-    pub fn num(&self) -> i16 {
+    pub const fn num(&self) -> i16 {
         self.num
     }
 
-    pub fn den(&self) -> i16 {
+    pub const fn den(&self) -> i16 {
         self.den
     }
 
@@ -93,7 +93,7 @@ impl fmt::Display for Rational {
     }
 }
 
-fn gcd(mut a: u16, mut b: u16) -> u16 {
+const fn gcd(mut a: u16, mut b: u16) -> u16 {
     while b != 0 {
         let t = b;
         b = a % b;
