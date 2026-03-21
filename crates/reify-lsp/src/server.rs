@@ -29,6 +29,7 @@ impl ServerState {
 }
 
 /// The Reify language server.
+#[derive(Clone)]
 pub struct ReifyLanguageServer {
     client: Client,
     state: Arc<RwLock<ServerState>>,

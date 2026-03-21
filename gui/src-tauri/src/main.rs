@@ -222,7 +222,7 @@ async fn lsp_request(
         None
     };
 
-    let result = reify_gui::lsp_bridge::lsp_request_impl(&bridge, &method, params).await?;
+    let result = reify_gui::lsp_bridge::lsp_request_impl(&*bridge, &method, params).await?;
 
     // After document mutations, emit diagnostics as a Tauri event
     if let Some(uri) = uri {

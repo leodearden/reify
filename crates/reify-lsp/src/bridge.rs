@@ -13,27 +13,26 @@ use crate::server::ReifyLanguageServer;
 
 /// An in-process LSP server that can be called directly without I/O streams.
 ///
-/// Wraps tower-lsp's `LspService` and exposes a simple
-/// `handle_request(method, params) -> Result<Value>` interface.
+/// The `server` field holds a cloned `ReifyLanguageServer` (all `Arc`-wrapped
+/// internals) which is `Send + Sync`. The `LspService` and `ClientSocket` are
+/// kept alive in `_keepalive` behind a `std::sync::Mutex` to satisfy `Sync`,
+/// since `LspService` itself is only `Send`.
 pub struct InProcessLsp {
-    service: LspService<ReifyLanguageServer>,
-    /// We need to keep the socket alive even though we don't use it for I/O.
-    _socket: tower_lsp::ClientSocket,
+    server: ReifyLanguageServer,
+    /// Keep `LspService` and `ClientSocket` alive so the `Client` sender
+    /// remains connected, but never access them after construction.
+    _keepalive: std::sync::Mutex<(LspService<ReifyLanguageServer>, tower_lsp::ClientSocket)>,
 }
 
 impl InProcessLsp {
     /// Create a new in-process LSP server.
     pub fn new() -> Self {
         let (service, socket) = LspService::new(ReifyLanguageServer::new);
+        let server = service.inner().clone();
         Self {
-            service,
-            _socket: socket,
+            server,
+            _keepalive: std::sync::Mutex::new((service, socket)),
         }
-    }
-
-    /// Access the inner [`ReifyLanguageServer`] directly.
-    pub fn server(&self) -> &ReifyLanguageServer {
-        self.service.inner()
     }
 
     /// Retrieve the last published diagnostics for a given URI.
@@ -46,8 +45,7 @@ impl InProcessLsp {
     /// wait for any concurrent write lock to release, rather than
     /// silently returning empty diagnostics via `try_read()`.
     pub async fn get_diagnostics(&self, uri: &str) -> Vec<Value> {
-        let server = self.service.inner();
-        let state = server.state();
+        let state = self.server.state();
 
         let guard = state.read().await;
 
@@ -75,7 +73,7 @@ impl InProcessLsp {
         method: &str,
         params: Value,
     ) -> Result<Value, String> {
-        let server = self.service.inner();
+        let server = &self.server;
 
         match method {
             "initialize" => {

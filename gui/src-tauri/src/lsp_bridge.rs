@@ -22,18 +22,10 @@ impl LspBridge {
         }
     }
 
-    /// Access the inner [`InProcessLsp`] directly.
-    pub fn inner(&self) -> &InProcessLsp {
-        &self.lsp
-    }
-
     /// Retrieve the last published diagnostics for a given URI.
     ///
     /// Returns a `Vec<serde_json::Value>` suitable for serialization
     /// as a Tauri event payload.
-    ///
-    /// Async because the underlying `InProcessLsp::get_diagnostics`
-    /// awaits a `tokio::sync::RwLock` read guard.
     pub async fn get_diagnostics(&self, uri: &str) -> Vec<serde_json::Value> {
         self.lsp.get_diagnostics(uri).await
     }
