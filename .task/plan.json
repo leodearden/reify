@@ -30,7 +30,7 @@
     "gui/src/__tests__",
     "gui/src"
   ],
-  "analysis": "Task 97 requires 4 main features: (1) File browser sidebar with tree view of .ri files, (2) Export dialog with format selector + native save dialog + progress/toast, (3) Keyboard shortcuts (Ctrl+O, F5, Ctrl+E), (4) File-changed event detection with reload prompt.\n\nExisting codebase has:\n- bridge.ts with exportGeometry(entityPath, outputPath) \u2014 NOTE: signature doesn't match backend export(format, path) command. The bridge invokes 'export_geometry' but the backend registers 'export'. Parameter names also mismatch (entityPath vs format). Need to fix.\n- bridge.ts onFileChanged(callback) already wired to 'file-changed' backend event with FileData payload\n- editorStore with openFile/closeFile/setActiveFile/markDirty/markClean\n- App.tsx with handleExport() as a stub comment, handleFitToView() stub\n- All panel components follow pattern: Component with exported Props interface, CSS module, data-testid, export from panels/index.ts\n- Tests use vitest + @solidjs/testing-library, mock @tauri-apps/api/core and @tauri-apps/api/event\n- Backend export command takes format ('step'|'stl') and path strings\n- Backend does NOT have a list_project_files command \u2014 FileBrowser must be prop-driven\n- Editor.tsx already handles Ctrl+S for save via CodeMirror keymap\n- App.test.tsx mocks bridge module, Viewport, Editor, and FileTabs \u2014 new components may need similar mocks\n- No hooks/ directory exists yet \u2014 will be created for useKeyboardShortcuts",
+  "analysis": "Task 97 requires 4 main features: (1) File browser sidebar with tree view of .ri files, (2) Export dialog with format selector + native save dialog + progress/toast, (3) Keyboard shortcuts (Ctrl+O, F5, Ctrl+E), (4) File-changed event detection with reload prompt.\n\nExisting codebase has:\n- bridge.ts with exportGeometry(entityPath, outputPath) \u2014 NOTE: signature doesn't match backend export(format, path) command. The bridge invokes 'export_geometry' but the backend registers 'export'. Parameter names also mismatch (entityPath vs format). Need to fix.\n- bridge.ts onFileChanged(callback) already wired to 'file-changed' backend event with FileData payload\n- editorStore with openFile/closeFile/setActiveFile/markDirty/markClean\n- App.tsx with handleExport() as a stub comment, handleFitToView() stub\n- All panel components follow pattern: Component with exported Props interface, CSS module, data-testid, export from panels/index.ts\n- Tests use vitest + @solidjs/testing-library, mock @tauri-apps/api/core and @tauri-apps/api/event\n- Backend export command takes format ('step'|'stl') and path strings\n- Backend does NOT have a list_project_files command \u2014 FileBrowser must be prop-driven\n- Editor.tsx already handles Ctrl+S for save via CodeMirror keymap\n- App.test.tsx mocks bridge module, Viewport, Editor, and FileTabs \u2014 new components may need similar mocks\n- No hooks/ directory exists yet \u2014 will be created for useKeyboardShortcuts\n\nReview feedback (blocking): ExportDialog Export button lacks disabled={props.exporting}, allowing concurrent export clicks during the async export window. Cancel button should also be disabled during export to prevent closing the dialog mid-export without seeing the result.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -138,6 +138,20 @@
       "description": "Wire all new components into App.tsx and update layout: (1) Add FileBrowser in editor panel showing editorStore.state.openFiles, wire onFileClick to setActiveFile, (2) Add ExportDialog state (showExportDialog signal), wire handleExport to open it, wire onExport to call bridge.exportGeometry with format + native save dialog path (mock-safe), show Toast on success/error, (3) Wire useKeyboardShortcuts: Ctrl+O opens file via bridge.openFile, F5 re-evaluates by calling updateSource, Ctrl+E toggles export dialog, (4) Subscribe to bridge.onFileChanged in onMount, track changedFile signal, show ReloadPrompt for open files, wire Reload to update content, Dismiss to clear prompt, (5) Update App.module.css with fileBrowser class for layout, (6) Update App.test.tsx bridge mock to include onFileChanged. Ensure all new components render in App smoke tests.",
       "status": "done",
       "commit": "e548b70"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Add failing tests to __tests__/ExportDialog.test.tsx for concurrent-invocation guard: (1) 'Export button is disabled when exporting=true' \u2014 render with exporting=true, query the Export button, assert it has disabled attribute and clicking it does NOT call onExport. (2) 'Cancel button is disabled when exporting=true' \u2014 render with exporting=true, query the Cancel button, assert it has disabled attribute and clicking it does NOT call onClose. (3) 'Export button is enabled when exporting=false' \u2014 render with exporting=false, assert Export button does NOT have disabled attribute. (4) 'format selector is disabled when exporting=true' \u2014 render with exporting=true, assert the <select> has disabled attribute to prevent changing format mid-export.",
+      "status": "done",
+      "commit": "b21d4ef"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Fix ExportDialog.tsx to guard against concurrent invocation: (1) Add disabled={props.exporting} to the Export button (line 48). (2) Add disabled={props.exporting} to the Cancel button (line 42) to prevent closing the dialog mid-export without seeing the result. (3) Add disabled={props.exporting} to the format <select> (line 29) to prevent changing format during an in-progress export. All three are gated on the existing props.exporting boolean which App.tsx already manages.",
+      "status": "done",
+      "commit": "2894aef"
     }
   ],
   "design_decisions": [
@@ -172,6 +186,10 @@
     {
       "decision": "Export dialog handles native save dialog in App.tsx wiring, not inside ExportDialog component",
       "rationale": "ExportDialog is a pure UI component that emits onExport(format). App.tsx handles the async flow: open native dialog (via @tauri-apps/plugin-dialog), get path, call bridge.exportGeometry(format, path), show toast. This keeps ExportDialog testable without mocking Tauri plugins."
+    },
+    {
+      "decision": "Disable Export, Cancel, and format selector when exporting=true",
+      "rationale": "Reviewer identified that between the user clicking Export and the dialog closing (in handleDoExport's finally block in App.tsx), there is an unbounded async window during which the user can click Export again, firing concurrent bridgeExportGeometry calls. For large models this window can be several seconds. Disabling all interactive controls (not just Export) prevents changing format mid-export and prevents closing the dialog without seeing the result. The exporting prop already exists and is managed by App.tsx, so no new state is needed."
     }
   ],
   "reuse": [
@@ -224,8 +242,13 @@
       "what": "For/Show SolidJS primitives for conditional and list rendering",
       "where": "ConstraintPanel.tsx (For + Show), PropertyEditor.tsx (For + Show), FileTabs.tsx (For + Show)",
       "how": "FileBrowser uses For for file list + Show for empty state. ExportDialog uses Show for open/close. Toast uses Show for visibility. ReloadPrompt uses Show for filePath check."
+    },
+    {
+      "what": "Existing props.exporting boolean in ExportDialog",
+      "where": "ExportDialog.tsx line 7 (ExportDialogProps.exporting), App.tsx manages the signal",
+      "how": "The exporting prop already exists and is used for the progress indicator. Steps 13-14 reuse it to also disable interactive controls, requiring zero new state or prop changes."
     }
   ],
   "_session_id": "97-86cb4992",
-  "_created_at": "2026-03-21T07:53:52.848931+00:00"
+  "_created_at": "2026-03-21T08:13:23.817937+00:00"
 }
