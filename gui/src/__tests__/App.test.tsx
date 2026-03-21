@@ -52,6 +52,7 @@ vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
   setParameter: vi.fn().mockResolvedValue(undefined),
   exportGeometry: vi.fn().mockResolvedValue(undefined),
+  pickSavePath: vi.fn().mockResolvedValue('/user/chosen/export.step'),
   updateSource: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
   getSourceLocation: vi.fn().mockResolvedValue({ file: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
@@ -581,5 +582,64 @@ describe('App handleSetParameter error handling', () => {
       window.removeEventListener('unhandledrejection', rejectHandler);
       errorSpy.mockRestore();
     }
+  });
+});
+
+describe('App file picker integration (E-6)', () => {
+  it('calls pickSavePath then exportGeometry with the chosen path', async () => {
+    vi.mocked(bridge.pickSavePath).mockResolvedValue('/user/chosen/export.step');
+    vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
+
+    render(() => <App />);
+
+    // Open the export dialog
+    fireEvent.click(screen.getByText('Export'));
+    await waitFor(() => {
+      expect(screen.getByTestId('export-dialog')).toBeTruthy();
+    });
+
+    // Click Export inside the dialog (default format is 'step')
+    const dialog = screen.getByRole('dialog');
+    const exportBtn = dialog.querySelector('button:last-of-type') as HTMLButtonElement;
+    fireEvent.click(exportBtn);
+
+    await waitFor(() => {
+      expect(bridge.pickSavePath).toHaveBeenCalledWith('export.step', 'step');
+    });
+
+    await waitFor(() => {
+      expect(bridge.exportGeometry).toHaveBeenCalledWith('step', '/user/chosen/export.step');
+    });
+  });
+
+  it('does NOT call exportGeometry when user cancels file picker', async () => {
+    vi.mocked(bridge.pickSavePath).mockResolvedValue(null);
+    vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
+
+    render(() => <App />);
+
+    // Open the export dialog
+    fireEvent.click(screen.getByText('Export'));
+    await waitFor(() => {
+      expect(screen.getByTestId('export-dialog')).toBeTruthy();
+    });
+
+    // Click Export inside the dialog
+    const dialog = screen.getByRole('dialog');
+    const exportBtn = dialog.querySelector('button:last-of-type') as HTMLButtonElement;
+    fireEvent.click(exportBtn);
+
+    await waitFor(() => {
+      expect(bridge.pickSavePath).toHaveBeenCalled();
+    });
+
+    // Give time for any downstream calls
+    await new Promise((r) => setTimeout(r, 50));
+
+    // exportGeometry should NOT have been called
+    expect(bridge.exportGeometry).not.toHaveBeenCalled();
+
+    // Dialog should still be open (not closed after cancel)
+    expect(screen.getByTestId('export-dialog')).toBeTruthy();
   });
 });
