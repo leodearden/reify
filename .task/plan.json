@@ -1,0 +1,167 @@
+{
+  "task_id": "117",
+  "title": "Fix silent type defaults and missing diagnostics in compiler",
+  "files": [
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/silent_defaults_tests.rs"
+  ],
+  "modules": [
+    "crates/reify-compiler"
+  ],
+  "analysis": "This task fixes 5 issues in reify-compiler/src/lib.rs where the compiler silently swallows errors or uses misleading types:\n\n1. **H2 (line 961-965)**: Collection member type silently defaults to `Type::Real` via `unwrap_or(Type::Real)` when a collection member name isn't found. The collection name *is* validated (via `collection_sub_names.contains`), but the member name within it is not. Fix: when `collection_sub_member_types.get(name).and_then(|m| m.get(member))` returns None, emit a diagnostic instead of silently defaulting.\n\n2. **H3 (line 2645)**: When `compile_geometry_call()` returns None for the `_ => None` catch-all (unrecognized geometry function \u2014 this shouldn't happen since `is_geometry_let` guards it, but the catch-all exists), the caller at line 2645 silently skips via `if let Some(ops)`. The inner function already emits diagnostics for arg count mismatches, but the `_ => None` branch at line 4561 emits nothing. Fix: add a diagnostic in the `_ => None` branch of `compile_geometry_call` for unrecognized geometry functions.\n\n3. **M7 (line 4205-4277)**: `compile_field()` always returns `Some(...)` \u2014 the `Option` return type is misleading. Fix: change return type to `CompiledField` directly and update the single caller at line 1729.\n\n4. **L1 (line 1855-1856)**: `prev_idx` and `idx` are explicitly suppressed with `let _ = ...` but could be useful in the duplicate function diagnostic. Fix: include both span/index references in the diagnostic message, or remove the unused bindings.\n\n5. **L6 (line 1410)**: Empty string `String::new()` used as sentinel for unlabeled constraints in `TraitDefault.name`. This is checked via `.is_empty()` at lines 3902 and 4066. Fix: change `TraitDefault.name` to `Option<String>` and update all creation sites and consumers.\n\nAll 5 fixes are in a single file. A new test file will verify the diagnostic behavior changes.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test: misspelled collection member name should produce a diagnostic. Create `tests/silent_defaults_tests.rs` with test `collection_member_typo_produces_diagnostic` \u2014 compile a structure with `sub bolts : List<Bolt>` referencing `bolts[0].diametr` (typo). Assert an error diagnostic is emitted containing 'unknown member'. Currently this will pass silently with Type::Real.",
+      "status": "done",
+      "commit": "3a30307"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Fix H2: In lib.rs around line 961-965, replace `.unwrap_or(Type::Real)` with a match that emits `Diagnostic::error(format!(\"unknown member '{}' on collection sub '{}'\", member, name))` when the member name is not found in `collection_sub_member_types`, then falls back to `Type::Real` so compilation can continue. This makes the test pass.",
+      "status": "done",
+      "commit": "2a6bbff"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test: geometry call with wrong arg count produces a diagnostic AND the caller doesn't silently swallow it. Add test `geometry_call_wrong_arg_count_produces_diagnostic` \u2014 compile a structure with `let shape = box(1, 2)` (missing 3rd arg). Assert error diagnostic contains 'expects 3 arguments'. Also add test `unrecognized_geometry_function_produces_diagnostic` testing the `_ => None` branch \u2014 this requires ensuring `is_geometry_function` returns true but `compile_geometry_call` doesn't match (currently impossible due to sync, but we should still add a diagnostic in the catch-all).",
+      "status": "done",
+      "commit": "0fec7b3"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Fix H3: In compile_geometry_call's `_ => None` match arm (line 4561), add `diagnostics.push(Diagnostic::error(format!(\"unsupported geometry function: {}\", name)));` before returning None. This ensures the catch-all branch is never truly silent. The wrong-arg-count test should already pass since inner diagnostics are emitted; verify both tests pass.",
+      "status": "done",
+      "commit": "06dabf1"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test: `compile_field_returns_direct_value` \u2014 call compile through the public API with a field definition and verify the field is present in `compiled.fields`. This test should pass before AND after the refactor, serving as a regression guard for the M7 change.",
+      "status": "done",
+      "commit": "40e8f05"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Fix M7: Change `compile_field()` return type from `Option<CompiledField>` to `CompiledField`. Remove the `Some(...)` wrapper at line 4270. Update the caller at line 1729 from `if let Some(compiled) = compile_field(...)` to a direct `let compiled = compile_field(...)` followed by `fields.push(compiled)`. Verify all existing field_compile_tests still pass.",
+      "status": "done",
+      "commit": "66e131c"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test: `duplicate_function_signature_diagnostic_has_context` \u2014 compile source with two functions of same signature and verify the error diagnostic message mentions the function name and parameter types. This validates step-8's improvement.",
+      "status": "done",
+      "commit": "292abee"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Fix L1: At lines 1855-1856, remove `let _ = prev_idx;` and `let _ = idx;`. Either use `idx` and `prev_idx` to enrich the diagnostic (e.g., add index info or note which is the duplicate), or simply remove the dead bindings if the diagnostic is already sufficient. The simplest fix is to remove both `let _ = ...;` lines since the diagnostic already includes the function name and signature.",
+      "status": "done",
+      "commit": "41ea166"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write test: `unlabeled_constraint_in_trait_uses_option_none` \u2014 compile a trait with an unlabeled constraint (`constraint : x > 0`) and verify the compiled trait's default has `name: None` (not empty string). This will fail until the Option<String> refactor is done.",
+      "status": "done",
+      "commit": "dc4e4b0"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Fix L6: Change `TraitDefault.name` field type from `String` to `Option<String>`. Update all creation sites: (1) line 1353: `name: Some(param.name.clone())`, (2) line 1393: `name: Some(let_decl.name.clone())`, (3) line 1403: `name: Some(label.clone())`, (4) line 1410: `name: None` (was `String::new()`). Update all consumers: (a) line 3902: change `!default.name.is_empty()` to `default.name.is_some()`, (b) line 3916/3938: `contains_key` checks use `default.name.as_deref()` or `default.name.as_ref().map(|n| ...)`, (c) line 3920/3941: `.clone()` calls use `.clone().unwrap_or_default()` or extract from Some, (d) line 4066: change `default.name.is_empty()` to `default.name.is_none()`, (e) line 4077-4093: `seen_defaults.get/insert` use the name value. Verify all trait_conformance_tests and trait_bounds_tests still pass.",
+      "status": "done",
+      "commit": "138ae72"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Fix review issue [wrong_code_path_tested]: Add an internal unit test `unsupported_geometry_fn_emits_diagnostic` in lib.rs's `#[cfg(test)] mod tests` that directly calls `compile_geometry_call` with a fabricated `Expr` containing `ExprKind::FunctionCall { name: \"make_cube\".to_string(), args: vec![...] }` \u2014 a function name NOT in `is_geometry_function`. Assert the returned diagnostics contain `\"unsupported geometry function\"`. This directly exercises the `_ =>` catch-all branch added in step-4, which the existing integration test `geometry_call_wrong_arg_count_produces_diagnostic` does NOT cover (that test hits the pre-existing `\"box\"` match arm). Also rename `geometry_call_wrong_arg_count_produces_diagnostic` in silent_defaults_tests.rs to `box_wrong_arg_count_produces_preexisting_diagnostic` to accurately reflect it covers the pre-existing argument-count check, not the new catch-all branch.",
+      "status": "done",
+      "commit": "30564e4"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Verify step-11 test passes (the `_ =>` branch diagnostic was already added in step-4, so the new unit test should pass immediately). No lib.rs code change needed \u2014 this step is verification-only. If the test fails for any reason (e.g., `compile_geometry_call` is not accessible from the internal test module, or the fabricated Expr doesn't work), fix the test setup.",
+      "status": "done",
+      "commit": "30564e4"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Fix review issue [silent_error_swallowing]: Add test `trait_default_param_and_let_always_have_name` in silent_defaults_tests.rs that compiles a trait with both param and let defaults, retrieves the compiled TraitDef, and asserts that all DefaultKind::Param and DefaultKind::Let entries have `name.is_some()`. This is a regression guard confirming the invariant before we harden it with `.expect()`.",
+      "status": "done",
+      "commit": "2d5bc3d"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Fix review issue [silent_error_swallowing]: In `check_trait_conformance` at line 3927, replace `default.name.as_deref().unwrap_or(\"\")` with `default.name.as_deref().expect(\"DefaultKind::Param always has Some(name)\")`. At line 3950, replace `default.name.as_deref().unwrap_or(\"\")` with `default.name.as_deref().expect(\"DefaultKind::Let always has Some(name)\")`. This enforces the invariant loudly per the project's 'logic errors should be noisy' convention (feedback_silent_defaults_pattern), preventing silent ghost-member injection if the invariant is ever violated by future refactoring. Verify all existing tests still pass.",
+      "status": "done",
+      "commit": "557e061"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Keep Type::Real as fallback even after emitting diagnostic for unknown collection member",
+      "rationale": "The compiler needs to continue compiling after errors to report multiple diagnostics in a single pass. Using Type::Real as fallback allows downstream compilation to proceed, matching the existing pattern used elsewhere (e.g., unresolved type names at line 1343, 4116)."
+    },
+    {
+      "decision": "Add diagnostic in compile_geometry_call's catch-all branch rather than in the caller",
+      "rationale": "The `_ => None` branch in compile_geometry_call is the right place because: (1) the function already pushes diagnostics for arg count errors, (2) it has access to the function name, and (3) the catch-all should theoretically never be reached (since is_geometry_let guards the caller), but if it is, it should be noisy per the project's 'no silent defaults' norm."
+    },
+    {
+      "decision": "Change compile_field return type to direct CompiledField rather than adding None paths",
+      "rationale": "The function never returns None and has no failure path that would warrant it. Adding artificial None paths would be misleading. The simpler fix is to make the type honest about what the function does."
+    },
+    {
+      "decision": "Use Option<String> for TraitDefault.name rather than a newtype or enum",
+      "rationale": "Option<String> is idiomatic Rust for 'may or may not have a name' and is the standard replacement for empty-string-as-sentinel. It makes the code self-documenting and leverages the type system to prevent bugs."
+    },
+    {
+      "decision": "Create a single new test file rather than spreading across existing test files",
+      "rationale": "The 5 fixes are related (silent defaults / missing diagnostics) and having them in one test file makes the task's scope clear. Existing test files like collection_sub_tests.rs and field_compile_tests.rs have their own task-specific focus."
+    },
+    {
+      "decision": "Use internal unit test in lib.rs for the geometry catch-all branch, not an integration test",
+      "rationale": "The `_ =>` catch-all branch in `compile_geometry_call` is unreachable through the public compile API because `is_geometry_let` filters upstream. The only way to exercise it is to call `compile_geometry_call` directly, which requires access to private functions \u2014 hence the test must be in the internal `#[cfg(test)] mod tests` in lib.rs."
+    },
+    {
+      "decision": "Replace unwrap_or(\"\") with .expect() rather than adding a diagnostic path",
+      "rationale": "DefaultKind::Param and DefaultKind::Let are always constructed with `name: Some(...)` (enforced in step-10's refactor). A None value would be a logic error / broken invariant, not a user input error. Per the project's 'logic errors should be noisy' convention, .expect() is the right choice \u2014 it panics immediately with a clear message rather than silently injecting a ghost member with empty-string name."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "compile_module / compile_no_errors test helper pattern",
+      "where": "crates/reify-compiler/tests/collection_sub_tests.rs, trait_conformance_tests.rs",
+      "how": "Reuse the same parse \u2192 compile \u2192 check diagnostics pattern in the new test file. Parse with reify_syntax::parse, compile with reify_compiler::compile, filter diagnostics by Severity::Error."
+    },
+    {
+      "what": "Diagnostic::error(...).with_label(...) pattern",
+      "where": "Throughout lib.rs (lines 753, 970, 1334, etc.)",
+      "how": "Use the same diagnostic builder pattern for the new collection member and geometry function diagnostics."
+    },
+    {
+      "what": "Type::Real fallback after diagnostic pattern",
+      "where": "lib.rs lines 1343, 4116",
+      "how": "After emitting an 'unresolved type' diagnostic, the code falls back to Type::Real to allow continued compilation. Use the same pattern for the collection member type fix."
+    },
+    {
+      "what": "Internal unit test pattern for compile_geometry_call",
+      "where": "lib.rs #[cfg(test)] mod tests (line 4622+)",
+      "how": "Existing internal tests directly call private functions like `is_geometry_function`. The new test for the catch-all branch follows the same pattern, directly calling `compile_geometry_call` with a fabricated Expr."
+    }
+  ],
+  "_session_id": "117-bdea6df7",
+  "_created_at": "2026-03-21T17:30:06.953004+00:00"
+}
