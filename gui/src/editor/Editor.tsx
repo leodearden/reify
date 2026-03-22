@@ -34,6 +34,7 @@ export function Editor(props: EditorProps) {
   let unlistenDiagnostics: (() => void) | undefined;
   let diagnosticsListenerCancelled = false;
   let fileOpsPromise: Promise<void> = Promise.resolve();
+  let destroyed = false;
 
   // Current URI — updated on file switch, read by LSP extension getters
   let currentUri = 'file:///untitled.ri';
@@ -205,7 +206,10 @@ export function Editor(props: EditorProps) {
     const version = lspVersion;
     fileOpsPromise = fileOpsPromise
       .then(() => lspClient.didClose(oldUri))
-      .then(() => lspClient.didOpen(newUri, newContent, version))
+      .then(() => {
+        if (destroyed) return;
+        return lspClient.didOpen(newUri, newContent, version);
+      })
       .catch((err: unknown) => console.error('LSP file switch error:', err));
   });
 
@@ -245,8 +249,14 @@ export function Editor(props: EditorProps) {
     unlistenDiagnostics?.();
     // Release cached per-file EditorState instances
     fileStates.clear();
-    // Close the current document in the LSP server
-    lspClient.didClose(currentUri).catch(() => {});
+    // Prevent any in-flight file switch chain from calling didOpen after teardown
+    destroyed = true;
+    // Chain the final didClose off fileOpsPromise so it waits for any
+    // in-flight file switch operations to complete before closing
+    const uriToClose = currentUri;
+    fileOpsPromise = fileOpsPromise
+      .then(() => lspClient.didClose(uriToClose))
+      .catch(() => {});
     view?.destroy();
   });
 
