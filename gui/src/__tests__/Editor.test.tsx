@@ -412,3 +412,26 @@ describe('Editor diagnostics URI filtering', () => {
     expect(diagnosticCount(view.state)).toBe(1);
   });
 });
+
+describe('Editor debounce timer cancellation on file switch (RC-04)', () => {
+  it('debounced updateSource does NOT fire after file switch', () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Edit file1 (triggers debounce timer)
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+
+    // Immediately switch to file2 (before 300ms elapses)
+    store.setActiveFile(file2.path);
+
+    // Advance timers past the debounce period
+    vi.advanceTimersByTime(300);
+
+    // The debounced updateSource should NOT have fired for the stale edit
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+});
