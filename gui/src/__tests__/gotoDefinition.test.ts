@@ -88,3 +88,86 @@ describe('reifyGotoDefinition', () => {
     expect(params.textDocument.uri).toBe('file:///second.ri');
   });
 });
+
+describe('cross-file goto-definition (onNavigate)', () => {
+  it('calls onNavigate callback when definition is in a different file', async () => {
+    const currentUri = 'file:///current.ri';
+    const crossFileLocation = {
+      uri: 'file:///other.ri',
+      range: { start: { line: 5, character: 2 }, end: { line: 5, character: 10 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(crossFileLocation));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          line: () => ({ from: 0 }),
+        },
+      },
+      dispatch: vi.fn(),
+    };
+
+    mousedownHandler(mockEvent, mockView);
+    await new Promise((r) => setTimeout(r, 10));
+
+    // onNavigate should be called with the cross-file URI, line, character
+    expect(onNavigate).toHaveBeenCalledWith('file:///other.ri', 5, 2);
+    // view.dispatch should NOT be called (different file)
+    expect(mockView.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('same-file definition dispatches cursor movement without calling onNavigate', async () => {
+    const currentUri = 'file:///current.ri';
+    const sameFileLocation = {
+      uri: 'file:///current.ri',
+      range: { start: { line: 10, character: 3 }, end: { line: 10, character: 8 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(sameFileLocation));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          line: (n: number) => ({ from: (n - 1) * 20 }),
+        },
+      },
+      dispatch: vi.fn(),
+    };
+
+    mousedownHandler(mockEvent, mockView);
+    await new Promise((r) => setTimeout(r, 10));
+
+    // onNavigate should NOT be called (same file)
+    expect(onNavigate).not.toHaveBeenCalled();
+    // view.dispatch should be called for same-file navigation
+    expect(mockView.dispatch).toHaveBeenCalledWith({
+      selection: { anchor: expect.any(Number) },
+      scrollIntoView: true,
+    });
+  });
+});
