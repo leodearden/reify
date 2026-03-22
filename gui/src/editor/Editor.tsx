@@ -7,7 +7,7 @@ import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/
 import { search, searchKeymap } from '@codemirror/search';
 import { linter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
 import { reifyLanguage } from './reifyLanguage';
-import { updateSource, saveFile } from '../bridge';
+import { updateSource, saveFile, openFile as bridgeOpenFile } from '../bridge';
 import { createLspClient } from './lspClient';
 import { reifyCompletionSource } from './completions';
 import { createDiagnosticsListener, lspDiagnosticToCodeMirror, type CmDiagnostic } from './diagnostics';
@@ -70,7 +70,29 @@ export function Editor(props: EditorProps) {
       // LSP-powered hover tooltips — dynamic URI getter
       reifyHoverTooltip(() => currentUri),
       // LSP-powered go-to-definition (Ctrl+Click) — dynamic URI getter
-      reifyGotoDefinition(() => currentUri),
+      reifyGotoDefinition(() => currentUri, (targetUri, line, character) => {
+        const path = targetUri.replace('file://', '');
+        bridgeOpenFile(path)
+          .then((fileData) => {
+            props.store.openFile(fileData);
+            // Defer cursor navigation until after SolidJS reactive file-switch
+            // effect has run and the EditorView has the new document
+            setTimeout(() => {
+              if (view) {
+                const lineNum = line + 1;
+                if (lineNum >= 1 && lineNum <= view.state.doc.lines) {
+                  const targetLine = view.state.doc.line(lineNum);
+                  const targetPos = Math.min(targetLine.from + character, targetLine.to);
+                  view.dispatch({
+                    selection: { anchor: targetPos },
+                    scrollIntoView: true,
+                  });
+                }
+              }
+            }, 0);
+          })
+          .catch((err: unknown) => console.error('Cross-file goto-definition error:', err));
+      }),
       // Find/replace (Ctrl+F, Ctrl+H)
       search(),
       // Diagnostic linter (diagnostics are pushed from LSP via Tauri events)
