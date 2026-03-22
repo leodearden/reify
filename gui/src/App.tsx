@@ -235,21 +235,30 @@ const App: Component = () => {
     );
     Promise.allSettled(promises)
       .then((results) => {
+        const succeededPaths: string[] = [];
         const failedPaths: string[] = [];
         for (let i = 0; i < results.length; i++) {
-          if (results[i].status === 'rejected') {
+          if (results[i].status === 'fulfilled') {
+            succeededPaths.push(filePaths[i]);
+          } else {
             failedPaths.push(filePaths[i]);
           }
         }
+        // Functional update: only delete succeeded paths, preserving any
+        // concurrently-added paths from onFileChanged events during reload
+        setChangedFiles((prev) => {
+          const next = new Set(prev);
+          for (const path of succeededPaths) {
+            next.delete(path);
+          }
+          return next;
+        });
         if (failedPaths.length > 0) {
-          setChangedFiles(new Set(failedPaths));
           const count = failedPaths.length;
           showToast(
             `${count} file${count > 1 ? 's' : ''} failed to reload`,
             'error',
           );
-        } else {
-          setChangedFiles(new Set());
         }
         setConfirmReload(false);
       });
