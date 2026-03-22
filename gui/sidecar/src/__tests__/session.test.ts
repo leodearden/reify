@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { OutboundMessage } from '../types.js';
 
@@ -7,6 +8,7 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
+import { spawn } from 'node:child_process';
 import { SidecarSession } from '../session.js';
 import { main } from '../index.js';
 
@@ -215,6 +217,23 @@ describe('entrypoint wiring', () => {
   });
 
   it('sending a valid JSON line through input produces outbound messages on output', async () => {
+    // Configure spawn mock to return a process that emits a successful response
+    const mockSpawn = vi.mocked(spawn);
+    mockSpawn.mockImplementation((() => {
+      const proc = new EventEmitter() as any;
+      proc.stdout = new PassThrough();
+      proc.stderr = new PassThrough();
+      proc.stdin = new PassThrough();
+      // Simulate successful CLI response after a tick
+      process.nextTick(() => {
+        proc.stdout.push('Test response');
+        proc.stdout.push(null);
+        proc.stderr.push(null);
+        proc.emit('close', 0);
+      });
+      return proc;
+    }) as any);
+
     const input = new PassThrough();
     const output = new PassThrough();
 
@@ -237,6 +256,8 @@ describe('entrypoint wiring', () => {
     // Should have ready from init, then done from the message processing
     expect(types).toContain('ready');
     expect(types).toContain('done');
+
+    mockSpawn.mockReset();
   });
 
   it('process sends ready message on startup', async () => {
