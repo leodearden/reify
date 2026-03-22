@@ -1,0 +1,142 @@
+import { describe, it, expect } from 'vitest';
+import { parseInboundMessage, formatOutboundMessage } from '../ipc.js';
+import type { OutboundMessage } from '../types.js';
+
+describe('parseInboundMessage', () => {
+  it('correctly parses send_message with text', () => {
+    const line = JSON.stringify({
+      type: 'send_message',
+      id: 'msg-1',
+      text: 'Hello world',
+    });
+    const msg = parseInboundMessage(line);
+    expect(msg).toEqual({
+      type: 'send_message',
+      id: 'msg-1',
+      text: 'Hello world',
+    });
+  });
+
+  it('correctly parses send_message with text and context', () => {
+    const line = JSON.stringify({
+      type: 'send_message',
+      id: 'msg-2',
+      text: 'Fix this',
+      context: {
+        selected_entity: 'bracket',
+        diagnostics: ['error at line 5'],
+        constraints: ['width > 0'],
+      },
+    });
+    const msg = parseInboundMessage(line);
+    expect(msg.type).toBe('send_message');
+    if (msg.type === 'send_message') {
+      expect(msg.text).toBe('Fix this');
+      expect(msg.context?.selected_entity).toBe('bracket');
+      expect(msg.context?.diagnostics).toEqual(['error at line 5']);
+      expect(msg.context?.constraints).toEqual(['width > 0']);
+    }
+  });
+
+  it('correctly parses abort message', () => {
+    const line = JSON.stringify({ type: 'abort' });
+    const msg = parseInboundMessage(line);
+    expect(msg).toEqual({ type: 'abort' });
+  });
+
+  it('correctly parses clear_session message', () => {
+    const line = JSON.stringify({ type: 'clear_session' });
+    const msg = parseInboundMessage(line);
+    expect(msg).toEqual({ type: 'clear_session' });
+  });
+
+  it('throws on invalid JSON', () => {
+    expect(() => parseInboundMessage('not json {')).toThrow();
+  });
+
+  it('throws on unknown message type', () => {
+    const line = JSON.stringify({ type: 'unknown_type' });
+    expect(() => parseInboundMessage(line)).toThrow(/unknown.*type/i);
+  });
+});
+
+describe('formatOutboundMessage', () => {
+  it('serializes text_delta correctly', () => {
+    const msg: OutboundMessage = { type: 'text_delta', text: 'Hello' };
+    const result = formatOutboundMessage(msg);
+    const parsed = JSON.parse(result.trim());
+    expect(parsed).toEqual({ type: 'text_delta', text: 'Hello' });
+  });
+
+  it('serializes thinking_delta correctly', () => {
+    const msg: OutboundMessage = { type: 'thinking_delta', text: 'Hmm...' };
+    const result = formatOutboundMessage(msg);
+    const parsed = JSON.parse(result.trim());
+    expect(parsed).toEqual({ type: 'thinking_delta', text: 'Hmm...' });
+  });
+
+  it('serializes tool_call correctly', () => {
+    const msg: OutboundMessage = {
+      type: 'tool_call',
+      tool: 'reify_get_source',
+      args: { file: 'main.ri' },
+    };
+    const result = formatOutboundMessage(msg);
+    const parsed = JSON.parse(result.trim());
+    expect(parsed).toEqual({
+      type: 'tool_call',
+      tool: 'reify_get_source',
+      args: { file: 'main.ri' },
+    });
+  });
+
+  it('serializes tool_result correctly', () => {
+    const msg: OutboundMessage = {
+      type: 'tool_result',
+      tool: 'reify_get_source',
+      result: 'structure Bracket {}',
+    };
+    const result = formatOutboundMessage(msg);
+    const parsed = JSON.parse(result.trim());
+    expect(parsed).toEqual({
+      type: 'tool_result',
+      tool: 'reify_get_source',
+      result: 'structure Bracket {}',
+    });
+  });
+
+  it('serializes done correctly', () => {
+    const msg: OutboundMessage = { type: 'done' };
+    const result = formatOutboundMessage(msg);
+    const parsed = JSON.parse(result.trim());
+    expect(parsed).toEqual({ type: 'done' });
+  });
+
+  it('serializes error correctly', () => {
+    const msg: OutboundMessage = { type: 'error', message: 'Auth failed' };
+    const result = formatOutboundMessage(msg);
+    const parsed = JSON.parse(result.trim());
+    expect(parsed).toEqual({ type: 'error', message: 'Auth failed' });
+  });
+
+  it('serializes ready correctly', () => {
+    const msg: OutboundMessage = { type: 'ready' };
+    const result = formatOutboundMessage(msg);
+    const parsed = JSON.parse(result.trim());
+    expect(parsed).toEqual({ type: 'ready' });
+  });
+
+  it('always ends with newline', () => {
+    const messages: OutboundMessage[] = [
+      { type: 'text_delta', text: 'hi' },
+      { type: 'thinking_delta', text: 'hmm' },
+      { type: 'done' },
+      { type: 'error', message: 'fail' },
+      { type: 'ready' },
+    ];
+    for (const msg of messages) {
+      const result = formatOutboundMessage(msg);
+      expect(result.endsWith('\n')).toBe(true);
+    }
+  });
+});
