@@ -987,6 +987,130 @@ describe('App handleReload partial failure', () => {
   });
 });
 
+describe('App handleReload race condition', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/bracket.ri', content: 'structure Bracket {}' },
+      { path: '/project/gear.ri', content: 'structure Gear {}' },
+      { path: '/project/housing.ri', content: 'structure Housing {}' },
+    ],
+  };
+
+  let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
+
+  beforeEach(() => {
+    fileChangedCallback = undefined;
+    vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+      fileChangedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+  });
+
+  it('concurrent file-change event during reload is preserved after all succeed', async () => {
+    // Use deferred promises to control when bridgeOpenFile resolves
+    let resolveBracket: ((value: any) => void) | undefined;
+    let resolveGear: ((value: any) => void) | undefined;
+
+    vi.mocked(bridge.openFile).mockImplementation((path: string) => {
+      if (path === '/project/bracket.ri') {
+        return new Promise((resolve) => { resolveBracket = resolve; });
+      }
+      if (path === '/project/gear.ri') {
+        return new Promise((resolve) => { resolveGear = resolve; });
+      }
+      return Promise.resolve({ path, content: `updated ${path}` });
+    });
+
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+
+    // Two files change
+    fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+    await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+    // Click Reload — starts in-flight reload for bracket.ri and gear.ri
+    fireEvent.click(screen.getByText('Reload'));
+
+    // Wait for bridgeOpenFile to be called
+    await waitFor(() => {
+      expect(bridge.openFile).toHaveBeenCalledTimes(2);
+    });
+
+    // DURING the in-flight reload, a new file-change event arrives for housing.ri
+    fileChangedCallback!({ path: '/project/housing.ri', content: '' });
+
+    // Now resolve both promises (both succeed)
+    resolveBracket!({ path: '/project/bracket.ri', content: 'updated bracket.ri' });
+    resolveGear!({ path: '/project/gear.ri', content: 'updated gear.ri' });
+
+    // After settlement, housing.ri should still be in changedFiles
+    // The reload prompt should show housing.ri, not disappear entirely
+    await waitFor(() => {
+      const prompt = screen.getByTestId('reload-prompt');
+      expect(prompt.textContent).toMatch(/housing\.ri/);
+    });
+  });
+
+  it('concurrent file-change event during reload preserved alongside partial failure', async () => {
+    // bracket.ri succeeds, gear.ri fails, housing.ri arrives concurrently
+    let resolveBracket: ((value: any) => void) | undefined;
+    let rejectGear: ((reason: any) => void) | undefined;
+
+    vi.mocked(bridge.openFile).mockImplementation((path: string) => {
+      if (path === '/project/bracket.ri') {
+        return new Promise((resolve) => { resolveBracket = resolve; });
+      }
+      if (path === '/project/gear.ri') {
+        return new Promise((_resolve, reject) => { rejectGear = reject; });
+      }
+      return Promise.resolve({ path, content: `updated ${path}` });
+    });
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      render(() => <App />);
+      await waitFor(() => expect(fileChangedCallback).toBeDefined());
+
+      // Two files change
+      fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+      fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+      await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+      // Click Reload
+      fireEvent.click(screen.getByText('Reload'));
+
+      await waitFor(() => {
+        expect(bridge.openFile).toHaveBeenCalledTimes(2);
+      });
+
+      // Concurrent file-change event during in-flight reload
+      fileChangedCallback!({ path: '/project/housing.ri', content: '' });
+
+      // Resolve bracket (success), reject gear (failure)
+      resolveBracket!({ path: '/project/bracket.ri', content: 'updated bracket.ri' });
+      rejectGear!(new Error('disk error'));
+
+      // After settlement: gear.ri (failed) + housing.ri (concurrent) should both remain
+      // bracket.ri (succeeded) should be removed
+      await waitFor(() => {
+        const prompt = screen.getByTestId('reload-prompt');
+        expect(prompt.textContent).toMatch(/2 files changed/);
+      });
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+      errorSpy.mockRestore();
+    }
+  });
+});
+
 describe('App handleSetParameter error handling', () => {
   it('logs error when bridge.setParameter rejects', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
