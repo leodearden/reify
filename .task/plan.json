@@ -11,7 +11,7 @@
     "gui/src/editor",
     "gui/src/__tests__"
   ],
-  "analysis": "Four bugs around editor file switching need fixing in the SolidJS/CodeMirror6 editor component:\n\n(E-05) Diagnostics cross-file contamination: The `createDiagnosticsListener` callback in Editor.tsx (lines 144-157) applies incoming diagnostics to the editor without checking whether `event.uri` matches `currentUri`. Diagnostics from file A get applied to file B when you switch files.\n\n(RC-04) Debounced didChange after file switch: The `lspDebounceTimer` (lines 107-113) and `debounceTimer` (lines 99-104) are NOT cleared when the file switch effect runs (lines 168-195). A pending timer from editing file A could fire after switching to file B. While the captured `path` variable is correct (captured at edit time), the shared `lspVersion` counter creates conflicts, and sending didChange for a URI that was just didClose'd confuses the LSP server.\n\n(E-04) File switch replaces doc content instead of swapping EditorState: Lines 183-186 use `view.dispatch({changes: ...})` to replace the entire document on file switch. This pollutes the undo history \u2014 undoing in file B would restore file A's content. Fix: maintain a `Map<string, EditorState>` of per-file states, save current state on switch, restore the target file's state via `view.setState()`.\n\n(RC-02) LSP didClose/didOpen not serialized: Lines 191-194 fire `didClose(oldUri).then(() => didOpen(newUri))` but the promise chain is fire-and-forget. Rapid file switches (A->B->C) can cause overlapping didClose/didOpen calls that arrive out of order. Fix: chain each file switch's LSP operations off a `fileOpsPromise` variable to serialize them.",
+  "analysis": "Four bugs around editor file switching need fixing in the SolidJS/CodeMirror6 editor component:\n\n(E-05) Diagnostics cross-file contamination: The `createDiagnosticsListener` callback in Editor.tsx (lines 144-157) applies incoming diagnostics to the editor without checking whether `event.uri` matches `currentUri`. Diagnostics from file A get applied to file B when you switch files.\n\n(RC-04) Debounced didChange after file switch: The `lspDebounceTimer` (lines 107-113) and `debounceTimer` (lines 99-104) are NOT cleared when the file switch effect runs (lines 168-195). A pending timer from editing file A could fire after switching to file B. While the captured `path` variable is correct (captured at edit time), the shared `lspVersion` counter creates conflicts, and sending didChange for a URI that was just didClose'd confuses the LSP server.\n\n(E-04) File switch replaces doc content instead of swapping EditorState: Lines 183-186 use `view.dispatch({changes: ...})` to replace the entire document on file switch. This pollutes the undo history \u2014 undoing in file B would restore file A's content. Fix: maintain a `Map<string, EditorState>` of per-file states, save current state on switch, restore the target file's state via `view.setState()`.\n\n(RC-02) LSP didClose/didOpen not serialized: Lines 191-194 fire `didClose(oldUri).then(() => didOpen(newUri))` but the promise chain is fire-and-forget. Rapid file switches (A->B->C) can cause overlapping didClose/didOpen calls that arrive out of order. Fix: chain each file switch's LSP operations off a `fileOpsPromise` variable to serialize them.\n\n(RC-05 / review feedback) Resource leak race condition on cleanup: onCleanup calls `lspClient.didClose(currentUri)` directly without waiting for in-flight `fileOpsPromise` to settle. If a file switch is mid-chain at teardown time, the cleanup's didClose fires concurrently, then the pending chain's didOpen fires afterward \u2014 leaving a phantom open document in the LSP server. Fix: chain cleanup's didClose off fileOpsPromise and add a `destroyed` flag to skip didOpen after teardown.",
   "prerequisites": [],
   "steps": [
     {
@@ -83,6 +83,20 @@
       "description": "Final cleanup: ensure onCleanup handler also clears the fileStates map. Remove the `isSwitching` flag and guard if it's no longer needed (setState doesn't trigger updateListener). Run the full gui test suite to confirm no regressions across all test files.",
       "status": "done",
       "commit": "93023ae"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test: RC-05 \u2014 onCleanup race condition with in-flight fileOpsPromise. In Editor.test.tsx, add a new describe block 'Editor cleanup race condition (RC-05)'. Test scenario: (1) render Editor with file1 and file2 open, (2) set up invoke mock to track LSP call order and make didClose/didOpen return controllable promises (using deferred pattern) so the file switch chain is mid-flight, (3) trigger a file switch from file1 to file2, (4) while the file switch LSP chain is still in progress (didClose resolved but didOpen not yet), call cleanup() from the render result to unmount the component, (5) resolve the pending didOpen promise, (6) flush all microtasks, (7) assert that the final LSP call sequence ends with a didClose for file2's URI (the cleanup's chained didClose), and critically that no didOpen fires AFTER the cleanup's didClose \u2014 proving the `destroyed` flag prevents the phantom open document. A second test verifies the simple case: when no file switch is in flight, cleanup's didClose still chains off fileOpsPromise and fires correctly for the current URI.",
+      "status": "done",
+      "commit": "a123f69"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Fix RC-05 \u2014 chain cleanup's didClose off fileOpsPromise and add destroyed flag. In Editor.tsx: (1) Add `let destroyed = false;` alongside the other component-level variables. (2) In the file switch effect's fileOpsPromise chain (line 208), guard the didOpen call: `.then(() => { if (destroyed) return; return lspClient.didOpen(newUri, newContent, version); })`. (3) In onCleanup, set `destroyed = true` before chaining the final didClose. Replace the direct `lspClient.didClose(currentUri).catch(() => {})` with: `const uriToClose = currentUri; fileOpsPromise = fileOpsPromise.then(() => lspClient.didClose(uriToClose)).catch(() => {});`. This ensures the cleanup's didClose waits for any in-flight file switch operations to complete, and the destroyed flag prevents any pending didOpen from executing after teardown. Run full test suite to confirm all tests pass including the new RC-05 test.",
+      "status": "done",
+      "commit": "71c69ed"
     }
   ],
   "design_decisions": [
@@ -109,23 +123,27 @@
     {
       "decision": "Extract CM6 extensions into a shared variable for reuse in fresh EditorState creation",
       "rationale": "When a file is opened for the first time (no saved EditorState in the map), we need to create a fresh EditorState with the same extensions. Extracting the extensions array avoids duplication between onMount and the file switch effect."
+    },
+    {
+      "decision": "Chain cleanup's didClose off fileOpsPromise and use a destroyed flag to guard didOpen",
+      "rationale": "The cleanup must not race with in-flight file switch operations. Chaining off fileOpsPromise guarantees the final didClose runs after any pending didClose/didOpen pair completes. The destroyed flag prevents the pending chain's didOpen from executing after the component is torn down, which would leave a phantom open document in the LSP server. This is simpler than cancellable promises and covers the edge case where teardown happens mid-chain."
     }
   ],
   "reuse": [
     {
       "what": "Existing EditorView.findFromDOM() test helper (getEditorView)",
-      "where": "gui/src/__tests__/Editor.test.tsx line 63-66",
+      "where": "gui/src/__tests__/Editor.test.tsx line 71-74",
       "how": "Reuse for all new Editor tests to get the CM6 view instance from the rendered container"
     },
     {
-      "what": "Existing setupStore() helper and file fixtures (file1, file2)",
-      "where": "gui/src/__tests__/Editor.test.tsx lines 19-35",
-      "how": "Extend with a file3 fixture and reuse setupStore for multi-file test scenarios"
+      "what": "Existing setupStore() helper and file fixtures (file1, file2, file3)",
+      "where": "gui/src/__tests__/Editor.test.tsx lines 26-43",
+      "how": "Reuse setupStore and existing file fixtures for the cleanup race condition test"
     },
     {
       "what": "Existing Tauri API mocks (vi.mock for @tauri-apps/api/core and event)",
-      "where": "gui/src/__tests__/Editor.test.tsx lines 10-15, diagnostics.test.ts lines 4-10",
-      "how": "Reuse the same mock patterns; extend the listen mock to simulate diagnostics events with URI fields"
+      "where": "gui/src/__tests__/Editor.test.tsx lines 12-17",
+      "how": "Reuse the same mock patterns; extend the invoke mock with deferred promises for controllable async behavior"
     },
     {
       "what": "DiagnosticsEvent type with uri field already defined",
@@ -134,15 +152,25 @@
     },
     {
       "what": "pathToUri helper function",
-      "where": "gui/src/editor/Editor.tsx lines 43-46",
+      "where": "gui/src/editor/Editor.tsx lines 44-48",
       "how": "Already available in scope for URI comparison in diagnostics filtering"
     },
     {
       "what": "CodeMirror EditorState.create() pattern",
-      "where": "gui/src/editor/Editor.tsx lines 55-123",
+      "where": "gui/src/editor/Editor.tsx lines 59-124",
       "how": "Reuse the same extensions for creating fresh per-file EditorState instances in the fileStates map"
+    },
+    {
+      "what": "Existing fileOpsPromise serialization pattern",
+      "where": "gui/src/editor/Editor.tsx lines 36, 206-209",
+      "how": "The cleanup fix chains off the same fileOpsPromise variable, extending the existing serialization pattern to cover component teardown"
+    },
+    {
+      "what": "LSP call tracking pattern from RC-02 test",
+      "where": "gui/src/__tests__/Editor.test.tsx lines 499-551",
+      "how": "Reuse the mockInvoke pattern that tracks LSP method calls with URIs, extended with deferred promises for the controllable-async test scenario"
     }
   ],
   "_session_id": "103-3d37479f",
-  "_created_at": "2026-03-22T07:26:03.186721+00:00"
+  "_created_at": "2026-03-22T07:49:13.057631+00:00"
 }
