@@ -171,6 +171,10 @@ export function Editor(props: EditorProps) {
     const activeFile = props.store.state.activeFile;
     if (!view || activeFile === previousActiveFile) return;
 
+    // Cancel any pending debounced operations from the previous file
+    clearTimeout(debounceTimer);
+    clearTimeout(lspDebounceTimer);
+
     const oldUri = currentUri;
     previousActiveFile = activeFile;
 
