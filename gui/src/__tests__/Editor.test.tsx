@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { EditorView } from '@codemirror/view';
+import { undo } from '@codemirror/commands';
 import { diagnosticCount } from '@codemirror/lint';
 import { createEditorStore } from '../stores/editorStore';
 import * as bridge from '../bridge';
@@ -440,8 +441,7 @@ describe('Editor per-file undo history (E-04)', () => {
     expect(view.state.doc.toString()).toContain('// edit');
 
     // (5) Undo — should revert file1's edit, not produce file2 content
-    const { undo } = require('@codemirror/commands');
-    undo({ state: view.state, dispatch: view.dispatch.bind(view) });
+    undo(view);
 
     view = getEditorView(container);
     // After undo, file1 should be back to original content
@@ -461,8 +461,7 @@ describe('Editor per-file undo history (E-04)', () => {
     let view = getEditorView(container);
 
     // Attempt undo in file2 — should be a no-op (no edits made in file2)
-    const { undo } = require('@codemirror/commands');
-    undo({ state: view.state, dispatch: view.dispatch.bind(view) });
+    undo(view);
 
     view = getEditorView(container);
     // file2 should still show file2 content, NOT file1's content

@@ -1,5 +1,5 @@
 import { onMount, onCleanup, createEffect } from 'solid-js';
-import { EditorState } from '@codemirror/state';
+import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { bracketMatching, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
@@ -28,8 +28,9 @@ export function Editor(props: EditorProps) {
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   let lspDebounceTimer: ReturnType<typeof setTimeout> | undefined;
   let previousActiveFile: string | null = null;
-  let isSwitching = false;
   let lspVersion = 1;
+  const fileStates = new Map<string, EditorState>();
+  let extensions: Extension[];
   let unlistenDiagnostics: (() => void) | undefined;
   let diagnosticsListenerCancelled = false;
 
@@ -52,75 +53,76 @@ export function Editor(props: EditorProps) {
     const doc = file?.content ?? '';
     currentUri = activeFile ? pathToUri(activeFile) : 'file:///untitled.ri';
 
-    const state = EditorState.create({
-      doc,
-      extensions: [
-        reifyLanguage(),
-        bracketMatching(),
-        syntaxHighlighting(defaultHighlightStyle),
-        history(),
-        // LSP-powered completions — dynamic URI getter resolves on each request
-        autocompletion({ override: [reifyCompletionSource(() => currentUri)] }),
-        // LSP-powered hover tooltips — dynamic URI getter
-        reifyHoverTooltip(() => currentUri),
-        // LSP-powered go-to-definition (Ctrl+Click) — dynamic URI getter
-        reifyGotoDefinition(() => currentUri),
-        // Diagnostic linter (diagnostics are pushed from LSP via Tauri events)
-        linter(() => [] as Diagnostic[]),
-        keymap.of([
-          {
-            key: 'Mod-s',
-            run: () => {
-              const path = props.store.state.activeFile;
-              if (path) {
-                const file = props.store.state.openFiles.find((f) => f.path === path);
-                if (!file) {
-                  console.error('Save aborted: file not in store', path);
-                  return true;
-                }
-                saveFile(path, file.content)
-                  .then(() => props.store.markClean(path))
-                  .catch((err: unknown) =>
-                    props.onError?.(`Failed to save file: ${err instanceof Error ? err.message : String(err)}`),
-                  );
-              }
-              return true;
-            },
-            preventDefault: true,
-          },
-          ...defaultKeymap,
-          ...historyKeymap,
-        ]),
-        EditorView.updateListener.of((update) => {
-          if (update.docChanged && !isSwitching) {
+    // Extract extensions into a shared variable for reuse when creating
+    // fresh EditorState instances for newly opened files
+    extensions = [
+      reifyLanguage(),
+      bracketMatching(),
+      syntaxHighlighting(defaultHighlightStyle),
+      history(),
+      // LSP-powered completions — dynamic URI getter resolves on each request
+      autocompletion({ override: [reifyCompletionSource(() => currentUri)] }),
+      // LSP-powered hover tooltips — dynamic URI getter
+      reifyHoverTooltip(() => currentUri),
+      // LSP-powered go-to-definition (Ctrl+Click) — dynamic URI getter
+      reifyGotoDefinition(() => currentUri),
+      // Diagnostic linter (diagnostics are pushed from LSP via Tauri events)
+      linter(() => [] as Diagnostic[]),
+      keymap.of([
+        {
+          key: 'Mod-s',
+          run: () => {
             const path = props.store.state.activeFile;
             if (path) {
-              props.store.markDirty(path);
-              clearTimeout(debounceTimer);
-              debounceTimer = setTimeout(() => {
-                updateSource(path, update.state.doc.toString()).catch((err: unknown) =>
-                  console.error('Failed to update source:', err),
+              const file = props.store.state.openFiles.find((f) => f.path === path);
+              if (!file) {
+                console.error('Save aborted: file not in store', path);
+                return true;
+              }
+              saveFile(path, file.content)
+                .then(() => props.store.markClean(path))
+                .catch((err: unknown) =>
+                  props.onError?.(`Failed to save file: ${err instanceof Error ? err.message : String(err)}`),
                 );
-              }, 300);
-
-              // Send didChange to LSP (debounced)
-              clearTimeout(lspDebounceTimer);
-              lspDebounceTimer = setTimeout(() => {
-                lspVersion++;
-                lspClient
-                  .didChange(pathToUri(path), update.state.doc.toString(), lspVersion)
-                  .catch((err: unknown) => console.error('LSP didChange error:', err));
-              }, 300);
             }
+            return true;
+          },
+          preventDefault: true,
+        },
+        ...defaultKeymap,
+        ...historyKeymap,
+      ]),
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          const path = props.store.state.activeFile;
+          if (path) {
+            props.store.markDirty(path);
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+              updateSource(path, update.state.doc.toString()).catch((err: unknown) =>
+                console.error('Failed to update source:', err),
+              );
+            }, 300);
+
+            // Send didChange to LSP (debounced)
+            clearTimeout(lspDebounceTimer);
+            lspDebounceTimer = setTimeout(() => {
+              lspVersion++;
+              lspClient
+                .didChange(pathToUri(path), update.state.doc.toString(), lspVersion)
+                .catch((err: unknown) => console.error('LSP didChange error:', err));
+            }, 300);
           }
-          if (update.selectionSet) {
-            const pos = update.state.selection.main.head;
-            const line = update.state.doc.lineAt(pos);
-            props.store.setCursorPosition(line.number, pos - line.from);
-          }
-        }),
-      ],
-    });
+        }
+        if (update.selectionSet) {
+          const pos = update.state.selection.main.head;
+          const line = update.state.doc.lineAt(pos);
+          props.store.setCursorPosition(line.number, pos - line.from);
+        }
+      }),
+    ];
+
+    const state = EditorState.create({ doc, extensions });
 
     view = new EditorView({ state, parent: containerRef });
 
@@ -185,12 +187,16 @@ export function Editor(props: EditorProps) {
     // Update the mutable URI so extension getters resolve to the new file
     currentUri = newUri;
 
-    isSwitching = true;
-    view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: newContent },
-      selection: { anchor: 0 },
-    });
-    isSwitching = false;
+    // Save current file's EditorState (keyed by URI) before switching
+    fileStates.set(oldUri, view.state);
+
+    // Restore or create EditorState for the new file
+    const savedState = fileStates.get(newUri);
+    if (savedState) {
+      view.setState(savedState);
+    } else {
+      view.setState(EditorState.create({ doc: newContent, extensions }));
+    }
 
     // Close old document and open new one in the LSP server
     lspVersion++;
