@@ -207,3 +207,36 @@ fn tessellate_records_geometry_errors_as_diagnostics() {
         result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+/// tessellate_snapshot returns None when no prior eval() has been called.
+#[test]
+fn tessellate_snapshot_returns_none_without_prior_eval() {
+    let module = module_with_box_realization();
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let result = engine.tessellate_snapshot(&module);
+    assert!(result.is_none(), "expected None when no eval() has been called");
+}
+
+/// tessellate_snapshot returns tessellated meshes from the current snapshot after eval().
+#[test]
+fn tessellate_snapshot_returns_meshes_after_eval() {
+    let module = module_with_box_realization();
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Initial eval to populate snapshot
+    let _eval_result = engine.eval(&module);
+
+    let result = engine.tessellate_snapshot(&module)
+        .expect("tessellate_snapshot should return Some after eval()");
+
+    assert_eq!(result.meshes.len(), 1, "expected one mesh from one realization");
+    let (entity_path, mesh) = &result.meshes[0];
+    assert_eq!(entity_path, "TestShape#realization[0]");
+    assert!(!mesh.vertices.is_empty(), "mesh should have non-empty vertices");
+    assert!(!mesh.indices.is_empty(), "mesh should have non-empty indices");
+}
