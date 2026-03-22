@@ -1,6 +1,16 @@
-// Tool stubs — placeholder
+// Tool registration
 
 pub mod navigation;
 pub mod read;
 pub mod reference;
 pub mod write;
+
+use crate::registry::ToolRegistry;
+
+/// Register all 16 MCP tools as stubs in the given registry.
+pub fn register_all_tools(registry: &mut ToolRegistry) {
+    read::register(registry);
+    write::register(registry);
+    navigation::register(registry);
+    reference::register(registry);
+}
