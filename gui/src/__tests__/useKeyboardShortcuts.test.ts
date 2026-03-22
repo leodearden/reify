@@ -127,4 +127,49 @@ describe('useKeyboardShortcuts', () => {
     );
     expect(onOpen).not.toHaveBeenCalled();
   });
+
+  it('dispatching Ctrl+Shift+R calls onReloadShortcut', () => {
+    const onReloadShortcut = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onReloadShortcut });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'R', ctrlKey: true, shiftKey: true, bubbles: true }),
+    );
+    expect(onReloadShortcut).toHaveBeenCalledTimes(1);
+  });
+
+  it('dispatching Escape calls onDismissReload', () => {
+    const onDismissReload = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onDismissReload });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    );
+    expect(onDismissReload).toHaveBeenCalledTimes(1);
+  });
+
+  it('Ctrl+Shift+R is skipped when target is an input element', () => {
+    const onReloadShortcut = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onReloadShortcut });
+      return d;
+    });
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'R', ctrlKey: true, shiftKey: true, bubbles: true }),
+      );
+      expect(onReloadShortcut).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
 });

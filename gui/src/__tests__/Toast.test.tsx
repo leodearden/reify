@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { Toast } from '../panels/Toast';
 
@@ -39,6 +39,74 @@ describe('Toast', () => {
     render(() => <Toast message="Done" type="success" onDismiss={onDismiss} />);
     const btn = screen.getByTestId('toast').querySelector('button')!;
     fireEvent.click(btn);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('close button has aria-label="Close"', () => {
+    render(() => <Toast message="Done" type="success" onDismiss={vi.fn()} />);
+    const btn = screen.getByTestId('toast').querySelector('button')!;
+    expect(btn.getAttribute('aria-label')).toBe('Close');
+  });
+
+  it('toast root has role="alert" and aria-live="assertive"', () => {
+    render(() => <Toast message="Done" type="success" onDismiss={vi.fn()} />);
+    const toast = screen.getByTestId('toast');
+    expect(toast.getAttribute('role')).toBe('alert');
+    expect(toast.getAttribute('aria-live')).toBe('assertive');
+  });
+
+  it('toast element has the animated class for slide-in animation', () => {
+    render(() => <Toast message="OK" type="success" onDismiss={vi.fn()} />);
+    const toast = screen.getByTestId('toast');
+    // CSS module maps class names; check that the animated class is applied
+    expect(toast.className).toContain('animated');
+  });
+});
+
+describe('Toast auto-dismiss', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('calls onDismiss after 3000ms for success type', () => {
+    const onDismiss = vi.fn();
+    render(() => <Toast message="OK" type="success" onDismiss={onDismiss} />);
+    expect(onDismiss).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(3000);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onDismiss after 5000ms for error type', () => {
+    const onDismiss = vi.fn();
+    render(() => <Toast message="Fail" type="error" onDismiss={onDismiss} />);
+    vi.advanceTimersByTime(3000);
+    expect(onDismiss).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(2000);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onDismiss after 3000ms for info type', () => {
+    const onDismiss = vi.fn();
+    render(() => <Toast message="Note" type="info" onDismiss={onDismiss} />);
+    vi.advanceTimersByTime(3000);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('manual dismiss before timeout does not double-call onDismiss', () => {
+    const onDismiss = vi.fn();
+    const { unmount } = render(() => <Toast message="OK" type="success" onDismiss={onDismiss} />);
+    // Manual dismiss via button click
+    const btn = screen.getByTestId('toast').querySelector('button')!;
+    fireEvent.click(btn);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    // Unmount to trigger onCleanup (clears the timer)
+    unmount();
+    // Advance past timeout — should NOT call onDismiss again
+    vi.advanceTimersByTime(5000);
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 });

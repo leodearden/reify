@@ -1,4 +1,4 @@
-import { type Component, onMount, onCleanup, createSignal, createEffect, Show } from 'solid-js';
+import { type Component, onMount, onCleanup, createSignal, createEffect, Show, For } from 'solid-js';
 import { Viewport } from './viewport';
 import { Editor } from './editor/Editor';
 import { FileTabs } from './editor/FileTabs';
@@ -15,7 +15,6 @@ import {
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
-import { createToast } from './hooks/useToast';
 import { createEngineStore } from './stores/engineStore';
 import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
@@ -36,7 +35,7 @@ import {
   navigateToEntity,
   navigateFromConstraint,
 } from './navigation';
-import type { ExportFormat, FileData, SourceLocation, ConstraintData } from './types';
+import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage } from './types';
 import { applyTheme } from './theme';
 import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
 import styles from './App.module.css';
@@ -46,6 +45,8 @@ const MIN_PANEL_HEIGHT = 80;
 const DEFAULT_EDITOR_WIDTH = 300;
 const DEFAULT_SIDE_WIDTH = 300;
 const DEFAULT_PROPERTY_HEIGHT = 200;
+
+let toastIdCounter = 0;
 
 const App: Component = () => {
   const editorStore = createEditorStore();
@@ -81,11 +82,17 @@ const App: Component = () => {
   const [showHelp, setShowHelp] = createSignal(false);
   const [exporting, setExporting] = createSignal(false);
 
-  // Toast state (centralized via createToast hook)
-  const toast = createToast();
+  // Toast queue state
+  const [toasts, setToasts] = createSignal<ToastMessage[]>([]);
 
-  // Reload prompt state
-  const [changedFile, setChangedFile] = createSignal<string | null>(null);
+  function showToast(message: string, type: ToastMessage['type']) {
+    const id = String(++toastIdCounter);
+    setToasts((prev) => [...prev, { id, type, message }]);
+  }
+
+  // Reload prompt state — tracks all files changed since last reload/dismiss
+  const [changedFiles, setChangedFiles] = createSignal<Set<string>>(new Set());
+  const [confirmReload, setConfirmReload] = createSignal(false);
 
   // Navigation state
   const [scrollToLocation, setScrollToLocation] = createSignal<SourceLocation | null>(null);
@@ -123,7 +130,7 @@ const App: Component = () => {
         const fileData = await bridgeOpenFile(path);
         editorStore.openFile(fileData);
       } catch (err) {
-        toast.showToast(`Open file failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+        showToast(`Open file failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     },
     onReEvaluate: () => {
@@ -133,7 +140,7 @@ const App: Component = () => {
         const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
         if (file) {
           bridgeUpdateSource(file.path, file.content).catch((err) =>
-            toast.showToast(`Re-evaluation failed: ${err instanceof Error ? err.message : String(err)}`, 'error'),
+            showToast(`Re-evaluation failed: ${err instanceof Error ? err.message : String(err)}`, 'error'),
           );
         }
       }
@@ -143,6 +150,16 @@ const App: Component = () => {
     },
     onHelp: () => {
       setShowHelp((v) => !v);
+    },
+    onReloadShortcut: () => {
+      if (changedFiles().size > 0) {
+        handleReload();
+      }
+    },
+    onDismissReload: () => {
+      if (changedFiles().size > 0) {
+        handleDismissReload();
+      }
     },
   });
 
@@ -184,7 +201,7 @@ const App: Component = () => {
       }
       unsub = u;
     } catch (err) {
-      toast.showToast('Event subscription failed — some updates may not appear', 'error');
+      showToast('Event subscription failed — some updates may not appear', 'error');
     }
 
     // Subscribe to file-changed events
@@ -193,7 +210,7 @@ const App: Component = () => {
         // Only show reload prompt if the file is currently open
         const isOpen = editorStore.state.openFiles.some((f) => f.path === data.path);
         if (isOpen) {
-          setChangedFile(data.path);
+          setChangedFiles((prev) => new Set([...prev, data.path]));
         }
       });
       if (!alive) {
@@ -202,7 +219,7 @@ const App: Component = () => {
       }
       fileChangedUnsub = unlistenFileChanged;
     } catch (_err) {
-      toast.showToast('File change monitoring unavailable — external edits may not be detected', 'error');
+      showToast('File change monitoring unavailable — external edits may not be detected', 'error');
     }
 
     if (!alive) return;
@@ -222,7 +239,7 @@ const App: Component = () => {
 
   function handleSetParameter(cellId: string, value: string) {
     bridgeSetParameter(cellId, value).catch((err) =>
-      toast.showToast(`Parameter update failed: ${err instanceof Error ? err.message : String(err)}`, 'error'),
+      showToast(`Parameter update failed: ${err instanceof Error ? err.message : String(err)}`, 'error'),
     );
   }
 
@@ -237,7 +254,7 @@ const App: Component = () => {
     try {
       chosenPath = await pickSavePath(defaultName, format);
     } catch (err) {
-      toast.showToast(`Could not open save dialog: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      showToast(`Could not open save dialog: ${err instanceof Error ? err.message : String(err)}`, 'error');
       return;
     }
 
@@ -249,9 +266,9 @@ const App: Component = () => {
     setExporting(true);
     try {
       await bridgeExportGeometry(format, chosenPath);
-      toast.showToast(`Exported successfully as ${format.toUpperCase()}`, 'success');
+      showToast(`Exported successfully as ${format.toUpperCase()}`, 'success');
     } catch (err) {
-      toast.showToast(`Export failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      showToast(`Export failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
     } finally {
       setExporting(false);
       setShowExportDialog(false);
@@ -263,29 +280,69 @@ const App: Component = () => {
   }
 
   function handleReload() {
-    const path = changedFile();
-    if (path) {
+    const files = changedFiles();
+    if (files.size === 0) return;
+
+    // Check if any changed files have unsaved edits
+    const dirtyOverlap = Array.from(files).some((f) =>
+      editorStore.state.dirtyFiles.includes(f),
+    );
+
+    if (dirtyOverlap && !confirmReload()) {
+      setConfirmReload(true);
+      return; // Show warning, don't reload yet
+    }
+
+    const filePaths = Array.from(files);
+    const promises = filePaths.map((path) =>
       bridgeOpenFile(path)
         .then((fileData) => {
           editorStore.updateFileContent(fileData.path, fileData.content);
-          setChangedFile(null);
-        })
-        .catch((err) =>
-          toast.showToast(`Reload failed: ${err instanceof Error ? err.message : String(err)}`, 'error'),
-        );
-    }
+          return path;
+        }),
+    );
+    Promise.allSettled(promises)
+      .then((results) => {
+        const succeededPaths: string[] = [];
+        const failedPaths: string[] = [];
+        for (let i = 0; i < results.length; i++) {
+          if (results[i].status === 'fulfilled') {
+            succeededPaths.push(filePaths[i]);
+          } else {
+            failedPaths.push(filePaths[i]);
+          }
+        }
+        // Functional update: only delete succeeded paths, preserving any
+        // concurrently-added paths from onFileChanged events during reload
+        setChangedFiles((prev) => {
+          const next = new Set(prev);
+          for (const path of succeededPaths) {
+            next.delete(path);
+          }
+          return next;
+        });
+        if (failedPaths.length > 0) {
+          const count = failedPaths.length;
+          showToast(
+            `${count} file${count > 1 ? 's' : ''} failed to reload`,
+            'error',
+          );
+        }
+        setConfirmReload(false);
+      });
   }
 
   function handleDismissReload() {
-    setChangedFile(null);
+    setChangedFiles(new Set());
+    setConfirmReload(false);
   }
 
   function handleRetry() {
     initApp();
   }
 
-  function handleDismissToast() {
-    toast.dismissToast();
+  function handleDismissToast(id: string) {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
   }
 
   function handleFileClick(path: string) {
@@ -359,7 +416,8 @@ const App: Component = () => {
         <div data-testid="app-layout" class={styles.layout}>
           <Toolbar onExport={handleExport} onFitToView={handleFitToView} />
           <ReloadPrompt
-            filePath={changedFile()}
+            filePaths={Array.from(changedFiles())}
+            hasDirtyFiles={confirmReload()}
             onReload={handleReload}
             onDismiss={handleDismissReload}
           />
@@ -375,7 +433,7 @@ const App: Component = () => {
                 onFileClick={handleFileClick}
               />
               <FileTabs store={editorStore} />
-              <Editor store={editorStore} scrollToLocation={scrollToLocation} onError={(msg) => toast.showToast(msg, 'error')} />
+              <Editor store={editorStore} scrollToLocation={scrollToLocation} onError={(msg) => showToast(msg, 'error')} />
             </div>
             <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
             <div data-testid="viewport-panel" class={styles.viewportPanel}>
@@ -423,13 +481,17 @@ const App: Component = () => {
             onExport={handleDoExport}
             onClose={() => setShowExportDialog(false)}
           />
-          <Show when={toast.toastMessage()}>
-            {(msg) => (
-              <div class={styles.toastContainer}>
-                <Toast message={msg()} type={toast.toastType()} onDismiss={handleDismissToast} />
-              </div>
-            )}
-          </Show>
+          <div class={styles.toastContainer}>
+            <For each={toasts()}>
+              {(t) => (
+                <Toast
+                  message={t.message}
+                  type={t.type}
+                  onDismiss={() => handleDismissToast(t.id)}
+                />
+              )}
+            </For>
+          </div>
         </div>
       </Show>
     </>
