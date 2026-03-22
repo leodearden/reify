@@ -7,8 +7,29 @@ export interface FileTabsProps {
 }
 
 export function FileTabs(props: FileTabsProps) {
+  function handleKeyDown(e: KeyboardEvent, file: { path: string }) {
+    const files = props.store.state.openFiles;
+    const idx = files.findIndex((f) => f.path === file.path);
+    let nextIdx: number | null = null;
+
+    if (e.key === 'ArrowRight') {
+      nextIdx = (idx + 1) % files.length;
+    } else if (e.key === 'ArrowLeft') {
+      nextIdx = (idx - 1 + files.length) % files.length;
+    }
+
+    if (nextIdx !== null) {
+      e.preventDefault();
+      props.store.setActiveFile(files[nextIdx].path);
+      // Focus the newly active tab
+      const tabBar = (e.currentTarget as HTMLElement).parentElement;
+      const tabs = tabBar?.querySelectorAll('[data-testid="file-tab"]');
+      (tabs?.[nextIdx] as HTMLElement)?.focus();
+    }
+  }
+
   return (
-    <div class={styles.tabBar} data-testid="file-tabs">
+    <div class={styles.tabBar} data-testid="file-tabs" role="tablist">
       <For each={props.store.state.openFiles}>
         {(file) => {
           const basename = () => file.path.split('/').pop() || file.path;
@@ -21,7 +42,10 @@ export function FileTabs(props: FileTabsProps) {
               data-testid="file-tab"
               role="tab"
               aria-selected={isActive() ? 'true' : 'false'}
+              tabindex={isActive() ? 0 : -1}
+              title={file.path}
               onClick={() => props.store.setActiveFile(file.path)}
+              onKeyDown={(e: KeyboardEvent) => handleKeyDown(e, file)}
             >
               <span>{basename()}</span>
               <Show when={isDirty()}>
