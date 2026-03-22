@@ -32,6 +32,12 @@ export function FileTabs(props: FileTabsProps) {
                 data-testid="close-tab"
                 onClick={(e: MouseEvent) => {
                   e.stopPropagation();
+                  if (props.store.state.dirtyFiles.includes(file.path)) {
+                    const name = file.path.split('/').pop() || file.path;
+                    if (!window.confirm(`"${name}" has unsaved changes. Close anyway?`)) {
+                      return;
+                    }
+                  }
                   props.store.closeFile(file.path);
                 }}
               >
