@@ -1,3 +1,4 @@
+use reify_mcp::context::ReifyToolContext;
 use reify_mcp::types::{ToolError, ToolInfo};
 
 #[test]
@@ -52,4 +53,30 @@ fn tool_info_serializes_to_json_with_required_fields() {
     assert_eq!(json["name"], "reify_get_source");
     assert_eq!(json["description"], "Get source code");
     assert_eq!(json["inputSchema"]["type"], "object");
+}
+
+// --- ReifyToolContext trait tests ---
+
+#[test]
+fn context_trait_is_object_safe() {
+    // This compiles only if the trait is object-safe
+    fn _accepts_dyn(_ctx: &dyn ReifyToolContext) {}
+}
+
+#[test]
+fn context_trait_is_send_sync() {
+    fn _assert_send_sync<T: Send + Sync>() {}
+    _assert_send_sync::<Box<dyn ReifyToolContext>>();
+}
+
+#[test]
+fn mock_context_returns_canned_data() {
+    use reify_mcp::context::MockToolContext;
+
+    let mock = MockToolContext::default();
+    let files = mock.get_open_files().unwrap();
+    assert!(files.is_empty(), "Default mock should return empty open files");
+
+    let status = mock.get_eval_status().unwrap();
+    assert_eq!(status.phase, "idle");
 }
