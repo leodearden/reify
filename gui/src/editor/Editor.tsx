@@ -4,6 +4,7 @@ import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { bracketMatching, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
 import { autocompletion } from '@codemirror/autocomplete';
+import { search, searchKeymap } from '@codemirror/search';
 import { linter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
 import { reifyLanguage } from './reifyLanguage';
 import { updateSource, saveFile } from '../bridge';
@@ -69,6 +70,8 @@ export function Editor(props: EditorProps) {
       reifyHoverTooltip(() => currentUri),
       // LSP-powered go-to-definition (Ctrl+Click) — dynamic URI getter
       reifyGotoDefinition(() => currentUri),
+      // Find/replace (Ctrl+F, Ctrl+H)
+      search(),
       // Diagnostic linter (diagnostics are pushed from LSP via Tauri events)
       linter(() => [] as Diagnostic[]),
       keymap.of([
@@ -92,6 +95,7 @@ export function Editor(props: EditorProps) {
           },
           preventDefault: true,
         },
+        ...searchKeymap,
         ...defaultKeymap,
         ...historyKeymap,
       ]),
