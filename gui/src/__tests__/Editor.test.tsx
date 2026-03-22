@@ -549,3 +549,92 @@ describe('Editor LSP file switch serialization (RC-02)', () => {
     ]);
   });
 });
+
+describe('Editor integration: rapid file switch with diagnostics mid-switch', () => {
+  it('diagnostics, debounce, and LSP serialization all behave correctly on rapid switch', async () => {
+    // Setup: capture diagnostics handler
+    let diagnosticsHandler: ((event: { payload: any }) => void) | undefined;
+    mockListen.mockImplementation(async (_event: any, handler: any) => {
+      diagnosticsHandler = handler;
+      return vi.fn();
+    });
+
+    // Track LSP calls
+    const lspCalls: { method: string; uri?: string }[] = [];
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method) {
+        const params = JSON.parse((args as any)?.params ?? '{}');
+        const uri = params?.textDocument?.uri;
+        lspCalls.push({ method, uri });
+      }
+      if ((args as any)?.method === 'initialize') {
+        return JSON.stringify({ capabilities: {} });
+      }
+      return undefined as any;
+    });
+
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined);
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+
+    // Wait for initial LSP setup
+    await vi.waitFor(() => {
+      expect(lspCalls.some(c => c.method === 'textDocument/didOpen')).toBe(true);
+    });
+    lspCalls.length = 0;
+
+    // (1) Edit file A — triggers debounce timer
+    const view = getEditorView(container);
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+
+    // (2) Switch A -> B before debounce fires
+    store.setActiveFile(file2.path);
+
+    // (3) Fire diagnostics for file A's URI mid-switch
+    expect(diagnosticsHandler).toBeDefined();
+    diagnosticsHandler!({
+      payload: {
+        uri: 'file:///project/src/bracket.ri',
+        diagnostics: [{
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+          severity: 1,
+          message: 'stale diagnostic from file A',
+        }],
+      },
+    });
+
+    // (4) Advance timers past debounce period
+    vi.advanceTimersByTime(300);
+
+    // Verify: diagnostics NOT applied to B's editor (E-05 fix)
+    const viewB = getEditorView(container);
+    expect(diagnosticCount(viewB.state)).toBe(0);
+
+    // Verify: debounced updateSource NOT called (RC-04 fix)
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    // Verify: undo in file B does NOT produce file A content (E-04 fix)
+    undo(viewB);
+    expect(getEditorView(container).state.doc.toString()).toContain('structure Mount');
+    expect(getEditorView(container).state.doc.toString()).not.toContain('structure Bracket');
+
+    // Verify: LSP calls correctly ordered (RC-02 fix)
+    await vi.waitFor(() => {
+      const switchCalls = lspCalls.filter(c => c.method.startsWith('textDocument/did'));
+      expect(switchCalls).toHaveLength(2);
+    });
+
+    const fileSwitchCalls = lspCalls
+      .filter(c => c.method.startsWith('textDocument/did'))
+      .map(c => ({ method: c.method, uri: c.uri }));
+
+    expect(fileSwitchCalls).toEqual([
+      { method: 'textDocument/didClose', uri: 'file:///project/src/bracket.ri' },
+      { method: 'textDocument/didOpen',  uri: 'file:///project/src/mount.ri' },
+    ]);
+  });
+});
