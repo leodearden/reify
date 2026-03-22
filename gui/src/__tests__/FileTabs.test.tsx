@@ -80,4 +80,129 @@ describe('FileTabs', () => {
     // setActiveFile should NOT be called by the close button click itself
     expect(activeSpy).not.toHaveBeenCalled();
   });
+
+  describe('tablist semantics and keyboard navigation', () => {
+    it('tab bar container has role=tablist', () => {
+      const store = setup();
+      render(() => <FileTabs store={store} />);
+      const tabBar = screen.getByTestId('file-tabs');
+      expect(tabBar.getAttribute('role')).toBe('tablist');
+    });
+
+    it('active tab has tabindex=0, inactive tabs have tabindex=-1', () => {
+      const store = setup();
+      render(() => <FileTabs store={store} />);
+      const tabs = screen.getAllByTestId('file-tab');
+      const mountTab = tabs.find((t) => t.textContent?.includes('mount.ri'))!;
+      const bracketTab = tabs.find((t) => t.textContent?.includes('bracket.ri'))!;
+      // mount.ri is the active tab (last opened)
+      expect(mountTab.getAttribute('tabindex')).toBe('0');
+      expect(bracketTab.getAttribute('tabindex')).toBe('-1');
+    });
+
+    it('each tab has a title attribute with full file path', () => {
+      const store = setup();
+      render(() => <FileTabs store={store} />);
+      const tabs = screen.getAllByTestId('file-tab');
+      const bracketTab = tabs.find((t) => t.textContent?.includes('bracket.ri'))!;
+      const mountTab = tabs.find((t) => t.textContent?.includes('mount.ri'))!;
+      expect(bracketTab.getAttribute('title')).toBe(file1.path);
+      expect(mountTab.getAttribute('title')).toBe(file2.path);
+    });
+
+    it('ArrowRight on active tab activates the next tab', () => {
+      const store = setup();
+      const spy = vi.spyOn(store, 'setActiveFile');
+      render(() => <FileTabs store={store} />);
+      // bracket.ri is first, mount.ri is active (last opened)
+      // Make bracket.ri active first
+      store.setActiveFile(file1.path);
+      spy.mockClear();
+      const tabs = screen.getAllByTestId('file-tab');
+      const bracketTab = tabs.find((t) => t.textContent?.includes('bracket.ri'))!;
+      fireEvent.keyDown(bracketTab, { key: 'ArrowRight' });
+      expect(spy).toHaveBeenCalledWith(file2.path);
+    });
+
+    it('ArrowLeft on active tab activates the previous tab', () => {
+      const store = setup();
+      const spy = vi.spyOn(store, 'setActiveFile');
+      render(() => <FileTabs store={store} />);
+      // mount.ri is active (last opened, index 1)
+      const tabs = screen.getAllByTestId('file-tab');
+      const mountTab = tabs.find((t) => t.textContent?.includes('mount.ri'))!;
+      fireEvent.keyDown(mountTab, { key: 'ArrowLeft' });
+      expect(spy).toHaveBeenCalledWith(file1.path);
+    });
+
+    it('ArrowRight on last tab wraps to first', () => {
+      const store = setup();
+      const spy = vi.spyOn(store, 'setActiveFile');
+      render(() => <FileTabs store={store} />);
+      // mount.ri is active (last opened, index 1 which is the last tab)
+      const tabs = screen.getAllByTestId('file-tab');
+      const mountTab = tabs.find((t) => t.textContent?.includes('mount.ri'))!;
+      fireEvent.keyDown(mountTab, { key: 'ArrowRight' });
+      expect(spy).toHaveBeenCalledWith(file1.path);
+    });
+
+    it('ArrowLeft on first tab wraps to last', () => {
+      const store = setup();
+      const spy = vi.spyOn(store, 'setActiveFile');
+      render(() => <FileTabs store={store} />);
+      store.setActiveFile(file1.path);
+      spy.mockClear();
+      const tabs = screen.getAllByTestId('file-tab');
+      const bracketTab = tabs.find((t) => t.textContent?.includes('bracket.ri'))!;
+      fireEvent.keyDown(bracketTab, { key: 'ArrowLeft' });
+      expect(spy).toHaveBeenCalledWith(file2.path);
+    });
+  });
+
+  describe('unsaved changes confirmation', () => {
+    it('clicking close on a dirty tab calls window.confirm with filename', () => {
+      const store = setup([file1, file2], { dirty: [file1.path] });
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      render(() => <FileTabs store={store} />);
+      const closeBtns = screen.getAllByTestId('close-tab');
+      fireEvent.click(closeBtns[0]); // bracket.ri is dirty
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      expect(confirmSpy.mock.calls[0][0]).toContain('bracket.ri');
+      confirmSpy.mockRestore();
+    });
+
+    it('cancelling confirm does NOT call closeFile', () => {
+      const store = setup([file1, file2], { dirty: [file1.path] });
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      const closeSpy = vi.spyOn(store, 'closeFile');
+      render(() => <FileTabs store={store} />);
+      const closeBtns = screen.getAllByTestId('close-tab');
+      fireEvent.click(closeBtns[0]);
+      expect(closeSpy).not.toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
+
+    it('confirming close on dirty tab calls closeFile', () => {
+      const store = setup([file1, file2], { dirty: [file1.path] });
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      const closeSpy = vi.spyOn(store, 'closeFile');
+      render(() => <FileTabs store={store} />);
+      const closeBtns = screen.getAllByTestId('close-tab');
+      fireEvent.click(closeBtns[0]);
+      expect(closeSpy).toHaveBeenCalledWith(file1.path);
+      confirmSpy.mockRestore();
+    });
+
+    it('clicking close on a clean tab does NOT call window.confirm', () => {
+      const store = setup([file1, file2]); // no dirty files
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      const closeSpy = vi.spyOn(store, 'closeFile');
+      render(() => <FileTabs store={store} />);
+      const closeBtns = screen.getAllByTestId('close-tab');
+      fireEvent.click(closeBtns[0]);
+      expect(confirmSpy).not.toHaveBeenCalled();
+      expect(closeSpy).toHaveBeenCalledWith(file1.path);
+      confirmSpy.mockRestore();
+    });
+  });
 });

@@ -1,176 +1,159 @@
 {
-  "task_id": "103",
-  "title": "Fix editor diagnostics cross-file contamination and file-switch race conditions",
+  "task_id": "110",
+  "title": "File management UX: unsaved prompt on close, adjacent tab selection, FileBrowser keyboard access",
   "files": [
-    "gui/src/editor/Editor.tsx",
-    "gui/src/editor/diagnostics.ts",
-    "gui/src/__tests__/Editor.test.tsx",
-    "gui/src/__tests__/diagnostics.test.ts"
+    "gui/src/stores/editorStore.ts",
+    "gui/src/editor/FileTabs.tsx",
+    "gui/src/editor/FileTabs.module.css",
+    "gui/src/panels/FileBrowser.tsx",
+    "gui/src/panels/FileBrowser.module.css",
+    "gui/src/__tests__/editorStore.test.ts",
+    "gui/src/__tests__/FileTabs.test.tsx",
+    "gui/src/__tests__/FileBrowser.test.tsx"
   ],
   "modules": [
+    "gui/src/stores",
     "gui/src/editor",
+    "gui/src/panels",
     "gui/src/__tests__"
   ],
-  "analysis": "Four bugs around editor file switching need fixing in the SolidJS/CodeMirror6 editor component:\n\n(E-05) Diagnostics cross-file contamination: The `createDiagnosticsListener` callback in Editor.tsx (lines 144-157) applies incoming diagnostics to the editor without checking whether `event.uri` matches `currentUri`. Diagnostics from file A get applied to file B when you switch files.\n\n(RC-04) Debounced didChange after file switch: The `lspDebounceTimer` (lines 107-113) and `debounceTimer` (lines 99-104) are NOT cleared when the file switch effect runs (lines 168-195). A pending timer from editing file A could fire after switching to file B. While the captured `path` variable is correct (captured at edit time), the shared `lspVersion` counter creates conflicts, and sending didChange for a URI that was just didClose'd confuses the LSP server.\n\n(E-04) File switch replaces doc content instead of swapping EditorState: Lines 183-186 use `view.dispatch({changes: ...})` to replace the entire document on file switch. This pollutes the undo history \u2014 undoing in file B would restore file A's content. Fix: maintain a `Map<string, EditorState>` of per-file states, save current state on switch, restore the target file's state via `view.setState()`.\n\n(RC-02) LSP didClose/didOpen not serialized: Lines 191-194 fire `didClose(oldUri).then(() => didOpen(newUri))` but the promise chain is fire-and-forget. Rapid file switches (A->B->C) can cause overlapping didClose/didOpen calls that arrive out of order. Fix: chain each file switch's LSP operations off a `fileOpsPromise` variable to serialize them.\n\n(RC-05 / review feedback) Resource leak race condition on cleanup: onCleanup calls `lspClient.didClose(currentUri)` directly without waiting for in-flight `fileOpsPromise` to settle. If a file switch is mid-chain at teardown time, the cleanup's didClose fires concurrently, then the pending chain's didOpen fires afterward \u2014 leaving a phantom open document in the LSP server. Fix: chain cleanup's didClose off fileOpsPromise and add a `destroyed` flag to skip didOpen after teardown.",
+  "analysis": "This task addresses 7 file management UX issues across 3 components and 1 store.\n\n**Current state:**\n- editorStore.closeFile (line 41) selects remaining[0] instead of the adjacent tab when the active file is closed.\n- FileTabs has role='tab' on individual tabs but no role='tablist' on the container div. No tabindex, no keyboard navigation (Left/Right arrows). The close handler (lines 33-36) directly calls store.closeFile with no unsaved-changes check.\n- FileBrowser items are plain divs with onClick. No ARIA semantics (no role='listbox'/role='option'), no keyboard accessibility (no tabindex, no key handlers). Only basename shown (no title for full path). Active indicator is background color + font-weight which is subtle.\n\n**Testing patterns:** Tests use vitest + @solidjs/testing-library with fireEvent. Store tests use createRoot((dispose) => {...}) pattern. Components are tested via render() + screen queries + fireEvent. Existing tests for both FileTabs and FileBrowser provide good setup() helpers.\n\n**Approach:** Fix in order: (1) store-level adjacent tab selection, (2) confirmation dialog in FileTabs close handler, (3) tablist semantics + keyboard nav on FileTabs, (4) ARIA + keyboard + title on FileBrowser, (5) enhanced active indicator CSS. Each fix is test-first.\n\n**Key existing code patterns to follow:** ConstraintPanel uses tabindex='0' and onKeyDown for keyboard access. ExportDialog uses role='dialog' with proper ARIA. CSS uses custom properties (--reify-accent, etc.). Tests mock with vi.spyOn().",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: E-05 \u2014 diagnostics from non-active URI should not be applied to editor. In Editor.test.tsx, add a test in a new 'Editor diagnostics URI filtering' describe block. Simulate a Tauri diagnostics event by capturing the listen handler from the mock, then invoke it with a payload whose `uri` does NOT match the active file's URI. Assert that the editor's diagnostics remain empty (no `cm-diagnostic` elements in DOM). Also add a positive test: diagnostics whose URI matches the active file ARE applied.",
+      "description": "Write failing tests in editorStore.test.ts for adjacent tab selection: (1) close middle tab (B of A,B,C with B active) \u2192 selects C (next at same index), (2) close last tab (C of A,B,C with C active) \u2192 selects B (previous), (3) close first tab when active (A of A,B with A active) \u2192 selects B (next). Update existing test 'closeFile selects first remaining file when active file is closed (3 files)' expectation from 'a.ri' to 'b.ri' since adjacent means the tab at the closed index (b.ri was after c.ri is removed). Also update 'closeFile computes correct fallback inside batch()' similarly.",
       "status": "done",
-      "commit": "70a3e50"
+      "commit": "b6e4793"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix E-05 \u2014 filter diagnostics by URI. In the `createDiagnosticsListener` callback in Editor.tsx (around line 144), add a guard: `if (event.uri !== currentUri) return;` before converting and applying diagnostics. This ensures only diagnostics for the currently active file are applied to the editor.",
+      "description": "Fix editorStore.closeFile: before filtering, find closedIndex = state.openFiles.findIndex(f => f.path === path). After filtering to `remaining`, select remaining[closedIndex] ?? remaining[closedIndex - 1] ?? null as the new activeFile. This replaces the current remaining[0] fallback with adjacent-tab selection.",
       "status": "done",
-      "commit": "f5a7f09"
+      "commit": "ee56721"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: RC-04 \u2014 debounced didChange should not fire after file switch. In Editor.test.tsx, add a test that: (1) opens file1 in editor, (2) dispatches an edit to the CM6 view (triggering debounce timers), (3) immediately switches to file2 via store.setActiveFile (before 300ms elapses), (4) advances timers past 300ms with vi.advanceTimersByTime(300), (5) asserts that bridge.updateSource was NOT called for the stale edit (timer should have been cancelled by the file switch).",
+      "description": "Write failing tests in FileTabs.test.tsx for unsaved-changes prompt on dirty tab close: (1) clicking close on a dirty tab calls window.confirm with message containing the filename, (2) if window.confirm returns false, store.closeFile is NOT called (close cancelled), (3) if window.confirm returns true, store.closeFile IS called, (4) clicking close on a clean tab does NOT call window.confirm and calls closeFile directly. Use vi.spyOn(window, 'confirm') for mocking.",
       "status": "done",
-      "commit": "0844ac3"
+      "commit": "800bc6c"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix RC-04 \u2014 clear debounce timers on file switch. In the `createEffect` for active file changes in Editor.tsx (around line 168), add `clearTimeout(debounceTimer); clearTimeout(lspDebounceTimer);` right after the early return check and before performing the document swap. This cancels any pending debounced operations from the previous file.",
+      "description": "Add confirmation logic in FileTabs close handler: in the onClick of the close button, check if file.path is in props.store.state.dirtyFiles. If dirty, call window.confirm('\"<basename>\" has unsaved changes. Close anyway?'). Only call props.store.closeFile(file.path) if the user confirms or the file is clean.",
       "status": "done",
-      "commit": "43b3cff"
+      "commit": "2d51611"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: E-04 \u2014 file switch should preserve per-file undo history (EditorState swap). In Editor.test.tsx, add a test that: (1) opens file1, (2) makes an edit to file1 (insert '// edit\\n' at position 0), (3) confirms edit is in the doc, (4) switches to file2, (5) confirms file2 content is shown, (6) switches back to file1, (7) confirms file1 content includes the edit, (8) dispatches undo command, (9) asserts file1 content reverts to original \u2014 proving undo history is per-file. A second test verifies that undoing in file2 after switching does NOT produce file1's content.",
+      "description": "Write failing tests in FileTabs.test.tsx for tablist semantics and keyboard navigation: (1) tab bar container has role='tablist', (2) active tab has tabindex='0', inactive tabs have tabindex='-1' (roving tabindex), (3) pressing ArrowRight on the active tab activates the next tab, (4) pressing ArrowLeft activates the previous tab, (5) ArrowRight on last tab wraps to first, (6) ArrowLeft on first wraps to last, (7) each tab has a title attribute containing the full file path for disambiguation.",
       "status": "done",
-      "commit": "008ad26"
+      "commit": "9595463"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Fix E-04 \u2014 swap per-file EditorState instead of replacing doc content. Add a `Map<string, EditorState>` (fileStates) to Editor.tsx. Extract the CM6 extensions array into a `const extensions = [...]` variable before `EditorState.create()`. In the file switch effect: (1) save `view.state` into `fileStates.set(previousActiveFile, view.state)`, (2) check if `fileStates.has(activeFile)` \u2014 if yes, `view.setState(fileStates.get(activeFile)!)`, otherwise create a fresh `EditorState.create({doc: newContent, extensions})` and use `view.setState()`. Remove the old `view.dispatch({changes: ...})` approach and the `isSwitching` flag (no longer needed since setState doesn't trigger updateListener).",
+      "description": "Update FileTabs component: (1) add role='tablist' on the container div, (2) add tabindex={isActive() ? 0 : -1} on each tab div, (3) add title={file.path} on each tab div, (4) add onKeyDown handler on each tab: ArrowRight \u2192 setActiveFile to next file (with wrapping), ArrowLeft \u2192 setActiveFile to previous (with wrapping), and focus the newly active tab element via ref or querySelector.",
       "status": "done",
-      "commit": "7a5d7d4"
+      "commit": "e02af60"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test: RC-02 \u2014 rapid file switches should serialize LSP didClose/didOpen. In Editor.test.tsx, add a test with 3 files (file1, file2, file3). Mock lspClient methods to track call order. Switch file1->file2 then immediately file2->file3 (two setActiveFile calls in sequence). Flush all promises. Assert the LSP call order is exactly: didClose(uri1), didOpen(uri2), didClose(uri2), didOpen(uri3) \u2014 proving serialization (each pair completes before the next begins).",
+      "description": "Write failing tests in FileBrowser.test.tsx for keyboard accessibility and ARIA semantics: (1) container has role='listbox', (2) container has aria-label='File browser', (3) each file item has role='option', (4) active item has aria-selected='true', non-active has aria-selected='false', (5) each item has title attribute with full file path, (6) active item has tabindex='0', others have tabindex='-1', (7) pressing ArrowDown on focused item moves focus/selection to next item, (8) pressing ArrowUp moves to previous, (9) pressing Enter on focused item calls onFileClick with that file's path.",
       "status": "done",
-      "commit": "13abf18"
+      "commit": "5ad0d08"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Fix RC-02 \u2014 serialize LSP file operations with a promise chain. Add `let fileOpsPromise: Promise<void> = Promise.resolve()` to Editor.tsx. In the file switch effect, replace the fire-and-forget promise chain with: `fileOpsPromise = fileOpsPromise.then(() => lspClient.didClose(oldUri)).then(() => lspClient.didOpen(newUri, newContent, lspVersion)).catch(err => console.error('LSP file switch error:', err))`. This ensures each file switch's LSP calls complete before the next pair starts.",
+      "description": "Update FileBrowser component: (1) add role='listbox' and aria-label='File browser' on container div, (2) change file items to use role='option' with aria-selected={isActive ? 'true' : 'false'}, (3) add title={file.path} on each item, (4) add tabindex={isActive ? 0 : -1} (roving tabindex), (5) add onKeyDown handler: ArrowDown \u2192 focus next item and call onFileClick, ArrowUp \u2192 focus previous, Enter/Space \u2192 call onFileClick. Use refs or DOM queries to manage focus.",
       "status": "done",
-      "commit": "8d15bde"
+      "commit": "3be5d8d"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write integration-level test: rapid file switch with diagnostics arriving mid-switch. In Editor.test.tsx, combine all four fixes: (1) open files A and B, (2) edit file A, (3) switch A->B, (4) fire a diagnostics event for file A's URI, (5) advance timers past debounce period, (6) verify: diagnostics NOT applied to B's editor, debounced updateSource NOT called, LSP calls correctly ordered. This serves as a regression test for the combined behavior.",
+      "description": "Write failing test in FileBrowser.test.tsx: active file item has a visually distinct left-border indicator \u2014 verify the active item has a CSS class or computed style indicating the enhanced border (test via checking the data-active attribute styling or a dedicated CSS class).",
       "status": "done",
-      "commit": "d0bdab4"
+      "commit": "827656d"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Final cleanup: ensure onCleanup handler also clears the fileStates map. Remove the `isSwitching` flag and guard if it's no longer needed (setState doesn't trigger updateListener). Run the full gui test suite to confirm no regressions across all test files.",
+      "description": "Update FileBrowser.module.css: enhance .item[data-active='true'] with border-left: 3px solid var(--reify-accent, #89b4fa) and adjust padding-left to compensate (9px instead of 12px). Add border-left: 3px solid transparent to .item base for consistent alignment. This makes the active file unmistakably visible.",
       "status": "done",
-      "commit": "93023ae"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write failing test: RC-05 \u2014 onCleanup race condition with in-flight fileOpsPromise. In Editor.test.tsx, add a new describe block 'Editor cleanup race condition (RC-05)'. Test scenario: (1) render Editor with file1 and file2 open, (2) set up invoke mock to track LSP call order and make didClose/didOpen return controllable promises (using deferred pattern) so the file switch chain is mid-flight, (3) trigger a file switch from file1 to file2, (4) while the file switch LSP chain is still in progress (didClose resolved but didOpen not yet), call cleanup() from the render result to unmount the component, (5) resolve the pending didOpen promise, (6) flush all microtasks, (7) assert that the final LSP call sequence ends with a didClose for file2's URI (the cleanup's chained didClose), and critically that no didOpen fires AFTER the cleanup's didClose \u2014 proving the `destroyed` flag prevents the phantom open document. A second test verifies the simple case: when no file switch is in flight, cleanup's didClose still chains off fileOpsPromise and fires correctly for the current URI.",
-      "status": "done",
-      "commit": "a123f69"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Fix RC-05 \u2014 chain cleanup's didClose off fileOpsPromise and add destroyed flag. In Editor.tsx: (1) Add `let destroyed = false;` alongside the other component-level variables. (2) In the file switch effect's fileOpsPromise chain (line 208), guard the didOpen call: `.then(() => { if (destroyed) return; return lspClient.didOpen(newUri, newContent, version); })`. (3) In onCleanup, set `destroyed = true` before chaining the final didClose. Replace the direct `lspClient.didClose(currentUri).catch(() => {})` with: `const uriToClose = currentUri; fileOpsPromise = fileOpsPromise.then(() => lspClient.didClose(uriToClose)).catch(() => {});`. This ensures the cleanup's didClose waits for any in-flight file switch operations to complete, and the destroyed flag prevents any pending didOpen from executing after teardown. Run full test suite to confirm all tests pass including the new RC-05 test.",
-      "status": "done",
-      "commit": "71c69ed"
+      "commit": "a2a0e63"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use a Map<string, EditorState> for per-file state preservation",
-      "rationale": "CodeMirror 6's EditorState is immutable and serializable. Storing a snapshot per file path allows perfect restoration of undo history, cursor position, and scroll position when switching back. This is the standard CM6 pattern for multi-tab editors."
+      "decision": "Confirmation uses window.confirm() in the FileTabs component rather than a custom dialog or store-level logic",
+      "rationale": "window.confirm is synchronous and simple. The store stays pure/testable without side effects. A custom modal would be over-engineering for this use case. The confirm call lives in the component's click handler, making it easy to mock in tests via vi.spyOn(window, 'confirm')."
     },
     {
-      "decision": "Use view.setState() instead of view.dispatch({changes}) for file switching",
-      "rationale": "view.dispatch() with content replacement creates a transaction in the undo history \u2014 undoing would restore the previous file's content. view.setState() replaces the entire state cleanly without polluting history. It also doesn't trigger the updateListener, eliminating the need for the `isSwitching` guard flag."
+      "decision": "Adjacent tab selection uses closedIndex position: prefer next tab (same index in remaining), fall back to previous",
+      "rationale": "This matches VS Code and most IDE behavior. When you close a middle tab, the tab to its right slides into position. When you close the rightmost tab, the previous tab is selected. remaining[closedIndex] ?? remaining[closedIndex-1] implements this correctly because after filtering, the element at closedIndex in remaining is what was originally at closedIndex+1."
     },
     {
-      "decision": "Serialize LSP file ops via promise chaining rather than an async queue",
-      "rationale": "A simple promise chain (`fileOpsPromise = fileOpsPromise.then(...)`) is the minimal solution that guarantees ordering without introducing a queue abstraction. Each file switch chains off the previous one. Errors are caught per-chain-link so one failure doesn't block subsequent switches."
+      "decision": "Use roving tabindex pattern for both FileTabs and FileBrowser keyboard navigation",
+      "rationale": "Roving tabindex (active item gets tabindex=0, others tabindex=-1) is the WAI-ARIA recommended pattern for composite widgets like tablists and listboxes. It allows a single Tab press to enter/exit the widget, and arrow keys to move within it."
     },
     {
-      "decision": "Clear debounce timers at the start of file switch effect rather than in the timer callbacks",
-      "rationale": "Clearing timers eagerly on file switch is simpler and more robust than adding guards inside the timer callbacks. It ensures no stale work runs after the context has changed."
+      "decision": "FileBrowser uses role='listbox' with role='option' children rather than converting to <button> elements",
+      "rationale": "role='listbox' with role='option' children is the correct ARIA pattern for a single-select file list. It communicates the selection semantics properly to screen readers. Items keep their div element but gain proper roles."
     },
     {
-      "decision": "Filter diagnostics by URI in the Editor callback, not in diagnostics.ts",
-      "rationale": "The diagnostics.ts module is a generic event bridge \u2014 it shouldn't know about the active file concept. The URI filtering belongs in the Editor component which has the `currentUri` context. This keeps diagnostics.ts reusable."
+      "decision": "Full path shown via title attribute on tabs and file items, not by changing displayed text",
+      "rationale": "A title attribute provides a tooltip with the full path on hover without cluttering the compact UI. This matches VS Code's approach for short tab labels with full-path tooltips."
     },
     {
-      "decision": "Extract CM6 extensions into a shared variable for reuse in fresh EditorState creation",
-      "rationale": "When a file is opened for the first time (no saved EditorState in the map), we need to create a fresh EditorState with the same extensions. Extracting the extensions array avoids duplication between onMount and the file switch effect."
-    },
-    {
-      "decision": "Chain cleanup's didClose off fileOpsPromise and use a destroyed flag to guard didOpen",
-      "rationale": "The cleanup must not race with in-flight file switch operations. Chaining off fileOpsPromise guarantees the final didClose runs after any pending didClose/didOpen pair completes. The destroyed flag prevents the pending chain's didOpen from executing after the component is torn down, which would leave a phantom open document in the LSP server. This is simpler than cancellable promises and covers the edge case where teardown happens mid-chain."
+      "decision": "Active file indicator enhancement uses left border (3px solid accent) with transparent border on inactive items for alignment",
+      "rationale": "A colored left border provides a strong visual signal without causing layout shift. Adding transparent borders on all items prevents the layout jumping when an item becomes active. The existing style already has background + font-weight changes; the left border makes it unmistakable."
     }
   ],
   "reuse": [
     {
-      "what": "Existing EditorView.findFromDOM() test helper (getEditorView)",
-      "where": "gui/src/__tests__/Editor.test.tsx line 71-74",
-      "how": "Reuse for all new Editor tests to get the CM6 view instance from the rendered container"
+      "what": "createRoot() + dispose() pattern for store unit tests",
+      "where": "gui/src/__tests__/editorStore.test.ts",
+      "how": "All new store tests wrap in createRoot((dispose) => { ... dispose(); }) \u2014 same pattern as all existing editorStore tests."
     },
     {
-      "what": "Existing setupStore() helper and file fixtures (file1, file2, file3)",
-      "where": "gui/src/__tests__/Editor.test.tsx lines 26-43",
-      "how": "Reuse setupStore and existing file fixtures for the cleanup race condition test"
+      "what": "setup() helper function with files and opts.dirty",
+      "where": "gui/src/__tests__/FileTabs.test.tsx lines 11-18",
+      "how": "Reuse the existing setup(files, { dirty }) helper for creating stores with dirty files for the confirmation dialog tests."
     },
     {
-      "what": "Existing Tauri API mocks (vi.mock for @tauri-apps/api/core and event)",
-      "where": "gui/src/__tests__/Editor.test.tsx lines 12-17",
-      "how": "Reuse the same mock patterns; extend the invoke mock with deferred promises for controllable async behavior"
+      "what": "render() + screen + fireEvent testing pattern",
+      "where": "gui/src/__tests__/FileTabs.test.tsx, gui/src/__tests__/FileBrowser.test.tsx",
+      "how": "Use @solidjs/testing-library render with arrow function, screen queries by testid/role/text, fireEvent for user interactions."
     },
     {
-      "what": "DiagnosticsEvent type with uri field already defined",
-      "where": "gui/src/editor/diagnostics.ts line 23-26",
-      "how": "The event payload already includes `uri: string` \u2014 we just need to check it in the Editor callback"
+      "what": "CSS custom properties for theming",
+      "where": "gui/src/panels/FileBrowser.module.css, gui/src/editor/FileTabs.module.css",
+      "how": "Use existing --reify-accent, --reify-surface, --reify-text CSS custom properties for the left border color and any new styles."
     },
     {
-      "what": "pathToUri helper function",
-      "where": "gui/src/editor/Editor.tsx lines 44-48",
-      "how": "Already available in scope for URI comparison in diagnostics filtering"
+      "what": "onKeyDown handler pattern from ConstraintPanel and Splitter",
+      "where": "gui/src/panels/ConstraintPanel.tsx (line 83), gui/src/components/Splitter.tsx (line 43)",
+      "how": "Follow the same inline onKeyDown with switch/if on e.key pattern, calling e.preventDefault() for handled keys."
     },
     {
-      "what": "CodeMirror EditorState.create() pattern",
-      "where": "gui/src/editor/Editor.tsx lines 59-124",
-      "how": "Reuse the same extensions for creating fresh per-file EditorState instances in the fileStates map"
+      "what": "vi.spyOn pattern for mocking store methods in component tests",
+      "where": "gui/src/__tests__/FileTabs.test.tsx (existing lines 62, 72-73)",
+      "how": "Use vi.spyOn(store, 'closeFile') and vi.spyOn(store, 'setActiveFile') as already done; extend with vi.spyOn(window, 'confirm') for the confirmation dialog tests."
     },
     {
-      "what": "Existing fileOpsPromise serialization pattern",
-      "where": "gui/src/editor/Editor.tsx lines 36, 206-209",
-      "how": "The cleanup fix chains off the same fileOpsPromise variable, extending the existing serialization pattern to cover component teardown"
-    },
-    {
-      "what": "LSP call tracking pattern from RC-02 test",
-      "where": "gui/src/__tests__/Editor.test.tsx lines 499-551",
-      "how": "Reuse the mockInvoke pattern that tracks LSP method calls with URIs, extended with deferred promises for the controllable-async test scenario"
+      "what": "data-testid naming conventions",
+      "where": "All existing component files",
+      "how": "Follow existing patterns: 'file-tab', 'file-browser', 'close-tab', 'file-item-{path}' for testable element identifiers."
     }
   ],
-  "_session_id": "103-3d37479f",
-  "_created_at": "2026-03-22T07:49:13.057631+00:00"
+  "_session_id": "110-04957c55",
+  "_created_at": "2026-03-22T08:03:55.762312+00:00"
 }
