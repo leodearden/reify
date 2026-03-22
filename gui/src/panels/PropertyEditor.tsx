@@ -91,7 +91,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   }
 
   function isValidValue(value: string): boolean {
-    return value.trim() !== '' && !isNaN(Number(value.trim()));
+    return value.trim() !== '' && Number.isFinite(Number(value.trim()));
   }
 
   function handleKeyDown(cellId: string, e: KeyboardEvent) {
@@ -111,6 +111,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
       const input = e.target as HTMLInputElement;
       // Find the original prop value for this cell
       const propValue = props.values[cellId]?.value ?? '';
+      input.removeAttribute('data-invalid');
       input.value = propValue;
       setEditValue(propValue);
       setEditingCellId(null);
