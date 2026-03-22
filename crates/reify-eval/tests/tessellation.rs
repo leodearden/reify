@@ -124,3 +124,27 @@ fn tessellate_multiple_realizations() {
     assert_eq!(paths[0], "TestShape#realization[0]");
     assert_eq!(paths[1], "TestShape#realization[1]");
 }
+
+/// tessellate_realizations returns empty meshes (no panic, no error) when
+/// geometry_kernel is None but module has realizations.
+#[test]
+fn tessellate_no_kernel_with_realizations_returns_empty_meshes() {
+    let module = module_with_box_realization();
+    let checker = MockConstraintChecker::new();
+    // No geometry kernel
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+    let result = engine.tessellate_realizations(&module);
+
+    assert!(result.meshes.is_empty(), "expected no meshes when kernel is absent");
+
+    // No tessellation-related error diagnostics
+    let has_tess_diag = result.diagnostics.iter().any(|d| {
+        d.message.contains("tessellation") || d.message.contains("geometry error")
+    });
+    assert!(
+        !has_tess_diag,
+        "expected no tessellation diagnostics when kernel absent, got: {:?}",
+        result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
