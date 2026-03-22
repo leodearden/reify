@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { parseInboundMessage, formatOutboundMessage } from '../ipc.js';
+import { PassThrough } from 'node:stream';
+import { parseInboundMessage, formatOutboundMessage, createLineReader, sendMessage } from '../ipc.js';
 import type { OutboundMessage } from '../types.js';
 
 describe('parseInboundMessage', () => {
@@ -138,5 +139,89 @@ describe('formatOutboundMessage', () => {
       const result = formatOutboundMessage(msg);
       expect(result.endsWith('\n')).toBe(true);
     }
+  });
+});
+
+describe('createLineReader', () => {
+  it('yields complete JSON lines from a readable stream', async () => {
+    const stream = new PassThrough();
+    const lines: string[] = [];
+
+    const reader = createLineReader(stream);
+    const collecting = (async () => {
+      for await (const line of reader) {
+        lines.push(line);
+      }
+    })();
+
+    stream.write('{"type":"abort"}\n');
+    stream.write('{"type":"clear_session"}\n');
+    stream.end();
+
+    await collecting;
+    expect(lines).toEqual(['{"type":"abort"}', '{"type":"clear_session"}']);
+  });
+
+  it('handles partial reads (message split across chunks)', async () => {
+    const stream = new PassThrough();
+    const lines: string[] = [];
+
+    const reader = createLineReader(stream);
+    const collecting = (async () => {
+      for await (const line of reader) {
+        lines.push(line);
+      }
+    })();
+
+    stream.write('{"type":');
+    stream.write('"abort"}\n');
+    stream.end();
+
+    await collecting;
+    expect(lines).toEqual(['{"type":"abort"}']);
+  });
+
+  it('handles multiple messages in one chunk', async () => {
+    const stream = new PassThrough();
+    const lines: string[] = [];
+
+    const reader = createLineReader(stream);
+    const collecting = (async () => {
+      for await (const line of reader) {
+        lines.push(line);
+      }
+    })();
+
+    stream.write('{"type":"abort"}\n{"type":"clear_session"}\n');
+    stream.end();
+
+    await collecting;
+    expect(lines).toEqual(['{"type":"abort"}', '{"type":"clear_session"}']);
+  });
+});
+
+describe('sendMessage', () => {
+  it('writes JSON + newline to a writable stream', async () => {
+    const stream = new PassThrough();
+    const chunks: string[] = [];
+    stream.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
+
+    const msg: OutboundMessage = { type: 'text_delta', text: 'hello' };
+    await sendMessage(stream, msg);
+
+    expect(chunks.join('')).toBe('{"type":"text_delta","text":"hello"}\n');
+  });
+
+  it('handles backpressure (waits for drain)', async () => {
+    const stream = new PassThrough({ highWaterMark: 1 }); // tiny buffer
+    const chunks: string[] = [];
+    stream.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
+
+    const msg: OutboundMessage = { type: 'text_delta', text: 'a long message to fill the buffer' };
+    await sendMessage(stream, msg);
+
+    const fullOutput = chunks.join('');
+    const parsed = JSON.parse(fullOutput.trim());
+    expect(parsed).toEqual({ type: 'text_delta', text: 'a long message to fill the buffer' });
   });
 });
