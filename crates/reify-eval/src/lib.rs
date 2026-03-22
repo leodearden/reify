@@ -2601,8 +2601,13 @@ impl Engine {
         module: &CompiledModule,
     ) -> TessellateResult {
         let check_result = self.check(module);
-        let diagnostics = check_result.diagnostics;
-        let meshes = Vec::new();
+        let mut diagnostics = check_result.diagnostics;
+        let meshes = Self::tessellate_from_values(
+            &mut self.geometry_kernel,
+            module,
+            &check_result.values,
+            &mut diagnostics,
+        );
 
         TessellateResult {
             values: check_result.values,
@@ -2611,6 +2616,77 @@ impl Engine {
             diagnostics,
             resolved_params: check_result.resolved_params,
         }
+    }
+
+    /// Default tessellation tolerance in SI meters (0.1mm).
+    const DEFAULT_TESSELLATION_TOLERANCE: f64 = 0.0001;
+
+    /// Shared helper: execute geometry operations and tessellate each realization.
+    ///
+    /// Used by both `tessellate_realizations()` and `tessellate_snapshot()`.
+    fn tessellate_from_values(
+        geometry_kernel: &mut Option<Box<dyn GeometryKernel>>,
+        module: &CompiledModule,
+        values: &ValueMap,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Vec<(String, Mesh)> {
+        let mut meshes = Vec::new();
+
+        let kernel = match geometry_kernel.as_mut() {
+            Some(k) => k,
+            None => return meshes,
+        };
+
+        let mut step_handles: Vec<GeometryHandleId> = Vec::new();
+
+        for template in &module.templates {
+            for realization in &template.realizations {
+                let handle_start = step_handles.len();
+
+                for op in &realization.operations {
+                    let geom_op = compile_geometry_op(
+                        op,
+                        values,
+                        &step_handles,
+                        &module.functions,
+                    );
+                    match geom_op {
+                        Some(geom_op) => match kernel.execute(&geom_op) {
+                            Ok(handle) => {
+                                step_handles.push(handle.id);
+                            }
+                            Err(e) => {
+                                diagnostics.push(Diagnostic::error(
+                                    format!("geometry error: {}", e),
+                                ));
+                            }
+                        },
+                        None => {
+                            diagnostics.push(Diagnostic::error(
+                                "failed to compile geometry operation",
+                            ));
+                        }
+                    }
+                }
+
+                // Tessellate this realization's final handle (if any new handles were produced)
+                if step_handles.len() > handle_start {
+                    let last_handle = step_handles[step_handles.len() - 1];
+                    match kernel.tessellate(last_handle, Self::DEFAULT_TESSELLATION_TOLERANCE) {
+                        Ok(mesh) => {
+                            meshes.push((realization.id.to_string(), mesh));
+                        }
+                        Err(e) => {
+                            diagnostics.push(Diagnostic::error(
+                                format!("tessellation error: {}", e),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        meshes
     }
 
     /// Evaluate let bindings from a template in topological order.
