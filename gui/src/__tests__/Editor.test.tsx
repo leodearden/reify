@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { EditorView } from '@codemirror/view';
+import { undo } from '@codemirror/commands';
+import { diagnosticCount } from '@codemirror/lint';
 import { createEditorStore } from '../stores/editorStore';
 import * as bridge from '../bridge';
 import type { FileData, SourceLocation } from '../types';
@@ -14,10 +16,16 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(),
 }));
 
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { Editor } from '../editor/Editor';
+
+const mockListen = vi.mocked(listen);
+const mockInvoke = vi.mocked(invoke);
 
 const file1: FileData = { path: '/project/src/bracket.ri', content: 'structure Bracket {\n  param width = 80mm\n}' };
 const file2: FileData = { path: '/project/src/mount.ri', content: 'structure Mount {}' };
+const file3: FileData = { path: '/project/src/plate.ri', content: 'structure Plate {}' };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -340,5 +348,411 @@ describe('Editor LSP init error callback', () => {
         expect.stringContaining('LSP initialization failed'),
       );
     });
+  });
+});
+
+describe('Editor diagnostics URI filtering', () => {
+  /** Capture the Tauri diagnostics event handler so we can fire events manually. */
+  function setupListenCapture() {
+    let diagnosticsHandler: ((event: { payload: any }) => void) | undefined;
+    mockListen.mockImplementation(async (_event: any, handler: any) => {
+      diagnosticsHandler = handler;
+      return vi.fn(); // unlisten
+    });
+    return () => diagnosticsHandler;
+  }
+
+  const sampleDiagnostic = {
+    range: {
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 9 },
+    },
+    severity: 1,
+    message: 'test error',
+  };
+
+  it('diagnostics from non-active URI are NOT applied to editor', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Verify handler was captured
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // Fire diagnostics for a DIFFERENT URI than the active file
+    handler!({
+      payload: {
+        uri: 'file:///project/src/other.ri',
+        diagnostics: [sampleDiagnostic],
+      },
+    });
+
+    // Diagnostics should NOT have been applied to the editor
+    expect(diagnosticCount(view.state)).toBe(0);
+  });
+
+  it('diagnostics from active file URI ARE applied to editor', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // Fire diagnostics for the ACTIVE file's URI
+    handler!({
+      payload: {
+        uri: 'file:///project/src/bracket.ri',
+        diagnostics: [sampleDiagnostic],
+      },
+    });
+
+    // Diagnostics SHOULD have been applied
+    expect(diagnosticCount(view.state)).toBe(1);
+  });
+});
+
+describe('Editor per-file undo history (E-04)', () => {
+  it('undo in file1 after switch round-trip restores file1 pre-edit content', () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    let view = getEditorView(container);
+
+    // (1) file1 is shown
+    expect(view.state.doc.toString()).toContain('structure Bracket');
+
+    // (2) Edit file1: insert '// edit\n' at position 0
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    expect(view.state.doc.toString()).toContain('// edit');
+
+    // (3) Switch to file2
+    store.setActiveFile(file2.path);
+    view = getEditorView(container);
+    expect(view.state.doc.toString()).toContain('structure Mount');
+
+    // (4) Switch back to file1
+    store.setActiveFile(file1.path);
+    view = getEditorView(container);
+    // file1 should still contain the edit
+    expect(view.state.doc.toString()).toContain('// edit');
+
+    // (5) Undo — should revert file1's edit, not produce file2 content
+    undo(view);
+
+    view = getEditorView(container);
+    // After undo, file1 should be back to original content
+    expect(view.state.doc.toString()).toBe(file1.content);
+    // And NOT contain file2's content (undo history must not be polluted)
+    expect(view.state.doc.toString()).not.toContain('structure Mount');
+  });
+
+  it('undo in file2 does NOT produce file1 content', () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+
+    // Switch to file2
+    store.setActiveFile(file2.path);
+    let view = getEditorView(container);
+
+    // Attempt undo in file2 — should be a no-op (no edits made in file2)
+    undo(view);
+
+    view = getEditorView(container);
+    // file2 should still show file2 content, NOT file1's content
+    expect(view.state.doc.toString()).toContain('structure Mount');
+    expect(view.state.doc.toString()).not.toContain('structure Bracket');
+  });
+});
+
+describe('Editor debounce timer cancellation on file switch (RC-04)', () => {
+  it('debounced updateSource does NOT fire after file switch', () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Edit file1 (triggers debounce timer)
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+
+    // Immediately switch to file2 (before 300ms elapses)
+    store.setActiveFile(file2.path);
+
+    // Advance timers past the debounce period
+    vi.advanceTimersByTime(300);
+
+    // The debounced updateSource should NOT have fired for the stale edit
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('Editor LSP file switch serialization (RC-02)', () => {
+  it('rapid file switches serialize didClose/didOpen in correct order', async () => {
+    const store = setupStore([file1, file2, file3]);
+    store.setActiveFile(file1.path);
+
+    // Track LSP method calls via the invoke mock
+    const lspCalls: { method: string; uri?: string }[] = [];
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method) {
+        const params = JSON.parse((args as any)?.params ?? '{}');
+        const uri = params?.textDocument?.uri;
+        lspCalls.push({ method, uri });
+      }
+      // Return valid JSON for initialize (needs to be parsed)
+      if ((args as any)?.method === 'initialize') {
+        return JSON.stringify({ capabilities: {} });
+      }
+      return undefined as any;
+    });
+
+    render(() => <Editor store={store} />);
+
+    // Wait for initial LSP calls (initialize, initialized, didOpen for file1)
+    await vi.waitFor(() => {
+      expect(lspCalls.some(c => c.method === 'textDocument/didOpen')).toBe(true);
+    });
+    lspCalls.length = 0;
+
+    // Rapidly switch file1 -> file2 -> file3
+    store.setActiveFile(file2.path);
+    store.setActiveFile(file3.path);
+
+    // Flush all microtasks — wait for all 4 LSP file-switch calls
+    await vi.waitFor(() => {
+      const switchCalls = lspCalls.filter(c => c.method.startsWith('textDocument/did'));
+      expect(switchCalls).toHaveLength(4);
+    });
+
+    const fileSwitchCalls = lspCalls
+      .filter(c => c.method.startsWith('textDocument/did'))
+      .map(c => ({ method: c.method, uri: c.uri }));
+
+    // Expected serialized order:
+    // didClose(file1) -> didOpen(file2) -> didClose(file2) -> didOpen(file3)
+    expect(fileSwitchCalls).toEqual([
+      { method: 'textDocument/didClose', uri: 'file:///project/src/bracket.ri' },
+      { method: 'textDocument/didOpen',  uri: 'file:///project/src/mount.ri' },
+      { method: 'textDocument/didClose', uri: 'file:///project/src/mount.ri' },
+      { method: 'textDocument/didOpen',  uri: 'file:///project/src/plate.ri' },
+    ]);
+  });
+});
+
+describe('Editor integration: rapid file switch with diagnostics mid-switch', () => {
+  it('diagnostics, debounce, and LSP serialization all behave correctly on rapid switch', async () => {
+    // Setup: capture diagnostics handler
+    let diagnosticsHandler: ((event: { payload: any }) => void) | undefined;
+    mockListen.mockImplementation(async (_event: any, handler: any) => {
+      diagnosticsHandler = handler;
+      return vi.fn();
+    });
+
+    // Track LSP calls
+    const lspCalls: { method: string; uri?: string }[] = [];
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method) {
+        const params = JSON.parse((args as any)?.params ?? '{}');
+        const uri = params?.textDocument?.uri;
+        lspCalls.push({ method, uri });
+      }
+      if ((args as any)?.method === 'initialize') {
+        return JSON.stringify({ capabilities: {} });
+      }
+      return undefined as any;
+    });
+
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined);
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+
+    // Wait for initial LSP setup
+    await vi.waitFor(() => {
+      expect(lspCalls.some(c => c.method === 'textDocument/didOpen')).toBe(true);
+    });
+    lspCalls.length = 0;
+
+    // (1) Edit file A — triggers debounce timer
+    const view = getEditorView(container);
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+
+    // (2) Switch A -> B before debounce fires
+    store.setActiveFile(file2.path);
+
+    // (3) Fire diagnostics for file A's URI mid-switch
+    expect(diagnosticsHandler).toBeDefined();
+    diagnosticsHandler!({
+      payload: {
+        uri: 'file:///project/src/bracket.ri',
+        diagnostics: [{
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+          severity: 1,
+          message: 'stale diagnostic from file A',
+        }],
+      },
+    });
+
+    // (4) Advance timers past debounce period
+    vi.advanceTimersByTime(300);
+
+    // Verify: diagnostics NOT applied to B's editor (E-05 fix)
+    const viewB = getEditorView(container);
+    expect(diagnosticCount(viewB.state)).toBe(0);
+
+    // Verify: debounced updateSource NOT called (RC-04 fix)
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    // Verify: undo in file B does NOT produce file A content (E-04 fix)
+    undo(viewB);
+    expect(getEditorView(container).state.doc.toString()).toContain('structure Mount');
+    expect(getEditorView(container).state.doc.toString()).not.toContain('structure Bracket');
+
+    // Verify: LSP calls correctly ordered (RC-02 fix)
+    await vi.waitFor(() => {
+      const switchCalls = lspCalls.filter(c => c.method.startsWith('textDocument/did'));
+      expect(switchCalls).toHaveLength(2);
+    });
+
+    const fileSwitchCalls = lspCalls
+      .filter(c => c.method.startsWith('textDocument/did'))
+      .map(c => ({ method: c.method, uri: c.uri }));
+
+    expect(fileSwitchCalls).toEqual([
+      { method: 'textDocument/didClose', uri: 'file:///project/src/bracket.ri' },
+      { method: 'textDocument/didOpen',  uri: 'file:///project/src/mount.ri' },
+    ]);
+  });
+});
+
+describe('Editor cleanup race condition (RC-05)', () => {
+  it('cleanup during in-flight file switch prevents phantom didOpen', async () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+
+    const lspCalls: string[] = [];
+    let firstSwitchCloseResolver: (() => void) | null = null;
+
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+
+      const params = JSON.parse((args as any)?.params ?? '{}');
+      const uri = params?.textDocument?.uri ?? '';
+
+      if (method?.startsWith('textDocument/did')) {
+        lspCalls.push(`${method}|${uri}`);
+      }
+
+      // Return a controllable promise for the file-switch's didClose(bracket)
+      // so we can interleave unmount while the chain is mid-flight
+      if (
+        method === 'textDocument/didClose' &&
+        uri.includes('bracket') &&
+        !firstSwitchCloseResolver
+      ) {
+        return new Promise<void>((resolve) => {
+          firstSwitchCloseResolver = resolve;
+        }) as any;
+      }
+
+      return undefined as any;
+    });
+
+    const { unmount } = render(() => <Editor store={store} />);
+
+    // Wait for initial LSP setup (initialize → initialized → didOpen)
+    await vi.waitFor(() => {
+      expect(lspCalls.some((c) => c.includes('didOpen'))).toBe(true);
+    });
+    lspCalls.length = 0;
+
+    // Trigger file switch file1 → file2
+    store.setActiveFile(file2.path);
+
+    // Wait for didClose(bracket) to be called — it's now pending via deferred
+    await vi.waitFor(() => {
+      expect(firstSwitchCloseResolver).not.toBeNull();
+    });
+
+    // Resolve didClose(bracket) and IMMEDIATELY unmount before the chain's
+    // didOpen microtask gets a chance to run — this creates the race condition
+    firstSwitchCloseResolver!();
+    unmount();
+
+    // Flush all microtasks to let pending promise chains settle
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+
+    // With the fix (destroyed flag + chained cleanup):
+    //   The chain's didOpen is SKIPPED (destroyed=true), then cleanup's
+    //   chained didClose(mount) fires.
+    //   Result: [didClose(bracket), didClose(mount)]
+    //
+    // BUG (no destroyed flag):
+    //   Cleanup fires didClose(mount) directly, then the chain's didOpen(mount)
+    //   fires afterward — leaving a phantom open document in the LSP server.
+    //   Result: [didClose(bracket), didClose(mount), didOpen(mount)]
+
+    // No phantom didOpen should be present
+    const didOpenCalls = lspCalls.filter((c) => c.includes('didOpen'));
+    expect(didOpenCalls).toHaveLength(0);
+
+    // Last call should be didClose for the file active at cleanup time
+    const lastCall = lspCalls[lspCalls.length - 1];
+    expect(lastCall).toContain('textDocument/didClose');
+    expect(lastCall).toContain('mount.ri');
+  });
+
+  it('cleanup fires didClose for current URI when no file switch is in flight', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+
+    const lspCalls: string[] = [];
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+
+      const params = JSON.parse((args as any)?.params ?? '{}');
+      const uri = params?.textDocument?.uri ?? '';
+
+      if (method?.startsWith('textDocument/did')) {
+        lspCalls.push(`${method}|${uri}`);
+      }
+
+      return undefined as any;
+    });
+
+    const { unmount } = render(() => <Editor store={store} />);
+
+    // Wait for initial LSP setup
+    await vi.waitFor(() => {
+      expect(lspCalls.some((c) => c.includes('didOpen'))).toBe(true);
+    });
+    lspCalls.length = 0;
+
+    // Unmount with no file switch in progress
+    unmount();
+
+    // Flush microtasks (cleanup's chained didClose)
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+
+    // Should have exactly one didClose for the active file
+    const closeCalls = lspCalls.filter((c) => c.includes('didClose'));
+    expect(closeCalls).toHaveLength(1);
+    expect(closeCalls[0]).toContain('bracket.ri');
   });
 });

@@ -1,317 +1,176 @@
 {
-  "task_id": "115",
-  "title": "UX polish: layout persistence, splitter bounds, error boundary, keyboard shortcut help, wiring gaps",
+  "task_id": "103",
+  "title": "Fix editor diagnostics cross-file contamination and file-switch race conditions",
   "files": [
-    "gui/src/App.tsx",
-    "gui/src/index.tsx",
-    "gui/src/bridge.ts",
-    "gui/src/hooks/useKeyboardShortcuts.ts",
-    "gui/src/hooks/useLayoutPersistence.ts",
-    "gui/src/viewport/Viewport.tsx",
-    "gui/src/viewport/scene.ts",
-    "gui/src/components/KeyboardHelp.tsx",
-    "gui/src/components/KeyboardHelp.module.css",
-    "gui/src/__tests__/useLayoutPersistence.test.ts",
-    "gui/src/__tests__/KeyboardHelp.test.tsx",
-    "gui/src/__tests__/ErrorBoundary.test.tsx",
-    "gui/src/__tests__/App.test.tsx",
-    "gui/src/__tests__/useKeyboardShortcuts.test.ts",
-    "gui/src/__tests__/viewport/Viewport.test.tsx",
-    "gui/src/__tests__/viewport/scene.test.ts"
+    "gui/src/editor/Editor.tsx",
+    "gui/src/editor/diagnostics.ts",
+    "gui/src/__tests__/Editor.test.tsx",
+    "gui/src/__tests__/diagnostics.test.ts"
   ],
   "modules": [
-    "gui/src",
-    "gui/src/hooks",
-    "gui/src/viewport",
-    "gui/src/components",
-    "gui/src/__tests__",
-    "gui/src/__tests__/viewport"
+    "gui/src/editor",
+    "gui/src/__tests__"
   ],
-  "analysis": "This task covers 10 independent UX polish items across the GUI crate. The codebase uses SolidJS with vitest+@solidjs/testing-library for testing. Key patterns: signals for state, createEffect for side effects, Tauri IPC via typed bridge layer, mock-heavy tests with vi.mock(). Viewport mocks Three.js entirely. App.test.tsx uses module-level vi.mock() for Viewport/Editor/bridge and a capturedViewportProps pattern to verify prop wiring.\n\nCurrent state analysis:\n- (A-9) Panel widths/heights are SolidJS signals (lines 54-56 of App.tsx) with hardcoded defaults (300/300/200), never persisted to localStorage.\n- (U4) Resize handlers (lines 262-272) use Math.max(MIN_PANEL_WIDTH, ...) but no upper bound \u2014 panels can be dragged wider than the container.\n- (X-8) No ErrorBoundary anywhere. App has manual error state for init failures but no catch for render crashes.\n- (K1) onOpen callback in useKeyboardShortcuts call (line 95-98) is an empty stub comment.\n- (K4) Only 3 shortcuts exist (Ctrl+O, F5, Ctrl+E), no help UI or discoverability.\n- (A-7/T-4) handleFitToView (line 228-230) is a stub comment. Toolbar 'Fit to View' button calls it but nothing happens.\n- (U8) Viewport accepts onHover prop but App never passes it (line 339-345), so viewport hover events don't update selectionStore.\n- (U9) evalStatus not passed to Viewport, making the spinner overlay (Viewport.tsx lines 156-174) dead code.\n- (V-12) Grid/axes created in scene.ts (lines 61-65) with no toggle mechanism \u2014 always visible.\n- (V-14) Tooltip has hardcoded position top:8px, left:8px (Viewport.tsx lines 139-140) \u2014 doesn't follow cursor.\n\nApproach: Implement each fix as an independent test\u2192impl pair. Create useLayoutPersistence utility for localStorage abstraction. Create KeyboardHelp overlay component. Extend scene.ts SceneContext to return helper refs. Use existing flyToEntityRef pattern for fitToViewRef. Add pickOpenPath to bridge.ts following pickSavePath pattern. Track pointer position for cursor-following tooltip.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Create empty gui/src/hooks/useLayoutPersistence.ts with PanelLayout type export and STORAGE_KEY constant to enable test-first development",
-      "status": "done",
-      "commit": "5882815",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Create empty gui/src/components/KeyboardHelp.tsx skeleton (export function KeyboardHelp) and gui/src/components/KeyboardHelp.module.css to enable test-first development",
-      "status": "done",
-      "commit": "5882815",
-      "tests": []
-    }
-  ],
+  "analysis": "Four bugs around editor file switching need fixing in the SolidJS/CodeMirror6 editor component:\n\n(E-05) Diagnostics cross-file contamination: The `createDiagnosticsListener` callback in Editor.tsx (lines 144-157) applies incoming diagnostics to the editor without checking whether `event.uri` matches `currentUri`. Diagnostics from file A get applied to file B when you switch files.\n\n(RC-04) Debounced didChange after file switch: The `lspDebounceTimer` (lines 107-113) and `debounceTimer` (lines 99-104) are NOT cleared when the file switch effect runs (lines 168-195). A pending timer from editing file A could fire after switching to file B. While the captured `path` variable is correct (captured at edit time), the shared `lspVersion` counter creates conflicts, and sending didChange for a URI that was just didClose'd confuses the LSP server.\n\n(E-04) File switch replaces doc content instead of swapping EditorState: Lines 183-186 use `view.dispatch({changes: ...})` to replace the entire document on file switch. This pollutes the undo history \u2014 undoing in file B would restore file A's content. Fix: maintain a `Map<string, EditorState>` of per-file states, save current state on switch, restore the target file's state via `view.setState()`.\n\n(RC-02) LSP didClose/didOpen not serialized: Lines 191-194 fire `didClose(oldUri).then(() => didOpen(newUri))` but the promise chain is fire-and-forget. Rapid file switches (A->B->C) can cause overlapping didClose/didOpen calls that arrive out of order. Fix: chain each file switch's LSP operations off a `fileOpsPromise` variable to serialize them.\n\n(RC-05 / review feedback) Resource leak race condition on cleanup: onCleanup calls `lspClient.didClose(currentUri)` directly without waiting for in-flight `fileOpsPromise` to settle. If a file switch is mid-chain at teardown time, the cleanup's didClose fires concurrently, then the pending chain's didOpen fires afterward \u2014 leaving a phantom open document in the LSP server. Fix: chain cleanup's didClose off fileOpsPromise and add a `destroyed` flag to skip didOpen after teardown.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for useLayoutPersistence in gui/src/__tests__/useLayoutPersistence.test.ts: (1) loadPanelLayout returns null when no data in localStorage, (2) loadPanelLayout returns parsed PanelLayout when valid JSON exists at STORAGE_KEY, (3) savePanelLayout writes serialized layout to localStorage at STORAGE_KEY, (4) loadPanelLayout returns null (does not throw) when localStorage contains corrupted/invalid JSON, (5) loadPanelLayout returns null when stored object is missing required fields",
+      "description": "Write failing test: E-05 \u2014 diagnostics from non-active URI should not be applied to editor. In Editor.test.tsx, add a test in a new 'Editor diagnostics URI filtering' describe block. Simulate a Tauri diagnostics event by capturing the listen handler from the mock, then invoke it with a payload whose `uri` does NOT match the active file's URI. Assert that the editor's diagnostics remain empty (no `cm-diagnostic` elements in DOM). Also add a positive test: diagnostics whose URI matches the active file ARE applied.",
       "status": "done",
-      "commit": "de1db4b"
+      "commit": "70a3e50"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement useLayoutPersistence.ts: export STORAGE_KEY='reify-panel-layout', export type PanelLayout = { editorWidth: number; sideWidth: number; propertyHeight: number }. loadPanelLayout(): reads from localStorage, parses JSON, validates all 3 fields are numbers, returns PanelLayout or null. savePanelLayout(layout: PanelLayout): serializes to localStorage. Both wrapped in try/catch for safety.",
+      "description": "Fix E-05 \u2014 filter diagnostics by URI. In the `createDiagnosticsListener` callback in Editor.tsx (around line 144), add a guard: `if (event.uri !== currentUri) return;` before converting and applying diagnostics. This ensures only diagnostics for the currently active file are applied to the editor.",
       "status": "done",
-      "commit": "281ba14"
+      "commit": "f5a7f09"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests in gui/src/__tests__/App.test.tsx (new describe 'App layout persistence'): (1) panel widths initialize from localStorage when valid data exists (seed localStorage before render, verify grid-template-columns reflects stored values), (2) missing localStorage falls back to defaults (300/300/200), (3) resizing left splitter writes updated layout to localStorage (drag splitter, check localStorage value)",
+      "description": "Write failing test: RC-04 \u2014 debounced didChange should not fire after file switch. In Editor.test.tsx, add a test that: (1) opens file1 in editor, (2) dispatches an edit to the CM6 view (triggering debounce timers), (3) immediately switches to file2 via store.setActiveFile (before 300ms elapses), (4) advances timers past 300ms with vi.advanceTimersByTime(300), (5) asserts that bridge.updateSource was NOT called for the stale edit (timer should have been cancelled by the file switch).",
       "status": "done",
-      "commit": "35b0a5a"
+      "commit": "0844ac3"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "In App.tsx: import loadPanelLayout/savePanelLayout from hooks/useLayoutPersistence. Initialize signals from loadPanelLayout() falling back to DEFAULT_* constants. Add createEffect that calls savePanelLayout({ editorWidth: editorWidth(), sideWidth: sideWidth(), propertyHeight: propertyHeight() }) \u2014 debounced via setTimeout/clearTimeout (300ms) to avoid thrashing during drag.",
+      "description": "Fix RC-04 \u2014 clear debounce timers on file switch. In the `createEffect` for active file changes in Editor.tsx (around line 168), add `clearTimeout(debounceTimer); clearTimeout(lspDebounceTimer);` right after the early return check and before performing the document swap. This cancels any pending debounced operations from the previous file.",
       "status": "done",
-      "commit": "a553366"
+      "commit": "43b3cff"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests in gui/src/__tests__/App.test.tsx (new describe 'App splitter max bounds'): (1) dragging left splitter far right clamps editor width so viewport and side panel remain visible \u2014 after a huge rightward drag, editorWidth should be <= containerWidth - sideWidth - MIN_PANEL_WIDTH - 8 (splitter widths), (2) dragging right splitter far left clamps side panel width similarly, (3) dragging side-panel splitter downward clamps property height so constraint panel remains visible",
+      "description": "Write failing test: E-04 \u2014 file switch should preserve per-file undo history (EditorState swap). In Editor.test.tsx, add a test that: (1) opens file1, (2) makes an edit to file1 (insert '// edit\\n' at position 0), (3) confirms edit is in the doc, (4) switches to file2, (5) confirms file2 content is shown, (6) switches back to file1, (7) confirms file1 content includes the edit, (8) dispatches undo command, (9) asserts file1 content reverts to original \u2014 proving undo history is per-file. A second test verifies that undoing in file2 after switching does NOT produce file1's content.",
       "status": "done",
-      "commit": "f541033"
+      "commit": "008ad26"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "In App.tsx: add a ref to the .main grid div (let mainRef: HTMLDivElement). In handleLeftResize: add Math.min upper bound using mainRef.clientWidth - sideWidth() - MIN_PANEL_WIDTH - 8. In handleRightResize: add Math.min upper bound using mainRef.clientWidth - editorWidth() - MIN_PANEL_WIDTH - 8. In handleSideResize: add ref to side panel div, clamp using its clientHeight - MIN_PANEL_HEIGHT - 4. Fallback to large number if refs not yet set.",
+      "description": "Fix E-04 \u2014 swap per-file EditorState instead of replacing doc content. Add a `Map<string, EditorState>` (fileStates) to Editor.tsx. Extract the CM6 extensions array into a `const extensions = [...]` variable before `EditorState.create()`. In the file switch effect: (1) save `view.state` into `fileStates.set(previousActiveFile, view.state)`, (2) check if `fileStates.has(activeFile)` \u2014 if yes, `view.setState(fileStates.get(activeFile)!)`, otherwise create a fresh `EditorState.create({doc: newContent, extensions})` and use `view.setState()`. Remove the old `view.dispatch({changes: ...})` approach and the `isSwitching` flag (no longer needed since setState doesn't trigger updateListener).",
       "status": "done",
-      "commit": "6388576"
+      "commit": "7a5d7d4"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests in gui/src/__tests__/ErrorBoundary.test.tsx: (1) ErrorBoundary wrapping a throwing component catches the error and shows fallback UI with data-testid='error-boundary-fallback' containing the error message, (2) ErrorBoundary renders children normally when no error occurs, (3) fallback shows a 'Reload' button",
+      "description": "Write failing test: RC-02 \u2014 rapid file switches should serialize LSP didClose/didOpen. In Editor.test.tsx, add a test with 3 files (file1, file2, file3). Mock lspClient methods to track call order. Switch file1->file2 then immediately file2->file3 (two setActiveFile calls in sequence). Flush all promises. Assert the LSP call order is exactly: didClose(uri1), didOpen(uri2), didClose(uri2), didOpen(uri3) \u2014 proving serialization (each pair completes before the next begins).",
       "status": "done",
-      "commit": "3f5281f"
+      "commit": "13abf18"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "In index.tsx: import ErrorBoundary from solid-js, wrap <App /> in <ErrorBoundary fallback={(err) => <div data-testid='error-boundary-fallback' style={errorStyles}><h2>Something went wrong</h2><p>{err.message}</p><button onClick={() => location.reload()}>Reload</button></div>}>. Use inline styles consistent with theme (background, text colors).",
+      "description": "Fix RC-02 \u2014 serialize LSP file operations with a promise chain. Add `let fileOpsPromise: Promise<void> = Promise.resolve()` to Editor.tsx. In the file switch effect, replace the fire-and-forget promise chain with: `fileOpsPromise = fileOpsPromise.then(() => lspClient.didClose(oldUri)).then(() => lspClient.didOpen(newUri, newContent, lspVersion)).catch(err => console.error('LSP file switch error:', err))`. This ensures each file switch's LSP calls complete before the next pair starts.",
       "status": "done",
-      "commit": "80a5c93"
+      "commit": "8d15bde"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests in gui/src/__tests__/App.test.tsx (new describe 'App viewport prop wiring'): (1) capturedViewportProps.onHover is a function \u2014 calling it with 'entity/path' results in selectionStore.hoveredEntity being updated (verify via PropertyEditor or other downstream prop), (2) capturedViewportProps.evalStatus is defined and reflects engine store state",
+      "description": "Write integration-level test: rapid file switch with diagnostics arriving mid-switch. In Editor.test.tsx, combine all four fixes: (1) open files A and B, (2) edit file A, (3) switch A->B, (4) fire a diagnostics event for file A's URI, (5) advance timers past debounce period, (6) verify: diagnostics NOT applied to B's editor, debounced updateSource NOT called, LSP calls correctly ordered. This serves as a regression test for the combined behavior.",
       "status": "done",
-      "commit": "e27cc6a"
+      "commit": "d0bdab4"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "In App.tsx Viewport JSX (lines 339-345): add onHover={(path) => selectionStore.hoverEntity(path)} and evalStatus={engineStore.state.evalStatus} props to the Viewport component",
+      "description": "Final cleanup: ensure onCleanup handler also clears the fileStates map. Remove the `isSwitching` flag and guard if it's no longer needed (setState doesn't trigger updateListener). Run the full gui test suite to confirm no regressions across all test files.",
       "status": "done",
-      "commit": "e27cc6a"
+      "commit": "93023ae"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing tests: (1) In Viewport.test.tsx: Viewport calls fitToViewRef with a function on mount, that function delegates to selection.fitToView. (2) In App.test.tsx (new describe 'App fit-to-view wiring'): capturedViewportProps.fitToViewRef is defined, and after setting it up, Toolbar's 'Fit to View' click triggers the viewport's fitToView function",
+      "description": "Write failing test: RC-05 \u2014 onCleanup race condition with in-flight fileOpsPromise. In Editor.test.tsx, add a new describe block 'Editor cleanup race condition (RC-05)'. Test scenario: (1) render Editor with file1 and file2 open, (2) set up invoke mock to track LSP call order and make didClose/didOpen return controllable promises (using deferred pattern) so the file switch chain is mid-flight, (3) trigger a file switch from file1 to file2, (4) while the file switch LSP chain is still in progress (didClose resolved but didOpen not yet), call cleanup() from the render result to unmount the component, (5) resolve the pending didOpen promise, (6) flush all microtasks, (7) assert that the final LSP call sequence ends with a didClose for file2's URI (the cleanup's chained didClose), and critically that no didOpen fires AFTER the cleanup's didClose \u2014 proving the `destroyed` flag prevents the phantom open document. A second test verifies the simple case: when no file switch is in flight, cleanup's didClose still chains off fileOpsPromise and fires correctly for the current URI.",
       "status": "done",
-      "commit": "36113f3"
+      "commit": "a123f69"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "In Viewport.tsx: add fitToViewRef?: (fn: () => void) => void to ViewportProps, call props.fitToViewRef?.(() => selection.fitToView()) in onMount alongside flyToEntityRef. In App.tsx: add let fitToViewFn: (() => void) | undefined, pass fitToViewRef={(fn) => { fitToViewFn = fn }} to Viewport, update handleFitToView to call fitToViewFn?.()",
+      "description": "Fix RC-05 \u2014 chain cleanup's didClose off fileOpsPromise and add destroyed flag. In Editor.tsx: (1) Add `let destroyed = false;` alongside the other component-level variables. (2) In the file switch effect's fileOpsPromise chain (line 208), guard the didOpen call: `.then(() => { if (destroyed) return; return lspClient.didOpen(newUri, newContent, version); })`. (3) In onCleanup, set `destroyed = true` before chaining the final didClose. Replace the direct `lspClient.didClose(currentUri).catch(() => {})` with: `const uriToClose = currentUri; fileOpsPromise = fileOpsPromise.then(() => lspClient.didClose(uriToClose)).catch(() => {});`. This ensures the cleanup's didClose waits for any in-flight file switch operations to complete, and the destroyed flag prevents any pending didOpen from executing after teardown. Run full test suite to confirm all tests pass including the new RC-05 test.",
       "status": "done",
-      "commit": "07fe73c"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing tests: (1) In bridge.test.ts: pickOpenPath calls Tauri dialog open() and returns selected path string. (2) In App.test.tsx (extend existing or new describe 'App Ctrl+O open file'): dispatching Ctrl+O triggers file dialog open flow \u2014 verify bridge.pickOpenPath is called, then bridge.openFile with returned path",
-      "status": "done",
-      "commit": "4c6f682"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "In bridge.ts: import { open } from '@tauri-apps/plugin-dialog', export async function pickOpenPath(): Promise<string | null> that calls open({ filters: [{ name: 'Reify files', extensions: ['ri'] }] }) and returns string path or null. In App.tsx: update onOpen callback to async function that calls pickOpenPath(), if path returned calls bridgeOpenFile(path), then editorStore.openFile(fileData). Wrap in try/catch with toast error.",
-      "status": "done",
-      "commit": "4bc5028"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing tests in gui/src/__tests__/useKeyboardShortcuts.test.ts: (1) dispatching ? key (Shift+/) on document calls onHelp callback, (2) dispatching ? when target is an <input> does NOT call onHelp, (3) dispatching ? with Ctrl held does NOT call onHelp (avoid conflict with browser shortcuts)",
-      "status": "done",
-      "commit": "f46273a"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "In useKeyboardShortcuts.ts: add onHelp?: () => void to KeyboardShortcutCallbacks interface. Add handler in handleKeyDown: if e.key === '?' and !e.ctrlKey and !e.altKey, call callbacks.onHelp?.(). Place it after modifier-key checks to avoid conflicts.",
-      "status": "done",
-      "commit": "13adc3a"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing tests in gui/src/__tests__/KeyboardHelp.test.tsx: (1) renders overlay with data-testid='keyboard-help' containing shortcut list including Ctrl+O, F5, Ctrl+E, ?, (2) clicking close button calls onClose callback, (3) pressing Escape key calls onClose, (4) lists correct descriptions for each shortcut",
-      "status": "done",
-      "commit": "64b7ad8"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Implement KeyboardHelp.tsx: export interface KeyboardHelpProps { onClose: () => void }. Render modal overlay (backdrop + centered card) with data-testid='keyboard-help'. Display shortcut table: Ctrl+O \u2192 Open file, F5 \u2192 Re-evaluate, Ctrl+E \u2192 Export, ? \u2192 Toggle this help. Close button and Escape keydown handler calling props.onClose(). Style with KeyboardHelp.module.css using theme CSS variables (--reify-surface, --reify-text, --reify-border, --reify-accent).",
-      "status": "done",
-      "commit": "c94c5dc"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write failing test in gui/src/__tests__/App.test.tsx (new describe 'App keyboard help overlay'): (1) pressing ? key shows keyboard help overlay (data-testid='keyboard-help' present), (2) pressing ? again hides it (toggle behavior), (3) pressing Escape while help is shown hides it",
-      "status": "done",
-      "commit": "f065e23"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "In App.tsx: import KeyboardHelp, add const [showHelp, setShowHelp] = createSignal(false). Pass onHelp: () => setShowHelp(v => !v) to useKeyboardShortcuts. Add <Show when={showHelp()}><KeyboardHelp onClose={() => setShowHelp(false)} /></Show> in the JSX (outside the initPhase ready block, so it works in all states).",
-      "status": "done",
-      "commit": "d89bef5"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing tests in gui/src/__tests__/viewport/scene.test.ts: (1) createScene returns grid property that is a GridHelper instance, (2) createScene returns axes property that is an AxesHelper instance, (3) both grid and axes have a visible property (initially true)",
-      "status": "done",
-      "commit": "c394cfe"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "In scene.ts: extend SceneContext interface to include grid: GridHelper and axes: AxesHelper. Store the grid and axes in local variables (already created but unnamed), return them in the SceneContext object: { scene, camera, renderer, resize, adjustClipping, grid, axes }.",
-      "status": "done",
-      "commit": "50562f7"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write failing tests in gui/src/__tests__/viewport/Viewport.test.tsx: (1) renders a grid toggle button with data-testid='toggle-grid', (2) clicking the toggle button updates grid/axes visible state (mock createScene to return objects with visible property, verify .visible toggled after click)",
-      "status": "done",
-      "commit": "a9c00af"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "In Viewport.tsx: destructure { grid, axes } from createScene result. Add const [showGrid, setShowGrid] = createSignal(true). Add createEffect that sets grid.visible = showGrid() and axes.visible = showGrid() and calls requestRender(). Add toggle button in overlay area near fit-to-view button (bottom-right, offset left of Fit button): data-testid='toggle-grid', onClick={() => setShowGrid(v => !v)}, text 'Grid' with visual indicator of state.",
-      "status": "done",
-      "commit": "32bae6b"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Write failing tests in gui/src/__tests__/viewport/Viewport.test.tsx: (1) tooltip style top/left update on mousemove within container (simulate mousemove, verify tooltip has updated position style near the pointer coordinates with offset), (2) tooltip is not positioned at fixed 8px/8px after a mousemove event, (3) tooltip still shows the hoveredEntity text content",
-      "status": "done",
-      "commit": "f857c68"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "In Viewport.tsx: add const [pointerPos, setPointerPos] = createSignal({ x: 8, y: 8 }). Add onMouseMove handler to container div that computes position relative to container (e.clientX - containerRef.getBoundingClientRect().left, e.clientY - containerRef.getBoundingClientRect().top). Update tooltip style to use top: `${pointerPos().y + 16}px` and left: `${pointerPos().x + 16}px` instead of hardcoded 8px values. Keep pointer-events: none on tooltip.",
-      "status": "done",
-      "commit": "9edb7c2"
+      "commit": "71c69ed"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Create useLayoutPersistence as a pure function module (loadPanelLayout/savePanelLayout) rather than a SolidJS reactive hook",
-      "rationale": "Pure functions are easier to test without SolidJS reactive context (no createRoot needed). The persistence logic is simple read/write to localStorage. App.tsx handles the reactive wiring (createEffect for save, signal init for load). This keeps the module framework-agnostic."
+      "decision": "Use a Map<string, EditorState> for per-file state preservation",
+      "rationale": "CodeMirror 6's EditorState is immutable and serializable. Storing a snapshot per file path allows perfect restoration of undo history, cursor position, and scroll position when switching back. This is the standard CM6 pattern for multi-tab editors."
     },
     {
-      "decision": "Use flyToEntityRef callback pattern for fitToViewRef \u2014 Viewport passes out a closure that App stores as a mutable ref",
-      "rationale": "This is the established pattern in the codebase (flyToEntityRef at App.tsx line 73 and line 344). Consistent and proven approach for child\u2192parent function exposure in SolidJS where parent needs to imperatively call a child function."
+      "decision": "Use view.setState() instead of view.dispatch({changes}) for file switching",
+      "rationale": "view.dispatch() with content replacement creates a transaction in the undo history \u2014 undoing would restore the previous file's content. view.setState() replaces the entire state cleanly without polluting history. It also doesn't trigger the updateListener, eliminating the need for the `isSwitching` guard flag."
     },
     {
-      "decision": "Return grid and axes objects from createScene in SceneContext rather than using scene.getObjectByName()",
-      "rationale": "Type-safe access without string lookups. Extends SceneContext interface cleanly. The grid/axes are already created in createScene, so returning them is a minimal change. Downstream code gets typed GridHelper/AxesHelper references."
+      "decision": "Serialize LSP file ops via promise chaining rather than an async queue",
+      "rationale": "A simple promise chain (`fileOpsPromise = fileOpsPromise.then(...)`) is the minimal solution that guarantees ordering without introducing a queue abstraction. Each file switch chains off the previous one. Errors are caught per-chain-link so one failure doesn't block subsequent switches."
     },
     {
-      "decision": "Single grid toggle button that controls both GridHelper and AxesHelper visibility together",
-      "rationale": "Simplest UI for a polish item. Grid and axes are conceptually related \u2014 both are reference helpers for spatial orientation. A single toggle reduces UI clutter. Can be split into separate toggles later if users request it."
+      "decision": "Clear debounce timers at the start of file switch effect rather than in the timer callbacks",
+      "rationale": "Clearing timers eagerly on file switch is simpler and more robust than adding guards inside the timer callbacks. It ensures no stale work runs after the context has changed."
     },
     {
-      "decision": "Track pointer position relative to container using getBoundingClientRect() on each mousemove",
-      "rationale": "Tooltip is positioned absolute within the viewport container, so container-relative coordinates are needed. Using getBoundingClientRect() on each move handles cases where the container shifts (e.g. splitter resize). The overhead is negligible since mousemove already fires frequently."
+      "decision": "Filter diagnostics by URI in the Editor callback, not in diagnostics.ts",
+      "rationale": "The diagnostics.ts module is a generic event bridge \u2014 it shouldn't know about the active file concept. The URI filtering belongs in the Editor component which has the `currentUri` context. This keeps diagnostics.ts reusable."
     },
     {
-      "decision": "Add pickOpenPath to bridge.ts using @tauri-apps/plugin-dialog open() function",
-      "rationale": "Follows existing pickSavePath pattern in bridge.ts (line 63-74). Keeps Tauri dialog API usage centralized in the bridge layer. The package @tauri-apps/plugin-dialog is already a dependency (package.json line 29). The open() function is the counterpart to save() already imported."
+      "decision": "Extract CM6 extensions into a shared variable for reuse in fresh EditorState creation",
+      "rationale": "When a file is opened for the first time (no saved EditorState in the map), we need to create a fresh EditorState with the same extensions. Extracting the extensions array avoids duplication between onMount and the file switch effect."
     },
     {
-      "decision": "Debounce savePanelLayout in createEffect with 300ms timeout rather than saving synchronously",
-      "rationale": "During splitter drag, the resize handler fires on every mousemove (potentially 60+ times per second). Writing to localStorage on every frame would be wasteful and could cause jank. A 300ms debounce captures the final resting position after drag completes."
-    },
-    {
-      "decision": "ErrorBoundary wraps App in index.tsx (entry point) rather than inside App component",
-      "rationale": "Catches errors from App's own render, not just its children. If App itself throws during initialization or rendering, the boundary still catches it. This is the standard pattern for top-level error boundaries in SolidJS."
-    },
-    {
-      "decision": "Max-width clamping reads ref.clientWidth at resize time rather than maintaining a reactive signal for container dimensions",
-      "rationale": "Container size changes are infrequent relative to splitter drags. Reading clientWidth directly in the resize handler is simpler, always current, and avoids adding another ResizeObserver or signal sync. The value is only needed at resize-handler invocation time, not reactively."
-    },
-    {
-      "decision": "Keyboard help overlay toggles on ? key and can be dismissed with Escape, placed outside initPhase guard",
-      "rationale": "Help should be accessible even during loading/error states since the user might need to know keyboard shortcuts before the app is fully initialized. Using ? as the toggle key is conventional (GitHub, Gmail use same pattern). Escape dismissal is expected modal behavior."
+      "decision": "Chain cleanup's didClose off fileOpsPromise and use a destroyed flag to guard didOpen",
+      "rationale": "The cleanup must not race with in-flight file switch operations. Chaining off fileOpsPromise guarantees the final didClose runs after any pending didClose/didOpen pair completes. The destroyed flag prevents the pending chain's didOpen from executing after the component is torn down, which would leave a phantom open document in the LSP server. This is simpler than cancellable promises and covers the edge case where teardown happens mid-chain."
     }
   ],
   "reuse": [
     {
-      "what": "flyToEntityRef callback pattern (child\u2192parent function passing)",
-      "where": "gui/src/App.tsx line 73 + line 344, gui/src/viewport/Viewport.tsx line 46",
-      "how": "Clone the same pattern for fitToViewRef: Viewport calls props.fitToViewRef?.(fn) in onMount, App stores the function in a let variable and calls it from handleFitToView"
+      "what": "Existing EditorView.findFromDOM() test helper (getEditorView)",
+      "where": "gui/src/__tests__/Editor.test.tsx line 71-74",
+      "how": "Reuse for all new Editor tests to get the CM6 view instance from the rendered container"
     },
     {
-      "what": "pickSavePath bridge function pattern",
-      "where": "gui/src/bridge.ts lines 63-74",
-      "how": "Create pickOpenPath following the same structure: import open from @tauri-apps/plugin-dialog, call with filters, normalize return value to string|null"
+      "what": "Existing setupStore() helper and file fixtures (file1, file2, file3)",
+      "where": "gui/src/__tests__/Editor.test.tsx lines 26-43",
+      "how": "Reuse setupStore and existing file fixtures for the cleanup race condition test"
     },
     {
-      "what": "useKeyboardShortcuts callback interface extension point",
-      "where": "gui/src/hooks/useKeyboardShortcuts.ts KeyboardShortcutCallbacks interface",
-      "how": "Add onHelp to existing interface, add handler in existing handleKeyDown function. No structural changes needed \u2014 just one more case in the if/else chain."
+      "what": "Existing Tauri API mocks (vi.mock for @tauri-apps/api/core and event)",
+      "where": "gui/src/__tests__/Editor.test.tsx lines 12-17",
+      "how": "Reuse the same mock patterns; extend the invoke mock with deferred promises for controllable async behavior"
     },
     {
-      "what": "Existing Viewport.test.tsx mock infrastructure",
-      "where": "gui/src/__tests__/viewport/Viewport.test.tsx lines 6-115",
-      "how": "Extend existing createScene mock to return grid/axes objects with visible property. Add mockGrid/mockAxes objects to existing mock setup. Add new test cases within existing describe blocks."
+      "what": "DiagnosticsEvent type with uri field already defined",
+      "where": "gui/src/editor/diagnostics.ts line 23-26",
+      "how": "The event payload already includes `uri: string` \u2014 we just need to check it in the Editor callback"
     },
     {
-      "what": "App.test.tsx renderAndWaitForReady helper and capturedViewportProps",
-      "where": "gui/src/__tests__/App.test.tsx lines 14-99",
-      "how": "Reuse renderAndWaitForReady for all new App tests. Use capturedViewportProps to verify onHover, evalStatus, fitToViewRef props are passed correctly to Viewport mock."
+      "what": "pathToUri helper function",
+      "where": "gui/src/editor/Editor.tsx lines 44-48",
+      "how": "Already available in scope for URI comparison in diagnostics filtering"
     },
     {
-      "what": "SolidJS testing patterns (render, screen, fireEvent, waitFor, createRoot)",
-      "where": "All existing test files",
-      "how": "Follow identical patterns: vi.mock() at module level, beforeEach/afterEach for cleanup, createRoot for hook tests, fireEvent for interaction simulation"
+      "what": "CodeMirror EditorState.create() pattern",
+      "where": "gui/src/editor/Editor.tsx lines 59-124",
+      "how": "Reuse the same extensions for creating fresh per-file EditorState instances in the fileStates map"
     },
     {
-      "what": "Theme CSS variables for consistent component styling",
-      "where": "gui/src/theme.ts THEME_TOKENS, existing inline styles in Viewport.tsx and panels",
-      "how": "KeyboardHelp overlay uses var(--reify-surface), var(--reify-text), var(--reify-border), var(--reify-accent) consistent with Viewport tooltip, ExportDialog overlay, and other panel components"
+      "what": "Existing fileOpsPromise serialization pattern",
+      "where": "gui/src/editor/Editor.tsx lines 36, 206-209",
+      "how": "The cleanup fix chains off the same fileOpsPromise variable, extending the existing serialization pattern to cover component teardown"
     },
     {
-      "what": "Splitter drag simulation pattern for App tests",
-      "where": "gui/src/__tests__/App.test.tsx lines 163-182 and gui/src/__tests__/Splitter.test.tsx lines 27-41",
-      "how": "Use same fireEvent.mouseDown/mouseMove/mouseUp pattern with clientX/clientY for testing max-width clamping behavior"
+      "what": "LSP call tracking pattern from RC-02 test",
+      "where": "gui/src/__tests__/Editor.test.tsx lines 499-551",
+      "how": "Reuse the mockInvoke pattern that tracks LSP method calls with URIs, extended with deferred promises for the controllable-async test scenario"
     }
   ],
-  "_session_id": "115-53818e8f",
-  "_created_at": "2026-03-21T21:55:13.526629+00:00"
+  "_session_id": "103-3d37479f",
+  "_created_at": "2026-03-22T07:49:13.057631+00:00"
 }
