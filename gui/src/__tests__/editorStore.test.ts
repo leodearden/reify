@@ -135,7 +135,8 @@ describe('editorStore', () => {
   });
 
   // S3: stale closure — closeFile should compute fallback from local filtered list
-  it('closeFile selects first remaining file when active file is closed (3 files)', () => {
+  // Adjacent tab selection: closing last tab selects previous (B)
+  it('closeFile selects adjacent tab when active file is closed (3 files, last closed)', () => {
     createRoot((dispose) => {
       const { state, openFile, closeFile } = createEditorStore();
       const fileA: FileData = { path: 'a.ri', content: 'a' };
@@ -147,14 +148,14 @@ describe('editorStore', () => {
       expect(state.activeFile).toBe('c.ri');
 
       closeFile('c.ri');
-      // After closing C, remaining files are [A, B] — active should be A (first remaining)
+      // After closing C (last tab), remaining = [A, B] — select B (previous, at closedIndex-1)
       expect(state.openFiles).toHaveLength(2);
-      expect(state.activeFile).toBe('a.ri');
+      expect(state.activeFile).toBe('b.ri');
       dispose();
     });
   });
 
-  it('closeFile computes correct fallback inside batch()', () => {
+  it('closeFile computes correct adjacent fallback inside batch()', () => {
     createRoot((dispose) => {
       const { state, openFile, closeFile } = createEditorStore();
       const fileA: FileData = { path: 'a.ri', content: 'a' };
@@ -171,7 +172,45 @@ describe('editorStore', () => {
       });
 
       expect(state.openFiles).toHaveLength(2);
+      expect(state.activeFile).toBe('b.ri');
+      dispose();
+    });
+  });
+
+  it('closeFile selects next tab when middle tab is closed', () => {
+    createRoot((dispose) => {
+      const { state, openFile, setActiveFile, closeFile } = createEditorStore();
+      const fileA: FileData = { path: 'a.ri', content: 'a' };
+      const fileB: FileData = { path: 'b.ri', content: 'b' };
+      const fileC: FileData = { path: 'c.ri', content: 'c' };
+      openFile(fileA);
+      openFile(fileB);
+      openFile(fileC);
+      setActiveFile('b.ri');
+      expect(state.activeFile).toBe('b.ri');
+
+      closeFile('b.ri');
+      // After closing B (middle), remaining = [A, C] — select C (next at same index)
+      expect(state.openFiles).toHaveLength(2);
+      expect(state.activeFile).toBe('c.ri');
+      dispose();
+    });
+  });
+
+  it('closeFile selects next tab when first tab is closed', () => {
+    createRoot((dispose) => {
+      const { state, openFile, setActiveFile, closeFile } = createEditorStore();
+      const fileA: FileData = { path: 'a.ri', content: 'a' };
+      const fileB: FileData = { path: 'b.ri', content: 'b' };
+      openFile(fileA);
+      openFile(fileB);
+      setActiveFile('a.ri');
       expect(state.activeFile).toBe('a.ri');
+
+      closeFile('a.ri');
+      // After closing A (first tab), remaining = [B] — select B (next at index 0)
+      expect(state.openFiles).toHaveLength(1);
+      expect(state.activeFile).toBe('b.ri');
       dispose();
     });
   });
