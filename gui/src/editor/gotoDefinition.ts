@@ -81,7 +81,10 @@ async function requestDefinition(
  *
  * @param uri - The document URI or getter to use for LSP requests.
  */
-export function reifyGotoDefinition(uri: string | (() => string)): Extension {
+export function reifyGotoDefinition(
+  uri: string | (() => string),
+  onNavigate?: (targetUri: string, line: number, character: number) => void,
+): Extension {
   return EditorView.domEventHandlers({
     mousedown(event: MouseEvent, view: EditorView) {
       // Only handle Ctrl+Click (or Cmd+Click on Mac)
@@ -99,15 +102,26 @@ export function reifyGotoDefinition(uri: string | (() => string)): Extension {
       requestDefinition(currentUri, lspLine, lspChar).then((location) => {
         if (!location) return;
 
-        // If same document, navigate to definition
         const resolvedNow = resolveUri(uri);
-        if (location.uri === resolvedNow || location.uri.endsWith(resolvedNow.replace('file://', ''))) {
+        const isSameFile =
+          location.uri === resolvedNow ||
+          location.uri.endsWith(resolvedNow.replace('file://', ''));
+
+        if (isSameFile) {
+          // Same document: navigate to definition in current view
           const targetLine = view.state.doc.line(location.range.start.line + 1);
           const targetPos = targetLine.from + location.range.start.character;
           view.dispatch({
             selection: { anchor: targetPos },
             scrollIntoView: true,
           });
+        } else if (onNavigate) {
+          // Different file: delegate to the onNavigate callback
+          onNavigate(
+            location.uri,
+            location.range.start.line,
+            location.range.start.character,
+          );
         }
       });
 

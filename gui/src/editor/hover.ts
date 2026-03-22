@@ -73,9 +73,6 @@ export function reifyHoverTooltip(uri: string | (() => string)) {
         create() {
           const dom = document.createElement('div');
           dom.className = 'cm-lsp-hover';
-          dom.style.padding = '4px 8px';
-          dom.style.maxWidth = '400px';
-          dom.style.whiteSpace = 'pre-wrap';
           dom.textContent = text;
           return { dom };
         },

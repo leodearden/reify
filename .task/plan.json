@@ -1,159 +1,223 @@
 {
-  "task_id": "110",
-  "title": "File management UX: unsaved prompt on close, adjacent tab selection, FileBrowser keyboard access",
+  "task_id": "107",
+  "title": "Editor missing features: line numbers, find/replace, auto-close brackets, completion positioning",
   "files": [
-    "gui/src/stores/editorStore.ts",
-    "gui/src/editor/FileTabs.tsx",
-    "gui/src/editor/FileTabs.module.css",
-    "gui/src/panels/FileBrowser.tsx",
-    "gui/src/panels/FileBrowser.module.css",
-    "gui/src/__tests__/editorStore.test.ts",
-    "gui/src/__tests__/FileTabs.test.tsx",
-    "gui/src/__tests__/FileBrowser.test.tsx"
+    "gui/package.json",
+    "gui/pnpm-lock.yaml",
+    "gui/src/editor/Editor.tsx",
+    "gui/src/editor/Editor.module.css",
+    "gui/src/editor/completions.ts",
+    "gui/src/editor/gotoDefinition.ts",
+    "gui/src/__tests__/Editor.test.tsx",
+    "gui/src/__tests__/completions.test.ts",
+    "gui/src/__tests__/gotoDefinition.test.ts",
+    "gui/src/__tests__/hover.test.ts"
   ],
   "modules": [
-    "gui/src/stores",
     "gui/src/editor",
-    "gui/src/panels",
     "gui/src/__tests__"
   ],
-  "analysis": "This task addresses 7 file management UX issues across 3 components and 1 store.\n\n**Current state:**\n- editorStore.closeFile (line 41) selects remaining[0] instead of the adjacent tab when the active file is closed.\n- FileTabs has role='tab' on individual tabs but no role='tablist' on the container div. No tabindex, no keyboard navigation (Left/Right arrows). The close handler (lines 33-36) directly calls store.closeFile with no unsaved-changes check.\n- FileBrowser items are plain divs with onClick. No ARIA semantics (no role='listbox'/role='option'), no keyboard accessibility (no tabindex, no key handlers). Only basename shown (no title for full path). Active indicator is background color + font-weight which is subtle.\n\n**Testing patterns:** Tests use vitest + @solidjs/testing-library with fireEvent. Store tests use createRoot((dispose) => {...}) pattern. Components are tested via render() + screen queries + fireEvent. Existing tests for both FileTabs and FileBrowser provide good setup() helpers.\n\n**Approach:** Fix in order: (1) store-level adjacent tab selection, (2) confirmation dialog in FileTabs close handler, (3) tablist semantics + keyboard nav on FileTabs, (4) ARIA + keyboard + title on FileBrowser, (5) enhanced active indicator CSS. Each fix is test-first.\n\n**Key existing code patterns to follow:** ConstraintPanel uses tabindex='0' and onKeyDown for keyboard access. ExportDialog uses role='dialog' with proper ARIA. CSS uses custom properties (--reify-accent, etc.). Tests mock with vi.spyOn().",
-  "prerequisites": [],
+  "analysis": "This task addresses 6 editor feature gaps in the CodeMirror-based editor component.\n\nE-01 (line numbers): The Editor.tsx extensions array (lines 60-125) does not include lineNumbers(). The lineNumbers extension is in @codemirror/view which is already a dependency.\n\nE-02 (find/replace): @codemirror/search is NOT currently installed \u2014 needs npm install. The search() extension and searchKeymap need to be added to Editor.tsx.\n\nE-03 (closeBrackets): The reifyLanguage.ts (line 24) defines closeBrackets language data with brackets config, but the closeBrackets() extension from @codemirror/autocomplete (already a dependency) is not loaded in Editor.tsx. Without the extension, the language data has no effect.\n\nE-11 (completion from position): In completions.ts line 112, `from: pos` uses cursor position directly. When cursor is mid-word (e.g. typing 'wid|'), accepting a completion inserts the full label starting at cursor, duplicating the already-typed prefix. Fix: scan backward from pos to find the word start (alphanumeric/underscore characters) and use that as `from`.\n\nE-12 (cross-file goto-definition): In gotoDefinition.ts lines 99-112, the mousedown handler only navigates when location.uri matches the current file. For cross-file definitions, the handler silently does nothing. Fix: add an onNavigate callback parameter that Editor.tsx can use to load the target file via bridge.openFile and open it in the editorStore.\n\nE-14 (hover tooltip styling): The hover.ts create() function (line 75) sets className 'cm-lsp-hover' and some inline padding/width styles, but there's no background color, border, or shadow. The tooltip appears as invisible text floating over the editor. Fix: add proper CSS rules for .cm-lsp-hover in Editor.module.css.\n\nExisting test patterns: Editor.test.tsx renders full Editor with mocked Tauri APIs and inspects CM6 DOM. Module-level tests (completions.test.ts, gotoDefinition.test.ts, hover.test.ts) mock invoke and test functions in isolation.\n\n**REVIEW FIX (steps 13-14):** Step 10 only modified gotoDefinition.ts to accept the onNavigate callback but never wired it in Editor.tsx. The call site at Editor.tsx:73 remains `reifyGotoDefinition(() => currentUri)` with no second argument. The entire cross-file goto-definition feature (E-12) is dead code in production. Steps 13-14 add the missing integration: an Editor.test.tsx integration test and the actual wiring in Editor.tsx.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Install @codemirror/search package: add to gui/package.json dependencies and run npm install to generate lockfile entry. This is needed for E-02 find/replace support.",
+      "status": "done",
+      "commit": "be1a218",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests in editorStore.test.ts for adjacent tab selection: (1) close middle tab (B of A,B,C with B active) \u2192 selects C (next at same index), (2) close last tab (C of A,B,C with C active) \u2192 selects B (previous), (3) close first tab when active (A of A,B with A active) \u2192 selects B (next). Update existing test 'closeFile selects first remaining file when active file is closed (3 files)' expectation from 'a.ri' to 'b.ri' since adjacent means the tab at the closed index (b.ri was after c.ri is removed). Also update 'closeFile computes correct fallback inside batch()' similarly.",
+      "description": "E-01 test: Add test in Editor.test.tsx in a new 'Editor extensions' describe block asserting that the rendered editor contains a .cm-lineNumbers element (CodeMirror renders a gutter with this class when lineNumbers() extension is loaded).",
       "status": "done",
-      "commit": "b6e4793"
+      "commit": "f298f3e"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix editorStore.closeFile: before filtering, find closedIndex = state.openFiles.findIndex(f => f.path === path). After filtering to `remaining`, select remaining[closedIndex] ?? remaining[closedIndex - 1] ?? null as the new activeFile. This replaces the current remaining[0] fallback with adjacent-tab selection.",
+      "description": "E-01 impl: In Editor.tsx, import { lineNumbers } from '@codemirror/view' (add to existing import on line 3) and add lineNumbers() to the extensions array before bracketMatching().",
       "status": "done",
-      "commit": "ee56721"
+      "commit": "a2cbd1d"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests in FileTabs.test.tsx for unsaved-changes prompt on dirty tab close: (1) clicking close on a dirty tab calls window.confirm with message containing the filename, (2) if window.confirm returns false, store.closeFile is NOT called (close cancelled), (3) if window.confirm returns true, store.closeFile IS called, (4) clicking close on a clean tab does NOT call window.confirm and calls closeFile directly. Use vi.spyOn(window, 'confirm') for mocking.",
+      "description": "E-02 test: Add test in Editor.test.tsx asserting that after dispatching a Ctrl+F keydown event on the editor's contentDOM, a .cm-search element appears in the editor container (CodeMirror's search panel).",
       "status": "done",
-      "commit": "800bc6c"
+      "commit": "e32a85c"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add confirmation logic in FileTabs close handler: in the onClick of the close button, check if file.path is in props.store.state.dirtyFiles. If dirty, call window.confirm('\"<basename>\" has unsaved changes. Close anyway?'). Only call props.store.closeFile(file.path) if the user confirms or the file is clean.",
+      "description": "E-02 impl: In Editor.tsx, import { search } from '@codemirror/search' and import { searchKeymap } from '@codemirror/search'. Add search() to the extensions array and add ...searchKeymap to the keymap.of() array.",
       "status": "done",
-      "commit": "2d51611"
+      "commit": "fec1760"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests in FileTabs.test.tsx for tablist semantics and keyboard navigation: (1) tab bar container has role='tablist', (2) active tab has tabindex='0', inactive tabs have tabindex='-1' (roving tabindex), (3) pressing ArrowRight on the active tab activates the next tab, (4) pressing ArrowLeft activates the previous tab, (5) ArrowRight on last tab wraps to first, (6) ArrowLeft on first wraps to last, (7) each tab has a title attribute containing the full file path for disambiguation.",
+      "description": "E-03 test: Add test in Editor.test.tsx. Set up editor with an empty document, type '{' by dispatching view.dispatch({changes: {from: 0, insert: '{'}}). This alone won't trigger closeBrackets (it operates via keyboard input handling). Instead, verify the extension is loaded by checking that the closeBrackets extension is present: use a simulated input event or check that the extension configuration includes closeBrackets. Alternatively, verify via the editor state's facet that closeBrackets is active. Simplest approach: fire a keyboard event for '{' key and check that doc contains '{}'.",
       "status": "done",
-      "commit": "9595463"
+      "commit": "3b09a21"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Update FileTabs component: (1) add role='tablist' on the container div, (2) add tabindex={isActive() ? 0 : -1} on each tab div, (3) add title={file.path} on each tab div, (4) add onKeyDown handler on each tab: ArrowRight \u2192 setActiveFile to next file (with wrapping), ArrowLeft \u2192 setActiveFile to previous (with wrapping), and focus the newly active tab element via ref or querySelector.",
+      "description": "E-03 impl: In Editor.tsx, import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete' (extend existing import on line 6). Add closeBrackets() to the extensions array after bracketMatching(). Add ...closeBracketsKeymap to the keymap.of() array before ...defaultKeymap.",
       "status": "done",
-      "commit": "e02af60"
+      "commit": "111e9cd"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests in FileBrowser.test.tsx for keyboard accessibility and ARIA semantics: (1) container has role='listbox', (2) container has aria-label='File browser', (3) each file item has role='option', (4) active item has aria-selected='true', non-active has aria-selected='false', (5) each item has title attribute with full file path, (6) active item has tabindex='0', others have tabindex='-1', (7) pressing ArrowDown on focused item moves focus/selection to next item, (8) pressing ArrowUp moves to previous, (9) pressing Enter on focused item calls onFileClick with that file's path.",
+      "description": "E-11 test: Add test in completions.test.ts: 'completion result.from scans backward to word start'. Create a context mock where pos=3, doc text is 'wid' (line from=0, to=3), and doc.sliceString(from, to) returns the text between the given offsets. Call the completion source and assert result.from === 0 (start of 'wid'), not 3 (cursor pos). Add second test with cursor mid-word after non-word chars: text='x = wid', pos=7, line.from=0 \u2014 expect from=4 (start of 'wid' not 'x').",
       "status": "done",
-      "commit": "5ad0d08"
+      "commit": "989fb0b"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Update FileBrowser component: (1) add role='listbox' and aria-label='File browser' on container div, (2) change file items to use role='option' with aria-selected={isActive ? 'true' : 'false'}, (3) add title={file.path} on each item, (4) add tabindex={isActive ? 0 : -1} (roving tabindex), (5) add onKeyDown handler: ArrowDown \u2192 focus next item and call onFileClick, ArrowUp \u2192 focus previous, Enter/Space \u2192 call onFileClick. Use refs or DOM queries to manage focus.",
+      "description": "E-11 impl: In completions.ts, before the return statement (line 112), compute the word start by scanning backward from pos. Get the line text via state.doc.sliceString(line.from, pos), iterate backward to find the first non-identifier char (not matching /[a-zA-Z0-9_]/), and set `const wordStart = line.from + i + 1` where i is the index of the last non-identifier char. Use wordStart as `from` in the returned CompletionResult instead of `pos`.",
       "status": "done",
-      "commit": "3be5d8d"
+      "commit": "989fb0b"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test in FileBrowser.test.tsx: active file item has a visually distinct left-border indicator \u2014 verify the active item has a CSS class or computed style indicating the enhanced border (test via checking the data-active attribute styling or a dedicated CSS class).",
+      "description": "E-12 test: Add tests in gotoDefinition.test.ts. Test 1: 'calls onNavigate callback when definition is in a different file'. Create extension with onNavigate spy, simulate Ctrl+Click, mock invoke to return a location with a different URI. Assert onNavigate was called with (differentUri, line, character) and view.dispatch was NOT called. Test 2: 'same-file definition still dispatches cursor movement without calling onNavigate'. Same setup but location URI matches current URI. Assert view.dispatch was called and onNavigate was NOT called.",
       "status": "done",
-      "commit": "827656d"
+      "commit": "a082014"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Update FileBrowser.module.css: enhance .item[data-active='true'] with border-left: 3px solid var(--reify-accent, #89b4fa) and adjust padding-left to compensate (9px instead of 12px). Add border-left: 3px solid transparent to .item base for consistent alignment. This makes the active file unmistakably visible.",
+      "description": "E-12 impl: Modify reifyGotoDefinition signature to accept optional onNavigate callback: reifyGotoDefinition(uri, onNavigate?: (targetUri: string, line: number, character: number) => void). In the mousedown handler, when location.uri differs from current URI: if onNavigate is provided, call onNavigate(location.uri, location.range.start.line, location.range.start.character); otherwise silently skip (preserving backward compatibility). In Editor.tsx, pass an onNavigate callback that: (a) extracts path from URI by stripping 'file://' prefix, (b) calls bridge.openFile(path) to load content, (c) calls props.store.openFile({path, content}) to open in store, (d) defers cursor navigation by dispatching to the view after the file switch effect runs (use setTimeout or Promise.resolve to yield to the reactive update).",
       "status": "done",
-      "commit": "a2a0e63"
+      "commit": "8855e39"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "E-14 test: Add test in hover.test.ts: 'tooltip create() returns DOM with cm-lsp-hover class and verifiable structure'. Call the hover handler to get a tooltip result, invoke the create() function on the returned tooltip, and assert that dom.className includes 'cm-lsp-hover'. This validates the CSS selector will match.",
+      "status": "done",
+      "commit": "36ec9cf"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "E-14 impl: In Editor.module.css, add :global(.cm-lsp-hover) CSS rule with background-color (dark theme: #2d2d3f or var(--reify-tooltip-bg)), color (#e0e0e0), border (1px solid #444), border-radius (4px), box-shadow (0 2px 8px rgba(0,0,0,0.3)), padding (6px 10px), max-width (480px), font-size (13px), white-space (pre-wrap), and line-height (1.4). Remove the redundant inline styles from hover.ts create() (padding, maxWidth, whiteSpace) since CSS now handles them \u2014 keep only className assignment and textContent.",
+      "status": "done",
+      "commit": "68bd77c"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "E-12 integration test (REVIEW FIX): Add test in Editor.test.tsx in a new 'Editor cross-file goto-definition (E-12)' describe block. The test verifies that when a Ctrl+Click triggers a goto-definition response pointing to a different file, Editor.tsx actually navigates to that file via bridge.openFile and store.openFile. Setup: (1) render Editor with file1 active, (2) mock invoke to return a cross-file definition location (uri: 'file:///project/src/mount.ri', range.start: {line: 5, character: 2}) when textDocument/definition is requested, (3) spy on bridge.openFile to return file2's FileData, (4) get the EditorView and simulate Ctrl+Click via a MouseEvent on contentDOM with ctrlKey:true (use view.posAtCoords mock or directly dispatch mousedown on contentDOM). After awaiting the async chain (vi.waitFor), assert: (a) bridge.openFile was called with '/project/src/mount.ri' (the path extracted from the URI), (b) store.state.activeFile === file2.path (the store switched to the target file). This test will FAIL because Editor.tsx:73 currently passes no onNavigate callback.",
+      "status": "done",
+      "commit": "0912b5d"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "E-12 integration impl (REVIEW FIX): Wire the onNavigate callback in Editor.tsx. (1) Add `openFile as bridgeOpenFile` to the import from '../bridge' (line 10, alongside updateSource and saveFile). (2) At line 73, change `reifyGotoDefinition(() => currentUri)` to `reifyGotoDefinition(() => currentUri, (targetUri, line, character) => { ... })`. (3) The callback body: (a) strip 'file://' prefix from targetUri to get the filesystem path \u2014 `const path = targetUri.replace('file://', '')`, (b) call `bridgeOpenFile(path).then(fileData => { ... })` to load the file from disk, (c) inside the .then: call `props.store.openFile(fileData)` to add/switch to the file in the store (this sets activeFile, which triggers the createEffect file-switch), (d) use `setTimeout(() => { if (view) { const targetLine = view.state.doc.line(line + 1); const targetPos = targetLine.from + character; view.dispatch({ selection: { anchor: targetPos }, scrollIntoView: true }); } }, 0)` to defer cursor navigation until after SolidJS's reactive file-switch effect has run and the EditorView has the new document. (4) Add `.catch((err: unknown) => console.error('Cross-file goto-definition error:', err))` for error handling on the bridgeOpenFile promise.",
+      "status": "done",
+      "commit": "4b4117f"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Confirmation uses window.confirm() in the FileTabs component rather than a custom dialog or store-level logic",
-      "rationale": "window.confirm is synchronous and simple. The store stays pure/testable without side effects. A custom modal would be over-engineering for this use case. The confirm call lives in the component's click handler, making it easy to mock in tests via vi.spyOn(window, 'confirm')."
+      "decision": "Add @codemirror/search as a runtime dependency rather than using a custom search implementation",
+      "rationale": "CodeMirror's official search package provides find/replace with regex support, keyboard shortcuts, and a styled panel out of the box. It's the standard approach and there's no benefit to building custom."
     },
     {
-      "decision": "Adjacent tab selection uses closedIndex position: prefer next tab (same index in remaining), fall back to previous",
-      "rationale": "This matches VS Code and most IDE behavior. When you close a middle tab, the tab to its right slides into position. When you close the rightmost tab, the previous tab is selected. remaining[closedIndex] ?? remaining[closedIndex-1] implements this correctly because after filtering, the element at closedIndex in remaining is what was originally at closedIndex+1."
+      "decision": "Scan backward for word start in completions.ts using /[a-zA-Z0-9_]/ character class",
+      "rationale": "Reify identifiers consist of alphanumeric chars and underscores. Scanning backward from cursor to find where the identifier starts ensures completion.from is correct, preventing prefix duplication when accepting a completion. This is the standard technique used by LSP-powered completion sources."
     },
     {
-      "decision": "Use roving tabindex pattern for both FileTabs and FileBrowser keyboard navigation",
-      "rationale": "Roving tabindex (active item gets tabindex=0, others tabindex=-1) is the WAI-ARIA recommended pattern for composite widgets like tablists and listboxes. It allows a single Tab press to enter/exit the widget, and arrow keys to move within it."
+      "decision": "Add onNavigate callback to reifyGotoDefinition rather than passing editorStore directly",
+      "rationale": "Keeps gotoDefinition.ts decoupled from the store and bridge modules. The Editor.tsx component is the natural integration point where store + bridge access exists. The callback pattern matches how the existing code handles URI resolution (function getters). Making the callback optional preserves backward compatibility."
     },
     {
-      "decision": "FileBrowser uses role='listbox' with role='option' children rather than converting to <button> elements",
-      "rationale": "role='listbox' with role='option' children is the correct ARIA pattern for a single-select file list. It communicates the selection semantics properly to screen readers. Items keep their div element but gain proper roles."
+      "decision": "Put hover tooltip CSS in Editor.module.css using :global() selector",
+      "rationale": "Editor.module.css already uses :global() for .cm-editor and .cm-scroller overrides. CodeMirror tooltip containers are appended inside the editor DOM tree, so :global() scoping from the editor container is the correct and consistent approach."
     },
     {
-      "decision": "Full path shown via title attribute on tabs and file items, not by changing displayed text",
-      "rationale": "A title attribute provides a tooltip with the full path on hover without cluttering the compact UI. This matches VS Code's approach for short tab labels with full-path tooltips."
+      "decision": "Use bridge.openFile for cross-file goto-definition to load file content from disk",
+      "rationale": "bridge.openFile(path) already exists (bridge.ts line 53) and returns FileData with path+content. The editorStore.openFile(fileData) expects FileData. This is the natural integration path \u2014 no new bridge commands needed."
     },
     {
-      "decision": "Active file indicator enhancement uses left border (3px solid accent) with transparent border on inactive items for alignment",
-      "rationale": "A colored left border provides a strong visual signal without causing layout shift. Adding transparent borders on all items prevents the layout jumping when an item becomes active. The existing style already has background + font-weight changes; the left border makes it unmistakable."
+      "decision": "closeBrackets extension added alongside closeBracketsKeymap for proper keyboard handling",
+      "rationale": "closeBrackets() provides auto-insertion behavior, but closeBracketsKeymap adds the Backspace handler that deletes both brackets when cursor is between a pair. Both are needed for a correct UX. They are both exported from @codemirror/autocomplete which is already installed."
+    },
+    {
+      "decision": "Use setTimeout/microtask to defer cursor navigation after cross-file goto-definition",
+      "rationale": "When onNavigate opens a new file via the store, the Editor's reactive file-switch effect runs asynchronously via SolidJS createEffect. The cursor navigation to the target definition position must happen AFTER the new EditorState is set. A setTimeout(0) or Promise.resolve().then() yields to the reactive update before dispatching the cursor movement."
+    },
+    {
+      "decision": "Import bridge.openFile as bridgeOpenFile alias in Editor.tsx",
+      "rationale": "Editor.tsx already uses the name 'openFile' from editorStore (via props.store.openFile). Using the alias 'bridgeOpenFile' avoids name collision and makes it clear at each call site whether we're loading from disk (bridge) or updating the store (store.openFile). This follows the aliasing pattern already used in App.tsx line 28."
     }
   ],
   "reuse": [
     {
-      "what": "createRoot() + dispose() pattern for store unit tests",
-      "where": "gui/src/__tests__/editorStore.test.ts",
-      "how": "All new store tests wrap in createRoot((dispose) => { ... dispose(); }) \u2014 same pattern as all existing editorStore tests."
+      "what": "EditorView.findFromDOM() helper (getEditorView function)",
+      "where": "gui/src/__tests__/Editor.test.tsx lines 71-74",
+      "how": "Reuse for all new Editor.test.tsx tests to get the CM6 view instance from rendered container"
     },
     {
-      "what": "setup() helper function with files and opts.dirty",
-      "where": "gui/src/__tests__/FileTabs.test.tsx lines 11-18",
-      "how": "Reuse the existing setup(files, { dirty }) helper for creating stores with dirty files for the confirmation dialog tests."
+      "what": "setupStore() helper and file fixtures (file1, file2, file3)",
+      "where": "gui/src/__tests__/Editor.test.tsx lines 26-43",
+      "how": "Reuse for new Editor extension tests"
     },
     {
-      "what": "render() + screen + fireEvent testing pattern",
-      "where": "gui/src/__tests__/FileTabs.test.tsx, gui/src/__tests__/FileBrowser.test.tsx",
-      "how": "Use @solidjs/testing-library render with arrow function, screen queries by testid/role/text, fireEvent for user interactions."
+      "what": "Tauri API mock pattern (vi.mock for @tauri-apps/api/core and event)",
+      "where": "All existing test files (Editor.test.tsx, completions.test.ts, gotoDefinition.test.ts, hover.test.ts)",
+      "how": "Follow the same mock pattern consistently in all test additions"
     },
     {
-      "what": "CSS custom properties for theming",
-      "where": "gui/src/panels/FileBrowser.module.css, gui/src/editor/FileTabs.module.css",
-      "how": "Use existing --reify-accent, --reify-surface, --reify-text CSS custom properties for the left border color and any new styles."
+      "what": "bridge.openFile(path) function for loading files from disk",
+      "where": "gui/src/bridge.ts lines 53-55",
+      "how": "Call from Editor.tsx's onNavigate callback to load file content for cross-file goto-definition"
     },
     {
-      "what": "onKeyDown handler pattern from ConstraintPanel and Splitter",
-      "where": "gui/src/panels/ConstraintPanel.tsx (line 83), gui/src/components/Splitter.tsx (line 43)",
-      "how": "Follow the same inline onKeyDown with switch/if on e.key pattern, calling e.preventDefault() for handled keys."
+      "what": "editorStore.openFile(fileData) and setActiveFile(path)",
+      "where": "gui/src/stores/editorStore.ts lines 19-25, 45-47",
+      "how": "Use in cross-file goto-definition callback to open/switch to the target file"
     },
     {
-      "what": "vi.spyOn pattern for mocking store methods in component tests",
-      "where": "gui/src/__tests__/FileTabs.test.tsx (existing lines 62, 72-73)",
-      "how": "Use vi.spyOn(store, 'closeFile') and vi.spyOn(store, 'setActiveFile') as already done; extend with vi.spyOn(window, 'confirm') for the confirmation dialog tests."
+      "what": "pathToUri() helper in Editor.tsx (lines 46-49)",
+      "where": "gui/src/editor/Editor.tsx",
+      "how": "Create inverse uriToPath() helper for converting LSP file:// URIs back to filesystem paths for bridge calls"
     },
     {
-      "what": "data-testid naming conventions",
-      "where": "All existing component files",
-      "how": "Follow existing patterns: 'file-tab', 'file-browser', 'close-tab', 'file-item-{path}' for testable element identifiers."
+      "what": ":global() CSS scoping pattern in Editor.module.css",
+      "where": "gui/src/editor/Editor.module.css lines 9-16",
+      "how": "Use same :global() pattern for .cm-lsp-hover tooltip styling"
+    },
+    {
+      "what": "Existing CompletionContext mock shape in completions.test.ts",
+      "where": "gui/src/__tests__/completions.test.ts lines 37-44",
+      "how": "Extend with sliceString method on doc mock for word-boundary scanning tests"
+    },
+    {
+      "what": "Existing gotoDefinition test mock structure",
+      "where": "gui/src/__tests__/gotoDefinition.test.ts lines 46-65",
+      "how": "Extend the ext/mousedownHandler pattern to test onNavigate callback for cross-file definitions"
+    },
+    {
+      "what": "mockInvoke pattern from Editor.test.tsx LSP serialization tests",
+      "where": "gui/src/__tests__/Editor.test.tsx lines 506-518 (RC-02 test)",
+      "how": "Reuse the mockInvoke.mockImplementation pattern that intercepts lsp_request calls and routes by method, for the E-12 integration test to mock textDocument/definition responses"
+    },
+    {
+      "what": "bridge.openFile spy pattern",
+      "where": "gui/src/__tests__/Editor.test.tsx (bridge spies at lines 91, 108, etc.)",
+      "how": "vi.spyOn(bridge, 'openFile') to mock the bridge call in the E-12 integration test and return controlled FileData"
     }
   ],
-  "_session_id": "110-04957c55",
-  "_created_at": "2026-03-22T08:03:55.762312+00:00"
+  "_session_id": "107-03d03fae",
+  "_created_at": "2026-03-22T08:25:45.080697+00:00"
 }

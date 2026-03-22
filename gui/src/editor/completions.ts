@@ -109,8 +109,21 @@ export function reifyCompletionSource(uri: string | (() => string)): CompletionS
         return completion;
       });
 
+      // Scan backward from cursor to find the start of the current word.
+      // This ensures that accepting a completion replaces the partial word
+      // rather than inserting the full label at the cursor position.
+      const lineText = state.doc.sliceString(line.from, pos);
+      let wordStart = pos;
+      for (let i = lineText.length - 1; i >= 0; i--) {
+        if (/[a-zA-Z0-9_]/.test(lineText[i])) {
+          wordStart = line.from + i;
+        } else {
+          break;
+        }
+      }
+
       return {
-        from: pos,
+        from: wordStart,
         options,
       };
     } catch {

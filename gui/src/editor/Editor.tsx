@@ -1,12 +1,13 @@
 import { onMount, onCleanup, createEffect } from 'solid-js';
 import { EditorState, type Extension } from '@codemirror/state';
-import { EditorView, keymap } from '@codemirror/view';
+import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { bracketMatching, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
-import { autocompletion } from '@codemirror/autocomplete';
+import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
+import { search, searchKeymap } from '@codemirror/search';
 import { linter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
 import { reifyLanguage } from './reifyLanguage';
-import { updateSource, saveFile } from '../bridge';
+import { updateSource, saveFile, openFile as bridgeOpenFile } from '../bridge';
 import { createLspClient } from './lspClient';
 import { reifyCompletionSource } from './completions';
 import { createDiagnosticsListener, lspDiagnosticToCodeMirror, type CmDiagnostic } from './diagnostics';
@@ -59,7 +60,9 @@ export function Editor(props: EditorProps) {
     // fresh EditorState instances for newly opened files
     extensions = [
       reifyLanguage(),
+      lineNumbers(),
       bracketMatching(),
+      closeBrackets(),
       syntaxHighlighting(defaultHighlightStyle),
       history(),
       // LSP-powered completions — dynamic URI getter resolves on each request
@@ -67,7 +70,32 @@ export function Editor(props: EditorProps) {
       // LSP-powered hover tooltips — dynamic URI getter
       reifyHoverTooltip(() => currentUri),
       // LSP-powered go-to-definition (Ctrl+Click) — dynamic URI getter
-      reifyGotoDefinition(() => currentUri),
+      reifyGotoDefinition(() => currentUri, (targetUri, line, character) => {
+        const path = targetUri.replace('file://', '');
+        bridgeOpenFile(path)
+          .then((fileData) => {
+            if (destroyed) return;
+            props.store.openFile(fileData);
+            // Defer cursor navigation until after SolidJS reactive file-switch
+            // effect has run and the EditorView has the new document
+            setTimeout(() => {
+              if (view && !destroyed) {
+                const lineNum = line + 1;
+                if (lineNum >= 1 && lineNum <= view.state.doc.lines) {
+                  const targetLine = view.state.doc.line(lineNum);
+                  const targetPos = Math.min(targetLine.from + character, targetLine.to);
+                  view.dispatch({
+                    selection: { anchor: targetPos },
+                    scrollIntoView: true,
+                  });
+                }
+              }
+            }, 0);
+          })
+          .catch((err: unknown) => console.error('Cross-file goto-definition error:', err));
+      }),
+      // Find/replace (Ctrl+F, Ctrl+H)
+      search(),
       // Diagnostic linter (diagnostics are pushed from LSP via Tauri events)
       linter(() => [] as Diagnostic[]),
       keymap.of([
@@ -91,6 +119,8 @@ export function Editor(props: EditorProps) {
           },
           preventDefault: true,
         },
+        ...closeBracketsKeymap,
+        ...searchKeymap,
         ...defaultKeymap,
         ...historyKeymap,
       ]),
