@@ -80,4 +80,51 @@ describe('FileTabs', () => {
     // setActiveFile should NOT be called by the close button click itself
     expect(activeSpy).not.toHaveBeenCalled();
   });
+
+  describe('unsaved changes confirmation', () => {
+    it('clicking close on a dirty tab calls window.confirm with filename', () => {
+      const store = setup([file1, file2], { dirty: [file1.path] });
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      render(() => <FileTabs store={store} />);
+      const closeBtns = screen.getAllByTestId('close-tab');
+      fireEvent.click(closeBtns[0]); // bracket.ri is dirty
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      expect(confirmSpy.mock.calls[0][0]).toContain('bracket.ri');
+      confirmSpy.mockRestore();
+    });
+
+    it('cancelling confirm does NOT call closeFile', () => {
+      const store = setup([file1, file2], { dirty: [file1.path] });
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      const closeSpy = vi.spyOn(store, 'closeFile');
+      render(() => <FileTabs store={store} />);
+      const closeBtns = screen.getAllByTestId('close-tab');
+      fireEvent.click(closeBtns[0]);
+      expect(closeSpy).not.toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
+
+    it('confirming close on dirty tab calls closeFile', () => {
+      const store = setup([file1, file2], { dirty: [file1.path] });
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      const closeSpy = vi.spyOn(store, 'closeFile');
+      render(() => <FileTabs store={store} />);
+      const closeBtns = screen.getAllByTestId('close-tab');
+      fireEvent.click(closeBtns[0]);
+      expect(closeSpy).toHaveBeenCalledWith(file1.path);
+      confirmSpy.mockRestore();
+    });
+
+    it('clicking close on a clean tab does NOT call window.confirm', () => {
+      const store = setup([file1, file2]); // no dirty files
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      const closeSpy = vi.spyOn(store, 'closeFile');
+      render(() => <FileTabs store={store} />);
+      const closeBtns = screen.getAllByTestId('close-tab');
+      fireEvent.click(closeBtns[0]);
+      expect(confirmSpy).not.toHaveBeenCalled();
+      expect(closeSpy).toHaveBeenCalledWith(file1.path);
+      confirmSpy.mockRestore();
+    });
+  });
 });
