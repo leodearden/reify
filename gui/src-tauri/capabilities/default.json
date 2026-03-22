@@ -2,5 +2,5 @@
   "identifier": "default",
   "description": "Default capabilities for Reify",
   "windows": ["main"],
-  "permissions": ["core:default", "core:event:default", "core:window:default", "dialog:default"]
+  "permissions": ["core:default", "core:event:default", "core:window:default", "dialog:default", "shell:allow-execute"]
 }
