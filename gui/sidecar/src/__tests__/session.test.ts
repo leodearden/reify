@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PassThrough } from 'node:stream';
 import type { OutboundMessage } from '../types.js';
 
 // Mock the claude SDK subprocess spawning
@@ -7,6 +8,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 import { SidecarSession } from '../session.js';
+import { main } from '../index.js';
 
 describe('SidecarSession', () => {
   let session: SidecarSession;
@@ -146,5 +148,113 @@ describe('SidecarSession', () => {
     expect(history.length).toBeGreaterThanOrEqual(4); // 2 user msgs + 2 assistant msgs
 
     mockInvoke.mockRestore();
+  });
+});
+
+describe('entrypoint wiring', () => {
+  /**
+   * Helper to collect all newline-delimited JSON messages from
+   * the output stream until the stream ends or a timeout.
+   */
+  function collectOutput(output: PassThrough, timeoutMs = 2000): Promise<OutboundMessage[]> {
+    return new Promise((resolve) => {
+      const msgs: OutboundMessage[] = [];
+      let buffer = '';
+
+      const onData = (chunk: Buffer | string) => {
+        buffer += chunk.toString();
+        let idx: number;
+        while ((idx = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 1);
+          if (line.length > 0) {
+            msgs.push(JSON.parse(line));
+          }
+        }
+      };
+
+      output.on('data', onData);
+
+      const timer = setTimeout(() => {
+        output.removeListener('data', onData);
+        resolve(msgs);
+      }, timeoutMs);
+
+      output.on('end', () => {
+        clearTimeout(timer);
+        // flush remaining buffer
+        if (buffer.length > 0) {
+          msgs.push(JSON.parse(buffer));
+        }
+        resolve(msgs);
+      });
+    });
+  }
+
+  it('main() reads from provided input stream and writes to provided output stream', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    const collecting = collectOutput(output, 500);
+
+    // Start main with injected streams
+    const mainPromise = main(input, output);
+
+    // Give it a moment to set up, then close
+    await new Promise((r) => setTimeout(r, 50));
+    input.end();
+    await mainPromise;
+
+    const msgs = await collecting;
+    // main() should produce at least a ready message on the output
+    expect(msgs.length).toBeGreaterThanOrEqual(1);
+    // All messages should be valid OutboundMessage objects with a 'type' field
+    for (const msg of msgs) {
+      expect(msg).toHaveProperty('type');
+    }
+  });
+
+  it('sending a valid JSON line through input produces outbound messages on output', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    const collecting = collectOutput(output, 1000);
+
+    const mainPromise = main(input, output);
+
+    // Wait for ready, then send a message
+    await new Promise((r) => setTimeout(r, 50));
+    input.write(JSON.stringify({ type: 'send_message', id: 'e2e-1', text: 'Hello' }) + '\n');
+
+    // Give session time to process, then close
+    await new Promise((r) => setTimeout(r, 200));
+    input.end();
+    await mainPromise;
+
+    const msgs = await collecting;
+    const types = msgs.map((m) => m.type);
+
+    // Should have ready from init, then done from the message processing
+    expect(types).toContain('ready');
+    expect(types).toContain('done');
+  });
+
+  it('process sends ready message on startup', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    const collecting = collectOutput(output, 500);
+
+    const mainPromise = main(input, output);
+
+    // Wait for ready
+    await new Promise((r) => setTimeout(r, 50));
+    input.end();
+    await mainPromise;
+
+    const msgs = await collecting;
+    // The first message should be 'ready'
+    expect(msgs.length).toBeGreaterThanOrEqual(1);
+    expect(msgs[0]).toEqual({ type: 'ready' });
   });
 });
