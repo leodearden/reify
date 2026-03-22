@@ -243,6 +243,8 @@ export function Editor(props: EditorProps) {
     // when it does resolve (preventing a leaked Tauri event listener).
     diagnosticsListenerCancelled = true;
     unlistenDiagnostics?.();
+    // Release cached per-file EditorState instances
+    fileStates.clear();
     // Close the current document in the LSP server
     lspClient.didClose(currentUri).catch(() => {});
     view?.destroy();
