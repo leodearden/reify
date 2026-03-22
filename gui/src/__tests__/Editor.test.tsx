@@ -16,13 +16,16 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(),
 }));
 
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { Editor } from '../editor/Editor';
 
 const mockListen = vi.mocked(listen);
+const mockInvoke = vi.mocked(invoke);
 
 const file1: FileData = { path: '/project/src/bracket.ri', content: 'structure Bracket {\n  param width = 80mm\n}' };
 const file2: FileData = { path: '/project/src/mount.ri', content: 'structure Mount {}' };
+const file3: FileData = { path: '/project/src/plate.ri', content: 'structure Plate {}' };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -490,5 +493,59 @@ describe('Editor debounce timer cancellation on file switch (RC-04)', () => {
 
     // The debounced updateSource should NOT have fired for the stale edit
     expect(updateSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('Editor LSP file switch serialization (RC-02)', () => {
+  it('rapid file switches serialize didClose/didOpen in correct order', async () => {
+    const store = setupStore([file1, file2, file3]);
+    store.setActiveFile(file1.path);
+
+    // Track LSP method calls via the invoke mock
+    const lspCalls: { method: string; uri?: string }[] = [];
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method) {
+        const params = JSON.parse((args as any)?.params ?? '{}');
+        const uri = params?.textDocument?.uri;
+        lspCalls.push({ method, uri });
+      }
+      // Return valid JSON for initialize (needs to be parsed)
+      if ((args as any)?.method === 'initialize') {
+        return JSON.stringify({ capabilities: {} });
+      }
+      return undefined as any;
+    });
+
+    render(() => <Editor store={store} />);
+
+    // Wait for initial LSP calls (initialize, initialized, didOpen for file1)
+    await vi.waitFor(() => {
+      expect(lspCalls.some(c => c.method === 'textDocument/didOpen')).toBe(true);
+    });
+    lspCalls.length = 0;
+
+    // Rapidly switch file1 -> file2 -> file3
+    store.setActiveFile(file2.path);
+    store.setActiveFile(file3.path);
+
+    // Flush all microtasks — wait for all 4 LSP file-switch calls
+    await vi.waitFor(() => {
+      const switchCalls = lspCalls.filter(c => c.method.startsWith('textDocument/did'));
+      expect(switchCalls).toHaveLength(4);
+    });
+
+    const fileSwitchCalls = lspCalls
+      .filter(c => c.method.startsWith('textDocument/did'))
+      .map(c => ({ method: c.method, uri: c.uri }));
+
+    // Expected serialized order:
+    // didClose(file1) -> didOpen(file2) -> didClose(file2) -> didOpen(file3)
+    expect(fileSwitchCalls).toEqual([
+      { method: 'textDocument/didClose', uri: 'file:///project/src/bracket.ri' },
+      { method: 'textDocument/didOpen',  uri: 'file:///project/src/mount.ri' },
+      { method: 'textDocument/didClose', uri: 'file:///project/src/mount.ri' },
+      { method: 'textDocument/didOpen',  uri: 'file:///project/src/plate.ri' },
+    ]);
   });
 });
