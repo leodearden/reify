@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { EditorView } from '@codemirror/view';
+import { diagnosticCount } from '@codemirror/lint';
 import { createEditorStore } from '../stores/editorStore';
 import * as bridge from '../bridge';
 import type { FileData, SourceLocation } from '../types';
@@ -14,7 +15,10 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(),
 }));
 
+import { listen } from '@tauri-apps/api/event';
 import { Editor } from '../editor/Editor';
+
+const mockListen = vi.mocked(listen);
 
 const file1: FileData = { path: '/project/src/bracket.ri', content: 'structure Bracket {\n  param width = 80mm\n}' };
 const file2: FileData = { path: '/project/src/mount.ri', content: 'structure Mount {}' };
@@ -340,5 +344,71 @@ describe('Editor LSP init error callback', () => {
         expect.stringContaining('LSP initialization failed'),
       );
     });
+  });
+});
+
+describe('Editor diagnostics URI filtering', () => {
+  /** Capture the Tauri diagnostics event handler so we can fire events manually. */
+  function setupListenCapture() {
+    let diagnosticsHandler: ((event: { payload: any }) => void) | undefined;
+    mockListen.mockImplementation(async (_event: any, handler: any) => {
+      diagnosticsHandler = handler;
+      return vi.fn(); // unlisten
+    });
+    return () => diagnosticsHandler;
+  }
+
+  const sampleDiagnostic = {
+    range: {
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 9 },
+    },
+    severity: 1,
+    message: 'test error',
+  };
+
+  it('diagnostics from non-active URI are NOT applied to editor', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Verify handler was captured
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // Fire diagnostics for a DIFFERENT URI than the active file
+    handler!({
+      payload: {
+        uri: 'file:///project/src/other.ri',
+        diagnostics: [sampleDiagnostic],
+      },
+    });
+
+    // Diagnostics should NOT have been applied to the editor
+    expect(diagnosticCount(view.state)).toBe(0);
+  });
+
+  it('diagnostics from active file URI ARE applied to editor', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // Fire diagnostics for the ACTIVE file's URI
+    handler!({
+      payload: {
+        uri: 'file:///project/src/bracket.ri',
+        diagnostics: [sampleDiagnostic],
+      },
+    });
+
+    // Diagnostics SHOULD have been applied
+    expect(diagnosticCount(view.state)).toBe(1);
   });
 });
