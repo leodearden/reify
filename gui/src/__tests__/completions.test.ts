@@ -36,7 +36,10 @@ describe('reifyCompletionSource', () => {
     // Create a minimal CompletionContext mock
     const context = {
       state: {
-        doc: { lineAt: (pos: number) => ({ number: 1, from: 0, to: 10 }) },
+        doc: {
+          lineAt: (pos: number) => ({ number: 1, from: 0, to: 10 }),
+          sliceString: (from: number, to: number) => 'hello world'.slice(from, to),
+        },
         selection: { main: { head: 5 } },
       },
       pos: 5,
