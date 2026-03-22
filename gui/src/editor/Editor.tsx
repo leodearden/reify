@@ -3,7 +3,7 @@ import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { bracketMatching, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
-import { autocompletion } from '@codemirror/autocomplete';
+import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { search, searchKeymap } from '@codemirror/search';
 import { linter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
 import { reifyLanguage } from './reifyLanguage';
@@ -62,6 +62,7 @@ export function Editor(props: EditorProps) {
       reifyLanguage(),
       lineNumbers(),
       bracketMatching(),
+      closeBrackets(),
       syntaxHighlighting(defaultHighlightStyle),
       history(),
       // LSP-powered completions — dynamic URI getter resolves on each request
@@ -95,6 +96,7 @@ export function Editor(props: EditorProps) {
           },
           preventDefault: true,
         },
+        ...closeBracketsKeymap,
         ...searchKeymap,
         ...defaultKeymap,
         ...historyKeymap,
