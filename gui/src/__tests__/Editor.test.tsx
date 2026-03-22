@@ -694,6 +694,61 @@ describe('Editor cross-file goto-definition (E-12)', () => {
   });
 });
 
+describe('Editor cross-file goto-definition cleanup (B1)', () => {
+  it('unmount during in-flight bridgeOpenFile does not dispatch to destroyed view', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+
+    const crossFileLocation = {
+      uri: 'file:///project/src/mount.ri',
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+    };
+
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+      if (method === 'textDocument/definition') return JSON.stringify(crossFileLocation);
+      return undefined as any;
+    });
+
+    // Return a deferred promise so we can unmount while it's in-flight
+    let resolveOpenFile: ((v: FileData) => void) | null = null;
+    vi.spyOn(bridge, 'openFile').mockReturnValue(
+      new Promise<FileData>((resolve) => {
+        resolveOpenFile = resolve;
+      }),
+    );
+
+    const { unmount } = render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    vi.spyOn(view, 'posAtCoords').mockReturnValue(5);
+    const dispatchSpy = vi.spyOn(view, 'dispatch');
+
+    // Trigger Ctrl+Click → goto-definition → bridgeOpenFile (now pending)
+    view.contentDOM.dispatchEvent(
+      new MouseEvent('mousedown', { ctrlKey: true, clientX: 100, clientY: 50, bubbles: true }),
+    );
+
+    // Wait for bridgeOpenFile to be called
+    await vi.waitFor(() => {
+      expect(resolveOpenFile).not.toBeNull();
+    });
+
+    // Unmount component — sets destroyed=true, calls view.destroy()
+    unmount();
+
+    // Now resolve the in-flight bridgeOpenFile
+    resolveOpenFile!(file2);
+    await vi.advanceTimersByTimeAsync(10);
+
+    // view.dispatch should NOT have been called after unmount
+    // (the destroyed guard prevents dispatch to the destroyed view)
+    expect(dispatchSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe('Editor extensions', () => {
   it('renders line numbers gutter (.cm-lineNumbers)', () => {
     const store = setupStore();

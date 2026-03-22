@@ -74,11 +74,12 @@ export function Editor(props: EditorProps) {
         const path = targetUri.replace('file://', '');
         bridgeOpenFile(path)
           .then((fileData) => {
+            if (destroyed) return;
             props.store.openFile(fileData);
             // Defer cursor navigation until after SolidJS reactive file-switch
             // effect has run and the EditorView has the new document
             setTimeout(() => {
-              if (view) {
+              if (view && !destroyed) {
                 const lineNum = line + 1;
                 if (lineNum >= 1 && lineNum <= view.state.doc.lines) {
                   const targetLine = view.state.doc.line(lineNum);
