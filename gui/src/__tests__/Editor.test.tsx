@@ -413,6 +413,64 @@ describe('Editor diagnostics URI filtering', () => {
   });
 });
 
+describe('Editor per-file undo history (E-04)', () => {
+  it('undo in file1 after switch round-trip restores file1 pre-edit content', () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    let view = getEditorView(container);
+
+    // (1) file1 is shown
+    expect(view.state.doc.toString()).toContain('structure Bracket');
+
+    // (2) Edit file1: insert '// edit\n' at position 0
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    expect(view.state.doc.toString()).toContain('// edit');
+
+    // (3) Switch to file2
+    store.setActiveFile(file2.path);
+    view = getEditorView(container);
+    expect(view.state.doc.toString()).toContain('structure Mount');
+
+    // (4) Switch back to file1
+    store.setActiveFile(file1.path);
+    view = getEditorView(container);
+    // file1 should still contain the edit
+    expect(view.state.doc.toString()).toContain('// edit');
+
+    // (5) Undo — should revert file1's edit, not produce file2 content
+    const { undo } = require('@codemirror/commands');
+    undo({ state: view.state, dispatch: view.dispatch.bind(view) });
+
+    view = getEditorView(container);
+    // After undo, file1 should be back to original content
+    expect(view.state.doc.toString()).toBe(file1.content);
+    // And NOT contain file2's content (undo history must not be polluted)
+    expect(view.state.doc.toString()).not.toContain('structure Mount');
+  });
+
+  it('undo in file2 does NOT produce file1 content', () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+
+    // Switch to file2
+    store.setActiveFile(file2.path);
+    let view = getEditorView(container);
+
+    // Attempt undo in file2 — should be a no-op (no edits made in file2)
+    const { undo } = require('@codemirror/commands');
+    undo({ state: view.state, dispatch: view.dispatch.bind(view) });
+
+    view = getEditorView(container);
+    // file2 should still show file2 content, NOT file1's content
+    expect(view.state.doc.toString()).toContain('structure Mount');
+    expect(view.state.doc.toString()).not.toContain('structure Bracket');
+  });
+});
+
 describe('Editor debounce timer cancellation on file switch (RC-04)', () => {
   it('debounced updateSource does NOT fire after file switch', () => {
     const store = setupStore([file1, file2]);
