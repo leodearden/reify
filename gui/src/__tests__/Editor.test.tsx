@@ -639,6 +639,61 @@ describe('Editor integration: rapid file switch with diagnostics mid-switch', ()
   });
 });
 
+describe('Editor cross-file goto-definition (E-12)', () => {
+  it('Ctrl+Click on cross-file definition navigates via bridge.openFile and store.openFile', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+
+    // Mock invoke to:
+    // 1. Handle LSP init normally
+    // 2. Return a cross-file definition location for textDocument/definition
+    const crossFileLocation = {
+      uri: 'file:///project/src/mount.ri',
+      range: { start: { line: 5, character: 2 }, end: { line: 5, character: 10 } },
+    };
+
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') {
+        return JSON.stringify({ capabilities: {} });
+      }
+      if (method === 'textDocument/definition') {
+        return JSON.stringify(crossFileLocation);
+      }
+      return undefined as any;
+    });
+
+    // Spy on bridge.openFile to return file2's data when called
+    const openFileSpy = vi.spyOn(bridge, 'openFile').mockResolvedValue(file2);
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // JSDOM has no layout, so posAtCoords returns null. Mock it to return a valid position.
+    vi.spyOn(view, 'posAtCoords').mockReturnValue(5);
+
+    // Simulate Ctrl+Click on contentDOM
+    const mouseEvent = new MouseEvent('mousedown', {
+      ctrlKey: true,
+      clientX: 100,
+      clientY: 50,
+      bubbles: true,
+    });
+    view.contentDOM.dispatchEvent(mouseEvent);
+
+    // Wait for async goto-definition chain: requestDefinition -> onNavigate -> bridge.openFile -> store.openFile
+    await vi.waitFor(() => {
+      expect(openFileSpy).toHaveBeenCalledWith('/project/src/mount.ri');
+    });
+
+    // After the bridge call resolves, the store should have switched to the target file
+    await vi.waitFor(() => {
+      expect(store.state.activeFile).toBe(file2.path);
+    });
+  });
+});
+
 describe('Editor extensions', () => {
   it('renders line numbers gutter (.cm-lineNumbers)', () => {
     const store = setupStore();
