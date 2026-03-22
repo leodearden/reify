@@ -647,6 +647,26 @@ describe('Editor extensions', () => {
     const lineNumbers = container.querySelector('.cm-lineNumbers');
     expect(lineNumbers).not.toBeNull();
   });
+
+  it('Ctrl+F opens search panel (.cm-search)', () => {
+    const store = setupStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Dispatch Ctrl+F to open search panel
+    const event = new KeyboardEvent('keydown', {
+      key: 'f',
+      code: 'KeyF',
+      ctrlKey: true,
+      bubbles: true,
+    });
+    view.contentDOM.dispatchEvent(event);
+
+    // CodeMirror search panel should now be rendered
+    const searchPanel = container.querySelector('.cm-search');
+    expect(searchPanel).not.toBeNull();
+  });
 });
 
 describe('Editor cleanup race condition (RC-05)', () => {
