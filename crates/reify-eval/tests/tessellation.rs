@@ -1,5 +1,6 @@
 //! Tests for Engine::tessellate_realizations() — tessellation API for GUI mesh generation.
 
+use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
 use reify_test_support::*;
 use reify_types::ModulePath;
 
@@ -31,4 +32,50 @@ fn tessellate_no_realizations_no_kernel_returns_empty_meshes() {
 
     // Values should still be populated from eval
     assert!(!result.values.is_empty(), "expected values to be populated from eval");
+}
+
+/// Helper: build a CompiledModule with one box primitive realization.
+fn module_with_box_realization() -> reify_compiler::CompiledModule {
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new("TestShape")
+        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
+        .param(e, "height", Type::length(), Some(mm_literal(100.0)))
+        .param(e, "depth", Type::length(), Some(mm_literal(5.0)))
+        .realization(e, 0, vec![box_op])
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("test_shape"))
+        .template(template)
+        .build()
+}
+
+/// tessellate_realizations returns a mesh for a single box realization.
+#[test]
+fn tessellate_single_box_realization() {
+    let module = module_with_box_realization();
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let result = engine.tessellate_realizations(&module);
+
+    assert_eq!(result.meshes.len(), 1, "expected exactly one mesh for one realization");
+
+    let (entity_path, mesh) = &result.meshes[0];
+    assert_eq!(entity_path, "TestShape#realization[0]");
+    assert!(!mesh.vertices.is_empty(), "mesh should have non-empty vertices");
+    assert!(!mesh.indices.is_empty(), "mesh should have non-empty indices");
 }
