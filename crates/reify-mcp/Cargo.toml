@@ -15,4 +15,5 @@ thiserror = "2"
 test-support = []
 
 [dev-dependencies]
+reify-mcp = { path = ".", features = ["test-support"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-std", "io-util", "test-util"] }
