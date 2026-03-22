@@ -639,6 +639,16 @@ describe('Editor integration: rapid file switch with diagnostics mid-switch', ()
   });
 });
 
+describe('Editor extensions', () => {
+  it('renders line numbers gutter (.cm-lineNumbers)', () => {
+    const store = setupStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const lineNumbers = container.querySelector('.cm-lineNumbers');
+    expect(lineNumbers).not.toBeNull();
+  });
+});
+
 describe('Editor cleanup race condition (RC-05)', () => {
   it('cleanup during in-flight file switch prevents phantom didOpen', async () => {
     const store = setupStore([file1, file2]);
