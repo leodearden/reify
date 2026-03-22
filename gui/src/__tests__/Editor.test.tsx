@@ -638,3 +638,121 @@ describe('Editor integration: rapid file switch with diagnostics mid-switch', ()
     ]);
   });
 });
+
+describe('Editor cleanup race condition (RC-05)', () => {
+  it('cleanup during in-flight file switch prevents phantom didOpen', async () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+
+    const lspCalls: string[] = [];
+    let firstSwitchCloseResolver: (() => void) | null = null;
+
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+
+      const params = JSON.parse((args as any)?.params ?? '{}');
+      const uri = params?.textDocument?.uri ?? '';
+
+      if (method?.startsWith('textDocument/did')) {
+        lspCalls.push(`${method}|${uri}`);
+      }
+
+      // Return a controllable promise for the file-switch's didClose(bracket)
+      // so we can interleave unmount while the chain is mid-flight
+      if (
+        method === 'textDocument/didClose' &&
+        uri.includes('bracket') &&
+        !firstSwitchCloseResolver
+      ) {
+        return new Promise<void>((resolve) => {
+          firstSwitchCloseResolver = resolve;
+        }) as any;
+      }
+
+      return undefined as any;
+    });
+
+    const { unmount } = render(() => <Editor store={store} />);
+
+    // Wait for initial LSP setup (initialize → initialized → didOpen)
+    await vi.waitFor(() => {
+      expect(lspCalls.some((c) => c.includes('didOpen'))).toBe(true);
+    });
+    lspCalls.length = 0;
+
+    // Trigger file switch file1 → file2
+    store.setActiveFile(file2.path);
+
+    // Wait for didClose(bracket) to be called — it's now pending via deferred
+    await vi.waitFor(() => {
+      expect(firstSwitchCloseResolver).not.toBeNull();
+    });
+
+    // Resolve didClose(bracket) and IMMEDIATELY unmount before the chain's
+    // didOpen microtask gets a chance to run — this creates the race condition
+    firstSwitchCloseResolver!();
+    unmount();
+
+    // Flush all microtasks to let pending promise chains settle
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+
+    // With the fix (destroyed flag + chained cleanup):
+    //   The chain's didOpen is SKIPPED (destroyed=true), then cleanup's
+    //   chained didClose(mount) fires.
+    //   Result: [didClose(bracket), didClose(mount)]
+    //
+    // BUG (no destroyed flag):
+    //   Cleanup fires didClose(mount) directly, then the chain's didOpen(mount)
+    //   fires afterward — leaving a phantom open document in the LSP server.
+    //   Result: [didClose(bracket), didClose(mount), didOpen(mount)]
+
+    // No phantom didOpen should be present
+    const didOpenCalls = lspCalls.filter((c) => c.includes('didOpen'));
+    expect(didOpenCalls).toHaveLength(0);
+
+    // Last call should be didClose for the file active at cleanup time
+    const lastCall = lspCalls[lspCalls.length - 1];
+    expect(lastCall).toContain('textDocument/didClose');
+    expect(lastCall).toContain('mount.ri');
+  });
+
+  it('cleanup fires didClose for current URI when no file switch is in flight', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+
+    const lspCalls: string[] = [];
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+
+      const params = JSON.parse((args as any)?.params ?? '{}');
+      const uri = params?.textDocument?.uri ?? '';
+
+      if (method?.startsWith('textDocument/did')) {
+        lspCalls.push(`${method}|${uri}`);
+      }
+
+      return undefined as any;
+    });
+
+    const { unmount } = render(() => <Editor store={store} />);
+
+    // Wait for initial LSP setup
+    await vi.waitFor(() => {
+      expect(lspCalls.some((c) => c.includes('didOpen'))).toBe(true);
+    });
+    lspCalls.length = 0;
+
+    // Unmount with no file switch in progress
+    unmount();
+
+    // Flush microtasks (cleanup's chained didClose)
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+
+    // Should have exactly one didClose for the active file
+    const closeCalls = lspCalls.filter((c) => c.includes('didClose'));
+    expect(closeCalls).toHaveLength(1);
+    expect(closeCalls[0]).toContain('bracket.ri');
+  });
+});
