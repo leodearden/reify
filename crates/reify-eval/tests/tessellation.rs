@@ -2,7 +2,10 @@
 
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
 use reify_test_support::*;
-use reify_types::ModulePath;
+use reify_types::{
+    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
+    GeometryOp, GeometryQuery, Mesh, ModulePath, QueryError, TessError, Value,
+};
 
 /// When the module has no realizations and no geometry kernel,
 /// tessellate_realizations() should return empty meshes and populated values.
@@ -145,6 +148,62 @@ fn tessellate_no_kernel_with_realizations_returns_empty_meshes() {
     assert!(
         !has_tess_diag,
         "expected no tessellation diagnostics when kernel absent, got: {:?}",
+        result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// FailingMockGeometryKernel — execute() always returns Err
+// ---------------------------------------------------------------------------
+
+struct FailingMockGeometryKernel;
+
+impl GeometryKernel for FailingMockGeometryKernel {
+    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(
+            "simulated kernel failure".into(),
+        ))
+    }
+
+    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+        Ok(Value::Real(0.0))
+    }
+
+    fn export(
+        &self,
+        _handle: GeometryHandleId,
+        _format: ExportFormat,
+        _writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        Ok(())
+    }
+
+    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+        Err(TessError::TessellationFailed("should not reach".into()))
+    }
+}
+
+/// tessellate_realizations records geometry execution errors as diagnostics
+/// when kernel operations fail.
+#[test]
+fn tessellate_records_geometry_errors_as_diagnostics() {
+    let module = module_with_box_realization();
+    let checker = MockConstraintChecker::new();
+    let kernel = FailingMockGeometryKernel;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let result = engine.tessellate_realizations(&module);
+
+    // No meshes should be produced
+    assert!(result.meshes.is_empty(), "expected no meshes when all kernel ops fail");
+
+    // Should have geometry error diagnostics
+    let has_geom_error = result.diagnostics.iter().any(|d| {
+        d.message.contains("geometry error")
+    });
+    assert!(
+        has_geom_error,
+        "expected geometry error diagnostic, got: {:?}",
         result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
