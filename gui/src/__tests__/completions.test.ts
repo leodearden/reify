@@ -106,4 +106,56 @@ describe('reifyCompletionSource', () => {
     params = JSON.parse((mockInvoke.mock.calls[0][1] as { params: string }).params);
     expect(params.textDocument.uri).toBe('file:///second.ri');
   });
+
+  it('completion result.from scans backward to word start (cursor at end of word)', async () => {
+    const mockItems = [{ label: 'width', kind: 6 }];
+    mockInvoke.mockResolvedValue(JSON.stringify(mockItems));
+
+    const source = reifyCompletionSource('file:///test.ri');
+
+    // Simulating: doc text is 'wid', cursor at pos=3 (end of 'wid')
+    // line.from=0, line.to=3
+    const context = {
+      state: {
+        doc: {
+          lineAt: () => ({ number: 1, from: 0, to: 3 }),
+          sliceString: (from: number, to: number) => 'wid'.slice(from, to),
+        },
+        selection: { main: { head: 3 } },
+      },
+      pos: 3,
+      explicit: true,
+    } as any;
+
+    const result = await source(context);
+    expect(result).not.toBeNull();
+    // from should be 0 (start of 'wid'), NOT 3 (cursor position)
+    expect(result!.from).toBe(0);
+  });
+
+  it('completion result.from scans backward past non-identifier chars', async () => {
+    const mockItems = [{ label: 'width', kind: 6 }];
+    mockInvoke.mockResolvedValue(JSON.stringify(mockItems));
+
+    const source = reifyCompletionSource('file:///test.ri');
+
+    // Simulating: doc text is 'x = wid', cursor at pos=7 (end of 'wid')
+    // line.from=0, line.to=7
+    const context = {
+      state: {
+        doc: {
+          lineAt: () => ({ number: 1, from: 0, to: 7 }),
+          sliceString: (from: number, to: number) => 'x = wid'.slice(from, to),
+        },
+        selection: { main: { head: 7 } },
+      },
+      pos: 7,
+      explicit: true,
+    } as any;
+
+    const result = await source(context);
+    expect(result).not.toBeNull();
+    // from should be 4 (start of 'wid'), NOT 7 (cursor position)
+    expect(result!.from).toBe(4);
+  });
 });
