@@ -51,7 +51,7 @@ export const FileBrowser: Component<FileBrowserProps> = (props) => {
               <div
                 data-testid={`file-item-${file.path}`}
                 data-active={isActive() ? 'true' : undefined}
-                class={styles.item}
+                class={`${styles.item}${isActive() ? ` ${styles.activeItem}` : ''}`}
                 role="option"
                 aria-selected={isActive() ? 'true' : 'false'}
                 tabindex={isActive() ? 0 : -1}
