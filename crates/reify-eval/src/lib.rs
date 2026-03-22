@@ -13,9 +13,9 @@ use reify_compiler::{CompiledConstraint, CompiledModule, CompiledPurpose, Topolo
 use reify_types::{
     AutoParam, CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintNodeId,
     ConstraintSolver, ContentHash, DeterminacyState, Diagnostic, ExportFormat,
-    GeometryHandleId, GeometryKernel, OptimizationObjective, PersistentMap, ResolutionProblem,
-    Satisfaction, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap,
-    VersionId, FIELD_ENTITY_PREFIX,
+    GeometryHandleId, GeometryKernel, Mesh, OptimizationObjective, PersistentMap,
+    ResolutionProblem, Satisfaction, SnapshotId, SnapshotProvenance, SolveResult, Value,
+    ValueCellId, ValueMap, VersionId, FIELD_ENTITY_PREFIX,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
@@ -146,6 +146,21 @@ pub struct BuildResult {
     pub values: ValueMap,
     pub constraint_results: Vec<ConstraintCheckEntry>,
     pub geometry_output: Option<Vec<u8>>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
+}
+
+/// Result of tessellating all realizations in a module for GUI mesh rendering.
+///
+/// Similar to [`BuildResult`] but produces per-realization meshes instead of
+/// a single exported geometry file. Each mesh is paired with its entity path
+/// (e.g., `"Bracket#realization[0]"`).
+#[derive(Debug)]
+pub struct TessellateResult {
+    pub values: ValueMap,
+    pub constraint_results: Vec<ConstraintCheckEntry>,
+    /// Per-realization tessellated meshes: `(entity_path, mesh)`.
+    pub meshes: Vec<(String, Mesh)>,
     pub diagnostics: Vec<Diagnostic>,
     pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
 }
@@ -2570,6 +2585,178 @@ impl Engine {
             diagnostics,
             resolved_params: check_result.resolved_params,
         }
+    }
+
+    /// Tessellate all realizations in the module for GUI mesh rendering.
+    ///
+    /// Evaluates the module via [`check()`], then executes geometry operations
+    /// per realization (same loop as [`build()`]) and tessellates each
+    /// realization's final shape. Returns one `(entity_path, Mesh)` pair per
+    /// realization that produced geometry.
+    ///
+    /// When no geometry kernel is configured, returns empty meshes with no
+    /// error diagnostics (matching the pattern in [`build()`]).
+    pub fn tessellate_realizations(
+        &mut self,
+        module: &CompiledModule,
+    ) -> TessellateResult {
+        let check_result = self.check(module);
+        let mut diagnostics = check_result.diagnostics;
+        let meshes = Self::tessellate_from_values(
+            &mut self.geometry_kernel,
+            module,
+            &check_result.values,
+            &mut diagnostics,
+        );
+
+        TessellateResult {
+            values: check_result.values,
+            constraint_results: check_result.constraint_results,
+            meshes,
+            diagnostics,
+            resolved_params: check_result.resolved_params,
+        }
+    }
+
+    /// Default tessellation tolerance in SI meters (0.1mm).
+    const DEFAULT_TESSELLATION_TOLERANCE: f64 = 0.0001;
+
+    /// Shared helper: execute geometry operations and tessellate each realization.
+    ///
+    /// Used by both `tessellate_realizations()` and `tessellate_snapshot()`.
+    fn tessellate_from_values(
+        geometry_kernel: &mut Option<Box<dyn GeometryKernel>>,
+        module: &CompiledModule,
+        values: &ValueMap,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Vec<(String, Mesh)> {
+        let mut meshes = Vec::new();
+
+        let kernel = match geometry_kernel.as_mut() {
+            Some(k) => k,
+            None => return meshes,
+        };
+
+        let mut step_handles: Vec<GeometryHandleId> = Vec::new();
+
+        for template in &module.templates {
+            for realization in &template.realizations {
+                let handle_start = step_handles.len();
+
+                for op in &realization.operations {
+                    let geom_op = compile_geometry_op(
+                        op,
+                        values,
+                        &step_handles,
+                        &module.functions,
+                    );
+                    match geom_op {
+                        Some(geom_op) => match kernel.execute(&geom_op) {
+                            Ok(handle) => {
+                                step_handles.push(handle.id);
+                            }
+                            Err(e) => {
+                                diagnostics.push(Diagnostic::error(
+                                    format!("geometry error: {}", e),
+                                ));
+                            }
+                        },
+                        None => {
+                            diagnostics.push(Diagnostic::error(
+                                "failed to compile geometry operation",
+                            ));
+                        }
+                    }
+                }
+
+                // Tessellate this realization's final handle (if any new handles were produced)
+                if step_handles.len() > handle_start {
+                    let last_handle = step_handles[step_handles.len() - 1];
+                    match kernel.tessellate(last_handle, Self::DEFAULT_TESSELLATION_TOLERANCE) {
+                        Ok(mesh) => {
+                            meshes.push((realization.id.to_string(), mesh));
+                        }
+                        Err(e) => {
+                            diagnostics.push(Diagnostic::error(
+                                format!("tessellation error: {}", e),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        meshes
+    }
+
+    /// Tessellate realizations from the current snapshot values, without
+    /// re-calling eval().
+    ///
+    /// Returns `None` if no snapshot exists (no prior `eval()` call).
+    /// Otherwise: checks constraints from snapshot, then executes geometry
+    /// operations and tessellates each realization. This is the incremental
+    /// companion to `tessellate_realizations()`: after `edit_param()` updates
+    /// values, call `tessellate_snapshot()` to get updated meshes without a
+    /// cold restart.
+    pub fn tessellate_snapshot(
+        &mut self,
+        module: &CompiledModule,
+    ) -> Option<TessellateResult> {
+        let state = self.eval_state.as_ref()?;
+
+        // Build ValueMap from snapshot values
+        let mut values = ValueMap::new();
+        for (id, (val, _det)) in state.snapshot.values.iter() {
+            values.insert(id.clone(), val.clone());
+        }
+
+        // Check constraints (guard-aware)
+        let mut constraint_results = Vec::new();
+        let mut diagnostics = Vec::new();
+
+        for template in &module.templates {
+            let active_constraints = Self::collect_active_constraints(template, &values);
+
+            if !active_constraints.is_empty() {
+                let constraint_pairs: Vec<_> = active_constraints
+                    .iter()
+                    .map(|c| (c.id.clone(), &c.expr))
+                    .collect();
+
+                let input = ConstraintInput {
+                    constraints: constraint_pairs,
+                    values: &values,
+                    functions: &module.functions,
+                };
+
+                let results = self.constraint_checker.check(&input);
+
+                for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
+                    diagnostics.extend(result.diagnostics.messages);
+                    constraint_results.push(ConstraintCheckEntry {
+                        id: result.id,
+                        label: compiled.label.clone(),
+                        satisfaction: result.satisfaction,
+                    });
+                }
+            }
+        }
+
+        // Execute geometry and tessellate
+        let meshes = Self::tessellate_from_values(
+            &mut self.geometry_kernel,
+            module,
+            &values,
+            &mut diagnostics,
+        );
+
+        Some(TessellateResult {
+            values,
+            constraint_results,
+            meshes,
+            diagnostics,
+            resolved_params: HashMap::new(),
+        })
     }
 
     /// Evaluate let bindings from a template in topological order.

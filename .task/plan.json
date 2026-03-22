@@ -1,223 +1,178 @@
 {
-  "task_id": "107",
-  "title": "Editor missing features: line numbers, find/replace, auto-close brackets, completion positioning",
+  "task_id": "131",
+  "title": "Engine: add tessellation API for GUI mesh generation",
   "files": [
-    "gui/package.json",
-    "gui/pnpm-lock.yaml",
-    "gui/src/editor/Editor.tsx",
-    "gui/src/editor/Editor.module.css",
-    "gui/src/editor/completions.ts",
-    "gui/src/editor/gotoDefinition.ts",
-    "gui/src/__tests__/Editor.test.tsx",
-    "gui/src/__tests__/completions.test.ts",
-    "gui/src/__tests__/gotoDefinition.test.ts",
-    "gui/src/__tests__/hover.test.ts"
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/tests/tessellation.rs"
   ],
   "modules": [
-    "gui/src/editor",
-    "gui/src/__tests__"
+    "crates/reify-eval/src",
+    "crates/reify-eval/tests"
   ],
-  "analysis": "This task addresses 6 editor feature gaps in the CodeMirror-based editor component.\n\nE-01 (line numbers): The Editor.tsx extensions array (lines 60-125) does not include lineNumbers(). The lineNumbers extension is in @codemirror/view which is already a dependency.\n\nE-02 (find/replace): @codemirror/search is NOT currently installed \u2014 needs npm install. The search() extension and searchKeymap need to be added to Editor.tsx.\n\nE-03 (closeBrackets): The reifyLanguage.ts (line 24) defines closeBrackets language data with brackets config, but the closeBrackets() extension from @codemirror/autocomplete (already a dependency) is not loaded in Editor.tsx. Without the extension, the language data has no effect.\n\nE-11 (completion from position): In completions.ts line 112, `from: pos` uses cursor position directly. When cursor is mid-word (e.g. typing 'wid|'), accepting a completion inserts the full label starting at cursor, duplicating the already-typed prefix. Fix: scan backward from pos to find the word start (alphanumeric/underscore characters) and use that as `from`.\n\nE-12 (cross-file goto-definition): In gotoDefinition.ts lines 99-112, the mousedown handler only navigates when location.uri matches the current file. For cross-file definitions, the handler silently does nothing. Fix: add an onNavigate callback parameter that Editor.tsx can use to load the target file via bridge.openFile and open it in the editorStore.\n\nE-14 (hover tooltip styling): The hover.ts create() function (line 75) sets className 'cm-lsp-hover' and some inline padding/width styles, but there's no background color, border, or shadow. The tooltip appears as invisible text floating over the editor. Fix: add proper CSS rules for .cm-lsp-hover in Editor.module.css.\n\nExisting test patterns: Editor.test.tsx renders full Editor with mocked Tauri APIs and inspects CM6 DOM. Module-level tests (completions.test.ts, gotoDefinition.test.ts, hover.test.ts) mock invoke and test functions in isolation.\n\n**REVIEW FIX (steps 13-14):** Step 10 only modified gotoDefinition.ts to accept the onNavigate callback but never wired it in Editor.tsx. The call site at Editor.tsx:73 remains `reifyGotoDefinition(() => currentUri)` with no second argument. The entire cross-file goto-definition feature (E-12) is dead code in production. Steps 13-14 add the missing integration: an Editor.test.tsx integration test and the actual wiring in Editor.tsx.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Install @codemirror/search package: add to gui/package.json dependencies and run npm install to generate lockfile entry. This is needed for E-02 find/replace support.",
-      "status": "done",
-      "commit": "be1a218",
-      "tests": []
-    }
-  ],
+  "analysis": "The Engine struct in reify-eval/src/lib.rs has build() and build_snapshot() methods that execute geometry operations and export to STEP/STL bytes, but no tessellation path for GUI rendering. The task is to add a tessellate_realizations() method that:\n\n1. Evaluates the module (via check() to also get constraint results)\n2. Executes geometry operations per realization (same as build())\n3. Instead of exporting, calls kernel.tessellate() on each realization's final handle\n4. Returns Vec<(String, Mesh)> pairing entity paths with tessellated meshes\n\nKey observations:\n- The build() method already has the exact geometry execution loop we need (lines 2510-2540), iterating templates -> realizations -> operations\n- compile_geometry_op() is an existing free function that compiles CompiledGeometryOp into GeometryOp\n- The Mesh type exists in reify-types::geometry with {vertices, indices, normals}\n- GeometryKernel::tessellate(handle, tolerance) -> Result<Mesh, TessError> already exists\n- MockGeometryKernel in reify-test-support returns a single triangle mesh from tessellate()\n- RealizationNodeId has entity:String and index:u32, with Display impl 'entity#realization[index]' - good entity_path\n- The geometry execution loop tracks step_handles globally. The last handle per realization is the final shape to tessellate.\n- build_snapshot() shows the incremental pattern; tessellate_snapshot can follow the same structure\n\nThe approach:\n- Add a TessellateResult struct similar to BuildResult but with meshes: Vec<(String, Mesh)> instead of geometry_output: Option<Vec<u8>>\n- Add Engine::tessellate_realizations() that calls check() then iterates realizations, executing geometry and calling tessellate()\n- Track handles globally across realizations (matching build() behavior) but tessellate each realization's last handle separately\n- Use RealizationNodeId::to_string() as the entity path (e.g., 'Bracket#realization[0]')\n- Default tessellation tolerance: 0.0001 (0.1mm in SI meters)\n- Also add tessellate_snapshot() for incremental usage (like build_snapshot is to build)",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "E-01 test: Add test in Editor.test.tsx in a new 'Editor extensions' describe block asserting that the rendered editor contains a .cm-lineNumbers element (CodeMirror renders a gutter with this class when lineNumbers() extension is loaded).",
+      "description": "Write failing test: tessellate_realizations returns empty meshes vec when module has no realizations and no geometry kernel. Create crates/reify-eval/tests/tessellation.rs with a test that builds a simple module with no realizations (just params), creates an Engine with no kernel, calls tessellate_realizations(), and verifies the result has empty meshes vec and values are populated from eval.",
       "status": "done",
-      "commit": "f298f3e"
+      "commit": "a440848"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "E-01 impl: In Editor.tsx, import { lineNumbers } from '@codemirror/view' (add to existing import on line 3) and add lineNumbers() to the extensions array before bracketMatching().",
+      "description": "Add TessellateResult struct and Engine::tessellate_realizations() method skeleton in lib.rs. TessellateResult has: values (ValueMap), constraint_results (Vec<ConstraintCheckEntry>), meshes (Vec<(String, Mesh)>), diagnostics (Vec<Diagnostic>), resolved_params (HashMap<ValueCellId, Value>). The method calls check(), then returns TessellateResult with empty meshes when no kernel or no realizations. Import Mesh in the use block. Make step-1 test pass.",
       "status": "done",
-      "commit": "a2cbd1d"
+      "commit": "238c7db"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "E-02 test: Add test in Editor.test.tsx asserting that after dispatching a Ctrl+F keydown event on the editor's contentDOM, a .cm-search element appears in the editor container (CodeMirror's search panel).",
+      "description": "Write failing test: tessellate_realizations returns mesh for a single box realization. Use MockGeometryKernel and TopologyTemplateBuilder/CompiledModuleBuilder to build a module with one box primitive realization (following module_with_box_realization pattern from geometry_error_handling.rs). Verify meshes has exactly one entry, its entity path matches 'TestShape#realization[0]', and the mesh has non-empty vertices and indices.",
       "status": "done",
-      "commit": "e32a85c"
+      "commit": "df1a3d1"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "E-02 impl: In Editor.tsx, import { search } from '@codemirror/search' and import { searchKeymap } from '@codemirror/search'. Add search() to the extensions array and add ...searchKeymap to the keymap.of() array.",
+      "description": "Implement the geometry execution + tessellation loop in tessellate_realizations(). After calling check(), iterate templates -> realizations -> operations: compile and execute each op via the kernel (using compile_geometry_op), track step_handles (global flat vec matching build() behavior). After processing each realization's operations, if the realization produced any handles, call kernel.tessellate(last_handle, DEFAULT_TESSELLATION_TOLERANCE) and push (realization.id.to_string(), mesh) to meshes vec. Define const DEFAULT_TESSELLATION_TOLERANCE: f64 = 0.0001. Make step-3 test pass.",
       "status": "done",
-      "commit": "fec1760"
+      "commit": "1417d7f"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "E-03 test: Add test in Editor.test.tsx. Set up editor with an empty document, type '{' by dispatching view.dispatch({changes: {from: 0, insert: '{'}}). This alone won't trigger closeBrackets (it operates via keyboard input handling). Instead, verify the extension is loaded by checking that the closeBrackets extension is present: use a simulated input event or check that the extension configuration includes closeBrackets. Alternatively, verify via the editor state's facet that closeBrackets is active. Simplest approach: fire a keyboard event for '{' key and check that doc contains '{}'.",
+      "description": "Write failing test: tessellate_realizations with multiple realizations returns multiple meshes with distinct entity paths. Build a module with two realizations on the same template (e.g., realization 0 with a box and realization 1 with a sphere). Verify meshes vec has two entries with entity paths 'TestShape#realization[0]' and 'TestShape#realization[1]'.",
       "status": "done",
-      "commit": "3b09a21"
+      "commit": "7f7179a"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "E-03 impl: In Editor.tsx, import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete' (extend existing import on line 6). Add closeBrackets() to the extensions array after bracketMatching(). Add ...closeBracketsKeymap to the keymap.of() array before ...defaultKeymap.",
+      "description": "Verify and fix the per-realization tessellation loop to correctly track which handle is the 'last' for each realization. The step_handles index at realization start vs end must be tracked to identify the realization's final handle. Should already work from step-4 if tracking is correct; adjust if needed. Make step-5 test pass.",
       "status": "done",
-      "commit": "111e9cd"
+      "commit": "7f7179a"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "E-11 test: Add test in completions.test.ts: 'completion result.from scans backward to word start'. Create a context mock where pos=3, doc text is 'wid' (line from=0, to=3), and doc.sliceString(from, to) returns the text between the given offsets. Call the completion source and assert result.from === 0 (start of 'wid'), not 3 (cursor pos). Add second test with cursor mid-word after non-word chars: text='x = wid', pos=7, line.from=0 \u2014 expect from=4 (start of 'wid' not 'x').",
+      "description": "Write failing test: tessellate_realizations returns empty meshes (no panic, no error) when geometry_kernel is None but module has realizations. Verify meshes is empty and no error diagnostics about tessellation are present.",
       "status": "done",
-      "commit": "989fb0b"
+      "commit": "26ee9b8"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "E-11 impl: In completions.ts, before the return statement (line 112), compute the word start by scanning backward from pos. Get the line text via state.doc.sliceString(line.from, pos), iterate backward to find the first non-identifier char (not matching /[a-zA-Z0-9_]/), and set `const wordStart = line.from + i + 1` where i is the index of the last non-identifier char. Use wordStart as `from` in the returned CompletionResult instead of `pos`.",
+      "description": "Ensure tessellate_realizations gracefully handles the no-kernel case by returning empty meshes with no tessellation-related diagnostics (matching the pattern in build() where geometry_output is None when kernel is absent). Should already work from step-2 skeleton; verify and adjust. Make step-7 test pass.",
       "status": "done",
-      "commit": "989fb0b"
+      "commit": "26ee9b8"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "E-12 test: Add tests in gotoDefinition.test.ts. Test 1: 'calls onNavigate callback when definition is in a different file'. Create extension with onNavigate spy, simulate Ctrl+Click, mock invoke to return a location with a different URI. Assert onNavigate was called with (differentUri, line, character) and view.dispatch was NOT called. Test 2: 'same-file definition still dispatches cursor movement without calling onNavigate'. Same setup but location URI matches current URI. Assert view.dispatch was called and onNavigate was NOT called.",
+      "description": "Write failing test: tessellate_realizations records geometry execution errors as diagnostics when kernel operations fail. Define a FailingMockGeometryKernel inline (same pattern as geometry_error_handling.rs), build a module with one box realization. Verify meshes is empty and diagnostics contain 'geometry error' messages.",
       "status": "done",
-      "commit": "a082014"
+      "commit": "b592038"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "E-12 impl: Modify reifyGotoDefinition signature to accept optional onNavigate callback: reifyGotoDefinition(uri, onNavigate?: (targetUri: string, line: number, character: number) => void). In the mousedown handler, when location.uri differs from current URI: if onNavigate is provided, call onNavigate(location.uri, location.range.start.line, location.range.start.character); otherwise silently skip (preserving backward compatibility). In Editor.tsx, pass an onNavigate callback that: (a) extracts path from URI by stripping 'file://' prefix, (b) calls bridge.openFile(path) to load content, (c) calls props.store.openFile({path, content}) to open in store, (d) defers cursor navigation by dispatching to the view after the file switch effect runs (use setTimeout or Promise.resolve to yield to the reactive update).",
+      "description": "Add error handling in the geometry loop: push Diagnostic::error for failed kernel.execute() calls and failed kernel.tessellate() calls. Skip tessellation for realizations where no handles were produced. Make step-9 test pass.",
       "status": "done",
-      "commit": "8855e39"
+      "commit": "b592038"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "E-14 test: Add test in hover.test.ts: 'tooltip create() returns DOM with cm-lsp-hover class and verifiable structure'. Call the hover handler to get a tooltip result, invoke the create() function on the returned tooltip, and assert that dom.className includes 'cm-lsp-hover'. This validates the CSS selector will match.",
+      "description": "Write failing test: tessellate_snapshot returns tessellated meshes from the current snapshot without re-calling eval(). Set up engine with eval() called, then call tessellate_snapshot() and verify it returns Some(TessellateResult) with meshes based on snapshot values. Also test that tessellate_snapshot returns None when no prior eval() has been called.",
       "status": "done",
-      "commit": "36ec9cf"
+      "commit": "a0a9ce2"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "E-14 impl: In Editor.module.css, add :global(.cm-lsp-hover) CSS rule with background-color (dark theme: #2d2d3f or var(--reify-tooltip-bg)), color (#e0e0e0), border (1px solid #444), border-radius (4px), box-shadow (0 2px 8px rgba(0,0,0,0.3)), padding (6px 10px), max-width (480px), font-size (13px), white-space (pre-wrap), and line-height (1.4). Remove the redundant inline styles from hover.ts create() (padding, maxWidth, whiteSpace) since CSS now handles them \u2014 keep only className assignment and textContent.",
+      "description": "Add Engine::tessellate_snapshot() method that reads values from the current EvaluationState snapshot (like build_snapshot), checks constraints, executes geometry, and tessellates each realization. Returns Option<TessellateResult> (None if eval_state is None). Factor the geometry execution + tessellation loop into a private helper method to share between tessellate_realizations() and tessellate_snapshot(). Make step-11 test pass.",
       "status": "done",
-      "commit": "68bd77c"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "E-12 integration test (REVIEW FIX): Add test in Editor.test.tsx in a new 'Editor cross-file goto-definition (E-12)' describe block. The test verifies that when a Ctrl+Click triggers a goto-definition response pointing to a different file, Editor.tsx actually navigates to that file via bridge.openFile and store.openFile. Setup: (1) render Editor with file1 active, (2) mock invoke to return a cross-file definition location (uri: 'file:///project/src/mount.ri', range.start: {line: 5, character: 2}) when textDocument/definition is requested, (3) spy on bridge.openFile to return file2's FileData, (4) get the EditorView and simulate Ctrl+Click via a MouseEvent on contentDOM with ctrlKey:true (use view.posAtCoords mock or directly dispatch mousedown on contentDOM). After awaiting the async chain (vi.waitFor), assert: (a) bridge.openFile was called with '/project/src/mount.ri' (the path extracted from the URI), (b) store.state.activeFile === file2.path (the store switched to the target file). This test will FAIL because Editor.tsx:73 currently passes no onNavigate callback.",
-      "status": "done",
-      "commit": "0912b5d"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "E-12 integration impl (REVIEW FIX): Wire the onNavigate callback in Editor.tsx. (1) Add `openFile as bridgeOpenFile` to the import from '../bridge' (line 10, alongside updateSource and saveFile). (2) At line 73, change `reifyGotoDefinition(() => currentUri)` to `reifyGotoDefinition(() => currentUri, (targetUri, line, character) => { ... })`. (3) The callback body: (a) strip 'file://' prefix from targetUri to get the filesystem path \u2014 `const path = targetUri.replace('file://', '')`, (b) call `bridgeOpenFile(path).then(fileData => { ... })` to load the file from disk, (c) inside the .then: call `props.store.openFile(fileData)` to add/switch to the file in the store (this sets activeFile, which triggers the createEffect file-switch), (d) use `setTimeout(() => { if (view) { const targetLine = view.state.doc.line(line + 1); const targetPos = targetLine.from + character; view.dispatch({ selection: { anchor: targetPos }, scrollIntoView: true }); } }, 0)` to defer cursor navigation until after SolidJS's reactive file-switch effect has run and the EditorView has the new document. (4) Add `.catch((err: unknown) => console.error('Cross-file goto-definition error:', err))` for error handling on the bridgeOpenFile promise.",
-      "status": "done",
-      "commit": "4b4117f"
+      "commit": "5be6963"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add @codemirror/search as a runtime dependency rather than using a custom search implementation",
-      "rationale": "CodeMirror's official search package provides find/replace with regex support, keyboard shortcuts, and a styled panel out of the box. It's the standard approach and there's no benefit to building custom."
+      "decision": "Use check() as the base for tessellate_realizations (not just eval())",
+      "rationale": "Matches build() pattern - constraints are checked before geometry. The TessellateResult includes constraint_results so the GUI can display constraint status alongside meshes."
     },
     {
-      "decision": "Scan backward for word start in completions.ts using /[a-zA-Z0-9_]/ character class",
-      "rationale": "Reify identifiers consist of alphanumeric chars and underscores. Scanning backward from cursor to find where the identifier starts ensures completion.from is correct, preventing prefix duplication when accepting a completion. This is the standard technique used by LSP-powered completion sources."
+      "decision": "Track step_handles globally across realizations (same as build())",
+      "rationale": "build() uses a single flat step_handles vec across all templates/realizations. Tessellation must match this handle indexing for GeomRef::Step(idx) to resolve correctly."
     },
     {
-      "decision": "Add onNavigate callback to reifyGotoDefinition rather than passing editorStore directly",
-      "rationale": "Keeps gotoDefinition.ts decoupled from the store and bridge modules. The Editor.tsx component is the natural integration point where store + bridge access exists. The callback pattern matches how the existing code handles URI resolution (function getters). Making the callback optional preserves backward compatibility."
+      "decision": "Tessellate each realization's final handle separately, returning one mesh per realization",
+      "rationale": "Unlike build() which exports only the last handle overall, tessellation should return one mesh per realization so the GUI can render/highlight individual entities."
     },
     {
-      "decision": "Put hover tooltip CSS in Editor.module.css using :global() selector",
-      "rationale": "Editor.module.css already uses :global() for .cm-editor and .cm-scroller overrides. CodeMirror tooltip containers are appended inside the editor DOM tree, so :global() scoping from the editor container is the correct and consistent approach."
+      "decision": "Use RealizationNodeId::to_string() as entity_path (e.g., 'Bracket#realization[0]')",
+      "rationale": "RealizationNodeId already has a Display impl that produces a unique, human-readable path. This matches the identity system used elsewhere."
     },
     {
-      "decision": "Use bridge.openFile for cross-file goto-definition to load file content from disk",
-      "rationale": "bridge.openFile(path) already exists (bridge.ts line 53) and returns FileData with path+content. The editorStore.openFile(fileData) expects FileData. This is the natural integration path \u2014 no new bridge commands needed."
+      "decision": "Default tessellation tolerance of 0.0001 (0.1mm in SI meters)",
+      "rationale": "Task spec suggests this value. It's a reasonable default for engineering CAD visualization - fine enough for visual quality, coarse enough for performance."
     },
     {
-      "decision": "closeBrackets extension added alongside closeBracketsKeymap for proper keyboard handling",
-      "rationale": "closeBrackets() provides auto-insertion behavior, but closeBracketsKeymap adds the Backspace handler that deletes both brackets when cursor is between a pair. Both are needed for a correct UX. They are both exported from @codemirror/autocomplete which is already installed."
+      "decision": "Add tessellate_snapshot() alongside tessellate_realizations()",
+      "rationale": "Matches the build/build_snapshot pattern for incremental updates. After edit_param(), the GUI needs to re-tessellate without a cold restart."
     },
     {
-      "decision": "Use setTimeout/microtask to defer cursor navigation after cross-file goto-definition",
-      "rationale": "When onNavigate opens a new file via the store, the Editor's reactive file-switch effect runs asynchronously via SolidJS createEffect. The cursor navigation to the target definition position must happen AFTER the new EditorState is set. A setTimeout(0) or Promise.resolve().then() yields to the reactive update before dispatching the cursor movement."
+      "decision": "Return TessellateResult struct (not Result<Vec<(String, Mesh)>, String>)",
+      "rationale": "Matches the pattern of CheckResult and BuildResult - includes values, constraint_results, diagnostics alongside the geometry output. More useful for the GUI which needs all this information."
     },
     {
-      "decision": "Import bridge.openFile as bridgeOpenFile alias in Editor.tsx",
-      "rationale": "Editor.tsx already uses the name 'openFile' from editorStore (via props.store.openFile). Using the alias 'bridgeOpenFile' avoids name collision and makes it clear at each call site whether we're loading from disk (bridge) or updating the store (store.openFile). This follows the aliasing pattern already used in App.tsx line 28."
+      "decision": "Factor geometry+tessellation loop into a private helper method",
+      "rationale": "tessellate_realizations() and tessellate_snapshot() share the same geometry execution + tessellation logic, differing only in how values are obtained. A shared helper avoids duplication (same pattern as build() vs build_snapshot() but better factored)."
     }
   ],
   "reuse": [
     {
-      "what": "EditorView.findFromDOM() helper (getEditorView function)",
-      "where": "gui/src/__tests__/Editor.test.tsx lines 71-74",
-      "how": "Reuse for all new Editor.test.tsx tests to get the CM6 view instance from rendered container"
+      "what": "compile_geometry_op() free function",
+      "where": "crates/reify-eval/src/lib.rs (line ~2650)",
+      "how": "Reuse directly to compile CompiledGeometryOp -> GeometryOp, same as build()"
     },
     {
-      "what": "setupStore() helper and file fixtures (file1, file2, file3)",
-      "where": "gui/src/__tests__/Editor.test.tsx lines 26-43",
-      "how": "Reuse for new Editor extension tests"
+      "what": "Geometry execution loop pattern from build() and build_snapshot()",
+      "where": "crates/reify-eval/src/lib.rs (lines 2510-2540, 2438-2490)",
+      "how": "Follow the same template->realization->operation iteration with step_handles tracking, but tessellate instead of export"
     },
     {
-      "what": "Tauri API mock pattern (vi.mock for @tauri-apps/api/core and event)",
-      "where": "All existing test files (Editor.test.tsx, completions.test.ts, gotoDefinition.test.ts, hover.test.ts)",
-      "how": "Follow the same mock pattern consistently in all test additions"
+      "what": "MockGeometryKernel from reify-test-support",
+      "where": "crates/reify-test-support/src/mocks.rs",
+      "how": "Use in tests - already implements tessellate() returning a single triangle mesh"
     },
     {
-      "what": "bridge.openFile(path) function for loading files from disk",
-      "where": "gui/src/bridge.ts lines 53-55",
-      "how": "Call from Editor.tsx's onNavigate callback to load file content for cross-file goto-definition"
+      "what": "TopologyTemplateBuilder and CompiledModuleBuilder",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Use .realization() builder method to create test modules with geometry operations"
     },
     {
-      "what": "editorStore.openFile(fileData) and setActiveFile(path)",
-      "where": "gui/src/stores/editorStore.ts lines 19-25, 45-47",
-      "how": "Use in cross-file goto-definition callback to open/switch to the target file"
+      "what": "module_with_box_realization() test helper pattern",
+      "where": "crates/reify-eval/tests/geometry_error_handling.rs",
+      "how": "Follow same pattern to build test modules with box primitive realizations"
     },
     {
-      "what": "pathToUri() helper in Editor.tsx (lines 46-49)",
-      "where": "gui/src/editor/Editor.tsx",
-      "how": "Create inverse uriToPath() helper for converting LSP file:// URIs back to filesystem paths for bridge calls"
+      "what": "Engine::check() method",
+      "where": "crates/reify-eval/src/lib.rs (line 2338)",
+      "how": "Call as first step of tessellate_realizations() to get evaluated values + constraint results"
     },
     {
-      "what": ":global() CSS scoping pattern in Editor.module.css",
-      "where": "gui/src/editor/Editor.module.css lines 9-16",
-      "how": "Use same :global() pattern for .cm-lsp-hover tooltip styling"
+      "what": "Mesh and TessError types from reify-types",
+      "where": "crates/reify-types/src/geometry.rs",
+      "how": "Mesh is the return type in TessellateResult.meshes; TessError is converted to Diagnostic::error in error handling"
     },
     {
-      "what": "Existing CompletionContext mock shape in completions.test.ts",
-      "where": "gui/src/__tests__/completions.test.ts lines 37-44",
-      "how": "Extend with sliceString method on doc mock for word-boundary scanning tests"
-    },
-    {
-      "what": "Existing gotoDefinition test mock structure",
-      "where": "gui/src/__tests__/gotoDefinition.test.ts lines 46-65",
-      "how": "Extend the ext/mousedownHandler pattern to test onNavigate callback for cross-file definitions"
-    },
-    {
-      "what": "mockInvoke pattern from Editor.test.tsx LSP serialization tests",
-      "where": "gui/src/__tests__/Editor.test.tsx lines 506-518 (RC-02 test)",
-      "how": "Reuse the mockInvoke.mockImplementation pattern that intercepts lsp_request calls and routes by method, for the E-12 integration test to mock textDocument/definition responses"
-    },
-    {
-      "what": "bridge.openFile spy pattern",
-      "where": "gui/src/__tests__/Editor.test.tsx (bridge spies at lines 91, 108, etc.)",
-      "how": "vi.spyOn(bridge, 'openFile') to mock the bridge call in the E-12 integration test and return controlled FileData"
+      "what": "FailingMockGeometryKernel pattern",
+      "where": "crates/reify-eval/tests/geometry_error_handling.rs (lines 18-53)",
+      "how": "Reuse the pattern of a mock kernel whose execute() always fails, for testing error handling in tessellation"
     }
   ],
-  "_session_id": "107-03d03fae",
-  "_created_at": "2026-03-22T08:25:45.080697+00:00"
+  "_session_id": "131-ce289911",
+  "_created_at": "2026-03-22T21:49:03.872620+00:00"
 }
