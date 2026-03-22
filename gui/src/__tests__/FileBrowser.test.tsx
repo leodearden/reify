@@ -152,6 +152,21 @@ describe('FileBrowser', () => {
       expect(onFileClick).toHaveBeenCalledWith('/project/src/bracket.ri');
     });
 
+    it('active item has the activeItem CSS class for enhanced indicator', () => {
+      render(() => (
+        <FileBrowser
+          files={testFiles}
+          activeFile="/project/src/bracket.ri"
+          onFileClick={vi.fn()}
+        />
+      ));
+      const activeItem = screen.getByTestId('file-item-/project/src/bracket.ri');
+      const inactiveItem = screen.getByTestId('file-item-/project/src/hinge.ri');
+      // Active item should have the activeItem CSS module class
+      expect(activeItem.className).toContain('activeItem');
+      expect(inactiveItem.className).not.toContain('activeItem');
+    });
+
     it('Enter on focused item calls onFileClick with that path', () => {
       const onFileClick = vi.fn();
       render(() => (
