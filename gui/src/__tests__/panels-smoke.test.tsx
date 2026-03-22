@@ -48,7 +48,7 @@ describe('panels smoke integration', () => {
           onClose={vi.fn()}
         />
         <ReloadPrompt
-          filePath="/test/file.ri"
+          filePaths={["/test/file.ri"]}
           onReload={vi.fn()}
           onDismiss={vi.fn()}
         />
