@@ -1,4 +1,5 @@
-use reify_mcp::context::ReifyToolContext;
+use reify_mcp::context::{MockToolContext, ReifyToolContext};
+use reify_mcp::registry::ToolRegistry;
 use reify_mcp::types::{ToolError, ToolInfo};
 
 #[test]
@@ -79,4 +80,90 @@ fn mock_context_returns_canned_data() {
 
     let status = mock.get_eval_status().unwrap();
     assert_eq!(status.phase, "idle");
+}
+
+// --- ToolRegistry tests ---
+
+#[test]
+fn registry_register_and_list_returns_tool() {
+    let mut registry = ToolRegistry::new();
+    registry.register(
+        "test_tool",
+        "A test tool",
+        serde_json::json!({"type": "object"}),
+        |_params, _ctx| Ok(serde_json::json!({"result": "ok"})),
+    );
+
+    let tools = registry.list_tools();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "test_tool");
+    assert_eq!(tools[0].description, "A test tool");
+    assert_eq!(tools[0].input_schema["type"], "object");
+}
+
+#[test]
+fn registry_call_tool_returns_result() {
+    let mut registry = ToolRegistry::new();
+    registry.register(
+        "echo",
+        "Echo tool",
+        serde_json::json!({"type": "object"}),
+        |params, _ctx| Ok(params),
+    );
+
+    let ctx = MockToolContext::default();
+    let params = serde_json::json!({"message": "hello"});
+    let result = registry.call_tool("echo", params.clone(), &ctx).unwrap();
+    assert_eq!(result, params);
+}
+
+#[test]
+fn registry_call_unknown_tool_returns_error() {
+    let registry = ToolRegistry::new();
+    let ctx = MockToolContext::default();
+    let result = registry.call_tool("nonexistent", serde_json::json!({}), &ctx);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ToolError::InvalidParams(msg) => {
+            assert!(msg.contains("nonexistent"), "Error should mention tool name: {msg}");
+        }
+        other => panic!("Expected InvalidParams, got: {other:?}"),
+    }
+}
+
+#[test]
+fn registry_multiple_tools_preserves_order() {
+    let mut registry = ToolRegistry::new();
+    for name in ["alpha", "beta", "gamma"] {
+        registry.register(
+            name,
+            &format!("{name} tool"),
+            serde_json::json!({"type": "object"}),
+            |_params, _ctx| Ok(serde_json::json!(null)),
+        );
+    }
+
+    let tools = registry.list_tools();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, vec!["alpha", "beta", "gamma"]);
+}
+
+#[test]
+fn registry_handler_receives_params_and_context() {
+    let mut registry = ToolRegistry::new();
+    registry.register(
+        "get_status",
+        "Get eval status from context",
+        serde_json::json!({"type": "object"}),
+        |_params, ctx: &dyn ReifyToolContext| {
+            let status = ctx.get_eval_status()?;
+            Ok(serde_json::json!({"phase": status.phase}))
+        },
+    );
+
+    let ctx = MockToolContext::default();
+    let result = registry
+        .call_tool("get_status", serde_json::json!({}), &ctx)
+        .unwrap();
+    assert_eq!(result["phase"], "idle");
 }
