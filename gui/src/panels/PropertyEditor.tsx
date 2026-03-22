@@ -91,7 +91,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   }
 
   function isValidValue(value: string): boolean {
-    return value.trim() !== '' && !isNaN(parseFloat(value));
+    return value.trim() !== '' && !isNaN(Number(value.trim()));
   }
 
   function handleKeyDown(cellId: string, e: KeyboardEvent) {
