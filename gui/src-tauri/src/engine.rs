@@ -248,15 +248,17 @@ impl EngineSession {
 
     /// Build the full GUI state from the current engine state.
     pub fn build_gui_state(&self) -> Result<GuiState, String> {
-        let compiled = self
-            .compiled
-            .as_ref()
-            .ok_or_else(|| "No module loaded".to_string())?;
-
-        let check = self
-            .last_check
-            .as_ref()
-            .ok_or_else(|| "No check result available".to_string())?;
+        let (compiled, check) = match (self.compiled.as_ref(), self.last_check.as_ref()) {
+            (Some(c), Some(k)) => (c, k),
+            _ => {
+                return Ok(GuiState {
+                    meshes: Vec::new(),
+                    values: Vec::new(),
+                    constraints: Vec::new(),
+                    files: Vec::new(),
+                });
+            }
+        };
 
         // Build values
         let mut values = Vec::new();

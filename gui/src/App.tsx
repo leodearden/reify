@@ -26,6 +26,7 @@ import {
   pickOpenPath,
   updateSource as bridgeUpdateSource,
   openFile as bridgeOpenFile,
+  openFileEngine as bridgeOpenFileEngine,
   onFileChanged,
   getSourceLocation as bridgeGetSourceLocation,
   focusEntity as bridgeFocusEntity,
@@ -129,8 +130,13 @@ const App: Component = () => {
         if (!path) return;
         const fileData = await bridgeOpenFile(path);
         editorStore.openFile(fileData);
+        // Load into engine for evaluation (meshes, values, constraints)
+        const guiState = await bridgeOpenFileEngine(path);
+        engineStore.initFromState(guiState);
       } catch (err) {
-        showToast(`Open file failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('Open file failed:', msg);
+        showToast(`Open file failed: ${msg}`, 'error');
       }
     },
     onReEvaluate: () => {
@@ -184,7 +190,8 @@ const App: Component = () => {
       for (const file of initialState.files) {
         editorStore.openFile(file);
       }
-    } catch (_err) {
+    } catch (err) {
+      console.error('getInitialState failed:', err);
       setInitPhase('error');
       return;
     }

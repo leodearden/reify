@@ -278,6 +278,7 @@ fn main() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .setup(move |app| {
             // Create LspBridge with TauriNotificationSink now that AppHandle is available

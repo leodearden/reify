@@ -36,11 +36,6 @@
         "description": "Reify design file"
       }
     ],
-    "resources": [
-      "lib/*.so",
-      "lib/*.dylib",
-      "lib/*.dll"
-    ],
     "linux": {
       "deb": {
         "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]

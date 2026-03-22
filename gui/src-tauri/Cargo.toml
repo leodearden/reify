@@ -15,7 +15,7 @@ name = "reify_gui"
 path = "src/lib.rs"
 
 [features]
-gui = ["dep:tauri", "dep:reify-kernel-occt"]
+gui = ["dep:tauri", "dep:reify-kernel-occt", "dep:tauri-plugin-dialog"]
 
 [dependencies]
 reify-types.workspace = true
@@ -32,10 +32,14 @@ reify-stdlib.workspace = true
 reify-lsp.workspace = true
 tower-lsp.workspace = true
 tauri = { workspace = true, optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
 tokio.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 notify.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
 
 [dev-dependencies]
 reify-test-support.workspace = true

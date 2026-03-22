@@ -49,9 +49,15 @@ export async function saveFile(path: string, content: string): Promise<void> {
   return invoke('save_file', { path, content });
 }
 
-/** Open a file from disk. */
+/** Open a file from disk (text only, no engine evaluation). */
 export async function openFile(path: string): Promise<FileData> {
   return invoke<FileData>('open_file', { path });
+}
+
+/** Open a file and load it into the engine for evaluation. Returns updated GUI state. */
+export async function openFileEngine(path: string): Promise<GuiState> {
+  const raw = await invoke<RawGuiState>('open_file_engine', { path });
+  return convertRawGuiState(raw);
 }
 
 /** Export geometry to a file in the specified format. */
