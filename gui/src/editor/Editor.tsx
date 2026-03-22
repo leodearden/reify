@@ -1,6 +1,6 @@
 import { onMount, onCleanup, createEffect } from 'solid-js';
 import { EditorState, type Extension } from '@codemirror/state';
-import { EditorView, keymap } from '@codemirror/view';
+import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { bracketMatching, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
 import { autocompletion } from '@codemirror/autocomplete';
@@ -59,6 +59,7 @@ export function Editor(props: EditorProps) {
     // fresh EditorState instances for newly opened files
     extensions = [
       reifyLanguage(),
+      lineNumbers(),
       bracketMatching(),
       syntaxHighlighting(defaultHighlightStyle),
       history(),
