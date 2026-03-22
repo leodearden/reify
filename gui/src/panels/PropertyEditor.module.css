@@ -60,6 +60,7 @@
   letter-spacing: 0.05em;
   cursor: pointer;
   text-align: left;
+  user-select: none;
 }
 
 .groupHeader:hover {
@@ -90,6 +91,10 @@
   background: var(--reify-surface-hover, #313244);
 }
 
+.row[data-highlighted] {
+  background: rgba(250, 179, 135, 0.12);
+}
+
 .paramName {
   flex: 1;
   min-width: 0;
@@ -100,7 +105,8 @@
 }
 
 .valueInput {
-  width: 70px;
+  min-width: 50px;
+  flex: 0 1 auto;
   padding: 2px 4px;
   background: var(--reify-surface, #2a2a3a);
   border: 1px solid var(--reify-border, #45475a);
@@ -115,8 +121,13 @@
   outline: none;
 }
 
+.valueInput[data-invalid] {
+  border-color: var(--reify-error, #f38ba8);
+}
+
 .valueReadonly {
-  width: 70px;
+  min-width: 50px;
+  flex: 0 1 auto;
   padding: 2px 4px;
   text-align: right;
   color: var(--reify-text-muted, #6c7086);

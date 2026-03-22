@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { PropertyEditor } from '../panels/PropertyEditor';
 import type { ValueData } from '../types';
 
@@ -128,6 +129,7 @@ describe('PropertyEditor parameter rows', () => {
     const widthRow = screen.getByTestId('prop-row-c1');
     const input = widthRow.querySelector('input[type="text"]') as HTMLInputElement;
     // Change value and press Enter
+    fireEvent.focus(input);
     fireEvent.input(input, { target: { value: '75' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(onSetParam).toHaveBeenCalledWith('c1', '75');
@@ -333,6 +335,331 @@ describe('PropertyEditor navigation enhancements', () => {
     const container = screen.getByTestId('property-editor');
     const highlighted = container.querySelectorAll('[data-highlighted]');
     expect(highlighted.length).toBe(0);
+  });
+});
+
+describe('PropertyEditor blur-commit', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it('blurring a determined input commits the current value via onSetParameter', () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '75' } });
+    fireEvent.blur(input);
+    expect(onSetParam).toHaveBeenCalledWith('c1', '75');
+  });
+});
+
+describe('PropertyEditor stale input', () => {
+  it('when not editing, input value updates when props.values changes', () => {
+    const [values, setValues] = createSignal<Record<string, ValueData>>({
+      c1: makeValue({ cell_id: 'c1', name: 'width', value: '10', determinacy: 'determined', entity_path: 'Bracket.width' }),
+    });
+    render(() => (
+      <PropertyEditor values={values()} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const input1 = screen.getByTestId('prop-row-c1').querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input1.value).toBe('10');
+
+    setValues({
+      c1: makeValue({ cell_id: 'c1', name: 'width', value: '20', determinacy: 'determined', entity_path: 'Bracket.width' }),
+    });
+    // Re-query since SolidJS may recreate DOM nodes
+    const input2 = screen.getByTestId('prop-row-c1').querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input2.value).toBe('20');
+  });
+});
+
+describe('PropertyEditor stale input during editing', () => {
+  it('when editing (focused), external prop changes do NOT overwrite local edit value', () => {
+    const [values, setValues] = createSignal<Record<string, ValueData>>({
+      c1: makeValue({ cell_id: 'c1', name: 'width', value: '10', determinacy: 'determined', entity_path: 'Bracket.width' }),
+    });
+    render(() => (
+      <PropertyEditor values={values()} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const input = screen.getByTestId('prop-row-c1').querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.value).toBe('10');
+
+    // Start editing
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '15' } });
+    expect(input.value).toBe('15');
+
+    // External prop change while editing
+    setValues({
+      c1: makeValue({ cell_id: 'c1', name: 'width', value: '20', determinacy: 'determined', entity_path: 'Bracket.width' }),
+    });
+
+    // Re-query since SolidJS may recreate DOM
+    const inputAfter = screen.getByTestId('prop-row-c1').querySelector('input[type="text"]') as HTMLInputElement;
+    // The input should still show the local edit value '15', NOT the new prop value '20'
+    expect(inputAfter.value).toBe('15');
+  });
+});
+
+describe('PropertyEditor escape-cancel', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it('pressing Escape reverts input to original prop value and does NOT call onSetParameter', () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '99' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(input.value).toBe('50');
+    expect(onSetParam).not.toHaveBeenCalled();
+  });
+});
+
+describe('PropertyEditor validation', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it('empty string on Enter does NOT call onSetParameter and input gets data-invalid', () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+});
+
+describe('PropertyEditor validation - non-parseable', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it("'abc' on Enter does NOT call onSetParameter and input shows error styling", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: 'abc' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+});
+
+describe('PropertyEditor highlight CSS', () => {
+  it('row with data-highlighted should have highlight CSS class applied', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} highlightedParams={['c1']} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    expect(row.hasAttribute('data-highlighted')).toBe(true);
+    // Verify the CSS module produces a class that would match [data-highlighted]
+    // The row class should exist (it's applied by the component)
+    expect(row.className).toContain('row');
+  });
+});
+
+describe('PropertyEditor group header', () => {
+  it('group header button has CSS class applied for styling (including user-select)', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const header = screen.getByText('Bracket');
+    // The groupHeader class should be applied
+    expect(header.className).toContain('groupHeader');
+  });
+});
+
+describe('PropertyEditor validation - valid number', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it("'42.5' on Enter calls onSetParameter and input does NOT have data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '42.5' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', '42.5');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+});
+
+describe('PropertyEditor input tooltip', () => {
+  it('value input has title attribute showing the full value', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', value: '123.456', determinacy: 'determined', entity_path: 'Bracket.width' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.getAttribute('title')).toBe('123.456');
+  });
+});
+
+describe('PropertyEditor validation - trailing non-numeric characters', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it("'10mm' on Enter does NOT call onSetParameter and sets data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '10mm' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+
+  it("'1.5abc' on Enter does NOT call onSetParameter and sets data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '1.5abc' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+
+  it("'1e3' (scientific notation) on Enter DOES call onSetParameter", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '1e3' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', '1e3');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+
+  it("' 42 ' (whitespace-padded) on Enter DOES call onSetParameter", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: ' 42 ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', ' 42 ');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+});
+
+describe('PropertyEditor validation - Infinity rejection', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it("'Infinity' on Enter does NOT call onSetParameter and sets data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: 'Infinity' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+
+  it("'-Infinity' on Enter does NOT call onSetParameter and sets data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '-Infinity' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+
+  it("'1e999' (overflows to Infinity) on Enter does NOT call onSetParameter", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '1e999' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+});
+
+describe('PropertyEditor escape clears data-invalid', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it('Escape after invalid entry reverts value AND clears data-invalid', () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: 'abc' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    // data-invalid should be set after invalid Enter
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+    // Now press Escape
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(input.value).toBe('50');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 });
 

@@ -27,6 +27,9 @@ function groupByEntity(values: Record<string, ValueData>): Record<string, ValueD
 export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   const [filterText, setFilterText] = createSignal('');
   const [collapsedGroups, setCollapsedGroups] = createSignal<Set<string>>(new Set());
+  const [editingCellId, setEditingCellId] = createSignal<string | null>(null);
+  const [editValue, setEditValue] = createSignal('');
+  let escapingRef = false;
 
   const filteredGroups = createMemo(() => {
     const filter = filterText().toLowerCase();
@@ -76,11 +79,61 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     return props.selectedEntity !== null && entityMatchesGroup(props.selectedEntity, name);
   }
 
+  function handleFocus(cellId: string, e: FocusEvent) {
+    const input = e.target as HTMLInputElement;
+    setEditingCellId(cellId);
+    setEditValue(input.value);
+  }
+
+  function handleInput(cellId: string, e: InputEvent) {
+    const input = e.target as HTMLInputElement;
+    setEditValue(input.value);
+  }
+
+  function isValidValue(value: string): boolean {
+    return value.trim() !== '' && Number.isFinite(Number(value.trim()));
+  }
+
   function handleKeyDown(cellId: string, e: KeyboardEvent) {
     if (e.key === 'Enter') {
       const input = e.target as HTMLInputElement;
+      if (!isValidValue(input.value)) {
+        input.setAttribute('data-invalid', '');
+        return;
+      }
+      input.removeAttribute('data-invalid');
+      props.onSetParameter(cellId, input.value);
+      setEditingCellId(null);
+      escapingRef = true;
+      input.blur();
+      escapingRef = false;
+    } else if (e.key === 'Escape') {
+      const input = e.target as HTMLInputElement;
+      // Find the original prop value for this cell
+      const propValue = props.values[cellId]?.value ?? '';
+      input.removeAttribute('data-invalid');
+      input.value = propValue;
+      setEditValue(propValue);
+      setEditingCellId(null);
+      escapingRef = true;
+      input.blur();
+      escapingRef = false;
+    }
+  }
+
+  function handleBlur(cellId: string, e: FocusEvent) {
+    if (escapingRef) return;
+    const input = e.target as HTMLInputElement;
+    if (!isValidValue(input.value)) {
+      // Revert to prop value on blur with invalid input
+      const propValue = props.values[cellId]?.value ?? '';
+      input.value = propValue;
+      input.removeAttribute('data-invalid');
+    } else {
+      input.removeAttribute('data-invalid');
       props.onSetParameter(cellId, input.value);
     }
+    setEditingCellId(null);
   }
 
   return (
@@ -131,8 +184,12 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                             <input
                               type="text"
                               class={styles.valueInput}
-                              value={val.value}
+                              value={editingCellId() === val.cell_id ? editValue() : val.value}
+                              title={val.value}
+                              onFocus={(e) => handleFocus(val.cell_id, e)}
+                              onInput={(e) => handleInput(val.cell_id, e)}
                               onKeyDown={(e) => handleKeyDown(val.cell_id, e)}
+                              onBlur={(e) => handleBlur(val.cell_id, e)}
                             />
                           </Show>
                           <Show when={val.unit}>
