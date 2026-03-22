@@ -1,178 +1,181 @@
 {
-  "task_id": "131",
-  "title": "Engine: add tessellation API for GUI mesh generation",
+  "task_id": "134",
+  "title": "Node.js sidecar: Claude Code SDK, IPC protocol, system prompt",
   "files": [
-    "crates/reify-eval/src/lib.rs",
-    "crates/reify-eval/tests/tessellation.rs"
+    "gui/sidecar/package.json",
+    "gui/sidecar/tsconfig.json",
+    "gui/sidecar/src/index.ts",
+    "gui/sidecar/src/system-prompt.ts",
+    "gui/sidecar/src/ipc.ts",
+    "gui/sidecar/src/types.ts",
+    "gui/sidecar/src/session.ts",
+    "gui/sidecar/src/__tests__/ipc.test.ts",
+    "gui/sidecar/src/__tests__/system-prompt.test.ts",
+    "gui/sidecar/src/__tests__/session.test.ts",
+    "gui/sidecar/vitest.config.ts",
+    "gui/src-tauri/tauri.conf.json",
+    "gui/src-tauri/capabilities/default.json"
   ],
   "modules": [
-    "crates/reify-eval/src",
-    "crates/reify-eval/tests"
+    "gui/sidecar/src",
+    "gui/sidecar",
+    "gui/src-tauri"
   ],
-  "analysis": "The Engine struct in reify-eval/src/lib.rs has build() and build_snapshot() methods that execute geometry operations and export to STEP/STL bytes, but no tessellation path for GUI rendering. The task is to add a tessellate_realizations() method that:\n\n1. Evaluates the module (via check() to also get constraint results)\n2. Executes geometry operations per realization (same as build())\n3. Instead of exporting, calls kernel.tessellate() on each realization's final handle\n4. Returns Vec<(String, Mesh)> pairing entity paths with tessellated meshes\n\nKey observations:\n- The build() method already has the exact geometry execution loop we need (lines 2510-2540), iterating templates -> realizations -> operations\n- compile_geometry_op() is an existing free function that compiles CompiledGeometryOp into GeometryOp\n- The Mesh type exists in reify-types::geometry with {vertices, indices, normals}\n- GeometryKernel::tessellate(handle, tolerance) -> Result<Mesh, TessError> already exists\n- MockGeometryKernel in reify-test-support returns a single triangle mesh from tessellate()\n- RealizationNodeId has entity:String and index:u32, with Display impl 'entity#realization[index]' - good entity_path\n- The geometry execution loop tracks step_handles globally. The last handle per realization is the final shape to tessellate.\n- build_snapshot() shows the incremental pattern; tessellate_snapshot can follow the same structure\n\nThe approach:\n- Add a TessellateResult struct similar to BuildResult but with meshes: Vec<(String, Mesh)> instead of geometry_output: Option<Vec<u8>>\n- Add Engine::tessellate_realizations() that calls check() then iterates realizations, executing geometry and calling tessellate()\n- Track handles globally across realizations (matching build() behavior) but tessellate each realization's last handle separately\n- Use RealizationNodeId::to_string() as the entity path (e.g., 'Bracket#realization[0]')\n- Default tessellation tolerance: 0.0001 (0.1mm in SI meters)\n- Also add tessellate_snapshot() for incremental usage (like build_snapshot is to build)",
-  "prerequisites": [],
+  "analysis": "This task creates a new Node.js sidecar project at gui/sidecar/ that runs the Claude Code SDK headlessly, communicating with the Tauri backend via JSON-over-stdin/stdout IPC. The sidecar is a standalone Node.js project separate from the main gui/ frontend (which is SolidJS + Vite). Key observations from codebase exploration:\n\n1. **No existing sidecar code** \u2014 gui/sidecar/ doesn't exist yet, this is a greenfield scaffold.\n2. **Tauri v2 is in use** \u2014 tauri.conf.json has basic config but no sidecar/shell plugin yet. Tauri v2 sidecars require the `tauri-plugin-shell` with sidecar permissions.\n3. **M7 architecture decisions** \u2014 Claude Code SDK with custom SolidJS chat UI (not embedded PTY), three-layer progressive disclosure for language reference (L1: system prompt briefing, L2: reify_language_reference tool, L3: full spec file read).\n4. **The sidecar needs its own test infrastructure** \u2014 separate vitest config since it's a distinct Node.js project (no SolidJS, no browser DOM).\n5. **IPC protocol** \u2014 JSON newline-delimited over stdin/stdout, matching the Tauri sidecar communication pattern.\n6. **System prompt** \u2014 Must be under 3K tokens, include condensed language briefing and MCP tool usage guidelines. Three-layer progressive disclosure: L1 system prompt, L2 reify_language_reference(topic) tool, L3 full spec file.\n7. **Tauri config changes needed** \u2014 Add shell plugin with sidecar permissions to tauri.conf.json and capabilities/default.json.\n8. **Existing test patterns** \u2014 gui/src/__tests__/ uses vitest with vi.mock() for dependency mocking (e.g., bridge.test.ts mocks @tauri-apps/api). gui/test/ has grammar tests using vitest with fs reads. We follow the same vitest patterns.\n9. **Language spec** \u2014 2531 lines at docs/reify-language-spec.md. System prompt needs a condensed ~2K token briefing covering structure/param/let/auto/constraint syntax, type system, units, geometry ops.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Create gui/sidecar/ directory structure with package.json (name: @reify/sidecar, type: module, @anthropic-ai/claude-code SDK dependency, vitest + typescript for dev, tsup for bundling), tsconfig.json (strict, ESNext, NodeNext moduleResolution, outDir: dist), and vitest.config.ts (node environment, no SolidJS plugin, globals: true)",
+      "status": "done",
+      "commit": "1ea20f0",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Update gui/src-tauri/tauri.conf.json to add sidecar configuration: add 'bundle.externalBin' array with sidecar binary path ('sidecar/reify-sidecar'), and add 'plugins.shell' config with sidecar scope. Update gui/src-tauri/capabilities/default.json to add 'shell:allow-execute' permission for the sidecar.",
+      "status": "done",
+      "commit": "91e3334",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: tessellate_realizations returns empty meshes vec when module has no realizations and no geometry kernel. Create crates/reify-eval/tests/tessellation.rs with a test that builds a simple module with no realizations (just params), creates an Engine with no kernel, calls tessellate_realizations(), and verifies the result has empty meshes vec and values are populated from eval.",
+      "description": "Write failing tests for IPC message type definitions and serialization in gui/sidecar/src/__tests__/ipc.test.ts: (1) parseInboundMessage correctly parses send_message with text and optional context fields, (2) parseInboundMessage correctly parses abort message, (3) parseInboundMessage correctly parses clear_session message, (4) parseInboundMessage throws on invalid JSON, (5) parseInboundMessage throws on unknown message type, (6) formatOutboundMessage serializes text_delta correctly, (7) formatOutboundMessage serializes each outbound type (thinking_delta, tool_call, tool_result, done, error, ready) correctly, (8) formatOutboundMessage always ends with newline.",
       "status": "done",
-      "commit": "a440848"
+      "commit": "9ab7266"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add TessellateResult struct and Engine::tessellate_realizations() method skeleton in lib.rs. TessellateResult has: values (ValueMap), constraint_results (Vec<ConstraintCheckEntry>), meshes (Vec<(String, Mesh)>), diagnostics (Vec<Diagnostic>), resolved_params (HashMap<ValueCellId, Value>). The method calls check(), then returns TessellateResult with empty meshes when no kernel or no realizations. Import Mesh in the use block. Make step-1 test pass.",
+      "description": "Implement gui/sidecar/src/types.ts with TypeScript interfaces for all IPC message types. InboundMessage is a discriminated union on 'type' field: SendMessage (type:'send_message', id:string, text:string, context?:{selected_entity?, diagnostics?, constraints?}), Abort (type:'abort'), ClearSession (type:'clear_session'). OutboundMessage is a discriminated union: TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, Error, Ready. Implement gui/sidecar/src/ipc.ts with parseInboundMessage(line: string): InboundMessage and formatOutboundMessage(msg: OutboundMessage): string functions.",
       "status": "done",
-      "commit": "238c7db"
+      "commit": "c5be1a2"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: tessellate_realizations returns mesh for a single box realization. Use MockGeometryKernel and TopologyTemplateBuilder/CompiledModuleBuilder to build a module with one box primitive realization (following module_with_box_realization pattern from geometry_error_handling.rs). Verify meshes has exactly one entry, its entity path matches 'TestShape#realization[0]', and the mesh has non-empty vertices and indices.",
+      "description": "Write failing tests for IPC stream I/O in gui/sidecar/src/__tests__/ipc.test.ts (new describe block): (1) createLineReader yields complete JSON lines from a mock Readable stream, (2) createLineReader handles partial reads (message split across chunks), (3) createLineReader handles multiple messages in one chunk, (4) sendMessage writes JSON + newline to a mock Writable stream, (5) sendMessage handles backpressure (waits for drain). Use PassThrough streams for testing.",
       "status": "done",
-      "commit": "df1a3d1"
+      "commit": "3090e29"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement the geometry execution + tessellation loop in tessellate_realizations(). After calling check(), iterate templates -> realizations -> operations: compile and execute each op via the kernel (using compile_geometry_op), track step_handles (global flat vec matching build() behavior). After processing each realization's operations, if the realization produced any handles, call kernel.tessellate(last_handle, DEFAULT_TESSELLATION_TOLERANCE) and push (realization.id.to_string(), mesh) to meshes vec. Define const DEFAULT_TESSELLATION_TOLERANCE: f64 = 0.0001. Make step-3 test pass.",
+      "description": "Implement createLineReader(readable: Readable): AsyncGenerator<string> as an async generator that buffers input and yields complete lines. Implement sendMessage(writable: Writable, msg: OutboundMessage): Promise<void> that calls formatOutboundMessage and writes to the stream, handling backpressure via drain events.",
       "status": "done",
-      "commit": "1417d7f"
+      "commit": "7fe0346"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: tessellate_realizations with multiple realizations returns multiple meshes with distinct entity paths. Build a module with two realizations on the same template (e.g., realization 0 with a box and realization 1 with a sphere). Verify meshes vec has two entries with entity paths 'TestShape#realization[0]' and 'TestShape#realization[1]'.",
+      "description": "Write failing tests for system prompt in gui/sidecar/src/__tests__/system-prompt.test.ts: (1) SYSTEM_PROMPT is under 3000 tokens (estimated as characters/4, with assertion < 12000 chars), (2) SYSTEM_PROMPT contains key language keywords ('structure', 'param', 'let', 'auto', 'constraint'), (3) SYSTEM_PROMPT mentions MCP tools (reify_get_source, reify_get_diagnostics, reify_language_reference), (4) SYSTEM_PROMPT mentions the Reify GUI context, (5) buildSystemPrompt() returns the prompt string, (6) buildSystemPrompt includes working directory when provided.",
       "status": "done",
-      "commit": "7f7179a"
+      "commit": "88c37b9"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify and fix the per-realization tessellation loop to correctly track which handle is the 'last' for each realization. The step_handles index at realization start vs end must be tracked to identify the realization's final handle. Should already work from step-4 if tracking is correct; adjust if needed. Make step-5 test pass.",
+      "description": "Implement gui/sidecar/src/system-prompt.ts exporting SYSTEM_PROMPT constant and buildSystemPrompt(options?) function. The prompt (~2-3K tokens) includes: (A) Role: engineering design assistant in Reify GUI, (B) Language briefing: declaration types (structure, enum, trait), member kinds (param with default + type annotation, let for derived values, auto for solver-determined, constraint expressions), expression syntax (arithmetic, comparison, logical, conditional, units like 80mm/90deg), type system (Scalar, Int, Real, Bool, String, List, Set, Map, Option), geometry operations (box, cylinder, fillet, chamfer, union, subtract, intersect), (C) MCP tool listing with brief descriptions, (D) Tool usage guidelines and design authoring conventions, (E) Example showing bracket.ri pattern.",
       "status": "done",
-      "commit": "7f7179a"
+      "commit": "7f2613b"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test: tessellate_realizations returns empty meshes (no panic, no error) when geometry_kernel is None but module has realizations. Verify meshes is empty and no error diagnostics about tessellation are present.",
+      "description": "Write failing tests for SidecarSession in gui/sidecar/src/__tests__/session.test.ts: (1) constructor creates session with config, (2) init() calls onOutput with ready message, (3) handleMessage with send_message eventually emits done message, (4) handleMessage with abort sets abort flag / cancels in-flight, (5) handleMessage with clear_session resets conversation history and emits ready, (6) SDK errors (auth failure) produce error outbound message with helpful text, (7) multiple sequential messages maintain conversation context. Mock @anthropic-ai/claude-code SDK.",
       "status": "done",
-      "commit": "26ee9b8"
+      "commit": "ebc253e"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Ensure tessellate_realizations gracefully handles the no-kernel case by returning empty meshes with no tessellation-related diagnostics (matching the pattern in build() where geometry_output is None when kernel is absent). Should already work from step-2 skeleton; verify and adjust. Make step-7 test pass.",
+      "description": "Implement gui/sidecar/src/session.ts with SidecarSession class. Constructor takes config: { model: string, workingDirectory: string, systemPrompt: string }. Has onOutput: (msg: OutboundMessage) => void callback. init() sets up SDK client and emits ready. handleMessage(msg: InboundMessage) dispatches by type. For send_message: calls Claude Code SDK with conversation history, system prompt, and extended thinking. Streams SDK events, mapping them to outbound messages: text deltas -> text_delta, thinking deltas -> thinking_delta, tool use -> tool_call/tool_result. Emits done when complete. For abort: uses AbortController to cancel in-flight request. For clear_session: clears conversation history array. Error handling: wraps SDK calls in try/catch, maps known error types to descriptive error messages.",
       "status": "done",
-      "commit": "26ee9b8"
+      "commit": "00058b3"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test: tessellate_realizations records geometry execution errors as diagnostics when kernel operations fail. Define a FailingMockGeometryKernel inline (same pattern as geometry_error_handling.rs), build a module with one box realization. Verify meshes is empty and diagnostics contain 'geometry error' messages.",
+      "description": "Write failing integration test for sidecar entrypoint in gui/sidecar/src/__tests__/session.test.ts (new describe block 'entrypoint wiring'): (1) main() function reads from provided input stream and writes to provided output stream, (2) sending a valid JSON line through input produces outbound messages on output, (3) process sends ready message on startup. Use mock streams and mock session.",
       "status": "done",
-      "commit": "b592038"
+      "commit": "a9fd5f8"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Add error handling in the geometry loop: push Diagnostic::error for failed kernel.execute() calls and failed kernel.tessellate() calls. Skip tessellation for realizations where no handles were produced. Make step-9 test pass.",
+      "description": "Implement gui/sidecar/src/index.ts as the sidecar entrypoint. Exports main(input?: Readable, output?: Writable) for testability (defaults to process.stdin/stdout). Creates SidecarSession with buildSystemPrompt(), wires createLineReader on input through parseInboundMessage to session.handleMessage, wires session.onOutput through sendMessage to output. Handles SIGTERM/SIGINT for clean shutdown. Calls session.init() then enters the message processing loop. If run directly (not imported), calls main().",
       "status": "done",
-      "commit": "b592038"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write failing test: tessellate_snapshot returns tessellated meshes from the current snapshot without re-calling eval(). Set up engine with eval() called, then call tessellate_snapshot() and verify it returns Some(TessellateResult) with meshes based on snapshot values. Also test that tessellate_snapshot returns None when no prior eval() has been called.",
-      "status": "done",
-      "commit": "a0a9ce2"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Add Engine::tessellate_snapshot() method that reads values from the current EvaluationState snapshot (like build_snapshot), checks constraints, executes geometry, and tessellates each realization. Returns Option<TessellateResult> (None if eval_state is None). Factor the geometry execution + tessellation loop into a private helper method to share between tessellate_realizations() and tessellate_snapshot(). Make step-11 test pass.",
-      "status": "done",
-      "commit": "5be6963"
+      "commit": "b717df2"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use check() as the base for tessellate_realizations (not just eval())",
-      "rationale": "Matches build() pattern - constraints are checked before geometry. The TessellateResult includes constraint_results so the GUI can display constraint status alongside meshes."
+      "decision": "Separate package.json and vitest config for gui/sidecar/ instead of sharing with gui/",
+      "rationale": "The sidecar is a Node.js-only project (no browser, no SolidJS, no Vite). It needs node environment for tests, NodeNext module resolution, and different dependencies. Keeping it separate avoids contaminating the frontend build and allows independent versioning."
     },
     {
-      "decision": "Track step_handles globally across realizations (same as build())",
-      "rationale": "build() uses a single flat step_handles vec across all templates/realizations. Tessellation must match this handle indexing for GeomRef::Step(idx) to resolve correctly."
+      "decision": "IPC protocol uses JSON newline-delimited (JSONL) format over stdin/stdout",
+      "rationale": "This matches Tauri v2's sidecar communication pattern. Each message is a single JSON object followed by a newline, making it trivial to parse line-by-line with no framing protocol needed. This is the standard pattern for Tauri sidecars."
     },
     {
-      "decision": "Tessellate each realization's final handle separately, returning one mesh per realization",
-      "rationale": "Unlike build() which exports only the last handle overall, tessellation should return one mesh per realization so the GUI can render/highlight individual entities."
+      "decision": "System prompt in a separate system-prompt.ts file with buildSystemPrompt() function",
+      "rationale": "Task spec explicitly requests separate file for easy editing. A function allows injecting runtime context like working directory. Follows M7 three-layer progressive disclosure: this is Layer 1 (condensed briefing), referencing Layer 2 (reify_language_reference MCP tool) for deeper knowledge."
     },
     {
-      "decision": "Use RealizationNodeId::to_string() as entity_path (e.g., 'Bracket#realization[0]')",
-      "rationale": "RealizationNodeId already has a Display impl that produces a unique, human-readable path. This matches the identity system used elsewhere."
+      "decision": "SidecarSession class encapsulates all SDK interaction behind a testable interface",
+      "rationale": "By separating session logic from I/O (stdin/stdout), tests can mock the Claude Code SDK and verify message routing without making real API calls. The session manages conversation state, abort handles, and error mapping. The onOutput callback pattern decouples output generation from transport."
     },
     {
-      "decision": "Default tessellation tolerance of 0.0001 (0.1mm in SI meters)",
-      "rationale": "Task spec suggests this value. It's a reasonable default for engineering CAD visualization - fine enough for visual quality, coarse enough for performance."
+      "decision": "Token count estimation uses character/4 heuristic rather than a tokenizer dependency",
+      "rationale": "The task says 'under 3K tokens' for the system prompt. Adding tiktoken or similar is heavyweight. Character/4 is a reasonable upper-bound estimate for English text. We use < 12000 chars as the test assertion, which is conservative."
     },
     {
-      "decision": "Add tessellate_snapshot() alongside tessellate_realizations()",
-      "rationale": "Matches the build/build_snapshot pattern for incremental updates. After edit_param(), the GUI needs to re-tessellate without a cold restart."
+      "decision": "Types module (types.ts) separate from IPC I/O module (ipc.ts) and session module (session.ts)",
+      "rationale": "Three-way separation: types.ts defines pure interfaces/types, ipc.ts handles serialization and stream I/O, session.ts manages SDK interaction and state. This allows independent testing and clear dependency direction: session depends on types, ipc depends on types, index.ts wires them together."
     },
     {
-      "decision": "Return TessellateResult struct (not Result<Vec<(String, Mesh)>, String>)",
-      "rationale": "Matches the pattern of CheckResult and BuildResult - includes values, constraint_results, diagnostics alongside the geometry output. More useful for the GUI which needs all this information."
+      "decision": "Entrypoint main() accepts optional stream parameters for testability",
+      "rationale": "By allowing injection of input/output streams (defaulting to process.stdin/stdout), the entrypoint can be tested without spawning a child process. This follows the same pattern used in many CLI tools for testability."
     },
     {
-      "decision": "Factor geometry+tessellation loop into a private helper method",
-      "rationale": "tessellate_realizations() and tessellate_snapshot() share the same geometry execution + tessellation logic, differing only in how values are obtained. A shared helper avoids duplication (same pattern as build() vs build_snapshot() but better factored)."
+      "decision": "Use tsup for bundling the sidecar into a single JS file",
+      "rationale": "Tauri sidecars benefit from a single script file for clean bundling. tsup (built on esbuild) is fast, handles TypeScript + dependencies in one step, and produces a single CJS/ESM file runnable with Node.js."
     }
   ],
   "reuse": [
     {
-      "what": "compile_geometry_op() free function",
-      "where": "crates/reify-eval/src/lib.rs (line ~2650)",
-      "how": "Reuse directly to compile CompiledGeometryOp -> GeometryOp, same as build()"
+      "what": "Vitest test patterns from gui/src/__tests__/bridge.test.ts",
+      "where": "gui/sidecar/src/__tests__/*.test.ts",
+      "how": "Follow same describe/it/expect patterns with vitest. Use vi.fn() and vi.mock() for mocking SDK dependencies, matching how bridge.test.ts mocks @tauri-apps/api/core and @tauri-apps/api/event."
     },
     {
-      "what": "Geometry execution loop pattern from build() and build_snapshot()",
-      "where": "crates/reify-eval/src/lib.rs (lines 2510-2540, 2438-2490)",
-      "how": "Follow the same template->realization->operation iteration with step_handles tracking, but tessellate instead of export"
+      "what": "IPC type patterns from gui/src-tauri/src/types.rs (GuiState, ValueData, ConstraintData)",
+      "where": "gui/sidecar/src/types.ts (context fields in SendMessage)",
+      "how": "The Rust types inform the context object shape in send_message. The TypeScript types for diagnostics, constraints, and selected_entity should be compatible with the Tauri backend's existing type system."
     },
     {
-      "what": "MockGeometryKernel from reify-test-support",
-      "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "Use in tests - already implements tessellate() returning a single triangle mesh"
+      "what": "Reify language spec from docs/reify-language-spec.md (2531 lines)",
+      "where": "gui/sidecar/src/system-prompt.ts",
+      "how": "Condense key language constructs (Sections 2-8: lexical structure, types, declarations, expressions, constraints, geometry) into ~2K token briefing for the system prompt."
     },
     {
-      "what": "TopologyTemplateBuilder and CompiledModuleBuilder",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Use .realization() builder method to create test modules with geometry operations"
+      "what": "Example bracket.ri file",
+      "where": "gui/sidecar/src/system-prompt.ts",
+      "how": "Include a condensed version as an example in the system prompt to show language look and feel (structure, param, let, constraint, geometry operations)."
     },
     {
-      "what": "module_with_box_realization() test helper pattern",
-      "where": "crates/reify-eval/tests/geometry_error_handling.rs",
-      "how": "Follow same pattern to build test modules with box primitive realizations"
+      "what": "M7 three-layer progressive disclosure architecture decision",
+      "where": "gui/sidecar/src/system-prompt.ts",
+      "how": "Implement Layer 1 (system prompt briefing) and reference Layer 2 (reify_language_reference(topic) MCP tool) in the prompt text, following the architecture decision stored in memory."
     },
     {
-      "what": "Engine::check() method",
-      "where": "crates/reify-eval/src/lib.rs (line 2338)",
-      "how": "Call as first step of tessellate_realizations() to get evaluated values + constraint results"
-    },
-    {
-      "what": "Mesh and TessError types from reify-types",
-      "where": "crates/reify-types/src/geometry.rs",
-      "how": "Mesh is the return type in TessellateResult.meshes; TessError is converted to Diagnostic::error in error handling"
-    },
-    {
-      "what": "FailingMockGeometryKernel pattern",
-      "where": "crates/reify-eval/tests/geometry_error_handling.rs (lines 18-53)",
-      "how": "Reuse the pattern of a mock kernel whose execute() always fails, for testing error handling in tessellation"
+      "what": "Existing tauri.conf.json structure and capabilities pattern",
+      "where": "gui/src-tauri/tauri.conf.json, gui/src-tauri/capabilities/default.json",
+      "how": "Extend existing config with sidecar-specific entries (externalBin, shell plugin permissions) following Tauri v2 conventions. Preserve all existing config."
     }
   ],
-  "_session_id": "131-ce289911",
-  "_created_at": "2026-03-22T21:49:03.872620+00:00"
+  "_session_id": "134-8a4cffb4",
+  "_created_at": "2026-03-22T21:49:59.603628+00:00"
 }
