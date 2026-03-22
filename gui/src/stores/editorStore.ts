@@ -34,11 +34,13 @@ export function createEditorStore() {
   }
 
   function closeFile(path: string) {
+    const closedIndex = state.openFiles.findIndex((f) => f.path === path);
     const remaining = state.openFiles.filter((f) => f.path !== path);
     setState('openFiles', remaining);
     setState('dirtyFiles', (dirty) => dirty.filter((p) => p !== path));
     if (state.activeFile === path) {
-      setState('activeFile', remaining.length > 0 ? remaining[0].path : null);
+      const next = remaining[closedIndex] ?? remaining[closedIndex - 1] ?? null;
+      setState('activeFile', next ? next.path : null);
     }
   }
 
