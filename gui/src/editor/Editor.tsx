@@ -143,6 +143,8 @@ export function Editor(props: EditorProps) {
     // Tauri event listener.
     createDiagnosticsListener((event) => {
       if (!view) return;
+      // Only apply diagnostics for the currently active file
+      if (event.uri !== currentUri) return;
       const diagnostics = event.diagnostics
         .map((d) => {
           try {
