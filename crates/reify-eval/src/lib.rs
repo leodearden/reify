@@ -2689,6 +2689,76 @@ impl Engine {
         meshes
     }
 
+    /// Tessellate realizations from the current snapshot values, without
+    /// re-calling eval().
+    ///
+    /// Returns `None` if no snapshot exists (no prior `eval()` call).
+    /// Otherwise: checks constraints from snapshot, then executes geometry
+    /// operations and tessellates each realization. This is the incremental
+    /// companion to `tessellate_realizations()`: after `edit_param()` updates
+    /// values, call `tessellate_snapshot()` to get updated meshes without a
+    /// cold restart.
+    pub fn tessellate_snapshot(
+        &mut self,
+        module: &CompiledModule,
+    ) -> Option<TessellateResult> {
+        let state = self.eval_state.as_ref()?;
+
+        // Build ValueMap from snapshot values
+        let mut values = ValueMap::new();
+        for (id, (val, _det)) in state.snapshot.values.iter() {
+            values.insert(id.clone(), val.clone());
+        }
+
+        // Check constraints (guard-aware)
+        let mut constraint_results = Vec::new();
+        let mut diagnostics = Vec::new();
+
+        for template in &module.templates {
+            let active_constraints = Self::collect_active_constraints(template, &values);
+
+            if !active_constraints.is_empty() {
+                let constraint_pairs: Vec<_> = active_constraints
+                    .iter()
+                    .map(|c| (c.id.clone(), &c.expr))
+                    .collect();
+
+                let input = ConstraintInput {
+                    constraints: constraint_pairs,
+                    values: &values,
+                    functions: &module.functions,
+                };
+
+                let results = self.constraint_checker.check(&input);
+
+                for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
+                    diagnostics.extend(result.diagnostics.messages);
+                    constraint_results.push(ConstraintCheckEntry {
+                        id: result.id,
+                        label: compiled.label.clone(),
+                        satisfaction: result.satisfaction,
+                    });
+                }
+            }
+        }
+
+        // Execute geometry and tessellate
+        let meshes = Self::tessellate_from_values(
+            &mut self.geometry_kernel,
+            module,
+            &values,
+            &mut diagnostics,
+        );
+
+        Some(TessellateResult {
+            values,
+            constraint_results,
+            meshes,
+            diagnostics,
+            resolved_params: HashMap::new(),
+        })
+    }
+
     /// Evaluate let bindings from a template in topological order.
     ///
     /// Collects let cells with expressions, builds dependency traces,
