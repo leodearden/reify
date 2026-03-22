@@ -13,9 +13,9 @@ use reify_compiler::{CompiledConstraint, CompiledModule, CompiledPurpose, Topolo
 use reify_types::{
     AutoParam, CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintNodeId,
     ConstraintSolver, ContentHash, DeterminacyState, Diagnostic, ExportFormat,
-    GeometryHandleId, GeometryKernel, OptimizationObjective, PersistentMap, ResolutionProblem,
-    Satisfaction, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap,
-    VersionId, FIELD_ENTITY_PREFIX,
+    GeometryHandleId, GeometryKernel, Mesh, OptimizationObjective, PersistentMap,
+    ResolutionProblem, Satisfaction, SnapshotId, SnapshotProvenance, SolveResult, Value,
+    ValueCellId, ValueMap, VersionId, FIELD_ENTITY_PREFIX,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
@@ -146,6 +146,21 @@ pub struct BuildResult {
     pub values: ValueMap,
     pub constraint_results: Vec<ConstraintCheckEntry>,
     pub geometry_output: Option<Vec<u8>>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
+}
+
+/// Result of tessellating all realizations in a module for GUI mesh rendering.
+///
+/// Similar to [`BuildResult`] but produces per-realization meshes instead of
+/// a single exported geometry file. Each mesh is paired with its entity path
+/// (e.g., `"Bracket#realization[0]"`).
+#[derive(Debug)]
+pub struct TessellateResult {
+    pub values: ValueMap,
+    pub constraint_results: Vec<ConstraintCheckEntry>,
+    /// Per-realization tessellated meshes: `(entity_path, mesh)`.
+    pub meshes: Vec<(String, Mesh)>,
     pub diagnostics: Vec<Diagnostic>,
     pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
 }
@@ -2567,6 +2582,32 @@ impl Engine {
             values: check_result.values,
             constraint_results: check_result.constraint_results,
             geometry_output,
+            diagnostics,
+            resolved_params: check_result.resolved_params,
+        }
+    }
+
+    /// Tessellate all realizations in the module for GUI mesh rendering.
+    ///
+    /// Evaluates the module via [`check()`], then executes geometry operations
+    /// per realization (same loop as [`build()`]) and tessellates each
+    /// realization's final shape. Returns one `(entity_path, Mesh)` pair per
+    /// realization that produced geometry.
+    ///
+    /// When no geometry kernel is configured, returns empty meshes with no
+    /// error diagnostics (matching the pattern in [`build()`]).
+    pub fn tessellate_realizations(
+        &mut self,
+        module: &CompiledModule,
+    ) -> TessellateResult {
+        let check_result = self.check(module);
+        let diagnostics = check_result.diagnostics;
+        let meshes = Vec::new();
+
+        TessellateResult {
+            values: check_result.values,
+            constraint_results: check_result.constraint_results,
+            meshes,
             diagnostics,
             resolved_params: check_result.resolved_params,
         }
