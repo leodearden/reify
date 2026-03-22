@@ -79,3 +79,48 @@ fn tessellate_single_box_realization() {
     assert!(!mesh.vertices.is_empty(), "mesh should have non-empty vertices");
     assert!(!mesh.indices.is_empty(), "mesh should have non-empty indices");
 }
+
+/// tessellate_realizations with two realizations returns two meshes with distinct entity paths.
+#[test]
+fn tessellate_multiple_realizations() {
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(10.0))],
+    };
+
+    let template = TopologyTemplateBuilder::new("TestShape")
+        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
+        .realization(e, 0, vec![box_op])
+        .realization(e, 1, vec![sphere_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test_multi"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let result = engine.tessellate_realizations(&module);
+
+    assert_eq!(result.meshes.len(), 2, "expected two meshes for two realizations");
+
+    let paths: Vec<&str> = result.meshes.iter().map(|(p, _)| p.as_str()).collect();
+    assert_eq!(paths[0], "TestShape#realization[0]");
+    assert_eq!(paths[1], "TestShape#realization[1]");
+}
