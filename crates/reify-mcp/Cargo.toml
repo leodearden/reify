@@ -1,0 +1,18 @@
+[package]
+name = "reify-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MCP (Model Context Protocol) server for Reify"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+tokio.workspace = true
+thiserror = "2"
+
+[features]
+test-support = []
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-std", "io-util", "test-util"] }

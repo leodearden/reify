@@ -1,0 +1,1 @@
+// ReifyToolContext trait — placeholder

@@ -12,6 +12,7 @@ members = [
     "crates/reify-runtime",
     "crates/reify-stdlib",
     "crates/reify-lsp",
+    "crates/reify-mcp",
     "crates/reify-cli",
     "crates/reify-test-support",
     "tree-sitter-reify",
@@ -35,6 +36,7 @@ reify-kernel-occt = { path = "crates/reify-kernel-occt" }
 reify-runtime = { path = "crates/reify-runtime" }
 reify-stdlib = { path = "crates/reify-stdlib" }
 reify-lsp = { path = "crates/reify-lsp" }
+reify-mcp = { path = "crates/reify-mcp" }
 reify-test-support = { path = "crates/reify-test-support" }
 
 xxhash-rust = { version = "0.8", features = ["xxh3"] }

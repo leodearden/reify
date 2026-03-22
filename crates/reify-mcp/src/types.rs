@@ -1,0 +1,1 @@
+// MCP response types — placeholder

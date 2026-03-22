@@ -1,0 +1,1 @@
+// ToolRegistry — placeholder
