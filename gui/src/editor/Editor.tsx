@@ -33,6 +33,7 @@ export function Editor(props: EditorProps) {
   let extensions: Extension[];
   let unlistenDiagnostics: (() => void) | undefined;
   let diagnosticsListenerCancelled = false;
+  let fileOpsPromise: Promise<void> = Promise.resolve();
 
   // Current URI — updated on file switch, read by LSP extension getters
   let currentUri = 'file:///untitled.ri';
@@ -198,11 +199,13 @@ export function Editor(props: EditorProps) {
       view.setState(EditorState.create({ doc: newContent, extensions }));
     }
 
-    // Close old document and open new one in the LSP server
+    // Close old document and open new one in the LSP server.
+    // Chain off fileOpsPromise to serialize rapid file switches.
     lspVersion++;
-    lspClient
-      .didClose(oldUri)
-      .then(() => lspClient.didOpen(newUri, newContent, lspVersion))
+    const version = lspVersion;
+    fileOpsPromise = fileOpsPromise
+      .then(() => lspClient.didClose(oldUri))
+      .then(() => lspClient.didOpen(newUri, newContent, version))
       .catch((err: unknown) => console.error('LSP file switch error:', err));
   });
 
