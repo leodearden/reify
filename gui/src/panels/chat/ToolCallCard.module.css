@@ -1,0 +1,135 @@
+.card {
+  border: 1px solid var(--reify-surface0);
+  border-radius: 6px;
+  margin: 4px 0;
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--reify-background);
+}
+
+.icon[data-tool-type="read"] {
+  background: var(--reify-blue, #89b4fa);
+}
+
+.icon[data-tool-type="write"] {
+  background: var(--reify-peach, #fab387);
+}
+
+.icon[data-tool-type="other"] {
+  background: var(--reify-text-muted);
+}
+
+.toolName {
+  font-family: var(--reify-font-mono);
+  color: var(--reify-text);
+  white-space: nowrap;
+}
+
+.paramHint {
+  color: var(--reify-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.summary {
+  color: var(--reify-text-muted);
+  font-style: italic;
+  white-space: nowrap;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 12px;
+}
+
+.status[data-status="complete"] {
+  color: var(--reify-green);
+}
+
+.status[data-status="error"] {
+  color: var(--reify-red);
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--reify-text-muted);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.details {
+  border-top: 1px solid var(--reify-surface0);
+  padding: 8px 10px;
+}
+
+.detailSection {
+  margin-bottom: 8px;
+}
+
+.detailSection:last-child {
+  margin-bottom: 0;
+}
+
+.detailLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--reify-text-muted);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.json {
+  font-family: var(--reify-font-mono);
+  font-size: 11px;
+  color: var(--reify-text);
+  background: var(--reify-surface0);
+  padding: 6px 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
