@@ -23,7 +23,7 @@ struct CliState {
     compiled: Option<reify_compiler::CompiledModule>,
     files: HashMap<String, FileEntry>,
     active_file: Option<String>,
-    project_dir: PathBuf,
+    _project_dir: PathBuf,
 }
 
 /// CLI-mode implementation of ReifyToolContext.
@@ -41,7 +41,7 @@ impl CliToolContext {
                 compiled: None,
                 files: HashMap::new(),
                 active_file: None,
-                project_dir,
+                _project_dir: project_dir,
             }),
         }
     }
@@ -437,7 +437,7 @@ impl ReifyToolContext for CliToolContext {
         let new_value = match &ty {
             reify_types::ty::Type::Scalar { dimension } => Value::Scalar {
                 si_value: numeric_val,
-                dimension: dimension.clone(),
+                dimension: *dimension,
             },
             reify_types::ty::Type::Int => Value::Int(numeric_val as i64),
             reify_types::ty::Type::Real => Value::Real(numeric_val),

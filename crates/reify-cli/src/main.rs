@@ -295,11 +295,11 @@ fn cmd_mcp_server(args: &[String]) -> ExitCode {
 
     let context = mcp_context::CliToolContext::new(project_dir);
 
-    if let Some(ref path) = file_path {
-        if let Err(e) = context.load_file(path) {
-            eprintln!("Error loading {}: {}", path, e);
-            return ExitCode::FAILURE;
-        }
+    if let Some(ref path) = file_path
+        && let Err(e) = context.load_file(path)
+    {
+        eprintln!("Error loading {}: {}", path, e);
+        return ExitCode::FAILURE;
     }
 
     let server = reify_mcp::McpServer::new(Arc::new(context));

@@ -1,54 +1,23 @@
 {
-  "task_id": "142",
-  "title": "Chat panel: streaming renderer, thinking blocks, tool call cards",
+  "task_id": "137",
+  "title": "Standalone MCP server binary: `reify mcp-server` CLI subcommand",
   "files": [
-    "gui/src/stores/claudeStore.ts",
-    "gui/src/stores/index.ts",
-    "gui/src/panels/chat/StreamingText.tsx",
-    "gui/src/panels/chat/StreamingText.module.css",
-    "gui/src/panels/chat/ThinkingBlock.tsx",
-    "gui/src/panels/chat/ThinkingBlock.module.css",
-    "gui/src/panels/chat/ToolCallCard.tsx",
-    "gui/src/panels/chat/ToolCallCard.module.css",
-    "gui/src/panels/chat/AbortButton.tsx",
-    "gui/src/panels/chat/AbortButton.module.css",
-    "gui/src/panels/chat/MessageGroup.tsx",
-    "gui/src/panels/chat/MessageGroup.module.css",
-    "gui/src/panels/chat/markdown.ts",
-    "gui/src/panels/chat/index.ts",
-    "gui/src/panels/ChatPanel.tsx",
-    "gui/src/panels/ChatPanel.module.css",
-    "gui/src/panels/index.ts",
-    "gui/src/App.tsx",
-    "gui/src/__tests__/claudeStore.test.ts",
-    "gui/src/__tests__/ChatPanel.test.tsx",
-    "gui/src/__tests__/StreamingText.test.tsx",
-    "gui/src/__tests__/ThinkingBlock.test.tsx",
-    "gui/src/__tests__/ToolCallCard.test.tsx",
-    "gui/src/__tests__/AbortButton.test.tsx",
-    "gui/src/__tests__/panels-smoke.test.tsx",
-    "gui/src/__tests__/markdown.test.ts"
+    "crates/reify-cli/Cargo.toml",
+    "crates/reify-cli/src/main.rs",
+    "crates/reify-cli/src/mcp_context.rs",
+    "crates/reify-cli/tests/cli_smoke.rs",
+    "crates/reify-cli/tests/mcp_integration.rs"
   ],
   "modules": [
-    "gui/src/stores",
-    "gui/src/panels",
-    "gui/src/panels/chat",
-    "gui/src/__tests__"
+    "crates/reify-cli"
   ],
-  "analysis": "The ChatPanel needs to display a streaming Claude conversation with rich message rendering. No chat-related code exists yet \u2014 this is a greenfield implementation.\n\n**Architecture:** The core is a `claudeStore` (following the existing `createEngineStore` pattern) that manages message state and session status. It processes `OutboundMessage` events from the sidecar (TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, Error) and exposes state for the UI components. The store accepts dependency-injected callbacks for sending messages and aborting, making it fully testable without sidecar IPC.\n\n**Streaming approach:** For 60 FPS rendering, incoming text deltas are buffered in a plain array and flushed to the SolidJS signal via requestAnimationFrame. This prevents re-rendering on every token while maintaining smooth progressive display.\n\n**Markdown:** A lightweight custom markdown renderer (markdown.ts) handles code blocks, inline code, bold, italic, headers, and links. No external dependency needed \u2014 the CAD context won't use exotic markdown features. The renderer produces HTML applied via innerHTML on the accumulated (not per-delta) text. HTML entities are escaped before markdown transforms to prevent XSS.\n\n**Component hierarchy:** ChatPanel \u2192 MessageGroup[] \u2192 { ThinkingBlock?, ToolCallCard[], StreamingText }. The AbortButton replaces the Send button position when sessionStatus is active. Each sub-component lives in `panels/chat/` following the `editor/` subdirectory pattern.\n\n**Sidecar types reuse:** The OutboundMessage types from `gui/sidecar/src/types.ts` define the exact event shapes. The store mirrors these into its own domain types (ToolCallInfo, AssistantMessage) for UI consumption.\n\n**Store state shape:**\n- SessionStatus: 'idle' | 'thinking' | 'responding' | 'tool-calling'\n- ToolCallInfo: { id, toolName, toolInput, status: 'pending'|'complete'|'error', result? }\n- AssistantMessage: { id, thinkingText, thinkingComplete, responseText, toolCalls: ToolCallInfo[], complete, error? }\n- ChatMessage: { role: 'user'|'assistant', ... }\n- ClaudeState: { messages: ChatMessage[], sessionStatus, currentMessageId }\n\n**Review fix (XSS):** The link renderer in markdown.ts inserts URLs directly into href attributes. Since escapeHtml only neutralizes HTML-special characters, protocol-based attacks (javascript:, data:, vbscript:) pass through unchanged. Fix: add a protocol allowlist (http://, https://, mailto:) before emitting <a> tags; non-matching URLs render as plain text.\n\n**Review fix (tool_result matching):** tool_result events match pending tool calls by toolName only, causing the second of two same-name tool calls to never resolve. Fix: assign locally-unique IDs at push time and match tool_result to the first *pending* entry with the matching toolName, so sequential same-tool calls resolve in FIFO order.",
+  "analysis": "Task 137 adds a `reify mcp-server [file.ri]` CLI subcommand that creates an Engine, loads a .ri file, and runs the MCP server on stdio. The infrastructure is already in place: reify-mcp provides McpServer with dual-mode transport (in-process + stdio via run_stdio()), a ReifyToolContext trait with 15 methods, and 16 registered tools. reify-cli uses manual argv parsing with 4 existing commands (check, build, lsp, gui). The cmd_lsp() pattern shows how to create a tokio runtime for async stdio servers.\n\nThe key new work is: (1) a CliToolContext struct implementing ReifyToolContext backed by a real Engine with interior mutability via Mutex<CliState>, (2) file/source management tracking open files and content, (3) wiring everything into a cmd_mcp_server function that follows the cmd_lsp() pattern.\n\nCliToolContext needs to: parse .ri files via reify_syntax::parse, compile via reify_compiler::compile, evaluate via Engine::eval/check, and expose snapshot state (value cells from snapshot.graph.value_cells + snapshot.values, constraints via check, diagnostics from CompiledModule + Engine) through the MCP trait methods.\n\nNavigation/selection tools are no-ops in CLI mode since there's no GUI viewport. Source location lookups use ValueCellDecl.span (byte offsets) converted to line/column via the source string.\n\nThe bracket.ri fixture (5 params: width/height/thickness/fillet_radius/hole_diameter, 1 let: volume, 3 constraints) provides a good integration test target. Values are stored in SI (meters), so 80mm = 0.08 internally.\n\nreify-mcp is already a workspace dependency but needs to be added to reify-cli's Cargo.toml. serde_json is already a dev-dependency for tests.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create gui/src/panels/chat/ directory and index.ts barrel export file",
+      "description": "Add reify-mcp.workspace = true to [dependencies] in crates/reify-cli/Cargo.toml. Also add serde_json.workspace = true to [dependencies] (needed in mcp_context for JSON value construction in export). Add tokio dev-dependency with test-util feature for integration tests.",
       "status": "done",
-      "commit": "d0742d3",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Create gui/src/panels/chat/markdown.ts \u2014 lightweight markdown-to-HTML renderer supporting code blocks (``` fenced), inline code (`), bold (**), italic (*), headers (#-###), links ([text](url)), and unordered lists (- item). Uses sequential regex transforms on pre-escaped HTML. Returns sanitized HTML string. Include unit tests inline or in a dedicated test.",
-      "status": "done",
-      "commit": "dc9e49b",
+      "commit": "97adea2",
       "tests": []
     }
   ],
@@ -56,251 +25,155 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for claudeStore in gui/src/__tests__/claudeStore.test.ts. Test cases: (1) initial state has sessionStatus='idle', empty messages array, currentMessageId=null; (2) handleOutboundMessage with Ready event keeps idle state; (3) sendMessage adds a user ChatMessage to messages, sets currentMessageId, calls onSend callback with message text and context; (4) handleOutboundMessage with TextDelta accumulates responseText on current assistant message, sets sessionStatus='responding'; (5) handleOutboundMessage with ThinkingDelta accumulates thinkingText, sets sessionStatus='thinking'; (6) handleOutboundMessage with ToolCall adds ToolCallInfo entry with status='pending', sets sessionStatus='tool-calling'; (7) handleOutboundMessage with ToolResult updates matching tool call status to 'complete' and stores result; (8) handleOutboundMessage with Done marks assistant message complete, sets sessionStatus='idle'; (9) handleOutboundMessage with ErrorMessage sets error on assistant message, sets sessionStatus='idle'; (10) claudeAbort calls onAbort callback, sets sessionStatus='idle'; (11) clearSession resets messages to empty array.",
+      "description": "Write failing test in cli_smoke.rs: add assertion that the help text (stderr from no-args invocation) includes 'mcp-server'. This extends the existing no_args_shows_help_with_all_commands test.",
       "status": "done",
-      "commit": "c6e4911"
+      "commit": "cae4efc"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement gui/src/stores/claudeStore.ts. createClaudeStore(options: {onSend, onAbort}) factory returning {state, handleOutboundMessage, sendMessage, claudeAbort, clearSession}. State uses createStore<ClaudeState>. Define and export types: SessionStatus, ToolCallInfo, AssistantMessage, UserMessage, ChatMessage, ClaudeState. handleOutboundMessage switches on msg.type and uses produce() for store mutations. sendMessage creates user message, then assistant message shell, calls onSend. Use batch() for grouped state updates.",
+      "description": "Add 'mcp-server' to help text in main.rs (eprintln line: '  mcp-server [file] [--project-dir <dir>]  Start MCP server (stdin/stdout)'). Add match arm 'mcp-server' => cmd_mcp_server(&args[2..]). Create stub cmd_mcp_server function that prints usage and returns FAILURE. Add 'mod mcp_context;' to main.rs. Create empty mcp_context.rs file with a placeholder comment.",
       "status": "done",
-      "commit": "c7a161b"
+      "commit": "7b0af76"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for claudeStore 60fps delta batching: (1) 'buffers multiple text_delta events and flushes on rAF' \u2014 send 10 text_delta events synchronously, verify responseText is empty before rAF flush, mock requestAnimationFrame callback fires, verify responseText contains all 10 deltas concatenated; (2) 'flushes immediately on done event' \u2014 send text_delta + done, verify text is flushed without waiting for rAF; (3) 'clears pending buffer on abort'. Use vi.useFakeTimers() and manual rAF mock.",
+      "description": "Write failing integration test in new file mcp_integration.rs: spawn 'reify mcp-server tests/fixtures/bracket.ri', write JSON-RPC initialize request then tools/list request to stdin (newline-delimited), read response lines from stdout, parse as JSON, verify tools/list response has result.tools array with exactly 16 entries. Use std::process::Command with piped stdin/stdout and a timeout via std::thread::spawn + wait_with_output.",
       "status": "done",
-      "commit": "11b9e1e"
+      "commit": "3cf599f"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add requestAnimationFrame-based delta batching to claudeStore: maintain a textBuffer and thinkingBuffer (plain string arrays). On text_delta/thinking_delta, push to buffer and schedule rAF if not already scheduled. rAF callback concatenates buffer contents, applies to store via setState, clears buffers. On done/error, flush buffers immediately (cancel pending rAF). On abort, clear buffers.",
+      "description": "Create CliToolContext in mcp_context.rs: struct wrapping Mutex<CliState> where CliState holds Engine, Option<CompiledModule>, HashMap<String, FileEntry> for open files, Option<String> for active file path, PathBuf for project_dir. FileEntry has content: String and dirty: bool. Implement all 15 ReifyToolContext methods with minimal stubs: read methods return empty vecs/default values, get_source returns active file content or ToolError::EngineError, get_selection returns empty SelectionInfo, write methods return ToolError::NotImplemented, navigation returns Ok(false). Add CliToolContext::new(project_dir: PathBuf) constructor and CliToolContext::load_file(&self, path: &str) method that reads from disk, stores in files map, parses+compiles+evals. Implement cmd_mcp_server in main.rs: parse args for optional file.ri and --project-dir flag, create CliToolContext, optionally call load_file, create McpServer::new(Arc::new(context)), run_stdio() via tokio runtime (following cmd_lsp pattern).",
       "status": "done",
-      "commit": "c7a161b"
+      "commit": "7b0af76"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for AbortButton in gui/src/__tests__/AbortButton.test.tsx: (1) renders with data-testid='abort-button'; (2) calls onAbort callback on click; (3) has aria-label='Abort generation'; (4) contains a stop icon element (\u25a0 character or SVG).",
+      "description": "Write failing integration test: spawn mcp-server with bracket.ri, send initialize + tools/call request for reify_language_reference with arguments {\"topic\": \"geometry\"}, verify response has isError=false and content[0].text contains geometry-related keywords (e.g., 'box', 'cylinder', or 'geometry').",
       "status": "done",
-      "commit": "5d5bd52"
+      "commit": "bf02e46"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement gui/src/panels/chat/AbortButton.tsx and AbortButton.module.css. Props: {onAbort: () => void}. Simple button with \u25a0 stop icon, themed styling matching existing button patterns. Red accent on hover.",
+      "description": "Verify language_reference test passes (the tool handler is self-contained with embedded markdown chunks in tools/reference.rs and tools/language_chunks.rs, independent of context state). Fix if needed -- should pass with the stub context from step-4.",
       "status": "done",
-      "commit": "5ee3615"
+      "commit": "bf02e46"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for ThinkingBlock in gui/src/__tests__/ThinkingBlock.test.tsx: (1) when complete=false, shows animated indicator with data-testid='thinking-indicator'; (2) when complete=false, does NOT show thinking text content; (3) when complete=true, renders collapsible section with data-testid='thinking-block'; (4) when complete=true, thinking text is NOT visible by default (collapsed); (5) clicking the header expands to show thinking text; (6) clicking again collapses; (7) expanded text container has muted styling (class containing 'muted' or similar).",
+      "description": "Write failing integration test: spawn mcp-server with bracket.ri, send initialize + tools/call request for reify_get_parameters with empty arguments {}, verify response has isError=false and the returned parameters include entries with names 'width', 'height', 'thickness', 'fillet_radius', 'hole_diameter' (the 5 params from bracket.ri). Verify each has a non-empty value and cell_id containing 'Bracket.'.",
       "status": "done",
-      "commit": "203c08a"
+      "commit": "23ea3b4"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement gui/src/panels/chat/ThinkingBlock.tsx and ThinkingBlock.module.css. Props: {text: string, complete: boolean}. When !complete: three pulsing dots with 'Thinking...' label, CSS keyframe animation. When complete: header row 'Thinking' with \u25b6/\u25bc chevron, createSignal(false) for expanded state, Show component wrapping text content. Styling: --reify-text-muted color, 12px font, subtle background.",
+      "description": "Implement real engine integration in CliToolContext::load_file: read file, parse via reify_syntax::parse(source, ModulePath::single(name)), compile via reify_compiler::compile, create Engine::new(Box::new(SimpleConstraintChecker), None), call engine.eval(&compiled), store compiled module. Implement get_parameters: lock state, get snapshot from engine.snapshot(), iterate snapshot.graph.value_cells, for each cell look up (value, determinacy) in snapshot.values, build ParameterInfo { cell_id: id.to_string(), name: id.member.clone(), value: value.to_string(), unit: derive from cell.cell_type dimension or empty string, kind: format cell.kind, entity_path: id.entity.clone(), determinacy: format determinacy }. Implement get_source: return content of requested file or active file. Implement get_open_files: map files entries to OpenFileInfo. Implement get_eval_status: return phase='ready' if engine is initialized, 'idle' otherwise. Implement get_diagnostics: collect from compiled module diagnostics, convert SourceSpan byte offsets to line/column using source content line scanning. Implement get_constraints: call engine.check_snapshot or engine.check on the compiled module to get constraint results, map to ConstraintInfo. Implement get_source_location: search compiled module templates for matching entity path, find ValueCellDecl by member name, convert span to line/column.",
       "status": "done",
-      "commit": "4ea6deb"
+      "commit": "226cb5a"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for ToolCallCard in gui/src/__tests__/ToolCallCard.test.tsx: (1) renders with data-testid='tool-call-card'; (2) displays tool name; (3) shows spinner element when status='pending'; (4) shows checkmark when status='complete'; (5) shows X mark when status='error'; (6) click expands to show full input JSON in data-testid='tool-call-details'; (7) for reify_update_source tool, shows 'View diff' text; (8) for reify_get_parameters with result containing array, shows count summary like '3 parameters'; (9) read tools (reify_get_*) have blue icon class; (10) write tools (reify_update_*) have orange icon class.",
+      "description": "Write failing integration test: spawn mcp-server with bracket.ri, send initialize + tools/call request for reify_set_parameter with arguments {\"cell_id\": \"Bracket.width\", \"value\": \"100\"}, verify response has isError=false and result contains success=true with a new_value field. Then send a subsequent reify_get_parameters call and verify the width parameter's value has changed from its original.",
       "status": "done",
-      "commit": "f638459"
+      "commit": "cdcbcb2"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement gui/src/panels/chat/ToolCallCard.tsx and ToolCallCard.module.css. Props: {toolCall: ToolCallInfo}. Compact card layout: icon (colored circle with first letter or tool-type icon), tool name, param summary (first key-value from toolInput). Expandable details panel with pre-formatted JSON for input and result. Status indicator: CSS spin animation for pending, \u2713/\u2717 characters for complete/error. isReadTool() helper checks toolName.startsWith('reify_get'). Special result summaries for known tools.",
+      "description": "Implement set_parameter in CliToolContext: lock state, parse cell_id string by splitting on '.' into entity+member to create ValueCellId, parse value string as f64, look up the cell's dimension from snapshot.graph.value_cells to determine if it's a length/angle/dimensionless value, construct appropriate Value (Value::Scalar for dimensional, Value::Real for dimensionless, Value::Int if integer), call engine.set_param_and_invalidate(&cell_id, value), then call engine.edit_param(&compiled, &cell_id) to incrementally re-evaluate, return SetParamResult { success: true, new_value: new_value.to_string(), unit }. Implement update_source: replace file content in files map, set dirty=true, re-run full parse\u2192compile\u2192eval pipeline (topology may change), return UpdateResult with diagnostics count. Implement open_file: read from disk, add to files map, set as active, parse+compile+eval if .ri file. Implement save_file: write file content to disk, set dirty=false. Implement export: call engine.build(&compiled, format) with appropriate ExportFormat, write geometry_output to path.",
       "status": "done",
-      "commit": "a7fc087"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write failing tests for StreamingText in gui/src/__tests__/StreamingText.test.tsx: (1) renders text content with data-testid='streaming-text'; (2) shows blinking cursor with data-testid='streaming-cursor' when streaming=true; (3) hides cursor when streaming=false; (4) applies markdown: bold text (**bold**) renders as <strong>; (5) applies markdown: code block renders as <pre><code>; (6) renders inline code with <code> tags; (7) empty text renders empty container without errors.",
-      "status": "done",
-      "commit": "b53e402"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Implement gui/src/panels/chat/StreamingText.tsx and StreamingText.module.css. Props: {text: string, streaming: boolean}. createMemo to run renderMarkdown(text) only when text changes. Render via innerHTML on a div. Blinking cursor span with CSS animation (opacity 0\u21941, 530ms interval). Code blocks get monospace + subtle background. Prose gets 13px standard font.",
-      "status": "done",
-      "commit": "b4532f8"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing tests for MessageGroup in gui/src/__tests__/ChatPanel.test.tsx (grouped with ChatPanel tests since MessageGroup is an internal component): (1) renders ThinkingBlock when message has non-empty thinkingText; (2) does NOT render ThinkingBlock when thinkingText is empty; (3) renders ToolCallCard for each tool call; (4) renders StreamingText for response text; (5) visual order in DOM: thinking-indicator/thinking-block before tool-call-card before streaming-text.",
-      "status": "done",
-      "commit": "608b126"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Implement gui/src/panels/chat/MessageGroup.tsx and MessageGroup.module.css. Props: {message: AssistantMessage}. Container div with subtle left-border accent (--reify-accent). Conditionally renders ThinkingBlock (Show when={message.thinkingText}), For loop of ToolCallCard, StreamingText with streaming={!message.complete}. Export from chat/index.ts.",
-      "status": "done",
-      "commit": "2ed7f36"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing tests for ChatPanel in gui/src/__tests__/ChatPanel.test.tsx: (1) renders with data-testid='chat-panel'; (2) shows empty state message when no messages; (3) renders user message with data-testid='user-message'; (4) renders assistant message via MessageGroup; (5) abort button visible when sessionStatus='responding'; (6) abort button NOT visible when sessionStatus='idle'; (7) send button visible when sessionStatus='idle'; (8) send button disabled when textarea is empty; (9) typing in textarea and clicking send calls onSend; (10) full event sequence: create store, sendMessage, feed text_deltas + done via handleOutboundMessage, verify rendered output.",
-      "status": "done",
-      "commit": "2462949"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Implement gui/src/panels/ChatPanel.tsx and ChatPanel.module.css. Layout: flex column, scrollable message list (overflow-y: auto, ref for auto-scroll), fixed input area at bottom. Message list: For loop over store messages, Show conditional for user vs assistant rendering. Input area: textarea with onKeyDown (Enter to send, Shift+Enter for newline), conditional Send button (idle) vs AbortButton (active). Auto-scroll: createEffect on messages length, scrollTo bottom. Export from panels/index.ts.",
-      "status": "done",
-      "commit": "9cb5fc6"
-    },
-    {
-      "id": "step-17",
-      "type": "impl",
-      "description": "Update barrel exports and smoke tests: (1) gui/src/panels/index.ts \u2014 add 'export { ChatPanel } from ./ChatPanel'; (2) gui/src/stores/index.ts \u2014 add 'export { createClaudeStore } from ./claudeStore' and type exports for ClaudeState, SessionStatus, ToolCallInfo, AssistantMessage; (3) gui/src/__tests__/panels-smoke.test.tsx \u2014 add ChatPanel to the smoke test suite with minimal props (store with empty state).",
-      "status": "done",
-      "commit": "a3d177c"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Wire ChatPanel into App.tsx: (1) import createClaudeStore and ChatPanel; (2) create claudeStore instance in App with no-op onSend/onAbort callbacks (actual sidecar IPC wiring comes from a separate integration task); (3) add ChatPanel below ConstraintPanel in the side panel grid, adjusting grid-template-rows to accommodate three rows (property editor + constraint panel + chat panel). Pass claudeStore state and action props.",
-      "status": "done",
-      "commit": "4e40a66"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write failing tests for markdown.ts link protocol allowlist in gui/src/__tests__/markdown.test.ts. Add a new describe('link protocol validation') block with test cases: (1) 'allows http:// URLs' \u2014 renderMarkdown('[link](http://example.com)') contains '<a href=\"http://example.com\"'; (2) 'allows https:// URLs' \u2014 renderMarkdown('[link](https://example.com)') contains '<a href=\"https://example.com\"'; (3) 'blocks javascript: URLs' \u2014 renderMarkdown('[click](javascript:alert(document.cookie))') does NOT contain 'href=\"javascript:' and renders the link text as plain text without an <a> tag; (4) 'blocks javascript: with mixed case' \u2014 renderMarkdown('[x](JavaScript:alert(1))') does NOT contain '<a'; (5) 'blocks data: URLs' \u2014 renderMarkdown('[x](data:text/html,<script>alert(1)</script>)') does NOT contain 'href=\"data:'; (6) 'blocks vbscript: URLs' \u2014 renderMarkdown('[x](vbscript:MsgBox)') does NOT contain '<a'; (7) 'renders blocked link text as plain text' \u2014 for a javascript: URL, the link text is still visible in the output but without a hyperlink wrapper; (8) 'allows mailto: URLs' \u2014 renderMarkdown('[email](mailto:a@b.com)') contains '<a href=\"mailto:a@b.com\"'.",
-      "status": "done",
-      "commit": "83b6cb5"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Fix XSS vulnerability in gui/src/panels/chat/markdown.ts link renderer (lines 108-111). Replace the link regex substitution with a function-based replacer that validates the URL protocol before emitting an <a> tag. Extract a helper function `isSafeUrl(url: string): boolean` that lowercases and checks `url.startsWith('http://') || url.startsWith('https://') || url.startsWith('mailto:')`. In the regex replacer: if isSafeUrl(url) returns true, emit `<a href=\"${url}\" target=\"_blank\" rel=\"noopener noreferrer\">${text}</a>`; otherwise emit just the plain text (the link text without any hyperlink wrapper). Note: the URL has already been HTML-entity-escaped at this point, so the protocol check must account for that \u2014 however http/https/mailto contain no HTML-special characters, so the startsWith check works correctly on escaped input.",
-      "status": "done",
-      "commit": "80bab34"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing tests for claudeStore tool_result FIFO matching in gui/src/__tests__/claudeStore.test.ts. Add a new describe('tool_result FIFO matching') block with test cases: (1) 'resolves sequential same-tool calls in order' \u2014 send two tool_call events with the same tool_name 'reify_get_parameters' (but different tool_input), then send two tool_result events with tool_name 'reify_get_parameters' and different results. Verify the first tool_result updates toolCalls[0] to status='complete' with its result, and the second tool_result updates toolCalls[1] to status='complete' with its result; (2) 'does not re-update an already-completed tool call' \u2014 send one tool_call, one tool_result (completes it), then another tool_result with the same tool_name; verify toolCalls[0].result is unchanged (the second result does not overwrite the first); (3) 'tool calls have locally-unique IDs' \u2014 send two tool_call events with the same tool_name, verify toolCalls[0].id !== toolCalls[1].id; (4) 'mixed tool names still match correctly' \u2014 send tool_call A, tool_call B, tool_call A (same name as first), then results for B, A, A; verify each tool call is matched to its correct result in FIFO order within same-name groups.",
-      "status": "done",
-      "commit": "1d096bf"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Fix tool_result matching logic in gui/src/stores/claudeStore.ts. Two changes: (1) In the tool_call handler (line 149-154), change the ToolCallInfo.id assignment from `msg.id` (the conversation message ID, same for all tool calls in a turn) to a locally-generated unique ID: `${msg.id}-tc-${m.toolCalls.length}`. This ensures each tool call has a distinct id. (2) In the tool_result handler (line 169), change `m.toolCalls.find((t) => t.toolName === msg.tool_name)` to `m.toolCalls.find((t) => t.toolName === msg.tool_name && t.status === 'pending')`. This ensures tool results are matched to the first *pending* entry with the matching tool name, so sequential same-tool calls are resolved in FIFO order rather than all updating the first entry.",
-      "status": "done",
-      "commit": "5ec1190"
+      "commit": "0df82c5"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Custom lightweight markdown renderer instead of adding a dependency like 'marked'",
-      "rationale": "The CAD tool context limits markdown usage to code blocks, inline code, bold, italic, headers, and links. A ~100-line regex-based renderer avoids a new dependency, keeps bundle size small, and is fully testable. Can be upgraded later if needed."
+      "decision": "Use Mutex<CliState> for interior mutability in CliToolContext",
+      "rationale": "ReifyToolContext trait methods take &self (object-safe, Arc-compatible), but Engine::eval/set_param_and_invalidate need &mut self. Wrapping state in Mutex allows safe interior mutation. Since the MCP server processes one request at a time (newline-delimited JSON-RPC on stdio, sequential dispatch in run_on_streams), contention is not a concern."
     },
     {
-      "decision": "requestAnimationFrame-based delta batching in the store, not in the component",
-      "rationale": "Batching at the store level means all consumers (current and future) automatically get 60fps updates. SolidJS's fine-grained reactivity means the DOM update from a signal change is already efficient \u2014 the bottleneck is the frequency of signal writes, which rAF batching solves."
+      "decision": "CliToolContext goes in reify-cli, not reify-mcp",
+      "rationale": "It depends on Engine, compiler, syntax parser, SimpleConstraintChecker \u2014 heavy dependencies that should not leak into the protocol-only reify-mcp crate. reify-mcp stays transport/protocol focused with ReifyToolContext as the clean abstraction boundary."
     },
     {
-      "decision": "Dependency-injected callbacks (onSend, onAbort) rather than direct sidecar IPC in claudeStore",
-      "rationale": "Decouples the store from IPC transport, making it fully unit-testable with vi.fn() mocks. The actual IPC wiring happens in App.tsx (or a future bridge integration), following the same pattern as engineStore's subscribeToEvents."
+      "decision": "Navigation tools (focus_entity, navigate_to_source) return Ok(false) in CLI mode",
+      "rationale": "Task description says 'return success but note that GUI is not available (no-op in CLI mode)'. Returning Ok(false) signals the operation was recognized but could not be performed. Selection returns empty SelectionInfo (no GUI viewport)."
     },
     {
-      "decision": "Chat sub-components in panels/chat/ subdirectory",
-      "rationale": "Five sub-components (StreamingText, ThinkingBlock, ToolCallCard, AbortButton, MessageGroup) plus their CSS modules would clutter the flat panels/ directory. The editor/ subdirectory pattern establishes precedent for this approach."
+      "decision": "Re-eval from scratch on update_source rather than incremental",
+      "rationale": "Source changes may alter the topology (add/remove params, constraints), invalidating the entire evaluation graph. A cold restart (parse -> compile -> eval) is the correct approach. Incremental eval via set_param_and_invalidate + edit_param is only valid for parameter value changes within the same topology."
     },
     {
-      "decision": "Store processes OutboundMessage directly rather than re-mapping types",
-      "rationale": "The sidecar OutboundMessage types (TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, ErrorMessage) are imported from gui/sidecar/src/types.ts. Using them directly avoids a redundant mapping layer. The store's internal AssistantMessage/ToolCallInfo types are the domain model for UI consumption."
+      "decision": "Integration tests use std::process::Command with piped stdin/stdout",
+      "rationale": "Matches the existing CLI smoke test pattern in cli_smoke.rs using env!(\"CARGO_BIN_EXE_reify\"). Spawning the actual binary tests the full end-to-end flow including arg parsing, engine initialization, and MCP transport. Tests write newline-delimited JSON to stdin, close stdin, then read all stdout."
     },
     {
-      "decision": "Collapsed-by-default ThinkingBlock after generation completes",
-      "rationale": "Thinking text is verbose internal reasoning not usually relevant to the user. Showing it collapsed keeps the conversation readable while preserving access for debugging. During streaming, an animated indicator signals activity without taking space."
+      "decision": "Parse set_parameter value as f64 and infer dimension from the cell's existing type",
+      "rationale": "The MCP protocol passes values as strings. For scalar parameters, parsing as f64 and applying the cell's known dimension (from the snapshot's ValueCellNode.cell_type) gives the correct Value::Scalar. This matches how the GUI sets parameter values \u2014 the dimension is intrinsic to the cell definition, so '100' for a length param means 100 in the cell's SI dimension."
     },
     {
-      "decision": "Color-coded tool icons: blue for read operations, orange for write operations",
-      "rationale": "Provides instant visual distinction between safe (read) and mutating (write) tool calls. Aligns with common UI conventions (blue=info, orange=warning/action). The reify_get_* vs reify_update_* naming makes classification straightforward."
+      "decision": "Initialize Engine without geometry kernel (None) by default",
+      "rationale": "Geometry kernel (OcctKernelHandle::spawn()) is only needed for export/build operations. Initializing without it keeps startup fast and avoids OCCT dependency issues. The kernel can be lazily initialized when export is first called, or the export method can create a temporary DispatchPlanner."
     },
     {
-      "decision": "innerHTML for markdown rendering with pre-escaped HTML entities",
-      "rationale": "SolidJS uses innerHTML for injecting HTML content. Since our custom renderer escapes all HTML entities (< > & \" ') BEFORE applying markdown regex transforms, and Claude output doesn't contain user-supplied HTML, XSS risk is negligible. The escape-first approach is simpler than a full sanitizer."
-    },
-    {
-      "decision": "ChatPanel receives store as a prop rather than using a global context/provider",
-      "rationale": "Following the existing pattern where App.tsx creates store instances and passes them as props (see engineStore, editorStore, selectionStore usage). This keeps stores explicit, testable, and avoids hidden dependencies via context."
-    },
-    {
-      "decision": "Protocol allowlist for markdown link URLs instead of blocklist",
-      "rationale": "An allowlist (http, https, mailto) is safer than a blocklist (javascript, data, vbscript, ...) because it protects against unknown future attack vectors. Any URL that doesn't match the allowlist is rendered as plain text \u2014 the link text remains visible, only the hyperlink wrapper is removed. This is a defense-in-depth measure since Claude output is attacker-controllable via prompt injection through CAD file content."
-    },
-    {
-      "decision": "FIFO matching for tool_result events using pending-status filter instead of unique wire IDs",
-      "rationale": "The sidecar wire protocol's ToolResult.id field carries the conversation-message ID (same for all tool calls in a turn), providing no per-call disambiguator. Rather than requiring a wire protocol change, the store assigns locally-unique IDs at push time (${msg.id}-tc-${index}) and matches tool_results to the first *pending* entry with the matching toolName. This resolves sequential same-tool calls in FIFO order without any protocol changes."
+      "decision": "Subcommand name is 'mcp-server' (with hyphen)",
+      "rationale": "Task title specifies 'mcp-server' explicitly. This is descriptive and follows the pattern of compound CLI subcommands. The match arm uses the string literal directly."
     }
   ],
   "reuse": [
     {
-      "what": "createStore + produce + batch pattern from solid-js/store",
-      "where": "gui/src/stores/engineStore.ts",
-      "how": "claudeStore follows the exact same factory pattern: createClaudeStore() returns {state, ...actions}. Uses createStore for reactive state, produce for immutable-style mutations, batch for grouped updates."
+      "what": "McpServer with run_stdio()",
+      "where": "crates/reify-mcp/src/transport.rs",
+      "how": "Create McpServer::new(Arc::new(context)) and call server.run_stdio(). All 16 tools, JSON-RPC dispatch via McpDispatcher, and stdio transport with newline-delimited JSON are already implemented."
     },
     {
-      "what": "OutboundMessage types (TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, ErrorMessage, Ready)",
-      "where": "gui/sidecar/src/types.ts",
-      "how": "Import directly into claudeStore.ts as the event types the store processes. No need to duplicate these type definitions."
+      "what": "ReifyToolContext trait + all MCP types",
+      "where": "crates/reify-mcp/src/context.rs, crates/reify-mcp/src/types.rs",
+      "how": "CliToolContext implements the 15-method ReifyToolContext trait, returning types like ParameterInfo, ConstraintInfo, DiagnosticInfo, EvalStatusInfo, etc. from the engine state. Import via reify_mcp::{ReifyToolContext, ParameterInfo, ...}."
     },
     {
-      "what": "CSS theme variables (--reify-background, --reify-text, --reify-accent, --reify-surface0, --reify-text-muted, --reify-font-mono, --reify-green, --reify-red)",
-      "where": "gui/src/App.module.css, gui/src/panels/*.module.css",
-      "how": "All new CSS modules use the same CSS custom properties for consistent theming. No new color values \u2014 reuse existing palette."
+      "what": "Engine creation pattern from cmd_check/cmd_build",
+      "where": "crates/reify-cli/src/main.rs lines 80-82 (check), 145-149 (build)",
+      "how": "Reuse Engine::new(Box::new(SimpleConstraintChecker), None) pattern for headless MCP mode. Add geometry kernel only if export is needed."
     },
     {
-      "what": "Expand/collapse toggle pattern with createSignal + Show",
-      "where": "gui/src/panels/ConstraintPanel.tsx lines 26-57",
-      "how": "ThinkingBlock and ToolCallCard use the same toggle pattern: createSignal(boolean) for expanded state, \u25b6/\u25bc chevron indicator, Show component for conditional content rendering."
+      "what": "parse_and_compile helper pattern",
+      "where": "crates/reify-cli/src/main.rs lines 33-63",
+      "how": "Reference the pattern of reading file -> reify_syntax::parse(&source, ModulePath::single(name)) -> reify_compiler::compile(&parsed) for CliToolContext::load_file. The pattern handles error reporting for parse/compile failures."
     },
     {
-      "what": "data-testid convention and vitest + @solidjs/testing-library test patterns",
-      "where": "gui/src/__tests__/Toast.test.tsx, gui/src/__tests__/panels-smoke.test.tsx",
-      "how": "All new components use data-testid attributes. Tests use render(() => <Component />), screen.getByTestId(), fireEvent.click(), vi.fn(), vi.useFakeTimers()/vi.advanceTimersByTime() patterns."
+      "what": "cmd_lsp pattern for tokio runtime + stdio server",
+      "where": "crates/reify-cli/src/main.rs lines 248-259",
+      "how": "Follow identical pattern: tokio::runtime::Runtime::new() -> rt.block_on(server.run_stdio()) -> ExitCode::SUCCESS. Error handling on runtime creation failure."
     },
     {
-      "what": "Component<Props> with CSS module imports pattern",
-      "where": "gui/src/panels/Toast.tsx, gui/src/panels/ConstraintPanel.tsx",
-      "how": "All new components follow: import styles from './X.module.css', export const X: Component<XProps> = (props) => { ... }."
+      "what": "CLI smoke test pattern with env!(CARGO_BIN_EXE_reify)",
+      "where": "crates/reify-cli/tests/cli_smoke.rs",
+      "how": "Extend existing help text test for mcp-server. Use Command::new(env!(\"CARGO_BIN_EXE_reify\")) with piped stdin/stdout for integration tests."
     },
     {
-      "what": "Panel and store barrel exports",
-      "where": "gui/src/panels/index.ts, gui/src/stores/index.ts",
-      "how": "Add ChatPanel to panels/index.ts and createClaudeStore to stores/index.ts following existing named export patterns."
+      "what": "MCP transport test JSON-RPC patterns",
+      "where": "crates/reify-mcp/tests/transport_tests.rs",
+      "how": "Reference JSON-RPC request format ({\"jsonrpc\":\"2.0\",\"id\":N,\"method\":\"tools/list\",\"params\":{}}), response parsing, and assertion patterns for tool count, tool names, and error checking."
     },
     {
-      "what": "Status indicator pattern with data-status attribute for CSS styling",
-      "where": "gui/src/panels/ConstraintPanel.tsx (.statusBadge with data-status), ConstraintPanel.module.css lines 70-83",
-      "how": "ToolCallCard status indicator uses the same data-status attribute pattern: [data-status='pending'], [data-status='complete'], [data-status='error'] for CSS color styling."
+      "what": "bracket.ri test fixture",
+      "where": "crates/reify-cli/tests/fixtures/bracket.ri",
+      "how": "Use as standard test input for MCP integration tests. Contains structure Bracket with 5 params (width=80mm, height=100mm, thickness=5mm, fillet_radius=3mm, hole_diameter=6mm), 1 let (volume), 3 constraints, and 1 realization (box)."
     },
     {
-      "what": "CSS spinner animation",
-      "where": "gui/src/App.module.css lines 46-57 (.spinner with @keyframes spin)",
-      "how": "ToolCallCard pending status reuses the same spin animation pattern (border with transparent top, rotate 360deg)."
+      "what": "ValueCellId Display format (entity.member)",
+      "where": "crates/reify-types/src/identity.rs line 74-77",
+      "how": "ValueCellId displays as 'Entity.member' (e.g., 'Bracket.width'). Parse back by splitting on '.' for set_parameter. Use ValueCellId::new(entity, member) constructor."
     }
   ],
-  "_session_id": "142-0c60416b",
-  "_created_at": "2026-03-23T18:35:00.921395+00:00"
+  "_session_id": "137-a12e4873",
+  "_created_at": "2026-03-23T20:12:40.091988+00:00"
 }
