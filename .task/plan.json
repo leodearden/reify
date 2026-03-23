@@ -1,44 +1,63 @@
 {
-  "task_id": "135",
-  "title": "Implement MCP read tools",
+  "task_id": "136",
+  "title": "Implement MCP write, navigation, and reference tools",
   "files": [
-    "crates/reify-mcp/src/types.rs",
+    "crates/reify-mcp/src/tools/write.rs",
+    "crates/reify-mcp/src/tools/navigation.rs",
+    "crates/reify-mcp/src/tools/reference.rs",
+    "crates/reify-mcp/src/tools/mod.rs",
+    "crates/reify-mcp/src/tools/language_chunks.rs",
+    "crates/reify-mcp/src/tools/chunks/syntax.md",
+    "crates/reify-mcp/src/tools/chunks/structures.md",
+    "crates/reify-mcp/src/tools/chunks/parameters.md",
+    "crates/reify-mcp/src/tools/chunks/constraints.md",
+    "crates/reify-mcp/src/tools/chunks/geometry.md",
+    "crates/reify-mcp/src/tools/chunks/traits.md",
+    "crates/reify-mcp/src/tools/chunks/collections.md",
+    "crates/reify-mcp/src/tools/chunks/fields.md",
+    "crates/reify-mcp/src/tools/chunks/purposes.md",
+    "crates/reify-mcp/src/tools/chunks/occurrences.md",
+    "crates/reify-mcp/src/tools/chunks/connect.md",
+    "crates/reify-mcp/src/tools/chunks/enums.md",
+    "crates/reify-mcp/src/tools/chunks/guards.md",
+    "crates/reify-mcp/src/tools/chunks/functions.md",
+    "crates/reify-mcp/src/tools/chunks/units.md",
+    "crates/reify-mcp/src/tools/chunks/types.md",
+    "crates/reify-mcp/src/tools/chunks/stdlib.md",
     "crates/reify-mcp/src/context.rs",
-    "crates/reify-mcp/src/tools/read.rs",
-    "crates/reify-mcp/tests/tools_tests.rs",
-    "crates/reify-mcp/tests/read_tools_tests.rs"
+    "crates/reify-mcp/src/types.rs",
+    "crates/reify-mcp/src/lib.rs",
+    "crates/reify-mcp/tests/write_tools_tests.rs",
+    "crates/reify-mcp/tests/navigation_tools_tests.rs",
+    "crates/reify-mcp/tests/reference_tools_tests.rs",
+    "crates/reify-mcp/tests/tools_tests.rs"
   ],
   "modules": [
-    "crates/reify-mcp"
+    "crates/reify-mcp/src/tools",
+    "crates/reify-mcp/src",
+    "crates/reify-mcp/tests"
   ],
-  "analysis": "Task 133 created the reify-mcp crate with 16 tool stubs (8 read, 5 write, 2 navigation, 1 reference), a ReifyToolContext trait, MockToolContext, ToolRegistry, McpDispatcher (JSON-RPC 2.0), and McpServer (dual-mode transport). All tool handlers currently return Err(ToolError::NotImplemented).\n\nThis task implements the 8 read tools in tools/read.rs. Each handler must: (1) parse input params from serde_json::Value, (2) call the corresponding ReifyToolContext trait method, (3) apply client-side filtering (by severity, file_path, entity_path prefix, status), and (4) serialize the result to JSON.\n\nKey type mismatches between task spec and existing types from task 133:\n- OpenFileInfo has {path, language} but spec wants {path, dirty} -> add dirty field\n- SelectionInfo has {entity_path, cell_ids} but spec wants {selected_entity?, hovered_entity?} -> update fields\n- get_source returns String but spec wants {content, file_path} -> add SourceContent struct, update trait return type\n\nThe MockToolContext needs to become configurable (public fields) to support testing with varied data. The existing tools_tests.rs test 'all_stub_tools_return_not_implemented' will break and needs updating to exclude read tools. Input schemas for filtering tools (diagnostics, parameters, constraints) need filter params added.\n\nHandler pattern: parse optional params with .as_str()/.as_u64(), call ctx method to get full dataset, apply filters in closure, serialize with serde_json::to_value(). For non-existing entities in get_source_location, convert ToolError to JSON null.",
+  "analysis": "Task 133 created the reify-mcp crate with 16 tools: 8 read tools are fully implemented (task 135), while 5 write tools, 2 navigation tools, and 1 reference tool remain as stubs returning ToolError::NotImplemented. The crate has a clean architecture: ReifyToolContext trait abstracts engine access with 16 methods (8 read + 5 write + 2 nav + 1 missing for reference), MockToolContext provides test doubles with public fields, ToolRegistry dispatches tool calls by name, and each tool module registers handlers via closures.\n\nThe implementation approach differs by tool category:\n\n**Write tools (5):** Each handler extracts required params (returning InvalidParams if missing), delegates to the corresponding ReifyToolContext method, and builds a JSON response. For update_source and set_parameter, the handler also calls get_diagnostics() to include diagnostics in the response per the task spec. For open_file, the handler calls open_file() then get_source() to return the source content. For export, the handler validates the format string.\n\n**Navigation tools (2):** focus_entity is straightforward \u2014 extract entity_path, call context. navigate_to_source requires a SCHEMA CHANGE from {file, line, column} to {entity_path} per the task spec \u2014 the handler performs a compound operation: (1) look up entity source location via get_source_location, (2) call navigate_to_source with the resolved coordinates, (3) return success + location.\n\n**Reference tool (1):** Entirely self-contained \u2014 no context needed. Pre-chunk docs/reify-language-spec.md and docs/reify-stdlib-reference.md into 17 topic-sized markdown chunks (~500-1500 tokens each), stored as include_str! files in src/tools/chunks/. A language_chunks module provides get_chunk(topic) and available_topics() functions.\n\n**MockToolContext enhancements:** The mock already returns canned success values for write/nav methods. To test context error propagation, add optional ToolError override fields (e.g., set_param_error: Option<ToolError>) so tests can trigger error paths without creating separate mock types.\n\n**Existing test updates:** The test non_read_stub_tools_return_not_implemented in tools_tests.rs must be replaced since all stubs become real implementations. Replace with a test verifying all 16 tools return Ok with valid params.\n\n**Type additions:** The task spec response shapes differ from existing types: update_source must return a diagnostics array (not just count), set_parameter must return diagnostics alongside new_value, and navigate_to_source returns an optional location object. These composite responses are built via serde_json::json!() in handlers rather than new types, except where a dedicated type improves clarity.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Update types.rs: Add SourceContent struct {content: String, file_path: String} with Serialize/Deserialize; add dirty: bool to OpenFileInfo; update SelectionInfo to {selected_entity: Option<String>, hovered_entity: Option<String>} to match MCP spec",
+      "description": "Create src/tools/chunks/ directory with 17 topic markdown files. Each chunk is a curated ~500-1500 token extract from docs/reify-language-spec.md and docs/reify-stdlib-reference.md. Topics: syntax, structures, parameters, constraints, geometry, traits, collections, fields, purposes, occurrences, connect, enums, guards, functions, units, types, stdlib. Each file contains key syntax rules, semantic descriptions, and 1-2 examples.",
       "status": "done",
-      "commit": "ad8dead",
+      "commit": "179ca80",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Update context.rs: Change get_source return type to Result<SourceContent, ToolError>; update get_selection for new SelectionInfo fields; make MockToolContext configurable with public fields (source: SourceContent, open_files: Vec<OpenFileInfo>, diagnostics: Vec<DiagnosticInfo>, parameters: Vec<ParameterInfo>, constraints: Vec<ConstraintInfo>, eval_status: EvalStatusInfo, selection: SelectionInfo, source_locations: std::collections::HashMap<String, SourceLocationInfo>). Implement Default with sensible empty values. Update all trait method impls to return from fields. For get_source_location, return Err(ToolError::EngineError) if entity_path not in HashMap.",
+      "description": "Create src/tools/language_chunks.rs module: use include_str! to embed all 17 chunk files, expose pub fn get_chunk(topic: &str) -> Option<&'static str> (match on topic name) and pub fn available_topics() -> &'static [&'static str] (returns all 17 topic names). Add 'pub mod language_chunks;' to tools/mod.rs.",
       "status": "done",
-      "commit": "ad8dead",
+      "commit": "14a30aa",
       "tests": []
     },
     {
       "id": "pre-3",
-      "description": "Update tools_tests.rs: Change all_stub_tools_return_not_implemented to only check write/navigation/reference tools (exclude the 8 read tools). Define READ_TOOLS const array with the 8 read tool names and filter them out of the assertion loop.",
+      "description": "Enhance MockToolContext in context.rs: add optional error override fields for write/nav methods (update_source_error, set_param_error, open_file_error, save_file_error, export_error, focus_entity_error, navigate_error \u2014 all Option<ToolError>). Update Default impl to set all to None. Update mock trait impls to check error override first: if Some(err), return Err(err.clone()), else return the success value. This enables testing context error propagation without separate mock types.",
       "status": "done",
-      "commit": "ad8dead",
-      "tests": []
-    },
-    {
-      "id": "pre-4",
-      "description": "Update input schemas in read.rs for filtering tools: add file_path (optional string) and severity (optional enum) params to reify_get_diagnostics, add entity_path (optional string) param to reify_get_parameters, add status (optional enum) param to reify_get_constraints. Keep existing schemas for tools that already have correct params (get_source has file_path, get_source_location has required entity_path).",
-      "status": "done",
-      "commit": "ad8dead",
+      "commit": "03d7691",
       "tests": []
     }
   ],
@@ -46,173 +65,197 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for reify_get_source in read_tools_tests.rs: (1) with explicit file_path param returns {content, file_path} JSON with correct values from mock, (2) without file_path param returns active file content from mock (mock configured with a default source), (3) error case when context returns ToolError propagates correctly. Configure MockToolContext with SourceContent {content: 'param x = 10mm', file_path: 'main.ri'}.",
+      "description": "Write failing tests for reify_update_source in write_tools_tests.rs: (1) valid file_path + content \u2192 returns JSON with {success: true, diagnostics_count: N, diagnostics: [...]} where diagnostics are filtered to the updated file, (2) missing file_path \u2192 InvalidParams, (3) missing content \u2192 InvalidParams. Configure MockToolContext with diagnostics for the target file.",
       "status": "done",
-      "commit": "3a96959"
+      "commit": "3e2ebbc"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement reify_get_source handler in read.rs: parse optional file_path from params['file_path'].as_str(), call ctx.get_source(file_path), on Ok serialize SourceContent to JSON via serde_json::to_value(), on Err propagate ToolError.",
+      "description": "Implement reify_update_source handler in write.rs: extract required file_path and content, call ctx.update_source(file_path, content), call ctx.get_diagnostics() and filter to file_path, build response JSON via json!({success, diagnostics_count, diagnostics}).",
       "status": "done",
-      "commit": "bbe3342"
+      "commit": "551ede1"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for reify_get_open_files: (1) returns JSON array with path, language, and dirty fields for each open file, (2) returns empty array when no files open. Configure mock with two OpenFileInfo entries (one dirty: true, one dirty: false).",
+      "description": "Write failing tests for reify_set_parameter in write_tools_tests.rs: (1) valid cell_id='Bracket.width' + value='120mm' \u2192 {success: true, new_value, unit, diagnostics: [...]}, (2) missing cell_id \u2192 InvalidParams, (3) missing value \u2192 InvalidParams, (4) context returns EngineError (via set_param_error override) \u2192 tool propagates EngineError.",
       "status": "done",
-      "commit": "3a96959"
+      "commit": "8d5469c"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement reify_get_open_files handler: call ctx.get_open_files(), serialize Vec<OpenFileInfo> to JSON via serde_json::to_value().",
+      "description": "Implement reify_set_parameter handler: extract required cell_id and value, call ctx.set_parameter(cell_id, value), call ctx.get_diagnostics(), build response JSON with {success, new_value, unit, diagnostics}.",
       "status": "done",
-      "commit": "bbe3342"
+      "commit": "d210473"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for reify_get_diagnostics: (1) returns all diagnostics with no filter params, (2) filters by file_path param (only diagnostics for that file), (3) filters by severity param 'error' (only errors returned), (4) combined filter by file_path and severity. Configure mock with 4 diagnostics: 2 errors and 1 warning in file_a, 1 error in file_b.",
+      "description": "Write failing tests for reify_open_file in write_tools_tests.rs: (1) valid file_path \u2192 {success: true, source: <content string>} by chaining open_file + get_source, (2) missing file_path \u2192 InvalidParams.",
       "status": "done",
-      "commit": "3a96959"
+      "commit": "d4585b5"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement reify_get_diagnostics handler: call ctx.get_diagnostics(), parse optional file_path and severity from params, filter Vec by file_path equality and severity equality (case-insensitive), serialize filtered results to JSON.",
+      "description": "Implement reify_open_file handler: extract required file_path, call ctx.open_file(file_path), then call ctx.get_source(Some(file_path)) to get content, return json!({success: true, source: content}).",
       "status": "done",
-      "commit": "bbe3342"
+      "commit": "cf7c7c5"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for reify_get_parameters: (1) returns all parameters with no filter, (2) filters by entity_path prefix 'sketch1' matches 'sketch1/width' and 'sketch1/height' but not 'sketch2/depth', (3) returns empty array when prefix matches nothing. Configure mock with 3 parameters across entity paths sketch1/width, sketch1/height, sketch2/depth.",
+      "description": "Write failing tests for reify_save_file in write_tools_tests.rs: (1) with file_path \u2192 {success: true}, (2) without file_path (saves active file) \u2192 {success: true}.",
       "status": "done",
-      "commit": "3a96959"
+      "commit": "5b27f94"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement reify_get_parameters handler: call ctx.get_parameters(), parse optional entity_path from params, filter by starts_with prefix matching on parameter's entity_path field, serialize filtered Vec<ParameterInfo> to JSON.",
+      "description": "Implement reify_save_file handler: extract optional file_path, call ctx.save_file(file_path), return json!({success: result}).",
       "status": "done",
-      "commit": "bbe3342"
+      "commit": "df360ca"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for reify_get_constraints: (1) returns all constraints with no filter, (2) filters by status='satisfied' returns only satisfied constraints, (3) filters by status='violated' returns only violated, (4) returns empty array when filter matches nothing (status='indeterminate' with none configured). Configure mock with 2 satisfied and 1 violated constraint.",
+      "description": "Write failing tests for reify_export in write_tools_tests.rs: (1) format='step', output_path='/tmp/out.step' \u2192 {success: true, path: '/tmp/out.step'}, (2) format='stl' \u2192 success, (3) missing format \u2192 InvalidParams, (4) missing output_path \u2192 InvalidParams.",
       "status": "done",
-      "commit": "3a96959"
+      "commit": "5b27f94"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement reify_get_constraints handler: call ctx.get_constraints(), parse optional status from params, filter by exact status string match, serialize filtered Vec<ConstraintInfo> to JSON.",
+      "description": "Implement reify_export handler: extract required format and output_path, call ctx.export(format, output_path), return json!({success: result, path: output_path}).",
       "status": "done",
-      "commit": "bbe3342"
+      "commit": "df360ca"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test for reify_get_eval_status: returns JSON with phase, progress, and dirty_count fields from mock. Configure mock with eval_status {phase: 'evaluating', progress: Some(0.5), dirty_count: 3}.",
+      "description": "Write failing tests for reify_focus_entity in navigation_tools_tests.rs: (1) valid entity_path \u2192 {success: true}, (2) missing entity_path \u2192 InvalidParams.",
       "status": "done",
-      "commit": "3a96959"
+      "commit": "ab2a15e"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement reify_get_eval_status handler: call ctx.get_eval_status(), serialize EvalStatusInfo to JSON via serde_json::to_value().",
+      "description": "Implement reify_focus_entity handler in navigation.rs: extract required entity_path, call ctx.focus_entity(entity_path), return json!({success: result}).",
       "status": "done",
-      "commit": "bbe3342"
+      "commit": "ab2a15e"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing tests for reify_get_selection: (1) returns selected_entity and hovered_entity when both are set, (2) returns null values when nothing selected (both None). Configure mock with SelectionInfo {selected_entity: Some('bracket/body'), hovered_entity: Some('bracket/fillet1')}.",
+      "description": "Write failing tests for reify_navigate_to_source in navigation_tools_tests.rs: (1) valid entity_path with known source location (mock source_locations has entry) \u2192 {success: true, location: {file, line, column, end_line, end_column}}, (2) unknown entity_path (no source_locations entry) \u2192 {success: false, location: null}, (3) missing entity_path param \u2192 InvalidParams. Tests also verify the schema change from {file, line, column} to {entity_path}.",
       "status": "done",
-      "commit": "3a96959"
+      "commit": "ab2a15e"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement reify_get_selection handler: call ctx.get_selection(), serialize SelectionInfo to JSON via serde_json::to_value().",
+      "description": "Implement reify_navigate_to_source handler: change input schema to {entity_path: required string}. Extract entity_path, call ctx.get_source_location(entity_path). If Ok(loc), call ctx.navigate_to_source(loc.file, loc.line, loc.column) and return json!({success: true, location: loc}). If Err (entity not found), return json!({success: false, location: null}).",
       "status": "done",
-      "commit": "bbe3342"
+      "commit": "ab2a15e"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing tests for reify_get_source_location: (1) returns {file, line, column, end_line, end_column} JSON for existing entity path, (2) returns JSON null for non-existing entity (mock HashMap has no entry), (3) returns InvalidParams error when entity_path param is missing from input. Configure mock HashMap with 'bracket/body' -> SourceLocationInfo {file: 'main.ri', line: 5, column: 3, end_line: 20, end_column: 1}.",
+      "description": "Write failing tests for reify_language_reference in reference_tools_tests.rs: (1) topic='syntax' \u2192 {topic: 'syntax', content: <non-empty string>}, (2) each of all 17 supported topics returns non-empty content (parameterized test), (3) unknown topic='foobar' \u2192 returns JSON with content containing list of available topics, (4) no topic param \u2192 returns available topics list. Verify content length is reasonable (>100 chars for known topics).",
       "status": "done",
-      "commit": "3a96959"
+      "commit": "1517a53"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement reify_get_source_location handler: parse required entity_path from params (return Err(ToolError::InvalidParams) if missing), call ctx.get_source_location(entity_path), on Ok serialize SourceLocationInfo to JSON, on Err (entity not found) return Ok(serde_json::Value::Null) rather than propagating error.",
+      "description": "Implement reify_language_reference handler in reference.rs: extract optional topic from params. If topic is given, call language_chunks::get_chunk(topic). If Some(content), return json!({topic, content}). If None (unknown topic), format available_topics() into a help message and return json!({topic, content: help_message}). If no topic param at all, return the same help message with topic: 'help'.",
       "status": "done",
-      "commit": "bbe3342"
+      "commit": "68ef79a"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Update tools_tests.rs: replace non_read_stub_tools_return_not_implemented with all_non_read_tools_return_ok_with_valid_params that calls each write/nav/ref tool with minimal valid params and asserts Ok (not NotImplemented). Add WRITE_TOOLS, NAV_TOOLS, REF_TOOLS constants. Add a test verifying all 16 tools are implemented (none return NotImplemented).",
+      "status": "done",
+      "commit": "071af1a"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Final integration pass: run full test suite (cargo test -p reify-mcp), ensure all existing tests (registry_tests, transport_tests, jsonrpc_tests, read_tools_tests) pass alongside new tests. Fix any regressions from schema changes (navigate_to_source schema in transport/jsonrpc tests if tested). Verify 0 NotImplemented stubs remain.",
+      "status": "done",
+      "commit": "071af1a"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add SourceContent struct and change get_source trait return type from String to SourceContent",
-      "rationale": "The MCP spec requires returning {content, file_path} from reify_get_source. When file_path is None (active file), the handler needs to know the resolved path. Returning a SourceContent{content, file_path} from the trait lets the engine implementation communicate the actual path used, rather than the handler guessing or returning null."
+      "decision": "Use include_str! with per-topic .md files in src/tools/chunks/ for language reference data",
+      "rationale": "Keeps chunk content editable as standalone markdown files while embedding at compile time for zero-cost runtime access. Each file maps 1:1 to a topic, making maintenance straightforward. Alternative of inline const strings would clutter source code (~15K chars of embedded text); runtime file loading adds failure modes and deployment complexity."
     },
     {
-      "decision": "Add dirty: bool to OpenFileInfo alongside existing language field",
-      "rationale": "The MCP tool spec requires dirty state in the response. Since OpenFileInfo is the MCP response type (derives Serialize), adding the field here is cleaner than constructing ad-hoc JSON in the handler. The language field is kept as additional useful information."
+      "decision": "navigate_to_source MCP tool schema changes from {file, line, column} to {entity_path}",
+      "rationale": "Task spec requires entity_path as input. The tool becomes a compound operation: resolve entity \u2192 get source location \u2192 navigate editor. This is more useful to LLM clients who know entity names but not line numbers. The context trait method signature navigate_to_source(file, line, column) stays unchanged since it represents the low-level editor navigation action."
     },
     {
-      "decision": "Replace SelectionInfo fields (entity_path, cell_ids) with (selected_entity, hovered_entity)",
-      "rationale": "The MCP spec defines the response as {selected_entity?, hovered_entity?}. The current fields don't match. Since this type exists solely as the MCP response type and no real implementation exists yet, now is the right time to align it with the spec."
+      "decision": "Write tool handlers compose multiple context calls (write method + get_diagnostics) rather than changing trait signatures",
+      "rationale": "Task spec requires update_source and set_parameter to return full diagnostics arrays. The context trait returns UpdateResult {success, diagnostics_count} / SetParamResult {success, new_value, unit}. Rather than changing the trait contract (which would break the existing clean separation), handlers compose two context calls. This keeps the trait simple and each method single-purpose."
     },
     {
-      "decision": "Filtering done in tool handlers, not in context trait methods",
-      "rationale": "The trait methods return full unfiltered data (all diagnostics, all parameters, all constraints). Filtering by severity/file_path/entity_path/status is applied by the handler after retrieval. This keeps the trait simple (one method per data type) and makes filtering logic testable at the handler level. For large datasets, filtering could later be pushed into the trait, but YAGNI for now."
+      "decision": "Build composite response JSON via json!() macro rather than creating new response struct types",
+      "rationale": "Responses for update_source, set_parameter, open_file, export, and navigate_to_source combine data from multiple context calls or augment context results with additional fields. Creating intermediate struct types for each would add boilerplate without benefit \u2014 the responses are consumed as raw JSON by MCP clients. The json!() macro is already used throughout the crate for schema definitions."
     },
     {
-      "decision": "Non-existing entity in get_source_location returns Ok(null JSON), not Err(ToolError)",
-      "rationale": "The spec says the tool returns location 'or null'. A missing entity isn't a tool error condition \u2014 it's a valid query with a null result. The handler catches ToolError from the context and converts to serde_json::Value::Null, letting MCP clients distinguish 'entity not found' (null) from 'something broke' (isError: true in JSON-RPC response)."
+      "decision": "Add optional ToolError override fields to MockToolContext for write/nav error testing",
+      "rationale": "Follows the existing pattern of public fields configured via struct update syntax. Adding Option<ToolError> fields lets tests trigger error paths (e.g., set_param_error: Some(ToolError::EngineError(...))) without creating separate mock types or complex builder patterns. Default is None (success path)."
     },
     {
-      "decision": "MockToolContext uses public fields with Default rather than builder pattern",
-      "rationale": "Public fields are the simplest approach for test configuration. Each test constructs a mock with the specific data it needs via struct update syntax (MockToolContext { diagnostics: vec![...], ..Default::default() }). A builder would add complexity without validation benefit. HashMap<String, SourceLocationInfo> supports testing existing vs non-existing entity lookups."
+      "decision": "Filter diagnostics to the updated file in update_source response",
+      "rationale": "After updating source, the MCP client most likely wants diagnostics for that specific file, not all diagnostics across all open files. Filtering by file_path reduces response noise. The full unfiltered diagnostics list remains available via reify_get_diagnostics."
     },
     {
-      "decision": "Entity path filtering uses starts_with prefix matching",
-      "rationale": "The spec says reify_get_parameters is 'filterable by entity path prefix'. String::starts_with on the parameter's entity_path field provides hierarchical filtering: 'sketch1' matches 'sketch1/width', 'sketch1/height'. This matches typical entity path hierarchies in CAD parametric models."
+      "decision": "Language reference chunks are curated summaries (~500-1500 tokens), not raw doc copies",
+      "rationale": "Raw spec sections are far too long (the full language spec is ~31K tokens, stdlib reference ~11K tokens). Chunks must be concise enough for LLM context windows while being self-contained and useful. Each chunk covers key syntax, semantic rules, and 1-2 canonical examples for the topic."
+    },
+    {
+      "decision": "Unknown topic in language_reference returns available topics list (not an error)",
+      "rationale": "Returning a helpful topic list rather than ToolError lets the LLM self-correct by picking from the list. This matches the task spec: 'Unknown topic \u2192 return list of available topics'. The response is still valid JSON with topic + content fields, just with content being the help text."
     }
   ],
   "reuse": [
     {
-      "what": "ToolRegistry::register and call_tool pattern",
-      "where": "crates/reify-mcp/src/registry.rs",
-      "how": "Each read tool replaces its stub closure with a real implementation following the same Fn(serde_json::Value, &dyn ReifyToolContext) -> Result<serde_json::Value, ToolError> signature. No changes to registry needed."
-    },
-    {
-      "what": "Existing MCP response types with Serialize derive",
-      "where": "crates/reify-mcp/src/types.rs",
-      "how": "DiagnosticInfo, ParameterInfo, ConstraintInfo, EvalStatusInfo, SourceLocationInfo already derive Serialize. Handlers use serde_json::to_value() to produce JSON responses directly. Only OpenFileInfo and SelectionInfo need field adjustments."
-    },
-    {
-      "what": "MockToolContext pattern from task 133",
+      "what": "MockToolContext struct with public fields + Default impl",
       "where": "crates/reify-mcp/src/context.rs",
-      "how": "Extend the existing mock with configurable public fields. Keep cfg(any(test, feature='test-support')) gate. Maintain Default impl compatibility so existing tests in registry_tests.rs and tools_tests.rs continue to work unchanged."
+      "how": "Extend with optional error override fields. All new tests use the same setup_registry() + MockToolContext { ..Default::default() } pattern established by read_tools_tests.rs."
     },
     {
-      "what": "Test setup pattern from tools_tests.rs",
-      "where": "crates/reify-mcp/tests/tools_tests.rs",
-      "how": "Follow same pattern: create registry via setup_registry(), call registry.call_tool() with mock context and JSON params, assert on returned serde_json::Value. New read_tools_tests.rs uses identical imports and setup function."
+      "what": "ToolRegistry::call_tool() dispatch + ToolError enum",
+      "where": "crates/reify-mcp/src/registry.rs, types.rs",
+      "how": "All tool handlers follow the same pattern: extract params \u2192 validate \u2192 call context \u2192 serialize response. Reuse InvalidParams for missing/bad params, EngineError for context failures, InternalError for serialization."
     },
     {
-      "what": "serde_json::json! macro for schemas, params, and assertions",
-      "where": "Throughout crate",
-      "how": "Input schemas in read.rs use json! macro for schema objects. Test code uses json! for constructing params. Handler responses use serde_json::to_value for struct serialization."
+      "what": "serde_json::to_value() and json!() for response construction",
+      "where": "crates/reify-mcp/src/tools/read.rs (established pattern)",
+      "how": "Read tools demonstrate the pattern: serialize typed results via to_value(), build ad-hoc responses via json!(). Write tools reuse this for composite responses that combine data from multiple context calls."
+    },
+    {
+      "what": "Required param extraction pattern with ok_or_else",
+      "where": "crates/reify-mcp/src/tools/read.rs (get_source_location handler)",
+      "how": "The get_source_location handler shows the pattern for required params: params['key'].as_str().ok_or_else(|| ToolError::InvalidParams('key is required')). All write/nav handlers with required params follow this exact pattern."
+    },
+    {
+      "what": "Test helper functions and assertion patterns",
+      "where": "crates/reify-mcp/tests/read_tools_tests.rs",
+      "how": "Use identical assertion style: result['field'] == expected, result.is_err(), match on ToolError variants. Use same helper function patterns like make_diagnostic(). New test files follow the same imports and setup_registry() structure."
+    },
+    {
+      "what": "ReifyToolContext trait methods for compound operations",
+      "where": "crates/reify-mcp/src/context.rs",
+      "how": "navigate_to_source tool composes get_source_location() + navigate_to_source() from the same context. update_source and set_parameter compose their write method + get_diagnostics(). open_file composes open_file() + get_source()."
     }
   ],
-  "_session_id": "135-12989b7e",
-  "_created_at": "2026-03-23T15:10:12.338957+00:00"
+  "_session_id": "136-24249e70",
+  "_created_at": "2026-03-23T18:00:46.179926+00:00",
+  "_schema_version": 1
 }
