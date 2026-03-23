@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createClaudeStore } from '../stores/claudeStore';
 import type { OutboundMessage } from '../../sidecar/src/types';
 
@@ -199,6 +199,82 @@ describe('claudeStore', () => {
       expect(state.messages.length).toBeGreaterThan(0);
       clearSession();
       expect(state.messages).toEqual([]);
+    });
+  });
+
+  describe('rAF delta batching', () => {
+    let rafCallbacks: Array<() => void>;
+    let origRAF: typeof globalThis.requestAnimationFrame;
+    let origCancelRAF: typeof globalThis.cancelAnimationFrame;
+
+    beforeEach(() => {
+      rafCallbacks = [];
+      origRAF = globalThis.requestAnimationFrame;
+      origCancelRAF = globalThis.cancelAnimationFrame;
+      globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
+        const id = rafCallbacks.length + 1;
+        rafCallbacks.push(() => cb(performance.now()));
+        return id;
+      };
+      globalThis.cancelAnimationFrame = (_id: number) => {
+        // For simplicity, we just let cancelAndFlush handle this
+      };
+    });
+
+    afterEach(() => {
+      globalThis.requestAnimationFrame = origRAF;
+      globalThis.cancelAnimationFrame = origCancelRAF;
+    });
+
+    it('buffers multiple text_delta events and flushes on rAF', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+
+      // Send 10 text deltas synchronously
+      for (let i = 0; i < 10; i++) {
+        handleOutboundMessage({ type: 'text_delta', id: msgId, content: `w${i}` } as OutboundMessage);
+      }
+
+      // Before rAF fires, responseText should still be empty
+      const assistantBefore = state.messages.find((m) => m.role === 'assistant');
+      expect(assistantBefore!.responseText).toBe('');
+
+      // Fire the rAF callback
+      rafCallbacks[0]();
+
+      // Now all 10 deltas should be concatenated
+      const assistantAfter = state.messages.find((m) => m.role === 'assistant');
+      expect(assistantAfter!.responseText).toBe('w0w1w2w3w4w5w6w7w8w9');
+    });
+
+    it('flushes immediately on done event without waiting for rAF', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+
+      handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'partial' } as OutboundMessage);
+      handleOutboundMessage({ type: 'done', id: msgId } as OutboundMessage);
+
+      // Text should be flushed immediately despite rAF not having fired
+      const assistant = state.messages.find((m) => m.role === 'assistant');
+      expect(assistant!.responseText).toBe('partial');
+      expect(assistant!.complete).toBe(true);
+    });
+
+    it('clears pending buffer on abort', () => {
+      const { state, sendMessage, handleOutboundMessage, claudeAbort } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+
+      handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'partial' } as OutboundMessage);
+      claudeAbort();
+
+      // Fire rAF — should not flush anything since buffer was cleared
+      if (rafCallbacks.length > 0) rafCallbacks[0]();
+
+      const assistant = state.messages.find((m) => m.role === 'assistant');
+      expect(assistant!.responseText).toBe('');
     });
   });
 });
