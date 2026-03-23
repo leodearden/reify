@@ -4,7 +4,151 @@
 //! OcctKernelHandle, but all operations return errors. This allows
 //! downstream crates to compile and fail gracefully at runtime.
 
-// Stub implementations will be added in step-4.
+use reify_types::{
+    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
+    GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable,
+};
+
+const NOT_AVAILABLE: &str = "OCCT libraries not available at build time";
+
+/// Stub OpenCASCADE kernel — all operations return errors.
+pub struct OcctKernel {
+    _private: (),
+}
+
+impl OcctKernel {
+    pub fn new() -> Self {
+        Self { _private: () }
+    }
+
+    pub fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
+    }
+
+    pub fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    pub fn export(
+        &self,
+        _handle: GeometryHandleId,
+        _format: ExportFormat,
+        _writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        Err(ExportError::FormatError(NOT_AVAILABLE.into()))
+    }
+
+    pub fn tessellate(
+        &self,
+        _handle: GeometryHandleId,
+        _tolerance: f64,
+    ) -> Result<Mesh, TessError> {
+        Err(TessError::TessellationFailed(NOT_AVAILABLE.into()))
+    }
+}
+
+impl Default for OcctKernel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WarmStartable for OcctKernel {
+    fn warm_state(&self) -> Option<OpaqueState> {
+        None
+    }
+
+    fn with_warm_state(&mut self, _state: OpaqueState) {
+        // No-op: OCCT not available, silently ignore per trait contract.
+    }
+}
+
+/// Stub thread-safe handle — implements GeometryKernel with error returns.
+pub struct OcctKernelHandle {
+    _private: (),
+}
+
+// Safety: stub contains no mutable state, is trivially Send + Sync.
+unsafe impl Send for OcctKernelHandle {}
+unsafe impl Sync for OcctKernelHandle {}
+
+impl OcctKernelHandle {
+    /// Create a stub handle (no thread is spawned).
+    pub fn spawn() -> Self {
+        Self { _private: () }
+    }
+
+    pub fn execute(&self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
+    }
+
+    pub fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    pub fn export(
+        &self,
+        _handle: GeometryHandleId,
+        _format: ExportFormat,
+        _writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        Err(ExportError::IoError(NOT_AVAILABLE.into()))
+    }
+
+    pub fn tessellate(
+        &self,
+        _handle: GeometryHandleId,
+        _tolerance: f64,
+    ) -> Result<Mesh, TessError> {
+        Err(TessError::TessellationFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// No-op shutdown (no thread to join).
+    pub async fn shutdown(self) {}
+}
+
+impl WarmStartable for OcctKernelHandle {
+    fn warm_state(&self) -> Option<OpaqueState> {
+        None
+    }
+
+    fn with_warm_state(&mut self, _state: OpaqueState) {
+        // No-op: OCCT not available.
+    }
+}
+
+impl GeometryKernel for OcctKernelHandle {
+    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        OcctKernelHandle::execute(self, op)
+    }
+
+    fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+        OcctKernelHandle::query(self, query)
+    }
+
+    fn export(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        OcctKernelHandle::export(self, handle, format, writer)
+    }
+
+    fn tessellate(
+        &self,
+        handle: GeometryHandleId,
+        tolerance: f64,
+    ) -> Result<Mesh, TessError> {
+        OcctKernelHandle::tessellate(self, handle, tolerance)
+    }
+}
+
+impl Drop for OcctKernelHandle {
+    fn drop(&mut self) {
+        // No-op: no thread to join.
+    }
+}
 
 #[cfg(all(test, not(has_occt)))]
 mod tests {
