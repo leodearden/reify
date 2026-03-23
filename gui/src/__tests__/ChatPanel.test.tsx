@@ -179,8 +179,8 @@ describe('ChatPanel auto-scroll', () => {
     // Mock layout properties to simulate overflow
     Object.defineProperty(messageList, 'scrollHeight', { value: 1000, configurable: true });
     Object.defineProperty(messageList, 'clientHeight', { value: 150, configurable: true });
-    // Start near bottom so auto-scroll triggers (850 + 150 >= 1000 - 50)
-    messageList.scrollTop = 100;
+    // Start near bottom so auto-scroll triggers (850 + 150 = 1000 >= 950 = 1000 - 50)
+    messageList.scrollTop = 850;
 
     setMessages([
       ...initialMessages,

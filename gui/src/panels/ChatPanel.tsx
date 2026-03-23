@@ -1,4 +1,4 @@
-import { type Component, Show, For, createSignal } from 'solid-js';
+import { type Component, Show, For, createSignal, createEffect } from 'solid-js';
 import type { ChatMessage, SessionStatus } from '../types';
 import styles from './ChatPanel.module.css';
 
@@ -15,6 +15,20 @@ export interface ChatPanelProps {
 
 export const ChatPanel: Component<ChatPanelProps> = (props) => {
   const [inputText, setInputText] = createSignal('');
+  let messageListRef: HTMLDivElement | undefined;
+
+  createEffect(() => {
+    // Track messages length to trigger on new messages
+    const len = props.messages.length;
+    if (len > 0 && messageListRef) {
+      const el = messageListRef;
+      // Check if user is near bottom (within 50px) before scrolling
+      const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 50;
+      if (nearBottom) {
+        el.scrollTop = el.scrollHeight;
+      }
+    }
+  });
 
   function handleSend() {
     const text = inputText().trim();
@@ -69,7 +83,7 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
         </div>
       </Show>
       <Show when={props.messages.length > 0}>
-        <div data-testid="chat-message-list" class={styles.messageList}>
+        <div data-testid="chat-message-list" class={styles.messageList} ref={messageListRef}>
           <For each={props.messages}>
             {(msg) => (
               <div
