@@ -9,6 +9,7 @@ import {
   FileBrowser,
   ExportDialog,
   ReloadPrompt,
+  ChatPanel,
 } from '../panels';
 
 describe('panels smoke integration', () => {
@@ -59,5 +60,22 @@ describe('panels smoke integration', () => {
     expect(screen.getByTestId('file-browser')).toBeTruthy();
     expect(screen.getByTestId('export-dialog')).toBeTruthy();
     expect(screen.getByTestId('reload-prompt')).toBeTruthy();
+  });
+
+  it('ChatPanel mounts with expected data-testid attribute', () => {
+    render(() => (
+      <ChatPanel
+        messages={[]}
+        sessionStatus="idle"
+        onSendMessage={vi.fn()}
+        onClearSession={vi.fn()}
+        onToggle={vi.fn()}
+        open={true}
+        height={250}
+        onResize={vi.fn()}
+      />
+    ));
+
+    expect(screen.getByTestId('chat-panel')).toBeTruthy();
   });
 });
