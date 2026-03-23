@@ -91,11 +91,13 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
           value={inputText()}
           onInput={(e) => setInputText(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
+          disabled={props.sessionStatus !== 'idle'}
         />
         <button
           data-testid="chat-send-btn"
           class={styles.sendButton}
           onClick={handleSend}
+          disabled={props.sessionStatus !== 'idle'}
         >
           Send
         </button>
