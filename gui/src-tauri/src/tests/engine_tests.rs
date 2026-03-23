@@ -674,3 +674,29 @@ fn build_gui_state_tessellation_preserves_values_and_constraints() {
         "expected 3 constraints alongside meshes"
     );
 }
+
+#[test]
+fn set_parameter_produces_updated_meshes() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let initial_state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load should succeed");
+
+    assert!(
+        !initial_state.meshes.is_empty(),
+        "initial state should have meshes"
+    );
+
+    // Set parameter and verify meshes are still produced
+    let updated_state = session
+        .set_parameter("Bracket.width", "120mm")
+        .expect("set_parameter should succeed");
+
+    assert!(
+        !updated_state.meshes.is_empty(),
+        "updated state should have meshes after set_parameter"
+    );
+}
