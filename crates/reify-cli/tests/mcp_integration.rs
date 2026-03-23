@@ -345,7 +345,7 @@ fn mcp_server_update_source_invalid_preserves_state() {
         .as_str()
         .expect("should have content field");
     assert_eq!(
-        returned_content,
+        returned_content.trim(),
         original_content.trim(),
         "get_source should return original bracket.ri content after failed update_source, \
          not the broken content"

@@ -342,21 +342,9 @@ impl ReifyToolContext for CliToolContext {
     }
 
     fn update_source(&self, file_path: &str, content: &str) -> Result<UpdateResult, ToolError> {
-        let mut state = self.state.lock().unwrap();
-
-        // Update file content
-        if let Some(entry) = state.files.get_mut(file_path) {
-            entry.content = content.to_string();
-            entry.dirty = true;
-        } else {
-            state.files.insert(
-                file_path.to_string(),
-                FileEntry {
-                    content: content.to_string(),
-                    dirty: true,
-                },
-            );
-        }
+        // Stage content locally — do NOT modify state.files until after successful pipeline.
+        // This preserves the invariant that files, compiled, and engine always reflect
+        // the same successful state.
 
         // Re-parse, compile, and eval from scratch (topology may change)
         let module_name = std::path::Path::new(file_path)
@@ -368,6 +356,8 @@ impl ReifyToolContext for CliToolContext {
             reify_syntax::parse(content, reify_types::ModulePath::single(module_name));
 
         if !parsed.errors.is_empty() {
+            // Parse failed — return failure WITHOUT modifying any state.
+            // get_source() continues to return the last known-good content.
             return Ok(UpdateResult {
                 success: false,
                 diagnostics_count: parsed.errors.len() as u32,
@@ -381,6 +371,20 @@ impl ReifyToolContext for CliToolContext {
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
         engine.eval(&compiled);
 
+        // Pipeline succeeded — commit file content alongside compiled/engine state.
+        let mut state = self.state.lock().unwrap();
+        if let Some(entry) = state.files.get_mut(file_path) {
+            entry.content = content.to_string();
+            entry.dirty = true;
+        } else {
+            state.files.insert(
+                file_path.to_string(),
+                FileEntry {
+                    content: content.to_string(),
+                    dirty: true,
+                },
+            );
+        }
         state.compiled = Some(compiled);
         state.engine = Some(engine);
 
