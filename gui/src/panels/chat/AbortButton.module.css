@@ -1,0 +1,24 @@
+.abortButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--reify-surface0);
+  border-radius: 6px;
+  background: var(--reify-surface0);
+  color: var(--reify-text);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.abortButton:hover {
+  background: var(--reify-red);
+  border-color: var(--reify-red);
+  color: var(--reify-background);
+}
+
+.stopIcon {
+  font-size: 12px;
+  line-height: 1;
+}
