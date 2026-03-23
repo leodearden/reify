@@ -6,6 +6,8 @@ export interface SessionConfig {
   model: string;
   workingDirectory: string;
   systemPrompt: string;
+  /** Timeout in milliseconds for each SDK invocation. Default: 300_000 (5 minutes). */
+  timeoutMs?: number;
 }
 
 /**
@@ -82,11 +84,10 @@ export class SidecarSession {
 
     try {
       await this.invokeSdk(id, prompt);
-      this.onOutput({ type: 'done', id });
+      this.emitAbortOrDone(id);
     } catch (error: unknown) {
       if (this.abortController?.signal.aborted) {
-        // Aborted — don't emit error, just done
-        this.onOutput({ type: 'done', id });
+        this.emitAbortOrDone(id);
       } else {
         const message = error instanceof Error ? error.message : String(error);
         this.onOutput({ type: 'error', id, message });
@@ -119,6 +120,12 @@ export class SidecarSession {
       signal: this.abortController?.signal,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    // Start timeout timer
+    const timeoutMs = this.config.timeoutMs ?? 300_000;
+    const timeoutId = setTimeout(() => {
+      this.abortController?.abort('timeout');
+    }, timeoutMs);
 
     // Collect stderr for error reporting
     let stderr = '';
@@ -176,10 +183,26 @@ export class SidecarSession {
       }
     }
 
+    // Clear timeout on normal completion
+    clearTimeout(timeoutId);
+
     // Wait for process exit and check exit code
     const exitCode = await exitPromise;
     if (exitCode !== 0 && exitCode !== null) {
       throw new Error(stderr || `Claude CLI exited with code ${exitCode}`);
+    }
+  }
+
+  /**
+   * Emit the appropriate message after invokeSdk completes or is aborted.
+   * Timeout aborts produce an error; user aborts and normal completions produce done.
+   */
+  private emitAbortOrDone(id: string): void {
+    if (this.abortController?.signal.aborted && this.abortController.signal.reason === 'timeout') {
+      const ms = this.config.timeoutMs ?? 300_000;
+      this.onOutput({ type: 'error', id, message: `Claude CLI timed out after ${ms}ms` });
+    } else {
+      this.onOutput({ type: 'done', id });
     }
   }
 
