@@ -238,6 +238,22 @@ fn focus_entity(app: tauri::AppHandle, entity_path: String) -> Result<(), String
 }
 
 #[tauri::command]
+fn mcp_tool_call(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    name: String,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let ctx = reify_gui::mcp_context::TauriToolContext::with_event_emitter(
+        state.engine.clone(),
+        move |event_name, payload| {
+            app.emit(event_name, payload).ok();
+        },
+    );
+    reify_gui::mcp_context::mcp_tool_call_impl(&name, params, &ctx)
+}
+
+#[tauri::command]
 async fn lsp_request(
     bridge: tauri::State<'_, LspBridge>,
     method: String,
@@ -308,6 +324,7 @@ fn main() {
             export,
             get_source_location,
             focus_entity,
+            mcp_tool_call,
             lsp_request,
         ])
         .run(tauri::generate_context!())
