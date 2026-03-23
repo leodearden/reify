@@ -1,0 +1,83 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--reify-background);
+  color: var(--reify-text);
+}
+
+.messageList {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px;
+}
+
+.emptyState {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--reify-text-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+.userMessage {
+  padding: 8px 12px;
+  margin: 4px 0;
+  border-radius: 6px;
+  background: var(--reify-surface0);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.inputArea {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.textarea {
+  flex: 1;
+  resize: none;
+  min-height: 36px;
+  max-height: 120px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: var(--reify-surface0);
+  color: var(--reify-text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  outline: none;
+}
+
+.textarea:focus {
+  border-color: var(--reify-accent);
+}
+
+.sendButton {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  background: var(--reify-accent);
+  color: var(--reify-background);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sendButton:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.sendButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
