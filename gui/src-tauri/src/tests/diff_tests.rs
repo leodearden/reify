@@ -1,19 +1,10 @@
 use crate::diff::{diff_gui_state, StateDelta};
 use crate::types::*;
 
-fn empty_state() -> GuiState {
-    GuiState {
-        meshes: vec![],
-        values: vec![],
-        constraints: vec![],
-        files: vec![],
-    }
-}
-
 fn sample_value(cell_id: &str, value: &str) -> ValueData {
     ValueData {
         cell_id: cell_id.to_string(),
-        name: cell_id.split('.').last().unwrap_or(cell_id).to_string(),
+        name: cell_id.split('.').next_back().unwrap_or(cell_id).to_string(),
         value: value.to_string(),
         unit: "mm".to_string(),
         determinacy: "determined".to_string(),

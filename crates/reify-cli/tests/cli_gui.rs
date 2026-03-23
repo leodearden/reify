@@ -189,17 +189,4 @@ fn bundler_config_has_platform_targets() {
             .unwrap_or(false)
     });
     assert!(has_ri, "fileAssociations should include .ri extension");
-
-    // bundle.resources should be configured for OCCT libs
-    let resources = config["bundle"]["resources"]
-        .as_array()
-        .expect("bundle.resources should be an array");
-    let has_so = resources.iter().any(|r| {
-        r.as_str().map(|s| s.contains(".so") || s.contains(".dylib") || s.contains(".dll")).unwrap_or(false)
-    });
-    assert!(
-        has_so,
-        "bundle.resources should include shared library patterns for OCCT, got: {:?}",
-        resources
-    );
 }

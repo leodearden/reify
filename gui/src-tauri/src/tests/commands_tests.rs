@@ -101,7 +101,7 @@ fn export_writes_file() {
     assert!(result.is_ok(), "export should succeed: {:?}", result.err());
 
     let data = std::fs::read(&path).expect("should read exported file");
-    assert!(data.len() > 0, "exported file should not be empty");
+    assert!(!data.is_empty(), "exported file should not be empty");
 
     // Cleanup
     let _ = std::fs::remove_file(&path);
