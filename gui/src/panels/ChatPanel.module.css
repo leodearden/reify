@@ -1,0 +1,35 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  background: var(--reify-surface, #2a2a3a);
+  border-top: 1px solid var(--reify-border, #45475a);
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--reify-surface, #2a2a3a);
+  border-bottom: 1px solid var(--reify-border, #45475a);
+  flex-shrink: 0;
+}
+
+.headerTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--reify-text, #cdd6f4);
+  flex: 1;
+}
+
+.emptyState {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 24px;
+  color: var(--reify-text-muted, #6c7086);
+  font-size: 13px;
+  text-align: center;
+}
