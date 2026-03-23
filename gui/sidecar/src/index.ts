@@ -56,16 +56,3 @@ export async function main(
     process.removeListener('SIGINT', shutdown);
   }
 }
-
-// Auto-run when executed directly (not imported as a module)
-const isDirectRun =
-  typeof process !== 'undefined' &&
-  process.argv[1] &&
-  (process.argv[1].endsWith('/index.js') || process.argv[1].endsWith('/index.ts'));
-
-if (isDirectRun) {
-  main().catch((err: unknown) => {
-    console.error('Sidecar fatal error:', err);
-    process.exit(1);
-  });
-}

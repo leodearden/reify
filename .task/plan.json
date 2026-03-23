@@ -1,44 +1,25 @@
 {
-  "task_id": "135",
-  "title": "Implement MCP read tools",
+  "task_id": "145",
+  "title": "Sidecar polish: Tauri config fix, SDK timeout, auto-run detection",
   "files": [
-    "crates/reify-mcp/src/types.rs",
-    "crates/reify-mcp/src/context.rs",
-    "crates/reify-mcp/src/tools/read.rs",
-    "crates/reify-mcp/tests/tools_tests.rs",
-    "crates/reify-mcp/tests/read_tools_tests.rs"
+    "gui/src-tauri/tauri.conf.json",
+    "gui/sidecar/src/session.ts",
+    "gui/sidecar/src/index.ts",
+    "gui/sidecar/src/cli.ts",
+    "gui/sidecar/package.json",
+    "gui/sidecar/src/__tests__/session.test.ts"
   ],
   "modules": [
-    "crates/reify-mcp"
+    "gui/src-tauri",
+    "gui/sidecar"
   ],
-  "analysis": "Task 133 created the reify-mcp crate with 16 tool stubs (8 read, 5 write, 2 navigation, 1 reference), a ReifyToolContext trait, MockToolContext, ToolRegistry, McpDispatcher (JSON-RPC 2.0), and McpServer (dual-mode transport). All tool handlers currently return Err(ToolError::NotImplemented).\n\nThis task implements the 8 read tools in tools/read.rs. Each handler must: (1) parse input params from serde_json::Value, (2) call the corresponding ReifyToolContext trait method, (3) apply client-side filtering (by severity, file_path, entity_path prefix, status), and (4) serialize the result to JSON.\n\nKey type mismatches between task spec and existing types from task 133:\n- OpenFileInfo has {path, language} but spec wants {path, dirty} -> add dirty field\n- SelectionInfo has {entity_path, cell_ids} but spec wants {selected_entity?, hovered_entity?} -> update fields\n- get_source returns String but spec wants {content, file_path} -> add SourceContent struct, update trait return type\n\nThe MockToolContext needs to become configurable (public fields) to support testing with varied data. The existing tools_tests.rs test 'all_stub_tools_return_not_implemented' will break and needs updating to exclude read tools. Input schemas for filtering tools (diagnostics, parameters, constraints) need filter params added.\n\nHandler pattern: parse optional params with .as_str()/.as_u64(), call ctx method to get full dataset, apply filters in closure, serialize with serde_json::to_value(). For non-existing entities in get_source_location, convert ToolError to JSON null.",
+  "analysis": "Three independent polish items from task 134 code review.\n\nS1 (tauri.conf.json): The shell plugin scope entry at plugins.shell.scope[0] has both `name` and `sidecar: true`. In Tauri v2, scope entries should only have `name` \u2014 the `sidecar` flag belongs at plugins.shell.sidecar (which is already set at line 21). Remove the redundant `sidecar: true` from the scope object.\n\nS2 (session.ts timeout): `invokeSdk()` spawns a Claude CLI subprocess but has no timeout. If the CLI hangs (auth issues, network problems, stuck process), the sidecar hangs indefinitely. Add a configurable `timeoutMs` to `SessionConfig` (default 300_000 = 5 minutes). Use `setTimeout` + `AbortController.abort('timeout')` to abort after the timeout. In `handleSendMessage`, differentiate timeout abort (emit error with timeout message) from user abort (emit done). Clear the timeout in a `finally` block when `invokeSdk` completes normally.\n\nS3 (auto-run detection): `index.ts` has fragile auto-run detection using `process.argv[1].endsWith('/index.js')` which could misfire when tsup bundles the output (filenames change). The fix is to extract auto-run to a separate `cli.ts` entrypoint that simply imports and calls `main()`. Remove auto-run from `index.ts` so it becomes a clean module export. Update the build script to also compile `cli.ts` as an entrypoint.\n\nExisting test patterns: vitest with `vi.mock('node:child_process')`, `vi.mocked(spawn)`, `createMockProcess()` helper, `PassThrough` streams for IPC testing. Tests are in `src/__tests__/*.test.ts`.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Update types.rs: Add SourceContent struct {content: String, file_path: String} with Serialize/Deserialize; add dirty: bool to OpenFileInfo; update SelectionInfo to {selected_entity: Option<String>, hovered_entity: Option<String>} to match MCP spec",
+      "description": "S1: Remove redundant `\"sidecar\": true` from plugins.shell.scope[0] in gui/src-tauri/tauri.conf.json. Tauri v2 scope entries should only have `name`. The top-level `plugins.shell.sidecar: true` already enables sidecar mode.",
       "status": "done",
-      "commit": "ad8dead",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Update context.rs: Change get_source return type to Result<SourceContent, ToolError>; update get_selection for new SelectionInfo fields; make MockToolContext configurable with public fields (source: SourceContent, open_files: Vec<OpenFileInfo>, diagnostics: Vec<DiagnosticInfo>, parameters: Vec<ParameterInfo>, constraints: Vec<ConstraintInfo>, eval_status: EvalStatusInfo, selection: SelectionInfo, source_locations: std::collections::HashMap<String, SourceLocationInfo>). Implement Default with sensible empty values. Update all trait method impls to return from fields. For get_source_location, return Err(ToolError::EngineError) if entity_path not in HashMap.",
-      "status": "done",
-      "commit": "ad8dead",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Update tools_tests.rs: Change all_stub_tools_return_not_implemented to only check write/navigation/reference tools (exclude the 8 read tools). Define READ_TOOLS const array with the 8 read tool names and filter them out of the assertion loop.",
-      "status": "done",
-      "commit": "ad8dead",
-      "tests": []
-    },
-    {
-      "id": "pre-4",
-      "description": "Update input schemas in read.rs for filtering tools: add file_path (optional string) and severity (optional enum) params to reify_get_diagnostics, add entity_path (optional string) param to reify_get_parameters, add status (optional enum) param to reify_get_constraints. Keep existing schemas for tools that already have correct params (get_source has file_path, get_source_location has required entity_path).",
-      "status": "done",
-      "commit": "ad8dead",
+      "commit": "7d41b30",
       "tests": []
     }
   ],
@@ -46,173 +27,95 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for reify_get_source in read_tools_tests.rs: (1) with explicit file_path param returns {content, file_path} JSON with correct values from mock, (2) without file_path param returns active file content from mock (mock configured with a default source), (3) error case when context returns ToolError propagates correctly. Configure MockToolContext with SourceContent {content: 'param x = 10mm', file_path: 'main.ri'}.",
+      "description": "S2: Write failing tests for SDK timeout in session.test.ts. Three new tests: (1) 'invokeSdk times out after configured timeoutMs' \u2014 use vi.useFakeTimers(), create a mock process that never completes (stdout stays open, no close event), construct SidecarSession with timeoutMs: 1000, send a message, advance fake timers by 1001ms via vi.advanceTimersByTime(), verify the session emits { type: 'error', id, message } where message contains 'timed out'. (2) 'normal completion clears timeout without error' \u2014 mock process that completes quickly, verify no timeout error is emitted (same as existing test, but with explicit timeoutMs set). (3) 'user abort still emits done, not timeout error' \u2014 same as existing abort test but with timeoutMs configured, verify the abort produces { type: 'done' } not a timeout error. Use the existing abort test mock pattern (signal.addEventListener('abort', ...)).",
       "status": "done",
-      "commit": "3a96959"
+      "commit": "62e0d30"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement reify_get_source handler in read.rs: parse optional file_path from params['file_path'].as_str(), call ctx.get_source(file_path), on Ok serialize SourceContent to JSON via serde_json::to_value(), on Err propagate ToolError.",
+      "description": "S2: Add `timeoutMs?: number` to `SessionConfig` interface (default 300_000). In `invokeSdk()`, after spawning the process, start `const timeoutId = setTimeout(() => { this.abortController?.abort('timeout'); }, this.config.timeoutMs ?? 300_000)`. In the finally block, call `clearTimeout(timeoutId)`. In `handleSendMessage()` catch block, change the abort check: if `this.abortController?.signal.reason === 'timeout'`, emit `{ type: 'error', id, message: 'Claude CLI timed out after Xms' }`; otherwise (user abort), emit `{ type: 'done', id }` as before.",
       "status": "done",
-      "commit": "bbe3342"
+      "commit": "3acc3fc"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for reify_get_open_files: (1) returns JSON array with path, language, and dirty fields for each open file, (2) returns empty array when no files open. Configure mock with two OpenFileInfo entries (one dirty: true, one dirty: false).",
+      "description": "S3: Verify existing entrypoint tests still pass (they import main from index.js and test it directly). No new test file needed \u2014 the existing 'entrypoint wiring' tests in session.test.ts fully cover main() behavior. This step is a verification checkpoint before the structural refactor.",
       "status": "done",
-      "commit": "3a96959"
+      "commit": "cd32800"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement reify_get_open_files handler: call ctx.get_open_files(), serialize Vec<OpenFileInfo> to JSON via serde_json::to_value().",
+      "description": "S3: Create gui/sidecar/src/cli.ts \u2014 a minimal entrypoint that imports main from './index.js' and calls `main().catch((err: unknown) => { console.error('Sidecar fatal error:', err); process.exit(1); })`. Remove the auto-run detection block (lines 60-71: isDirectRun variable and if block) from index.ts. Update gui/sidecar/package.json build script from `tsup src/index.ts --format esm --dts` to `tsup src/index.ts src/cli.ts --format esm --dts` so both library and CLI entrypoint are built.",
       "status": "done",
-      "commit": "bbe3342"
+      "commit": "ec357e4"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for reify_get_diagnostics: (1) returns all diagnostics with no filter params, (2) filters by file_path param (only diagnostics for that file), (3) filters by severity param 'error' (only errors returned), (4) combined filter by file_path and severity. Configure mock with 4 diagnostics: 2 errors and 1 warning in file_a, 1 error in file_b.",
+      "description": "B1 (review fix): Write a failing test 'stdout stream error does not leak timeout to next request' in the 'SidecarSession timeout' describe block. The test creates a session with timeoutMs: 60000. The first spawn mock creates a hanging process whose stdout emits an error event after a short delay (via `process.nextTick(() => stdout.destroy(new Error('I/O error')))`) \u2014 this simulates a stream failure that causes the `for await` async iterator to throw. After handleMessage resolves (with the error output), send a second send_message using a normal createMockProcess. Verify that the second request completes with `{ type: 'done' }` and does NOT receive a spurious `{ type: 'error', message: '...timed out...' }`. This test should FAIL against the current code because the first request's dangling timeout is not cleared when the for-await throws, and when it fires it aborts the second request's AbortController.",
       "status": "done",
-      "commit": "3a96959"
+      "commit": "7b1b358"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement reify_get_diagnostics handler: call ctx.get_diagnostics(), parse optional file_path and severity from params, filter Vec by file_path equality and severity equality (case-insensitive), serialize filtered results to JSON.",
+      "description": "B1 (review fix): In `invokeSdk()` in session.ts, wrap the `for await` loop (lines 147-184) in a try/finally block, moving `clearTimeout(timeoutId)` from its current inline position (line 187) into the `finally` clause. The `exitPromise` await and exit-code check remain AFTER the try/finally, since they don't need timeout protection \u2014 the timeout only guards the streaming read. Structure becomes:\n```\ntry {\n  for await (const line of createLineReader(proc.stdout!)) {\n    // ... existing parsing logic ...\n  }\n} finally {\n  clearTimeout(timeoutId);\n}\nconst exitCode = await exitPromise;\n```\nThis guarantees clearTimeout is called regardless of how the loop exits (normal completion, thrown stream error, or rethrown abort), preventing cross-request interference from leaked timeouts.",
       "status": "done",
-      "commit": "bbe3342"
-    },
-    {
-      "id": "step-7",
-      "type": "test",
-      "description": "Write failing tests for reify_get_parameters: (1) returns all parameters with no filter, (2) filters by entity_path prefix 'sketch1' matches 'sketch1/width' and 'sketch1/height' but not 'sketch2/depth', (3) returns empty array when prefix matches nothing. Configure mock with 3 parameters across entity paths sketch1/width, sketch1/height, sketch2/depth.",
-      "status": "done",
-      "commit": "3a96959"
-    },
-    {
-      "id": "step-8",
-      "type": "impl",
-      "description": "Implement reify_get_parameters handler: call ctx.get_parameters(), parse optional entity_path from params, filter by starts_with prefix matching on parameter's entity_path field, serialize filtered Vec<ParameterInfo> to JSON.",
-      "status": "done",
-      "commit": "bbe3342"
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Write failing tests for reify_get_constraints: (1) returns all constraints with no filter, (2) filters by status='satisfied' returns only satisfied constraints, (3) filters by status='violated' returns only violated, (4) returns empty array when filter matches nothing (status='indeterminate' with none configured). Configure mock with 2 satisfied and 1 violated constraint.",
-      "status": "done",
-      "commit": "3a96959"
-    },
-    {
-      "id": "step-10",
-      "type": "impl",
-      "description": "Implement reify_get_constraints handler: call ctx.get_constraints(), parse optional status from params, filter by exact status string match, serialize filtered Vec<ConstraintInfo> to JSON.",
-      "status": "done",
-      "commit": "bbe3342"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write failing test for reify_get_eval_status: returns JSON with phase, progress, and dirty_count fields from mock. Configure mock with eval_status {phase: 'evaluating', progress: Some(0.5), dirty_count: 3}.",
-      "status": "done",
-      "commit": "3a96959"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Implement reify_get_eval_status handler: call ctx.get_eval_status(), serialize EvalStatusInfo to JSON via serde_json::to_value().",
-      "status": "done",
-      "commit": "bbe3342"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing tests for reify_get_selection: (1) returns selected_entity and hovered_entity when both are set, (2) returns null values when nothing selected (both None). Configure mock with SelectionInfo {selected_entity: Some('bracket/body'), hovered_entity: Some('bracket/fillet1')}.",
-      "status": "done",
-      "commit": "3a96959"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Implement reify_get_selection handler: call ctx.get_selection(), serialize SelectionInfo to JSON via serde_json::to_value().",
-      "status": "done",
-      "commit": "bbe3342"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing tests for reify_get_source_location: (1) returns {file, line, column, end_line, end_column} JSON for existing entity path, (2) returns JSON null for non-existing entity (mock HashMap has no entry), (3) returns InvalidParams error when entity_path param is missing from input. Configure mock HashMap with 'bracket/body' -> SourceLocationInfo {file: 'main.ri', line: 5, column: 3, end_line: 20, end_column: 1}.",
-      "status": "done",
-      "commit": "3a96959"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Implement reify_get_source_location handler: parse required entity_path from params (return Err(ToolError::InvalidParams) if missing), call ctx.get_source_location(entity_path), on Ok serialize SourceLocationInfo to JSON, on Err (entity not found) return Ok(serde_json::Value::Null) rather than propagating error.",
-      "status": "done",
-      "commit": "bbe3342"
+      "commit": "d0b4678"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add SourceContent struct and change get_source trait return type from String to SourceContent",
-      "rationale": "The MCP spec requires returning {content, file_path} from reify_get_source. When file_path is None (active file), the handler needs to know the resolved path. Returning a SourceContent{content, file_path} from the trait lets the engine implementation communicate the actual path used, rather than the handler guessing or returning null."
+      "decision": "Use abort reason string 'timeout' to differentiate timeout abort from user abort",
+      "rationale": "AbortController.abort(reason) allows passing a reason. Default abort() sets reason to a DOMException('AbortError'). By passing the string 'timeout', handleSendMessage can check signal.reason === 'timeout' to emit an error for timeouts while still emitting 'done' for user aborts. This avoids adding extra boolean flags to the class."
     },
     {
-      "decision": "Add dirty: bool to OpenFileInfo alongside existing language field",
-      "rationale": "The MCP tool spec requires dirty state in the response. Since OpenFileInfo is the MCP response type (derives Serialize), adding the field here is cleaner than constructing ad-hoc JSON in the handler. The language field is kept as additional useful information."
+      "decision": "Add timeoutMs to SessionConfig rather than hardcoding",
+      "rationale": "Makes the timeout configurable for different environments and testable with short values or fake timers. Default of 300_000ms (5 minutes) matches the task suggestion. Tests can override with a short value like 1000ms."
     },
     {
-      "decision": "Replace SelectionInfo fields (entity_path, cell_ids) with (selected_entity, hovered_entity)",
-      "rationale": "The MCP spec defines the response as {selected_entity?, hovered_entity?}. The current fields don't match. Since this type exists solely as the MCP response type and no real implementation exists yet, now is the right time to align it with the spec."
+      "decision": "Move auto-run to separate cli.ts rather than using a more robust detection pattern",
+      "rationale": "The task explicitly suggests 'move auto-run to a separate entrypoint file' as an option. This is the cleanest solution: index.ts becomes a pure library module (exports main), cli.ts is the executable entrypoint for the sidecar binary. No fragile heuristics needed. tsup can build both entry points in a single command."
     },
     {
-      "decision": "Filtering done in tool handlers, not in context trait methods",
-      "rationale": "The trait methods return full unfiltered data (all diagnostics, all parameters, all constraints). Filtering by severity/file_path/entity_path/status is applied by the handler after retrieval. This keeps the trait simple (one method per data type) and makes filtering logic testable at the handler level. For large datasets, filtering could later be pushed into the trait, but YAGNI for now."
+      "decision": "Use vi.useFakeTimers() for timeout tests",
+      "rationale": "Fake timers give deterministic, fast tests without flakiness from real timing. We can advance time precisely to trigger the timeout. The mock process that never completes simulates the real hang scenario without actually waiting."
     },
     {
-      "decision": "Non-existing entity in get_source_location returns Ok(null JSON), not Err(ToolError)",
-      "rationale": "The spec says the tool returns location 'or null'. A missing entity isn't a tool error condition \u2014 it's a valid query with a null result. The handler catches ToolError from the context and converts to serde_json::Value::Null, letting MCP clients distinguish 'entity not found' (null) from 'something broke' (isError: true in JSON-RPC response)."
+      "decision": "No dedicated test file for cli.ts",
+      "rationale": "cli.ts is a trivial 3-line wrapper (import + call main + catch). The existing entrypoint wiring tests in session.test.ts already thoroughly test main(). Adding a test for cli.ts would require mocking the module import of main(), adding complexity for near-zero value."
     },
     {
-      "decision": "MockToolContext uses public fields with Default rather than builder pattern",
-      "rationale": "Public fields are the simplest approach for test configuration. Each test constructs a mock with the specific data it needs via struct update syntax (MockToolContext { diagnostics: vec![...], ..Default::default() }). A builder would add complexity without validation benefit. HashMap<String, SourceLocationInfo> supports testing existing vs non-existing entity lookups."
-    },
-    {
-      "decision": "Entity path filtering uses starts_with prefix matching",
-      "rationale": "The spec says reify_get_parameters is 'filterable by entity path prefix'. String::starts_with on the parameter's entity_path field provides hierarchical filtering: 'sketch1' matches 'sketch1/width', 'sketch1/height'. This matches typical entity path hierarchies in CAD parametric models."
+      "decision": "clearTimeout in try/finally around for-await loop only, not around exitPromise",
+      "rationale": "The timeout guards against the stdout streaming read hanging indefinitely. Once the for-await loop exits (normally or via error), the timeout's purpose is served and it must be cleared immediately. The subsequent exitPromise await and exit-code check don't need timeout protection \u2014 the process has already exited or will exit promptly after stdout closes. Keeping exitPromise outside the try/finally avoids masking exit-code errors with the finally clause."
     }
   ],
   "reuse": [
     {
-      "what": "ToolRegistry::register and call_tool pattern",
-      "where": "crates/reify-mcp/src/registry.rs",
-      "how": "Each read tool replaces its stub closure with a real implementation following the same Fn(serde_json::Value, &dyn ReifyToolContext) -> Result<serde_json::Value, ToolError> signature. No changes to registry needed."
+      "what": "createMockProcess() helper function",
+      "where": "gui/sidecar/src/__tests__/session.test.ts lines 19-38",
+      "how": "Reuse for the 'normal completion clears timeout' test. For the hanging process test, create a variant inline that never emits 'close' or ends stdout \u2014 just return an EventEmitter with PassThrough streams that stay open."
     },
     {
-      "what": "Existing MCP response types with Serialize derive",
-      "where": "crates/reify-mcp/src/types.rs",
-      "how": "DiagnosticInfo, ParameterInfo, ConstraintInfo, EvalStatusInfo, SourceLocationInfo already derive Serialize. Handlers use serde_json::to_value() to produce JSON responses directly. Only OpenFileInfo and SelectionInfo need field adjustments."
+      "what": "Existing abort test mock pattern",
+      "where": "gui/sidecar/src/__tests__/session.test.ts lines 136-184",
+      "how": "The existing abort test creates a hanging mock process with signal.addEventListener('abort', ...) to simulate the OS killing the process on abort. Reuse this exact pattern for both the timeout test (abort triggered by timer) and the 'user abort still works with timeout configured' test."
     },
     {
-      "what": "MockToolContext pattern from task 133",
-      "where": "crates/reify-mcp/src/context.rs",
-      "how": "Extend the existing mock with configurable public fields. Keep cfg(any(test, feature='test-support')) gate. Maintain Default impl compatibility so existing tests in registry_tests.rs and tools_tests.rs continue to work unchanged."
+      "what": "vi.mocked(spawn) + beforeEach reset pattern",
+      "where": "gui/sidecar/src/__tests__/session.test.ts lines 44-53",
+      "how": "All existing tests use vi.mock('node:child_process') at module level and vi.mocked(spawn).mockReset() in beforeEach. New timeout tests follow the same pattern within the existing describe('SidecarSession') block."
     },
     {
-      "what": "Test setup pattern from tools_tests.rs",
-      "where": "crates/reify-mcp/tests/tools_tests.rs",
-      "how": "Follow same pattern: create registry via setup_registry(), call registry.call_tool() with mock context and JSON params, assert on returned serde_json::Value. New read_tools_tests.rs uses identical imports and setup function."
-    },
-    {
-      "what": "serde_json::json! macro for schemas, params, and assertions",
-      "where": "Throughout crate",
-      "how": "Input schemas in read.rs use json! macro for schema objects. Test code uses json! for constructing params. Handler responses use serde_json::to_value for struct serialization."
+      "what": "outputs array collection via session.onOutput",
+      "where": "gui/sidecar/src/__tests__/session.test.ts lines 44-53",
+      "how": "Existing tests collect OutboundMessages in an outputs array. Timeout tests reuse this to assert on emitted error/done messages."
     }
   ],
-  "_session_id": "135-12989b7e",
-  "_created_at": "2026-03-23T15:10:12.338957+00:00"
+  "_session_id": "145-825f43ee",
+  "_created_at": "2026-03-23T16:16:47.635035+00:00",
+  "_schema_version": 1
 }
