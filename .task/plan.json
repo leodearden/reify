@@ -1,181 +1,107 @@
 {
-  "task_id": "134",
-  "title": "Node.js sidecar: Claude Code SDK, IPC protocol, system prompt",
+  "task_id": "130",
+  "title": "Fix flaky watcher tests: use unique temp directory names",
   "files": [
-    "gui/sidecar/package.json",
-    "gui/sidecar/tsconfig.json",
-    "gui/sidecar/src/index.ts",
-    "gui/sidecar/src/system-prompt.ts",
-    "gui/sidecar/src/ipc.ts",
-    "gui/sidecar/src/types.ts",
-    "gui/sidecar/src/session.ts",
-    "gui/sidecar/src/__tests__/ipc.test.ts",
-    "gui/sidecar/src/__tests__/system-prompt.test.ts",
-    "gui/sidecar/src/__tests__/session.test.ts",
-    "gui/sidecar/vitest.config.ts",
-    "gui/src-tauri/tauri.conf.json",
-    "gui/src-tauri/capabilities/default.json"
+    "Cargo.toml",
+    "gui/src-tauri/Cargo.toml",
+    "gui/src-tauri/src/tests/watcher_tests.rs",
+    "gui/src-tauri/src/tests/engine_tests.rs",
+    "gui/src-tauri/src/tests/commands_tests.rs"
   ],
   "modules": [
-    "gui/sidecar/src",
-    "gui/sidecar",
     "gui/src-tauri"
   ],
-  "analysis": "This task creates a new Node.js sidecar project at gui/sidecar/ that runs the Claude Code SDK headlessly, communicating with the Tauri backend via JSON-over-stdin/stdout IPC. The sidecar is a standalone Node.js project separate from the main gui/ frontend (which is SolidJS + Vite). Key observations from codebase exploration:\n\n1. **No existing sidecar code** \u2014 gui/sidecar/ doesn't exist yet, this is a greenfield scaffold.\n2. **Tauri v2 is in use** \u2014 tauri.conf.json has basic config but no sidecar/shell plugin yet. Tauri v2 sidecars require the `tauri-plugin-shell` with sidecar permissions.\n3. **M7 architecture decisions** \u2014 Claude Code SDK with custom SolidJS chat UI (not embedded PTY), three-layer progressive disclosure for language reference (L1: system prompt briefing, L2: reify_language_reference tool, L3: full spec file read).\n4. **The sidecar needs its own test infrastructure** \u2014 separate vitest config since it's a distinct Node.js project (no SolidJS, no browser DOM).\n5. **IPC protocol** \u2014 JSON newline-delimited over stdin/stdout, matching the Tauri sidecar communication pattern.\n6. **System prompt** \u2014 Must be under 3K tokens, include condensed language briefing and MCP tool usage guidelines. Three-layer progressive disclosure: L1 system prompt, L2 reify_language_reference(topic) tool, L3 full spec file.\n7. **Tauri config changes needed** \u2014 Add shell plugin with sidecar permissions to tauri.conf.json and capabilities/default.json.\n8. **Existing test patterns** \u2014 gui/src/__tests__/ uses vitest with vi.mock() for dependency mocking (e.g., bridge.test.ts mocks @tauri-apps/api). gui/test/ has grammar tests using vitest with fs reads. We follow the same vitest patterns.\n9. **Language spec** \u2014 2531 lines at docs/reify-language-spec.md. System prompt needs a condensed ~2K token briefing covering structure/param/let/auto/constraint syntax, type system, units, geometry ops.",
+  "analysis": "Three test files in gui/src-tauri/src/tests/ use hardcoded temp directory names (e.g., /tmp/reify-watcher-test-1, /tmp/reify-gui-test-export) that collide when multiple test runs or orchestrator worktrees execute concurrently. There are 8 total instances across 3 files:\n\n- watcher_tests.rs: 3 tests with reify-watcher-test-{1,2,3}\n- engine_tests.rs: 2 tests with reify-gui-test-export-{e2e,no-clone}\n- commands_tests.rs: 3 tests with reify-gui-test{,-export,-e2e-export}\n\nFix: Add the `tempfile` crate as a dev-dependency and replace all hardcoded temp dirs with `tempfile::TempDir::new()` or `tempfile::tempdir()`. This provides OS-guaranteed unique names (via mkdtemp) and automatic cleanup on drop, eliminating both the collision bug and the manual cleanup code.\n\nThe `tempfile` crate is the standard Rust approach for test temp directories. It is not currently in the workspace dependencies, so it must be added to both Cargo.toml (workspace) and gui/src-tauri/Cargo.toml (dev-dep).\n\nSince we're fixing test infrastructure (not production code), the TDD cycle is: fix the test file, then verify tests pass. Each test file is a separate atomic step.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create gui/sidecar/ directory structure with package.json (name: @reify/sidecar, type: module, @anthropic-ai/claude-code SDK dependency, vitest + typescript for dev, tsup for bundling), tsconfig.json (strict, ESNext, NodeNext moduleResolution, outDir: dist), and vitest.config.ts (node environment, no SolidJS plugin, globals: true)",
+      "description": "Add `tempfile = \"3\"` to workspace dependencies in root Cargo.toml and `tempfile.workspace = true` to [dev-dependencies] in gui/src-tauri/Cargo.toml",
       "status": "done",
-      "commit": "1ea20f0",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Update gui/src-tauri/tauri.conf.json to add sidecar configuration: add 'bundle.externalBin' array with sidecar binary path ('sidecar/reify-sidecar'), and add 'plugins.shell' config with sidecar scope. Update gui/src-tauri/capabilities/default.json to add 'shell:allow-execute' permission for the sidecar.",
-      "status": "done",
-      "commit": "91e3334",
+      "commit": "29d1875",
       "tests": []
     }
   ],
   "steps": [
     {
       "id": "step-1",
-      "type": "test",
-      "description": "Write failing tests for IPC message type definitions and serialization in gui/sidecar/src/__tests__/ipc.test.ts: (1) parseInboundMessage correctly parses send_message with text and optional context fields, (2) parseInboundMessage correctly parses abort message, (3) parseInboundMessage correctly parses clear_session message, (4) parseInboundMessage throws on invalid JSON, (5) parseInboundMessage throws on unknown message type, (6) formatOutboundMessage serializes text_delta correctly, (7) formatOutboundMessage serializes each outbound type (thinking_delta, tool_call, tool_result, done, error, ready) correctly, (8) formatOutboundMessage always ends with newline.",
+      "type": "impl",
+      "description": "Fix watcher_tests.rs: Replace 3 hardcoded temp dir paths (reify-watcher-test-{1,2,3}) with tempfile::tempdir(). Each test creates a TempDir via tempfile::tempdir().unwrap(), uses dir.path() for the watch directory. The TempDir auto-cleans on drop so remove all manual cleanup code (remove_file, remove_dir calls). Use a named `_dir` binding (not `_`) so TempDir lives for the full test duration and the directory isn't deleted prematurely.",
       "status": "done",
-      "commit": "9ab7266"
+      "commit": "9868119"
     },
     {
       "id": "step-2",
-      "type": "impl",
-      "description": "Implement gui/sidecar/src/types.ts with TypeScript interfaces for all IPC message types. InboundMessage is a discriminated union on 'type' field: SendMessage (type:'send_message', id:string, text:string, context?:{selected_entity?, diagnostics?, constraints?}), Abort (type:'abort'), ClearSession (type:'clear_session'). OutboundMessage is a discriminated union: TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, Error, Ready. Implement gui/sidecar/src/ipc.ts with parseInboundMessage(line: string): InboundMessage and formatOutboundMessage(msg: OutboundMessage): string functions.",
+      "type": "test",
+      "description": "Verify all 3 watcher tests pass: cargo test -p reify-gui --lib -- watcher_tests",
       "status": "done",
-      "commit": "c5be1a2"
+      "commit": "9868119"
     },
     {
       "id": "step-3",
-      "type": "test",
-      "description": "Write failing tests for IPC stream I/O in gui/sidecar/src/__tests__/ipc.test.ts (new describe block): (1) createLineReader yields complete JSON lines from a mock Readable stream, (2) createLineReader handles partial reads (message split across chunks), (3) createLineReader handles multiple messages in one chunk, (4) sendMessage writes JSON + newline to a mock Writable stream, (5) sendMessage handles backpressure (waits for drain). Use PassThrough streams for testing.",
+      "type": "impl",
+      "description": "Fix engine_tests.rs: Replace 2 hardcoded temp dir paths (reify-gui-test-export-e2e in export_end_to_end, reify-gui-test-export-no-clone in export_no_unnecessary_clone) with tempfile::tempdir(). Remove manual cleanup code. Use named binding so TempDir stays alive.",
       "status": "done",
-      "commit": "3090e29"
+      "commit": "4b4a6b9"
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Implement createLineReader(readable: Readable): AsyncGenerator<string> as an async generator that buffers input and yields complete lines. Implement sendMessage(writable: Writable, msg: OutboundMessage): Promise<void> that calls formatOutboundMessage and writes to the stream, handling backpressure via drain events.",
+      "type": "test",
+      "description": "Verify engine export tests pass: cargo test -p reify-gui --lib -- engine_tests::export",
       "status": "done",
-      "commit": "7fe0346"
+      "commit": "4b4a6b9"
     },
     {
       "id": "step-5",
-      "type": "test",
-      "description": "Write failing tests for system prompt in gui/sidecar/src/__tests__/system-prompt.test.ts: (1) SYSTEM_PROMPT is under 3000 tokens (estimated as characters/4, with assertion < 12000 chars), (2) SYSTEM_PROMPT contains key language keywords ('structure', 'param', 'let', 'auto', 'constraint'), (3) SYSTEM_PROMPT mentions MCP tools (reify_get_source, reify_get_diagnostics, reify_language_reference), (4) SYSTEM_PROMPT mentions the Reify GUI context, (5) buildSystemPrompt() returns the prompt string, (6) buildSystemPrompt includes working directory when provided.",
+      "type": "impl",
+      "description": "Fix commands_tests.rs: Replace 3 hardcoded temp dir paths (reify-gui-test in save_and_open_file_roundtrip, reify-gui-test-export in export_writes_file, reify-gui-test-e2e-export in end_to_end_export_via_impl) with tempfile::tempdir(). Remove manual cleanup code. Use named binding so TempDir stays alive.",
       "status": "done",
-      "commit": "88c37b9"
+      "commit": "ef1dba7"
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Implement gui/sidecar/src/system-prompt.ts exporting SYSTEM_PROMPT constant and buildSystemPrompt(options?) function. The prompt (~2-3K tokens) includes: (A) Role: engineering design assistant in Reify GUI, (B) Language briefing: declaration types (structure, enum, trait), member kinds (param with default + type annotation, let for derived values, auto for solver-determined, constraint expressions), expression syntax (arithmetic, comparison, logical, conditional, units like 80mm/90deg), type system (Scalar, Int, Real, Bool, String, List, Set, Map, Option), geometry operations (box, cylinder, fillet, chamfer, union, subtract, intersect), (C) MCP tool listing with brief descriptions, (D) Tool usage guidelines and design authoring conventions, (E) Example showing bracket.ri pattern.",
+      "type": "test",
+      "description": "Verify all commands tests pass: cargo test -p reify-gui --lib -- commands_tests",
       "status": "done",
-      "commit": "7f2613b"
+      "commit": "ef1dba7"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for SidecarSession in gui/sidecar/src/__tests__/session.test.ts: (1) constructor creates session with config, (2) init() calls onOutput with ready message, (3) handleMessage with send_message eventually emits done message, (4) handleMessage with abort sets abort flag / cancels in-flight, (5) handleMessage with clear_session resets conversation history and emits ready, (6) SDK errors (auth failure) produce error outbound message with helpful text, (7) multiple sequential messages maintain conversation context. Mock @anthropic-ai/claude-code SDK.",
+      "description": "Run full gui test suite to verify no regressions: cargo test -p reify-gui --lib. Confirm zero hardcoded temp dir patterns remain via grep.",
       "status": "done",
-      "commit": "ebc253e"
-    },
-    {
-      "id": "step-8",
-      "type": "impl",
-      "description": "Implement gui/sidecar/src/session.ts with SidecarSession class. Constructor takes config: { model: string, workingDirectory: string, systemPrompt: string }. Has onOutput: (msg: OutboundMessage) => void callback. init() sets up SDK client and emits ready. handleMessage(msg: InboundMessage) dispatches by type. For send_message: calls Claude Code SDK with conversation history, system prompt, and extended thinking. Streams SDK events, mapping them to outbound messages: text deltas -> text_delta, thinking deltas -> thinking_delta, tool use -> tool_call/tool_result. Emits done when complete. For abort: uses AbortController to cancel in-flight request. For clear_session: clears conversation history array. Error handling: wraps SDK calls in try/catch, maps known error types to descriptive error messages.",
-      "status": "done",
-      "commit": "00058b3"
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Write failing integration test for sidecar entrypoint in gui/sidecar/src/__tests__/session.test.ts (new describe block 'entrypoint wiring'): (1) main() function reads from provided input stream and writes to provided output stream, (2) sending a valid JSON line through input produces outbound messages on output, (3) process sends ready message on startup. Use mock streams and mock session.",
-      "status": "done",
-      "commit": "a9fd5f8"
-    },
-    {
-      "id": "step-10",
-      "type": "impl",
-      "description": "Implement gui/sidecar/src/index.ts as the sidecar entrypoint. Exports main(input?: Readable, output?: Writable) for testability (defaults to process.stdin/stdout). Creates SidecarSession with buildSystemPrompt(), wires createLineReader on input through parseInboundMessage to session.handleMessage, wires session.onOutput through sendMessage to output. Handles SIGTERM/SIGINT for clean shutdown. Calls session.init() then enters the message processing loop. If run directly (not imported), calls main().",
-      "status": "done",
-      "commit": "b717df2"
+      "commit": "ef1dba7"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Separate package.json and vitest config for gui/sidecar/ instead of sharing with gui/",
-      "rationale": "The sidecar is a Node.js-only project (no browser, no SolidJS, no Vite). It needs node environment for tests, NodeNext module resolution, and different dependencies. Keeping it separate avoids contaminating the frontend build and allows independent versioning."
+      "decision": "Use the `tempfile` crate instead of manual PID/UUID suffix approach",
+      "rationale": "tempfile::TempDir uses OS-provided mkdtemp for guaranteed-unique names, auto-cleans on drop (eliminating manual cleanup code), and is the standard Rust testing practice. The task description lists it as an acceptable approach. It also makes tests cleaner by removing 2-3 lines of cleanup boilerplate per test."
     },
     {
-      "decision": "IPC protocol uses JSON newline-delimited (JSONL) format over stdin/stdout",
-      "rationale": "This matches Tauri v2's sidecar communication pattern. Each message is a single JSON object followed by a newline, making it trivial to parse line-by-line with no framing protocol needed. This is the standard pattern for Tauri sidecars."
+      "decision": "Fix commands_tests.rs in addition to the explicitly mentioned files",
+      "rationale": "commands_tests.rs has the same hardcoded temp dir pattern (3 instances) and is equally susceptible to the same race conditions. The task says 'also check engine_tests.rs for the same pattern' \u2014 commands_tests.rs has the same issue and should be fixed for consistency and correctness."
     },
     {
-      "decision": "System prompt in a separate system-prompt.ts file with buildSystemPrompt() function",
-      "rationale": "Task spec explicitly requests separate file for easy editing. A function allows injecting runtime context like working directory. Follows M7 three-layer progressive disclosure: this is Layer 1 (condensed briefing), referencing Layer 2 (reify_language_reference MCP tool) for deeper knowledge."
+      "decision": "Use named `_dir` binding (not underscore-prefixed drop) to keep TempDir alive",
+      "rationale": "TempDir deletes its directory when dropped. Watcher tests need the directory to persist for the duration of the test (FileWatcher watches it). A plain `_` binding drops immediately; a named binding like `dir` or `tmp_dir` lives until end of scope. We'll use `let dir = tempfile::tempdir().unwrap()` and `dir.path()` to get the PathBuf."
     },
     {
-      "decision": "SidecarSession class encapsulates all SDK interaction behind a testable interface",
-      "rationale": "By separating session logic from I/O (stdin/stdout), tests can mock the Claude Code SDK and verify message routing without making real API calls. The session manages conversation state, abort handles, and error mapping. The onOutput callback pattern decouples output generation from transport."
-    },
-    {
-      "decision": "Token count estimation uses character/4 heuristic rather than a tokenizer dependency",
-      "rationale": "The task says 'under 3K tokens' for the system prompt. Adding tiktoken or similar is heavyweight. Character/4 is a reasonable upper-bound estimate for English text. We use < 12000 chars as the test assertion, which is conservative."
-    },
-    {
-      "decision": "Types module (types.ts) separate from IPC I/O module (ipc.ts) and session module (session.ts)",
-      "rationale": "Three-way separation: types.ts defines pure interfaces/types, ipc.ts handles serialization and stream I/O, session.ts manages SDK interaction and state. This allows independent testing and clear dependency direction: session depends on types, ipc depends on types, index.ts wires them together."
-    },
-    {
-      "decision": "Entrypoint main() accepts optional stream parameters for testability",
-      "rationale": "By allowing injection of input/output streams (defaulting to process.stdin/stdout), the entrypoint can be tested without spawning a child process. This follows the same pattern used in many CLI tools for testability."
-    },
-    {
-      "decision": "Use tsup for bundling the sidecar into a single JS file",
-      "rationale": "Tauri sidecars benefit from a single script file for clean bundling. tsup (built on esbuild) is fast, handles TypeScript + dependencies in one step, and produces a single CJS/ESM file runnable with Node.js."
+      "decision": "Add tempfile as a workspace dependency following project conventions",
+      "rationale": "The project uses workspace dependency management \u2014 all external crates are declared in [workspace.dependencies] then referenced with `workspace = true` in member crates. Adding tempfile at workspace level is consistent with existing patterns (e.g., notify, tokio, serde_json)."
     }
   ],
   "reuse": [
     {
-      "what": "Vitest test patterns from gui/src/__tests__/bridge.test.ts",
-      "where": "gui/sidecar/src/__tests__/*.test.ts",
-      "how": "Follow same describe/it/expect patterns with vitest. Use vi.fn() and vi.mock() for mocking SDK dependencies, matching how bridge.test.ts mocks @tauri-apps/api/core and @tauri-apps/api/event."
+      "what": "Workspace dependency pattern",
+      "where": "Cargo.toml [workspace.dependencies] + gui/src-tauri/Cargo.toml [dev-dependencies]",
+      "how": "Add `tempfile = \"3\"` to workspace deps, then `tempfile.workspace = true` to gui crate dev-deps, following existing patterns like reify-test-support.workspace = true"
     },
     {
-      "what": "IPC type patterns from gui/src-tauri/src/types.rs (GuiState, ValueData, ConstraintData)",
-      "where": "gui/sidecar/src/types.ts (context fields in SendMessage)",
-      "how": "The Rust types inform the context object shape in send_message. The TypeScript types for diagnostics, constraints, and selected_entity should be compatible with the Tauri backend's existing type system."
-    },
-    {
-      "what": "Reify language spec from docs/reify-language-spec.md (2531 lines)",
-      "where": "gui/sidecar/src/system-prompt.ts",
-      "how": "Condense key language constructs (Sections 2-8: lexical structure, types, declarations, expressions, constraints, geometry) into ~2K token briefing for the system prompt."
-    },
-    {
-      "what": "Example bracket.ri file",
-      "where": "gui/sidecar/src/system-prompt.ts",
-      "how": "Include a condensed version as an example in the system prompt to show language look and feel (structure, param, let, constraint, geometry operations)."
-    },
-    {
-      "what": "M7 three-layer progressive disclosure architecture decision",
-      "where": "gui/sidecar/src/system-prompt.ts",
-      "how": "Implement Layer 1 (system prompt briefing) and reference Layer 2 (reify_language_reference(topic) MCP tool) in the prompt text, following the architecture decision stored in memory."
-    },
-    {
-      "what": "Existing tauri.conf.json structure and capabilities pattern",
-      "where": "gui/src-tauri/tauri.conf.json, gui/src-tauri/capabilities/default.json",
-      "how": "Extend existing config with sidecar-specific entries (externalBin, shell plugin permissions) following Tauri v2 conventions. Preserve all existing config."
+      "what": "Existing test structure and assertions",
+      "where": "gui/src-tauri/src/tests/{watcher,engine,commands}_tests.rs",
+      "how": "All test logic, assertions, and structure remain identical \u2014 only the temp directory creation line changes (hardcoded path \u2192 tempfile::tempdir()) and manual cleanup lines are removed"
     }
   ],
-  "_session_id": "134-8a4cffb4",
-  "_created_at": "2026-03-22T21:49:59.603628+00:00"
+  "_session_id": "130-fbc11d6c",
+  "_created_at": "2026-03-23T15:07:32.816749+00:00"
 }
