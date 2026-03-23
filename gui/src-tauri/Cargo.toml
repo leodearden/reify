@@ -30,6 +30,7 @@ reify-geometry.workspace = true
 reify-kernel-occt = { workspace = true, optional = true }
 reify-stdlib.workspace = true
 reify-lsp.workspace = true
+reify-mcp.workspace = true
 tower-lsp.workspace = true
 tauri = { workspace = true, optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
@@ -43,5 +44,6 @@ tauri-build = { version = "2", features = [] }
 
 [dev-dependencies]
 reify-test-support.workspace = true
+reify-mcp = { workspace = true, features = ["test-support"] }
 reify-lsp = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
