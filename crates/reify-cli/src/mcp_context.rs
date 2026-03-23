@@ -451,7 +451,9 @@ impl ReifyToolContext for CliToolContext {
         // Apply the parameter change via incremental edit
         let engine = state.engine.as_mut().unwrap();
         engine.set_param_and_invalidate(&cell_id_obj, new_value.clone());
-        let _ = engine.edit_param(cell_id_obj, new_value.clone());
+        engine
+            .edit_param(cell_id_obj, new_value.clone())
+            .map_err(|e| ToolError::EngineError(format!("incremental eval failed: {e}")))?;
 
         let unit = dimension_unit(&ty);
         Ok(SetParamResult {
