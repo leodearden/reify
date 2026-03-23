@@ -99,6 +99,50 @@ describe('renderMarkdown', () => {
     });
   });
 
+  describe('link protocol validation', () => {
+    it('allows http:// URLs', () => {
+      const result = renderMarkdown('[link](http://example.com)');
+      expect(result).toContain('<a href="http://example.com"');
+    });
+
+    it('allows https:// URLs', () => {
+      const result = renderMarkdown('[link](https://example.com)');
+      expect(result).toContain('<a href="https://example.com"');
+    });
+
+    it('blocks javascript: URLs', () => {
+      const result = renderMarkdown('[click](javascript:alert(document.cookie))');
+      expect(result).not.toContain('href="javascript:');
+      expect(result).not.toContain('<a');
+    });
+
+    it('blocks javascript: with mixed case', () => {
+      const result = renderMarkdown('[x](JavaScript:alert(1))');
+      expect(result).not.toContain('<a');
+    });
+
+    it('blocks data: URLs', () => {
+      const result = renderMarkdown('[x](data:text/html,<script>alert(1)</script>)');
+      expect(result).not.toContain('href="data:');
+    });
+
+    it('blocks vbscript: URLs', () => {
+      const result = renderMarkdown('[x](vbscript:MsgBox)');
+      expect(result).not.toContain('<a');
+    });
+
+    it('renders blocked link text as plain text', () => {
+      const result = renderMarkdown('[click me](javascript:alert(1))');
+      expect(result).toContain('click me');
+      expect(result).not.toContain('<a');
+    });
+
+    it('allows mailto: URLs', () => {
+      const result = renderMarkdown('[email](mailto:a@b.com)');
+      expect(result).toContain('<a href="mailto:a@b.com"');
+    });
+  });
+
   describe('combined', () => {
     it('handles mixed markdown in a single input', () => {
       const input = '# Hello\n\nThis is **bold** and *italic*.\n\n```js\nconst x = 1;\n```\n\n- one\n- two';
