@@ -97,3 +97,55 @@ describe('ChatPanel message list rendering', () => {
     expect(messageEls.length).toBe(testMessages.length);
   });
 });
+
+describe('ChatPanel input bar', () => {
+  it('textarea renders with placeholder', () => {
+    render(() => <ChatPanel {...defaultProps()} />);
+    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    expect(textarea.placeholder).toBe('Ask Claude about your design...');
+  });
+
+  it('typing and pressing Enter calls onSendMessage with text', () => {
+    const onSendMessage = vi.fn();
+    render(() => <ChatPanel {...defaultProps()} onSendMessage={onSendMessage} />);
+    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    fireEvent.input(textarea, { target: { value: 'Hello Claude' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    expect(onSendMessage).toHaveBeenCalledWith('Hello Claude');
+  });
+
+  it('input is cleared after sending', () => {
+    const onSendMessage = vi.fn();
+    render(() => <ChatPanel {...defaultProps()} onSendMessage={onSendMessage} />);
+    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    fireEvent.input(textarea, { target: { value: 'Hello Claude' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    expect(textarea.value).toBe('');
+  });
+
+  it('Shift+Enter does NOT call onSendMessage', () => {
+    const onSendMessage = vi.fn();
+    render(() => <ChatPanel {...defaultProps()} onSendMessage={onSendMessage} />);
+    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    fireEvent.input(textarea, { target: { value: 'Hello Claude' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true });
+    expect(onSendMessage).not.toHaveBeenCalled();
+  });
+
+  it('Enter on empty input does NOT call onSendMessage', () => {
+    const onSendMessage = vi.fn();
+    render(() => <ChatPanel {...defaultProps()} onSendMessage={onSendMessage} />);
+    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    expect(onSendMessage).not.toHaveBeenCalled();
+  });
+
+  it('send button click calls onSendMessage with current input text', () => {
+    const onSendMessage = vi.fn();
+    render(() => <ChatPanel {...defaultProps()} onSendMessage={onSendMessage} />);
+    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    fireEvent.input(textarea, { target: { value: 'Hi!' } });
+    fireEvent.click(screen.getByTestId('chat-send-btn'));
+    expect(onSendMessage).toHaveBeenCalledWith('Hi!');
+  });
+});
