@@ -1,6 +1,7 @@
 import { batch } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import type { OutboundMessage } from '../../sidecar/src/types';
+import { classifyError } from '../utils/errorClassifier';
 
 // --- Domain types for UI consumption ---
 
@@ -226,6 +227,9 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
             }),
           );
         });
+        // Auto-classify error and add system message
+        const classified = classifyError(msg.message);
+        addSystemMessage(classified.type, classified.userMessage);
         break;
       }
     }
