@@ -277,6 +277,167 @@ describe('SidecarSession', () => {
   });
 });
 
+describe('SidecarSession timeout', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    vi.mocked(spawn).mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('invokeSdk times out after configured timeoutMs', async () => {
+    vi.useFakeTimers();
+
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are a test assistant.',
+      timeoutMs: 1000,
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    // Create a process that hangs forever (stdout stays open, no close event)
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+    mockProc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation(((_cmd: string, _args: string[], opts: any) => {
+      // When aborted, end the process
+      if (opts?.signal) {
+        opts.signal.addEventListener('abort', () => {
+          stdout.end();
+          mockProc.exitCode = null;
+          mockProc.emit('close', null);
+        });
+      }
+      return mockProc;
+    }) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    // Start a message (will hang)
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-timeout',
+      text: 'Hanging task',
+    });
+
+    // Advance time past the timeout
+    vi.advanceTimersByTime(1001);
+
+    // Wait for the promise to resolve
+    await msgPromise;
+
+    // Should emit an error with timeout message, NOT a done
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).message).toContain('timed out');
+    expect((errors[0] as any).id).toBe('msg-timeout');
+
+    // Should NOT emit a bare done
+    const dones = outputs.filter((o) => o.type === 'done');
+    expect(dones).toHaveLength(0);
+
+    vi.useRealTimers();
+  });
+
+  it('normal completion clears timeout without error', async () => {
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are a test assistant.',
+      timeoutMs: 5000,
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Response' }] } },
+      { type: 'result', session_id: 'sess-ok' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({
+      type: 'send_message',
+      id: 'msg-ok',
+      text: 'Quick task',
+    });
+
+    // Should emit done, NOT error
+    const dones = outputs.filter((o) => o.type === 'done');
+    expect(dones).toHaveLength(1);
+    expect(dones[0]).toEqual({ type: 'done', id: 'msg-ok' });
+
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(0);
+  });
+
+  it('user abort still emits done, not timeout error', async () => {
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are a test assistant.',
+      timeoutMs: 60000,
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    // Create a hanging process that responds to abort
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+    mockProc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation(((_cmd: string, _args: string[], opts: any) => {
+      if (opts?.signal) {
+        opts.signal.addEventListener('abort', () => {
+          stdout.end();
+          mockProc.exitCode = null;
+          mockProc.emit('close', null);
+        });
+      }
+      return mockProc;
+    }) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    // Start a message
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-abort',
+      text: 'Long task',
+    });
+
+    // Give it a tick to set up
+    await new Promise((r) => setTimeout(r, 10));
+
+    // User abort (not timeout)
+    await session.handleMessage({ type: 'abort' });
+    await msgPromise;
+
+    // Should emit done (user abort), NOT error
+    const doneMsg = outputs.find((o) => o.type === 'done');
+    expect(doneMsg).toBeDefined();
+    expect(doneMsg).toEqual({ type: 'done', id: 'msg-abort' });
+
+    // Should NOT emit error
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(0);
+  });
+});
+
 describe('entrypoint wiring', () => {
   /**
    * Helper to collect all newline-delimited JSON messages from
