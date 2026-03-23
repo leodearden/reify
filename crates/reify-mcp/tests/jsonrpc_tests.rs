@@ -183,3 +183,83 @@ fn dispatch_array_id_returns_invalid_request() {
 
     assert_eq!(response["error"]["code"], INVALID_REQUEST);
 }
+
+// --- S2+S3: tools/call input validation tests ---
+
+#[test]
+fn dispatch_tools_call_missing_name_returns_invalid_params() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+    let dispatcher = McpDispatcher::new(&registry, &ctx);
+
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "tools/call",
+        "params": {
+            "arguments": {}
+        }
+    });
+    let response_str = dispatcher.dispatch(&request.to_string());
+    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+    // Should be an MCP isError content response
+    assert_eq!(response["result"]["isError"], true);
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.to_lowercase().contains("name"),
+        "Error should mention 'name', got: {text}"
+    );
+}
+
+#[test]
+fn dispatch_tools_call_numeric_name_returns_invalid_params() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+    let dispatcher = McpDispatcher::new(&registry, &ctx);
+
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "tools/call",
+        "params": {
+            "name": 123,
+            "arguments": {}
+        }
+    });
+    let response_str = dispatcher.dispatch(&request.to_string());
+    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+    assert_eq!(response["result"]["isError"], true);
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.to_lowercase().contains("name"),
+        "Error should mention 'name', got: {text}"
+    );
+}
+
+#[test]
+fn dispatch_tools_call_array_arguments_returns_invalid_params() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+    let dispatcher = McpDispatcher::new(&registry, &ctx);
+
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 12,
+        "method": "tools/call",
+        "params": {
+            "name": "reify_get_source",
+            "arguments": [1, 2]
+        }
+    });
+    let response_str = dispatcher.dispatch(&request.to_string());
+    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+    assert_eq!(response["result"]["isError"], true);
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.to_lowercase().contains("arguments"),
+        "Error should mention 'arguments', got: {text}"
+    );
+}
