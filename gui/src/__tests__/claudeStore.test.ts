@@ -161,7 +161,7 @@ describe('claudeStore', () => {
     it('calls onSend callback with message text and context', () => {
       const onSend = vi.fn();
       const { sendMessage } = makeStore({ onSend });
-      const ctx = { selected_entity: 'box1' };
+      const ctx = { selectedEntity: 'box1' };
       sendMessage('hello', ctx);
       expect(onSend).toHaveBeenCalledTimes(1);
       expect(onSend).toHaveBeenCalledWith(expect.any(String), 'hello', ctx);
