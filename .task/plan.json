@@ -1,40 +1,44 @@
 {
-  "task_id": "134",
-  "title": "Node.js sidecar: Claude Code SDK, IPC protocol, system prompt",
+  "task_id": "135",
+  "title": "Implement MCP read tools",
   "files": [
-    "gui/sidecar/package.json",
-    "gui/sidecar/tsconfig.json",
-    "gui/sidecar/src/index.ts",
-    "gui/sidecar/src/system-prompt.ts",
-    "gui/sidecar/src/ipc.ts",
-    "gui/sidecar/src/types.ts",
-    "gui/sidecar/src/session.ts",
-    "gui/sidecar/src/__tests__/ipc.test.ts",
-    "gui/sidecar/src/__tests__/system-prompt.test.ts",
-    "gui/sidecar/src/__tests__/session.test.ts",
-    "gui/sidecar/vitest.config.ts",
-    "gui/src-tauri/tauri.conf.json",
-    "gui/src-tauri/capabilities/default.json"
+    "crates/reify-mcp/src/types.rs",
+    "crates/reify-mcp/src/context.rs",
+    "crates/reify-mcp/src/tools/read.rs",
+    "crates/reify-mcp/tests/tools_tests.rs",
+    "crates/reify-mcp/tests/read_tools_tests.rs"
   ],
   "modules": [
-    "gui/sidecar/src",
-    "gui/sidecar",
-    "gui/src-tauri"
+    "crates/reify-mcp"
   ],
-  "analysis": "This task creates a new Node.js sidecar project at gui/sidecar/ that runs the Claude Code SDK headlessly, communicating with the Tauri backend via JSON-over-stdin/stdout IPC. The sidecar is a standalone Node.js project separate from the main gui/ frontend (which is SolidJS + Vite). Key observations from codebase exploration:\n\n1. **No existing sidecar code** \u2014 gui/sidecar/ doesn't exist yet, this is a greenfield scaffold.\n2. **Tauri v2 is in use** \u2014 tauri.conf.json has basic config but no sidecar/shell plugin yet. Tauri v2 sidecars require the `tauri-plugin-shell` with sidecar permissions.\n3. **M7 architecture decisions** \u2014 Claude Code SDK with custom SolidJS chat UI (not embedded PTY), three-layer progressive disclosure for language reference (L1: system prompt briefing, L2: reify_language_reference tool, L3: full spec file read).\n4. **The sidecar needs its own test infrastructure** \u2014 separate vitest config since it's a distinct Node.js project (no SolidJS, no browser DOM).\n5. **IPC protocol** \u2014 JSON newline-delimited over stdin/stdout, matching the Tauri sidecar communication pattern.\n6. **System prompt** \u2014 Must be under 3K tokens, include condensed language briefing and MCP tool usage guidelines. Three-layer progressive disclosure: L1 system prompt, L2 reify_language_reference(topic) tool, L3 full spec file.\n7. **Tauri config changes needed** \u2014 Add shell plugin with sidecar permissions to tauri.conf.json and capabilities/default.json.\n8. **Existing test patterns** \u2014 gui/src/__tests__/ uses vitest with vi.mock() for dependency mocking (e.g., bridge.test.ts mocks @tauri-apps/api). gui/test/ has grammar tests using vitest with fs reads. We follow the same vitest patterns.\n9. **Language spec** \u2014 2531 lines at docs/reify-language-spec.md. System prompt needs a condensed ~2K token briefing covering structure/param/let/auto/constraint syntax, type system, units, geometry ops.",
+  "analysis": "Task 133 created the reify-mcp crate with 16 tool stubs (8 read, 5 write, 2 navigation, 1 reference), a ReifyToolContext trait, MockToolContext, ToolRegistry, McpDispatcher (JSON-RPC 2.0), and McpServer (dual-mode transport). All tool handlers currently return Err(ToolError::NotImplemented).\n\nThis task implements the 8 read tools in tools/read.rs. Each handler must: (1) parse input params from serde_json::Value, (2) call the corresponding ReifyToolContext trait method, (3) apply client-side filtering (by severity, file_path, entity_path prefix, status), and (4) serialize the result to JSON.\n\nKey type mismatches between task spec and existing types from task 133:\n- OpenFileInfo has {path, language} but spec wants {path, dirty} -> add dirty field\n- SelectionInfo has {entity_path, cell_ids} but spec wants {selected_entity?, hovered_entity?} -> update fields\n- get_source returns String but spec wants {content, file_path} -> add SourceContent struct, update trait return type\n\nThe MockToolContext needs to become configurable (public fields) to support testing with varied data. The existing tools_tests.rs test 'all_stub_tools_return_not_implemented' will break and needs updating to exclude read tools. Input schemas for filtering tools (diagnostics, parameters, constraints) need filter params added.\n\nHandler pattern: parse optional params with .as_str()/.as_u64(), call ctx method to get full dataset, apply filters in closure, serialize with serde_json::to_value(). For non-existing entities in get_source_location, convert ToolError to JSON null.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create gui/sidecar/ directory structure with package.json (name: @reify/sidecar, type: module, @anthropic-ai/claude-code SDK dependency, vitest + typescript for dev, tsup for bundling), tsconfig.json (strict, ESNext, NodeNext moduleResolution, outDir: dist), and vitest.config.ts (node environment, no SolidJS plugin, globals: true)",
+      "description": "Update types.rs: Add SourceContent struct {content: String, file_path: String} with Serialize/Deserialize; add dirty: bool to OpenFileInfo; update SelectionInfo to {selected_entity: Option<String>, hovered_entity: Option<String>} to match MCP spec",
       "status": "done",
-      "commit": "1ea20f0",
+      "commit": "ad8dead",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Update gui/src-tauri/tauri.conf.json to add sidecar configuration: add 'bundle.externalBin' array with sidecar binary path ('sidecar/reify-sidecar'), and add 'plugins.shell' config with sidecar scope. Update gui/src-tauri/capabilities/default.json to add 'shell:allow-execute' permission for the sidecar.",
+      "description": "Update context.rs: Change get_source return type to Result<SourceContent, ToolError>; update get_selection for new SelectionInfo fields; make MockToolContext configurable with public fields (source: SourceContent, open_files: Vec<OpenFileInfo>, diagnostics: Vec<DiagnosticInfo>, parameters: Vec<ParameterInfo>, constraints: Vec<ConstraintInfo>, eval_status: EvalStatusInfo, selection: SelectionInfo, source_locations: std::collections::HashMap<String, SourceLocationInfo>). Implement Default with sensible empty values. Update all trait method impls to return from fields. For get_source_location, return Err(ToolError::EngineError) if entity_path not in HashMap.",
       "status": "done",
-      "commit": "91e3334",
+      "commit": "ad8dead",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Update tools_tests.rs: Change all_stub_tools_return_not_implemented to only check write/navigation/reference tools (exclude the 8 read tools). Define READ_TOOLS const array with the 8 read tool names and filter them out of the assertion loop.",
+      "status": "done",
+      "commit": "ad8dead",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Update input schemas in read.rs for filtering tools: add file_path (optional string) and severity (optional enum) params to reify_get_diagnostics, add entity_path (optional string) param to reify_get_parameters, add status (optional enum) param to reify_get_constraints. Keep existing schemas for tools that already have correct params (get_source has file_path, get_source_location has required entity_path).",
+      "status": "done",
+      "commit": "ad8dead",
       "tests": []
     }
   ],
@@ -42,140 +46,173 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for IPC message type definitions and serialization in gui/sidecar/src/__tests__/ipc.test.ts: (1) parseInboundMessage correctly parses send_message with text and optional context fields, (2) parseInboundMessage correctly parses abort message, (3) parseInboundMessage correctly parses clear_session message, (4) parseInboundMessage throws on invalid JSON, (5) parseInboundMessage throws on unknown message type, (6) formatOutboundMessage serializes text_delta correctly, (7) formatOutboundMessage serializes each outbound type (thinking_delta, tool_call, tool_result, done, error, ready) correctly, (8) formatOutboundMessage always ends with newline.",
+      "description": "Write failing tests for reify_get_source in read_tools_tests.rs: (1) with explicit file_path param returns {content, file_path} JSON with correct values from mock, (2) without file_path param returns active file content from mock (mock configured with a default source), (3) error case when context returns ToolError propagates correctly. Configure MockToolContext with SourceContent {content: 'param x = 10mm', file_path: 'main.ri'}.",
       "status": "done",
-      "commit": "9ab7266"
+      "commit": "3a96959"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement gui/sidecar/src/types.ts with TypeScript interfaces for all IPC message types. InboundMessage is a discriminated union on 'type' field: SendMessage (type:'send_message', id:string, text:string, context?:{selected_entity?, diagnostics?, constraints?}), Abort (type:'abort'), ClearSession (type:'clear_session'). OutboundMessage is a discriminated union: TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, Error, Ready. Implement gui/sidecar/src/ipc.ts with parseInboundMessage(line: string): InboundMessage and formatOutboundMessage(msg: OutboundMessage): string functions.",
+      "description": "Implement reify_get_source handler in read.rs: parse optional file_path from params['file_path'].as_str(), call ctx.get_source(file_path), on Ok serialize SourceContent to JSON via serde_json::to_value(), on Err propagate ToolError.",
       "status": "done",
-      "commit": "c5be1a2"
+      "commit": "bbe3342"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for IPC stream I/O in gui/sidecar/src/__tests__/ipc.test.ts (new describe block): (1) createLineReader yields complete JSON lines from a mock Readable stream, (2) createLineReader handles partial reads (message split across chunks), (3) createLineReader handles multiple messages in one chunk, (4) sendMessage writes JSON + newline to a mock Writable stream, (5) sendMessage handles backpressure (waits for drain). Use PassThrough streams for testing.",
+      "description": "Write failing tests for reify_get_open_files: (1) returns JSON array with path, language, and dirty fields for each open file, (2) returns empty array when no files open. Configure mock with two OpenFileInfo entries (one dirty: true, one dirty: false).",
       "status": "done",
-      "commit": "3090e29"
+      "commit": "3a96959"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement createLineReader(readable: Readable): AsyncGenerator<string> as an async generator that buffers input and yields complete lines. Implement sendMessage(writable: Writable, msg: OutboundMessage): Promise<void> that calls formatOutboundMessage and writes to the stream, handling backpressure via drain events.",
+      "description": "Implement reify_get_open_files handler: call ctx.get_open_files(), serialize Vec<OpenFileInfo> to JSON via serde_json::to_value().",
       "status": "done",
-      "commit": "7fe0346"
+      "commit": "bbe3342"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for system prompt in gui/sidecar/src/__tests__/system-prompt.test.ts: (1) SYSTEM_PROMPT is under 3000 tokens (estimated as characters/4, with assertion < 12000 chars), (2) SYSTEM_PROMPT contains key language keywords ('structure', 'param', 'let', 'auto', 'constraint'), (3) SYSTEM_PROMPT mentions MCP tools (reify_get_source, reify_get_diagnostics, reify_language_reference), (4) SYSTEM_PROMPT mentions the Reify GUI context, (5) buildSystemPrompt() returns the prompt string, (6) buildSystemPrompt includes working directory when provided.",
+      "description": "Write failing tests for reify_get_diagnostics: (1) returns all diagnostics with no filter params, (2) filters by file_path param (only diagnostics for that file), (3) filters by severity param 'error' (only errors returned), (4) combined filter by file_path and severity. Configure mock with 4 diagnostics: 2 errors and 1 warning in file_a, 1 error in file_b.",
       "status": "done",
-      "commit": "88c37b9"
+      "commit": "3a96959"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement gui/sidecar/src/system-prompt.ts exporting SYSTEM_PROMPT constant and buildSystemPrompt(options?) function. The prompt (~2-3K tokens) includes: (A) Role: engineering design assistant in Reify GUI, (B) Language briefing: declaration types (structure, enum, trait), member kinds (param with default + type annotation, let for derived values, auto for solver-determined, constraint expressions), expression syntax (arithmetic, comparison, logical, conditional, units like 80mm/90deg), type system (Scalar, Int, Real, Bool, String, List, Set, Map, Option), geometry operations (box, cylinder, fillet, chamfer, union, subtract, intersect), (C) MCP tool listing with brief descriptions, (D) Tool usage guidelines and design authoring conventions, (E) Example showing bracket.ri pattern.",
+      "description": "Implement reify_get_diagnostics handler: call ctx.get_diagnostics(), parse optional file_path and severity from params, filter Vec by file_path equality and severity equality (case-insensitive), serialize filtered results to JSON.",
       "status": "done",
-      "commit": "7f2613b"
+      "commit": "bbe3342"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for SidecarSession in gui/sidecar/src/__tests__/session.test.ts: (1) constructor creates session with config, (2) init() calls onOutput with ready message, (3) handleMessage with send_message eventually emits done message, (4) handleMessage with abort sets abort flag / cancels in-flight, (5) handleMessage with clear_session resets conversation history and emits ready, (6) SDK errors (auth failure) produce error outbound message with helpful text, (7) multiple sequential messages maintain conversation context. Mock @anthropic-ai/claude-code SDK.",
+      "description": "Write failing tests for reify_get_parameters: (1) returns all parameters with no filter, (2) filters by entity_path prefix 'sketch1' matches 'sketch1/width' and 'sketch1/height' but not 'sketch2/depth', (3) returns empty array when prefix matches nothing. Configure mock with 3 parameters across entity paths sketch1/width, sketch1/height, sketch2/depth.",
       "status": "done",
-      "commit": "ebc253e"
+      "commit": "3a96959"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement gui/sidecar/src/session.ts with SidecarSession class. Constructor takes config: { model: string, workingDirectory: string, systemPrompt: string }. Has onOutput: (msg: OutboundMessage) => void callback. init() sets up SDK client and emits ready. handleMessage(msg: InboundMessage) dispatches by type. For send_message: calls Claude Code SDK with conversation history, system prompt, and extended thinking. Streams SDK events, mapping them to outbound messages: text deltas -> text_delta, thinking deltas -> thinking_delta, tool use -> tool_call/tool_result. Emits done when complete. For abort: uses AbortController to cancel in-flight request. For clear_session: clears conversation history array. Error handling: wraps SDK calls in try/catch, maps known error types to descriptive error messages.",
+      "description": "Implement reify_get_parameters handler: call ctx.get_parameters(), parse optional entity_path from params, filter by starts_with prefix matching on parameter's entity_path field, serialize filtered Vec<ParameterInfo> to JSON.",
       "status": "done",
-      "commit": "00058b3"
+      "commit": "bbe3342"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing integration test for sidecar entrypoint in gui/sidecar/src/__tests__/session.test.ts (new describe block 'entrypoint wiring'): (1) main() function reads from provided input stream and writes to provided output stream, (2) sending a valid JSON line through input produces outbound messages on output, (3) process sends ready message on startup. Use mock streams and mock session.",
+      "description": "Write failing tests for reify_get_constraints: (1) returns all constraints with no filter, (2) filters by status='satisfied' returns only satisfied constraints, (3) filters by status='violated' returns only violated, (4) returns empty array when filter matches nothing (status='indeterminate' with none configured). Configure mock with 2 satisfied and 1 violated constraint.",
       "status": "done",
-      "commit": "a9fd5f8"
+      "commit": "3a96959"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement gui/sidecar/src/index.ts as the sidecar entrypoint. Exports main(input?: Readable, output?: Writable) for testability (defaults to process.stdin/stdout). Creates SidecarSession with buildSystemPrompt(), wires createLineReader on input through parseInboundMessage to session.handleMessage, wires session.onOutput through sendMessage to output. Handles SIGTERM/SIGINT for clean shutdown. Calls session.init() then enters the message processing loop. If run directly (not imported), calls main().",
+      "description": "Implement reify_get_constraints handler: call ctx.get_constraints(), parse optional status from params, filter by exact status string match, serialize filtered Vec<ConstraintInfo> to JSON.",
       "status": "done",
-      "commit": "b717df2"
+      "commit": "bbe3342"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test for reify_get_eval_status: returns JSON with phase, progress, and dirty_count fields from mock. Configure mock with eval_status {phase: 'evaluating', progress: Some(0.5), dirty_count: 3}.",
+      "status": "done",
+      "commit": "3a96959"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Implement reify_get_eval_status handler: call ctx.get_eval_status(), serialize EvalStatusInfo to JSON via serde_json::to_value().",
+      "status": "done",
+      "commit": "bbe3342"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing tests for reify_get_selection: (1) returns selected_entity and hovered_entity when both are set, (2) returns null values when nothing selected (both None). Configure mock with SelectionInfo {selected_entity: Some('bracket/body'), hovered_entity: Some('bracket/fillet1')}.",
+      "status": "done",
+      "commit": "3a96959"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Implement reify_get_selection handler: call ctx.get_selection(), serialize SelectionInfo to JSON via serde_json::to_value().",
+      "status": "done",
+      "commit": "bbe3342"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing tests for reify_get_source_location: (1) returns {file, line, column, end_line, end_column} JSON for existing entity path, (2) returns JSON null for non-existing entity (mock HashMap has no entry), (3) returns InvalidParams error when entity_path param is missing from input. Configure mock HashMap with 'bracket/body' -> SourceLocationInfo {file: 'main.ri', line: 5, column: 3, end_line: 20, end_column: 1}.",
+      "status": "done",
+      "commit": "3a96959"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement reify_get_source_location handler: parse required entity_path from params (return Err(ToolError::InvalidParams) if missing), call ctx.get_source_location(entity_path), on Ok serialize SourceLocationInfo to JSON, on Err (entity not found) return Ok(serde_json::Value::Null) rather than propagating error.",
+      "status": "done",
+      "commit": "bbe3342"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Separate package.json and vitest config for gui/sidecar/ instead of sharing with gui/",
-      "rationale": "The sidecar is a Node.js-only project (no browser, no SolidJS, no Vite). It needs node environment for tests, NodeNext module resolution, and different dependencies. Keeping it separate avoids contaminating the frontend build and allows independent versioning."
+      "decision": "Add SourceContent struct and change get_source trait return type from String to SourceContent",
+      "rationale": "The MCP spec requires returning {content, file_path} from reify_get_source. When file_path is None (active file), the handler needs to know the resolved path. Returning a SourceContent{content, file_path} from the trait lets the engine implementation communicate the actual path used, rather than the handler guessing or returning null."
     },
     {
-      "decision": "IPC protocol uses JSON newline-delimited (JSONL) format over stdin/stdout",
-      "rationale": "This matches Tauri v2's sidecar communication pattern. Each message is a single JSON object followed by a newline, making it trivial to parse line-by-line with no framing protocol needed. This is the standard pattern for Tauri sidecars."
+      "decision": "Add dirty: bool to OpenFileInfo alongside existing language field",
+      "rationale": "The MCP tool spec requires dirty state in the response. Since OpenFileInfo is the MCP response type (derives Serialize), adding the field here is cleaner than constructing ad-hoc JSON in the handler. The language field is kept as additional useful information."
     },
     {
-      "decision": "System prompt in a separate system-prompt.ts file with buildSystemPrompt() function",
-      "rationale": "Task spec explicitly requests separate file for easy editing. A function allows injecting runtime context like working directory. Follows M7 three-layer progressive disclosure: this is Layer 1 (condensed briefing), referencing Layer 2 (reify_language_reference MCP tool) for deeper knowledge."
+      "decision": "Replace SelectionInfo fields (entity_path, cell_ids) with (selected_entity, hovered_entity)",
+      "rationale": "The MCP spec defines the response as {selected_entity?, hovered_entity?}. The current fields don't match. Since this type exists solely as the MCP response type and no real implementation exists yet, now is the right time to align it with the spec."
     },
     {
-      "decision": "SidecarSession class encapsulates all SDK interaction behind a testable interface",
-      "rationale": "By separating session logic from I/O (stdin/stdout), tests can mock the Claude Code SDK and verify message routing without making real API calls. The session manages conversation state, abort handles, and error mapping. The onOutput callback pattern decouples output generation from transport."
+      "decision": "Filtering done in tool handlers, not in context trait methods",
+      "rationale": "The trait methods return full unfiltered data (all diagnostics, all parameters, all constraints). Filtering by severity/file_path/entity_path/status is applied by the handler after retrieval. This keeps the trait simple (one method per data type) and makes filtering logic testable at the handler level. For large datasets, filtering could later be pushed into the trait, but YAGNI for now."
     },
     {
-      "decision": "Token count estimation uses character/4 heuristic rather than a tokenizer dependency",
-      "rationale": "The task says 'under 3K tokens' for the system prompt. Adding tiktoken or similar is heavyweight. Character/4 is a reasonable upper-bound estimate for English text. We use < 12000 chars as the test assertion, which is conservative."
+      "decision": "Non-existing entity in get_source_location returns Ok(null JSON), not Err(ToolError)",
+      "rationale": "The spec says the tool returns location 'or null'. A missing entity isn't a tool error condition \u2014 it's a valid query with a null result. The handler catches ToolError from the context and converts to serde_json::Value::Null, letting MCP clients distinguish 'entity not found' (null) from 'something broke' (isError: true in JSON-RPC response)."
     },
     {
-      "decision": "Types module (types.ts) separate from IPC I/O module (ipc.ts) and session module (session.ts)",
-      "rationale": "Three-way separation: types.ts defines pure interfaces/types, ipc.ts handles serialization and stream I/O, session.ts manages SDK interaction and state. This allows independent testing and clear dependency direction: session depends on types, ipc depends on types, index.ts wires them together."
+      "decision": "MockToolContext uses public fields with Default rather than builder pattern",
+      "rationale": "Public fields are the simplest approach for test configuration. Each test constructs a mock with the specific data it needs via struct update syntax (MockToolContext { diagnostics: vec![...], ..Default::default() }). A builder would add complexity without validation benefit. HashMap<String, SourceLocationInfo> supports testing existing vs non-existing entity lookups."
     },
     {
-      "decision": "Entrypoint main() accepts optional stream parameters for testability",
-      "rationale": "By allowing injection of input/output streams (defaulting to process.stdin/stdout), the entrypoint can be tested without spawning a child process. This follows the same pattern used in many CLI tools for testability."
-    },
-    {
-      "decision": "Use tsup for bundling the sidecar into a single JS file",
-      "rationale": "Tauri sidecars benefit from a single script file for clean bundling. tsup (built on esbuild) is fast, handles TypeScript + dependencies in one step, and produces a single CJS/ESM file runnable with Node.js."
+      "decision": "Entity path filtering uses starts_with prefix matching",
+      "rationale": "The spec says reify_get_parameters is 'filterable by entity path prefix'. String::starts_with on the parameter's entity_path field provides hierarchical filtering: 'sketch1' matches 'sketch1/width', 'sketch1/height'. This matches typical entity path hierarchies in CAD parametric models."
     }
   ],
   "reuse": [
     {
-      "what": "Vitest test patterns from gui/src/__tests__/bridge.test.ts",
-      "where": "gui/sidecar/src/__tests__/*.test.ts",
-      "how": "Follow same describe/it/expect patterns with vitest. Use vi.fn() and vi.mock() for mocking SDK dependencies, matching how bridge.test.ts mocks @tauri-apps/api/core and @tauri-apps/api/event."
+      "what": "ToolRegistry::register and call_tool pattern",
+      "where": "crates/reify-mcp/src/registry.rs",
+      "how": "Each read tool replaces its stub closure with a real implementation following the same Fn(serde_json::Value, &dyn ReifyToolContext) -> Result<serde_json::Value, ToolError> signature. No changes to registry needed."
     },
     {
-      "what": "IPC type patterns from gui/src-tauri/src/types.rs (GuiState, ValueData, ConstraintData)",
-      "where": "gui/sidecar/src/types.ts (context fields in SendMessage)",
-      "how": "The Rust types inform the context object shape in send_message. The TypeScript types for diagnostics, constraints, and selected_entity should be compatible with the Tauri backend's existing type system."
+      "what": "Existing MCP response types with Serialize derive",
+      "where": "crates/reify-mcp/src/types.rs",
+      "how": "DiagnosticInfo, ParameterInfo, ConstraintInfo, EvalStatusInfo, SourceLocationInfo already derive Serialize. Handlers use serde_json::to_value() to produce JSON responses directly. Only OpenFileInfo and SelectionInfo need field adjustments."
     },
     {
-      "what": "Reify language spec from docs/reify-language-spec.md (2531 lines)",
-      "where": "gui/sidecar/src/system-prompt.ts",
-      "how": "Condense key language constructs (Sections 2-8: lexical structure, types, declarations, expressions, constraints, geometry) into ~2K token briefing for the system prompt."
+      "what": "MockToolContext pattern from task 133",
+      "where": "crates/reify-mcp/src/context.rs",
+      "how": "Extend the existing mock with configurable public fields. Keep cfg(any(test, feature='test-support')) gate. Maintain Default impl compatibility so existing tests in registry_tests.rs and tools_tests.rs continue to work unchanged."
     },
     {
-      "what": "Example bracket.ri file",
-      "where": "gui/sidecar/src/system-prompt.ts",
-      "how": "Include a condensed version as an example in the system prompt to show language look and feel (structure, param, let, constraint, geometry operations)."
+      "what": "Test setup pattern from tools_tests.rs",
+      "where": "crates/reify-mcp/tests/tools_tests.rs",
+      "how": "Follow same pattern: create registry via setup_registry(), call registry.call_tool() with mock context and JSON params, assert on returned serde_json::Value. New read_tools_tests.rs uses identical imports and setup function."
     },
     {
-      "what": "M7 three-layer progressive disclosure architecture decision",
-      "where": "gui/sidecar/src/system-prompt.ts",
-      "how": "Implement Layer 1 (system prompt briefing) and reference Layer 2 (reify_language_reference(topic) MCP tool) in the prompt text, following the architecture decision stored in memory."
-    },
-    {
-      "what": "Existing tauri.conf.json structure and capabilities pattern",
-      "where": "gui/src-tauri/tauri.conf.json, gui/src-tauri/capabilities/default.json",
-      "how": "Extend existing config with sidecar-specific entries (externalBin, shell plugin permissions) following Tauri v2 conventions. Preserve all existing config."
+      "what": "serde_json::json! macro for schemas, params, and assertions",
+      "where": "Throughout crate",
+      "how": "Input schemas in read.rs use json! macro for schema objects. Test code uses json! for constructing params. Handler responses use serde_json::to_value for struct serialization."
     }
   ],
-  "_session_id": "134-8a4cffb4",
-  "_created_at": "2026-03-22T21:49:59.603628+00:00"
+  "_session_id": "135-12989b7e",
+  "_created_at": "2026-03-23T15:10:12.338957+00:00"
 }
