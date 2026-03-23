@@ -23,7 +23,7 @@ describe('DiffView', () => {
   });
 
   it('context lines have data-diff="context"', () => {
-    render(() => <DiffView before="same\nchanged" after="same\nnew" />);
+    render(() => <DiffView before={"same\nchanged"} after={"same\nnew"} />);
     const diffView = screen.getByTestId('diff-view');
     const contextLines = diffView.querySelectorAll('[data-diff="context"]');
     expect(contextLines.length).toBeGreaterThan(0);
@@ -59,7 +59,7 @@ describe('DiffView', () => {
   });
 
   it('line numbers are displayed', () => {
-    render(() => <DiffView before="line1\nline2" after="line1\nline3" />);
+    render(() => <DiffView before={"line1\nline2"} after={"line1\nline3"} />);
     const diffView = screen.getByTestId('diff-view');
     const lineNums = diffView.querySelectorAll('[data-testid="line-number"]');
     expect(lineNums.length).toBeGreaterThan(0);
