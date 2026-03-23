@@ -573,3 +573,21 @@ fn parse_value_string_unit_table_ordering_invariant() {
         _ => panic!("45deg should be Scalar, got {:?}", v),
     }
 }
+
+// --- Task 132: Tessellation integration tests ---
+
+#[test]
+fn build_gui_state_includes_meshes_from_tessellation() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+
+    assert!(
+        !state.meshes.is_empty(),
+        "build_gui_state should produce meshes when a geometry kernel is available, got empty"
+    );
+}
