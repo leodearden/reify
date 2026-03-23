@@ -70,3 +70,49 @@ fn mcp_server_tools_list_returns_16_tools() {
         tools.iter().map(|t| t["name"].as_str().unwrap_or("?")).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn mcp_server_language_reference_returns_content() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
+
+    let requests = vec![
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_language_reference",
+                "arguments": {"topic": "geometry"}
+            }
+        }),
+    ];
+
+    let responses = mcp_roundtrip(&[fixture], &requests);
+    assert!(responses.len() >= 2, "expected at least 2 responses");
+
+    let call_response = &responses[1];
+    assert_ne!(
+        call_response["result"]["isError"],
+        true,
+        "language_reference should not return error: {:?}",
+        call_response
+    );
+
+    let content = call_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    assert!(!content.is_empty(), "content should not be empty");
+
+    let text = content[0]["text"].as_str().expect("content[0].text should be a string");
+    // Geometry-related keywords from the language reference
+    let has_geometry_keyword = text.contains("box")
+        || text.contains("cylinder")
+        || text.contains("geometry")
+        || text.contains("Geometry");
+    assert!(
+        has_geometry_keyword,
+        "language reference for 'geometry' should contain geometry keywords, got: {}",
+        &text[..text.len().min(200)]
+    );
+}
