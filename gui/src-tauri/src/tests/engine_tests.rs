@@ -573,3 +573,151 @@ fn parse_value_string_unit_table_ordering_invariant() {
         _ => panic!("45deg should be Scalar, got {:?}", v),
     }
 }
+
+// --- Task 132: Tessellation integration tests ---
+
+#[test]
+fn build_gui_state_includes_meshes_from_tessellation() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+
+    assert!(
+        !state.meshes.is_empty(),
+        "build_gui_state should produce meshes when a geometry kernel is available, got empty"
+    );
+}
+
+#[test]
+fn build_gui_state_mesh_data_structure_matches_kernel_output() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+
+    assert!(!state.meshes.is_empty(), "should have at least one mesh");
+    let mesh = &state.meshes[0];
+
+    // MockGeometryKernel returns: vertices = [0,0,0, 1,0,0, 0,1,0] (9 floats = 3 vertices)
+    assert_eq!(mesh.vertices.len(), 9, "expected 9 vertex floats (3 vertices × 3 coords)");
+    // indices = [0, 1, 2] (1 triangle)
+    assert_eq!(mesh.indices.len(), 3, "expected 3 indices (1 triangle)");
+    // normals = Some([0,0,1, 0,0,1, 0,0,1]) (9 floats)
+    assert!(mesh.normals.is_some(), "expected normals to be present");
+    assert_eq!(mesh.normals.as_ref().unwrap().len(), 9, "expected 9 normal floats");
+    // entity_path should be non-empty
+    assert!(!mesh.entity_path.is_empty(), "entity_path should be non-empty");
+}
+
+#[test]
+fn build_gui_state_no_kernel_returns_empty_meshes() {
+    let checker = SimpleConstraintChecker;
+    // No geometry kernel
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed even without kernel");
+
+    // Meshes should be empty when no kernel is available
+    assert!(
+        state.meshes.is_empty(),
+        "expected empty meshes without geometry kernel, got {}",
+        state.meshes.len()
+    );
+
+    // Values and constraints should still be populated
+    assert!(
+        state.values.len() >= 5,
+        "expected at least 5 values without kernel, got {}",
+        state.values.len()
+    );
+    assert_eq!(
+        state.constraints.len(),
+        3,
+        "expected 3 constraints without kernel"
+    );
+}
+
+#[test]
+fn build_gui_state_tessellation_preserves_values_and_constraints() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+
+    // Tessellation should produce meshes
+    assert!(
+        !state.meshes.is_empty(),
+        "expected non-empty meshes with geometry kernel"
+    );
+
+    // And values/constraints should still be fully populated (tessellation doesn't interfere)
+    assert!(
+        state.values.len() >= 5,
+        "expected at least 5 values alongside meshes, got {}",
+        state.values.len()
+    );
+    assert_eq!(
+        state.constraints.len(),
+        3,
+        "expected 3 constraints alongside meshes"
+    );
+}
+
+#[test]
+fn set_parameter_produces_updated_meshes() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let initial_state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load should succeed");
+
+    assert!(
+        !initial_state.meshes.is_empty(),
+        "initial state should have meshes"
+    );
+
+    // Set parameter and verify meshes are still produced
+    let updated_state = session
+        .set_parameter("Bracket.width", "120mm")
+        .expect("set_parameter should succeed");
+
+    assert!(
+        !updated_state.meshes.is_empty(),
+        "updated state should have meshes after set_parameter"
+    );
+}
+
+#[test]
+fn update_source_produces_meshes() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load should succeed");
+
+    let new_source = bracket_source_with_width("120mm");
+    let state = session
+        .update_source("bracket.ri", &new_source)
+        .expect("update_source should succeed");
+
+    assert!(
+        !state.meshes.is_empty(),
+        "update_source should produce meshes"
+    );
+}

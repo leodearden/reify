@@ -11,7 +11,7 @@ use reify_types::{
 };
 
 use crate::types::{
-    format_determinacy, format_value, ConstraintData, FileData, GuiState, ValueData,
+    format_determinacy, format_value, ConstraintData, FileData, GuiState, MeshData, ValueData,
 };
 
 /// Session wrapping an Engine with its compiled module and source text.
@@ -247,7 +247,7 @@ impl EngineSession {
     }
 
     /// Build the full GUI state from the current engine state.
-    pub fn build_gui_state(&self) -> Result<GuiState, String> {
+    pub fn build_gui_state(&mut self) -> Result<GuiState, String> {
         let (compiled, check) = match (self.compiled.as_ref(), self.last_check.as_ref()) {
             (Some(c), Some(k)) => (c, k),
             _ => {
@@ -331,8 +331,24 @@ impl EngineSession {
         }
 
         // Build meshes (from tessellation of realizations)
-        let meshes = Vec::new();
-        // TODO: tessellate realizations when geometry kernel is available
+        let meshes = match self.engine.tessellate_snapshot(compiled) {
+            Some(result) => {
+                for diag in &result.diagnostics {
+                    eprintln!("[tessellation] {:?}: {}", diag.severity, diag.message);
+                }
+                result
+                    .meshes
+                    .into_iter()
+                    .map(|(entity_path, mesh)| MeshData {
+                        entity_path,
+                        vertices: mesh.vertices,
+                        indices: mesh.indices,
+                        normals: mesh.normals,
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        };
 
         // Build files
         let files: Vec<FileData> = self
