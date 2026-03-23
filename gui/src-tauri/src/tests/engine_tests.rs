@@ -615,3 +615,33 @@ fn build_gui_state_mesh_data_structure_matches_kernel_output() {
     // entity_path should be non-empty
     assert!(!mesh.entity_path.is_empty(), "entity_path should be non-empty");
 }
+
+#[test]
+fn build_gui_state_no_kernel_returns_empty_meshes() {
+    let checker = SimpleConstraintChecker;
+    // No geometry kernel
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed even without kernel");
+
+    // Meshes should be empty when no kernel is available
+    assert!(
+        state.meshes.is_empty(),
+        "expected empty meshes without geometry kernel, got {}",
+        state.meshes.len()
+    );
+
+    // Values and constraints should still be populated
+    assert!(
+        state.values.len() >= 5,
+        "expected at least 5 values without kernel, got {}",
+        state.values.len()
+    );
+    assert_eq!(
+        state.constraints.len(),
+        3,
+        "expected 3 constraints without kernel"
+    );
+}
