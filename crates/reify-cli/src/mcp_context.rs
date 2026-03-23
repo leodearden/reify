@@ -341,24 +341,191 @@ impl ReifyToolContext for CliToolContext {
         )))
     }
 
-    fn update_source(&self, _file_path: &str, _content: &str) -> Result<UpdateResult, ToolError> {
-        Err(ToolError::NotImplemented)
+    fn update_source(&self, file_path: &str, content: &str) -> Result<UpdateResult, ToolError> {
+        let mut state = self.state.lock().unwrap();
+
+        // Update file content
+        if let Some(entry) = state.files.get_mut(file_path) {
+            entry.content = content.to_string();
+            entry.dirty = true;
+        } else {
+            state.files.insert(
+                file_path.to_string(),
+                FileEntry {
+                    content: content.to_string(),
+                    dirty: true,
+                },
+            );
+        }
+
+        // Re-parse, compile, and eval from scratch (topology may change)
+        let module_name = std::path::Path::new(file_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unnamed");
+
+        let parsed =
+            reify_syntax::parse(content, reify_types::ModulePath::single(module_name));
+
+        if !parsed.errors.is_empty() {
+            return Ok(UpdateResult {
+                success: false,
+                diagnostics_count: parsed.errors.len() as u32,
+            });
+        }
+
+        let compiled = reify_compiler::compile(&parsed);
+        let diag_count = compiled.diagnostics.len() as u32;
+
+        let checker = reify_constraints::SimpleConstraintChecker;
+        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        engine.eval(&compiled);
+
+        state.compiled = Some(compiled);
+        state.engine = Some(engine);
+
+        Ok(UpdateResult {
+            success: true,
+            diagnostics_count: diag_count,
+        })
     }
 
-    fn set_parameter(&self, _cell_id: &str, _value: &str) -> Result<SetParamResult, ToolError> {
-        Err(ToolError::NotImplemented)
+    fn set_parameter(&self, cell_id: &str, value: &str) -> Result<SetParamResult, ToolError> {
+        let mut state = self.state.lock().unwrap();
+
+        if state.engine.is_none() {
+            return Err(ToolError::EngineError("no engine initialized".to_string()));
+        }
+
+        // Parse cell_id: "Entity.member"
+        let (entity, member) = cell_id
+            .split_once('.')
+            .ok_or_else(|| {
+                ToolError::InvalidParams(format!(
+                    "cell_id must be 'Entity.member' format, got: {cell_id}"
+                ))
+            })?;
+
+        let cell_id_obj = reify_types::ValueCellId::new(entity, member);
+
+        // Parse the value as f64
+        let numeric_val: f64 = value
+            .parse()
+            .map_err(|e| ToolError::InvalidParams(format!("cannot parse value as number: {e}")))?;
+
+        // Look up the cell's type from the compiled module to determine dimension
+        let compiled = state
+            .compiled
+            .as_ref()
+            .ok_or_else(|| ToolError::EngineError("no compiled module".to_string()))?;
+
+        let mut cell_type = None;
+        for template in &compiled.templates {
+            for cell_decl in &template.value_cells {
+                if cell_decl.id == cell_id_obj {
+                    cell_type = Some(cell_decl.cell_type.clone());
+                    break;
+                }
+            }
+        }
+
+        let ty = cell_type.ok_or_else(|| {
+            ToolError::InvalidParams(format!("cell not found: {}", cell_id_obj))
+        })?;
+
+        // Construct the appropriate Value based on the cell's type
+        let new_value = match &ty {
+            reify_types::ty::Type::Scalar { dimension } => Value::Scalar {
+                si_value: numeric_val,
+                dimension: dimension.clone(),
+            },
+            reify_types::ty::Type::Int => Value::Int(numeric_val as i64),
+            reify_types::ty::Type::Real => Value::Real(numeric_val),
+            _ => Value::Real(numeric_val),
+        };
+
+        // Apply the parameter change via incremental edit
+        let engine = state.engine.as_mut().unwrap();
+        engine.set_param_and_invalidate(&cell_id_obj, new_value.clone());
+        let _ = engine.edit_param(cell_id_obj, new_value.clone());
+
+        let unit = dimension_unit(&ty);
+        Ok(SetParamResult {
+            success: true,
+            new_value: format!("{}", new_value),
+            unit,
+        })
     }
 
-    fn open_file(&self, _file_path: &str) -> Result<OpenFileInfo, ToolError> {
-        Err(ToolError::NotImplemented)
+    fn open_file(&self, file_path: &str) -> Result<OpenFileInfo, ToolError> {
+        let source = std::fs::read_to_string(file_path)
+            .map_err(|e| ToolError::EngineError(format!("cannot read file: {e}")))?;
+
+        let abs_path = std::fs::canonicalize(file_path)
+            .unwrap_or_else(|_| PathBuf::from(file_path))
+            .to_string_lossy()
+            .to_string();
+
+        let mut state = self.state.lock().unwrap();
+        state.files.insert(
+            abs_path.clone(),
+            FileEntry {
+                content: source.clone(),
+                dirty: false,
+            },
+        );
+        state.active_file = Some(abs_path.clone());
+
+        // If it's a .ri file, parse/compile/eval
+        if file_path.ends_with(".ri") {
+            let module_name = std::path::Path::new(file_path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unnamed");
+
+            let parsed =
+                reify_syntax::parse(&source, reify_types::ModulePath::single(module_name));
+
+            if parsed.errors.is_empty() {
+                let compiled = reify_compiler::compile(&parsed);
+                let checker = reify_constraints::SimpleConstraintChecker;
+                let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+                engine.eval(&compiled);
+                state.compiled = Some(compiled);
+                state.engine = Some(engine);
+            }
+        }
+
+        Ok(OpenFileInfo {
+            path: abs_path,
+            language: "reify".to_string(),
+            dirty: false,
+        })
     }
 
-    fn save_file(&self, _file_path: Option<&str>) -> Result<bool, ToolError> {
-        Err(ToolError::NotImplemented)
+    fn save_file(&self, file_path: Option<&str>) -> Result<bool, ToolError> {
+        let state = self.state.lock().unwrap();
+        let path = file_path
+            .map(|s| s.to_string())
+            .or_else(|| state.active_file.clone())
+            .ok_or_else(|| ToolError::EngineError("no active file".to_string()))?;
+
+        let entry = state
+            .files
+            .get(&path)
+            .ok_or_else(|| ToolError::EngineError(format!("file not open: {path}")))?;
+
+        std::fs::write(&path, &entry.content)
+            .map_err(|e| ToolError::EngineError(format!("cannot write file: {e}")))?;
+
+        Ok(true)
     }
 
     fn export(&self, _format: &str, _output_path: &str) -> Result<bool, ToolError> {
-        Err(ToolError::NotImplemented)
+        // Export requires geometry kernel which is not initialized in CLI mode by default
+        Err(ToolError::EngineError(
+            "export not available in headless CLI mode (no geometry kernel)".to_string(),
+        ))
     }
 
     fn focus_entity(&self, _entity_path: &str) -> Result<bool, ToolError> {
