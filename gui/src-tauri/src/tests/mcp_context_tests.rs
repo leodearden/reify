@@ -138,3 +138,84 @@ fn get_diagnostics_returns_empty() {
         .expect("get_diagnostics should succeed");
     assert!(diags.is_empty(), "diagnostics should be empty initially");
 }
+
+// --- Write method tests ---
+
+#[test]
+fn update_source_with_valid_source_succeeds() {
+    let ctx = make_tauri_context();
+    let new_source = bracket_source().replace("80mm", "120mm");
+    let result = ctx
+        .update_source("bracket.ri", &new_source)
+        .expect("update_source should succeed");
+    assert!(result.success);
+}
+
+#[test]
+fn update_source_with_invalid_source_returns_error() {
+    let ctx = make_tauri_context();
+    let result = ctx.update_source("bracket.ri", "this is not valid reify source {{{");
+    assert!(result.is_err(), "should return error for invalid source");
+}
+
+#[test]
+fn set_parameter_succeeds() {
+    let ctx = make_tauri_context();
+    let result = ctx
+        .set_parameter("Bracket.width", "100mm")
+        .expect("set_parameter should succeed");
+    assert!(result.success);
+    assert_eq!(result.new_value, "100");
+    assert_eq!(result.unit, "mm");
+}
+
+#[test]
+fn set_parameter_invalid_cell_returns_error() {
+    let ctx = make_tauri_context();
+    let result = ctx.set_parameter("Nonexistent.param", "100mm");
+    assert!(result.is_err(), "should return error for invalid cell_id");
+}
+
+#[test]
+fn open_file_reads_from_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test_open.ri");
+    std::fs::write(&path, bracket_source()).unwrap();
+
+    let ctx = make_tauri_context();
+    let result = ctx
+        .open_file(path.to_str().unwrap())
+        .expect("open_file should succeed");
+    assert_eq!(result.path, path.to_str().unwrap());
+    assert_eq!(result.language, "reify");
+    assert_eq!(result.dirty, false);
+}
+
+#[test]
+fn save_file_writes_to_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test_save.ri");
+
+    let ctx = make_tauri_context();
+    // save_file writes the source_map content for the first file to the given path
+    let result = ctx
+        .save_file(Some(path.to_str().unwrap()))
+        .expect("save_file should succeed");
+    assert!(result);
+
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(content.contains("structure Bracket"));
+}
+
+#[test]
+fn export_writes_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test_export.step");
+
+    let ctx = make_tauri_context();
+    let result = ctx
+        .export("step", path.to_str().unwrap())
+        .expect("export should succeed");
+    assert!(result);
+    assert!(path.exists(), "exported file should exist");
+}
