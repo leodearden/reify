@@ -11,6 +11,7 @@ import {
   ExportDialog,
   Toast,
   ReloadPrompt,
+  ChatPanel,
 } from './panels';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
@@ -18,6 +19,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { createEngineStore } from './stores/engineStore';
 import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
+import { createClaudeStore } from './stores/claudeStore';
 import {
   getInitialState,
   setParameter as bridgeSetParameter,
@@ -54,6 +56,10 @@ const App: Component = () => {
   const selectionStore = createSelectionStore();
   const engineStore = createEngineStore({
     onEntityRemoved: (id) => selectionStore.clearIfRemoved(id),
+  });
+  const claudeStore = createClaudeStore({
+    onSend: () => {}, // Actual sidecar IPC wiring comes from a separate integration task
+    onAbort: () => {},
   });
 
   const savedLayout = loadPanelLayout();
@@ -460,7 +466,7 @@ const App: Component = () => {
               ref={sidePanelRef}
               data-testid="side-panel"
               class={styles.sidePanel}
-              style={{ 'grid-template-rows': `${propertyHeight()}px 4px 1fr` }}
+              style={{ 'grid-template-rows': `${propertyHeight()}px 4px 1fr 1fr` }}
             >
               <PropertyEditor
                 values={engineStore.state.values}
@@ -475,6 +481,7 @@ const App: Component = () => {
                 values={engineStore.state.values}
                 onConstraintSelect={handleConstraintSelect}
               />
+              <ChatPanel store={claudeStore} />
             </div>
           </div>
           <StatusBar
