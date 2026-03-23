@@ -1,7 +1,68 @@
-import { type Component, Show, For, createSignal, createEffect } from 'solid-js';
+import { type Component, type JSX, Show, For, createSignal, createEffect } from 'solid-js';
 import type { ChatMessage, SessionStatus } from '../types';
 import { Splitter } from '../components/Splitter';
 import styles from './ChatPanel.module.css';
+
+/** Lightweight markdown renderer for assistant messages.
+ *  Supports: code blocks (```), inline code (`), bold (**), italic (*).
+ */
+function renderMarkdown(text: string): JSX.Element {
+  // Split on code blocks (``` ... ```)
+  const codeBlockParts = text.split(/```(?:\w*\n?)?/);
+  const elements: JSX.Element[] = [];
+
+  for (let i = 0; i < codeBlockParts.length; i++) {
+    if (i % 2 === 1) {
+      // Inside a code block
+      const code = codeBlockParts[i].replace(/^\n/, '').replace(/\n$/, '');
+      elements.push(<pre class={styles.codeBlock}><code>{code}</code></pre>);
+    } else {
+      // Normal text — apply inline formatting
+      elements.push(renderInline(codeBlockParts[i]));
+    }
+  }
+
+  return <>{elements}</>;
+}
+
+function renderInline(text: string): JSX.Element {
+  // Process inline code, bold, and italic via regex split
+  // Order matters: inline code first (to avoid processing markdown inside backticks)
+  const parts: JSX.Element[] = [];
+  // Split on inline code spans: `...`
+  const codeParts = text.split(/`([^`]+)`/);
+  for (let i = 0; i < codeParts.length; i++) {
+    if (i % 2 === 1) {
+      parts.push(<code>{codeParts[i]}</code>);
+    } else {
+      // Process bold and italic in non-code segments
+      parts.push(renderBoldItalic(codeParts[i]));
+    }
+  }
+  return <>{parts}</>;
+}
+
+function renderBoldItalic(text: string): JSX.Element {
+  // Bold: **...**
+  const boldParts = text.split(/\*\*([^*]+)\*\*/);
+  const parts: JSX.Element[] = [];
+  for (let i = 0; i < boldParts.length; i++) {
+    if (i % 2 === 1) {
+      parts.push(<strong>{boldParts[i]}</strong>);
+    } else {
+      // Italic: *...*
+      const italicParts = boldParts[i].split(/\*([^*]+)\*/);
+      for (let j = 0; j < italicParts.length; j++) {
+        if (j % 2 === 1) {
+          parts.push(<em>{italicParts[j]}</em>);
+        } else {
+          parts.push(<>{italicParts[j]}</>);
+        }
+      }
+    }
+  }
+  return <>{parts}</>;
+}
 
 export interface ChatPanelProps {
   messages: ChatMessage[];
@@ -98,7 +159,7 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
                   data-role={msg.role}
                   class={`${styles.message} ${msg.role === 'user' ? styles.userMessage : styles.assistantMessage}`}
                 >
-                  {msg.content}
+                  {msg.role === 'assistant' ? renderMarkdown(msg.content) : msg.content}
                 </div>
               )}
             </For>

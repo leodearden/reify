@@ -135,3 +135,14 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.codeBlock {
+  background: var(--reify-surface-0, #1e1e2e);
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  margin: 4px 0;
+}
