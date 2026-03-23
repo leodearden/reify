@@ -268,3 +268,130 @@ fn mcp_server_set_parameter_changes_value() {
         "width should be 100 m after setting to 100"
     );
 }
+
+#[test]
+fn mcp_server_update_source_invalid_preserves_state() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
+    // Compute the canonical path the server will use as the file key
+    let abs_fixture = std::fs::canonicalize(fixture)
+        .expect("fixture should exist")
+        .to_string_lossy()
+        .to_string();
+
+    // Read original bracket.ri content for comparison
+    let original_content = std::fs::read_to_string(fixture).expect("fixture should be readable");
+
+    let requests = vec![
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        // Send invalid source (missing enum name triggers parse error) via update_source
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_update_source",
+                "arguments": {
+                    "file_path": abs_fixture,
+                    "content": "enum { }"
+                }
+            }
+        }),
+        // Get source — should still return the original bracket.ri content
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_get_source",
+                "arguments": {}
+            }
+        }),
+        // Get parameters — should still return the original bracket.ri params
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_get_parameters",
+                "arguments": {}
+            }
+        }),
+    ];
+
+    let responses = mcp_roundtrip(&[fixture], &requests);
+    assert!(responses.len() >= 4, "expected at least 4 responses");
+
+    // get_source should return the ORIGINAL content, not the broken "enum { }"
+    // This is the key assertion: if update_source mutates files before validation,
+    // get_source will return the broken content instead of the original.
+    let source_response = &responses[2];
+    assert_ne!(
+        source_response["result"]["isError"],
+        true,
+        "get_source should not return error after failed update: {:?}",
+        source_response
+    );
+
+    let source_content = source_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    let source_text = source_content[0]["text"]
+        .as_str()
+        .expect("content[0].text should be string");
+    // Parse get_source result (it returns JSON with content and file_path)
+    let source_result: serde_json::Value =
+        serde_json::from_str(source_text).expect("get_source result should be JSON");
+    let returned_content = source_result["content"]
+        .as_str()
+        .expect("should have content field");
+    assert_eq!(
+        returned_content,
+        original_content.trim(),
+        "get_source should return original bracket.ri content after failed update_source, \
+         not the broken content"
+    );
+
+    // get_parameters should still return original bracket.ri parameters
+    let get_response = &responses[3];
+    assert_ne!(
+        get_response["result"]["isError"],
+        true,
+        "get_parameters should not return error after failed update: {:?}",
+        get_response
+    );
+
+    let get_content = get_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    let get_text = get_content[0]["text"].as_str().expect("should be string");
+    let params: Vec<serde_json::Value> =
+        serde_json::from_str(get_text).expect("should be JSON array of parameters");
+
+    // All 5 original params should be present
+    let expected_names = ["width", "height", "thickness", "fillet_radius", "hole_diameter"];
+    let param_names: Vec<&str> = params
+        .iter()
+        .filter(|p| p["kind"].as_str() == Some("Param"))
+        .map(|p| p["name"].as_str().unwrap_or("?"))
+        .collect();
+
+    for expected in &expected_names {
+        assert!(
+            param_names.contains(expected),
+            "after failed update_source, parameter '{}' should still be present, got: {:?}",
+            expected,
+            param_names
+        );
+    }
+
+    // Width should still be the original value (0.08 m)
+    let width_param = params
+        .iter()
+        .find(|p| p["name"].as_str() == Some("width"))
+        .expect("should have width parameter");
+    let width_value = width_param["value"].as_str().unwrap_or("");
+    assert_eq!(
+        width_value, "0.08 m",
+        "width should still be original 0.08 m after failed update_source"
+    );
+}
