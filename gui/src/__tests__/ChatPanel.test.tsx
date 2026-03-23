@@ -196,6 +196,31 @@ describe('ChatPanel auto-scroll', () => {
   });
 });
 
+describe('ChatPanel open/close toggle', () => {
+  it('when open=false, message list and input bar are NOT in the DOM', () => {
+    render(() => <ChatPanel {...defaultProps()} open={false} />);
+    expect(screen.queryByTestId('chat-message-list')).toBeNull();
+    expect(screen.queryByTestId('chat-input')).toBeNull();
+  });
+
+  it('when open=true, message list and input bar ARE in the DOM', () => {
+    const messages: ChatMessage[] = [
+      { id: '1', role: 'user', content: 'Hello', timestamp: 1 },
+    ];
+    render(() => <ChatPanel {...defaultProps()} messages={messages} open={true} />);
+    expect(screen.getByTestId('chat-message-list')).toBeTruthy();
+    expect(screen.getByTestId('chat-input')).toBeTruthy();
+  });
+
+  it('resize handle is present when open=true', () => {
+    const messages: ChatMessage[] = [
+      { id: '1', role: 'user', content: 'Hello', timestamp: 1 },
+    ];
+    render(() => <ChatPanel {...defaultProps()} messages={messages} open={true} />);
+    expect(screen.getByTestId('chat-resize-handle')).toBeTruthy();
+  });
+});
+
 describe('ChatPanel disabled state', () => {
   it('textarea is disabled when sessionStatus is busy', () => {
     render(() => <ChatPanel {...defaultProps()} sessionStatus="busy" />);
