@@ -66,7 +66,27 @@ pub fn register(registry: &mut ToolRegistry) {
             },
             "required": ["cell_id", "value"]
         }),
-        |_params, _ctx| Err(ToolError::NotImplemented),
+        |params, ctx| {
+            let cell_id = params["cell_id"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("cell_id is required".to_string()))?;
+            let value = params["value"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("value is required".to_string()))?;
+
+            let result = ctx.set_parameter(cell_id, value)?;
+
+            let diagnostics = ctx.get_diagnostics()?;
+            let diagnostics_json = serde_json::to_value(&diagnostics)
+                .map_err(|e| ToolError::InternalError(e.to_string()))?;
+
+            Ok(serde_json::json!({
+                "success": result.success,
+                "new_value": result.new_value,
+                "unit": result.unit,
+                "diagnostics": diagnostics_json,
+            }))
+        },
     );
 
     registry.register(
