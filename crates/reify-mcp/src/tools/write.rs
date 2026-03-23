@@ -129,7 +129,14 @@ pub fn register(registry: &mut ToolRegistry) {
                 }
             }
         }),
-        |_params, _ctx| Err(ToolError::NotImplemented),
+        |params, ctx| {
+            let file_path = params["file_path"].as_str();
+            let result = ctx.save_file(file_path)?;
+
+            Ok(serde_json::json!({
+                "success": result,
+            }))
+        },
     );
 
     registry.register(
@@ -149,6 +156,20 @@ pub fn register(registry: &mut ToolRegistry) {
             },
             "required": ["format", "output_path"]
         }),
-        |_params, _ctx| Err(ToolError::NotImplemented),
+        |params, ctx| {
+            let format = params["format"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("format is required".to_string()))?;
+            let output_path = params["output_path"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("output_path is required".to_string()))?;
+
+            let result = ctx.export(format, output_path)?;
+
+            Ok(serde_json::json!({
+                "success": result,
+                "path": output_path,
+            }))
+        },
     );
 }
