@@ -436,6 +436,83 @@ describe('SidecarSession timeout', () => {
     const errors = outputs.filter((o) => o.type === 'error');
     expect(errors).toHaveLength(0);
   });
+
+  it('stdout stream error does not leak timeout to next request', async () => {
+    vi.useFakeTimers();
+
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are a test assistant.',
+      timeoutMs: 60_000,
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    // First spawn: process whose stdout emits an I/O error
+    vi.mocked(spawn).mockImplementationOnce((() => {
+      const proc = new EventEmitter() as any;
+      const stdout = new PassThrough();
+      proc.stdout = stdout;
+      proc.stderr = new PassThrough();
+      proc.stdin = new PassThrough();
+      proc.exitCode = null;
+
+      process.nextTick(() => {
+        stdout.destroy(new Error('I/O error'));
+        proc.exitCode = 1;
+        proc.emit('close', 1);
+      });
+
+      return proc;
+    }) as any);
+
+    // First request — will fail due to stdout error
+    await session.handleMessage({
+      type: 'send_message',
+      id: 'msg-leak-1',
+      text: 'First',
+    });
+
+    // Verify first request produced an error
+    const firstErrors = outputs.filter((o) => o.type === 'error');
+    expect(firstErrors).toHaveLength(1);
+    expect((firstErrors[0] as any).id).toBe('msg-leak-1');
+
+    outputs.length = 0;
+
+    // Advance clock partway so leaked timeout fires during second request
+    vi.advanceTimersByTime(30_000);
+
+    // Second spawn: normal mock process that completes successfully
+    vi.mocked(spawn).mockImplementationOnce((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'OK' }] } },
+      { type: 'result', session_id: 'sess-leak' },
+    ])) as any);
+
+    // Start second request (registers its own timeout at clock 30000 + 60000 = 90000)
+    const secondPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-leak-2',
+      text: 'Second',
+    });
+
+    // Advance to fire the first request's leaked timeout (at 60000)
+    // but NOT the second request's timeout (at 90000)
+    vi.advanceTimersByTime(30_001);
+
+    await secondPromise;
+
+    // Second request should complete with done, NOT a spurious timeout error
+    const dones = outputs.filter((o) => o.type === 'done');
+    expect(dones).toHaveLength(1);
+    expect(dones[0]).toEqual({ type: 'done', id: 'msg-leak-2' });
+
+    // Should NOT have a spurious timeout error from the leaked timer
+    const timeoutErrors = outputs.filter(
+      (o) => o.type === 'error' && 'message' in o && (o as any).message.includes('timed out')
+    );
+    expect(timeoutErrors).toHaveLength(0);
+  });
 });
 
 describe('entrypoint wiring', () => {
