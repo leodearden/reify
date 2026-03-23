@@ -1,190 +1,96 @@
-import { type Component, type JSX, Show, For, createSignal, createEffect } from 'solid-js';
-import type { ChatMessage, SessionStatus } from '../types';
-import { Splitter } from '../components/Splitter';
+import { type Component, createSignal, createEffect, For, Show } from 'solid-js';
+import type { ChatMessage } from '../stores/claudeStore';
+import { MessageGroup } from './chat/MessageGroup';
+import { AbortButton } from './chat/AbortButton';
 import styles from './ChatPanel.module.css';
 
-/** Lightweight markdown renderer for assistant messages.
- *  Supports: code blocks (```), inline code (`), bold (**), italic (*).
- */
-function renderMarkdown(text: string): JSX.Element {
-  // Split on code blocks (``` ... ```)
-  const codeBlockParts = text.split(/```(?:\w*\n?)?/);
-  const elements: JSX.Element[] = [];
-
-  for (let i = 0; i < codeBlockParts.length; i++) {
-    if (i % 2 === 1) {
-      // Inside a code block
-      const code = codeBlockParts[i].replace(/^\n/, '').replace(/\n$/, '');
-      elements.push(<pre class={styles.codeBlock}><code>{code}</code></pre>);
-    } else {
-      // Normal text — apply inline formatting
-      elements.push(renderInline(codeBlockParts[i]));
-    }
-  }
-
-  return <>{elements}</>;
-}
-
-function renderInline(text: string): JSX.Element {
-  // Process inline code, bold, and italic via regex split
-  // Order matters: inline code first (to avoid processing markdown inside backticks)
-  const parts: JSX.Element[] = [];
-  // Split on inline code spans: `...`
-  const codeParts = text.split(/`([^`]+)`/);
-  for (let i = 0; i < codeParts.length; i++) {
-    if (i % 2 === 1) {
-      parts.push(<code>{codeParts[i]}</code>);
-    } else {
-      // Process bold and italic in non-code segments
-      parts.push(renderBoldItalic(codeParts[i]));
-    }
-  }
-  return <>{parts}</>;
-}
-
-function renderBoldItalic(text: string): JSX.Element {
-  // Bold: **...**
-  const boldParts = text.split(/\*\*([^*]+)\*\*/);
-  const parts: JSX.Element[] = [];
-  for (let i = 0; i < boldParts.length; i++) {
-    if (i % 2 === 1) {
-      parts.push(<strong>{boldParts[i]}</strong>);
-    } else {
-      // Italic: *...*
-      const italicParts = boldParts[i].split(/\*([^*]+)\*/);
-      for (let j = 0; j < italicParts.length; j++) {
-        if (j % 2 === 1) {
-          parts.push(<em>{italicParts[j]}</em>);
-        } else {
-          parts.push(<>{italicParts[j]}</>);
-        }
-      }
-    }
-  }
-  return <>{parts}</>;
-}
-
 export interface ChatPanelProps {
-  messages: ChatMessage[];
-  sessionStatus: SessionStatus;
-  onSendMessage: (text: string) => void;
-  onClearSession: () => void;
-  onToggle: () => void;
-  open: boolean;
-  height: number;
-  onResize: (delta: number) => void;
+  store: {
+    state: {
+      messages: ChatMessage[];
+      sessionStatus: string;
+      currentMessageId: string | null;
+    };
+    sendMessage: (text: string, context: Record<string, unknown>) => void;
+    claudeAbort: () => void;
+  };
 }
 
 export const ChatPanel: Component<ChatPanelProps> = (props) => {
   const [inputText, setInputText] = createSignal('');
   let messageListRef: HTMLDivElement | undefined;
 
+  // Auto-scroll to bottom when new messages arrive or content changes
   createEffect(() => {
-    // Track messages length to trigger on new messages
-    const len = props.messages.length;
-    if (len > 0 && messageListRef) {
-      const el = messageListRef;
-      // Check if user is near bottom (within 50px) before scrolling
-      const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 50;
-      if (nearBottom) {
-        el.scrollTop = el.scrollHeight;
-      }
+    const _msgs = props.store.state.messages;
+    if (messageListRef) {
+      messageListRef.scrollTop = messageListRef.scrollHeight;
     }
   });
 
   function handleSend() {
     const text = inputText().trim();
-    if (text === '') return;
-    props.onSendMessage(text);
+    if (!text) return;
+    props.store.sendMessage(text, {});
     setInputText('');
   }
 
   function handleKeyDown(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      if (!isActive()) handleSend();
     }
   }
 
+  const isActive = () => props.store.state.sessionStatus !== 'idle';
+
   return (
-    <Show when={props.open}>
-      <div
-        data-testid="chat-panel"
-        class={styles.container}
-        style={{ height: `${props.height}px` }}
-      >
-        <Splitter
-          orientation="horizontal"
-          onResize={(delta) => props.onResize(-delta)}
-          data-testid="chat-resize-handle"
-        />
-        <div class={styles.header}>
-          <span class={styles.headerTitle}>Claude Session</span>
-          <button
-            data-testid="chat-clear-btn"
-            class={styles.headerBtn}
-            onClick={() => props.onClearSession()}
-            title="Clear session"
-          >
-            &#x1f5d1;
-          </button>
-          <button
-            data-testid="chat-minimize-btn"
-            class={styles.headerBtn}
-            onClick={() => props.onToggle()}
-            title="Minimize"
-          >
-            &#x2500;
-          </button>
-          <button
-            data-testid="chat-close-btn"
-            class={styles.headerBtn}
-            onClick={() => props.onToggle()}
-            title="Close"
-          >
-            &#x00d7;
-          </button>
-        </div>
-        <Show when={props.messages.length === 0}>
-          <div class={styles.emptyState}>
-            Start a conversation with Claude to get help with your design.
-          </div>
+    <div data-testid="chat-panel" class={styles.panel}>
+      <div ref={messageListRef} class={styles.messageList}>
+        <Show when={props.store.state.messages.length === 0}>
+          <div class={styles.emptyState}>Start a conversation</div>
         </Show>
-        <Show when={props.messages.length > 0}>
-          <div data-testid="chat-message-list" class={styles.messageList} ref={messageListRef}>
-            <For each={props.messages}>
-              {(msg) => (
-                <div
-                  data-testid={`chat-message-${msg.id}`}
-                  data-role={msg.role}
-                  class={`${styles.message} ${msg.role === 'user' ? styles.userMessage : styles.assistantMessage}`}
-                >
-                  {msg.role === 'assistant' ? renderMarkdown(msg.content) : msg.content}
+        <For each={props.store.state.messages}>
+          {(msg) => (
+            <Show
+              when={msg.role === 'assistant'}
+              fallback={
+                <div data-testid="user-message" class={styles.userMessage}>
+                  {(msg as { text: string }).text}
                 </div>
-              )}
-            </For>
-          </div>
-        </Show>
-        <div class={styles.inputBar}>
-          <textarea
-            data-testid="chat-input"
-            class={styles.textarea}
-            placeholder="Ask Claude about your design..."
-            value={inputText()}
-            onInput={(e) => setInputText(e.currentTarget.value)}
-            onKeyDown={handleKeyDown}
-            disabled={props.sessionStatus !== 'idle'}
-          />
-          <button
-            data-testid="chat-send-btn"
-            class={styles.sendButton}
-            onClick={handleSend}
-            disabled={props.sessionStatus !== 'idle'}
-          >
-            Send
-          </button>
-        </div>
+              }
+            >
+              <MessageGroup message={msg as import('../stores/claudeStore').AssistantMessage} />
+            </Show>
+          )}
+        </For>
       </div>
-    </Show>
+      <div class={styles.inputArea}>
+        <textarea
+          data-testid="chat-input"
+          class={styles.textarea}
+          placeholder="Ask Claude..."
+          value={inputText()}
+          onInput={(e) => setInputText(e.currentTarget.value)}
+          onKeyDown={handleKeyDown}
+          rows={1}
+        />
+        <Show
+          when={isActive()}
+          fallback={
+            <button
+              data-testid="send-button"
+              class={styles.sendButton}
+              disabled={!inputText().trim()}
+              onClick={handleSend}
+            >
+              Send
+            </button>
+          }
+        >
+          <AbortButton onAbort={() => props.store.claudeAbort()} />
+        </Show>
+      </div>
+    </div>
   );
 };

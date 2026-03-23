@@ -1,0 +1,96 @@
+.container {
+  position: relative;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--reify-text);
+}
+
+.prose {
+  word-break: break-word;
+}
+
+.prose :global(pre) {
+  font-family: var(--reify-font-mono);
+  font-size: 12px;
+  background: var(--reify-surface0);
+  padding: 8px 10px;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+
+.prose :global(code) {
+  font-family: var(--reify-font-mono);
+  font-size: 12px;
+  background: var(--reify-surface0);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.prose :global(pre code) {
+  background: none;
+  padding: 0;
+}
+
+.prose :global(strong) {
+  font-weight: 600;
+}
+
+.prose :global(em) {
+  font-style: italic;
+}
+
+.prose :global(a) {
+  color: var(--reify-accent);
+  text-decoration: none;
+}
+
+.prose :global(a:hover) {
+  text-decoration: underline;
+}
+
+.prose :global(h1),
+.prose :global(h2),
+.prose :global(h3) {
+  margin: 8px 0 4px;
+  font-weight: 600;
+}
+
+.prose :global(h1) {
+  font-size: 16px;
+}
+
+.prose :global(h2) {
+  font-size: 14px;
+}
+
+.prose :global(h3) {
+  font-size: 13px;
+}
+
+.prose :global(ul) {
+  padding-left: 18px;
+  margin: 4px 0;
+}
+
+.prose :global(li) {
+  margin: 2px 0;
+}
+
+.cursor {
+  display: inline-block;
+  width: 2px;
+  height: 14px;
+  background: var(--reify-accent);
+  vertical-align: text-bottom;
+  animation: blink 1.06s steps(2) infinite;
+}
+
+@keyframes blink {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}

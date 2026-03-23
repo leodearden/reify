@@ -6,3 +6,6 @@ export type { EditorState } from './editorStore';
 
 export { createEngineStore } from './engineStore';
 export type { EngineState } from './engineStore';
+
+export { createClaudeStore } from './claudeStore';
+export type { ClaudeState, SessionStatus, ToolCallInfo, AssistantMessage } from './claudeStore';

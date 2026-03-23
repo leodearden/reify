@@ -11,6 +11,7 @@ import {
   ReloadPrompt,
   ChatPanel,
 } from '../panels';
+import { createClaudeStore } from '../stores';
 
 describe('panels smoke integration', () => {
   it('all four original components mount and have expected data-testid attributes', () => {
@@ -62,20 +63,9 @@ describe('panels smoke integration', () => {
     expect(screen.getByTestId('reload-prompt')).toBeTruthy();
   });
 
-  it('ChatPanel mounts with expected data-testid attribute', () => {
-    render(() => (
-      <ChatPanel
-        messages={[]}
-        sessionStatus="idle"
-        onSendMessage={vi.fn()}
-        onClearSession={vi.fn()}
-        onToggle={vi.fn()}
-        open={true}
-        height={250}
-        onResize={vi.fn()}
-      />
-    ));
-
+  it('ChatPanel mounts with expected data-testid', () => {
+    const store = createClaudeStore({ onSend: vi.fn(), onAbort: vi.fn() });
+    render(() => <ChatPanel store={store} />);
     expect(screen.getByTestId('chat-panel')).toBeTruthy();
   });
 });

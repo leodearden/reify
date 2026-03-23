@@ -1,324 +1,182 @@
-// @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
-import { createSignal } from 'solid-js';
+import { MessageGroup } from '../panels/chat/MessageGroup';
 import { ChatPanel } from '../panels/ChatPanel';
-import type { ChatMessage } from '../types';
+import { createClaudeStore } from '../stores/claudeStore';
+import type { AssistantMessage, ClaudeState, ChatMessage, UserMessage } from '../stores/claudeStore';
 
-const defaultProps = () => ({
-  messages: [] as ChatMessage[],
-  sessionStatus: 'idle' as const,
-  onSendMessage: vi.fn(),
-  onClearSession: vi.fn(),
-  onToggle: vi.fn(),
-  open: true,
-  height: 250,
-  onResize: vi.fn(),
+function makeAssistantMsg(overrides?: Partial<AssistantMessage>): AssistantMessage {
+  return {
+    role: 'assistant',
+    id: 'msg-1',
+    thinkingText: '',
+    thinkingComplete: false,
+    responseText: '',
+    toolCalls: [],
+    complete: false,
+    ...overrides,
+  };
+}
+
+describe('MessageGroup', () => {
+  it('renders ThinkingBlock when message has non-empty thinkingText', () => {
+    render(() => (
+      <MessageGroup message={makeAssistantMsg({ thinkingText: 'pondering...', thinkingComplete: false })} />
+    ));
+    expect(screen.getByTestId('thinking-indicator')).toBeTruthy();
+  });
+
+  it('does NOT render ThinkingBlock when thinkingText is empty', () => {
+    render(() => (
+      <MessageGroup message={makeAssistantMsg({ thinkingText: '' })} />
+    ));
+    expect(screen.queryByTestId('thinking-indicator')).toBeNull();
+    expect(screen.queryByTestId('thinking-block')).toBeNull();
+  });
+
+  it('renders ToolCallCard for each tool call', () => {
+    const msg = makeAssistantMsg({
+      toolCalls: [
+        { id: 'tc-1', toolName: 'reify_get_parameters', toolInput: {}, status: 'pending' },
+        { id: 'tc-2', toolName: 'reify_update_source', toolInput: {}, status: 'complete' },
+      ],
+    });
+    render(() => <MessageGroup message={msg} />);
+    const cards = screen.getAllByTestId('tool-call-card');
+    expect(cards).toHaveLength(2);
+  });
+
+  it('renders StreamingText for response text', () => {
+    render(() => (
+      <MessageGroup message={makeAssistantMsg({ responseText: 'Hello there', complete: true })} />
+    ));
+    expect(screen.getByTestId('streaming-text')).toBeTruthy();
+    expect(screen.getByTestId('streaming-text').textContent).toContain('Hello there');
+  });
+
+  it('visual order in DOM: thinking before tool calls before streaming text', () => {
+    const msg = makeAssistantMsg({
+      thinkingText: 'thinking...',
+      thinkingComplete: false,
+      toolCalls: [
+        { id: 'tc-1', toolName: 'reify_get_parameters', toolInput: {}, status: 'pending' },
+      ],
+      responseText: 'response here',
+    });
+    render(() => <MessageGroup message={msg} />);
+
+    const container = screen.getByTestId('streaming-text').closest('[data-testid="message-group"]')!;
+    const children = container.querySelectorAll('[data-testid]');
+    const testIds = Array.from(children).map((el) => el.getAttribute('data-testid'));
+
+    const thinkingIdx = testIds.indexOf('thinking-indicator');
+    const toolIdx = testIds.indexOf('tool-call-card');
+    const textIdx = testIds.indexOf('streaming-text');
+
+    expect(thinkingIdx).toBeLessThan(toolIdx);
+    expect(toolIdx).toBeLessThan(textIdx);
+  });
 });
 
-describe('ChatPanel basic rendering', () => {
+function makeStore(overrides?: { onSend?: ReturnType<typeof vi.fn>; onAbort?: ReturnType<typeof vi.fn> }) {
+  return createClaudeStore({
+    onSend: overrides?.onSend ?? vi.fn(),
+    onAbort: overrides?.onAbort ?? vi.fn(),
+  });
+}
+
+describe('ChatPanel', () => {
   it('renders with data-testid="chat-panel"', () => {
-    render(() => <ChatPanel {...defaultProps()} />);
+    const store = makeStore();
+    render(() => <ChatPanel store={store} />);
     expect(screen.getByTestId('chat-panel')).toBeTruthy();
   });
 
-  it('shows header with "Claude Session" title text', () => {
-    render(() => <ChatPanel {...defaultProps()} />);
-    expect(screen.getByText('Claude Session')).toBeTruthy();
+  it('shows empty state message when no messages', () => {
+    const store = makeStore();
+    render(() => <ChatPanel store={store} />);
+    expect(screen.getByTestId('chat-panel').textContent).toContain('Start a conversation');
   });
 
-  it('shows empty state message when messages array is empty', () => {
-    render(() => <ChatPanel {...defaultProps()} />);
-    expect(
-      screen.getByText('Start a conversation with Claude to get help with your design.'),
-    ).toBeTruthy();
+  it('renders user message with data-testid="user-message"', () => {
+    const store = makeStore();
+    store.sendMessage('Hello world', {});
+    render(() => <ChatPanel store={store} />);
+    expect(screen.getByTestId('user-message')).toBeTruthy();
+    expect(screen.getByTestId('user-message').textContent).toContain('Hello world');
   });
 
-  it('empty state is NOT shown when messages array has items', () => {
-    const messages: ChatMessage[] = [
-      { id: '1', role: 'user', content: 'Hello', timestamp: 1 },
-    ];
-    render(() => <ChatPanel {...defaultProps()} messages={messages} />);
-    expect(
-      screen.queryByText('Start a conversation with Claude to get help with your design.'),
-    ).toBeNull();
-  });
-});
-
-describe('ChatPanel header buttons', () => {
-  it('minimize button calls onToggle on click', () => {
-    const onToggle = vi.fn();
-    render(() => <ChatPanel {...defaultProps()} onToggle={onToggle} />);
-    fireEvent.click(screen.getByTestId('chat-minimize-btn'));
-    expect(onToggle).toHaveBeenCalledTimes(1);
+  it('renders assistant message via MessageGroup', () => {
+    const store = makeStore();
+    store.sendMessage('Hello', {});
+    // Feed a text delta to give the assistant some response text
+    const msgId = store.state.currentMessageId!;
+    store.handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'Hi there!' });
+    store.handleOutboundMessage({ type: 'done', id: msgId });
+    render(() => <ChatPanel store={store} />);
+    expect(screen.getByTestId('message-group')).toBeTruthy();
+    expect(screen.getByTestId('streaming-text').textContent).toContain('Hi there!');
   });
 
-  it('close button calls onToggle on click', () => {
-    const onToggle = vi.fn();
-    render(() => <ChatPanel {...defaultProps()} onToggle={onToggle} />);
-    fireEvent.click(screen.getByTestId('chat-close-btn'));
-    expect(onToggle).toHaveBeenCalledTimes(1);
+  it('abort button visible when sessionStatus is responding', () => {
+    const store = makeStore();
+    store.sendMessage('Hello', {});
+    const msgId = store.state.currentMessageId!;
+    store.handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'Hi' });
+    // sessionStatus should now be 'responding'
+    render(() => <ChatPanel store={store} />);
+    expect(screen.getByTestId('abort-button')).toBeTruthy();
   });
 
-  it('clear session button calls onClearSession on click', () => {
-    const onClearSession = vi.fn();
-    render(() => <ChatPanel {...defaultProps()} onClearSession={onClearSession} />);
-    fireEvent.click(screen.getByTestId('chat-clear-btn'));
-    expect(onClearSession).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('ChatPanel message list rendering', () => {
-  const testMessages: ChatMessage[] = [
-    { id: '1', role: 'user', content: 'Hello', timestamp: 1 },
-    { id: '2', role: 'assistant', content: 'Hi there', timestamp: 2 },
-  ];
-
-  it('user messages render with data-role="user"', () => {
-    render(() => <ChatPanel {...defaultProps()} messages={testMessages} />);
-    const msg = screen.getByTestId('chat-message-1');
-    expect(msg.getAttribute('data-role')).toBe('user');
+  it('abort button NOT visible when sessionStatus is idle', () => {
+    const store = makeStore();
+    render(() => <ChatPanel store={store} />);
+    expect(screen.queryByTestId('abort-button')).toBeNull();
   });
 
-  it('assistant messages render with data-role="assistant"', () => {
-    render(() => <ChatPanel {...defaultProps()} messages={testMessages} />);
-    const msg = screen.getByTestId('chat-message-2');
-    expect(msg.getAttribute('data-role')).toBe('assistant');
+  it('send button visible when sessionStatus is idle', () => {
+    const store = makeStore();
+    render(() => <ChatPanel store={store} />);
+    expect(screen.getByTestId('send-button')).toBeTruthy();
   });
 
-  it('message content text is visible', () => {
-    render(() => <ChatPanel {...defaultProps()} messages={testMessages} />);
-    expect(screen.getByText('Hello')).toBeTruthy();
-    expect(screen.getByText('Hi there')).toBeTruthy();
+  it('send button disabled when textarea is empty', () => {
+    const store = makeStore();
+    render(() => <ChatPanel store={store} />);
+    const sendBtn = screen.getByTestId('send-button') as HTMLButtonElement;
+    expect(sendBtn.disabled).toBe(true);
   });
 
-  it('correct number of message elements rendered', () => {
-    const { container } = render(() => <ChatPanel {...defaultProps()} messages={testMessages} />);
-    const messageEls = container.querySelectorAll('[data-role]');
-    expect(messageEls.length).toBe(testMessages.length);
-  });
-});
-
-describe('ChatPanel input bar', () => {
-  it('textarea renders with placeholder', () => {
-    render(() => <ChatPanel {...defaultProps()} />);
+  it('typing in textarea and clicking send calls onSend', async () => {
+    const onSend = vi.fn();
+    const store = makeStore({ onSend });
+    render(() => <ChatPanel store={store} />);
     const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
-    expect(textarea.placeholder).toBe('Ask Claude about your design...');
+    fireEvent.input(textarea, { target: { value: 'Build a box' } });
+    const sendBtn = screen.getByTestId('send-button') as HTMLButtonElement;
+    fireEvent.click(sendBtn);
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend).toHaveBeenCalledWith(expect.any(String), 'Build a box', {});
   });
 
-  it('typing and pressing Enter calls onSendMessage with text', () => {
-    const onSendMessage = vi.fn();
-    render(() => <ChatPanel {...defaultProps()} onSendMessage={onSendMessage} />);
-    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: 'Hello Claude' } });
-    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-    expect(onSendMessage).toHaveBeenCalledWith('Hello Claude');
-  });
+  it('full event sequence: sendMessage, text_deltas, done → rendered output', () => {
+    const store = makeStore();
+    store.sendMessage('Make a sphere', {});
+    const msgId = store.state.currentMessageId!;
+    store.handleOutboundMessage({ type: 'thinking_delta', id: msgId, content: 'Let me think...' });
+    store.handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'Here is ' });
+    store.handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'a sphere.' });
+    store.handleOutboundMessage({ type: 'done', id: msgId });
 
-  it('input is cleared after sending', () => {
-    const onSendMessage = vi.fn();
-    render(() => <ChatPanel {...defaultProps()} onSendMessage={onSendMessage} />);
-    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: 'Hello Claude' } });
-    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-    expect(textarea.value).toBe('');
-  });
+    render(() => <ChatPanel store={store} />);
 
-  it('Shift+Enter does NOT call onSendMessage', () => {
-    const onSendMessage = vi.fn();
-    render(() => <ChatPanel {...defaultProps()} onSendMessage={onSendMessage} />);
-    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: 'Hello Claude' } });
-    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true });
-    expect(onSendMessage).not.toHaveBeenCalled();
-  });
-
-  it('Enter on empty input does NOT call onSendMessage', () => {
-    const onSendMessage = vi.fn();
-    render(() => <ChatPanel {...defaultProps()} onSendMessage={onSendMessage} />);
-    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
-    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-    expect(onSendMessage).not.toHaveBeenCalled();
-  });
-
-  it('send button click calls onSendMessage with current input text', () => {
-    const onSendMessage = vi.fn();
-    render(() => <ChatPanel {...defaultProps()} onSendMessage={onSendMessage} />);
-    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: 'Hi!' } });
-    fireEvent.click(screen.getByTestId('chat-send-btn'));
-    expect(onSendMessage).toHaveBeenCalledWith('Hi!');
-  });
-});
-
-describe('ChatPanel auto-scroll', () => {
-  it('scrolls to bottom when new messages are added and user is near bottom', async () => {
-    const initialMessages: ChatMessage[] = Array.from({ length: 20 }, (_, i) => ({
-      id: String(i),
-      role: 'user' as const,
-      content: `Message ${i} with enough text to take up space`,
-      timestamp: i,
-    }));
-
-    const [messages, setMessages] = createSignal<ChatMessage[]>(initialMessages);
-
-    render(() => (
-      <ChatPanel
-        messages={messages()}
-        sessionStatus="idle"
-        onSendMessage={vi.fn()}
-        onClearSession={vi.fn()}
-        onToggle={vi.fn()}
-        open={true}
-        height={150}
-        onResize={vi.fn()}
-      />
-    ));
-
-    const messageList = screen.getByTestId('chat-message-list');
-    // Mock layout properties to simulate overflow
-    Object.defineProperty(messageList, 'scrollHeight', { value: 1000, configurable: true });
-    Object.defineProperty(messageList, 'clientHeight', { value: 150, configurable: true });
-    // Start near bottom so auto-scroll triggers (850 + 150 = 1000 >= 950 = 1000 - 50)
-    messageList.scrollTop = 850;
-
-    setMessages([
-      ...initialMessages,
-      { id: '20', role: 'assistant', content: 'New message!', timestamp: 20 },
-    ]);
-
-    // Wait for effect to run
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Without auto-scroll implementation, scrollTop stays at 100
-    // With auto-scroll, it should be set to scrollHeight (1000)
-    expect(messageList.scrollTop).toBe(1000);
-  });
-});
-
-describe('ChatPanel open/close toggle', () => {
-  it('when open=false, message list and input bar are NOT in the DOM', () => {
-    render(() => <ChatPanel {...defaultProps()} open={false} />);
-    expect(screen.queryByTestId('chat-message-list')).toBeNull();
-    expect(screen.queryByTestId('chat-input')).toBeNull();
-  });
-
-  it('when open=true, message list and input bar ARE in the DOM', () => {
-    const messages: ChatMessage[] = [
-      { id: '1', role: 'user', content: 'Hello', timestamp: 1 },
-    ];
-    render(() => <ChatPanel {...defaultProps()} messages={messages} open={true} />);
-    expect(screen.getByTestId('chat-message-list')).toBeTruthy();
-    expect(screen.getByTestId('chat-input')).toBeTruthy();
-  });
-
-  it('resize handle is present when open=true', () => {
-    const messages: ChatMessage[] = [
-      { id: '1', role: 'user', content: 'Hello', timestamp: 1 },
-    ];
-    render(() => <ChatPanel {...defaultProps()} messages={messages} open={true} />);
-    expect(screen.getByTestId('chat-resize-handle')).toBeTruthy();
-  });
-});
-
-describe('ChatPanel drag-to-resize', () => {
-  it('Splitter with orientation="horizontal" and data-testid="chat-resize-handle" exists when open', () => {
-    render(() => <ChatPanel {...defaultProps()} open={true} />);
-    const handle = screen.getByTestId('chat-resize-handle');
-    expect(handle.getAttribute('aria-orientation')).toBe('horizontal');
-  });
-
-  it('mouseDown + mouseMove on splitter triggers onResize with negated delta', () => {
-    const onResize = vi.fn();
-    render(() => <ChatPanel {...defaultProps()} open={true} onResize={onResize} />);
-    const handle = screen.getByTestId('chat-resize-handle');
-
-    // Start drag at y=300
-    fireEvent.mouseDown(handle, { clientX: 100, clientY: 300 });
-    // Move to y=280 (delta = -20 from Splitter, negated = +20 to onResize)
-    fireEvent.mouseMove(document, { clientX: 100, clientY: 280 });
-
-    expect(onResize).toHaveBeenCalledWith(20);
-
-    // Release
-    fireEvent.mouseUp(document);
-  });
-});
-
-describe('ChatPanel markdown rendering', () => {
-  it('assistant message with code block renders a <pre> element containing a <code> element', () => {
-    const messages: ChatMessage[] = [
-      { id: '1', role: 'assistant', content: '```\nconst x = 1;\n```', timestamp: 1 },
-    ];
-    const { container } = render(() => <ChatPanel {...defaultProps()} messages={messages} />);
-    const msgEl = container.querySelector('[data-testid="chat-message-1"]')!;
-    const pre = msgEl.querySelector('pre');
-    expect(pre).toBeTruthy();
-    const code = pre!.querySelector('code');
-    expect(code).toBeTruthy();
-    expect(code!.textContent).toContain('const x = 1;');
-  });
-
-  it('assistant message with inline code renders a <code> element not inside <pre>', () => {
-    const messages: ChatMessage[] = [
-      { id: '1', role: 'assistant', content: 'Use `foo()` here', timestamp: 1 },
-    ];
-    const { container } = render(() => <ChatPanel {...defaultProps()} messages={messages} />);
-    const msgEl = container.querySelector('[data-testid="chat-message-1"]')!;
-    const codes = msgEl.querySelectorAll('code');
-    expect(codes.length).toBeGreaterThanOrEqual(1);
-    // Should NOT be inside a <pre>
-    const pre = msgEl.querySelector('pre');
-    expect(pre).toBeNull();
-    expect(codes[0].textContent).toBe('foo()');
-  });
-
-  it('assistant message with bold renders a <strong> element', () => {
-    const messages: ChatMessage[] = [
-      { id: '1', role: 'assistant', content: 'This is **bold** text', timestamp: 1 },
-    ];
-    const { container } = render(() => <ChatPanel {...defaultProps()} messages={messages} />);
-    const msgEl = container.querySelector('[data-testid="chat-message-1"]')!;
-    const strong = msgEl.querySelector('strong');
-    expect(strong).toBeTruthy();
-    expect(strong!.textContent).toBe('bold');
-  });
-
-  it('user messages do NOT get markdown rendering', () => {
-    const messages: ChatMessage[] = [
-      { id: '1', role: 'user', content: 'This is **bold** and `code`', timestamp: 1 },
-    ];
-    const { container } = render(() => <ChatPanel {...defaultProps()} messages={messages} />);
-    const msgEl = container.querySelector('[data-testid="chat-message-1"]')!;
-    expect(msgEl.querySelector('strong')).toBeNull();
-    expect(msgEl.querySelector('code')).toBeNull();
-    // The raw text should be there
-    expect(msgEl.textContent).toContain('**bold**');
-  });
-});
-
-describe('ChatPanel disabled state', () => {
-  it('textarea is disabled when sessionStatus is busy', () => {
-    render(() => <ChatPanel {...defaultProps()} sessionStatus="busy" />);
-    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
-    expect(textarea.disabled).toBe(true);
-  });
-
-  it('send button is disabled when sessionStatus is busy', () => {
-    render(() => <ChatPanel {...defaultProps()} sessionStatus="busy" />);
-    const btn = screen.getByTestId('chat-send-btn') as HTMLButtonElement;
-    expect(btn.disabled).toBe(true);
-  });
-
-  it('textarea is NOT disabled when sessionStatus is idle', () => {
-    render(() => <ChatPanel {...defaultProps()} sessionStatus="idle" />);
-    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
-    expect(textarea.disabled).toBe(false);
-  });
-
-  it('send button is NOT disabled when sessionStatus is idle', () => {
-    render(() => <ChatPanel {...defaultProps()} sessionStatus="idle" />);
-    const btn = screen.getByTestId('chat-send-btn') as HTMLButtonElement;
-    expect(btn.disabled).toBe(false);
+    // User message should be rendered
+    expect(screen.getByTestId('user-message').textContent).toContain('Make a sphere');
+    // Assistant message should have combined response
+    expect(screen.getByTestId('streaming-text').textContent).toContain('Here is a sphere.');
+    // Thinking block should appear (collapsed, since complete)
+    expect(screen.getByTestId('thinking-block')).toBeTruthy();
+    // Session should be idle, so no abort button
+    expect(screen.queryByTestId('abort-button')).toBeNull();
   });
 });

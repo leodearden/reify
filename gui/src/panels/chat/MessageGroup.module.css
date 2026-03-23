@@ -1,0 +1,6 @@
+.group {
+  padding: 8px 0;
+  border-left: 2px solid var(--reify-accent);
+  padding-left: 12px;
+  margin: 4px 0;
+}
