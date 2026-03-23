@@ -238,6 +238,41 @@ fn focus_entity(app: tauri::AppHandle, entity_path: String) -> Result<(), String
 }
 
 #[tauri::command]
+fn mcp_tool_call(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    name: String,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    // Clone app before moving into the event_emitter closure
+    let app_for_emitter = app.clone();
+    let ctx = reify_gui::mcp_context::TauriToolContext::with_event_emitter(
+        state.engine.clone(),
+        move |event_name, payload| {
+            app_for_emitter.emit(event_name, payload).ok();
+        },
+    );
+
+    // Bracket the MCP call with evaluation-status events
+    emit_status(&app, "evaluating");
+    let _idle = IdleGuard(app.clone());
+
+    let result = reify_gui::mcp_context::mcp_tool_call_impl(&name, params, &ctx);
+
+    // Sync state and emit delta events (conservative: runs even after read-only tools,
+    // since build_gui_state is cheap for unchanged state and compute_delta produces
+    // an empty delta when nothing changed)
+    if let Ok(mut session) = state.engine.lock() {
+        if let Ok(gui_state) = session.build_gui_state() {
+            let delta = compute_delta(&state.last_state, &gui_state);
+            emit_delta(&app, &delta);
+        }
+    }
+
+    result
+}
+
+#[tauri::command]
 async fn lsp_request(
     bridge: tauri::State<'_, LspBridge>,
     method: String,
@@ -308,6 +343,7 @@ fn main() {
             export,
             get_source_location,
             focus_entity,
+            mcp_tool_call,
             lsp_request,
         ])
         .run(tauri::generate_context!())

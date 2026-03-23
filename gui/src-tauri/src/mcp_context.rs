@@ -1,0 +1,315 @@
+// TauriToolContext — bridges MCP tool context to EngineSession for Tauri GUI
+
+use std::sync::{Arc, Mutex};
+
+use reify_mcp::{
+    ConstraintInfo, DiagnosticInfo, EvalStatusInfo, OpenFileInfo, ParameterInfo, ReifyToolContext,
+    SelectionInfo, SetParamResult, SourceContent, SourceLocationInfo, ToolError, UpdateResult,
+};
+
+use crate::engine::EngineSession;
+
+/// Event emitter callback type for navigation events (focus_entity, navigate_to_source).
+type EventEmitter = Box<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
+/// Bridges the MCP tool context trait to an EngineSession for use in the Tauri GUI.
+///
+/// Holds an `Arc<Mutex<EngineSession>>` and delegates each `ReifyToolContext` method
+/// to the appropriate `EngineSession` method after acquiring the lock. Converts between
+/// GUI types (`ValueData`, `ConstraintData`) and MCP types (`ParameterInfo`, `ConstraintInfo`).
+///
+/// An optional event emitter callback is used for navigation tools (`focus_entity`,
+/// `navigate_to_source`), keeping the struct testable without a Tauri runtime.
+pub struct TauriToolContext {
+    engine: Arc<Mutex<EngineSession>>,
+    event_emitter: Option<EventEmitter>,
+}
+
+impl TauriToolContext {
+    /// Create a new TauriToolContext with no event emitter.
+    pub fn new(engine: Arc<Mutex<EngineSession>>) -> Self {
+        Self {
+            engine,
+            event_emitter: None,
+        }
+    }
+
+    /// Create a new TauriToolContext with an event emitter for navigation events.
+    pub fn with_event_emitter(
+        engine: Arc<Mutex<EngineSession>>,
+        emitter: impl Fn(&str, serde_json::Value) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            engine,
+            event_emitter: Some(Box::new(emitter)),
+        }
+    }
+}
+
+impl ReifyToolContext for TauriToolContext {
+    fn get_source(&self, _file_path: Option<&str>) -> Result<SourceContent, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        let gui_state = session
+            .build_gui_state()
+            .map_err(ToolError::EngineError)?;
+
+        // Return the first file's content (single-file model for now)
+        if let Some(file) = gui_state.files.first() {
+            Ok(SourceContent {
+                content: file.content.clone(),
+                file_path: file.path.clone(),
+            })
+        } else {
+            Err(ToolError::EngineError("No source loaded".to_string()))
+        }
+    }
+
+    fn get_open_files(&self) -> Result<Vec<OpenFileInfo>, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        let gui_state = session
+            .build_gui_state()
+            .map_err(ToolError::EngineError)?;
+
+        Ok(gui_state
+            .files
+            .iter()
+            .map(|f| OpenFileInfo {
+                path: f.path.clone(),
+                language: "reify".to_string(),
+                dirty: false,
+            })
+            .collect())
+    }
+
+    fn get_diagnostics(&self) -> Result<Vec<DiagnosticInfo>, ToolError> {
+        Ok(Vec::new())
+    }
+
+    fn get_parameters(&self) -> Result<Vec<ParameterInfo>, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        let gui_state = session
+            .build_gui_state()
+            .map_err(ToolError::EngineError)?;
+
+        Ok(gui_state
+            .values
+            .iter()
+            .map(|v| ParameterInfo {
+                cell_id: v.cell_id.clone(),
+                name: v.name.clone(),
+                value: v.value.clone(),
+                unit: v.unit.clone(),
+                kind: v.kind.clone(),
+                entity_path: v.entity_path.clone(),
+                determinacy: v.determinacy.clone(),
+            })
+            .collect())
+    }
+
+    fn get_constraints(&self) -> Result<Vec<ConstraintInfo>, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        let gui_state = session
+            .build_gui_state()
+            .map_err(ToolError::EngineError)?;
+
+        Ok(gui_state
+            .constraints
+            .iter()
+            .map(|c| ConstraintInfo {
+                node_id: c.node_id.clone(),
+                expression: c.expression.clone(),
+                status: c.status.clone(),
+                label: c.label.clone(),
+                parameter_ids: c.parameter_ids.clone(),
+            })
+            .collect())
+    }
+
+    fn get_eval_status(&self) -> Result<EvalStatusInfo, ToolError> {
+        Ok(EvalStatusInfo {
+            phase: "idle".to_string(),
+            progress: None,
+            dirty_count: 0,
+        })
+    }
+
+    fn get_selection(&self) -> Result<SelectionInfo, ToolError> {
+        Ok(SelectionInfo {
+            selected_entity: None,
+            hovered_entity: None,
+        })
+    }
+
+    fn get_source_location(&self, entity_path: &str) -> Result<SourceLocationInfo, ToolError> {
+        let session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+
+        let loc = session.get_source_location(entity_path).ok_or_else(|| {
+            ToolError::EngineError(format!("entity not found: {}", entity_path))
+        })?;
+
+        Ok(SourceLocationInfo {
+            file: loc.file,
+            line: loc.line,
+            column: loc.column,
+            end_line: loc.end_line,
+            end_column: loc.end_column,
+        })
+    }
+
+    fn update_source(&self, file_path: &str, content: &str) -> Result<UpdateResult, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        session
+            .update_source(file_path, content)
+            .map(|_| UpdateResult {
+                success: true,
+                diagnostics_count: 0,
+            })
+            .map_err(ToolError::EngineError)
+    }
+
+    fn set_parameter(&self, cell_id: &str, value: &str) -> Result<SetParamResult, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        let gui_state = session
+            .set_parameter(cell_id, value)
+            .map_err(ToolError::EngineError)?;
+
+        // Find the updated parameter in the returned GuiState
+        let param = gui_state
+            .values
+            .iter()
+            .find(|v| v.cell_id == cell_id)
+            .ok_or_else(|| {
+                ToolError::EngineError(format!("parameter '{}' not found in result", cell_id))
+            })?;
+
+        Ok(SetParamResult {
+            success: true,
+            new_value: param.value.clone(),
+            unit: param.unit.clone(),
+        })
+    }
+
+    fn open_file(&self, file_path: &str) -> Result<OpenFileInfo, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        session
+            .load_file(std::path::Path::new(file_path))
+            .map_err(ToolError::EngineError)?;
+
+        Ok(OpenFileInfo {
+            path: file_path.to_string(),
+            language: "reify".to_string(),
+            dirty: false,
+        })
+    }
+
+    fn save_file(&self, file_path: Option<&str>) -> Result<bool, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        let gui_state = session
+            .build_gui_state()
+            .map_err(ToolError::EngineError)?;
+
+        // Get the first file's content (single-file model)
+        let file = gui_state
+            .files
+            .first()
+            .ok_or_else(|| ToolError::EngineError("No source loaded".to_string()))?;
+
+        let path = file_path.unwrap_or(&file.path);
+        std::fs::write(path, &file.content)
+            .map_err(|e| ToolError::EngineError(format!("Error writing {}: {}", path, e)))?;
+        Ok(true)
+    }
+
+    fn export(&self, format: &str, output_path: &str) -> Result<bool, ToolError> {
+        let export_format = match format {
+            "step" | "stp" => reify_types::ExportFormat::Step,
+            "stl" => reify_types::ExportFormat::Stl,
+            _ => {
+                return Err(ToolError::InvalidParams(format!(
+                    "Unknown export format: {}",
+                    format
+                )))
+            }
+        };
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        session
+            .export(export_format, std::path::Path::new(output_path))
+            .map_err(ToolError::EngineError)?;
+        Ok(true)
+    }
+
+    fn focus_entity(&self, entity_path: &str) -> Result<bool, ToolError> {
+        if let Some(ref emitter) = self.event_emitter {
+            emitter(
+                "focus-entity",
+                serde_json::json!(entity_path),
+            );
+        }
+        Ok(true)
+    }
+
+    fn navigate_to_source(
+        &self,
+        file: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<bool, ToolError> {
+        if let Some(ref emitter) = self.event_emitter {
+            emitter(
+                "navigate-to-source",
+                serde_json::json!({
+                    "file": file,
+                    "line": line,
+                    "column": column,
+                }),
+            );
+        }
+        Ok(true)
+    }
+}
+
+/// Dispatch an MCP tool call by name, using the given context.
+///
+/// Creates a fresh `ToolRegistry`, registers all tools, then dispatches.
+/// Returns the tool's JSON result or a String error.
+pub fn mcp_tool_call_impl(
+    name: &str,
+    params: serde_json::Value,
+    context: &dyn ReifyToolContext,
+) -> Result<serde_json::Value, String> {
+    let mut registry = reify_mcp::ToolRegistry::new();
+    reify_mcp::register_all_tools(&mut registry);
+    registry
+        .call_tool(name, params, context)
+        .map_err(|e| e.to_string())
+}
