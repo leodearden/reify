@@ -147,7 +147,7 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
             produce((m: ChatMessage) => {
               if (m.role !== 'assistant') return;
               m.toolCalls.push({
-                id: msg.id,
+                id: `${msg.id}-tc-${m.toolCalls.length}`,
                 toolName: msg.tool_name,
                 toolInput: msg.tool_input,
                 status: 'pending',
@@ -166,7 +166,7 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
           idx,
           produce((m: ChatMessage) => {
             if (m.role !== 'assistant') return;
-            const tc = m.toolCalls.find((t) => t.toolName === msg.tool_name);
+            const tc = m.toolCalls.find((t) => t.toolName === msg.tool_name && t.status === 'pending');
             if (tc) {
               tc.status = 'complete';
               tc.result = msg.result;
