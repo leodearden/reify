@@ -1,4 +1,4 @@
-// Navigation tool stubs (2 tools)
+// Navigation tools (2 tools)
 
 use crate::registry::ToolRegistry;
 use crate::types::ToolError;
@@ -17,30 +17,59 @@ pub fn register(registry: &mut ToolRegistry) {
             },
             "required": ["entity_path"]
         }),
-        |_params, _ctx| Err(ToolError::NotImplemented),
+        |params, ctx| {
+            let entity_path = params["entity_path"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("entity_path is required".to_string()))?;
+
+            let result = ctx.focus_entity(entity_path)?;
+
+            Ok(serde_json::json!({
+                "success": result,
+            }))
+        },
     );
 
     registry.register(
         "reify_navigate_to_source",
-        "Navigate the editor to a specific source location.",
+        "Navigate the editor to the source location of an entity.",
         serde_json::json!({
             "type": "object",
             "properties": {
-                "file": {
+                "entity_path": {
                     "type": "string",
-                    "description": "File path to navigate to."
-                },
-                "line": {
-                    "type": "integer",
-                    "description": "Line number (1-based)."
-                },
-                "column": {
-                    "type": "integer",
-                    "description": "Column number (1-based)."
+                    "description": "The entity path to navigate to its source definition."
                 }
             },
-            "required": ["file", "line", "column"]
+            "required": ["entity_path"]
         }),
-        |_params, _ctx| Err(ToolError::NotImplemented),
+        |params, ctx| {
+            let entity_path = params["entity_path"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("entity_path is required".to_string()))?;
+
+            match ctx.get_source_location(entity_path) {
+                Ok(loc) => {
+                    ctx.navigate_to_source(&loc.file, loc.line, loc.column)?;
+
+                    Ok(serde_json::json!({
+                        "success": true,
+                        "location": {
+                            "file": loc.file,
+                            "line": loc.line,
+                            "column": loc.column,
+                            "end_line": loc.end_line,
+                            "end_column": loc.end_column,
+                        },
+                    }))
+                }
+                Err(_) => {
+                    Ok(serde_json::json!({
+                        "success": false,
+                        "location": null,
+                    }))
+                }
+            }
+        },
     );
 }

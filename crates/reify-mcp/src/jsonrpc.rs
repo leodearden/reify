@@ -37,7 +37,13 @@ pub struct JsonRpcError {
 
 // Standard JSON-RPC error codes
 const PARSE_ERROR: i32 = -32700;
+/// Invalid Request — the JSON sent is not a valid Request object.
+pub const INVALID_REQUEST: i32 = -32600;
 const METHOD_NOT_FOUND: i32 = -32601;
+/// Invalid params — invalid method parameter(s).
+pub const INVALID_PARAMS: i32 = -32602;
+/// Internal error — internal JSON-RPC error.
+pub const INTERNAL_ERROR: i32 = -32603;
 
 /// MCP protocol dispatcher that routes JSON-RPC requests to the tool registry.
 pub struct McpDispatcher<'a> {
@@ -59,6 +65,24 @@ impl<'a> McpDispatcher<'a> {
                 return self.error_response(serde_json::Value::Null, PARSE_ERROR, "Parse error");
             }
         };
+
+        // Validate jsonrpc version
+        if request.jsonrpc != "2.0" {
+            return self.error_response(
+                request.id,
+                INVALID_REQUEST,
+                "Invalid Request: jsonrpc must be '2.0'",
+            );
+        }
+
+        // Validate id is string or number (reject null, array, object, bool)
+        if !request.id.is_string() && !request.id.is_number() {
+            return self.error_response(
+                serde_json::Value::Null,
+                INVALID_REQUEST,
+                "Invalid Request: id must be a string or number",
+            );
+        }
 
         let response = match request.method.as_str() {
             "initialize" => self.handle_initialize(&request),
@@ -116,15 +140,46 @@ impl<'a> McpDispatcher<'a> {
     }
 
     fn handle_tools_call(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
-        let name = request.params["name"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        let arguments = request.params["arguments"].clone();
+        // Validate name is a string
+        let name = match request.params["name"].as_str() {
+            Some(s) => s.to_string(),
+            None => {
+                return self.mcp_error_response(
+                    &request.id,
+                    "missing or invalid tool name: 'name' must be a string",
+                );
+            }
+        };
+
+        // Validate arguments: if present and not null, must be an object
+        let arguments = match &request.params["arguments"] {
+            v if v.is_null() => serde_json::json!({}),
+            v if v.is_object() => v.clone(),
+            _ => {
+                return self.mcp_error_response(
+                    &request.id,
+                    "invalid arguments: 'arguments' must be an object",
+                );
+            }
+        };
 
         match self.registry.call_tool(&name, arguments, self.context) {
             Ok(value) => {
-                let text = serde_json::to_string(&value).unwrap_or_default();
+                let text = match serde_json::to_string(&value) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return JsonRpcResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id: request.id.clone(),
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: INTERNAL_ERROR,
+                                message: format!("failed to serialize tool result: {e}"),
+                                data: None,
+                            }),
+                        };
+                    }
+                };
                 JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: request.id.clone(),
@@ -147,6 +202,19 @@ impl<'a> McpDispatcher<'a> {
                     error: None,
                 }
             }
+        }
+    }
+
+    /// Build an MCP-level isError content response (tool-level error, not JSON-RPC error).
+    fn mcp_error_response(&self, id: &serde_json::Value, message: &str) -> JsonRpcResponse {
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: id.clone(),
+            result: Some(serde_json::json!({
+                "content": [{"type": "text", "text": message}],
+                "isError": true
+            })),
+            error: None,
         }
     }
 

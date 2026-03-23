@@ -33,6 +33,24 @@ describe('Toolbar', () => {
   });
 });
 
+describe('Toolbar Claude button', () => {
+  it('renders a button with text "Claude" when onToggleChatPanel prop is provided', () => {
+    render(() => (
+      <Toolbar onExport={vi.fn()} onFitToView={vi.fn()} onToggleChatPanel={vi.fn()} />
+    ));
+    expect(screen.getByText('Claude')).toBeTruthy();
+  });
+
+  it('clicking Claude button calls onToggleChatPanel callback', () => {
+    const onToggleChatPanel = vi.fn();
+    render(() => (
+      <Toolbar onExport={vi.fn()} onFitToView={vi.fn()} onToggleChatPanel={onToggleChatPanel} />
+    ));
+    fireEvent.click(screen.getByText('Claude'));
+    expect(onToggleChatPanel).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Toolbar accessibility', () => {
   it('container has role="toolbar"', () => {
     render(() => <Toolbar onExport={vi.fn()} onFitToView={vi.fn()} />);

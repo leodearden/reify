@@ -1,6 +1,9 @@
 use reify_mcp::context::{MockToolContext, ReifyToolContext};
 use reify_mcp::registry::ToolRegistry;
-use reify_mcp::types::{ToolError, ToolInfo};
+use reify_mcp::types::{
+    ConstraintInfo, DiagnosticInfo, EvalStatusInfo, OpenFileInfo, ParameterInfo, SelectionInfo,
+    SetParamResult, SourceContent, SourceLocationInfo, ToolError, ToolInfo, UpdateResult,
+};
 
 #[test]
 fn tool_error_not_implemented_has_display() {
@@ -54,6 +57,210 @@ fn tool_info_serializes_to_json_with_required_fields() {
     assert_eq!(json["name"], "reify_get_source");
     assert_eq!(json["description"], "Get source code");
     assert_eq!(json["inputSchema"]["type"], "object");
+}
+
+// --- PartialEq derive tests (S1) ---
+
+#[test]
+fn source_content_partial_eq() {
+    let a = SourceContent {
+        content: "x = 1".to_string(),
+        file_path: "main.ri".to_string(),
+    };
+    let b = SourceContent {
+        content: "x = 1".to_string(),
+        file_path: "main.ri".to_string(),
+    };
+    assert_eq!(a, b);
+}
+
+#[test]
+fn open_file_info_partial_eq() {
+    let a = OpenFileInfo {
+        path: "/a.ri".to_string(),
+        language: "reify".to_string(),
+        dirty: false,
+    };
+    let b = OpenFileInfo {
+        path: "/a.ri".to_string(),
+        language: "reify".to_string(),
+        dirty: false,
+    };
+    assert_eq!(a, b);
+}
+
+#[test]
+fn diagnostic_info_partial_eq() {
+    let a = DiagnosticInfo {
+        file_path: "a.ri".to_string(),
+        line: 1,
+        column: 0,
+        end_line: 1,
+        end_column: 5,
+        severity: "error".to_string(),
+        message: "bad".to_string(),
+        code: None,
+    };
+    let b = DiagnosticInfo {
+        file_path: "a.ri".to_string(),
+        line: 1,
+        column: 0,
+        end_line: 1,
+        end_column: 5,
+        severity: "error".to_string(),
+        message: "bad".to_string(),
+        code: None,
+    };
+    assert_eq!(a, b);
+}
+
+#[test]
+fn parameter_info_partial_eq() {
+    let a = ParameterInfo {
+        cell_id: "c1".to_string(),
+        name: "width".to_string(),
+        value: "10".to_string(),
+        unit: "mm".to_string(),
+        kind: "real".to_string(),
+        entity_path: "/box".to_string(),
+        determinacy: "determined".to_string(),
+    };
+    let b = ParameterInfo {
+        cell_id: "c1".to_string(),
+        name: "width".to_string(),
+        value: "10".to_string(),
+        unit: "mm".to_string(),
+        kind: "real".to_string(),
+        entity_path: "/box".to_string(),
+        determinacy: "determined".to_string(),
+    };
+    assert_eq!(a, b);
+}
+
+#[test]
+fn constraint_info_partial_eq() {
+    let a = ConstraintInfo {
+        node_id: "n1".to_string(),
+        expression: "x > 0".to_string(),
+        status: "satisfied".to_string(),
+        label: Some("pos".to_string()),
+        parameter_ids: vec!["c1".to_string()],
+    };
+    let b = ConstraintInfo {
+        node_id: "n1".to_string(),
+        expression: "x > 0".to_string(),
+        status: "satisfied".to_string(),
+        label: Some("pos".to_string()),
+        parameter_ids: vec!["c1".to_string()],
+    };
+    assert_eq!(a, b);
+}
+
+#[test]
+fn eval_status_info_partial_eq() {
+    let a = EvalStatusInfo {
+        phase: "idle".to_string(),
+        progress: Some(1.0),
+        dirty_count: 0,
+    };
+    let b = EvalStatusInfo {
+        phase: "idle".to_string(),
+        progress: Some(1.0),
+        dirty_count: 0,
+    };
+    assert_eq!(a, b);
+}
+
+#[test]
+fn selection_info_partial_eq() {
+    let a = SelectionInfo {
+        selected_entity: Some("box".to_string()),
+        hovered_entity: None,
+    };
+    let b = SelectionInfo {
+        selected_entity: Some("box".to_string()),
+        hovered_entity: None,
+    };
+    assert_eq!(a, b);
+}
+
+#[test]
+fn source_location_info_partial_eq() {
+    let a = SourceLocationInfo {
+        file: "a.ri".to_string(),
+        line: 1,
+        column: 0,
+        end_line: 1,
+        end_column: 5,
+    };
+    let b = SourceLocationInfo {
+        file: "a.ri".to_string(),
+        line: 1,
+        column: 0,
+        end_line: 1,
+        end_column: 5,
+    };
+    assert_eq!(a, b);
+}
+
+#[test]
+fn update_result_partial_eq() {
+    let a = UpdateResult {
+        success: true,
+        diagnostics_count: 0,
+    };
+    let b = UpdateResult {
+        success: true,
+        diagnostics_count: 0,
+    };
+    assert_eq!(a, b);
+}
+
+#[test]
+fn set_param_result_partial_eq() {
+    let a = SetParamResult {
+        success: true,
+        new_value: "10".to_string(),
+        unit: "mm".to_string(),
+    };
+    let b = SetParamResult {
+        success: true,
+        new_value: "10".to_string(),
+        unit: "mm".to_string(),
+    };
+    assert_eq!(a, b);
+}
+
+#[test]
+fn tool_info_partial_eq() {
+    let a = ToolInfo {
+        name: "test".to_string(),
+        description: "desc".to_string(),
+        input_schema: serde_json::json!({"type": "object"}),
+    };
+    let b = ToolInfo {
+        name: "test".to_string(),
+        description: "desc".to_string(),
+        input_schema: serde_json::json!({"type": "object"}),
+    };
+    assert_eq!(a, b);
+}
+
+#[test]
+fn tool_error_partial_eq() {
+    assert_eq!(ToolError::NotImplemented, ToolError::NotImplemented);
+    assert_eq!(
+        ToolError::InvalidParams("x".to_string()),
+        ToolError::InvalidParams("x".to_string())
+    );
+    assert_eq!(
+        ToolError::InternalError("y".to_string()),
+        ToolError::InternalError("y".to_string())
+    );
+    assert_eq!(
+        ToolError::EngineError("z".to_string()),
+        ToolError::EngineError("z".to_string())
+    );
 }
 
 // --- ReifyToolContext trait tests ---
@@ -146,6 +353,26 @@ fn registry_multiple_tools_preserves_order() {
     let tools = registry.list_tools();
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names, vec!["alpha", "beta", "gamma"]);
+}
+
+// --- S4: Duplicate registration test ---
+
+#[test]
+#[should_panic(expected = "duplicate")]
+fn registry_duplicate_name_panics() {
+    let mut registry = ToolRegistry::new();
+    registry.register(
+        "alpha",
+        "First alpha",
+        serde_json::json!({"type": "object"}),
+        |_params, _ctx| Ok(serde_json::json!(null)),
+    );
+    registry.register(
+        "alpha",
+        "Second alpha",
+        serde_json::json!({"type": "object"}),
+        |_params, _ctx| Ok(serde_json::json!(null)),
+    );
 }
 
 #[test]

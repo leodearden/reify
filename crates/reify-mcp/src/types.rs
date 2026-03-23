@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Error types returned by MCP tool handlers.
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ToolError {
     #[error("tool not implemented")]
     NotImplemented,
@@ -19,7 +19,7 @@ pub enum ToolError {
 }
 
 /// Metadata about a registered tool, returned by tools/list.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolInfo {
     pub name: String,
     pub description: String,
@@ -30,14 +30,14 @@ pub struct ToolInfo {
 // --- MCP response types (JSON-oriented, decoupled from GUI types) ---
 
 /// Source content returned by get_source.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceContent {
     pub content: String,
     pub file_path: String,
 }
 
 /// Information about an open file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OpenFileInfo {
     pub path: String,
     pub language: String,
@@ -45,7 +45,7 @@ pub struct OpenFileInfo {
 }
 
 /// A diagnostic (error/warning) from the engine.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiagnosticInfo {
     pub file_path: String,
     pub line: u32,
@@ -58,7 +58,7 @@ pub struct DiagnosticInfo {
 }
 
 /// A parameter (value cell) in the model.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParameterInfo {
     pub cell_id: String,
     pub name: String,
@@ -70,7 +70,7 @@ pub struct ParameterInfo {
 }
 
 /// A constraint in the model.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConstraintInfo {
     pub node_id: String,
     pub expression: String,
@@ -80,7 +80,7 @@ pub struct ConstraintInfo {
 }
 
 /// Current evaluation engine status.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvalStatusInfo {
     pub phase: String,
     pub progress: Option<f64>,
@@ -88,14 +88,14 @@ pub struct EvalStatusInfo {
 }
 
 /// Current selection in the viewport.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SelectionInfo {
     pub selected_entity: Option<String>,
     pub hovered_entity: Option<String>,
 }
 
 /// A source location reference.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceLocationInfo {
     pub file: String,
     pub line: u32,
@@ -105,14 +105,14 @@ pub struct SourceLocationInfo {
 }
 
 /// Result of an update_source operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UpdateResult {
     pub success: bool,
     pub diagnostics_count: u32,
 }
 
 /// Result of a set_parameter operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SetParamResult {
     pub success: bool,
     pub new_value: String,

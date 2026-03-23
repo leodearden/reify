@@ -76,6 +76,12 @@
   cursor: pointer;
 }
 
+.chatPanel {
+  flex-shrink: 0;
+  border-top: 1px solid var(--reify-border, #313244);
+  overflow: hidden;
+}
+
 .toastContainer {
   position: fixed;
   bottom: 40px;

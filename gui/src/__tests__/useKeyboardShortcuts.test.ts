@@ -154,6 +154,57 @@ describe('useKeyboardShortcuts', () => {
     expect(onDismissReload).toHaveBeenCalledTimes(1);
   });
 
+  it('dispatching Ctrl+J calls onToggleChatPanel callback', () => {
+    const onToggleChatPanel = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onToggleChatPanel });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'j', ctrlKey: true, bubbles: true }),
+    );
+    expect(onToggleChatPanel).toHaveBeenCalledTimes(1);
+  });
+
+  it('Ctrl+J is skipped when target is an input element', () => {
+    const onToggleChatPanel = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onToggleChatPanel });
+      return d;
+    });
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'j', ctrlKey: true, bubbles: true }),
+      );
+      expect(onToggleChatPanel).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
+
+  it('Ctrl+J is skipped when target is a textarea element', () => {
+    const onToggleChatPanel = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onToggleChatPanel });
+      return d;
+    });
+
+    const textarea = document.createElement('textarea');
+    document.body.appendChild(textarea);
+    try {
+      textarea.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'j', ctrlKey: true, bubbles: true }),
+      );
+      expect(onToggleChatPanel).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(textarea);
+    }
+  });
+
   it('Ctrl+Shift+R is skipped when target is an input element', () => {
     const onReloadShortcut = vi.fn();
     dispose = createRoot((d) => {

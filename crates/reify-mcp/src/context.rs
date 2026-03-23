@@ -74,6 +74,14 @@ pub struct MockToolContext {
     pub eval_status: EvalStatusInfo,
     pub selection: SelectionInfo,
     pub source_locations: std::collections::HashMap<String, SourceLocationInfo>,
+    // Optional error overrides for write/nav methods
+    pub update_source_error: Option<ToolError>,
+    pub set_param_error: Option<ToolError>,
+    pub open_file_error: Option<ToolError>,
+    pub save_file_error: Option<ToolError>,
+    pub export_error: Option<ToolError>,
+    pub focus_entity_error: Option<ToolError>,
+    pub navigate_error: Option<ToolError>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -98,6 +106,13 @@ impl Default for MockToolContext {
                 hovered_entity: None,
             },
             source_locations: std::collections::HashMap::new(),
+            update_source_error: None,
+            set_param_error: None,
+            open_file_error: None,
+            save_file_error: None,
+            export_error: None,
+            focus_entity_error: None,
+            navigate_error: None,
         }
     }
 }
@@ -142,6 +157,9 @@ impl ReifyToolContext for MockToolContext {
     }
 
     fn update_source(&self, _file_path: &str, _content: &str) -> Result<UpdateResult, ToolError> {
+        if let Some(err) = &self.update_source_error {
+            return Err(err.clone());
+        }
         Ok(UpdateResult {
             success: true,
             diagnostics_count: 0,
@@ -149,6 +167,9 @@ impl ReifyToolContext for MockToolContext {
     }
 
     fn set_parameter(&self, _cell_id: &str, _value: &str) -> Result<SetParamResult, ToolError> {
+        if let Some(err) = &self.set_param_error {
+            return Err(err.clone());
+        }
         Ok(SetParamResult {
             success: true,
             new_value: String::new(),
@@ -157,6 +178,9 @@ impl ReifyToolContext for MockToolContext {
     }
 
     fn open_file(&self, file_path: &str) -> Result<OpenFileInfo, ToolError> {
+        if let Some(err) = &self.open_file_error {
+            return Err(err.clone());
+        }
         Ok(OpenFileInfo {
             path: file_path.to_string(),
             language: "reify".to_string(),
@@ -165,14 +189,23 @@ impl ReifyToolContext for MockToolContext {
     }
 
     fn save_file(&self, _file_path: Option<&str>) -> Result<bool, ToolError> {
+        if let Some(err) = &self.save_file_error {
+            return Err(err.clone());
+        }
         Ok(true)
     }
 
     fn export(&self, _format: &str, _output_path: &str) -> Result<bool, ToolError> {
+        if let Some(err) = &self.export_error {
+            return Err(err.clone());
+        }
         Ok(true)
     }
 
     fn focus_entity(&self, _entity_path: &str) -> Result<bool, ToolError> {
+        if let Some(err) = &self.focus_entity_error {
+            return Err(err.clone());
+        }
         Ok(true)
     }
 
@@ -182,6 +215,9 @@ impl ReifyToolContext for MockToolContext {
         _line: u32,
         _column: u32,
     ) -> Result<bool, ToolError> {
+        if let Some(err) = &self.navigate_error {
+            return Err(err.clone());
+        }
         Ok(true)
     }
 }
