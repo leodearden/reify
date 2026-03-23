@@ -83,4 +83,57 @@ describe('ToolCallCard', () => {
     const icon = card.querySelector('[data-tool-type="write"]');
     expect(icon).toBeTruthy();
   });
+
+  describe('diff view for source updates', () => {
+    it('when toolName=reify_update_source and complete, expanding shows DiffView', () => {
+      render(() => (
+        <ToolCallCard
+          toolCall={makeTool({
+            toolName: 'reify_update_source',
+            status: 'complete',
+            toolInput: { content: 'old source' },
+            result: 'new source',
+          })}
+        />
+      ));
+      const header = screen.getByTestId('tool-call-card').querySelector('[role="button"]')!;
+      fireEvent.click(header);
+      expect(screen.getByTestId('diff-view')).toBeTruthy();
+    });
+
+    it('DiffView receives before from toolInput and after from result', () => {
+      render(() => (
+        <ToolCallCard
+          toolCall={makeTool({
+            toolName: 'reify_update_source',
+            status: 'complete',
+            toolInput: { content: 'line a' },
+            result: 'line b',
+          })}
+        />
+      ));
+      const header = screen.getByTestId('tool-call-card').querySelector('[role="button"]')!;
+      fireEvent.click(header);
+      const diffView = screen.getByTestId('diff-view');
+      // Should have remove line for old and add line for new
+      expect(diffView.querySelectorAll('[data-diff="remove"]').length).toBeGreaterThan(0);
+      expect(diffView.querySelectorAll('[data-diff="add"]').length).toBeGreaterThan(0);
+    });
+
+    it('for non-update tools, expanded details still show JSON (no diff view)', () => {
+      render(() => (
+        <ToolCallCard
+          toolCall={makeTool({
+            toolName: 'reify_get_source',
+            status: 'complete',
+            result: { source: 'hello' },
+          })}
+        />
+      ));
+      const header = screen.getByTestId('tool-call-card').querySelector('[role="button"]')!;
+      fireEvent.click(header);
+      expect(screen.queryByTestId('diff-view')).toBeNull();
+      expect(screen.getByTestId('tool-call-details')).toBeTruthy();
+    });
+  });
 });
