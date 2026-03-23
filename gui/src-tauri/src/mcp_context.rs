@@ -1,1 +1,206 @@
 // TauriToolContext — bridges MCP tool context to EngineSession for Tauri GUI
+
+use std::sync::{Arc, Mutex};
+
+use reify_mcp::{
+    ConstraintInfo, DiagnosticInfo, EvalStatusInfo, OpenFileInfo, ParameterInfo, ReifyToolContext,
+    SelectionInfo, SetParamResult, SourceContent, SourceLocationInfo, ToolError, UpdateResult,
+};
+
+use crate::engine::EngineSession;
+
+/// Event emitter callback type for navigation events (focus_entity, navigate_to_source).
+type EventEmitter = Box<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
+/// Bridges the MCP tool context trait to an EngineSession for use in the Tauri GUI.
+///
+/// Holds an `Arc<Mutex<EngineSession>>` and delegates each `ReifyToolContext` method
+/// to the appropriate `EngineSession` method after acquiring the lock. Converts between
+/// GUI types (`ValueData`, `ConstraintData`) and MCP types (`ParameterInfo`, `ConstraintInfo`).
+///
+/// An optional event emitter callback is used for navigation tools (`focus_entity`,
+/// `navigate_to_source`), keeping the struct testable without a Tauri runtime.
+pub struct TauriToolContext {
+    engine: Arc<Mutex<EngineSession>>,
+    event_emitter: Option<EventEmitter>,
+}
+
+impl TauriToolContext {
+    /// Create a new TauriToolContext with no event emitter.
+    pub fn new(engine: Arc<Mutex<EngineSession>>) -> Self {
+        Self {
+            engine,
+            event_emitter: None,
+        }
+    }
+
+    /// Create a new TauriToolContext with an event emitter for navigation events.
+    pub fn with_event_emitter(
+        engine: Arc<Mutex<EngineSession>>,
+        emitter: impl Fn(&str, serde_json::Value) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            engine,
+            event_emitter: Some(Box::new(emitter)),
+        }
+    }
+}
+
+impl ReifyToolContext for TauriToolContext {
+    fn get_source(&self, _file_path: Option<&str>) -> Result<SourceContent, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        let gui_state = session
+            .build_gui_state()
+            .map_err(|e| ToolError::EngineError(e))?;
+
+        // Return the first file's content (single-file model for now)
+        if let Some(file) = gui_state.files.first() {
+            Ok(SourceContent {
+                content: file.content.clone(),
+                file_path: file.path.clone(),
+            })
+        } else {
+            Err(ToolError::EngineError("No source loaded".to_string()))
+        }
+    }
+
+    fn get_open_files(&self) -> Result<Vec<OpenFileInfo>, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        let gui_state = session
+            .build_gui_state()
+            .map_err(|e| ToolError::EngineError(e))?;
+
+        Ok(gui_state
+            .files
+            .iter()
+            .map(|f| OpenFileInfo {
+                path: f.path.clone(),
+                language: "reify".to_string(),
+                dirty: false,
+            })
+            .collect())
+    }
+
+    fn get_diagnostics(&self) -> Result<Vec<DiagnosticInfo>, ToolError> {
+        Ok(Vec::new())
+    }
+
+    fn get_parameters(&self) -> Result<Vec<ParameterInfo>, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        let gui_state = session
+            .build_gui_state()
+            .map_err(|e| ToolError::EngineError(e))?;
+
+        Ok(gui_state
+            .values
+            .iter()
+            .map(|v| ParameterInfo {
+                cell_id: v.cell_id.clone(),
+                name: v.name.clone(),
+                value: v.value.clone(),
+                unit: v.unit.clone(),
+                kind: v.kind.clone(),
+                entity_path: v.entity_path.clone(),
+                determinacy: v.determinacy.clone(),
+            })
+            .collect())
+    }
+
+    fn get_constraints(&self) -> Result<Vec<ConstraintInfo>, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        let gui_state = session
+            .build_gui_state()
+            .map_err(|e| ToolError::EngineError(e))?;
+
+        Ok(gui_state
+            .constraints
+            .iter()
+            .map(|c| ConstraintInfo {
+                node_id: c.node_id.clone(),
+                expression: c.expression.clone(),
+                status: c.status.clone(),
+                label: c.label.clone(),
+                parameter_ids: c.parameter_ids.clone(),
+            })
+            .collect())
+    }
+
+    fn get_eval_status(&self) -> Result<EvalStatusInfo, ToolError> {
+        Ok(EvalStatusInfo {
+            phase: "idle".to_string(),
+            progress: None,
+            dirty_count: 0,
+        })
+    }
+
+    fn get_selection(&self) -> Result<SelectionInfo, ToolError> {
+        Ok(SelectionInfo {
+            selected_entity: None,
+            hovered_entity: None,
+        })
+    }
+
+    fn get_source_location(&self, entity_path: &str) -> Result<SourceLocationInfo, ToolError> {
+        let session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+
+        let loc = session.get_source_location(entity_path).ok_or_else(|| {
+            ToolError::EngineError(format!("entity not found: {}", entity_path))
+        })?;
+
+        Ok(SourceLocationInfo {
+            file: loc.file,
+            line: loc.line,
+            column: loc.column,
+            end_line: loc.end_line,
+            end_column: loc.end_column,
+        })
+    }
+
+    fn update_source(&self, _file_path: &str, _content: &str) -> Result<UpdateResult, ToolError> {
+        todo!("write methods implemented in step-4")
+    }
+
+    fn set_parameter(&self, _cell_id: &str, _value: &str) -> Result<SetParamResult, ToolError> {
+        todo!("write methods implemented in step-4")
+    }
+
+    fn open_file(&self, _file_path: &str) -> Result<OpenFileInfo, ToolError> {
+        todo!("write methods implemented in step-4")
+    }
+
+    fn save_file(&self, _file_path: Option<&str>) -> Result<bool, ToolError> {
+        todo!("write methods implemented in step-4")
+    }
+
+    fn export(&self, _format: &str, _output_path: &str) -> Result<bool, ToolError> {
+        todo!("write methods implemented in step-4")
+    }
+
+    fn focus_entity(&self, _entity_path: &str) -> Result<bool, ToolError> {
+        todo!("navigation methods implemented in step-6")
+    }
+
+    fn navigate_to_source(
+        &self,
+        _file: &str,
+        _line: u32,
+        _column: u32,
+    ) -> Result<bool, ToolError> {
+        todo!("navigation methods implemented in step-6")
+    }
+}
