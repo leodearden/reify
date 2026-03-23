@@ -221,6 +221,30 @@ describe('ChatPanel open/close toggle', () => {
   });
 });
 
+describe('ChatPanel drag-to-resize', () => {
+  it('Splitter with orientation="horizontal" and data-testid="chat-resize-handle" exists when open', () => {
+    render(() => <ChatPanel {...defaultProps()} open={true} />);
+    const handle = screen.getByTestId('chat-resize-handle');
+    expect(handle.getAttribute('aria-orientation')).toBe('horizontal');
+  });
+
+  it('mouseDown + mouseMove on splitter triggers onResize with negated delta', () => {
+    const onResize = vi.fn();
+    render(() => <ChatPanel {...defaultProps()} open={true} onResize={onResize} />);
+    const handle = screen.getByTestId('chat-resize-handle');
+
+    // Start drag at y=300
+    fireEvent.mouseDown(handle, { clientX: 100, clientY: 300 });
+    // Move to y=280 (delta = -20 from Splitter, negated = +20 to onResize)
+    fireEvent.mouseMove(document, { clientX: 100, clientY: 280 });
+
+    expect(onResize).toHaveBeenCalledWith(20);
+
+    // Release
+    fireEvent.mouseUp(document);
+  });
+});
+
 describe('ChatPanel disabled state', () => {
   it('textarea is disabled when sessionStatus is busy', () => {
     render(() => <ChatPanel {...defaultProps()} sessionStatus="busy" />);
