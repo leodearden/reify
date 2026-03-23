@@ -268,16 +268,32 @@ impl ReifyToolContext for TauriToolContext {
         Ok(true)
     }
 
-    fn focus_entity(&self, _entity_path: &str) -> Result<bool, ToolError> {
-        todo!("navigation methods implemented in step-6")
+    fn focus_entity(&self, entity_path: &str) -> Result<bool, ToolError> {
+        if let Some(ref emitter) = self.event_emitter {
+            emitter(
+                "focus-entity",
+                serde_json::json!(entity_path),
+            );
+        }
+        Ok(true)
     }
 
     fn navigate_to_source(
         &self,
-        _file: &str,
-        _line: u32,
-        _column: u32,
+        file: &str,
+        line: u32,
+        column: u32,
     ) -> Result<bool, ToolError> {
-        todo!("navigation methods implemented in step-6")
+        if let Some(ref emitter) = self.event_emitter {
+            emitter(
+                "navigate-to-source",
+                serde_json::json!({
+                    "file": file,
+                    "line": line,
+                    "column": column,
+                }),
+            );
+        }
+        Ok(true)
     }
 }
