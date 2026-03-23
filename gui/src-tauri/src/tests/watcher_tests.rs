@@ -4,6 +4,26 @@ use std::time::Duration;
 
 use crate::watcher::FileWatcher;
 
+/// Try to create a FileWatcher, returning None if OS resources (e.g. inotify
+/// instances) are exhausted. Tests should skip rather than fail in that case.
+fn try_watcher<F>(
+    dir: &std::path::Path,
+    target_file: Option<PathBuf>,
+    callback: F,
+) -> Option<FileWatcher>
+where
+    F: Fn(PathBuf) + Send + 'static,
+{
+    match FileWatcher::new(dir, target_file, callback) {
+        Ok(w) => Some(w),
+        Err(e) if e.contains("Too many open files") => {
+            eprintln!("SKIP: inotify instances exhausted: {e}");
+            None
+        }
+        Err(e) => panic!("unexpected watcher error: {e}"),
+    }
+}
+
 #[test]
 fn watcher_detects_ri_file_modification() {
     let dir = tempfile::tempdir().unwrap();
@@ -13,14 +33,11 @@ fn watcher_detects_ri_file_modification() {
     let changed_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
     let changed_clone = changed_paths.clone();
 
-    let _watcher = FileWatcher::new(
-        dir.path(),
-        None,
-        move |path| {
-            changed_clone.lock().unwrap().push(path);
-        },
-    )
-    .expect("should create watcher");
+    let Some(_watcher) = try_watcher(dir.path(), None, move |path| {
+        changed_clone.lock().unwrap().push(path);
+    }) else {
+        return;
+    };
 
     // Give the watcher time to register
     std::thread::sleep(Duration::from_millis(200));
@@ -48,14 +65,11 @@ fn watcher_ignores_non_ri_file_changes() {
     let changed_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
     let changed_clone = changed_paths.clone();
 
-    let _watcher = FileWatcher::new(
-        dir.path(),
-        None,
-        move |path| {
-            changed_clone.lock().unwrap().push(path);
-        },
-    )
-    .expect("should create watcher");
+    let Some(_watcher) = try_watcher(dir.path(), None, move |path| {
+        changed_clone.lock().unwrap().push(path);
+    }) else {
+        return;
+    };
 
     // Give the watcher time to register
     std::thread::sleep(Duration::from_millis(200));
@@ -85,14 +99,15 @@ fn watcher_with_target_file_only_fires_for_that_file() {
     let changed_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
     let changed_clone = changed_paths.clone();
 
-    let _watcher = FileWatcher::new(
+    let Some(_watcher) = try_watcher(
         dir.path(),
         Some(PathBuf::from("project.ri")),
         move |path| {
             changed_clone.lock().unwrap().push(path);
         },
-    )
-    .expect("should create watcher");
+    ) else {
+        return;
+    };
 
     // Give the watcher time to register
     std::thread::sleep(Duration::from_millis(200));
