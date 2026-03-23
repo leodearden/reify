@@ -507,6 +507,10 @@ fn user_fn_with_constraint() {
 /// - All constraints are satisfied
 #[test]
 fn geometry_cylinder_pattern() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
     let source = std::fs::read_to_string("../../examples/m5_geometry.ri")
         .expect("examples/m5_geometry.ri should exist");
 
@@ -1273,6 +1277,10 @@ fn user_fn_safety_factor() {
 /// - All constraints satisfied
 #[test]
 fn geometry_flange_with_pattern() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
     let source = std::fs::read_to_string("../../examples/m5_geometry_flange.ri")
         .expect("examples/m5_geometry_flange.ri should exist");
 
