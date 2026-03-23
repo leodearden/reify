@@ -60,15 +60,15 @@ pub fn register(registry: &mut ToolRegistry) {
             let filtered: Vec<_> = diagnostics
                 .into_iter()
                 .filter(|d| {
-                    if let Some(fp) = file_path_filter {
-                        if d.file_path != fp {
-                            return false;
-                        }
+                    if let Some(fp) = file_path_filter
+                        && d.file_path != fp
+                    {
+                        return false;
                     }
-                    if let Some(sev) = severity_filter {
-                        if !d.severity.eq_ignore_ascii_case(sev) {
-                            return false;
-                        }
+                    if let Some(sev) = severity_filter
+                        && !d.severity.eq_ignore_ascii_case(sev)
+                    {
+                        return false;
                     }
                     true
                 })
@@ -97,10 +97,10 @@ pub fn register(registry: &mut ToolRegistry) {
             let filtered: Vec<_> = parameters
                 .into_iter()
                 .filter(|p| {
-                    if let Some(prefix) = entity_path_filter {
-                        if !p.entity_path.starts_with(prefix) {
-                            return false;
-                        }
+                    if let Some(prefix) = entity_path_filter
+                        && !p.entity_path.starts_with(prefix)
+                    {
+                        return false;
                     }
                     true
                 })
@@ -129,10 +129,10 @@ pub fn register(registry: &mut ToolRegistry) {
             let filtered: Vec<_> = constraints
                 .into_iter()
                 .filter(|c| {
-                    if let Some(status) = status_filter {
-                        if c.status != status {
-                            return false;
-                        }
+                    if let Some(status) = status_filter
+                        && c.status != status
+                    {
+                        return false;
                     }
                     true
                 })
