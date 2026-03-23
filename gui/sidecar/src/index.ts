@@ -18,7 +18,7 @@ export async function main(
   });
 
   const session = new SidecarSession({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-opus-4-6',
     workingDirectory: process.cwd(),
     systemPrompt,
   });
@@ -48,7 +48,7 @@ export async function main(
         await session.handleMessage(msg);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        await sendMessage(output, { type: 'error', message });
+        await sendMessage(output, { type: 'error', id: '', message });
       }
     }
   } finally {

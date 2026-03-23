@@ -59,65 +59,84 @@ describe('parseInboundMessage', () => {
     const line = JSON.stringify({ type: 'unknown_type' });
     expect(() => parseInboundMessage(line)).toThrow(/unknown.*type/i);
   });
+
+  it('throws on send_message missing id field', () => {
+    const line = JSON.stringify({ type: 'send_message', text: 'Hello' });
+    expect(() => parseInboundMessage(line)).toThrow(/id/i);
+  });
+
+  it('throws on send_message with empty id', () => {
+    const line = JSON.stringify({ type: 'send_message', id: '', text: 'Hello' });
+    expect(() => parseInboundMessage(line)).toThrow(/id/i);
+  });
+
+  it('throws on send_message missing text field', () => {
+    const line = JSON.stringify({ type: 'send_message', id: 'msg-1' });
+    expect(() => parseInboundMessage(line)).toThrow(/text/i);
+  });
 });
 
 describe('formatOutboundMessage', () => {
   it('serializes text_delta correctly', () => {
-    const msg: OutboundMessage = { type: 'text_delta', text: 'Hello' };
+    const msg: OutboundMessage = { type: 'text_delta', id: 'msg-1', content: 'Hello' };
     const result = formatOutboundMessage(msg);
     const parsed = JSON.parse(result.trim());
-    expect(parsed).toEqual({ type: 'text_delta', text: 'Hello' });
+    expect(parsed).toEqual({ type: 'text_delta', id: 'msg-1', content: 'Hello' });
   });
 
   it('serializes thinking_delta correctly', () => {
-    const msg: OutboundMessage = { type: 'thinking_delta', text: 'Hmm...' };
+    const msg: OutboundMessage = { type: 'thinking_delta', id: 'msg-1', content: 'Hmm...' };
     const result = formatOutboundMessage(msg);
     const parsed = JSON.parse(result.trim());
-    expect(parsed).toEqual({ type: 'thinking_delta', text: 'Hmm...' });
+    expect(parsed).toEqual({ type: 'thinking_delta', id: 'msg-1', content: 'Hmm...' });
   });
 
   it('serializes tool_call correctly', () => {
     const msg: OutboundMessage = {
       type: 'tool_call',
-      tool: 'reify_get_source',
-      args: { file: 'main.ri' },
+      id: 'msg-1',
+      tool_name: 'reify_get_source',
+      tool_input: { file: 'main.ri' },
     };
     const result = formatOutboundMessage(msg);
     const parsed = JSON.parse(result.trim());
     expect(parsed).toEqual({
       type: 'tool_call',
-      tool: 'reify_get_source',
-      args: { file: 'main.ri' },
+      id: 'msg-1',
+      tool_name: 'reify_get_source',
+      tool_input: { file: 'main.ri' },
     });
   });
 
   it('serializes tool_result correctly', () => {
     const msg: OutboundMessage = {
       type: 'tool_result',
-      tool: 'reify_get_source',
+      id: 'msg-1',
+      tool_name: 'reify_get_source',
       result: 'structure Bracket {}',
     };
     const result = formatOutboundMessage(msg);
     const parsed = JSON.parse(result.trim());
     expect(parsed).toEqual({
       type: 'tool_result',
-      tool: 'reify_get_source',
+      id: 'msg-1',
+      tool_name: 'reify_get_source',
       result: 'structure Bracket {}',
     });
   });
 
   it('serializes done correctly', () => {
-    const msg: OutboundMessage = { type: 'done' };
+    const msg: OutboundMessage = { type: 'done', id: 'msg-1' };
     const result = formatOutboundMessage(msg);
     const parsed = JSON.parse(result.trim());
-    expect(parsed).toEqual({ type: 'done' });
+    expect(parsed).toEqual({ type: 'done', id: 'msg-1' });
   });
 
   it('serializes error correctly', () => {
-    const msg: OutboundMessage = { type: 'error', message: 'Auth failed' };
+    const msg: OutboundMessage = { type: 'error', id: 'msg-1', message: 'Auth failed' };
     const result = formatOutboundMessage(msg);
     const parsed = JSON.parse(result.trim());
-    expect(parsed).toEqual({ type: 'error', message: 'Auth failed' });
+    expect(parsed).toEqual({ type: 'error', id: 'msg-1', message: 'Auth failed' });
   });
 
   it('serializes ready correctly', () => {
@@ -129,10 +148,10 @@ describe('formatOutboundMessage', () => {
 
   it('always ends with newline', () => {
     const messages: OutboundMessage[] = [
-      { type: 'text_delta', text: 'hi' },
-      { type: 'thinking_delta', text: 'hmm' },
-      { type: 'done' },
-      { type: 'error', message: 'fail' },
+      { type: 'text_delta', id: 'x', content: 'hi' },
+      { type: 'thinking_delta', id: 'x', content: 'hmm' },
+      { type: 'done', id: 'x' },
+      { type: 'error', id: 'x', message: 'fail' },
       { type: 'ready' },
     ];
     for (const msg of messages) {
@@ -206,10 +225,10 @@ describe('sendMessage', () => {
     const chunks: string[] = [];
     stream.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
 
-    const msg: OutboundMessage = { type: 'text_delta', text: 'hello' };
+    const msg: OutboundMessage = { type: 'text_delta', id: 'msg-1', content: 'hello' };
     await sendMessage(stream, msg);
 
-    expect(chunks.join('')).toBe('{"type":"text_delta","text":"hello"}\n');
+    expect(chunks.join('')).toBe('{"type":"text_delta","id":"msg-1","content":"hello"}\n');
   });
 
   it('handles backpressure (waits for drain)', async () => {
@@ -217,11 +236,11 @@ describe('sendMessage', () => {
     const chunks: string[] = [];
     stream.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
 
-    const msg: OutboundMessage = { type: 'text_delta', text: 'a long message to fill the buffer' };
+    const msg: OutboundMessage = { type: 'text_delta', id: 'msg-1', content: 'a long message to fill the buffer' };
     await sendMessage(stream, msg);
 
     const fullOutput = chunks.join('');
     const parsed = JSON.parse(fullOutput.trim());
-    expect(parsed).toEqual({ type: 'text_delta', text: 'a long message to fill the buffer' });
+    expect(parsed).toEqual({ type: 'text_delta', id: 'msg-1', content: 'a long message to fill the buffer' });
   });
 });

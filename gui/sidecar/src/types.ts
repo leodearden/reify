@@ -25,32 +25,38 @@ export type InboundMessage = SendMessage | Abort | ClearSession;
 
 export interface TextDelta {
   type: 'text_delta';
-  text: string;
+  id: string;
+  content: string;
 }
 
 export interface ThinkingDelta {
   type: 'thinking_delta';
-  text: string;
+  id: string;
+  content: string;
 }
 
 export interface ToolCall {
   type: 'tool_call';
-  tool: string;
-  args: Record<string, unknown>;
+  id: string;
+  tool_name: string;
+  tool_input: Record<string, unknown>;
 }
 
 export interface ToolResult {
   type: 'tool_result';
-  tool: string;
-  result: string;
+  id: string;
+  tool_name: string;
+  result: unknown;
 }
 
 export interface Done {
   type: 'done';
+  id: string;
 }
 
 export interface ErrorMessage {
   type: 'error';
+  id: string;
   message: string;
 }
 

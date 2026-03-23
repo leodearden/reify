@@ -15,6 +15,14 @@ export function parseInboundMessage(line: string): InboundMessage {
   if (!VALID_INBOUND_TYPES.has(parsed.type)) {
     throw new Error(`Unknown inbound message type: ${parsed.type}`);
   }
+  if (parsed.type === 'send_message') {
+    if (typeof parsed.id !== 'string' || !parsed.id) {
+      throw new Error('send_message requires a non-empty "id" field');
+    }
+    if (typeof parsed.text !== 'string') {
+      throw new Error('send_message requires a "text" field');
+    }
+  }
   return parsed as InboundMessage;
 }
 

@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { OutboundMessage } from '../types.js';
 
-// Mock the claude SDK subprocess spawning
+// Mock the claude CLI subprocess spawning
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
@@ -12,6 +12,31 @@ import { spawn } from 'node:child_process';
 import { SidecarSession } from '../session.js';
 import { main } from '../index.js';
 
+/**
+ * Create a mock child process that emits streaming JSON events on stdout,
+ * then closes with the given exit code.
+ */
+function createMockProcess(events: object[], exitCode = 0): any {
+  const proc = new EventEmitter() as any;
+  const stdout = new PassThrough();
+  proc.stdout = stdout;
+  proc.stderr = new PassThrough();
+  proc.stdin = new PassThrough();
+  proc.exitCode = null;
+
+  process.nextTick(() => {
+    for (const event of events) {
+      stdout.push(JSON.stringify(event) + '\n');
+    }
+    stdout.push(null);
+    proc.stderr.push(null);
+    proc.exitCode = exitCode;
+    proc.emit('close', exitCode);
+  });
+
+  return proc;
+}
+
 describe('SidecarSession', () => {
   let session: SidecarSession;
   let outputs: OutboundMessage[];
@@ -19,11 +44,12 @@ describe('SidecarSession', () => {
   beforeEach(() => {
     outputs = [];
     session = new SidecarSession({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-4-6',
       workingDirectory: '/tmp/test-project',
       systemPrompt: 'You are a test assistant.',
     });
     session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
   });
 
   it('constructor creates session with config', () => {
@@ -37,12 +63,15 @@ describe('SidecarSession', () => {
     expect(outputs[0]).toEqual({ type: 'ready' });
   });
 
-  it('handleMessage with send_message eventually emits done message', async () => {
+  it('handleMessage with send_message streams text deltas and emits done', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello world' }] } },
+      { type: 'result', session_id: 'sess-123' },
+    ])) as any);
+
     await session.init();
     outputs.length = 0;
-
-    // Mock the internal SDK call to resolve immediately
-    const mockInvoke = vi.spyOn(session as any, 'invokeSdk').mockResolvedValue('Test response');
 
     await session.handleMessage({
       type: 'send_message',
@@ -50,43 +79,117 @@ describe('SidecarSession', () => {
       text: 'Hello',
     });
 
-    // Should emit at least a text_delta and done
     const types = outputs.map((o) => o.type);
     expect(types).toContain('text_delta');
     expect(types[types.length - 1]).toBe('done');
 
-    mockInvoke.mockRestore();
+    // Check deltas are correct — first "Hello", then " world"
+    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
+    expect(textDeltas[0]).toEqual({ type: 'text_delta', id: 'msg-1', content: 'Hello' });
+    expect(textDeltas[1]).toEqual({ type: 'text_delta', id: 'msg-1', content: ' world' });
   });
 
-  it('handleMessage with abort sets abort flag', async () => {
+  it('handleMessage streams thinking deltas', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Let me' }] } },
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Let me think' }] } },
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Let me think' }, { type: 'text', text: 'Answer' }] } },
+      { type: 'result', session_id: 'sess-456' },
+    ])) as any);
+
     await session.init();
+    outputs.length = 0;
 
-    // Start a long-running message
-    const mockInvoke = vi.spyOn(session as any, 'invokeSdk').mockImplementation(
-      () => new Promise((resolve) => setTimeout(resolve, 10000))
-    );
+    await session.handleMessage({ type: 'send_message', id: 'msg-t', text: 'Think' });
 
+    const thinkDeltas = outputs.filter((o) => o.type === 'thinking_delta');
+    expect(thinkDeltas[0]).toEqual({ type: 'thinking_delta', id: 'msg-t', content: 'Let me' });
+    expect(thinkDeltas[1]).toEqual({ type: 'thinking_delta', id: 'msg-t', content: ' think' });
+
+    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
+    expect(textDeltas[0]).toEqual({ type: 'text_delta', id: 'msg-t', content: 'Answer' });
+  });
+
+  it('handleMessage emits tool_call events', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'tu-1', name: 'reify_get_source', input: { file: 'main.ri' } },
+      ] } },
+      { type: 'result', session_id: 'sess-789' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-tc', text: 'Read file' });
+
+    const toolCalls = outputs.filter((o) => o.type === 'tool_call');
+    expect(toolCalls).toHaveLength(1);
+    expect(toolCalls[0]).toEqual({
+      type: 'tool_call',
+      id: 'msg-tc',
+      tool_name: 'reify_get_source',
+      tool_input: { file: 'main.ri' },
+    });
+  });
+
+  it('handleMessage with abort cancels in-flight request', async () => {
+    // Create a process that hangs until aborted
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+    mockProc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation(((_cmd: string, _args: string[], opts: any) => {
+      // Simulate abort killing the process
+      if (opts?.signal) {
+        opts.signal.addEventListener('abort', () => {
+          stdout.end();
+          mockProc.exitCode = null;
+          mockProc.emit('close', null);
+        });
+      }
+      return mockProc;
+    }) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    // Start a message (will hang waiting for stdout)
     const msgPromise = session.handleMessage({
       type: 'send_message',
       id: 'msg-2',
       text: 'Long task',
     });
 
-    // Abort immediately
+    // Give it a tick to set up
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Abort
     await session.handleMessage({ type: 'abort' });
 
-    // The abort should cause the SDK call to be cancelled
-    expect((session as any).abortController?.signal.aborted).toBe(true);
+    // Wait for cleanup
+    await msgPromise;
 
-    mockInvoke.mockRestore();
+    // Should emit done (not error) on abort
+    const doneMsg = outputs.find((o) => o.type === 'done');
+    expect(doneMsg).toBeDefined();
+    expect(doneMsg).toEqual({ type: 'done', id: 'msg-2' });
+
+    // Should NOT emit an error
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(0);
   });
 
-  it('handleMessage with clear_session resets history and emits ready', async () => {
-    await session.init();
-    outputs.length = 0;
+  it('handleMessage with clear_session resets session and emits ready', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Response' }] } },
+      { type: 'result', session_id: 'sess-abc' },
+    ])) as any);
 
-    // Add some conversation history
-    const mockInvoke = vi.spyOn(session as any, 'invokeSdk').mockResolvedValue('Response');
+    await session.init();
     await session.handleMessage({
       type: 'send_message',
       id: 'msg-3',
@@ -99,18 +202,31 @@ describe('SidecarSession', () => {
 
     expect(outputs).toHaveLength(1);
     expect(outputs[0]).toEqual({ type: 'ready' });
-    expect((session as any).conversationHistory).toHaveLength(0);
-
-    mockInvoke.mockRestore();
+    expect((session as any).sessionId).toBeNull();
   });
 
   it('SDK errors produce error outbound message', async () => {
+    // Process exits with non-zero code
+    const proc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    proc.stdout = stdout;
+    proc.stderr = new PassThrough();
+    proc.stdin = new PassThrough();
+    proc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation((() => {
+      process.nextTick(() => {
+        proc.stderr.push('Authentication failed: invalid API key');
+        proc.stderr.push(null);
+        stdout.push(null);
+        proc.exitCode = 1;
+        proc.emit('close', 1);
+      });
+      return proc;
+    }) as any);
+
     await session.init();
     outputs.length = 0;
-
-    const mockInvoke = vi.spyOn(session as any, 'invokeSdk').mockRejectedValue(
-      new Error('Authentication failed: invalid API key')
-    );
 
     await session.handleMessage({
       type: 'send_message',
@@ -121,17 +237,26 @@ describe('SidecarSession', () => {
     const errorMsgs = outputs.filter((o) => o.type === 'error');
     expect(errorMsgs).toHaveLength(1);
     expect((errorMsgs[0] as any).message).toContain('Authentication failed');
-
-    mockInvoke.mockRestore();
+    expect((errorMsgs[0] as any).id).toBe('msg-4');
   });
 
-  it('multiple sequential messages maintain conversation context', async () => {
+  it('multiple sequential messages use session_id for resume', async () => {
+    const mockSpawn = vi.mocked(spawn);
+
+    // First call returns a session_id
+    mockSpawn.mockImplementationOnce((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'First' }] } },
+      { type: 'result', session_id: 'sess-abc' },
+    ])) as any);
+
+    // Second call
+    mockSpawn.mockImplementationOnce((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Second' }] } },
+      { type: 'result', session_id: 'sess-abc' },
+    ])) as any);
+
     await session.init();
     outputs.length = 0;
-
-    const mockInvoke = vi.spyOn(session as any, 'invokeSdk');
-    mockInvoke.mockResolvedValueOnce('First response');
-    mockInvoke.mockResolvedValueOnce('Second response');
 
     await session.handleMessage({
       type: 'send_message',
@@ -145,11 +270,10 @@ describe('SidecarSession', () => {
       text: 'Message two',
     });
 
-    // Should have accumulated conversation history
-    const history = (session as any).conversationHistory;
-    expect(history.length).toBeGreaterThanOrEqual(4); // 2 user msgs + 2 assistant msgs
-
-    mockInvoke.mockRestore();
+    // Second spawn call should include --resume with session id
+    const secondCallArgs = mockSpawn.mock.calls[1]?.[1] as string[];
+    expect(secondCallArgs).toContain('--resume');
+    expect(secondCallArgs).toContain('sess-abc');
   });
 });
 
@@ -217,22 +341,12 @@ describe('entrypoint wiring', () => {
   });
 
   it('sending a valid JSON line through input produces outbound messages on output', async () => {
-    // Configure spawn mock to return a process that emits a successful response
+    // Configure spawn mock to return a process that emits streaming events
     const mockSpawn = vi.mocked(spawn);
-    mockSpawn.mockImplementation((() => {
-      const proc = new EventEmitter() as any;
-      proc.stdout = new PassThrough();
-      proc.stderr = new PassThrough();
-      proc.stdin = new PassThrough();
-      // Simulate successful CLI response after a tick
-      process.nextTick(() => {
-        proc.stdout.push('Test response');
-        proc.stdout.push(null);
-        proc.stderr.push(null);
-        proc.emit('close', 0);
-      });
-      return proc;
-    }) as any);
+    mockSpawn.mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Test response' }] } },
+      { type: 'result', session_id: 'sess-e2e' },
+    ])) as any);
 
     const input = new PassThrough();
     const output = new PassThrough();
@@ -253,8 +367,9 @@ describe('entrypoint wiring', () => {
     const msgs = await collecting;
     const types = msgs.map((m) => m.type);
 
-    // Should have ready from init, then done from the message processing
+    // Should have ready from init, then text_delta and done from the message
     expect(types).toContain('ready');
+    expect(types).toContain('text_delta');
     expect(types).toContain('done');
 
     mockSpawn.mockReset();
