@@ -148,6 +148,50 @@ fn set_parameter_missing_value_returns_invalid_params() {
     }
 }
 
+// === reify_open_file ===
+
+#[test]
+fn open_file_returns_success_with_source() {
+    let registry = setup_registry();
+    let ctx = MockToolContext {
+        source: reify_mcp::types::SourceContent {
+            content: "param x = 10mm".to_string(),
+            file_path: "main.ri".to_string(),
+        },
+        ..Default::default()
+    };
+
+    let result = registry
+        .call_tool(
+            "reify_open_file",
+            serde_json::json!({"file_path": "main.ri"}),
+            &ctx,
+        )
+        .expect("should succeed");
+
+    assert_eq!(result["success"], true);
+    assert_eq!(result["source"], "param x = 10mm");
+}
+
+#[test]
+fn open_file_missing_file_path_returns_invalid_params() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+
+    let result = registry.call_tool(
+        "reify_open_file",
+        serde_json::json!({}),
+        &ctx,
+    );
+
+    match result {
+        Err(ToolError::InvalidParams(_)) => {} // expected
+        other => panic!("expected InvalidParams, got: {other:?}"),
+    }
+}
+
+// === reify_set_parameter (continued) ===
+
 #[test]
 fn set_parameter_context_error_propagates() {
     let registry = setup_registry();
