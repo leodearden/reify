@@ -21,7 +21,7 @@ pub struct AppState {
 
 /// Get the current GUI state.
 pub fn get_initial_state_impl(engine: &Mutex<EngineSession>) -> Result<GuiState, String> {
-    let session = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let mut session = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
     session.build_gui_state()
 }
 
