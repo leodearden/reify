@@ -86,3 +86,84 @@ fn update_source_missing_content_returns_invalid_params() {
         other => panic!("expected InvalidParams, got: {other:?}"),
     }
 }
+
+// === reify_set_parameter ===
+
+#[test]
+fn set_parameter_returns_success_with_diagnostics() {
+    let registry = setup_registry();
+    let ctx = MockToolContext {
+        diagnostics: vec![
+            make_diagnostic("main.ri", "warning", "constraint near limit"),
+        ],
+        ..Default::default()
+    };
+
+    let result = registry
+        .call_tool(
+            "reify_set_parameter",
+            serde_json::json!({"cell_id": "Bracket.width", "value": "120mm"}),
+            &ctx,
+        )
+        .expect("should succeed");
+
+    assert_eq!(result["success"], true);
+    assert!(result["new_value"].is_string());
+    assert!(result["unit"].is_string());
+    let diags = result["diagnostics"].as_array().expect("diagnostics should be array");
+    assert_eq!(diags.len(), 1);
+}
+
+#[test]
+fn set_parameter_missing_cell_id_returns_invalid_params() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+
+    let result = registry.call_tool(
+        "reify_set_parameter",
+        serde_json::json!({"value": "120mm"}),
+        &ctx,
+    );
+
+    match result {
+        Err(ToolError::InvalidParams(_)) => {} // expected
+        other => panic!("expected InvalidParams, got: {other:?}"),
+    }
+}
+
+#[test]
+fn set_parameter_missing_value_returns_invalid_params() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+
+    let result = registry.call_tool(
+        "reify_set_parameter",
+        serde_json::json!({"cell_id": "Bracket.width"}),
+        &ctx,
+    );
+
+    match result {
+        Err(ToolError::InvalidParams(_)) => {} // expected
+        other => panic!("expected InvalidParams, got: {other:?}"),
+    }
+}
+
+#[test]
+fn set_parameter_context_error_propagates() {
+    let registry = setup_registry();
+    let ctx = MockToolContext {
+        set_param_error: Some(ToolError::EngineError("param not found".to_string())),
+        ..Default::default()
+    };
+
+    let result = registry.call_tool(
+        "reify_set_parameter",
+        serde_json::json!({"cell_id": "Bracket.width", "value": "120mm"}),
+        &ctx,
+    );
+
+    match result {
+        Err(ToolError::EngineError(msg)) => assert!(msg.contains("param not found")),
+        other => panic!("expected EngineError, got: {other:?}"),
+    }
+}
