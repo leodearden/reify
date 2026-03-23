@@ -38,7 +38,7 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
   function handleKeyDown(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      if (!isActive()) handleSend();
     }
   }
 
