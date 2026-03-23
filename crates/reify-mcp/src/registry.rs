@@ -35,6 +35,9 @@ impl ToolRegistry {
             + Sync
             + 'static,
     ) {
+        if self.tools.iter().any(|e| e.info.name == name) {
+            panic!("duplicate tool registration: '{name}'");
+        }
         self.tools.push(ToolEntry {
             info: ToolInfo {
                 name: name.to_string(),
