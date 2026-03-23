@@ -37,7 +37,13 @@ pub struct JsonRpcError {
 
 // Standard JSON-RPC error codes
 const PARSE_ERROR: i32 = -32700;
+/// Invalid Request — the JSON sent is not a valid Request object.
+pub const INVALID_REQUEST: i32 = -32600;
 const METHOD_NOT_FOUND: i32 = -32601;
+/// Invalid params — invalid method parameter(s).
+pub const INVALID_PARAMS: i32 = -32602;
+/// Internal error — internal JSON-RPC error.
+pub const INTERNAL_ERROR: i32 = -32603;
 
 /// MCP protocol dispatcher that routes JSON-RPC requests to the tool registry.
 pub struct McpDispatcher<'a> {
@@ -59,6 +65,24 @@ impl<'a> McpDispatcher<'a> {
                 return self.error_response(serde_json::Value::Null, PARSE_ERROR, "Parse error");
             }
         };
+
+        // Validate jsonrpc version
+        if request.jsonrpc != "2.0" {
+            return self.error_response(
+                request.id,
+                INVALID_REQUEST,
+                "Invalid Request: jsonrpc must be '2.0'",
+            );
+        }
+
+        // Validate id is string or number (reject null, array, object, bool)
+        if !request.id.is_string() && !request.id.is_number() {
+            return self.error_response(
+                serde_json::Value::Null,
+                INVALID_REQUEST,
+                "Invalid Request: id must be a string or number",
+            );
+        }
 
         let response = match request.method.as_str() {
             "initialize" => self.handle_initialize(&request),
