@@ -19,7 +19,10 @@ reify-geometry.workspace = true
 reify-kernel-occt.workspace = true
 reify-stdlib.workspace = true
 reify-lsp.workspace = true
+reify-mcp.workspace = true
 tokio.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
