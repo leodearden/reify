@@ -1,4 +1,4 @@
-import { type Component, Show, For } from 'solid-js';
+import { type Component, Show, For, createSignal } from 'solid-js';
 import type { ChatMessage, SessionStatus } from '../types';
 import styles from './ChatPanel.module.css';
 
@@ -14,6 +14,22 @@ export interface ChatPanelProps {
 }
 
 export const ChatPanel: Component<ChatPanelProps> = (props) => {
+  const [inputText, setInputText] = createSignal('');
+
+  function handleSend() {
+    const text = inputText().trim();
+    if (text === '') return;
+    props.onSendMessage(text);
+    setInputText('');
+  }
+
+  function handleKeyDown(e: KeyboardEvent) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }
+
   return (
     <div
       data-testid="chat-panel"
@@ -67,6 +83,23 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
           </For>
         </div>
       </Show>
+      <div class={styles.inputBar}>
+        <textarea
+          data-testid="chat-input"
+          class={styles.textarea}
+          placeholder="Ask Claude about your design..."
+          value={inputText()}
+          onInput={(e) => setInputText(e.currentTarget.value)}
+          onKeyDown={handleKeyDown}
+        />
+        <button
+          data-testid="chat-send-btn"
+          class={styles.sendButton}
+          onClick={handleSend}
+        >
+          Send
+        </button>
+      </div>
     </div>
   );
 };

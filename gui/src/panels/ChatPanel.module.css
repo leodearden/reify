@@ -84,3 +84,48 @@
   font-size: 13px;
   text-align: center;
 }
+
+.inputBar {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--reify-border, #45475a);
+  flex-shrink: 0;
+}
+
+.textarea {
+  flex: 1;
+  min-height: 36px;
+  max-height: 120px;
+  padding: 8px;
+  border: 1px solid var(--reify-border, #45475a);
+  border-radius: 6px;
+  background: var(--reify-surface-0, #1e1e2e);
+  color: var(--reify-text, #cdd6f4);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  resize: none;
+  outline: none;
+}
+
+.textarea:focus {
+  border-color: var(--reify-accent, #89b4fa);
+}
+
+.sendButton {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: var(--reify-accent, #89b4fa);
+  color: var(--reify-base, #1e1e2e);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.sendButton:hover {
+  opacity: 0.9;
+}
