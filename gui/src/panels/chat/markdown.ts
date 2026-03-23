@@ -18,6 +18,21 @@ function escapeHtml(text: string): string {
 }
 
 /**
+ * Check whether a URL has a safe protocol for use in href attributes.
+ * Only http://, https://, and mailto: are allowed.
+ * URLs have already been HTML-entity-escaped at this point, but these
+ * protocols contain no HTML-special characters so startsWith works correctly.
+ */
+function isSafeUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  return (
+    lower.startsWith('http://') ||
+    lower.startsWith('https://') ||
+    lower.startsWith('mailto:')
+  );
+}
+
+/**
  * Render a markdown string to sanitized HTML.
  *
  * The input is first HTML-escaped, then markdown transformations are applied
@@ -104,10 +119,16 @@ export function renderMarkdown(input: string): string {
   // Italic (single asterisk, but not inside bold)
   html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
 
-  // Links [text](url)
+  // Links [text](url) — with protocol allowlist to prevent javascript:/data:/vbscript: XSS
   html = html.replace(
     /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+    (_match: string, text: string, url: string) => {
+      if (isSafeUrl(url)) {
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+      }
+      // Unsafe protocol — render link text as plain text without hyperlink
+      return text;
+    },
   );
 
   // Phase 5: Restore code blocks
