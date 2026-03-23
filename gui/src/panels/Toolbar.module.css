@@ -20,3 +20,7 @@
 .button:hover {
   background: var(--reify-accent-hover, #74c7ec);
 }
+
+.spacer {
+  flex: 1;
+}

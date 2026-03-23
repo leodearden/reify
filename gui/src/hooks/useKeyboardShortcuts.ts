@@ -7,6 +7,7 @@ export interface KeyboardShortcutCallbacks {
   onHelp?: () => void;
   onReloadShortcut?: () => void;
   onDismissReload?: () => void;
+  onToggleChatPanel?: () => void;
 }
 
 /**
@@ -44,6 +45,13 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
     if (e.ctrlKey && e.key === 'e') {
       e.preventDefault();
       callbacks.onExportDialog?.();
+      return;
+    }
+
+    // Ctrl+J — Toggle chat panel
+    if (e.ctrlKey && e.key === 'j') {
+      e.preventDefault();
+      callbacks.onToggleChatPanel?.();
       return;
     }
 

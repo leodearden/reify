@@ -118,3 +118,14 @@ export interface ToastMessage {
   type: 'success' | 'error' | 'info';
   message: string;
 }
+
+/** A single message in the Claude chat session. */
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: number;
+}
+
+/** Current status of the Claude chat session. */
+export type SessionStatus = 'idle' | 'busy' | 'error';
