@@ -54,7 +54,7 @@ impl ReifyToolContext for TauriToolContext {
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
         let gui_state = session
             .build_gui_state()
-            .map_err(|e| ToolError::EngineError(e))?;
+            .map_err(ToolError::EngineError)?;
 
         // Return the first file's content (single-file model for now)
         if let Some(file) = gui_state.files.first() {
@@ -74,7 +74,7 @@ impl ReifyToolContext for TauriToolContext {
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
         let gui_state = session
             .build_gui_state()
-            .map_err(|e| ToolError::EngineError(e))?;
+            .map_err(ToolError::EngineError)?;
 
         Ok(gui_state
             .files
@@ -98,7 +98,7 @@ impl ReifyToolContext for TauriToolContext {
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
         let gui_state = session
             .build_gui_state()
-            .map_err(|e| ToolError::EngineError(e))?;
+            .map_err(ToolError::EngineError)?;
 
         Ok(gui_state
             .values
@@ -122,7 +122,7 @@ impl ReifyToolContext for TauriToolContext {
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
         let gui_state = session
             .build_gui_state()
-            .map_err(|e| ToolError::EngineError(e))?;
+            .map_err(ToolError::EngineError)?;
 
         Ok(gui_state
             .constraints
@@ -182,7 +182,7 @@ impl ReifyToolContext for TauriToolContext {
                 success: true,
                 diagnostics_count: 0,
             })
-            .map_err(|e| ToolError::EngineError(e))
+            .map_err(ToolError::EngineError)
     }
 
     fn set_parameter(&self, cell_id: &str, value: &str) -> Result<SetParamResult, ToolError> {
@@ -192,7 +192,7 @@ impl ReifyToolContext for TauriToolContext {
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
         let gui_state = session
             .set_parameter(cell_id, value)
-            .map_err(|e| ToolError::EngineError(e))?;
+            .map_err(ToolError::EngineError)?;
 
         // Find the updated parameter in the returned GuiState
         let param = gui_state
@@ -217,7 +217,7 @@ impl ReifyToolContext for TauriToolContext {
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
         session
             .load_file(std::path::Path::new(file_path))
-            .map_err(|e| ToolError::EngineError(e))?;
+            .map_err(ToolError::EngineError)?;
 
         Ok(OpenFileInfo {
             path: file_path.to_string(),
@@ -233,7 +233,7 @@ impl ReifyToolContext for TauriToolContext {
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
         let gui_state = session
             .build_gui_state()
-            .map_err(|e| ToolError::EngineError(e))?;
+            .map_err(ToolError::EngineError)?;
 
         // Get the first file's content (single-file model)
         let file = gui_state
@@ -264,7 +264,7 @@ impl ReifyToolContext for TauriToolContext {
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
         session
             .export(export_format, std::path::Path::new(output_path))
-            .map_err(|e| ToolError::EngineError(e))?;
+            .map_err(ToolError::EngineError)?;
         Ok(true)
     }
 
