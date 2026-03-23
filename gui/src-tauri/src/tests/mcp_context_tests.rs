@@ -219,3 +219,68 @@ fn export_writes_file() {
     assert!(result);
     assert!(path.exists(), "exported file should exist");
 }
+
+// --- Navigation/event method tests ---
+
+#[test]
+fn focus_entity_with_emitter_records_event() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let ctx = TauriToolContext::with_event_emitter(engine, move |name, payload| {
+        events_clone.lock().unwrap().push((name.to_string(), payload));
+    });
+
+    let result = ctx
+        .focus_entity("Bracket.width")
+        .expect("focus_entity should succeed");
+    assert!(result);
+
+    let recorded = events.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].0, "focus-entity");
+}
+
+#[test]
+fn navigate_to_source_with_emitter_records_event() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let ctx = TauriToolContext::with_event_emitter(engine, move |name, payload| {
+        events_clone.lock().unwrap().push((name.to_string(), payload));
+    });
+
+    let result = ctx
+        .navigate_to_source("bracket.ri", 5, 1)
+        .expect("navigate_to_source should succeed");
+    assert!(result);
+
+    let recorded = events.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].0, "navigate-to-source");
+    assert_eq!(recorded[0].1["file"], "bracket.ri");
+    assert_eq!(recorded[0].1["line"], 5);
+    assert_eq!(recorded[0].1["column"], 1);
+}
+
+#[test]
+fn focus_entity_without_emitter_succeeds() {
+    let ctx = make_tauri_context();
+    let result = ctx
+        .focus_entity("Bracket.width")
+        .expect("focus_entity without emitter should succeed");
+    assert!(result);
+}
+
+#[test]
+fn navigate_to_source_without_emitter_succeeds() {
+    let ctx = make_tauri_context();
+    let result = ctx
+        .navigate_to_source("bracket.ri", 5, 1)
+        .expect("navigate_to_source without emitter should succeed");
+    assert!(result);
+}
