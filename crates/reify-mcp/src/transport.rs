@@ -40,30 +40,51 @@ impl McpServer {
         let stdin = tokio::io::stdin();
         let stdout = tokio::io::stdout();
         let reader = tokio::io::BufReader::new(stdin);
-        self.run_on_streams(reader, stdout).await;
+        if let Err(e) = self.run_on_streams(reader, stdout).await {
+            eprintln!("MCP transport error: {e}");
+        }
     }
 
     /// Run the MCP server on arbitrary async streams (for testing and embedding).
     ///
     /// Reads newline-delimited JSON from reader, writes responses to writer.
-    pub async fn run_on_streams<R, W>(&self, reader: R, mut writer: W)
+    /// Returns `Ok(())` on graceful shutdown (EOF), `Err` on I/O failure.
+    pub async fn run_on_streams<R, W>(
+        &self,
+        reader: R,
+        mut writer: W,
+    ) -> Result<(), std::io::Error>
     where
         R: AsyncBufRead + Unpin,
         W: AsyncWrite + Unpin,
     {
         let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let response = self.handle_message(trimmed);
-            let output = format!("{response}\n");
-            if writer.write_all(output.as_bytes()).await.is_err() {
-                break;
-            }
-            if writer.flush().await.is_err() {
-                break;
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let response = self.handle_message(trimmed);
+                    let output = format!("{response}\n");
+                    if let Err(e) = writer.write_all(output.as_bytes()).await {
+                        eprintln!("MCP write error: {e}");
+                        return Err(e);
+                    }
+                    if let Err(e) = writer.flush().await {
+                        eprintln!("MCP flush error: {e}");
+                        return Err(e);
+                    }
+                }
+                Ok(None) => {
+                    // Clean EOF — graceful shutdown
+                    return Ok(());
+                }
+                Err(e) => {
+                    eprintln!("MCP read error: {e}");
+                    return Err(e);
+                }
             }
         }
     }

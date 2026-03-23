@@ -68,7 +68,7 @@ async fn stream_mode_tools_list() {
     let server_clone = server.clone();
     let handle = tokio::spawn(async move {
         let reader = tokio::io::BufReader::new(server_reader);
-        server_clone.run_on_streams(reader, server_writer).await;
+        server_clone.run_on_streams(reader, server_writer).await.unwrap();
     });
 
     // Write a tools/list request
