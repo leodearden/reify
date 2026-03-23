@@ -38,13 +38,7 @@ import {
   navigateToEntity,
   navigateFromConstraint,
 } from './navigation';
-import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ChatMessage, SessionStatus } from './types';
-import {
-  loadChatPanelHeight,
-  saveChatPanelHeight,
-  loadChatPanelOpen,
-  saveChatPanelOpen,
-} from './hooks/useChatPanelPersistence';
+import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage } from './types';
 import { applyTheme } from './theme';
 import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
 import styles from './App.module.css';
@@ -54,8 +48,6 @@ const MIN_PANEL_HEIGHT = 80;
 const DEFAULT_EDITOR_WIDTH = 300;
 const DEFAULT_SIDE_WIDTH = 300;
 const DEFAULT_PROPERTY_HEIGHT = 200;
-const MIN_CHAT_HEIGHT = 150;
-const DEFAULT_CHAT_HEIGHT = 250;
 
 let toastIdCounter = 0;
 
@@ -85,25 +77,6 @@ const App: Component = () => {
     };
     clearTimeout(saveTimeout);
     saveTimeout = setTimeout(() => savePanelLayout(layout), 300);
-  });
-
-  // Chat panel state
-  const [chatOpen, setChatOpen] = createSignal(loadChatPanelOpen() ?? false);
-  const [chatHeight, setChatHeight] = createSignal(loadChatPanelHeight() ?? DEFAULT_CHAT_HEIGHT);
-  const [chatMessages, setChatMessages] = createSignal<ChatMessage[]>([]);
-  const [sessionStatus, setSessionStatus] = createSignal<SessionStatus>('idle');
-
-  // Debounced persistence of chat panel height
-  let chatHeightTimeout: ReturnType<typeof setTimeout> | undefined;
-  createEffect(() => {
-    const h = chatHeight();
-    clearTimeout(chatHeightTimeout);
-    chatHeightTimeout = setTimeout(() => saveChatPanelHeight(h), 300);
-  });
-
-  // Persist chat open state immediately
-  createEffect(() => {
-    saveChatPanelOpen(chatOpen());
   });
 
   // Init phase: loading → ready | error
@@ -199,9 +172,6 @@ const App: Component = () => {
       if (changedFiles().size > 0) {
         handleDismissReload();
       }
-    },
-    onToggleChatPanel: () => {
-      setChatOpen((v) => !v);
     },
   });
 
@@ -410,29 +380,6 @@ const App: Component = () => {
     setPropertyHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
   }
 
-  function handleChatResize(delta: number) {
-    const maxHeight = Math.floor(0.6 * window.innerHeight);
-    setChatHeight((h) => Math.min(maxHeight, Math.max(MIN_CHAT_HEIGHT, h - delta)));
-  }
-
-  let chatMessageIdCounter = 0;
-
-  function handleSendMessage(text: string) {
-    const id = String(++chatMessageIdCounter);
-    const userMessage: ChatMessage = {
-      id,
-      role: 'user',
-      content: text,
-      timestamp: Date.now(),
-    };
-    setChatMessages((prev) => [...prev, userMessage]);
-  }
-
-  function handleClearSession() {
-    setChatMessages([]);
-    chatMessageIdCounter = 0;
-  }
-
   function handleViewportSelect(entityPath: string | null) {
     if (!entityPath) {
       selectionStore.selectEntity(null);
@@ -480,7 +427,7 @@ const App: Component = () => {
       </Show>
       <Show when={initPhase() === 'ready'}>
         <div data-testid="app-layout" class={styles.layout}>
-          <Toolbar onExport={handleExport} onFitToView={handleFitToView} onToggleChatPanel={() => setChatOpen((v) => !v)} />
+          <Toolbar onExport={handleExport} onFitToView={handleFitToView} />
           <ReloadPrompt
             filePaths={Array.from(changedFiles())}
             hasDirtyFiles={confirmReload()}
@@ -537,16 +484,6 @@ const App: Component = () => {
               <ChatPanel store={claudeStore} />
             </div>
           </div>
-          <ChatPanel
-            messages={chatMessages()}
-            sessionStatus={sessionStatus()}
-            onSendMessage={handleSendMessage}
-            onClearSession={handleClearSession}
-            onToggle={() => setChatOpen((v) => !v)}
-            open={chatOpen()}
-            height={chatHeight()}
-            onResize={handleChatResize}
-          />
           <StatusBar
             evalStatus={engineStore.state.evalStatus}
             meshes={engineStore.state.meshes}
