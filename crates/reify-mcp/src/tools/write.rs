@@ -21,7 +21,32 @@ pub fn register(registry: &mut ToolRegistry) {
             },
             "required": ["file_path", "content"]
         }),
-        |_params, _ctx| Err(ToolError::NotImplemented),
+        |params, ctx| {
+            let file_path = params["file_path"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("file_path is required".to_string()))?;
+            let content = params["content"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("content is required".to_string()))?;
+
+            ctx.update_source(file_path, content)?;
+
+            let diagnostics = ctx.get_diagnostics()?;
+            let filtered: Vec<_> = diagnostics
+                .into_iter()
+                .filter(|d| d.file_path == file_path)
+                .collect();
+
+            let diagnostics_count = filtered.len();
+            let diagnostics_json = serde_json::to_value(&filtered)
+                .map_err(|e| ToolError::InternalError(e.to_string()))?;
+
+            Ok(serde_json::json!({
+                "success": true,
+                "diagnostics_count": diagnostics_count,
+                "diagnostics": diagnostics_json,
+            }))
+        },
     );
 
     registry.register(
@@ -41,7 +66,27 @@ pub fn register(registry: &mut ToolRegistry) {
             },
             "required": ["cell_id", "value"]
         }),
-        |_params, _ctx| Err(ToolError::NotImplemented),
+        |params, ctx| {
+            let cell_id = params["cell_id"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("cell_id is required".to_string()))?;
+            let value = params["value"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("value is required".to_string()))?;
+
+            let result = ctx.set_parameter(cell_id, value)?;
+
+            let diagnostics = ctx.get_diagnostics()?;
+            let diagnostics_json = serde_json::to_value(&diagnostics)
+                .map_err(|e| ToolError::InternalError(e.to_string()))?;
+
+            Ok(serde_json::json!({
+                "success": result.success,
+                "new_value": result.new_value,
+                "unit": result.unit,
+                "diagnostics": diagnostics_json,
+            }))
+        },
     );
 
     registry.register(
@@ -57,7 +102,19 @@ pub fn register(registry: &mut ToolRegistry) {
             },
             "required": ["file_path"]
         }),
-        |_params, _ctx| Err(ToolError::NotImplemented),
+        |params, ctx| {
+            let file_path = params["file_path"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("file_path is required".to_string()))?;
+
+            ctx.open_file(file_path)?;
+            let source = ctx.get_source(Some(file_path))?;
+
+            Ok(serde_json::json!({
+                "success": true,
+                "source": source.content,
+            }))
+        },
     );
 
     registry.register(
@@ -72,7 +129,14 @@ pub fn register(registry: &mut ToolRegistry) {
                 }
             }
         }),
-        |_params, _ctx| Err(ToolError::NotImplemented),
+        |params, ctx| {
+            let file_path = params["file_path"].as_str();
+            let result = ctx.save_file(file_path)?;
+
+            Ok(serde_json::json!({
+                "success": result,
+            }))
+        },
     );
 
     registry.register(
@@ -92,6 +156,20 @@ pub fn register(registry: &mut ToolRegistry) {
             },
             "required": ["format", "output_path"]
         }),
-        |_params, _ctx| Err(ToolError::NotImplemented),
+        |params, ctx| {
+            let format = params["format"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("format is required".to_string()))?;
+            let output_path = params["output_path"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("output_path is required".to_string()))?;
+
+            let result = ctx.export(format, output_path)?;
+
+            Ok(serde_json::json!({
+                "success": result,
+                "path": output_path,
+            }))
+        },
     );
 }

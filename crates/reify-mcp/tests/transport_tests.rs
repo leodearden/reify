@@ -17,7 +17,7 @@ fn in_process_tools_list_returns_16_tools() {
 }
 
 #[test]
-fn in_process_tools_call_stub_returns_not_implemented() {
+fn in_process_tools_call_missing_params_returns_error() {
     let ctx = Arc::new(MockToolContext::default());
     let server = McpServer::new(ctx);
 
@@ -39,7 +39,7 @@ fn in_process_tools_call_stub_returns_not_implemented() {
         .as_str()
         .unwrap()
         .to_lowercase()
-        .contains("not implemented"));
+        .contains("invalid parameters"));
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn integration_tools_list_has_all_16_correct_names() {
 }
 
 #[test]
-fn integration_tools_call_stub_error() {
+fn integration_tools_call_missing_params_error() {
     let ctx = Arc::new(MockToolContext::default());
     let server = McpServer::new(ctx);
 
@@ -164,8 +164,8 @@ fn integration_tools_call_stub_error() {
     assert_eq!(response["result"]["isError"], true);
     let text = response["result"]["content"][0]["text"].as_str().unwrap();
     assert!(
-        text.to_lowercase().contains("not implemented"),
-        "Expected 'not implemented' in error text: {text}"
+        text.to_lowercase().contains("invalid parameters"),
+        "Expected 'invalid parameters' in error text: {text}"
     );
 }
 

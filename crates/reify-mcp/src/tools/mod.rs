@@ -1,5 +1,6 @@
 // Tool registration
 
+pub mod language_chunks;
 pub mod navigation;
 pub mod read;
 pub mod reference;
