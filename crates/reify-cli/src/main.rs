@@ -1,6 +1,9 @@
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use reify_constraints::SimpleConstraintChecker;
+
+mod mcp_context;
 use reify_geometry::DispatchPlanner;
 use reify_kernel_occt::OcctKernelHandle;
 use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity};
@@ -15,6 +18,7 @@ fn main() -> ExitCode {
         eprintln!("  build <file> -o <output>   Build geometry and export");
         eprintln!("  lsp                        Start language server (stdin/stdout)");
         eprintln!("  gui <file>                 Open file in GUI");
+        eprintln!("  mcp-server [file] [--project-dir <dir>]  Start MCP server (stdin/stdout)");
         return ExitCode::FAILURE;
     }
 
@@ -23,6 +27,7 @@ fn main() -> ExitCode {
         "build" => cmd_build(&args[2..]),
         "lsp" => cmd_lsp(),
         "gui" => cmd_gui(&args[2..]),
+        "mcp-server" => cmd_mcp_server(&args[2..]),
         other => {
             eprintln!("Unknown command: {}", other);
             ExitCode::FAILURE
@@ -249,6 +254,59 @@ fn cmd_lsp() -> ExitCode {
     match tokio::runtime::Runtime::new() {
         Ok(rt) => {
             rt.block_on(reify_lsp::run_server());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Failed to create async runtime: {}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_mcp_server(args: &[String]) -> ExitCode {
+    // Parse optional file argument and --project-dir flag
+    let mut file_path: Option<String> = None;
+    let mut project_dir: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--project-dir" {
+            if i + 1 < args.len() {
+                project_dir = Some(args[i + 1].clone());
+                i += 2;
+                continue;
+            } else {
+                eprintln!("--project-dir requires a value");
+                return ExitCode::FAILURE;
+            }
+        } else if file_path.is_none() {
+            file_path = Some(args[i].clone());
+        }
+        i += 1;
+    }
+
+    let project_dir = project_dir
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            file_path
+                .as_ref()
+                .and_then(|f| std::path::Path::new(f).parent().map(|p| p.to_path_buf()))
+        })
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let context = mcp_context::CliToolContext::new(project_dir);
+
+    if let Some(ref path) = file_path {
+        if let Err(e) = context.load_file(path) {
+            eprintln!("Error loading {}: {}", path, e);
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let server = reify_mcp::McpServer::new(Arc::new(context));
+
+    match tokio::runtime::Runtime::new() {
+        Ok(rt) => {
+            rt.block_on(server.run_stdio());
             ExitCode::SUCCESS
         }
         Err(e) => {
