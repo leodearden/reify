@@ -284,3 +284,17 @@ fn navigate_to_source_without_emitter_succeeds() {
         .expect("navigate_to_source without emitter should succeed");
     assert!(result);
 }
+
+// --- Compile-time trait assertions ---
+
+#[test]
+fn tauri_tool_context_is_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<TauriToolContext>();
+}
+
+#[test]
+fn tauri_tool_context_implements_reify_tool_context() {
+    let ctx = make_tauri_context();
+    let _dyn_ctx: Arc<dyn ReifyToolContext> = Arc::new(ctx);
+}
