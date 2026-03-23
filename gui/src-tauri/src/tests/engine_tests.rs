@@ -591,3 +591,27 @@ fn build_gui_state_includes_meshes_from_tessellation() {
         "build_gui_state should produce meshes when a geometry kernel is available, got empty"
     );
 }
+
+#[test]
+fn build_gui_state_mesh_data_structure_matches_kernel_output() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+
+    assert!(!state.meshes.is_empty(), "should have at least one mesh");
+    let mesh = &state.meshes[0];
+
+    // MockGeometryKernel returns: vertices = [0,0,0, 1,0,0, 0,1,0] (9 floats = 3 vertices)
+    assert_eq!(mesh.vertices.len(), 9, "expected 9 vertex floats (3 vertices × 3 coords)");
+    // indices = [0, 1, 2] (1 triangle)
+    assert_eq!(mesh.indices.len(), 3, "expected 3 indices (1 triangle)");
+    // normals = Some([0,0,1, 0,0,1, 0,0,1]) (9 floats)
+    assert!(mesh.normals.is_some(), "expected normals to be present");
+    assert_eq!(mesh.normals.as_ref().unwrap().len(), 9, "expected 9 normal floats");
+    // entity_path should be non-empty
+    assert!(!mesh.entity_path.is_empty(), "entity_path should be non-empty");
+}
