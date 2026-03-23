@@ -4,6 +4,7 @@
   gap: 4px;
   font-size: 13px;
   color: var(--reify-text, #cdd6f4);
+  position: relative;
 }
 
 .emptyState {
@@ -103,4 +104,31 @@
   font-size: 11px;
   color: var(--reify-text-muted, #6c7086);
   padding: 1px 0;
+}
+
+.contextMenu {
+  z-index: 1000;
+  background: var(--reify-surface0, #313244);
+  border: 1px solid var(--reify-border, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  min-width: 200px;
+}
+
+.contextMenuItem {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--reify-text, #cdd6f4);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.contextMenuItem:hover {
+  background: var(--reify-surface-hover, #45475a);
 }
