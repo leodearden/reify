@@ -30,9 +30,8 @@ fn app_state_constructible() {
 fn save_and_open_file_roundtrip() {
     use crate::commands::{open_file_impl, save_file_impl};
 
-    let dir = std::env::temp_dir().join("reify-gui-test");
-    std::fs::create_dir_all(&dir).ok();
-    let path = dir.join("test_roundtrip.ri");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test_roundtrip.ri");
 
     // Save
     save_file_impl(path.to_str().unwrap(), bracket_source()).expect("save should succeed");
@@ -41,10 +40,6 @@ fn save_and_open_file_roundtrip() {
     let file_data = open_file_impl(path.to_str().unwrap()).expect("open should succeed");
     assert_eq!(file_data.path, path.to_str().unwrap());
     assert!(file_data.content.contains("structure Bracket"));
-
-    // Cleanup
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_dir(&dir);
 }
 
 #[test]
@@ -92,9 +87,8 @@ fn export_writes_file() {
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
-    let dir = std::env::temp_dir().join("reify-gui-test-export");
-    std::fs::create_dir_all(&dir).ok();
-    let path = dir.join("test.step");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.step");
 
     let result = session.export(reify_types::ExportFormat::Step, &path);
     // MockGeometryKernel writes MOCK_EXPORT_DATA
@@ -102,10 +96,6 @@ fn export_writes_file() {
 
     let data = std::fs::read(&path).expect("should read exported file");
     assert!(!data.is_empty(), "exported file should not be empty");
-
-    // Cleanup
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_dir(&dir);
 }
 
 // --- Integration tests (step-11) ---
@@ -164,16 +154,11 @@ fn end_to_end_export_via_impl() {
     let session = make_loaded_session();
     let engine = Mutex::new(session);
 
-    let dir = std::env::temp_dir().join("reify-gui-test-e2e-export");
-    std::fs::create_dir_all(&dir).ok();
-    let path = dir.join("e2e_test.step");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("e2e_test.step");
 
     export_impl(&engine, "step", path.to_str().unwrap()).expect("export should succeed");
     assert!(path.exists(), "exported file should exist");
-
-    // Cleanup
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_dir(&dir);
 }
 
 #[test]
