@@ -31,7 +31,22 @@ export interface UserMessage {
   text: string;
 }
 
-export type ChatMessage = UserMessage | AssistantMessage;
+export interface SystemMessage {
+  role: 'system';
+  id: string;
+  errorType: string;
+  text: string;
+}
+
+export interface MessageContext {
+  selectedEntity?: string;
+  diagnostics?: string[];
+  constraints?: string[];
+  currentFile?: string;
+  attachedContexts?: string[];
+}
+
+export type ChatMessage = UserMessage | AssistantMessage | SystemMessage;
 
 export interface ClaudeState {
   messages: ChatMessage[];
@@ -40,7 +55,7 @@ export interface ClaudeState {
 }
 
 export interface ClaudeStoreOptions {
-  onSend: (id: string, text: string, context: Record<string, unknown>) => void;
+  onSend: (id: string, text: string, context: MessageContext) => void;
   onAbort: () => void;
 }
 
@@ -216,7 +231,13 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     }
   }
 
-  function sendMessage(text: string, context: Record<string, unknown>): void {
+  function addSystemMessage(errorType: string, text: string): void {
+    const id = generateId();
+    const sysMsg: SystemMessage = { role: 'system', id, errorType, text };
+    setState('messages', (msgs) => [...msgs, sysMsg]);
+  }
+
+  function sendMessage(text: string, context: MessageContext): void {
     const id = generateId();
     const userMsg: UserMessage = { role: 'user', id, text };
     const assistantMsg: AssistantMessage = {
@@ -256,6 +277,7 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     state,
     handleOutboundMessage,
     sendMessage,
+    addSystemMessage,
     claudeAbort,
     clearSession,
   };
