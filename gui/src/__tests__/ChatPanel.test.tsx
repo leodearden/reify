@@ -179,4 +179,126 @@ describe('ChatPanel', () => {
     // Session should be idle, so no abort button
     expect(screen.queryByTestId('abort-button')).toBeNull();
   });
+
+  describe('context integration', () => {
+    it('renders context picker button in input area', () => {
+      const store = makeStore();
+      render(() => <ChatPanel store={store} />);
+      expect(screen.getByTestId('context-picker-btn')).toBeTruthy();
+    });
+
+    it('renders context chips area when items are attached', () => {
+      const store = makeStore();
+      render(() => (
+        <ChatPanel
+          store={store}
+          selectedEntity="box1"
+          engineConstraints={[]}
+          diagnostics={[]}
+        />
+      ));
+      // Open picker and attach selection
+      fireEvent.click(screen.getByTestId('context-picker-btn'));
+      fireEvent.click(screen.getByText('Current selection'));
+      expect(screen.getByTestId('context-chips')).toBeTruthy();
+    });
+
+    it('attaching selection context shows a ContextChip with entity label', () => {
+      const store = makeStore();
+      render(() => (
+        <ChatPanel
+          store={store}
+          selectedEntity="cylinder1"
+          engineConstraints={[]}
+          diagnostics={[]}
+        />
+      ));
+      fireEvent.click(screen.getByTestId('context-picker-btn'));
+      fireEvent.click(screen.getByText('Current selection'));
+      expect(screen.getByTestId('context-chip')).toBeTruthy();
+      expect(screen.getByTestId('context-chip').textContent).toContain('cylinder1');
+    });
+
+    it('removing a chip removes it from display', () => {
+      const store = makeStore();
+      render(() => (
+        <ChatPanel
+          store={store}
+          selectedEntity="box1"
+          engineConstraints={[]}
+          diagnostics={[]}
+        />
+      ));
+      fireEvent.click(screen.getByTestId('context-picker-btn'));
+      fireEvent.click(screen.getByText('Current selection'));
+      expect(screen.getByTestId('context-chip')).toBeTruthy();
+      fireEvent.click(screen.getByTestId('chip-remove'));
+      expect(screen.queryByTestId('context-chip')).toBeNull();
+    });
+
+    it('sending a message includes attached contexts in sendMessage call', () => {
+      const onSend = vi.fn();
+      const store = makeStore({ onSend });
+      render(() => (
+        <ChatPanel
+          store={store}
+          selectedEntity="box1"
+          engineConstraints={[]}
+          diagnostics={[]}
+        />
+      ));
+      fireEvent.click(screen.getByTestId('context-picker-btn'));
+      fireEvent.click(screen.getByText('Current selection'));
+      const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+      fireEvent.input(textarea, { target: { value: 'Resize it' } });
+      fireEvent.click(screen.getByTestId('send-button'));
+      expect(onSend).toHaveBeenCalledWith(
+        expect.any(String),
+        'Resize it',
+        expect.objectContaining({ selectedEntity: 'box1' })
+      );
+    });
+
+    it('after sending, attached contexts are cleared', () => {
+      const store = makeStore();
+      render(() => (
+        <ChatPanel
+          store={store}
+          selectedEntity="box1"
+          engineConstraints={[]}
+          diagnostics={[]}
+        />
+      ));
+      fireEvent.click(screen.getByTestId('context-picker-btn'));
+      fireEvent.click(screen.getByText('Current selection'));
+      expect(screen.getByTestId('context-chip')).toBeTruthy();
+      const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+      fireEvent.input(textarea, { target: { value: 'hello' } });
+      fireEvent.click(screen.getByTestId('send-button'));
+      expect(screen.queryByTestId('context-chip')).toBeNull();
+    });
+
+    it('system messages in store render as SystemMessage components', () => {
+      const store = makeStore();
+      store.addSystemMessage('auth', 'Authentication required. Run `claude login` in your terminal.');
+      render(() => <ChatPanel store={store} />);
+      expect(screen.getByTestId('system-message')).toBeTruthy();
+    });
+
+    it('when selectedEntity is provided, auto-context label shown on user messages', () => {
+      const store = makeStore();
+      store.sendMessage('Do something', {});
+      render(() => (
+        <ChatPanel
+          store={store}
+          selectedEntity="sphere1"
+          engineConstraints={[]}
+          diagnostics={[]}
+        />
+      ));
+      const label = screen.queryByTestId('auto-context-label');
+      expect(label).toBeTruthy();
+      expect(label!.textContent).toContain('sphere1');
+    });
+  });
 });
