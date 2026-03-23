@@ -1,0 +1,49 @@
+.systemMessage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin: 4px 0;
+  border-radius: 6px;
+  font-size: 0.85em;
+  background: var(--reify-surface0);
+  color: var(--reify-text);
+  border-left: 3px solid var(--reify-border);
+}
+
+.systemMessage[data-error-type='auth'] {
+  border-left-color: var(--reify-error, #e55);
+  background: color-mix(in srgb, var(--reify-error, #e55) 8%, var(--reify-surface0));
+}
+
+.systemMessage[data-error-type='rate-limit'] {
+  border-left-color: #e8a735;
+  background: color-mix(in srgb, #e8a735 8%, var(--reify-surface0));
+}
+
+.systemMessage[data-error-type='network'] {
+  border-left-color: var(--reify-error, #e55);
+  background: color-mix(in srgb, var(--reify-error, #e55) 8%, var(--reify-surface0));
+}
+
+.systemMessage[data-error-type='sidecar'] {
+  border-left-color: var(--reify-error, #e55);
+  background: color-mix(in srgb, var(--reify-error, #e55) 8%, var(--reify-surface0));
+}
+
+.icon {
+  flex-shrink: 0;
+  font-size: 1.1em;
+}
+
+.text {
+  flex: 1;
+}
+
+.code {
+  font-family: monospace;
+  background: var(--reify-background);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.95em;
+}

@@ -1,6 +1,7 @@
 import { batch } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import type { OutboundMessage } from '../../sidecar/src/types';
+import { classifyError } from '../utils/errorClassifier';
 
 // --- Domain types for UI consumption ---
 
@@ -31,7 +32,22 @@ export interface UserMessage {
   text: string;
 }
 
-export type ChatMessage = UserMessage | AssistantMessage;
+export interface SystemMessage {
+  role: 'system';
+  id: string;
+  errorType: string;
+  text: string;
+}
+
+export interface MessageContext {
+  selectedEntity?: string;
+  diagnostics?: string[];
+  constraints?: string[];
+  currentFile?: string;
+  attachedContexts?: string[];
+}
+
+export type ChatMessage = UserMessage | AssistantMessage | SystemMessage;
 
 export interface ClaudeState {
   messages: ChatMessage[];
@@ -40,7 +56,7 @@ export interface ClaudeState {
 }
 
 export interface ClaudeStoreOptions {
-  onSend: (id: string, text: string, context: Record<string, unknown>) => void;
+  onSend: (id: string, text: string, context: MessageContext) => void;
   onAbort: () => void;
 }
 
@@ -178,45 +194,50 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
 
       case 'done': {
         cancelAndFlush();
+        setState('sessionStatus', 'idle');
         const idx = findAssistantIdx(msg.id);
         if (idx === -1) break;
-        batch(() => {
-          setState('sessionStatus', 'idle');
-          setState(
-            'messages',
-            idx,
-            produce((m: ChatMessage) => {
-              if (m.role !== 'assistant') return;
-              m.complete = true;
-              m.thinkingComplete = true;
-            }),
-          );
-        });
+        setState(
+          'messages',
+          idx,
+          produce((m: ChatMessage) => {
+            if (m.role !== 'assistant') return;
+            m.complete = true;
+            m.thinkingComplete = true;
+          }),
+        );
         break;
       }
 
       case 'error': {
         cancelAndFlush();
+        setState('sessionStatus', 'idle');
+        // Auto-classify error and add system message
+        const classified = classifyError(msg.message);
+        addSystemMessage(classified.type, classified.userMessage);
         const idx = findAssistantIdx(msg.id);
         if (idx === -1) break;
-        batch(() => {
-          setState('sessionStatus', 'idle');
-          setState(
-            'messages',
-            idx,
-            produce((m: ChatMessage) => {
-              if (m.role !== 'assistant') return;
-              m.error = msg.message;
-              m.complete = true;
-            }),
-          );
-        });
+        setState(
+          'messages',
+          idx,
+          produce((m: ChatMessage) => {
+            if (m.role !== 'assistant') return;
+            m.error = msg.message;
+            m.complete = true;
+          }),
+        );
         break;
       }
     }
   }
 
-  function sendMessage(text: string, context: Record<string, unknown>): void {
+  function addSystemMessage(errorType: string, text: string): void {
+    const id = generateId();
+    const sysMsg: SystemMessage = { role: 'system', id, errorType, text };
+    setState('messages', (msgs) => [...msgs, sysMsg]);
+  }
+
+  function sendMessage(text: string, context: MessageContext): void {
     const id = generateId();
     const userMsg: UserMessage = { role: 'user', id, text };
     const assistantMsg: AssistantMessage = {
@@ -256,6 +277,7 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     state,
     handleOutboundMessage,
     sendMessage,
+    addSystemMessage,
     claudeAbort,
     clearSession,
   };

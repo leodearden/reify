@@ -1,0 +1,57 @@
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  background: var(--reify-surface0);
+  color: var(--reify-text);
+  border: 1px solid var(--reify-border);
+  white-space: nowrap;
+}
+
+.chip[data-context-type='selection'] {
+  border-color: var(--reify-blue, #89b4fa);
+  background: color-mix(in srgb, var(--reify-blue, #89b4fa) 12%, var(--reify-surface0));
+}
+
+.chip[data-context-type='diagnostics'] {
+  border-color: var(--reify-peach, #fab387);
+  background: color-mix(in srgb, var(--reify-peach, #fab387) 12%, var(--reify-surface0));
+}
+
+.chip[data-context-type='constraints'] {
+  border-color: var(--reify-mauve, #cba6f7);
+  background: color-mix(in srgb, var(--reify-mauve, #cba6f7) 12%, var(--reify-surface0));
+}
+
+.chip[data-context-type='file'] {
+  border-color: var(--reify-green, #a6e3a1);
+  background: color-mix(in srgb, var(--reify-green, #a6e3a1) 12%, var(--reify-surface0));
+}
+
+.label {
+  line-height: 1.4;
+}
+
+.remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: transparent;
+  color: var(--reify-text-muted);
+  cursor: pointer;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 50%;
+}
+
+.remove:hover {
+  color: var(--reify-text);
+  background: rgba(255, 255, 255, 0.1);
+}

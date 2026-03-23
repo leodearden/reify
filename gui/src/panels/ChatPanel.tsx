@@ -1,8 +1,16 @@
 import { type Component, createSignal, createEffect, For, Show } from 'solid-js';
-import type { ChatMessage } from '../stores/claudeStore';
+import type { ChatMessage, MessageContext, AssistantMessage, SystemMessage as SystemMessageType } from '../stores/claudeStore';
 import { MessageGroup } from './chat/MessageGroup';
 import { AbortButton } from './chat/AbortButton';
+import { SystemMessage } from './chat/SystemMessage';
+import { ContextPicker, type ContextType } from './chat/ContextPicker';
+import { ContextChip } from './chat/ContextChip';
 import styles from './ChatPanel.module.css';
+
+export interface AttachedContext {
+  type: ContextType;
+  label: string;
+}
 
 export interface ChatPanelProps {
   store: {
@@ -11,13 +19,18 @@ export interface ChatPanelProps {
       sessionStatus: string;
       currentMessageId: string | null;
     };
-    sendMessage: (text: string, context: Record<string, unknown>) => void;
+    sendMessage: (text: string, context: MessageContext) => void;
     claudeAbort: () => void;
   };
+  selectedEntity?: string;
+  engineConstraints?: Array<{ expression?: string; status?: string }>;
+  diagnostics?: string[];
+  activeFile?: string;
 }
 
 export const ChatPanel: Component<ChatPanelProps> = (props) => {
   const [inputText, setInputText] = createSignal('');
+  const [attachedContexts, setAttachedContexts] = createSignal<AttachedContext[]>([]);
   let messageListRef: HTMLDivElement | undefined;
 
   // Auto-scroll to bottom when new messages arrive or content changes
@@ -28,11 +41,75 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
     }
   });
 
+  function buildContextLabel(type: ContextType): string {
+    switch (type) {
+      case 'selection':
+        return props.selectedEntity ?? 'Selection';
+      case 'diagnostics':
+        return 'Diagnostics';
+      case 'constraints':
+        return 'Violated constraints';
+      case 'file':
+        return props.activeFile ?? 'Current file';
+    }
+  }
+
+  function handleAttach(type: ContextType) {
+    // Don't add duplicate types
+    if (attachedContexts().some((c) => c.type === type)) return;
+    const label = buildContextLabel(type);
+    setAttachedContexts((prev) => [...prev, { type, label }]);
+  }
+
+  function handleRemoveChip(type: ContextType) {
+    setAttachedContexts((prev) => prev.filter((c) => c.type !== type));
+  }
+
+  function buildMessageContext(): MessageContext {
+    const ctx: MessageContext = {};
+    const attached = attachedContexts();
+
+    // Always include selectedEntity if available (automatic context)
+    if (props.selectedEntity) {
+      ctx.selectedEntity = props.selectedEntity;
+    }
+
+    // Add explicitly attached contexts
+    for (const item of attached) {
+      switch (item.type) {
+        case 'selection':
+          if (props.selectedEntity) ctx.selectedEntity = props.selectedEntity;
+          break;
+        case 'diagnostics':
+          if (props.diagnostics) ctx.diagnostics = props.diagnostics;
+          break;
+        case 'constraints':
+          if (props.engineConstraints) {
+            ctx.constraints = props.engineConstraints.map(
+              (c) => c.expression ?? 'unknown'
+            );
+          }
+          break;
+        case 'file':
+          if (props.activeFile) ctx.currentFile = props.activeFile;
+          break;
+      }
+    }
+
+    if (attached.length > 0) {
+      ctx.attachedContexts = attached.map((c) => c.type);
+    }
+
+    return ctx;
+  }
+
   function handleSend() {
     const text = inputText().trim();
     if (!text) return;
-    props.store.sendMessage(text, {});
+    const context = buildMessageContext();
+    props.store.sendMessage(text, context);
     setInputText('');
+    setAttachedContexts([]);
   }
 
   function handleKeyDown(e: KeyboardEvent) {
@@ -43,6 +120,9 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
   }
 
   const isActive = () => props.store.state.sessionStatus !== 'idle';
+
+  const hasViolatedConstraints = () =>
+    (props.engineConstraints ?? []).some((c) => c.status === 'violated');
 
   return (
     <div data-testid="chat-panel" class={styles.panel}>
@@ -55,17 +135,52 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
             <Show
               when={msg.role === 'assistant'}
               fallback={
-                <div data-testid="user-message" class={styles.userMessage}>
-                  {(msg as { text: string }).text}
-                </div>
+                <Show
+                  when={msg.role === 'system'}
+                  fallback={
+                    <div data-testid="user-message" class={styles.userMessage}>
+                      {(msg as { text: string }).text}
+                      <Show when={props.selectedEntity}>
+                        <span data-testid="auto-context-label" class={styles.autoContextLabel}>
+                          [Context: {props.selectedEntity} selected]
+                        </span>
+                      </Show>
+                    </div>
+                  }
+                >
+                  <SystemMessage
+                    errorType={(msg as SystemMessageType).errorType}
+                    text={(msg as SystemMessageType).text}
+                  />
+                </Show>
               }
             >
-              <MessageGroup message={msg as import('../stores/claudeStore').AssistantMessage} />
+              <MessageGroup message={msg as AssistantMessage} />
             </Show>
           )}
         </For>
       </div>
+      <Show when={attachedContexts().length > 0}>
+        <div data-testid="context-chips" class={styles.contextChips}>
+          <For each={attachedContexts()}>
+            {(ctx) => (
+              <ContextChip
+                label={ctx.label}
+                type={ctx.type}
+                onRemove={() => handleRemoveChip(ctx.type)}
+              />
+            )}
+          </For>
+        </div>
+      </Show>
       <div class={styles.inputArea}>
+        <ContextPicker
+          onAttach={handleAttach}
+          hasSelection={!!props.selectedEntity}
+          hasDiagnostics={(props.diagnostics ?? []).length > 0}
+          hasViolatedConstraints={hasViolatedConstraints()}
+          hasActiveFile={!!props.activeFile}
+        />
         <textarea
           data-testid="chat-input"
           class={styles.textarea}

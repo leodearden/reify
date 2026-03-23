@@ -1,4 +1,4 @@
-import { type Component, createSignal, createMemo, For, Show } from 'solid-js';
+import { type Component, createSignal, createMemo, For, Show, onCleanup } from 'solid-js';
 import type { ConstraintData, ValueData } from '../types';
 import styles from './ConstraintPanel.module.css';
 
@@ -6,6 +6,7 @@ export interface ConstraintPanelProps {
   constraints: Record<string, ConstraintData>;
   values: Record<string, ValueData>;
   onConstraintSelect?: (constraint: ConstraintData) => void;
+  onAskClaude?: (context: string) => void;
 }
 
 const STATUS_PRIORITY: Record<string, number> = {
@@ -24,6 +25,7 @@ function statusIcon(status: string): string {
 
 export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
   const [expandedNodes, setExpandedNodes] = createSignal<Set<string>>(new Set());
+  const [contextMenu, setContextMenu] = createSignal<{ constraint: ConstraintData; x: number; y: number } | null>(null);
 
   const sortedConstraints = createMemo(() => {
     const list = Object.values(props.constraints);
@@ -62,6 +64,37 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
       .filter((v): v is ValueData => v != null);
   }
 
+  function handleContextMenu(e: MouseEvent, constraint: ConstraintData) {
+    if (!props.onAskClaude) return;
+    e.preventDefault();
+    setContextMenu({ constraint, x: e.clientX, y: e.clientY });
+    document.addEventListener('click', handleDismissMenu, { once: true });
+  }
+
+  function handleDismissMenu() {
+    setContextMenu(null);
+  }
+
+  function buildContextString(constraint: ConstraintData): string {
+    const params = getContributingParams(constraint.parameter_ids);
+    const paramStr = params.map((p) => `${p.name}=${p.value}`).join(', ');
+    let result = `Constraint: ${constraint.expression}\nStatus: ${constraint.status}`;
+    if (paramStr) {
+      result += `\nParameters: ${paramStr}`;
+    }
+    return result;
+  }
+
+  function handleAskClaude(constraint: ConstraintData) {
+    const contextStr = buildContextString(constraint);
+    props.onAskClaude?.(contextStr);
+    setContextMenu(null);
+  }
+
+  onCleanup(() => {
+    document.removeEventListener('click', handleDismissMenu);
+  });
+
   return (
     <div data-testid="constraint-panel" class={styles.container}>
       <Show when={isEmpty()}>
@@ -76,6 +109,7 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
                 class={`${styles.row} ${isExpandable(constraint.status) ? styles.expandable : ''}`}
                 role="listitem"
                 tabindex="0"
+                onContextMenu={(e: MouseEvent) => handleContextMenu(e, constraint)}
                 onClick={() => {
                   props.onConstraintSelect?.(constraint);
                   if (isExpandable(constraint.status)) toggleExpand(constraint.node_id);
@@ -121,6 +155,22 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
             )}
           </For>
         </div>
+      </Show>
+      <Show when={contextMenu()}>
+        {(menu) => (
+          <div
+            data-testid="constraint-context-menu"
+            class={styles.contextMenu}
+            style={{ position: 'absolute', left: `${menu().x}px`, top: `${menu().y}px` }}
+          >
+            <button
+              class={styles.contextMenuItem}
+              onClick={() => handleAskClaude(menu().constraint)}
+            >
+              Ask Claude about this constraint
+            </button>
+          </div>
+        )}
       </Show>
     </div>
   );

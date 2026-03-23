@@ -161,7 +161,7 @@ describe('claudeStore', () => {
     it('calls onSend callback with message text and context', () => {
       const onSend = vi.fn();
       const { sendMessage } = makeStore({ onSend });
-      const ctx = { selected_entity: 'box1' };
+      const ctx = { selectedEntity: 'box1' };
       sendMessage('hello', ctx);
       expect(onSend).toHaveBeenCalledTimes(1);
       expect(onSend).toHaveBeenCalledWith(expect.any(String), 'hello', ctx);
@@ -427,6 +427,152 @@ describe('claudeStore', () => {
 
       const assistant = state.messages.find((m) => m.role === 'assistant');
       expect(assistant!.responseText).toBe('');
+    });
+  });
+
+  describe('system messages', () => {
+    it('addSystemMessage adds a message with role="system" to messages array', () => {
+      const { state, addSystemMessage } = makeStore();
+      addSystemMessage('network', 'Connection failed.');
+      expect(state.messages).toHaveLength(1);
+      expect(state.messages[0].role).toBe('system');
+    });
+
+    it('system message has errorType and text fields', () => {
+      const { state, addSystemMessage } = makeStore();
+      addSystemMessage('auth', 'Please authenticate.');
+      const msg = state.messages[0] as any;
+      expect(msg.errorType).toBe('auth');
+      expect(msg.text).toBe('Please authenticate.');
+    });
+
+    it('system messages appear in correct position in timeline (after the last message)', () => {
+      const { state, sendMessage, handleOutboundMessage, addSystemMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({ type: 'done', id: msgId } as OutboundMessage);
+      addSystemMessage('network', 'Connection lost.');
+      expect(state.messages).toHaveLength(3); // user + assistant + system
+      expect(state.messages[2].role).toBe('system');
+    });
+
+    it('error OutboundMessage with auth-pattern text adds a classified system message automatically', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({
+        type: 'error',
+        id: msgId,
+        message: 'Authentication failed: 401 Unauthorized',
+      } as OutboundMessage);
+      const systemMsgs = state.messages.filter((m) => m.role === 'system');
+      expect(systemMsgs).toHaveLength(1);
+      expect((systemMsgs[0] as any).errorType).toBe('auth');
+    });
+
+    it('error OutboundMessage with rate-limit pattern adds rate-limit system message', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({
+        type: 'error',
+        id: msgId,
+        message: 'Rate limit exceeded (429)',
+      } as OutboundMessage);
+      const systemMsgs = state.messages.filter((m) => m.role === 'system');
+      expect(systemMsgs).toHaveLength(1);
+      expect((systemMsgs[0] as any).errorType).toBe('rate-limit');
+    });
+
+    it('first auth error includes first-run instructions in text', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({
+        type: 'error',
+        id: msgId,
+        message: '401 Unauthorized',
+      } as OutboundMessage);
+      const systemMsg = state.messages.find((m) => m.role === 'system') as any;
+      expect(systemMsg.text).toContain('claude login');
+    });
+  });
+
+  describe('stuck state recovery on unmatched message id', () => {
+    let origRAF: typeof globalThis.requestAnimationFrame;
+    let origCancelRAF: typeof globalThis.cancelAnimationFrame;
+
+    beforeEach(() => {
+      origRAF = globalThis.requestAnimationFrame;
+      origCancelRAF = globalThis.cancelAnimationFrame;
+      globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
+        // Immediately invoke to flush buffers synchronously for test simplicity
+        cb(performance.now());
+        return 1;
+      };
+      globalThis.cancelAnimationFrame = () => {};
+    });
+
+    afterEach(() => {
+      globalThis.requestAnimationFrame = origRAF;
+      globalThis.cancelAnimationFrame = origCancelRAF;
+    });
+
+    it('done with unmatched id still sets sessionStatus to idle', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      // Put store into responding state
+      handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'Hi' } as OutboundMessage);
+      expect(state.sessionStatus).toBe('responding');
+      // Dispatch done with a non-existent id
+      handleOutboundMessage({ type: 'done', id: 'unknown-id-999' } as OutboundMessage);
+      expect(state.sessionStatus).toBe('idle');
+    });
+
+    it('error with unmatched id still sets sessionStatus to idle', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      // Put store into responding state
+      handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'Hi' } as OutboundMessage);
+      expect(state.sessionStatus).toBe('responding');
+      // Dispatch error with a non-existent id
+      handleOutboundMessage({
+        type: 'error',
+        id: 'unknown-id-999',
+        message: 'Something went wrong',
+      } as OutboundMessage);
+      expect(state.sessionStatus).toBe('idle');
+    });
+
+    it('error with unmatched id still adds classified system message', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      // Put store into responding state
+      handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'Hi' } as OutboundMessage);
+      // Dispatch error with unmatched id and rate-limit pattern
+      handleOutboundMessage({
+        type: 'error',
+        id: 'unknown-id-999',
+        message: 'Rate limit exceeded (429)',
+      } as OutboundMessage);
+      const systemMsgs = state.messages.filter((m) => m.role === 'system');
+      expect(systemMsgs).toHaveLength(1);
+      expect((systemMsgs[0] as any).errorType).toBe('rate-limit');
+    });
+
+    it('done with valid id still works correctly after fix', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'Hello' } as OutboundMessage);
+      handleOutboundMessage({ type: 'done', id: msgId } as OutboundMessage);
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant') as any;
+      expect(assistantMsg.complete).toBe(true);
+      expect(assistantMsg.thinkingComplete).toBe(true);
+      expect(state.sessionStatus).toBe('idle');
     });
   });
 });

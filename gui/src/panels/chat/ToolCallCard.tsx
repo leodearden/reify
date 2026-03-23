@@ -1,5 +1,6 @@
 import { type Component, createSignal, Show } from 'solid-js';
 import type { ToolCallInfo } from '../../stores/claudeStore';
+import { DiffView } from './DiffView';
 import styles from './ToolCallCard.module.css';
 
 export interface ToolCallCardProps {
@@ -48,6 +49,21 @@ function resultSummary(toolCall: ToolCallInfo): string | null {
   return null;
 }
 
+function isSourceUpdateDiff(toolCall: ToolCallInfo): boolean {
+  return toolCall.toolName === 'reify_update_source' && toolCall.status === 'complete';
+}
+
+function extractDiffBefore(toolInput: Record<string, unknown>): string {
+  if (typeof toolInput.content === 'string') return toolInput.content;
+  if (typeof toolInput.source === 'string') return toolInput.source;
+  return '';
+}
+
+function extractDiffAfter(result: unknown): string {
+  if (typeof result === 'string') return result;
+  return '';
+}
+
 export const ToolCallCard: Component<ToolCallCardProps> = (props) => {
   const [expanded, setExpanded] = createSignal(false);
   const type = () => toolType(props.toolCall.toolName);
@@ -88,18 +104,30 @@ export const ToolCallCard: Component<ToolCallCardProps> = (props) => {
         </span>
       </div>
       <Show when={expanded()}>
-        <div data-testid="tool-call-details" class={styles.details}>
-          <div class={styles.detailSection}>
-            <div class={styles.detailLabel}>Input</div>
-            <pre class={styles.json}>{JSON.stringify(props.toolCall.toolInput, null, 2)}</pre>
-          </div>
-          <Show when={props.toolCall.result !== undefined}>
-            <div class={styles.detailSection}>
-              <div class={styles.detailLabel}>Result</div>
-              <pre class={styles.json}>{JSON.stringify(props.toolCall.result, null, 2)}</pre>
+        <Show
+          when={isSourceUpdateDiff(props.toolCall)}
+          fallback={
+            <div data-testid="tool-call-details" class={styles.details}>
+              <div class={styles.detailSection}>
+                <div class={styles.detailLabel}>Input</div>
+                <pre class={styles.json}>{JSON.stringify(props.toolCall.toolInput, null, 2)}</pre>
+              </div>
+              <Show when={props.toolCall.result !== undefined}>
+                <div class={styles.detailSection}>
+                  <div class={styles.detailLabel}>Result</div>
+                  <pre class={styles.json}>{JSON.stringify(props.toolCall.result, null, 2)}</pre>
+                </div>
+              </Show>
             </div>
-          </Show>
-        </div>
+          }
+        >
+          <div data-testid="tool-call-details" class={styles.details}>
+            <DiffView
+              before={extractDiffBefore(props.toolCall.toolInput)}
+              after={extractDiffAfter(props.toolCall.result)}
+            />
+          </div>
+        </Show>
       </Show>
     </div>
   );

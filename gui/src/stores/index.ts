@@ -8,4 +8,4 @@ export { createEngineStore } from './engineStore';
 export type { EngineState } from './engineStore';
 
 export { createClaudeStore } from './claudeStore';
-export type { ClaudeState, SessionStatus, ToolCallInfo, AssistantMessage } from './claudeStore';
+export type { ClaudeState, SessionStatus, ToolCallInfo, AssistantMessage, SystemMessage, MessageContext, UserMessage } from './claudeStore';
