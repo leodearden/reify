@@ -700,3 +700,24 @@ fn set_parameter_produces_updated_meshes() {
         "updated state should have meshes after set_parameter"
     );
 }
+
+#[test]
+fn update_source_produces_meshes() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load should succeed");
+
+    let new_source = bracket_source_with_width("120mm");
+    let state = session
+        .update_source("bracket.ri", &new_source)
+        .expect("update_source should succeed");
+
+    assert!(
+        !state.meshes.is_empty(),
+        "update_source should produce meshes"
+    );
+}
