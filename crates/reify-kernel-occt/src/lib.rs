@@ -575,6 +575,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn occt_available_is_true_when_built_with_occt() {
+        assert!(
+            crate::OCCT_AVAILABLE,
+            "OCCT_AVAILABLE should be true on a system with OCCT installed"
+        );
+    }
+
+    #[test]
     fn warm_state_returns_none_on_fresh_kernel() {
         let kernel = OcctKernel::new();
         assert!(kernel.warm_state().is_none(), "fresh kernel should have no warm state");
