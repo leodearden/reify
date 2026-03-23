@@ -395,3 +395,59 @@ fn mcp_server_update_source_invalid_preserves_state() {
         "width should still be original 0.08 m after failed update_source"
     );
 }
+
+#[test]
+fn mcp_server_set_parameter_reports_new_value_accurately() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
+
+    let requests = vec![
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        // Set width to 200
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_set_parameter",
+                "arguments": {"cell_id": "Bracket.width", "value": "200"}
+            }
+        }),
+    ];
+
+    let responses = mcp_roundtrip(&[fixture], &requests);
+    assert!(responses.len() >= 2, "expected at least 2 responses");
+
+    // set_parameter response should report success
+    let set_response = &responses[1];
+    assert_ne!(
+        set_response["result"]["isError"],
+        true,
+        "set_parameter should not return error: {:?}",
+        set_response
+    );
+
+    let set_content = set_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    let set_text = set_content[0]["text"]
+        .as_str()
+        .expect("content[0].text should be string");
+    let set_result: serde_json::Value =
+        serde_json::from_str(set_text).expect("set_parameter result should be JSON");
+
+    assert_eq!(
+        set_result["success"], true,
+        "set_parameter should return success=true: {:?}",
+        set_result
+    );
+
+    // Verify the new_value field accurately reports the post-edit value.
+    // This validates that edit_param result is used to confirm the value was applied,
+    // rather than blindly reporting success.
+    assert_eq!(
+        set_result["new_value"].as_str().unwrap_or(""),
+        "200 m",
+        "set_parameter new_value should be '200 m' after setting width to 200, got: {:?}",
+        set_result["new_value"]
+    );
+}
