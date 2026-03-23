@@ -297,3 +297,19 @@ impl ReifyToolContext for TauriToolContext {
         Ok(true)
     }
 }
+
+/// Dispatch an MCP tool call by name, using the given context.
+///
+/// Creates a fresh `ToolRegistry`, registers all tools, then dispatches.
+/// Returns the tool's JSON result or a String error.
+pub fn mcp_tool_call_impl(
+    name: &str,
+    params: serde_json::Value,
+    context: &dyn ReifyToolContext,
+) -> Result<serde_json::Value, String> {
+    let mut registry = reify_mcp::ToolRegistry::new();
+    reify_mcp::register_all_tools(&mut registry);
+    registry
+        .call_tool(name, params, context)
+        .map_err(|e| e.to_string())
+}
