@@ -88,7 +88,7 @@ describe('Editor doc change handling', () => {
 
   it('calls bridge.updateSource after 300ms debounce', () => {
     const store = setupStore();
-    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined);
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
     render(() => <Editor store={store} />);
     const container = screen.getByTestId('editor-container');
     const view = getEditorView(container);
@@ -105,7 +105,7 @@ describe('Editor doc change handling', () => {
 
   it('rapid edits collapse into a single updateSource call', () => {
     const store = setupStore();
-    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined);
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
     render(() => <Editor store={store} />);
     const container = screen.getByTestId('editor-container');
     const view = getEditorView(container);
@@ -477,7 +477,7 @@ describe('Editor debounce timer cancellation on file switch (RC-04)', () => {
   it('debounced updateSource does NOT fire after file switch', () => {
     const store = setupStore([file1, file2]);
     store.setActiveFile(file1.path);
-    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined);
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
     render(() => <Editor store={store} />);
     const container = screen.getByTestId('editor-container');
     const view = getEditorView(container);
@@ -576,7 +576,7 @@ describe('Editor integration: rapid file switch with diagnostics mid-switch', ()
 
     const store = setupStore([file1, file2]);
     store.setActiveFile(file1.path);
-    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined);
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
 
     render(() => <Editor store={store} />);
     const container = screen.getByTestId('editor-container');

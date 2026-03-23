@@ -340,7 +340,7 @@ const App: Component = () => {
   }
 
   function handleDismissReload() {
-    setChangedFiles(new Set());
+    setChangedFiles(new Set<string>());
     setConfirmReload(false);
   }
 

@@ -218,7 +218,7 @@ describe('ExportDialog', () => {
       <ExportDialog open={true} exporting={false} onExport={vi.fn()} onClose={vi.fn()} />
     ));
     // Wait for the queued microtask that sets initial focus
-    await new Promise((r) => queueMicrotask(r));
+    await new Promise<void>((r) => queueMicrotask(r));
     const select = document.getElementById('export-format-select');
     expect(document.activeElement).toBe(select);
   });
