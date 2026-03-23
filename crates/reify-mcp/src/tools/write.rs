@@ -102,7 +102,19 @@ pub fn register(registry: &mut ToolRegistry) {
             },
             "required": ["file_path"]
         }),
-        |_params, _ctx| Err(ToolError::NotImplemented),
+        |params, ctx| {
+            let file_path = params["file_path"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("file_path is required".to_string()))?;
+
+            ctx.open_file(file_path)?;
+            let source = ctx.get_source(Some(file_path))?;
+
+            Ok(serde_json::json!({
+                "success": true,
+                "source": source.content,
+            }))
+        },
     );
 
     registry.register(
