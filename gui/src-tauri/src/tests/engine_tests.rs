@@ -645,3 +645,32 @@ fn build_gui_state_no_kernel_returns_empty_meshes() {
         "expected 3 constraints without kernel"
     );
 }
+
+#[test]
+fn build_gui_state_tessellation_preserves_values_and_constraints() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+
+    // Tessellation should produce meshes
+    assert!(
+        !state.meshes.is_empty(),
+        "expected non-empty meshes with geometry kernel"
+    );
+
+    // And values/constraints should still be fully populated (tessellation doesn't interfere)
+    assert!(
+        state.values.len() >= 5,
+        "expected at least 5 values alongside meshes, got {}",
+        state.values.len()
+    );
+    assert_eq!(
+        state.constraints.len(),
+        3,
+        "expected 3 constraints alongside meshes"
+    );
+}
