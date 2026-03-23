@@ -51,6 +51,20 @@
       "description": "S3: Create gui/sidecar/src/cli.ts \u2014 a minimal entrypoint that imports main from './index.js' and calls `main().catch((err: unknown) => { console.error('Sidecar fatal error:', err); process.exit(1); })`. Remove the auto-run detection block (lines 60-71: isDirectRun variable and if block) from index.ts. Update gui/sidecar/package.json build script from `tsup src/index.ts --format esm --dts` to `tsup src/index.ts src/cli.ts --format esm --dts` so both library and CLI entrypoint are built.",
       "status": "done",
       "commit": "ec357e4"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "B1 (review fix): Write a failing test 'stdout stream error does not leak timeout to next request' in the 'SidecarSession timeout' describe block. The test creates a session with timeoutMs: 60000. The first spawn mock creates a hanging process whose stdout emits an error event after a short delay (via `process.nextTick(() => stdout.destroy(new Error('I/O error')))`) \u2014 this simulates a stream failure that causes the `for await` async iterator to throw. After handleMessage resolves (with the error output), send a second send_message using a normal createMockProcess. Verify that the second request completes with `{ type: 'done' }` and does NOT receive a spurious `{ type: 'error', message: '...timed out...' }`. This test should FAIL against the current code because the first request's dangling timeout is not cleared when the for-await throws, and when it fires it aborts the second request's AbortController.",
+      "status": "done",
+      "commit": "7b1b358"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "B1 (review fix): In `invokeSdk()` in session.ts, wrap the `for await` loop (lines 147-184) in a try/finally block, moving `clearTimeout(timeoutId)` from its current inline position (line 187) into the `finally` clause. The `exitPromise` await and exit-code check remain AFTER the try/finally, since they don't need timeout protection \u2014 the timeout only guards the streaming read. Structure becomes:\n```\ntry {\n  for await (const line of createLineReader(proc.stdout!)) {\n    // ... existing parsing logic ...\n  }\n} finally {\n  clearTimeout(timeoutId);\n}\nconst exitCode = await exitPromise;\n```\nThis guarantees clearTimeout is called regardless of how the loop exits (normal completion, thrown stream error, or rethrown abort), preventing cross-request interference from leaked timeouts.",
+      "status": "done",
+      "commit": "d0b4678"
     }
   ],
   "design_decisions": [
@@ -73,6 +87,10 @@
     {
       "decision": "No dedicated test file for cli.ts",
       "rationale": "cli.ts is a trivial 3-line wrapper (import + call main + catch). The existing entrypoint wiring tests in session.test.ts already thoroughly test main(). Adding a test for cli.ts would require mocking the module import of main(), adding complexity for near-zero value."
+    },
+    {
+      "decision": "clearTimeout in try/finally around for-await loop only, not around exitPromise",
+      "rationale": "The timeout guards against the stdout streaming read hanging indefinitely. Once the for-await loop exits (normally or via error), the timeout's purpose is served and it must be cleared immediately. The subsequent exitPromise await and exit-code check don't need timeout protection \u2014 the process has already exited or will exit promptly after stdout closes. Keeping exitPromise outside the try/finally avoids masking exit-code errors with the finally clause."
     }
   ],
   "reuse": [
@@ -98,6 +116,6 @@
     }
   ],
   "_session_id": "145-825f43ee",
-  "_created_at": "2026-03-23T16:07:57.766330+00:00",
+  "_created_at": "2026-03-23T16:16:47.635035+00:00",
   "_schema_version": 1
 }
