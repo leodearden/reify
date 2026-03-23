@@ -171,24 +171,101 @@ impl ReifyToolContext for TauriToolContext {
         })
     }
 
-    fn update_source(&self, _file_path: &str, _content: &str) -> Result<UpdateResult, ToolError> {
-        todo!("write methods implemented in step-4")
+    fn update_source(&self, file_path: &str, content: &str) -> Result<UpdateResult, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        session
+            .update_source(file_path, content)
+            .map(|_| UpdateResult {
+                success: true,
+                diagnostics_count: 0,
+            })
+            .map_err(|e| ToolError::EngineError(e))
     }
 
-    fn set_parameter(&self, _cell_id: &str, _value: &str) -> Result<SetParamResult, ToolError> {
-        todo!("write methods implemented in step-4")
+    fn set_parameter(&self, cell_id: &str, value: &str) -> Result<SetParamResult, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        let gui_state = session
+            .set_parameter(cell_id, value)
+            .map_err(|e| ToolError::EngineError(e))?;
+
+        // Find the updated parameter in the returned GuiState
+        let param = gui_state
+            .values
+            .iter()
+            .find(|v| v.cell_id == cell_id)
+            .ok_or_else(|| {
+                ToolError::EngineError(format!("parameter '{}' not found in result", cell_id))
+            })?;
+
+        Ok(SetParamResult {
+            success: true,
+            new_value: param.value.clone(),
+            unit: param.unit.clone(),
+        })
     }
 
-    fn open_file(&self, _file_path: &str) -> Result<OpenFileInfo, ToolError> {
-        todo!("write methods implemented in step-4")
+    fn open_file(&self, file_path: &str) -> Result<OpenFileInfo, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        session
+            .load_file(std::path::Path::new(file_path))
+            .map_err(|e| ToolError::EngineError(e))?;
+
+        Ok(OpenFileInfo {
+            path: file_path.to_string(),
+            language: "reify".to_string(),
+            dirty: false,
+        })
     }
 
-    fn save_file(&self, _file_path: Option<&str>) -> Result<bool, ToolError> {
-        todo!("write methods implemented in step-4")
+    fn save_file(&self, file_path: Option<&str>) -> Result<bool, ToolError> {
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        let gui_state = session
+            .build_gui_state()
+            .map_err(|e| ToolError::EngineError(e))?;
+
+        // Get the first file's content (single-file model)
+        let file = gui_state
+            .files
+            .first()
+            .ok_or_else(|| ToolError::EngineError("No source loaded".to_string()))?;
+
+        let path = file_path.unwrap_or(&file.path);
+        std::fs::write(path, &file.content)
+            .map_err(|e| ToolError::EngineError(format!("Error writing {}: {}", path, e)))?;
+        Ok(true)
     }
 
-    fn export(&self, _format: &str, _output_path: &str) -> Result<bool, ToolError> {
-        todo!("write methods implemented in step-4")
+    fn export(&self, format: &str, output_path: &str) -> Result<bool, ToolError> {
+        let export_format = match format {
+            "step" | "stp" => reify_types::ExportFormat::Step,
+            "stl" => reify_types::ExportFormat::Stl,
+            _ => {
+                return Err(ToolError::InvalidParams(format!(
+                    "Unknown export format: {}",
+                    format
+                )))
+            }
+        };
+        let mut session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+        session
+            .export(export_format, std::path::Path::new(output_path))
+            .map_err(|e| ToolError::EngineError(e))?;
+        Ok(true)
     }
 
     fn focus_entity(&self, _entity_path: &str) -> Result<bool, ToolError> {
