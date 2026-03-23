@@ -1,25 +1,53 @@
 {
-  "task_id": "145",
-  "title": "Sidecar polish: Tauri config fix, SDK timeout, auto-run detection",
+  "task_id": "142",
+  "title": "Chat panel: streaming renderer, thinking blocks, tool call cards",
   "files": [
-    "gui/src-tauri/tauri.conf.json",
-    "gui/sidecar/src/session.ts",
-    "gui/sidecar/src/index.ts",
-    "gui/sidecar/src/cli.ts",
-    "gui/sidecar/package.json",
-    "gui/sidecar/src/__tests__/session.test.ts"
+    "gui/src/stores/claudeStore.ts",
+    "gui/src/stores/index.ts",
+    "gui/src/panels/chat/StreamingText.tsx",
+    "gui/src/panels/chat/StreamingText.module.css",
+    "gui/src/panels/chat/ThinkingBlock.tsx",
+    "gui/src/panels/chat/ThinkingBlock.module.css",
+    "gui/src/panels/chat/ToolCallCard.tsx",
+    "gui/src/panels/chat/ToolCallCard.module.css",
+    "gui/src/panels/chat/AbortButton.tsx",
+    "gui/src/panels/chat/AbortButton.module.css",
+    "gui/src/panels/chat/MessageGroup.tsx",
+    "gui/src/panels/chat/MessageGroup.module.css",
+    "gui/src/panels/chat/markdown.ts",
+    "gui/src/panels/chat/index.ts",
+    "gui/src/panels/ChatPanel.tsx",
+    "gui/src/panels/ChatPanel.module.css",
+    "gui/src/panels/index.ts",
+    "gui/src/App.tsx",
+    "gui/src/__tests__/claudeStore.test.ts",
+    "gui/src/__tests__/ChatPanel.test.tsx",
+    "gui/src/__tests__/StreamingText.test.tsx",
+    "gui/src/__tests__/ThinkingBlock.test.tsx",
+    "gui/src/__tests__/ToolCallCard.test.tsx",
+    "gui/src/__tests__/AbortButton.test.tsx",
+    "gui/src/__tests__/panels-smoke.test.tsx"
   ],
   "modules": [
-    "gui/src-tauri",
-    "gui/sidecar"
+    "gui/src/stores",
+    "gui/src/panels",
+    "gui/src/panels/chat",
+    "gui/src/__tests__"
   ],
-  "analysis": "Three independent polish items from task 134 code review.\n\nS1 (tauri.conf.json): The shell plugin scope entry at plugins.shell.scope[0] has both `name` and `sidecar: true`. In Tauri v2, scope entries should only have `name` \u2014 the `sidecar` flag belongs at plugins.shell.sidecar (which is already set at line 21). Remove the redundant `sidecar: true` from the scope object.\n\nS2 (session.ts timeout): `invokeSdk()` spawns a Claude CLI subprocess but has no timeout. If the CLI hangs (auth issues, network problems, stuck process), the sidecar hangs indefinitely. Add a configurable `timeoutMs` to `SessionConfig` (default 300_000 = 5 minutes). Use `setTimeout` + `AbortController.abort('timeout')` to abort after the timeout. In `handleSendMessage`, differentiate timeout abort (emit error with timeout message) from user abort (emit done). Clear the timeout in a `finally` block when `invokeSdk` completes normally.\n\nS3 (auto-run detection): `index.ts` has fragile auto-run detection using `process.argv[1].endsWith('/index.js')` which could misfire when tsup bundles the output (filenames change). The fix is to extract auto-run to a separate `cli.ts` entrypoint that simply imports and calls `main()`. Remove auto-run from `index.ts` so it becomes a clean module export. Update the build script to also compile `cli.ts` as an entrypoint.\n\nExisting test patterns: vitest with `vi.mock('node:child_process')`, `vi.mocked(spawn)`, `createMockProcess()` helper, `PassThrough` streams for IPC testing. Tests are in `src/__tests__/*.test.ts`.",
+  "analysis": "The ChatPanel needs to display a streaming Claude conversation with rich message rendering. No chat-related code exists yet \u2014 this is a greenfield implementation.\n\n**Architecture:** The core is a `claudeStore` (following the existing `createEngineStore` pattern) that manages message state and session status. It processes `OutboundMessage` events from the sidecar (TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, Error) and exposes state for the UI components. The store accepts dependency-injected callbacks for sending messages and aborting, making it fully testable without sidecar IPC.\n\n**Streaming approach:** For 60 FPS rendering, incoming text deltas are buffered in a plain array and flushed to the SolidJS signal via requestAnimationFrame. This prevents re-rendering on every token while maintaining smooth progressive display.\n\n**Markdown:** A lightweight custom markdown renderer (markdown.ts) handles code blocks, inline code, bold, italic, headers, and links. No external dependency needed \u2014 the CAD context won't use exotic markdown features. The renderer produces HTML applied via innerHTML on the accumulated (not per-delta) text. HTML entities are escaped before markdown transforms to prevent XSS.\n\n**Component hierarchy:** ChatPanel \u2192 MessageGroup[] \u2192 { ThinkingBlock?, ToolCallCard[], StreamingText }. The AbortButton replaces the Send button position when sessionStatus is active. Each sub-component lives in `panels/chat/` following the `editor/` subdirectory pattern.\n\n**Sidecar types reuse:** The OutboundMessage types from `gui/sidecar/src/types.ts` define the exact event shapes. The store mirrors these into its own domain types (ToolCallInfo, AssistantMessage) for UI consumption.\n\n**Store state shape:**\n- SessionStatus: 'idle' | 'thinking' | 'responding' | 'tool-calling'\n- ToolCallInfo: { id, toolName, toolInput, status: 'pending'|'complete'|'error', result? }\n- AssistantMessage: { id, thinkingText, thinkingComplete, responseText, toolCalls: ToolCallInfo[], complete, error? }\n- ChatMessage: { role: 'user'|'assistant', ... }\n- ClaudeState: { messages: ChatMessage[], sessionStatus, currentMessageId }",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "S1: Remove redundant `\"sidecar\": true` from plugins.shell.scope[0] in gui/src-tauri/tauri.conf.json. Tauri v2 scope entries should only have `name`. The top-level `plugins.shell.sidecar: true` already enables sidecar mode.",
+      "description": "Create gui/src/panels/chat/ directory and index.ts barrel export file",
       "status": "done",
-      "commit": "7d41b30",
+      "commit": "d0742d3",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Create gui/src/panels/chat/markdown.ts \u2014 lightweight markdown-to-HTML renderer supporting code blocks (``` fenced), inline code (`), bold (**), italic (*), headers (#-###), links ([text](url)), and unordered lists (- item). Uses sequential regex transforms on pre-escaped HTML. Returns sanitized HTML string. Include unit tests inline or in a dedicated test.",
+      "status": "done",
+      "commit": "dc9e49b",
       "tests": []
     }
   ],
@@ -27,95 +55,215 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "S2: Write failing tests for SDK timeout in session.test.ts. Three new tests: (1) 'invokeSdk times out after configured timeoutMs' \u2014 use vi.useFakeTimers(), create a mock process that never completes (stdout stays open, no close event), construct SidecarSession with timeoutMs: 1000, send a message, advance fake timers by 1001ms via vi.advanceTimersByTime(), verify the session emits { type: 'error', id, message } where message contains 'timed out'. (2) 'normal completion clears timeout without error' \u2014 mock process that completes quickly, verify no timeout error is emitted (same as existing test, but with explicit timeoutMs set). (3) 'user abort still emits done, not timeout error' \u2014 same as existing abort test but with timeoutMs configured, verify the abort produces { type: 'done' } not a timeout error. Use the existing abort test mock pattern (signal.addEventListener('abort', ...)).",
+      "description": "Write failing tests for claudeStore in gui/src/__tests__/claudeStore.test.ts. Test cases: (1) initial state has sessionStatus='idle', empty messages array, currentMessageId=null; (2) handleOutboundMessage with Ready event keeps idle state; (3) sendMessage adds a user ChatMessage to messages, sets currentMessageId, calls onSend callback with message text and context; (4) handleOutboundMessage with TextDelta accumulates responseText on current assistant message, sets sessionStatus='responding'; (5) handleOutboundMessage with ThinkingDelta accumulates thinkingText, sets sessionStatus='thinking'; (6) handleOutboundMessage with ToolCall adds ToolCallInfo entry with status='pending', sets sessionStatus='tool-calling'; (7) handleOutboundMessage with ToolResult updates matching tool call status to 'complete' and stores result; (8) handleOutboundMessage with Done marks assistant message complete, sets sessionStatus='idle'; (9) handleOutboundMessage with ErrorMessage sets error on assistant message, sets sessionStatus='idle'; (10) claudeAbort calls onAbort callback, sets sessionStatus='idle'; (11) clearSession resets messages to empty array.",
       "status": "done",
-      "commit": "62e0d30"
+      "commit": "c6e4911"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "S2: Add `timeoutMs?: number` to `SessionConfig` interface (default 300_000). In `invokeSdk()`, after spawning the process, start `const timeoutId = setTimeout(() => { this.abortController?.abort('timeout'); }, this.config.timeoutMs ?? 300_000)`. In the finally block, call `clearTimeout(timeoutId)`. In `handleSendMessage()` catch block, change the abort check: if `this.abortController?.signal.reason === 'timeout'`, emit `{ type: 'error', id, message: 'Claude CLI timed out after Xms' }`; otherwise (user abort), emit `{ type: 'done', id }` as before.",
+      "description": "Implement gui/src/stores/claudeStore.ts. createClaudeStore(options: {onSend, onAbort}) factory returning {state, handleOutboundMessage, sendMessage, claudeAbort, clearSession}. State uses createStore<ClaudeState>. Define and export types: SessionStatus, ToolCallInfo, AssistantMessage, UserMessage, ChatMessage, ClaudeState. handleOutboundMessage switches on msg.type and uses produce() for store mutations. sendMessage creates user message, then assistant message shell, calls onSend. Use batch() for grouped state updates.",
       "status": "done",
-      "commit": "3acc3fc"
+      "commit": "c7a161b"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "S3: Verify existing entrypoint tests still pass (they import main from index.js and test it directly). No new test file needed \u2014 the existing 'entrypoint wiring' tests in session.test.ts fully cover main() behavior. This step is a verification checkpoint before the structural refactor.",
+      "description": "Write failing tests for claudeStore 60fps delta batching: (1) 'buffers multiple text_delta events and flushes on rAF' \u2014 send 10 text_delta events synchronously, verify responseText is empty before rAF flush, mock requestAnimationFrame callback fires, verify responseText contains all 10 deltas concatenated; (2) 'flushes immediately on done event' \u2014 send text_delta + done, verify text is flushed without waiting for rAF; (3) 'clears pending buffer on abort'. Use vi.useFakeTimers() and manual rAF mock.",
       "status": "done",
-      "commit": "cd32800"
+      "commit": "11b9e1e"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "S3: Create gui/sidecar/src/cli.ts \u2014 a minimal entrypoint that imports main from './index.js' and calls `main().catch((err: unknown) => { console.error('Sidecar fatal error:', err); process.exit(1); })`. Remove the auto-run detection block (lines 60-71: isDirectRun variable and if block) from index.ts. Update gui/sidecar/package.json build script from `tsup src/index.ts --format esm --dts` to `tsup src/index.ts src/cli.ts --format esm --dts` so both library and CLI entrypoint are built.",
+      "description": "Add requestAnimationFrame-based delta batching to claudeStore: maintain a textBuffer and thinkingBuffer (plain string arrays). On text_delta/thinking_delta, push to buffer and schedule rAF if not already scheduled. rAF callback concatenates buffer contents, applies to store via setState, clears buffers. On done/error, flush buffers immediately (cancel pending rAF). On abort, clear buffers.",
       "status": "done",
-      "commit": "ec357e4"
+      "commit": "c7a161b"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "B1 (review fix): Write a failing test 'stdout stream error does not leak timeout to next request' in the 'SidecarSession timeout' describe block. The test creates a session with timeoutMs: 60000. The first spawn mock creates a hanging process whose stdout emits an error event after a short delay (via `process.nextTick(() => stdout.destroy(new Error('I/O error')))`) \u2014 this simulates a stream failure that causes the `for await` async iterator to throw. After handleMessage resolves (with the error output), send a second send_message using a normal createMockProcess. Verify that the second request completes with `{ type: 'done' }` and does NOT receive a spurious `{ type: 'error', message: '...timed out...' }`. This test should FAIL against the current code because the first request's dangling timeout is not cleared when the for-await throws, and when it fires it aborts the second request's AbortController.",
+      "description": "Write failing tests for AbortButton in gui/src/__tests__/AbortButton.test.tsx: (1) renders with data-testid='abort-button'; (2) calls onAbort callback on click; (3) has aria-label='Abort generation'; (4) contains a stop icon element (\u25a0 character or SVG).",
       "status": "done",
-      "commit": "7b1b358"
+      "commit": "5d5bd52"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "B1 (review fix): In `invokeSdk()` in session.ts, wrap the `for await` loop (lines 147-184) in a try/finally block, moving `clearTimeout(timeoutId)` from its current inline position (line 187) into the `finally` clause. The `exitPromise` await and exit-code check remain AFTER the try/finally, since they don't need timeout protection \u2014 the timeout only guards the streaming read. Structure becomes:\n```\ntry {\n  for await (const line of createLineReader(proc.stdout!)) {\n    // ... existing parsing logic ...\n  }\n} finally {\n  clearTimeout(timeoutId);\n}\nconst exitCode = await exitPromise;\n```\nThis guarantees clearTimeout is called regardless of how the loop exits (normal completion, thrown stream error, or rethrown abort), preventing cross-request interference from leaked timeouts.",
+      "description": "Implement gui/src/panels/chat/AbortButton.tsx and AbortButton.module.css. Props: {onAbort: () => void}. Simple button with \u25a0 stop icon, themed styling matching existing button patterns. Red accent on hover.",
       "status": "done",
-      "commit": "d0b4678"
+      "commit": "5ee3615"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing tests for ThinkingBlock in gui/src/__tests__/ThinkingBlock.test.tsx: (1) when complete=false, shows animated indicator with data-testid='thinking-indicator'; (2) when complete=false, does NOT show thinking text content; (3) when complete=true, renders collapsible section with data-testid='thinking-block'; (4) when complete=true, thinking text is NOT visible by default (collapsed); (5) clicking the header expands to show thinking text; (6) clicking again collapses; (7) expanded text container has muted styling (class containing 'muted' or similar).",
+      "status": "done",
+      "commit": "203c08a"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Implement gui/src/panels/chat/ThinkingBlock.tsx and ThinkingBlock.module.css. Props: {text: string, complete: boolean}. When !complete: three pulsing dots with 'Thinking...' label, CSS keyframe animation. When complete: header row 'Thinking' with \u25b6/\u25bc chevron, createSignal(false) for expanded state, Show component wrapping text content. Styling: --reify-text-muted color, 12px font, subtle background.",
+      "status": "done",
+      "commit": "4ea6deb"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing tests for ToolCallCard in gui/src/__tests__/ToolCallCard.test.tsx: (1) renders with data-testid='tool-call-card'; (2) displays tool name; (3) shows spinner element when status='pending'; (4) shows checkmark when status='complete'; (5) shows X mark when status='error'; (6) click expands to show full input JSON in data-testid='tool-call-details'; (7) for reify_update_source tool, shows 'View diff' text; (8) for reify_get_parameters with result containing array, shows count summary like '3 parameters'; (9) read tools (reify_get_*) have blue icon class; (10) write tools (reify_update_*) have orange icon class.",
+      "status": "done",
+      "commit": "f638459"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Implement gui/src/panels/chat/ToolCallCard.tsx and ToolCallCard.module.css. Props: {toolCall: ToolCallInfo}. Compact card layout: icon (colored circle with first letter or tool-type icon), tool name, param summary (first key-value from toolInput). Expandable details panel with pre-formatted JSON for input and result. Status indicator: CSS spin animation for pending, \u2713/\u2717 characters for complete/error. isReadTool() helper checks toolName.startsWith('reify_get'). Special result summaries for known tools.",
+      "status": "done",
+      "commit": "a7fc087"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing tests for StreamingText in gui/src/__tests__/StreamingText.test.tsx: (1) renders text content with data-testid='streaming-text'; (2) shows blinking cursor with data-testid='streaming-cursor' when streaming=true; (3) hides cursor when streaming=false; (4) applies markdown: bold text (**bold**) renders as <strong>; (5) applies markdown: code block renders as <pre><code>; (6) renders inline code with <code> tags; (7) empty text renders empty container without errors.",
+      "status": "done",
+      "commit": "b53e402"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Implement gui/src/panels/chat/StreamingText.tsx and StreamingText.module.css. Props: {text: string, streaming: boolean}. createMemo to run renderMarkdown(text) only when text changes. Render via innerHTML on a div. Blinking cursor span with CSS animation (opacity 0\u21941, 530ms interval). Code blocks get monospace + subtle background. Prose gets 13px standard font.",
+      "status": "done",
+      "commit": "b4532f8"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing tests for MessageGroup in gui/src/__tests__/ChatPanel.test.tsx (grouped with ChatPanel tests since MessageGroup is an internal component): (1) renders ThinkingBlock when message has non-empty thinkingText; (2) does NOT render ThinkingBlock when thinkingText is empty; (3) renders ToolCallCard for each tool call; (4) renders StreamingText for response text; (5) visual order in DOM: thinking-indicator/thinking-block before tool-call-card before streaming-text.",
+      "status": "done",
+      "commit": "608b126"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Implement gui/src/panels/chat/MessageGroup.tsx and MessageGroup.module.css. Props: {message: AssistantMessage}. Container div with subtle left-border accent (--reify-accent). Conditionally renders ThinkingBlock (Show when={message.thinkingText}), For loop of ToolCallCard, StreamingText with streaming={!message.complete}. Export from chat/index.ts.",
+      "status": "done",
+      "commit": "2ed7f36"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing tests for ChatPanel in gui/src/__tests__/ChatPanel.test.tsx: (1) renders with data-testid='chat-panel'; (2) shows empty state message when no messages; (3) renders user message with data-testid='user-message'; (4) renders assistant message via MessageGroup; (5) abort button visible when sessionStatus='responding'; (6) abort button NOT visible when sessionStatus='idle'; (7) send button visible when sessionStatus='idle'; (8) send button disabled when textarea is empty; (9) typing in textarea and clicking send calls onSend; (10) full event sequence: create store, sendMessage, feed text_deltas + done via handleOutboundMessage, verify rendered output.",
+      "status": "done",
+      "commit": "2462949"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement gui/src/panels/ChatPanel.tsx and ChatPanel.module.css. Layout: flex column, scrollable message list (overflow-y: auto, ref for auto-scroll), fixed input area at bottom. Message list: For loop over store messages, Show conditional for user vs assistant rendering. Input area: textarea with onKeyDown (Enter to send, Shift+Enter for newline), conditional Send button (idle) vs AbortButton (active). Auto-scroll: createEffect on messages length, scrollTo bottom. Export from panels/index.ts.",
+      "status": "done",
+      "commit": "9cb5fc6"
+    },
+    {
+      "id": "step-17",
+      "type": "impl",
+      "description": "Update barrel exports and smoke tests: (1) gui/src/panels/index.ts \u2014 add 'export { ChatPanel } from ./ChatPanel'; (2) gui/src/stores/index.ts \u2014 add 'export { createClaudeStore } from ./claudeStore' and type exports for ClaudeState, SessionStatus, ToolCallInfo, AssistantMessage; (3) gui/src/__tests__/panels-smoke.test.tsx \u2014 add ChatPanel to the smoke test suite with minimal props (store with empty state).",
+      "status": "done",
+      "commit": "a3d177c"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Wire ChatPanel into App.tsx: (1) import createClaudeStore and ChatPanel; (2) create claudeStore instance in App with no-op onSend/onAbort callbacks (actual sidecar IPC wiring comes from a separate integration task); (3) add ChatPanel below ConstraintPanel in the side panel grid, adjusting grid-template-rows to accommodate three rows (property editor + constraint panel + chat panel). Pass claudeStore state and action props.",
+      "status": "done",
+      "commit": "4e40a66"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use abort reason string 'timeout' to differentiate timeout abort from user abort",
-      "rationale": "AbortController.abort(reason) allows passing a reason. Default abort() sets reason to a DOMException('AbortError'). By passing the string 'timeout', handleSendMessage can check signal.reason === 'timeout' to emit an error for timeouts while still emitting 'done' for user aborts. This avoids adding extra boolean flags to the class."
+      "decision": "Custom lightweight markdown renderer instead of adding a dependency like 'marked'",
+      "rationale": "The CAD tool context limits markdown usage to code blocks, inline code, bold, italic, headers, and links. A ~100-line regex-based renderer avoids a new dependency, keeps bundle size small, and is fully testable. Can be upgraded later if needed."
     },
     {
-      "decision": "Add timeoutMs to SessionConfig rather than hardcoding",
-      "rationale": "Makes the timeout configurable for different environments and testable with short values or fake timers. Default of 300_000ms (5 minutes) matches the task suggestion. Tests can override with a short value like 1000ms."
+      "decision": "requestAnimationFrame-based delta batching in the store, not in the component",
+      "rationale": "Batching at the store level means all consumers (current and future) automatically get 60fps updates. SolidJS's fine-grained reactivity means the DOM update from a signal change is already efficient \u2014 the bottleneck is the frequency of signal writes, which rAF batching solves."
     },
     {
-      "decision": "Move auto-run to separate cli.ts rather than using a more robust detection pattern",
-      "rationale": "The task explicitly suggests 'move auto-run to a separate entrypoint file' as an option. This is the cleanest solution: index.ts becomes a pure library module (exports main), cli.ts is the executable entrypoint for the sidecar binary. No fragile heuristics needed. tsup can build both entry points in a single command."
+      "decision": "Dependency-injected callbacks (onSend, onAbort) rather than direct sidecar IPC in claudeStore",
+      "rationale": "Decouples the store from IPC transport, making it fully unit-testable with vi.fn() mocks. The actual IPC wiring happens in App.tsx (or a future bridge integration), following the same pattern as engineStore's subscribeToEvents."
     },
     {
-      "decision": "Use vi.useFakeTimers() for timeout tests",
-      "rationale": "Fake timers give deterministic, fast tests without flakiness from real timing. We can advance time precisely to trigger the timeout. The mock process that never completes simulates the real hang scenario without actually waiting."
+      "decision": "Chat sub-components in panels/chat/ subdirectory",
+      "rationale": "Five sub-components (StreamingText, ThinkingBlock, ToolCallCard, AbortButton, MessageGroup) plus their CSS modules would clutter the flat panels/ directory. The editor/ subdirectory pattern establishes precedent for this approach."
     },
     {
-      "decision": "No dedicated test file for cli.ts",
-      "rationale": "cli.ts is a trivial 3-line wrapper (import + call main + catch). The existing entrypoint wiring tests in session.test.ts already thoroughly test main(). Adding a test for cli.ts would require mocking the module import of main(), adding complexity for near-zero value."
+      "decision": "Store processes OutboundMessage directly rather than re-mapping types",
+      "rationale": "The sidecar OutboundMessage types (TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, ErrorMessage) are imported from gui/sidecar/src/types.ts. Using them directly avoids a redundant mapping layer. The store's internal AssistantMessage/ToolCallInfo types are the domain model for UI consumption."
     },
     {
-      "decision": "clearTimeout in try/finally around for-await loop only, not around exitPromise",
-      "rationale": "The timeout guards against the stdout streaming read hanging indefinitely. Once the for-await loop exits (normally or via error), the timeout's purpose is served and it must be cleared immediately. The subsequent exitPromise await and exit-code check don't need timeout protection \u2014 the process has already exited or will exit promptly after stdout closes. Keeping exitPromise outside the try/finally avoids masking exit-code errors with the finally clause."
+      "decision": "Collapsed-by-default ThinkingBlock after generation completes",
+      "rationale": "Thinking text is verbose internal reasoning not usually relevant to the user. Showing it collapsed keeps the conversation readable while preserving access for debugging. During streaming, an animated indicator signals activity without taking space."
+    },
+    {
+      "decision": "Color-coded tool icons: blue for read operations, orange for write operations",
+      "rationale": "Provides instant visual distinction between safe (read) and mutating (write) tool calls. Aligns with common UI conventions (blue=info, orange=warning/action). The reify_get_* vs reify_update_* naming makes classification straightforward."
+    },
+    {
+      "decision": "innerHTML for markdown rendering with pre-escaped HTML entities",
+      "rationale": "SolidJS uses innerHTML for injecting HTML content. Since our custom renderer escapes all HTML entities (< > & \" ') BEFORE applying markdown regex transforms, and Claude output doesn't contain user-supplied HTML, XSS risk is negligible. The escape-first approach is simpler than a full sanitizer."
+    },
+    {
+      "decision": "ChatPanel receives store as a prop rather than using a global context/provider",
+      "rationale": "Following the existing pattern where App.tsx creates store instances and passes them as props (see engineStore, editorStore, selectionStore usage). This keeps stores explicit, testable, and avoids hidden dependencies via context."
     }
   ],
   "reuse": [
     {
-      "what": "createMockProcess() helper function",
-      "where": "gui/sidecar/src/__tests__/session.test.ts lines 19-38",
-      "how": "Reuse for the 'normal completion clears timeout' test. For the hanging process test, create a variant inline that never emits 'close' or ends stdout \u2014 just return an EventEmitter with PassThrough streams that stay open."
+      "what": "createStore + produce + batch pattern from solid-js/store",
+      "where": "gui/src/stores/engineStore.ts",
+      "how": "claudeStore follows the exact same factory pattern: createClaudeStore() returns {state, ...actions}. Uses createStore for reactive state, produce for immutable-style mutations, batch for grouped updates."
     },
     {
-      "what": "Existing abort test mock pattern",
-      "where": "gui/sidecar/src/__tests__/session.test.ts lines 136-184",
-      "how": "The existing abort test creates a hanging mock process with signal.addEventListener('abort', ...) to simulate the OS killing the process on abort. Reuse this exact pattern for both the timeout test (abort triggered by timer) and the 'user abort still works with timeout configured' test."
+      "what": "OutboundMessage types (TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, ErrorMessage, Ready)",
+      "where": "gui/sidecar/src/types.ts",
+      "how": "Import directly into claudeStore.ts as the event types the store processes. No need to duplicate these type definitions."
     },
     {
-      "what": "vi.mocked(spawn) + beforeEach reset pattern",
-      "where": "gui/sidecar/src/__tests__/session.test.ts lines 44-53",
-      "how": "All existing tests use vi.mock('node:child_process') at module level and vi.mocked(spawn).mockReset() in beforeEach. New timeout tests follow the same pattern within the existing describe('SidecarSession') block."
+      "what": "CSS theme variables (--reify-background, --reify-text, --reify-accent, --reify-surface0, --reify-text-muted, --reify-font-mono, --reify-green, --reify-red)",
+      "where": "gui/src/App.module.css, gui/src/panels/*.module.css",
+      "how": "All new CSS modules use the same CSS custom properties for consistent theming. No new color values \u2014 reuse existing palette."
     },
     {
-      "what": "outputs array collection via session.onOutput",
-      "where": "gui/sidecar/src/__tests__/session.test.ts lines 44-53",
-      "how": "Existing tests collect OutboundMessages in an outputs array. Timeout tests reuse this to assert on emitted error/done messages."
+      "what": "Expand/collapse toggle pattern with createSignal + Show",
+      "where": "gui/src/panels/ConstraintPanel.tsx lines 26-57",
+      "how": "ThinkingBlock and ToolCallCard use the same toggle pattern: createSignal(boolean) for expanded state, \u25b6/\u25bc chevron indicator, Show component for conditional content rendering."
+    },
+    {
+      "what": "data-testid convention and vitest + @solidjs/testing-library test patterns",
+      "where": "gui/src/__tests__/Toast.test.tsx, gui/src/__tests__/panels-smoke.test.tsx",
+      "how": "All new components use data-testid attributes. Tests use render(() => <Component />), screen.getByTestId(), fireEvent.click(), vi.fn(), vi.useFakeTimers()/vi.advanceTimersByTime() patterns."
+    },
+    {
+      "what": "Component<Props> with CSS module imports pattern",
+      "where": "gui/src/panels/Toast.tsx, gui/src/panels/ConstraintPanel.tsx",
+      "how": "All new components follow: import styles from './X.module.css', export const X: Component<XProps> = (props) => { ... }."
+    },
+    {
+      "what": "Panel and store barrel exports",
+      "where": "gui/src/panels/index.ts, gui/src/stores/index.ts",
+      "how": "Add ChatPanel to panels/index.ts and createClaudeStore to stores/index.ts following existing named export patterns."
+    },
+    {
+      "what": "Status indicator pattern with data-status attribute for CSS styling",
+      "where": "gui/src/panels/ConstraintPanel.tsx (.statusBadge with data-status), ConstraintPanel.module.css lines 70-83",
+      "how": "ToolCallCard status indicator uses the same data-status attribute pattern: [data-status='pending'], [data-status='complete'], [data-status='error'] for CSS color styling."
+    },
+    {
+      "what": "CSS spinner animation",
+      "where": "gui/src/App.module.css lines 46-57 (.spinner with @keyframes spin)",
+      "how": "ToolCallCard pending status reuses the same spin animation pattern (border with transparent top, rotate 360deg)."
     }
   ],
-  "_session_id": "145-825f43ee",
-  "_created_at": "2026-03-23T16:16:47.635035+00:00",
-  "_schema_version": 1
+  "_session_id": "142-0c60416b",
+  "_created_at": "2026-03-23T18:07:26.739586+00:00"
 }
