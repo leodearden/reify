@@ -128,13 +128,13 @@ fn no_tools_return_not_implemented() {
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
         let result = registry.call_tool(&tool.name, params, &ctx);
-        match result {
-            Err(ToolError::NotImplemented) => panic!(
+        if let Err(ToolError::NotImplemented) = result {
+            panic!(
                 "Tool '{}' still returns NotImplemented — should be implemented",
                 tool.name
-            ),
-            _ => {} // Any other result (Ok or non-NotImplemented error) is fine
+            );
         }
+        // Any other result (Ok or non-NotImplemented error) is fine
     }
 }
 

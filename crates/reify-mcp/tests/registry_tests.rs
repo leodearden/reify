@@ -355,7 +355,6 @@ fn registry_multiple_tools_preserves_order() {
     assert_eq!(names, vec!["alpha", "beta", "gamma"]);
 }
 
-#[test]
 // --- S4: Duplicate registration test ---
 
 #[test]
@@ -376,6 +375,7 @@ fn registry_duplicate_name_panics() {
     );
 }
 
+#[test]
 fn registry_handler_receives_params_and_context() {
     let mut registry = ToolRegistry::new();
     registry.register(
