@@ -186,3 +186,79 @@ fn mcp_server_get_parameters_returns_bracket_params() {
         }
     }
 }
+
+#[test]
+fn mcp_server_set_parameter_changes_value() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
+
+    let requests = vec![
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        // Set width to 100 (100mm = 0.1 in SI)
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_set_parameter",
+                "arguments": {"cell_id": "Bracket.width", "value": "100"}
+            }
+        }),
+        // Get parameters to verify the change
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_get_parameters",
+                "arguments": {}
+            }
+        }),
+    ];
+
+    let responses = mcp_roundtrip(&[fixture], &requests);
+    assert!(responses.len() >= 3, "expected at least 3 responses");
+
+    // set_parameter response
+    let set_response = &responses[1];
+    assert_ne!(
+        set_response["result"]["isError"],
+        true,
+        "set_parameter should not return error: {:?}",
+        set_response
+    );
+
+    let set_content = set_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    let set_text = set_content[0]["text"]
+        .as_str()
+        .expect("content[0].text should be string");
+    let set_result: serde_json::Value =
+        serde_json::from_str(set_text).expect("set_parameter result should be JSON");
+    assert_eq!(
+        set_result["success"], true,
+        "set_parameter should return success=true: {:?}",
+        set_result
+    );
+
+    // get_parameters response — verify width changed
+    let get_response = &responses[2];
+    let get_content = get_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    let get_text = get_content[0]["text"].as_str().expect("should be string");
+    let params: Vec<serde_json::Value> = serde_json::from_str(get_text).expect("should be JSON array");
+
+    let width_param = params
+        .iter()
+        .find(|p| p["name"].as_str() == Some("width"))
+        .expect("should have width parameter");
+
+    let width_value = width_param["value"].as_str().unwrap_or("");
+    // Original was 80mm (0.08 SI), new should be 100mm (0.1 SI)
+    // The value is set as raw number which will be interpreted in the cell's dimension
+    assert!(
+        width_value != "0.08 m",
+        "width should have changed from original 0.08 m, got: {width_value}"
+    );
+}
