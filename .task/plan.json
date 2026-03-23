@@ -1,54 +1,66 @@
 {
-  "task_id": "142",
-  "title": "Chat panel: streaming renderer, thinking blocks, tool call cards",
+  "task_id": "143",
+  "title": "Context integration, diff view, and polish",
   "files": [
     "gui/src/stores/claudeStore.ts",
     "gui/src/stores/index.ts",
-    "gui/src/panels/chat/StreamingText.tsx",
-    "gui/src/panels/chat/StreamingText.module.css",
-    "gui/src/panels/chat/ThinkingBlock.tsx",
-    "gui/src/panels/chat/ThinkingBlock.module.css",
-    "gui/src/panels/chat/ToolCallCard.tsx",
-    "gui/src/panels/chat/ToolCallCard.module.css",
-    "gui/src/panels/chat/AbortButton.tsx",
-    "gui/src/panels/chat/AbortButton.module.css",
-    "gui/src/panels/chat/MessageGroup.tsx",
-    "gui/src/panels/chat/MessageGroup.module.css",
-    "gui/src/panels/chat/markdown.ts",
-    "gui/src/panels/chat/index.ts",
     "gui/src/panels/ChatPanel.tsx",
     "gui/src/panels/ChatPanel.module.css",
+    "gui/src/panels/ConstraintPanel.tsx",
+    "gui/src/panels/ConstraintPanel.module.css",
+    "gui/src/panels/StatusBar.tsx",
+    "gui/src/panels/StatusBar.module.css",
+    "gui/src/panels/chat/ContextPicker.tsx",
+    "gui/src/panels/chat/ContextPicker.module.css",
+    "gui/src/panels/chat/ContextChip.tsx",
+    "gui/src/panels/chat/ContextChip.module.css",
+    "gui/src/panels/chat/DiffView.tsx",
+    "gui/src/panels/chat/DiffView.module.css",
+    "gui/src/panels/chat/SystemMessage.tsx",
+    "gui/src/panels/chat/SystemMessage.module.css",
+    "gui/src/panels/chat/ToolCallCard.tsx",
+    "gui/src/panels/chat/MessageGroup.tsx",
+    "gui/src/panels/chat/index.ts",
     "gui/src/panels/index.ts",
     "gui/src/App.tsx",
-    "gui/src/__tests__/claudeStore.test.ts",
+    "gui/src/utils/diff.ts",
+    "gui/src/utils/errorClassifier.ts",
+    "gui/src/__tests__/contextPicker.test.tsx",
+    "gui/src/__tests__/contextChip.test.tsx",
+    "gui/src/__tests__/diffView.test.tsx",
+    "gui/src/__tests__/diff.test.ts",
+    "gui/src/__tests__/errorClassifier.test.ts",
+    "gui/src/__tests__/systemMessage.test.tsx",
+    "gui/src/__tests__/StatusBar.test.tsx",
     "gui/src/__tests__/ChatPanel.test.tsx",
-    "gui/src/__tests__/StreamingText.test.tsx",
-    "gui/src/__tests__/ThinkingBlock.test.tsx",
+    "gui/src/__tests__/ConstraintPanel.test.tsx",
+    "gui/src/__tests__/claudeStore.test.ts",
     "gui/src/__tests__/ToolCallCard.test.tsx",
-    "gui/src/__tests__/AbortButton.test.tsx",
-    "gui/src/__tests__/panels-smoke.test.tsx",
-    "gui/src/__tests__/markdown.test.ts"
+    "gui/src/__tests__/contextIntegration.test.tsx",
+    "gui/sidecar/src/types.ts"
   ],
   "modules": [
     "gui/src/stores",
     "gui/src/panels",
     "gui/src/panels/chat",
-    "gui/src/__tests__"
+    "gui/src/utils",
+    "gui/src/__tests__",
+    "gui/sidecar/src"
   ],
-  "analysis": "The ChatPanel needs to display a streaming Claude conversation with rich message rendering. No chat-related code exists yet \u2014 this is a greenfield implementation.\n\n**Architecture:** The core is a `claudeStore` (following the existing `createEngineStore` pattern) that manages message state and session status. It processes `OutboundMessage` events from the sidecar (TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, Error) and exposes state for the UI components. The store accepts dependency-injected callbacks for sending messages and aborting, making it fully testable without sidecar IPC.\n\n**Streaming approach:** For 60 FPS rendering, incoming text deltas are buffered in a plain array and flushed to the SolidJS signal via requestAnimationFrame. This prevents re-rendering on every token while maintaining smooth progressive display.\n\n**Markdown:** A lightweight custom markdown renderer (markdown.ts) handles code blocks, inline code, bold, italic, headers, and links. No external dependency needed \u2014 the CAD context won't use exotic markdown features. The renderer produces HTML applied via innerHTML on the accumulated (not per-delta) text. HTML entities are escaped before markdown transforms to prevent XSS.\n\n**Component hierarchy:** ChatPanel \u2192 MessageGroup[] \u2192 { ThinkingBlock?, ToolCallCard[], StreamingText }. The AbortButton replaces the Send button position when sessionStatus is active. Each sub-component lives in `panels/chat/` following the `editor/` subdirectory pattern.\n\n**Sidecar types reuse:** The OutboundMessage types from `gui/sidecar/src/types.ts` define the exact event shapes. The store mirrors these into its own domain types (ToolCallInfo, AssistantMessage) for UI consumption.\n\n**Store state shape:**\n- SessionStatus: 'idle' | 'thinking' | 'responding' | 'tool-calling'\n- ToolCallInfo: { id, toolName, toolInput, status: 'pending'|'complete'|'error', result? }\n- AssistantMessage: { id, thinkingText, thinkingComplete, responseText, toolCalls: ToolCallInfo[], complete, error? }\n- ChatMessage: { role: 'user'|'assistant', ... }\n- ClaudeState: { messages: ChatMessage[], sessionStatus, currentMessageId }\n\n**Review fix (XSS):** The link renderer in markdown.ts inserts URLs directly into href attributes. Since escapeHtml only neutralizes HTML-special characters, protocol-based attacks (javascript:, data:, vbscript:) pass through unchanged. Fix: add a protocol allowlist (http://, https://, mailto:) before emitting <a> tags; non-matching URLs render as plain text.\n\n**Review fix (tool_result matching):** tool_result events match pending tool calls by toolName only, causing the second of two same-name tool calls to never resolve. Fix: assign locally-unique IDs at push time and match tool_result to the first *pending* entry with the matching toolName, so sequential same-tool calls resolve in FIFO order.",
+  "analysis": "Task 143 is the final integration layer for Claude session support in the Reify GUI. The codebase already has: (1) claudeStore with messages, sessionStatus, sendMessage(text, context)/handleOutboundMessage \u2014 context is currently Record<string,unknown>, (2) ChatPanel with input area (textarea + send/abort) and message rendering (For loop over messages, user messages and MessageGroup for assistant), (3) ConstraintPanel with expandable rows, onConstraintSelect callback, sorted by status, (4) StatusBar showing eval status/triangles/constraint counts in a section+divider pattern, (5) selectionStore with selectedEntity/hoveredEntity, (6) engineStore with constraints/values/evalStatus, (7) sidecar types with SendMessage.context defining selected_entity/diagnostics/constraints fields.\n\nThe work breaks into 7 sub-features: (A) Context injection UI \u2014 ContextPicker dropdown + ContextChip badges + wiring context into sendMessage, (B) Right-click 'Ask Claude' menus on ConstraintPanel rows, (C) Automatic context from selectionStore in every message, (D) Inline diff view for reify_update_source tool results, (E) Status bar Claude indicator showing sessionStatus, (F) Error classification and system messages in chat timeline, (G) First-run experience for auth errors.\n\nKey design: system messages (errors, info) are modeled as a third role in the ChatMessage union (role='system') so they appear inline in the timeline at the correct position. Context is structured via a MessageContext type matching the sidecar's SendMessage.context shape. Diff is computed via a simple line-based LCS algorithm (no external dep). Error classification is a pure utility function. The ToolCallCard already detects reify_update_source and shows 'View diff' \u2014 we extend its expanded state to render a DiffView component.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create gui/src/panels/chat/ directory and index.ts barrel export file",
+      "description": "Create gui/src/utils/ directory with diff.ts and errorClassifier.ts stub files",
       "status": "done",
-      "commit": "d0742d3",
+      "commit": "732d13b",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Create gui/src/panels/chat/markdown.ts \u2014 lightweight markdown-to-HTML renderer supporting code blocks (``` fenced), inline code (`), bold (**), italic (*), headers (#-###), links ([text](url)), and unordered lists (- item). Uses sequential regex transforms on pre-escaped HTML. Returns sanitized HTML string. Include unit tests inline or in a dedicated test.",
+      "description": "Extend claudeStore types: add SystemMessage type (role='system', id, errorType, text), update ChatMessage union to include SystemMessage, add MessageContext interface (selectedEntity?, diagnostics?, constraints?, currentFile?, attachedContexts?), add addSystemMessage() action to store. Update sendMessage to accept MessageContext parameter instead of Record<string,unknown>",
       "status": "done",
-      "commit": "dc9e49b",
+      "commit": "b5edb14",
       "tests": []
     }
   ],
@@ -56,251 +68,274 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for claudeStore in gui/src/__tests__/claudeStore.test.ts. Test cases: (1) initial state has sessionStatus='idle', empty messages array, currentMessageId=null; (2) handleOutboundMessage with Ready event keeps idle state; (3) sendMessage adds a user ChatMessage to messages, sets currentMessageId, calls onSend callback with message text and context; (4) handleOutboundMessage with TextDelta accumulates responseText on current assistant message, sets sessionStatus='responding'; (5) handleOutboundMessage with ThinkingDelta accumulates thinkingText, sets sessionStatus='thinking'; (6) handleOutboundMessage with ToolCall adds ToolCallInfo entry with status='pending', sets sessionStatus='tool-calling'; (7) handleOutboundMessage with ToolResult updates matching tool call status to 'complete' and stores result; (8) handleOutboundMessage with Done marks assistant message complete, sets sessionStatus='idle'; (9) handleOutboundMessage with ErrorMessage sets error on assistant message, sets sessionStatus='idle'; (10) claudeAbort calls onAbort callback, sets sessionStatus='idle'; (11) clearSession resets messages to empty array.",
+      "description": "Write failing tests for errorClassifier utility in gui/src/__tests__/errorClassifier.test.ts: classifyError(message) returns { type, userMessage } for: (1) auth errors matching /auth|unauthorized|401/ \u2192 type='auth', userMessage='Authentication required. Run `claude login` in your terminal.'; (2) rate limit errors matching /rate.?limit|429/ \u2192 type='rate-limit', userMessage='Rate limited. Please wait and try again.'; (3) network errors matching /network|connect|ECONNREFUSED|fetch/ \u2192 type='network', userMessage='Connection failed. Check your network.'; (4) sidecar crash errors matching /disconnect|crash|exit|spawn/ \u2192 type='sidecar', userMessage='Claude session disconnected. Click to restart.'; (5) unknown errors \u2192 type='unknown', userMessage passes through the original message",
       "status": "done",
-      "commit": "c6e4911"
+      "commit": "5c91d2d"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement gui/src/stores/claudeStore.ts. createClaudeStore(options: {onSend, onAbort}) factory returning {state, handleOutboundMessage, sendMessage, claudeAbort, clearSession}. State uses createStore<ClaudeState>. Define and export types: SessionStatus, ToolCallInfo, AssistantMessage, UserMessage, ChatMessage, ClaudeState. handleOutboundMessage switches on msg.type and uses produce() for store mutations. sendMessage creates user message, then assistant message shell, calls onSend. Use batch() for grouped state updates.",
+      "description": "Implement gui/src/utils/errorClassifier.ts: export interface ClassifiedError { type: 'auth'|'rate-limit'|'network'|'sidecar'|'unknown'; userMessage: string }. export function classifyError(message: string): ClassifiedError \u2014 pattern-match against ordered regex rules, return first match or unknown fallback",
       "status": "done",
-      "commit": "c7a161b"
+      "commit": "2d3b0e7"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for claudeStore 60fps delta batching: (1) 'buffers multiple text_delta events and flushes on rAF' \u2014 send 10 text_delta events synchronously, verify responseText is empty before rAF flush, mock requestAnimationFrame callback fires, verify responseText contains all 10 deltas concatenated; (2) 'flushes immediately on done event' \u2014 send text_delta + done, verify text is flushed without waiting for rAF; (3) 'clears pending buffer on abort'. Use vi.useFakeTimers() and manual rAF mock.",
+      "description": "Write failing tests for diff utility in gui/src/__tests__/diff.test.ts: computeUnifiedDiff(before, after) returns DiffLine[] with { type: 'add'|'remove'|'context', content: string }. Test cases: (1) identical strings \u2192 all context lines; (2) pure additions (empty before, non-empty after) \u2192 all add lines; (3) pure deletions (non-empty before, empty after) \u2192 all remove lines; (4) single line change \u2192 one remove + one add; (5) mixed changes with context lines around them; (6) both empty \u2192 empty array; (7) multiline with insertions in the middle",
       "status": "done",
-      "commit": "11b9e1e"
+      "commit": "d110050"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add requestAnimationFrame-based delta batching to claudeStore: maintain a textBuffer and thinkingBuffer (plain string arrays). On text_delta/thinking_delta, push to buffer and schedule rAF if not already scheduled. rAF callback concatenates buffer contents, applies to store via setState, clears buffers. On done/error, flush buffers immediately (cancel pending rAF). On abort, clear buffers.",
+      "description": "Implement gui/src/utils/diff.ts: export interface DiffLine { type: 'add'|'remove'|'context'; content: string }. export function computeUnifiedDiff(before: string, after: string): DiffLine[] \u2014 split by newlines, compute LCS via dynamic programming, generate unified diff output with 3 lines of context around changes. Keep implementation simple (~60 lines), no external deps",
       "status": "done",
-      "commit": "c7a161b"
+      "commit": "15a5011"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for AbortButton in gui/src/__tests__/AbortButton.test.tsx: (1) renders with data-testid='abort-button'; (2) calls onAbort callback on click; (3) has aria-label='Abort generation'; (4) contains a stop icon element (\u25a0 character or SVG).",
+      "description": "Write failing tests for claudeStore extensions in gui/src/__tests__/claudeStore.test.ts \u2014 new describe block 'system messages': (1) addSystemMessage adds a message with role='system' to messages array; (2) system message has errorType and text fields; (3) system messages appear in correct position in timeline (after the last message); (4) error OutboundMessage with auth-pattern text adds a classified system message automatically; (5) error OutboundMessage with rate-limit pattern adds rate-limit system message; (6) first error that is auth-type includes first-run instructions in text",
       "status": "done",
-      "commit": "5d5bd52"
+      "commit": "2929dd3"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement gui/src/panels/chat/AbortButton.tsx and AbortButton.module.css. Props: {onAbort: () => void}. Simple button with \u25a0 stop icon, themed styling matching existing button patterns. Red accent on hover.",
+      "description": "Extend gui/src/stores/claudeStore.ts: add SystemMessage type, update ChatMessage union, add addSystemMessage() action, modify error handler to classify errors via classifyError() and add system messages. Add hasReceivedResponse flag to detect first-run auth failures. Update stores/index.ts exports to include new types",
       "status": "done",
-      "commit": "5ee3615"
+      "commit": "8398f27"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for ThinkingBlock in gui/src/__tests__/ThinkingBlock.test.tsx: (1) when complete=false, shows animated indicator with data-testid='thinking-indicator'; (2) when complete=false, does NOT show thinking text content; (3) when complete=true, renders collapsible section with data-testid='thinking-block'; (4) when complete=true, thinking text is NOT visible by default (collapsed); (5) clicking the header expands to show thinking text; (6) clicking again collapses; (7) expanded text container has muted styling (class containing 'muted' or similar).",
+      "description": "Write failing tests for SystemMessage component in gui/src/__tests__/systemMessage.test.tsx: (1) renders with data-testid='system-message'; (2) displays message text; (3) auth errors have data-error-type='auth' and show 'claude login' text; (4) rate-limit errors have data-error-type='rate-limit'; (5) network errors have data-error-type='network'; (6) sidecar errors have data-error-type='sidecar' and show 'restart' text; (7) unknown errors display the raw message",
       "status": "done",
-      "commit": "203c08a"
+      "commit": "8a6d036"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement gui/src/panels/chat/ThinkingBlock.tsx and ThinkingBlock.module.css. Props: {text: string, complete: boolean}. When !complete: three pulsing dots with 'Thinking...' label, CSS keyframe animation. When complete: header row 'Thinking' with \u25b6/\u25bc chevron, createSignal(false) for expanded state, Show component wrapping text content. Styling: --reify-text-muted color, 12px font, subtle background.",
+      "description": "Implement gui/src/panels/chat/SystemMessage.tsx + SystemMessage.module.css: Component<{errorType: string, text: string}>. Styled as centered system notification with warning icon, error-type-specific coloring via data-error-type attribute. Auth type shows code-formatted 'claude login' instruction. Export from chat/index.ts",
       "status": "done",
-      "commit": "4ea6deb"
+      "commit": "2a09c9b"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for ToolCallCard in gui/src/__tests__/ToolCallCard.test.tsx: (1) renders with data-testid='tool-call-card'; (2) displays tool name; (3) shows spinner element when status='pending'; (4) shows checkmark when status='complete'; (5) shows X mark when status='error'; (6) click expands to show full input JSON in data-testid='tool-call-details'; (7) for reify_update_source tool, shows 'View diff' text; (8) for reify_get_parameters with result containing array, shows count summary like '3 parameters'; (9) read tools (reify_get_*) have blue icon class; (10) write tools (reify_update_*) have orange icon class.",
+      "description": "Write failing tests for ContextChip component in gui/src/__tests__/contextChip.test.tsx: (1) renders with data-testid='context-chip'; (2) displays label text prop; (3) shows remove button with data-testid='chip-remove'; (4) clicking remove calls onRemove callback; (5) different context types set data-context-type attribute ('selection', 'diagnostics', 'constraints', 'file'); (6) chip is keyboard-accessible (Enter on remove button triggers callback)",
       "status": "done",
-      "commit": "f638459"
+      "commit": "1fbb851"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement gui/src/panels/chat/ToolCallCard.tsx and ToolCallCard.module.css. Props: {toolCall: ToolCallInfo}. Compact card layout: icon (colored circle with first letter or tool-type icon), tool name, param summary (first key-value from toolInput). Expandable details panel with pre-formatted JSON for input and result. Status indicator: CSS spin animation for pending, \u2713/\u2717 characters for complete/error. isReadTool() helper checks toolName.startsWith('reify_get'). Special result summaries for known tools.",
+      "description": "Implement gui/src/panels/chat/ContextChip.tsx + ContextChip.module.css: Component<{label: string, type: string, onRemove: () => void}>. Small pill/badge with label text, \u00d7 dismiss button, colored by context type. Export from chat/index.ts",
       "status": "done",
-      "commit": "a7fc087"
+      "commit": "e556dff"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing tests for StreamingText in gui/src/__tests__/StreamingText.test.tsx: (1) renders text content with data-testid='streaming-text'; (2) shows blinking cursor with data-testid='streaming-cursor' when streaming=true; (3) hides cursor when streaming=false; (4) applies markdown: bold text (**bold**) renders as <strong>; (5) applies markdown: code block renders as <pre><code>; (6) renders inline code with <code> tags; (7) empty text renders empty container without errors.",
+      "description": "Write failing tests for ContextPicker component in gui/src/__tests__/contextPicker.test.tsx: (1) renders [+ context] button with data-testid='context-picker-btn'; (2) clicking button opens dropdown with data-testid='context-picker-dropdown'; (3) dropdown has 4 options: 'Current selection', 'Active diagnostics', 'Violated constraints', 'Current file'; (4) clicking an option calls onAttach(type) with the context type string; (5) dropdown closes after selecting an option; (6) dropdown closes on clicking outside; (7) options can be disabled when not available (e.g., no selection \u2192 'Current selection' disabled)",
       "status": "done",
-      "commit": "b53e402"
+      "commit": "f46675e"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement gui/src/panels/chat/StreamingText.tsx and StreamingText.module.css. Props: {text: string, streaming: boolean}. createMemo to run renderMarkdown(text) only when text changes. Render via innerHTML on a div. Blinking cursor span with CSS animation (opacity 0\u21941, 530ms interval). Code blocks get monospace + subtle background. Prose gets 13px standard font.",
+      "description": "Implement gui/src/panels/chat/ContextPicker.tsx + ContextPicker.module.css: Component<{onAttach: (type: ContextType) => void, hasSelection: boolean, hasDiagnostics: boolean, hasViolatedConstraints: boolean, hasActiveFile: boolean}>. Button opens positioned dropdown, options disabled based on availability props. Click-outside handler via document.addEventListener. Export from chat/index.ts",
       "status": "done",
-      "commit": "b4532f8"
+      "commit": "fc94b8d"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing tests for MessageGroup in gui/src/__tests__/ChatPanel.test.tsx (grouped with ChatPanel tests since MessageGroup is an internal component): (1) renders ThinkingBlock when message has non-empty thinkingText; (2) does NOT render ThinkingBlock when thinkingText is empty; (3) renders ToolCallCard for each tool call; (4) renders StreamingText for response text; (5) visual order in DOM: thinking-indicator/thinking-block before tool-call-card before streaming-text.",
+      "description": "Write failing tests for DiffView component in gui/src/__tests__/diffView.test.tsx: (1) renders with data-testid='diff-view'; (2) addition lines have data-diff='add' and green styling attribute; (3) deletion lines have data-diff='remove' and red styling attribute; (4) context lines have data-diff='context'; (5) starts expanded by default; (6) clicking header collapses the diff content; (7) clicking again re-expands; (8) when before===after shows 'No changes' text; (9) line numbers are displayed",
       "status": "done",
-      "commit": "608b126"
+      "commit": "add67ee"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement gui/src/panels/chat/MessageGroup.tsx and MessageGroup.module.css. Props: {message: AssistantMessage}. Container div with subtle left-border accent (--reify-accent). Conditionally renders ThinkingBlock (Show when={message.thinkingText}), For loop of ToolCallCard, StreamingText with streaming={!message.complete}. Export from chat/index.ts.",
+      "description": "Implement gui/src/panels/chat/DiffView.tsx + DiffView.module.css: Component<{before: string, after: string}>. Uses computeUnifiedDiff() to compute diff lines. Collapsible container (createSignal(true) for expanded). Each line rendered with data-diff attribute for type-based CSS (green background for add, red for remove, neutral for context). Monospace font, line numbers. Export from chat/index.ts",
       "status": "done",
-      "commit": "2ed7f36"
+      "commit": "a8f1940"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing tests for ChatPanel in gui/src/__tests__/ChatPanel.test.tsx: (1) renders with data-testid='chat-panel'; (2) shows empty state message when no messages; (3) renders user message with data-testid='user-message'; (4) renders assistant message via MessageGroup; (5) abort button visible when sessionStatus='responding'; (6) abort button NOT visible when sessionStatus='idle'; (7) send button visible when sessionStatus='idle'; (8) send button disabled when textarea is empty; (9) typing in textarea and clicking send calls onSend; (10) full event sequence: create store, sendMessage, feed text_deltas + done via handleOutboundMessage, verify rendered output.",
+      "description": "Write failing tests for ToolCallCard diff integration in gui/src/__tests__/ToolCallCard.test.tsx \u2014 new describe block 'diff view for source updates': (1) when toolName='reify_update_source', status='complete', and result has source content, expanding shows DiffView (data-testid='diff-view'); (2) DiffView receives before from toolInput and after from result; (3) for non-update tools, expanded details still show JSON (no diff view)",
       "status": "done",
-      "commit": "2462949"
+      "commit": "f4a432d"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement gui/src/panels/ChatPanel.tsx and ChatPanel.module.css. Layout: flex column, scrollable message list (overflow-y: auto, ref for auto-scroll), fixed input area at bottom. Message list: For loop over store messages, Show conditional for user vs assistant rendering. Input area: textarea with onKeyDown (Enter to send, Shift+Enter for newline), conditional Send button (idle) vs AbortButton (active). Auto-scroll: createEffect on messages length, scrollTo bottom. Export from panels/index.ts.",
+      "description": "Modify gui/src/panels/chat/ToolCallCard.tsx: in the expanded details section, when toolCall.toolName === 'reify_update_source' && toolCall.status === 'complete', render DiffView instead of raw JSON pre block. Extract before string from toolCall.toolInput.content (or toolCall.toolInput.source) and after string from toolCall.result. Fall back to JSON display if result shape is unexpected",
       "status": "done",
-      "commit": "9cb5fc6"
+      "commit": "d69a572"
     },
     {
       "id": "step-17",
-      "type": "impl",
-      "description": "Update barrel exports and smoke tests: (1) gui/src/panels/index.ts \u2014 add 'export { ChatPanel } from ./ChatPanel'; (2) gui/src/stores/index.ts \u2014 add 'export { createClaudeStore } from ./claudeStore' and type exports for ClaudeState, SessionStatus, ToolCallInfo, AssistantMessage; (3) gui/src/__tests__/panels-smoke.test.tsx \u2014 add ChatPanel to the smoke test suite with minimal props (store with empty state).",
+      "type": "test",
+      "description": "Write failing tests for ChatPanel context features in gui/src/__tests__/ChatPanel.test.tsx \u2014 new describe block 'context integration': (1) renders context picker button (data-testid='context-picker-btn') in input area; (2) renders context chips area (data-testid='context-chips') when items are attached; (3) attaching 'selection' context shows a ContextChip with selected entity label; (4) removing a chip removes it from display; (5) sending a message includes attached contexts in the sendMessage call args; (6) after sending, attached contexts are cleared; (7) when selectedEntity is provided, user messages show '[Context: X selected]' label (data-testid='auto-context-label'); (8) system messages in store.state.messages render as SystemMessage components (data-testid='system-message')",
       "status": "done",
-      "commit": "a3d177c"
+      "commit": "f77d953"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Wire ChatPanel into App.tsx: (1) import createClaudeStore and ChatPanel; (2) create claudeStore instance in App with no-op onSend/onAbort callbacks (actual sidecar IPC wiring comes from a separate integration task); (3) add ChatPanel below ConstraintPanel in the side panel grid, adjusting grid-template-rows to accommodate three rows (property editor + constraint panel + chat panel). Pass claudeStore state and action props.",
+      "description": "Modify gui/src/panels/ChatPanel.tsx: (1) add ChatPanelProps for selectedEntity, engineConstraints, engineValues, activeFile, diagnostics; (2) add createSignal<AttachedContext[]>([]) for context items; (3) render ContextPicker in inputArea with availability booleans derived from props; (4) render ContextChip list above input when items attached; (5) on handleSend, build MessageContext from attached items + automatic selectedEntity, pass to store.sendMessage, clear attached; (6) in message list For loop, handle role='system' by rendering SystemMessage; (7) show auto-context label '[Context: X selected]' on user messages when selectedEntity exists. Update ChatPanel.module.css with new styles for chips area and auto-context label",
       "status": "done",
-      "commit": "4e40a66"
+      "commit": "d711b15"
     },
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write failing tests for markdown.ts link protocol allowlist in gui/src/__tests__/markdown.test.ts. Add a new describe('link protocol validation') block with test cases: (1) 'allows http:// URLs' \u2014 renderMarkdown('[link](http://example.com)') contains '<a href=\"http://example.com\"'; (2) 'allows https:// URLs' \u2014 renderMarkdown('[link](https://example.com)') contains '<a href=\"https://example.com\"'; (3) 'blocks javascript: URLs' \u2014 renderMarkdown('[click](javascript:alert(document.cookie))') does NOT contain 'href=\"javascript:' and renders the link text as plain text without an <a> tag; (4) 'blocks javascript: with mixed case' \u2014 renderMarkdown('[x](JavaScript:alert(1))') does NOT contain '<a'; (5) 'blocks data: URLs' \u2014 renderMarkdown('[x](data:text/html,<script>alert(1)</script>)') does NOT contain 'href=\"data:'; (6) 'blocks vbscript: URLs' \u2014 renderMarkdown('[x](vbscript:MsgBox)') does NOT contain '<a'; (7) 'renders blocked link text as plain text' \u2014 for a javascript: URL, the link text is still visible in the output but without a hyperlink wrapper; (8) 'allows mailto: URLs' \u2014 renderMarkdown('[email](mailto:a@b.com)') contains '<a href=\"mailto:a@b.com\"'.",
+      "description": "Write failing tests for ConstraintPanel 'Ask Claude' context menu in gui/src/__tests__/ConstraintPanel.test.tsx \u2014 new describe block 'Ask Claude context menu': (1) right-clicking (contextmenu event) a constraint row shows a menu with data-testid='constraint-context-menu'; (2) menu contains 'Ask Claude about this constraint' option; (3) clicking the option calls onAskClaude prop with constraint context string containing expression, status, and parameter values; (4) menu closes after clicking the option; (5) menu closes on subsequent click-outside; (6) onAskClaude is optional \u2014 omitting it means no context menu appears on right-click",
       "status": "done",
-      "commit": "83b6cb5"
+      "commit": "4efc82b"
     },
     {
       "id": "step-20",
       "type": "impl",
-      "description": "Fix XSS vulnerability in gui/src/panels/chat/markdown.ts link renderer (lines 108-111). Replace the link regex substitution with a function-based replacer that validates the URL protocol before emitting an <a> tag. Extract a helper function `isSafeUrl(url: string): boolean` that lowercases and checks `url.startsWith('http://') || url.startsWith('https://') || url.startsWith('mailto:')`. In the regex replacer: if isSafeUrl(url) returns true, emit `<a href=\"${url}\" target=\"_blank\" rel=\"noopener noreferrer\">${text}</a>`; otherwise emit just the plain text (the link text without any hyperlink wrapper). Note: the URL has already been HTML-entity-escaped at this point, so the protocol check must account for that \u2014 however http/https/mailto contain no HTML-special characters, so the startsWith check works correctly on escaped input.",
+      "description": "Modify gui/src/panels/ConstraintPanel.tsx: add optional onAskClaude?: (context: string) => void prop. Add contextmenu event handler on constraint rows (only when onAskClaude is provided) that shows a positioned absolute div with the menu option. Build context string: 'Constraint: {expression}\\nStatus: {status}\\nParameters: {name}={value}, ...' from constraint data + resolved values. Click-outside handler to dismiss. Update ConstraintPanel.module.css with menu styles",
       "status": "done",
-      "commit": "80bab34"
+      "commit": "92034c8"
     },
     {
       "id": "step-21",
       "type": "test",
-      "description": "Write failing tests for claudeStore tool_result FIFO matching in gui/src/__tests__/claudeStore.test.ts. Add a new describe('tool_result FIFO matching') block with test cases: (1) 'resolves sequential same-tool calls in order' \u2014 send two tool_call events with the same tool_name 'reify_get_parameters' (but different tool_input), then send two tool_result events with tool_name 'reify_get_parameters' and different results. Verify the first tool_result updates toolCalls[0] to status='complete' with its result, and the second tool_result updates toolCalls[1] to status='complete' with its result; (2) 'does not re-update an already-completed tool call' \u2014 send one tool_call, one tool_result (completes it), then another tool_result with the same tool_name; verify toolCalls[0].result is unchanged (the second result does not overwrite the first); (3) 'tool calls have locally-unique IDs' \u2014 send two tool_call events with the same tool_name, verify toolCalls[0].id !== toolCalls[1].id; (4) 'mixed tool names still match correctly' \u2014 send tool_call A, tool_call B, tool_call A (same name as first), then results for B, A, A; verify each tool call is matched to its correct result in FIFO order within same-name groups.",
+      "description": "Write failing tests for StatusBar Claude indicator in gui/src/__tests__/StatusBar.test.tsx \u2014 new describe block 'Claude status indicator': (1) when claudeStatus prop provided, renders section with data-testid='claude-status'; (2) shows 'Claude: idle' when claudeStatus='idle'; (3) shows 'Claude: thinking...' when claudeStatus='thinking'; (4) shows 'Claude: calling tool...' when claudeStatus='tool-calling'; (5) shows 'Claude: responding...' when claudeStatus='responding'; (6) clicking the indicator calls onToggleChat callback; (7) without claudeStatus prop, no claude-status section rendered (backwards compatible)",
       "status": "done",
-      "commit": "1d096bf"
+      "commit": "4f241b5"
     },
     {
       "id": "step-22",
       "type": "impl",
-      "description": "Fix tool_result matching logic in gui/src/stores/claudeStore.ts. Two changes: (1) In the tool_call handler (line 149-154), change the ToolCallInfo.id assignment from `msg.id` (the conversation message ID, same for all tool calls in a turn) to a locally-generated unique ID: `${msg.id}-tc-${m.toolCalls.length}`. This ensures each tool call has a distinct id. (2) In the tool_result handler (line 169), change `m.toolCalls.find((t) => t.toolName === msg.tool_name)` to `m.toolCalls.find((t) => t.toolName === msg.tool_name && t.status === 'pending')`. This ensures tool results are matched to the first *pending* entry with the matching tool name, so sequential same-tool calls are resolved in FIFO order rather than all updating the first entry.",
+      "description": "Modify gui/src/panels/StatusBar.tsx: add optional claudeStatus?: SessionStatus and onToggleChat?: () => void props. When claudeStatus is provided, render a new section with divider following the existing pattern: <span class={styles.divider}/> <span class={styles.section}> with label 'Claude:' and status text. Use data-claude-status attribute for per-state CSS styling (idle=muted, thinking=accent pulsing, tool-calling=accent, responding=accent, error=red). Make clickable with onClick={onToggleChat}. Update StatusBar.module.css",
       "status": "done",
-      "commit": "5ec1190"
+      "commit": "bfcc896"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write failing integration test in gui/src/__tests__/contextIntegration.test.tsx: (1) ChatPanel with engineStore constraints containing violated items \u2192 ContextPicker 'Violated constraints' option is enabled; (2) attaching 'Violated constraints' context and sending message \u2192 onSend receives constraints array in context; (3) ConstraintPanel onAskClaude callback with constraint context string \u2192 can be used to pre-populate ChatPanel input; (4) StatusBar with claudeStatus='thinking' \u2192 displays correct text; (5) error outbound message \u2192 system message appears in chat messages",
+      "status": "done",
+      "commit": "9dc3e2b"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Verify all sub-components integrate correctly. Fix any type mismatches between props. Ensure chat/index.ts exports new components (ContextPicker, ContextChip, DiffView, SystemMessage). Ensure panels/index.ts is unchanged (ChatPanel already exported)",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Write failing test for App.tsx wiring in gui/src/__tests__/contextIntegration.test.tsx (additional cases): (1) verify ChatPanel receives selectionStore.selectedEntity as selectedEntity prop; (2) verify ConstraintPanel receives onAskClaude handler; (3) verify StatusBar receives claudeStatus from claudeStore.state.sessionStatus; (4) verify StatusBar onToggleChat toggles a chatOpen signal that controls ChatPanel visibility",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Wire everything in gui/src/App.tsx: (1) pass selectedEntity={selectionStore.state.selectedEntity}, engineConstraints={engineStore.state.constraints}, engineValues={engineStore.state.values}, activeFile={editorStore.state.activeFile} to ChatPanel; (2) add onAskClaude handler to ConstraintPanel that builds context, sets ChatPanel input text, and opens chat panel if closed; (3) pass claudeStatus={claudeStore.state.sessionStatus} and onToggleChat to StatusBar; (4) add chatOpen signal to control ChatPanel visibility, toggled by StatusBar click. Use the existing useChatPanelPersistence hook for open/closed state"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Custom lightweight markdown renderer instead of adding a dependency like 'marked'",
-      "rationale": "The CAD tool context limits markdown usage to code blocks, inline code, bold, italic, headers, and links. A ~100-line regex-based renderer avoids a new dependency, keeps bundle size small, and is fully testable. Can be upgraded later if needed."
+      "decision": "Use a simple line-based LCS diff algorithm in utils/diff.ts instead of an external diff library",
+      "rationale": "The project avoids unnecessary dependencies (hand-written FFI, custom JSON-RPC dispatcher). The diff needs are simple: compare two source strings line-by-line. A basic LCS algorithm is ~60 lines and sufficient for Reify source files which are typically small."
     },
     {
-      "decision": "requestAnimationFrame-based delta batching in the store, not in the component",
-      "rationale": "Batching at the store level means all consumers (current and future) automatically get 60fps updates. SolidJS's fine-grained reactivity means the DOM update from a signal change is already efficient \u2014 the bottleneck is the frequency of signal writes, which rAF batching solves."
+      "decision": "Model system messages as a third role in ChatMessage union rather than a separate array",
+      "rationale": "System messages (errors, info) need to appear inline in the chat timeline at the correct position relative to user/assistant messages. Adding them to the existing messages array with role='system' preserves ordering naturally and reuses the existing For-each rendering loop in ChatPanel."
     },
     {
-      "decision": "Dependency-injected callbacks (onSend, onAbort) rather than direct sidecar IPC in claudeStore",
-      "rationale": "Decouples the store from IPC transport, making it fully unit-testable with vi.fn() mocks. The actual IPC wiring happens in App.tsx (or a future bridge integration), following the same pattern as engineStore's subscribeToEvents."
+      "decision": "Context menu on ConstraintPanel uses a custom positioned div rather than browser native context menu",
+      "rationale": "Tauri/webview context menus are inconsistent across platforms. A custom div positioned at click coordinates gives full control over styling and behavior, matching the project's existing pattern of custom UI over native APIs."
     },
     {
-      "decision": "Chat sub-components in panels/chat/ subdirectory",
-      "rationale": "Five sub-components (StreamingText, ThinkingBlock, ToolCallCard, AbortButton, MessageGroup) plus their CSS modules would clutter the flat panels/ directory. The editor/ subdirectory pattern establishes precedent for this approach."
+      "decision": "ContextPicker and ContextChip are separate components under panels/chat/",
+      "rationale": "Follows the existing pattern where chat sub-components (AbortButton, MessageGroup, ThinkingBlock, etc.) are separate files under panels/chat/. Each is independently testable and reusable."
     },
     {
-      "decision": "Store processes OutboundMessage directly rather than re-mapping types",
-      "rationale": "The sidecar OutboundMessage types (TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, ErrorMessage) are imported from gui/sidecar/src/types.ts. Using them directly avoids a redundant mapping layer. The store's internal AssistantMessage/ToolCallInfo types are the domain model for UI consumption."
+      "decision": "Automatic context (selectedEntity) is shown as a subtle label on user messages, not as a dismissible chip",
+      "rationale": "The task spec distinguishes between explicit context (chips above input, user-selected) and automatic context (always included, shown as subtle label '[Context: X selected]'). Making it non-dismissible keeps it visually distinct from user-attached context items."
     },
     {
-      "decision": "Collapsed-by-default ThinkingBlock after generation completes",
-      "rationale": "Thinking text is verbose internal reasoning not usually relevant to the user. Showing it collapsed keeps the conversation readable while preserving access for debugging. During streaming, an animated indicator signals activity without taking space."
+      "decision": "Error classification in a pure utility function separate from the store",
+      "rationale": "Keeps the store focused on state management. The classifier is independently testable and can be reused by other components. The store calls classifyError() and adds the result as a system message."
     },
     {
-      "decision": "Color-coded tool icons: blue for read operations, orange for write operations",
-      "rationale": "Provides instant visual distinction between safe (read) and mutating (write) tool calls. Aligns with common UI conventions (blue=info, orange=warning/action). The reify_get_* vs reify_update_* naming makes classification straightforward."
+      "decision": "ChatPanel props extended rather than creating a wrapper component",
+      "rationale": "The existing ChatPanel is already rendered in App.tsx at the right structural position. Adding props for context data keeps the component tree flat, avoids unnecessary re-renders, and follows the existing pattern where panels receive all needed data as props."
     },
     {
-      "decision": "innerHTML for markdown rendering with pre-escaped HTML entities",
-      "rationale": "SolidJS uses innerHTML for injecting HTML content. Since our custom renderer escapes all HTML entities (< > & \" ') BEFORE applying markdown regex transforms, and Claude output doesn't contain user-supplied HTML, XSS risk is negligible. The escape-first approach is simpler than a full sanitizer."
+      "decision": "DiffView takes before/after strings and computes diff internally",
+      "rationale": "Encapsulation: the component owns its rendering logic. ToolCallCard just passes source strings from tool_input and result. DiffView is independently testable and reusable."
     },
     {
-      "decision": "ChatPanel receives store as a prop rather than using a global context/provider",
-      "rationale": "Following the existing pattern where App.tsx creates store instances and passes them as props (see engineStore, editorStore, selectionStore usage). This keeps stores explicit, testable, and avoids hidden dependencies via context."
-    },
-    {
-      "decision": "Protocol allowlist for markdown link URLs instead of blocklist",
-      "rationale": "An allowlist (http, https, mailto) is safer than a blocklist (javascript, data, vbscript, ...) because it protects against unknown future attack vectors. Any URL that doesn't match the allowlist is rendered as plain text \u2014 the link text remains visible, only the hyperlink wrapper is removed. This is a defense-in-depth measure since Claude output is attacker-controllable via prompt injection through CAD file content."
-    },
-    {
-      "decision": "FIFO matching for tool_result events using pending-status filter instead of unique wire IDs",
-      "rationale": "The sidecar wire protocol's ToolResult.id field carries the conversation-message ID (same for all tool calls in a turn), providing no per-call disambiguator. Rather than requiring a wire protocol change, the store assigns locally-unique IDs at push time (${msg.id}-tc-${index}) and matches tool_results to the first *pending* entry with the matching toolName. This resolves sequential same-tool calls in FIFO order without any protocol changes."
+      "decision": "StatusBar Claude indicator is optional via props, maintaining backward compatibility",
+      "rationale": "Adding claudeStatus as an optional prop means existing StatusBar tests continue passing without modification. The Claude section only renders when the prop is provided, so the component works both with and without Claude integration."
     }
   ],
   "reuse": [
     {
-      "what": "createStore + produce + batch pattern from solid-js/store",
-      "where": "gui/src/stores/engineStore.ts",
-      "how": "claudeStore follows the exact same factory pattern: createClaudeStore() returns {state, ...actions}. Uses createStore for reactive state, produce for immutable-style mutations, batch for grouped updates."
+      "what": "claudeStore.sendMessage already accepts context parameter and forwards via onSend callback",
+      "where": "gui/src/stores/claudeStore.ts line 219",
+      "how": "Refine the context parameter type from Record<string,unknown> to a structured MessageContext interface. The onSend callback already forwards context to sidecar, so the wiring exists."
     },
     {
-      "what": "OutboundMessage types (TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, ErrorMessage, Ready)",
-      "where": "gui/sidecar/src/types.ts",
-      "how": "Import directly into claudeStore.ts as the event types the store processes. No need to duplicate these type definitions."
+      "what": "Sidecar SendMessage.context already defines selected_entity, diagnostics, constraints fields",
+      "where": "gui/sidecar/src/types.ts lines 7-11",
+      "how": "The MessageContext type should mirror this structure so context flows directly from UI \u2192 store \u2192 sidecar without transformation."
     },
     {
-      "what": "CSS theme variables (--reify-background, --reify-text, --reify-accent, --reify-surface0, --reify-text-muted, --reify-font-mono, --reify-green, --reify-red)",
-      "where": "gui/src/App.module.css, gui/src/panels/*.module.css",
-      "how": "All new CSS modules use the same CSS custom properties for consistent theming. No new color values \u2014 reuse existing palette."
+      "what": "ToolCallCard already detects reify_update_source and shows 'View diff' summary text",
+      "where": "gui/src/panels/chat/ToolCallCard.tsx lines 42-44",
+      "how": "Extend the existing resultSummary logic and the expanded details section to render DiffView instead of raw JSON when the tool is reify_update_source."
     },
     {
-      "what": "Expand/collapse toggle pattern with createSignal + Show",
-      "where": "gui/src/panels/ConstraintPanel.tsx lines 26-57",
-      "how": "ThinkingBlock and ToolCallCard use the same toggle pattern: createSignal(boolean) for expanded state, \u25b6/\u25bc chevron indicator, Show component for conditional content rendering."
+      "what": "StatusBar section+divider pattern with data-* attributes for CSS styling",
+      "where": "gui/src/panels/StatusBar.tsx lines 30-55",
+      "how": "Add a new Claude section following the identical pattern: <span class={styles.divider}/> <span class={styles.section}> with label + value, using data-claude-status attribute for state-based styling."
     },
     {
-      "what": "data-testid convention and vitest + @solidjs/testing-library test patterns",
-      "where": "gui/src/__tests__/Toast.test.tsx, gui/src/__tests__/panels-smoke.test.tsx",
-      "how": "All new components use data-testid attributes. Tests use render(() => <Component />), screen.getByTestId(), fireEvent.click(), vi.fn(), vi.useFakeTimers()/vi.advanceTimersByTime() patterns."
+      "what": "ConstraintPanel.onConstraintSelect callback pattern for optional prop callbacks",
+      "where": "gui/src/panels/ConstraintPanel.tsx line 8",
+      "how": "Add parallel onAskClaude optional callback following the same pattern. Wire in App.tsx the same way handleConstraintSelect is wired."
     },
     {
-      "what": "Component<Props> with CSS module imports pattern",
-      "where": "gui/src/panels/Toast.tsx, gui/src/panels/ConstraintPanel.tsx",
-      "how": "All new components follow: import styles from './X.module.css', export const X: Component<XProps> = (props) => { ... }."
+      "what": "ChatPanel.module.css inputArea styling",
+      "where": "gui/src/panels/ChatPanel.module.css lines 37-42",
+      "how": "Extend inputArea to include context picker button alongside textarea and send/abort. Add contextChips area above inputArea."
     },
     {
-      "what": "Panel and store barrel exports",
-      "where": "gui/src/panels/index.ts, gui/src/stores/index.ts",
-      "how": "Add ChatPanel to panels/index.ts and createClaudeStore to stores/index.ts following existing named export patterns."
+      "what": "Test patterns: factory helpers + data-testid + vi.fn() + render/screen/fireEvent",
+      "where": "gui/src/__tests__/*.test.tsx (especially ChatPanel.test.tsx, ConstraintPanel.test.tsx)",
+      "how": "All new tests follow identical patterns: makeX() factory functions for test data, vi.fn() for callbacks, render(() => <Component />), screen.getByTestId(), fireEvent.click/contextMenu."
     },
     {
-      "what": "Status indicator pattern with data-status attribute for CSS styling",
-      "where": "gui/src/panels/ConstraintPanel.tsx (.statusBadge with data-status), ConstraintPanel.module.css lines 70-83",
-      "how": "ToolCallCard status indicator uses the same data-status attribute pattern: [data-status='pending'], [data-status='complete'], [data-status='error'] for CSS color styling."
+      "what": "CSS modules with var(--reify-*) design tokens",
+      "where": "gui/src/panels/*.module.css",
+      "how": "All new CSS modules use the same design tokens (--reify-accent, --reify-background, --reify-text, --reify-surface0, --reify-border, --reify-error, --reify-success) for consistent theming."
     },
     {
-      "what": "CSS spinner animation",
-      "where": "gui/src/App.module.css lines 46-57 (.spinner with @keyframes spin)",
-      "how": "ToolCallCard pending status reuses the same spin animation pattern (border with transparent top, rotate 360deg)."
+      "what": "Expand/collapse toggle pattern: createSignal(bool) + Show component",
+      "where": "gui/src/panels/ConstraintPanel.tsx, gui/src/panels/chat/ToolCallCard.tsx",
+      "how": "DiffView uses the same toggle pattern for collapsible diff content."
+    },
+    {
+      "what": "useChatPanelPersistence hook for chat panel open/closed state",
+      "where": "gui/src/hooks/useChatPanelPersistence.ts",
+      "how": "Reuse for the chat panel toggle triggered by StatusBar click and Ask Claude actions."
     }
   ],
-  "_session_id": "142-0c60416b",
-  "_created_at": "2026-03-23T18:35:00.921395+00:00"
+  "_session_id": "143-91bb2704",
+  "_created_at": "2026-03-23T20:11:20.380202+00:00"
 }
