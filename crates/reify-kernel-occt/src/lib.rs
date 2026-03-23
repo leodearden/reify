@@ -11,6 +11,14 @@
 //!
 //! [`GeometryKernel`]: reify_types::GeometryKernel
 
+/// Whether OCCT libraries were found at build time.
+///
+/// This constant is `true` when the build detected OCCT include/lib
+/// directories, and `false` otherwise (stub types are used instead).
+/// Downstream crates can check this to skip OCCT-dependent tests
+/// at runtime.
+pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
+
 #[allow(dead_code)]
 mod ffi;
 mod handle;

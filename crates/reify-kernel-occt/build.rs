@@ -1,17 +1,42 @@
 use std::env;
 use std::path::PathBuf;
 
-fn main() {
-    // Determine OCCT paths from environment or well-known locations.
-    let occt_include = env::var("OCCT_INCLUDE_DIR").ok().map(PathBuf::from);
-    let occt_lib = env::var("OCCT_LIB_DIR").ok().map(PathBuf::from);
+fn find_include_dir() -> Option<PathBuf> {
+    if let Ok(dir) = env::var("OCCT_INCLUDE_DIR") {
+        return Some(PathBuf::from(dir));
+    }
 
-    // Well-known search paths (system, snap FreeCAD)
     let search_include = [
         "/usr/include/opencascade",
         "/usr/local/include/opencascade",
         "/snap/freecad/current/usr/include/opencascade",
     ];
+
+    for p in &search_include {
+        let path = PathBuf::from(p);
+        if path.join("Standard_Failure.hxx").exists() {
+            return Some(path);
+        }
+    }
+
+    // Also try numbered snap directories
+    if let Ok(entries) = std::fs::read_dir("/snap/freecad") {
+        for entry in entries.flatten() {
+            let candidate = entry.path().join("usr/include/opencascade");
+            if candidate.join("Standard_Failure.hxx").exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+fn find_lib_dir() -> Option<PathBuf> {
+    if let Ok(dir) = env::var("OCCT_LIB_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+
     let search_lib = [
         "/usr/lib/x86_64-linux-gnu",
         "/usr/lib",
@@ -19,44 +44,46 @@ fn main() {
         "/snap/freecad/current/usr/lib",
     ];
 
-    let include_dir = occt_include.unwrap_or_else(|| {
-        for p in &search_include {
-            let path = PathBuf::from(p);
-            if path.join("Standard_Failure.hxx").exists() {
-                return path;
-            }
+    for p in &search_lib {
+        let path = PathBuf::from(p);
+        if path.join("libTKernel.so").exists() {
+            return Some(path);
         }
-        // Also try numbered snap directories
-        if let Ok(entries) = std::fs::read_dir("/snap/freecad") {
-            for entry in entries.flatten() {
-                let candidate = entry.path().join("usr/include/opencascade");
-                if candidate.join("Standard_Failure.hxx").exists() {
-                    return candidate;
-                }
-            }
-        }
-        panic!(
-            "Cannot find OCCT include directory. Set OCCT_INCLUDE_DIR or install libocct-*-dev"
-        );
-    });
+    }
 
-    let lib_dir = occt_lib.unwrap_or_else(|| {
-        for p in &search_lib {
-            let path = PathBuf::from(p);
-            if path.join("libTKernel.so").exists() {
-                return path;
+    if let Ok(entries) = std::fs::read_dir("/snap/freecad") {
+        for entry in entries.flatten() {
+            let candidate = entry.path().join("usr/lib");
+            if candidate.join("libTKernel.so").exists() {
+                return Some(candidate);
             }
         }
-        if let Ok(entries) = std::fs::read_dir("/snap/freecad") {
-            for entry in entries.flatten() {
-                let candidate = entry.path().join("usr/lib");
-                if candidate.join("libTKernel.so").exists() {
-                    return candidate;
-                }
-            }
+    }
+
+    None
+}
+
+fn main() {
+    // Auto-detect OCCT availability.
+    let include_dir = find_include_dir();
+    let lib_dir = find_lib_dir();
+
+    let (include_dir, lib_dir) = match (include_dir, lib_dir) {
+        (Some(inc), Some(lib)) => (inc, lib),
+        _ => {
+            // OCCT not found — emit a warning and exit gracefully.
+            // The crate will compile with stub types instead of FFI bindings.
+            println!(
+                "cargo:warning=OCCT libraries not found. \
+                 Building without OCCT support (stub types only). \
+                 Set OCCT_INCLUDE_DIR / OCCT_LIB_DIR or install libocct-*-dev."
+            );
+            return;
         }
-        panic!("Cannot find OCCT lib directory. Set OCCT_LIB_DIR or install libocct-*-dev");
-    });
+    };
+
+    // OCCT found — enable the has_occt cfg flag.
+    println!("cargo:rustc-cfg=has_occt");
 
     println!("cargo:rerun-if-changed=cpp/occt_wrapper.h");
     println!("cargo:rerun-if-changed=cpp/occt_wrapper.cpp");
