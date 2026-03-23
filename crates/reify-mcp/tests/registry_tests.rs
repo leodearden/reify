@@ -356,6 +356,26 @@ fn registry_multiple_tools_preserves_order() {
 }
 
 #[test]
+// --- S4: Duplicate registration test ---
+
+#[test]
+#[should_panic(expected = "duplicate")]
+fn registry_duplicate_name_panics() {
+    let mut registry = ToolRegistry::new();
+    registry.register(
+        "alpha",
+        "First alpha",
+        serde_json::json!({"type": "object"}),
+        |_params, _ctx| Ok(serde_json::json!(null)),
+    );
+    registry.register(
+        "alpha",
+        "Second alpha",
+        serde_json::json!({"type": "object"}),
+        |_params, _ctx| Ok(serde_json::json!(null)),
+    );
+}
+
 fn registry_handler_receives_params_and_context() {
     let mut registry = ToolRegistry::new();
     registry.register(
