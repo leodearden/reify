@@ -352,6 +352,12 @@ impl ReifyToolContext for CliToolContext {
     }
 
     fn update_source(&self, file_path: &str, content: &str) -> Result<UpdateResult, ToolError> {
+        // Canonicalize path to match open_file/load_file key convention.
+        let canonical = std::fs::canonicalize(file_path)
+            .unwrap_or_else(|_| PathBuf::from(file_path))
+            .to_string_lossy()
+            .to_string();
+
         // Stage content locally — do NOT modify state.files until after successful pipeline.
         // This preserves the invariant that files, compiled, and engine always reflect
         // the same successful state.
@@ -383,12 +389,12 @@ impl ReifyToolContext for CliToolContext {
 
         // Pipeline succeeded — commit file content alongside compiled/engine state.
         let mut state = self.lock_state();
-        if let Some(entry) = state.files.get_mut(file_path) {
+        if let Some(entry) = state.files.get_mut(&canonical) {
             entry.content = content.to_string();
             entry.dirty = true;
         } else {
             state.files.insert(
-                file_path.to_string(),
+                canonical,
                 FileEntry {
                     content: content.to_string(),
                     dirty: true,
@@ -482,18 +488,9 @@ impl ReifyToolContext for CliToolContext {
             .to_string_lossy()
             .to_string();
 
-        let mut state = self.lock_state();
-        state.files.insert(
-            abs_path.clone(),
-            FileEntry {
-                content: source.clone(),
-                dirty: false,
-            },
-        );
-        state.active_file = Some(abs_path.clone());
-
-        // If it's a .ri file, parse/compile/eval
-        if file_path.ends_with(".ri") {
+        // If it's a .ri file, parse/compile/eval BEFORE committing state.
+        // On parse failure, still register the file but don't update compiled/engine.
+        let pipeline_result = if file_path.ends_with(".ri") {
             let module_name = std::path::Path::new(file_path)
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -507,9 +504,27 @@ impl ReifyToolContext for CliToolContext {
                 let checker = reify_constraints::SimpleConstraintChecker;
                 let mut engine = reify_eval::Engine::new(Box::new(checker), None);
                 engine.eval(&compiled);
-                state.compiled = Some(compiled);
-                state.engine = Some(engine);
+                Some((compiled, engine))
+            } else {
+                None
             }
+        } else {
+            None
+        };
+
+        let mut state = self.lock_state();
+        state.files.insert(
+            abs_path.clone(),
+            FileEntry {
+                content: source,
+                dirty: false,
+            },
+        );
+        state.active_file = Some(abs_path.clone());
+
+        if let Some((compiled, engine)) = pipeline_result {
+            state.compiled = Some(compiled);
+            state.engine = Some(engine);
         }
 
         Ok(OpenFileInfo {
@@ -520,7 +535,7 @@ impl ReifyToolContext for CliToolContext {
     }
 
     fn save_file(&self, file_path: Option<&str>) -> Result<bool, ToolError> {
-        let state = self.lock_state();
+        let mut state = self.lock_state();
         let path = file_path
             .map(|s| s.to_string())
             .or_else(|| state.active_file.clone())
@@ -533,6 +548,11 @@ impl ReifyToolContext for CliToolContext {
 
         std::fs::write(&path, &entry.content)
             .map_err(|e| ToolError::EngineError(format!("cannot write file: {e}")))?;
+
+        // Reset dirty flag after successful write
+        if let Some(entry) = state.files.get_mut(&path) {
+            entry.dirty = false;
+        }
 
         Ok(true)
     }

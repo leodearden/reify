@@ -1,8 +1,10 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// Helper: spawn `reify mcp-server` with the given args, send JSON-RPC lines,
 /// close stdin, and read all stdout. Returns parsed JSON lines.
+/// Times out after 10 seconds to prevent CI deadlocks.
 fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
         .arg("mcp-server")
@@ -24,10 +26,26 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
     // Drop stdin by closing it
     drop(child.stdin.take());
 
-    // Wait with timeout
+    // Wait with timeout to prevent CI deadlocks
+    let timeout = Duration::from_secs(10);
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => break,
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    child.kill().ok();
+                    panic!("mcp_roundtrip: child process timed out after {timeout:?}");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => panic!("mcp_roundtrip: error waiting for child: {e}"),
+        }
+    }
+
     let output = child
         .wait_with_output()
-        .expect("failed to wait for reify mcp-server");
+        .expect("failed to collect output from reify mcp-server");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
