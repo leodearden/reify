@@ -81,3 +81,19 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+.contextChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.autoContextLabel {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--reify-text-muted);
+  font-style: italic;
+}
