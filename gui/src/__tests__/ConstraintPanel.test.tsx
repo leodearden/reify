@@ -359,3 +359,140 @@ describe('ConstraintPanel status badge aria-labels', () => {
     expect(ariaLabels).toContain('indeterminate');
   });
 });
+
+describe('ConstraintPanel Ask Claude context menu', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50' }),
+    c2: makeValue({ cell_id: 'c2', name: 'height', value: '30' }),
+  };
+
+  it('right-clicking a constraint row shows a context menu', () => {
+    const constraint = makeConstraint({
+      node_id: 'n1',
+      status: 'violated',
+      expression: 'width > 100',
+      parameter_ids: ['c1'],
+    });
+    const onAskClaude = vi.fn();
+    render(() => (
+      <ConstraintPanel
+        constraints={{ n1: constraint }}
+        values={values}
+        onAskClaude={onAskClaude}
+      />
+    ));
+    const row = screen.getByTestId('constraint-row-n1');
+    fireEvent.contextMenu(row);
+    expect(screen.getByTestId('constraint-context-menu')).toBeTruthy();
+  });
+
+  it('menu contains "Ask Claude about this constraint" option', () => {
+    const constraint = makeConstraint({
+      node_id: 'n1',
+      status: 'violated',
+      expression: 'width > 100',
+      parameter_ids: ['c1'],
+    });
+    const onAskClaude = vi.fn();
+    render(() => (
+      <ConstraintPanel
+        constraints={{ n1: constraint }}
+        values={values}
+        onAskClaude={onAskClaude}
+      />
+    ));
+    const row = screen.getByTestId('constraint-row-n1');
+    fireEvent.contextMenu(row);
+    expect(screen.getByText('Ask Claude about this constraint')).toBeTruthy();
+  });
+
+  it('clicking the option calls onAskClaude with context string', () => {
+    const constraint = makeConstraint({
+      node_id: 'n1',
+      status: 'violated',
+      expression: 'width > 100',
+      parameter_ids: ['c1', 'c2'],
+    });
+    const onAskClaude = vi.fn();
+    render(() => (
+      <ConstraintPanel
+        constraints={{ n1: constraint }}
+        values={values}
+        onAskClaude={onAskClaude}
+      />
+    ));
+    const row = screen.getByTestId('constraint-row-n1');
+    fireEvent.contextMenu(row);
+    fireEvent.click(screen.getByText('Ask Claude about this constraint'));
+    expect(onAskClaude).toHaveBeenCalledTimes(1);
+    const contextStr = onAskClaude.mock.calls[0][0] as string;
+    expect(contextStr).toContain('Constraint: width > 100');
+    expect(contextStr).toContain('Status: violated');
+    expect(contextStr).toContain('width=50');
+    expect(contextStr).toContain('height=30');
+  });
+
+  it('menu closes after clicking the option', () => {
+    const constraint = makeConstraint({
+      node_id: 'n1',
+      status: 'violated',
+      expression: 'width > 100',
+      parameter_ids: ['c1'],
+    });
+    const onAskClaude = vi.fn();
+    render(() => (
+      <ConstraintPanel
+        constraints={{ n1: constraint }}
+        values={values}
+        onAskClaude={onAskClaude}
+      />
+    ));
+    const row = screen.getByTestId('constraint-row-n1');
+    fireEvent.contextMenu(row);
+    expect(screen.getByTestId('constraint-context-menu')).toBeTruthy();
+    fireEvent.click(screen.getByText('Ask Claude about this constraint'));
+    expect(screen.queryByTestId('constraint-context-menu')).toBeNull();
+  });
+
+  it('menu closes on click-outside', () => {
+    const constraint = makeConstraint({
+      node_id: 'n1',
+      status: 'violated',
+      expression: 'width > 100',
+      parameter_ids: ['c1'],
+    });
+    const onAskClaude = vi.fn();
+    render(() => (
+      <ConstraintPanel
+        constraints={{ n1: constraint }}
+        values={values}
+        onAskClaude={onAskClaude}
+      />
+    ));
+    const row = screen.getByTestId('constraint-row-n1');
+    fireEvent.contextMenu(row);
+    expect(screen.getByTestId('constraint-context-menu')).toBeTruthy();
+    // Click outside the menu
+    fireEvent.click(document.body);
+    expect(screen.queryByTestId('constraint-context-menu')).toBeNull();
+  });
+
+  it('onAskClaude is optional — omitting it means no context menu on right-click', () => {
+    const constraint = makeConstraint({
+      node_id: 'n1',
+      status: 'violated',
+      expression: 'width > 100',
+      parameter_ids: ['c1'],
+    });
+    // Render WITHOUT onAskClaude
+    render(() => (
+      <ConstraintPanel
+        constraints={{ n1: constraint }}
+        values={values}
+      />
+    ));
+    const row = screen.getByTestId('constraint-row-n1');
+    fireEvent.contextMenu(row);
+    expect(screen.queryByTestId('constraint-context-menu')).toBeNull();
+  });
+});
