@@ -22,6 +22,30 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
     >
       <div class={styles.header}>
         <span class={styles.headerTitle}>Claude Session</span>
+        <button
+          data-testid="chat-clear-btn"
+          class={styles.headerBtn}
+          onClick={() => props.onClearSession()}
+          title="Clear session"
+        >
+          &#x1f5d1;
+        </button>
+        <button
+          data-testid="chat-minimize-btn"
+          class={styles.headerBtn}
+          onClick={() => props.onToggle()}
+          title="Minimize"
+        >
+          &#x2500;
+        </button>
+        <button
+          data-testid="chat-close-btn"
+          class={styles.headerBtn}
+          onClick={() => props.onToggle()}
+          title="Close"
+        >
+          &#x00d7;
+        </button>
       </div>
       <Show when={props.messages.length === 0}>
         <div class={styles.emptyState}>
