@@ -21,8 +21,7 @@
       "sidecar": true,
       "scope": [
         {
-          "name": "sidecar/reify-sidecar",
-          "sidecar": true
+          "name": "sidecar/reify-sidecar"
         }
       ]
     }
