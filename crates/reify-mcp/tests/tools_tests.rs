@@ -59,12 +59,27 @@ fn all_tools_have_valid_object_schema() {
     }
 }
 
+/// Read tools that are implemented (not stubs).
+const READ_TOOLS: &[&str] = &[
+    "reify_get_source",
+    "reify_get_open_files",
+    "reify_get_diagnostics",
+    "reify_get_parameters",
+    "reify_get_constraints",
+    "reify_get_eval_status",
+    "reify_get_selection",
+    "reify_get_source_location",
+];
+
 #[test]
-fn all_stub_tools_return_not_implemented() {
+fn non_read_stub_tools_return_not_implemented() {
     let registry = setup_registry();
     let ctx = MockToolContext::default();
 
     for tool in registry.list_tools() {
+        if READ_TOOLS.contains(&tool.name.as_str()) {
+            continue;
+        }
         let result = registry.call_tool(&tool.name, serde_json::json!({}), &ctx);
         match result {
             Err(ToolError::NotImplemented) => {} // expected

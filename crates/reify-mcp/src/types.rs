@@ -29,11 +29,19 @@ pub struct ToolInfo {
 
 // --- MCP response types (JSON-oriented, decoupled from GUI types) ---
 
+/// Source content returned by get_source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceContent {
+    pub content: String,
+    pub file_path: String,
+}
+
 /// Information about an open file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenFileInfo {
     pub path: String,
     pub language: String,
+    pub dirty: bool,
 }
 
 /// A diagnostic (error/warning) from the engine.
@@ -82,8 +90,8 @@ pub struct EvalStatusInfo {
 /// Current selection in the viewport.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelectionInfo {
-    pub entity_path: Option<String>,
-    pub cell_ids: Vec<String>,
+    pub selected_entity: Option<String>,
+    pub hovered_entity: Option<String>,
 }
 
 /// A source location reference.

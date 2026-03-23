@@ -19,7 +19,7 @@ pub use tools::register_all_tools;
 pub use transport::McpServer;
 pub use types::{
     ConstraintInfo, DiagnosticInfo, EvalStatusInfo, OpenFileInfo, ParameterInfo, SelectionInfo,
-    SetParamResult, SourceLocationInfo, ToolError, ToolInfo, UpdateResult,
+    SetParamResult, SourceContent, SourceLocationInfo, ToolError, ToolInfo, UpdateResult,
 };
 
 #[cfg(any(test, feature = "test-support"))]

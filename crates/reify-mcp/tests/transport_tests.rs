@@ -26,7 +26,7 @@ fn in_process_tools_call_stub_returns_not_implemented() {
         "id": 2,
         "method": "tools/call",
         "params": {
-            "name": "reify_get_source",
+            "name": "reify_update_source",
             "arguments": {}
         }
     });
@@ -154,7 +154,7 @@ fn integration_tools_call_stub_error() {
         "id": 3,
         "method": "tools/call",
         "params": {
-            "name": "reify_get_eval_status",
+            "name": "reify_update_source",
             "arguments": {}
         }
     });

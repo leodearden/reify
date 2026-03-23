@@ -1,107 +1,218 @@
 {
-  "task_id": "130",
-  "title": "Fix flaky watcher tests: use unique temp directory names",
+  "task_id": "135",
+  "title": "Implement MCP read tools",
   "files": [
-    "Cargo.toml",
-    "gui/src-tauri/Cargo.toml",
-    "gui/src-tauri/src/tests/watcher_tests.rs",
-    "gui/src-tauri/src/tests/engine_tests.rs",
-    "gui/src-tauri/src/tests/commands_tests.rs"
+    "crates/reify-mcp/src/types.rs",
+    "crates/reify-mcp/src/context.rs",
+    "crates/reify-mcp/src/tools/read.rs",
+    "crates/reify-mcp/tests/tools_tests.rs",
+    "crates/reify-mcp/tests/read_tools_tests.rs"
   ],
   "modules": [
-    "gui/src-tauri"
+    "crates/reify-mcp"
   ],
-  "analysis": "Three test files in gui/src-tauri/src/tests/ use hardcoded temp directory names (e.g., /tmp/reify-watcher-test-1, /tmp/reify-gui-test-export) that collide when multiple test runs or orchestrator worktrees execute concurrently. There are 8 total instances across 3 files:\n\n- watcher_tests.rs: 3 tests with reify-watcher-test-{1,2,3}\n- engine_tests.rs: 2 tests with reify-gui-test-export-{e2e,no-clone}\n- commands_tests.rs: 3 tests with reify-gui-test{,-export,-e2e-export}\n\nFix: Add the `tempfile` crate as a dev-dependency and replace all hardcoded temp dirs with `tempfile::TempDir::new()` or `tempfile::tempdir()`. This provides OS-guaranteed unique names (via mkdtemp) and automatic cleanup on drop, eliminating both the collision bug and the manual cleanup code.\n\nThe `tempfile` crate is the standard Rust approach for test temp directories. It is not currently in the workspace dependencies, so it must be added to both Cargo.toml (workspace) and gui/src-tauri/Cargo.toml (dev-dep).\n\nSince we're fixing test infrastructure (not production code), the TDD cycle is: fix the test file, then verify tests pass. Each test file is a separate atomic step.",
+  "analysis": "Task 133 created the reify-mcp crate with 16 tool stubs (8 read, 5 write, 2 navigation, 1 reference), a ReifyToolContext trait, MockToolContext, ToolRegistry, McpDispatcher (JSON-RPC 2.0), and McpServer (dual-mode transport). All tool handlers currently return Err(ToolError::NotImplemented).\n\nThis task implements the 8 read tools in tools/read.rs. Each handler must: (1) parse input params from serde_json::Value, (2) call the corresponding ReifyToolContext trait method, (3) apply client-side filtering (by severity, file_path, entity_path prefix, status), and (4) serialize the result to JSON.\n\nKey type mismatches between task spec and existing types from task 133:\n- OpenFileInfo has {path, language} but spec wants {path, dirty} -> add dirty field\n- SelectionInfo has {entity_path, cell_ids} but spec wants {selected_entity?, hovered_entity?} -> update fields\n- get_source returns String but spec wants {content, file_path} -> add SourceContent struct, update trait return type\n\nThe MockToolContext needs to become configurable (public fields) to support testing with varied data. The existing tools_tests.rs test 'all_stub_tools_return_not_implemented' will break and needs updating to exclude read tools. Input schemas for filtering tools (diagnostics, parameters, constraints) need filter params added.\n\nHandler pattern: parse optional params with .as_str()/.as_u64(), call ctx method to get full dataset, apply filters in closure, serialize with serde_json::to_value(). For non-existing entities in get_source_location, convert ToolError to JSON null.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add `tempfile = \"3\"` to workspace dependencies in root Cargo.toml and `tempfile.workspace = true` to [dev-dependencies] in gui/src-tauri/Cargo.toml",
+      "description": "Update types.rs: Add SourceContent struct {content: String, file_path: String} with Serialize/Deserialize; add dirty: bool to OpenFileInfo; update SelectionInfo to {selected_entity: Option<String>, hovered_entity: Option<String>} to match MCP spec",
       "status": "done",
-      "commit": "29d1875",
+      "commit": "ad8dead",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Update context.rs: Change get_source return type to Result<SourceContent, ToolError>; update get_selection for new SelectionInfo fields; make MockToolContext configurable with public fields (source: SourceContent, open_files: Vec<OpenFileInfo>, diagnostics: Vec<DiagnosticInfo>, parameters: Vec<ParameterInfo>, constraints: Vec<ConstraintInfo>, eval_status: EvalStatusInfo, selection: SelectionInfo, source_locations: std::collections::HashMap<String, SourceLocationInfo>). Implement Default with sensible empty values. Update all trait method impls to return from fields. For get_source_location, return Err(ToolError::EngineError) if entity_path not in HashMap.",
+      "status": "done",
+      "commit": "ad8dead",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Update tools_tests.rs: Change all_stub_tools_return_not_implemented to only check write/navigation/reference tools (exclude the 8 read tools). Define READ_TOOLS const array with the 8 read tool names and filter them out of the assertion loop.",
+      "status": "done",
+      "commit": "ad8dead",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Update input schemas in read.rs for filtering tools: add file_path (optional string) and severity (optional enum) params to reify_get_diagnostics, add entity_path (optional string) param to reify_get_parameters, add status (optional enum) param to reify_get_constraints. Keep existing schemas for tools that already have correct params (get_source has file_path, get_source_location has required entity_path).",
+      "status": "done",
+      "commit": "ad8dead",
       "tests": []
     }
   ],
   "steps": [
     {
       "id": "step-1",
-      "type": "impl",
-      "description": "Fix watcher_tests.rs: Replace 3 hardcoded temp dir paths (reify-watcher-test-{1,2,3}) with tempfile::tempdir(). Each test creates a TempDir via tempfile::tempdir().unwrap(), uses dir.path() for the watch directory. The TempDir auto-cleans on drop so remove all manual cleanup code (remove_file, remove_dir calls). Use a named `_dir` binding (not `_`) so TempDir lives for the full test duration and the directory isn't deleted prematurely.",
+      "type": "test",
+      "description": "Write failing tests for reify_get_source in read_tools_tests.rs: (1) with explicit file_path param returns {content, file_path} JSON with correct values from mock, (2) without file_path param returns active file content from mock (mock configured with a default source), (3) error case when context returns ToolError propagates correctly. Configure MockToolContext with SourceContent {content: 'param x = 10mm', file_path: 'main.ri'}.",
       "status": "done",
-      "commit": "9868119"
+      "commit": "3a96959"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Verify all 3 watcher tests pass: cargo test -p reify-gui --lib -- watcher_tests",
+      "type": "impl",
+      "description": "Implement reify_get_source handler in read.rs: parse optional file_path from params['file_path'].as_str(), call ctx.get_source(file_path), on Ok serialize SourceContent to JSON via serde_json::to_value(), on Err propagate ToolError.",
       "status": "done",
-      "commit": "9868119"
+      "commit": "bbe3342"
     },
     {
       "id": "step-3",
-      "type": "impl",
-      "description": "Fix engine_tests.rs: Replace 2 hardcoded temp dir paths (reify-gui-test-export-e2e in export_end_to_end, reify-gui-test-export-no-clone in export_no_unnecessary_clone) with tempfile::tempdir(). Remove manual cleanup code. Use named binding so TempDir stays alive.",
+      "type": "test",
+      "description": "Write failing tests for reify_get_open_files: (1) returns JSON array with path, language, and dirty fields for each open file, (2) returns empty array when no files open. Configure mock with two OpenFileInfo entries (one dirty: true, one dirty: false).",
       "status": "done",
-      "commit": "4b4a6b9"
+      "commit": "3a96959"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Verify engine export tests pass: cargo test -p reify-gui --lib -- engine_tests::export",
+      "type": "impl",
+      "description": "Implement reify_get_open_files handler: call ctx.get_open_files(), serialize Vec<OpenFileInfo> to JSON via serde_json::to_value().",
       "status": "done",
-      "commit": "4b4a6b9"
+      "commit": "bbe3342"
     },
     {
       "id": "step-5",
-      "type": "impl",
-      "description": "Fix commands_tests.rs: Replace 3 hardcoded temp dir paths (reify-gui-test in save_and_open_file_roundtrip, reify-gui-test-export in export_writes_file, reify-gui-test-e2e-export in end_to_end_export_via_impl) with tempfile::tempdir(). Remove manual cleanup code. Use named binding so TempDir stays alive.",
+      "type": "test",
+      "description": "Write failing tests for reify_get_diagnostics: (1) returns all diagnostics with no filter params, (2) filters by file_path param (only diagnostics for that file), (3) filters by severity param 'error' (only errors returned), (4) combined filter by file_path and severity. Configure mock with 4 diagnostics: 2 errors and 1 warning in file_a, 1 error in file_b.",
       "status": "done",
-      "commit": "ef1dba7"
+      "commit": "3a96959"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Verify all commands tests pass: cargo test -p reify-gui --lib -- commands_tests",
+      "type": "impl",
+      "description": "Implement reify_get_diagnostics handler: call ctx.get_diagnostics(), parse optional file_path and severity from params, filter Vec by file_path equality and severity equality (case-insensitive), serialize filtered results to JSON.",
       "status": "done",
-      "commit": "ef1dba7"
+      "commit": "bbe3342"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Run full gui test suite to verify no regressions: cargo test -p reify-gui --lib. Confirm zero hardcoded temp dir patterns remain via grep.",
+      "description": "Write failing tests for reify_get_parameters: (1) returns all parameters with no filter, (2) filters by entity_path prefix 'sketch1' matches 'sketch1/width' and 'sketch1/height' but not 'sketch2/depth', (3) returns empty array when prefix matches nothing. Configure mock with 3 parameters across entity paths sketch1/width, sketch1/height, sketch2/depth.",
       "status": "done",
-      "commit": "ef1dba7"
+      "commit": "3a96959"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Implement reify_get_parameters handler: call ctx.get_parameters(), parse optional entity_path from params, filter by starts_with prefix matching on parameter's entity_path field, serialize filtered Vec<ParameterInfo> to JSON.",
+      "status": "done",
+      "commit": "bbe3342"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing tests for reify_get_constraints: (1) returns all constraints with no filter, (2) filters by status='satisfied' returns only satisfied constraints, (3) filters by status='violated' returns only violated, (4) returns empty array when filter matches nothing (status='indeterminate' with none configured). Configure mock with 2 satisfied and 1 violated constraint.",
+      "status": "done",
+      "commit": "3a96959"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Implement reify_get_constraints handler: call ctx.get_constraints(), parse optional status from params, filter by exact status string match, serialize filtered Vec<ConstraintInfo> to JSON.",
+      "status": "done",
+      "commit": "bbe3342"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test for reify_get_eval_status: returns JSON with phase, progress, and dirty_count fields from mock. Configure mock with eval_status {phase: 'evaluating', progress: Some(0.5), dirty_count: 3}.",
+      "status": "done",
+      "commit": "3a96959"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Implement reify_get_eval_status handler: call ctx.get_eval_status(), serialize EvalStatusInfo to JSON via serde_json::to_value().",
+      "status": "done",
+      "commit": "bbe3342"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing tests for reify_get_selection: (1) returns selected_entity and hovered_entity when both are set, (2) returns null values when nothing selected (both None). Configure mock with SelectionInfo {selected_entity: Some('bracket/body'), hovered_entity: Some('bracket/fillet1')}.",
+      "status": "done",
+      "commit": "3a96959"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Implement reify_get_selection handler: call ctx.get_selection(), serialize SelectionInfo to JSON via serde_json::to_value().",
+      "status": "done",
+      "commit": "bbe3342"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing tests for reify_get_source_location: (1) returns {file, line, column, end_line, end_column} JSON for existing entity path, (2) returns JSON null for non-existing entity (mock HashMap has no entry), (3) returns InvalidParams error when entity_path param is missing from input. Configure mock HashMap with 'bracket/body' -> SourceLocationInfo {file: 'main.ri', line: 5, column: 3, end_line: 20, end_column: 1}.",
+      "status": "done",
+      "commit": "3a96959"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement reify_get_source_location handler: parse required entity_path from params (return Err(ToolError::InvalidParams) if missing), call ctx.get_source_location(entity_path), on Ok serialize SourceLocationInfo to JSON, on Err (entity not found) return Ok(serde_json::Value::Null) rather than propagating error.",
+      "status": "done",
+      "commit": "bbe3342"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use the `tempfile` crate instead of manual PID/UUID suffix approach",
-      "rationale": "tempfile::TempDir uses OS-provided mkdtemp for guaranteed-unique names, auto-cleans on drop (eliminating manual cleanup code), and is the standard Rust testing practice. The task description lists it as an acceptable approach. It also makes tests cleaner by removing 2-3 lines of cleanup boilerplate per test."
+      "decision": "Add SourceContent struct and change get_source trait return type from String to SourceContent",
+      "rationale": "The MCP spec requires returning {content, file_path} from reify_get_source. When file_path is None (active file), the handler needs to know the resolved path. Returning a SourceContent{content, file_path} from the trait lets the engine implementation communicate the actual path used, rather than the handler guessing or returning null."
     },
     {
-      "decision": "Fix commands_tests.rs in addition to the explicitly mentioned files",
-      "rationale": "commands_tests.rs has the same hardcoded temp dir pattern (3 instances) and is equally susceptible to the same race conditions. The task says 'also check engine_tests.rs for the same pattern' \u2014 commands_tests.rs has the same issue and should be fixed for consistency and correctness."
+      "decision": "Add dirty: bool to OpenFileInfo alongside existing language field",
+      "rationale": "The MCP tool spec requires dirty state in the response. Since OpenFileInfo is the MCP response type (derives Serialize), adding the field here is cleaner than constructing ad-hoc JSON in the handler. The language field is kept as additional useful information."
     },
     {
-      "decision": "Use named `_dir` binding (not underscore-prefixed drop) to keep TempDir alive",
-      "rationale": "TempDir deletes its directory when dropped. Watcher tests need the directory to persist for the duration of the test (FileWatcher watches it). A plain `_` binding drops immediately; a named binding like `dir` or `tmp_dir` lives until end of scope. We'll use `let dir = tempfile::tempdir().unwrap()` and `dir.path()` to get the PathBuf."
+      "decision": "Replace SelectionInfo fields (entity_path, cell_ids) with (selected_entity, hovered_entity)",
+      "rationale": "The MCP spec defines the response as {selected_entity?, hovered_entity?}. The current fields don't match. Since this type exists solely as the MCP response type and no real implementation exists yet, now is the right time to align it with the spec."
     },
     {
-      "decision": "Add tempfile as a workspace dependency following project conventions",
-      "rationale": "The project uses workspace dependency management \u2014 all external crates are declared in [workspace.dependencies] then referenced with `workspace = true` in member crates. Adding tempfile at workspace level is consistent with existing patterns (e.g., notify, tokio, serde_json)."
+      "decision": "Filtering done in tool handlers, not in context trait methods",
+      "rationale": "The trait methods return full unfiltered data (all diagnostics, all parameters, all constraints). Filtering by severity/file_path/entity_path/status is applied by the handler after retrieval. This keeps the trait simple (one method per data type) and makes filtering logic testable at the handler level. For large datasets, filtering could later be pushed into the trait, but YAGNI for now."
+    },
+    {
+      "decision": "Non-existing entity in get_source_location returns Ok(null JSON), not Err(ToolError)",
+      "rationale": "The spec says the tool returns location 'or null'. A missing entity isn't a tool error condition \u2014 it's a valid query with a null result. The handler catches ToolError from the context and converts to serde_json::Value::Null, letting MCP clients distinguish 'entity not found' (null) from 'something broke' (isError: true in JSON-RPC response)."
+    },
+    {
+      "decision": "MockToolContext uses public fields with Default rather than builder pattern",
+      "rationale": "Public fields are the simplest approach for test configuration. Each test constructs a mock with the specific data it needs via struct update syntax (MockToolContext { diagnostics: vec![...], ..Default::default() }). A builder would add complexity without validation benefit. HashMap<String, SourceLocationInfo> supports testing existing vs non-existing entity lookups."
+    },
+    {
+      "decision": "Entity path filtering uses starts_with prefix matching",
+      "rationale": "The spec says reify_get_parameters is 'filterable by entity path prefix'. String::starts_with on the parameter's entity_path field provides hierarchical filtering: 'sketch1' matches 'sketch1/width', 'sketch1/height'. This matches typical entity path hierarchies in CAD parametric models."
     }
   ],
   "reuse": [
     {
-      "what": "Workspace dependency pattern",
-      "where": "Cargo.toml [workspace.dependencies] + gui/src-tauri/Cargo.toml [dev-dependencies]",
-      "how": "Add `tempfile = \"3\"` to workspace deps, then `tempfile.workspace = true` to gui crate dev-deps, following existing patterns like reify-test-support.workspace = true"
+      "what": "ToolRegistry::register and call_tool pattern",
+      "where": "crates/reify-mcp/src/registry.rs",
+      "how": "Each read tool replaces its stub closure with a real implementation following the same Fn(serde_json::Value, &dyn ReifyToolContext) -> Result<serde_json::Value, ToolError> signature. No changes to registry needed."
     },
     {
-      "what": "Existing test structure and assertions",
-      "where": "gui/src-tauri/src/tests/{watcher,engine,commands}_tests.rs",
-      "how": "All test logic, assertions, and structure remain identical \u2014 only the temp directory creation line changes (hardcoded path \u2192 tempfile::tempdir()) and manual cleanup lines are removed"
+      "what": "Existing MCP response types with Serialize derive",
+      "where": "crates/reify-mcp/src/types.rs",
+      "how": "DiagnosticInfo, ParameterInfo, ConstraintInfo, EvalStatusInfo, SourceLocationInfo already derive Serialize. Handlers use serde_json::to_value() to produce JSON responses directly. Only OpenFileInfo and SelectionInfo need field adjustments."
+    },
+    {
+      "what": "MockToolContext pattern from task 133",
+      "where": "crates/reify-mcp/src/context.rs",
+      "how": "Extend the existing mock with configurable public fields. Keep cfg(any(test, feature='test-support')) gate. Maintain Default impl compatibility so existing tests in registry_tests.rs and tools_tests.rs continue to work unchanged."
+    },
+    {
+      "what": "Test setup pattern from tools_tests.rs",
+      "where": "crates/reify-mcp/tests/tools_tests.rs",
+      "how": "Follow same pattern: create registry via setup_registry(), call registry.call_tool() with mock context and JSON params, assert on returned serde_json::Value. New read_tools_tests.rs uses identical imports and setup function."
+    },
+    {
+      "what": "serde_json::json! macro for schemas, params, and assertions",
+      "where": "Throughout crate",
+      "how": "Input schemas in read.rs use json! macro for schema objects. Test code uses json! for constructing params. Handler responses use serde_json::to_value for struct serialization."
     }
   ],
-  "_session_id": "130-fbc11d6c",
-  "_created_at": "2026-03-23T15:07:32.816749+00:00"
+  "_session_id": "135-12989b7e",
+  "_created_at": "2026-03-23T15:10:12.338957+00:00"
 }
