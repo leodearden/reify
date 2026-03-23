@@ -64,6 +64,9 @@ fn find_lib_dir() -> Option<PathBuf> {
 }
 
 fn main() {
+    // Declare has_occt as a known cfg so rustc doesn't warn about it.
+    println!("cargo::rustc-check-cfg=cfg(has_occt)");
+
     // Auto-detect OCCT availability.
     let include_dir = find_include_dir();
     let lib_dir = find_lib_dir();
