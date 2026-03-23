@@ -202,6 +202,158 @@ describe('claudeStore', () => {
     });
   });
 
+  describe('tool_result FIFO matching', () => {
+    it('resolves sequential same-tool calls in order', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+
+      // Two tool_call events with the same tool_name
+      handleOutboundMessage({
+        type: 'tool_call',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        tool_input: { entity: 'box1' },
+      } as OutboundMessage);
+      handleOutboundMessage({
+        type: 'tool_call',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        tool_input: { entity: 'box2' },
+      } as OutboundMessage);
+
+      // Two tool_result events with the same tool_name but different results
+      handleOutboundMessage({
+        type: 'tool_result',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        result: [{ name: 'width', value: 10 }],
+      } as OutboundMessage);
+      handleOutboundMessage({
+        type: 'tool_result',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        result: [{ name: 'height', value: 20 }],
+      } as OutboundMessage);
+
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant') as any;
+      expect(assistantMsg.toolCalls[0].status).toBe('complete');
+      expect(assistantMsg.toolCalls[0].result).toEqual([{ name: 'width', value: 10 }]);
+      expect(assistantMsg.toolCalls[1].status).toBe('complete');
+      expect(assistantMsg.toolCalls[1].result).toEqual([{ name: 'height', value: 20 }]);
+    });
+
+    it('does not re-update an already-completed tool call', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+
+      handleOutboundMessage({
+        type: 'tool_call',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        tool_input: { entity: 'box1' },
+      } as OutboundMessage);
+
+      // Complete it
+      handleOutboundMessage({
+        type: 'tool_result',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        result: 'first result',
+      } as OutboundMessage);
+
+      // Send another result with same tool_name — should not overwrite
+      handleOutboundMessage({
+        type: 'tool_result',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        result: 'second result',
+      } as OutboundMessage);
+
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant') as any;
+      expect(assistantMsg.toolCalls[0].result).toBe('first result');
+    });
+
+    it('tool calls have locally-unique IDs', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+
+      handleOutboundMessage({
+        type: 'tool_call',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        tool_input: {},
+      } as OutboundMessage);
+      handleOutboundMessage({
+        type: 'tool_call',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        tool_input: {},
+      } as OutboundMessage);
+
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant') as any;
+      expect(assistantMsg.toolCalls[0].id).not.toBe(assistantMsg.toolCalls[1].id);
+    });
+
+    it('mixed tool names still match correctly', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+
+      // Send: A, B, A
+      handleOutboundMessage({
+        type: 'tool_call',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        tool_input: { entity: 'box1' },
+      } as OutboundMessage);
+      handleOutboundMessage({
+        type: 'tool_call',
+        id: msgId,
+        tool_name: 'reify_update_source',
+        tool_input: { code: 'x' },
+      } as OutboundMessage);
+      handleOutboundMessage({
+        type: 'tool_call',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        tool_input: { entity: 'box2' },
+      } as OutboundMessage);
+
+      // Results: B, A, A
+      handleOutboundMessage({
+        type: 'tool_result',
+        id: msgId,
+        tool_name: 'reify_update_source',
+        result: 'source updated',
+      } as OutboundMessage);
+      handleOutboundMessage({
+        type: 'tool_result',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        result: 'params-box1',
+      } as OutboundMessage);
+      handleOutboundMessage({
+        type: 'tool_result',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        result: 'params-box2',
+      } as OutboundMessage);
+
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant') as any;
+      // toolCalls[0] = get_parameters (box1) → params-box1
+      expect(assistantMsg.toolCalls[0].result).toBe('params-box1');
+      // toolCalls[1] = update_source → source updated
+      expect(assistantMsg.toolCalls[1].result).toBe('source updated');
+      // toolCalls[2] = get_parameters (box2) → params-box2
+      expect(assistantMsg.toolCalls[2].result).toBe('params-box2');
+      // All complete
+      expect(assistantMsg.toolCalls.every((tc: any) => tc.status === 'complete')).toBe(true);
+    });
+  });
+
   describe('rAF delta batching', () => {
     let rafCallbacks: Array<() => void>;
     let origRAF: typeof globalThis.requestAnimationFrame;
