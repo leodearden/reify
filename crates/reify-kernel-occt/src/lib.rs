@@ -569,7 +569,7 @@ impl WarmStartable for OcctKernel {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, has_occt))]
 impl OcctKernel {
     /// Store a raw OcctShape and return its GeometryHandleId for testing.
     fn store_raw(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandleId {
@@ -595,7 +595,7 @@ impl OcctKernel {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, has_occt))]
 mod tests {
     use super::*;
 
