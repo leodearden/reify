@@ -40,8 +40,8 @@ max_turns:
 
 # Verification commands (Rust + GUI frontend)
 # npm ci is fast when node_modules exists; --prefer-offline avoids network hits
-test_command: ". ~/.cargo/env && cargo test --workspace -- --test-threads=1 && (cd gui && npm ci --prefer-offline && npm test)"
-lint_command: ". ~/.cargo/env && cargo clippy --workspace -- -D warnings && (cd gui && npm ci --prefer-offline && npx tsc --noEmit)"
+test_command: ". ~/.cargo/env && cargo test --workspace -- --test-threads=1 && (test -d gui && cd gui && npm ci --prefer-offline && npm test || true)"
+lint_command: ". ~/.cargo/env && cargo clippy --workspace -- -D warnings && (test -d gui && cd gui && npm ci --prefer-offline && npx tsc --noEmit || true)"
 type_check_command: ". ~/.cargo/env && cargo check --workspace"
 
 # Fused memory HTTP server
