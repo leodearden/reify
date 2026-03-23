@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@solidjs/testing-library';
+import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { MessageGroup } from '../panels/chat/MessageGroup';
-import type { AssistantMessage } from '../stores/claudeStore';
+import { ChatPanel } from '../panels/ChatPanel';
+import { createClaudeStore } from '../stores/claudeStore';
+import type { AssistantMessage, ClaudeState, ChatMessage, UserMessage } from '../stores/claudeStore';
 
 function makeAssistantMsg(overrides?: Partial<AssistantMessage>): AssistantMessage {
   return {
@@ -73,5 +75,108 @@ describe('MessageGroup', () => {
 
     expect(thinkingIdx).toBeLessThan(toolIdx);
     expect(toolIdx).toBeLessThan(textIdx);
+  });
+});
+
+function makeStore(overrides?: { onSend?: ReturnType<typeof vi.fn>; onAbort?: ReturnType<typeof vi.fn> }) {
+  return createClaudeStore({
+    onSend: overrides?.onSend ?? vi.fn(),
+    onAbort: overrides?.onAbort ?? vi.fn(),
+  });
+}
+
+describe('ChatPanel', () => {
+  it('renders with data-testid="chat-panel"', () => {
+    const store = makeStore();
+    render(() => <ChatPanel store={store} />);
+    expect(screen.getByTestId('chat-panel')).toBeTruthy();
+  });
+
+  it('shows empty state message when no messages', () => {
+    const store = makeStore();
+    render(() => <ChatPanel store={store} />);
+    expect(screen.getByTestId('chat-panel').textContent).toContain('Start a conversation');
+  });
+
+  it('renders user message with data-testid="user-message"', () => {
+    const store = makeStore();
+    store.sendMessage('Hello world', {});
+    render(() => <ChatPanel store={store} />);
+    expect(screen.getByTestId('user-message')).toBeTruthy();
+    expect(screen.getByTestId('user-message').textContent).toContain('Hello world');
+  });
+
+  it('renders assistant message via MessageGroup', () => {
+    const store = makeStore();
+    store.sendMessage('Hello', {});
+    // Feed a text delta to give the assistant some response text
+    const msgId = store.state.currentMessageId!;
+    store.handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'Hi there!' });
+    store.handleOutboundMessage({ type: 'done', id: msgId });
+    render(() => <ChatPanel store={store} />);
+    expect(screen.getByTestId('message-group')).toBeTruthy();
+    expect(screen.getByTestId('streaming-text').textContent).toContain('Hi there!');
+  });
+
+  it('abort button visible when sessionStatus is responding', () => {
+    const store = makeStore();
+    store.sendMessage('Hello', {});
+    const msgId = store.state.currentMessageId!;
+    store.handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'Hi' });
+    // sessionStatus should now be 'responding'
+    render(() => <ChatPanel store={store} />);
+    expect(screen.getByTestId('abort-button')).toBeTruthy();
+  });
+
+  it('abort button NOT visible when sessionStatus is idle', () => {
+    const store = makeStore();
+    render(() => <ChatPanel store={store} />);
+    expect(screen.queryByTestId('abort-button')).toBeNull();
+  });
+
+  it('send button visible when sessionStatus is idle', () => {
+    const store = makeStore();
+    render(() => <ChatPanel store={store} />);
+    expect(screen.getByTestId('send-button')).toBeTruthy();
+  });
+
+  it('send button disabled when textarea is empty', () => {
+    const store = makeStore();
+    render(() => <ChatPanel store={store} />);
+    const sendBtn = screen.getByTestId('send-button') as HTMLButtonElement;
+    expect(sendBtn.disabled).toBe(true);
+  });
+
+  it('typing in textarea and clicking send calls onSend', async () => {
+    const onSend = vi.fn();
+    const store = makeStore({ onSend });
+    render(() => <ChatPanel store={store} />);
+    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    fireEvent.input(textarea, { target: { value: 'Build a box' } });
+    const sendBtn = screen.getByTestId('send-button') as HTMLButtonElement;
+    fireEvent.click(sendBtn);
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend).toHaveBeenCalledWith(expect.any(String), 'Build a box', {});
+  });
+
+  it('full event sequence: sendMessage, text_deltas, done → rendered output', () => {
+    const store = makeStore();
+    store.sendMessage('Make a sphere', {});
+    const msgId = store.state.currentMessageId!;
+    store.handleOutboundMessage({ type: 'thinking_delta', id: msgId, content: 'Let me think...' });
+    store.handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'Here is ' });
+    store.handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'a sphere.' });
+    store.handleOutboundMessage({ type: 'done', id: msgId });
+
+    render(() => <ChatPanel store={store} />);
+
+    // User message should be rendered
+    expect(screen.getByTestId('user-message').textContent).toContain('Make a sphere');
+    // Assistant message should have combined response
+    expect(screen.getByTestId('streaming-text').textContent).toContain('Here is a sphere.');
+    // Thinking block should appear (collapsed, since complete)
+    expect(screen.getByTestId('thinking-block')).toBeTruthy();
+    // Session should be idle, so no abort button
+    expect(screen.queryByTestId('abort-button')).toBeNull();
   });
 });
