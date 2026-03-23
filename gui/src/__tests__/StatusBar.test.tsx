@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@solidjs/testing-library';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { StatusBar } from '../panels/StatusBar';
 import type { EvaluationStatus, MeshData, ConstraintData } from '../types';
 
@@ -106,5 +106,98 @@ describe('StatusBar accessibility', () => {
     ));
     const el = screen.getByTestId('status-bar');
     expect(el.getAttribute('aria-live')).toBe('polite');
+  });
+});
+
+describe('StatusBar Claude status indicator', () => {
+  it('when claudeStatus prop provided, renders section with data-testid="claude-status"', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        claudeStatus="idle"
+      />
+    ));
+    expect(screen.getByTestId('claude-status')).toBeTruthy();
+  });
+
+  it('shows "Claude: idle" when claudeStatus="idle"', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        claudeStatus="idle"
+      />
+    ));
+    const el = screen.getByTestId('claude-status');
+    expect(el.textContent).toContain('Claude:');
+    expect(el.textContent).toContain('idle');
+  });
+
+  it('shows "Claude: thinking..." when claudeStatus="thinking"', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        claudeStatus="thinking"
+      />
+    ));
+    const el = screen.getByTestId('claude-status');
+    expect(el.textContent).toContain('thinking...');
+  });
+
+  it('shows "Claude: calling tool..." when claudeStatus="tool-calling"', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        claudeStatus="tool-calling"
+      />
+    ));
+    const el = screen.getByTestId('claude-status');
+    expect(el.textContent).toContain('calling tool...');
+  });
+
+  it('shows "Claude: responding..." when claudeStatus="responding"', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        claudeStatus="responding"
+      />
+    ));
+    const el = screen.getByTestId('claude-status');
+    expect(el.textContent).toContain('responding...');
+  });
+
+  it('clicking the indicator calls onToggleChat callback', () => {
+    const onToggle = vi.fn();
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        claudeStatus="idle"
+        onToggleChat={onToggle}
+      />
+    ));
+    fireEvent.click(screen.getByTestId('claude-status'));
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('without claudeStatus prop, no claude-status section rendered', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+      />
+    ));
+    expect(screen.queryByTestId('claude-status')).toBeNull();
   });
 });
