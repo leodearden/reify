@@ -144,47 +144,48 @@ export class SidecarSession {
     const seenToolIds = new Set<string>();
 
     // Parse streaming JSON events from stdout
-    for await (const line of createLineReader(proc.stdout!)) {
-      try {
-        const event = JSON.parse(line);
+    try {
+      for await (const line of createLineReader(proc.stdout!)) {
+        try {
+          const event = JSON.parse(line);
 
-        if (event.type === 'assistant' && event.message?.content) {
-          for (const block of event.message.content) {
-            if (block.type === 'text' && block.text && block.text.length > lastTextLen) {
-              const delta = block.text.slice(lastTextLen);
-              lastTextLen = block.text.length;
-              this.onOutput({ type: 'text_delta', id, content: delta });
-            } else if (block.type === 'thinking' && block.thinking && block.thinking.length > lastThinkingLen) {
-              const delta = block.thinking.slice(lastThinkingLen);
-              lastThinkingLen = block.thinking.length;
-              this.onOutput({ type: 'thinking_delta', id, content: delta });
-            } else if (block.type === 'tool_use' && block.id && !seenToolIds.has(block.id)) {
-              seenToolIds.add(block.id);
-              this.onOutput({
-                type: 'tool_call',
-                id,
-                tool_name: block.name,
-                tool_input: block.input ?? {},
-              });
-            } else if (block.type === 'tool_result') {
-              this.onOutput({
-                type: 'tool_result',
-                id,
-                tool_name: block.tool_use_id ?? '',
-                result: block.content,
-              });
+          if (event.type === 'assistant' && event.message?.content) {
+            for (const block of event.message.content) {
+              if (block.type === 'text' && block.text && block.text.length > lastTextLen) {
+                const delta = block.text.slice(lastTextLen);
+                lastTextLen = block.text.length;
+                this.onOutput({ type: 'text_delta', id, content: delta });
+              } else if (block.type === 'thinking' && block.thinking && block.thinking.length > lastThinkingLen) {
+                const delta = block.thinking.slice(lastThinkingLen);
+                lastThinkingLen = block.thinking.length;
+                this.onOutput({ type: 'thinking_delta', id, content: delta });
+              } else if (block.type === 'tool_use' && block.id && !seenToolIds.has(block.id)) {
+                seenToolIds.add(block.id);
+                this.onOutput({
+                  type: 'tool_call',
+                  id,
+                  tool_name: block.name,
+                  tool_input: block.input ?? {},
+                });
+              } else if (block.type === 'tool_result') {
+                this.onOutput({
+                  type: 'tool_result',
+                  id,
+                  tool_name: block.tool_use_id ?? '',
+                  result: block.content,
+                });
+              }
             }
+          } else if (event.type === 'result' && event.session_id) {
+            this.sessionId = event.session_id;
           }
-        } else if (event.type === 'result' && event.session_id) {
-          this.sessionId = event.session_id;
+        } catch {
+          // Skip unparseable lines
         }
-      } catch {
-        // Skip unparseable lines
       }
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    // Clear timeout on normal completion
-    clearTimeout(timeoutId);
 
     // Wait for process exit and check exit code
     const exitCode = await exitPromise;
