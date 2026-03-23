@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use reify_compiler::ValueCellKind;
 use reify_mcp::{
@@ -46,6 +46,16 @@ impl CliToolContext {
         }
     }
 
+    /// Lock the internal state, recovering from a poisoned mutex.
+    ///
+    /// If a previous request panicked while holding the lock, the mutex becomes
+    /// poisoned. Rather than cascading panics that kill the server, we recover
+    /// the inner guard and continue operating on the (potentially inconsistent
+    /// but non-crashed) state.
+    fn lock_state(&self) -> MutexGuard<'_, CliState> {
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Load a .ri file: read from disk, parse, compile, eval.
     pub fn load_file(&self, path: &str) -> Result<(), String> {
         let source = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
@@ -74,7 +84,7 @@ impl CliToolContext {
             .to_string_lossy()
             .to_string();
 
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state();
         state.files.insert(
             abs_path.clone(),
             FileEntry {
@@ -119,7 +129,7 @@ fn dimension_unit(ty: &reify_types::ty::Type) -> String {
 
 impl ReifyToolContext for CliToolContext {
     fn get_source(&self, file_path: Option<&str>) -> Result<SourceContent, ToolError> {
-        let state = self.state.lock().unwrap();
+        let state = self.lock_state();
         let path = file_path
             .map(|s| s.to_string())
             .or_else(|| state.active_file.clone())
@@ -137,7 +147,7 @@ impl ReifyToolContext for CliToolContext {
     }
 
     fn get_open_files(&self) -> Result<Vec<OpenFileInfo>, ToolError> {
-        let state = self.state.lock().unwrap();
+        let state = self.lock_state();
         Ok(state
             .files
             .iter()
@@ -150,7 +160,7 @@ impl ReifyToolContext for CliToolContext {
     }
 
     fn get_diagnostics(&self) -> Result<Vec<DiagnosticInfo>, ToolError> {
-        let state = self.state.lock().unwrap();
+        let state = self.lock_state();
         let mut result = Vec::new();
 
         if let Some(compiled) = &state.compiled {
@@ -188,7 +198,7 @@ impl ReifyToolContext for CliToolContext {
     }
 
     fn get_parameters(&self) -> Result<Vec<ParameterInfo>, ToolError> {
-        let state = self.state.lock().unwrap();
+        let state = self.lock_state();
         let snapshot = match state.engine.as_ref().and_then(|e| e.snapshot()) {
             Some(s) => s,
             None => return Ok(vec![]),
@@ -240,7 +250,7 @@ impl ReifyToolContext for CliToolContext {
     }
 
     fn get_constraints(&self) -> Result<Vec<ConstraintInfo>, ToolError> {
-        let state = self.state.lock().unwrap();
+        let state = self.lock_state();
         let compiled = match &state.compiled {
             Some(c) => c,
             None => return Ok(vec![]),
@@ -269,7 +279,7 @@ impl ReifyToolContext for CliToolContext {
     }
 
     fn get_eval_status(&self) -> Result<EvalStatusInfo, ToolError> {
-        let state = self.state.lock().unwrap();
+        let state = self.lock_state();
         let phase = if state.engine.is_some() {
             "ready"
         } else {
@@ -290,7 +300,7 @@ impl ReifyToolContext for CliToolContext {
     }
 
     fn get_source_location(&self, entity_path: &str) -> Result<SourceLocationInfo, ToolError> {
-        let state = self.state.lock().unwrap();
+        let state = self.lock_state();
         let compiled = state
             .compiled
             .as_ref()
@@ -372,7 +382,7 @@ impl ReifyToolContext for CliToolContext {
         engine.eval(&compiled);
 
         // Pipeline succeeded — commit file content alongside compiled/engine state.
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state();
         if let Some(entry) = state.files.get_mut(file_path) {
             entry.content = content.to_string();
             entry.dirty = true;
@@ -395,7 +405,7 @@ impl ReifyToolContext for CliToolContext {
     }
 
     fn set_parameter(&self, cell_id: &str, value: &str) -> Result<SetParamResult, ToolError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state();
 
         if state.engine.is_none() {
             return Err(ToolError::EngineError("no engine initialized".to_string()));
@@ -472,7 +482,7 @@ impl ReifyToolContext for CliToolContext {
             .to_string_lossy()
             .to_string();
 
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state();
         state.files.insert(
             abs_path.clone(),
             FileEntry {
@@ -510,7 +520,7 @@ impl ReifyToolContext for CliToolContext {
     }
 
     fn save_file(&self, file_path: Option<&str>) -> Result<bool, ToolError> {
-        let state = self.state.lock().unwrap();
+        let state = self.lock_state();
         let path = file_path
             .map(|s| s.to_string())
             .or_else(|| state.active_file.clone())
