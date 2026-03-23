@@ -475,7 +475,7 @@ impl GeometryKernel for OcctKernelHandle {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, has_occt))]
 mod tests {
     use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, ReprKind, Value};
 
