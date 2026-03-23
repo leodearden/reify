@@ -1,121 +1,145 @@
 {
-  "task_id": "145",
-  "title": "Sidecar polish: Tauri config fix, SDK timeout, auto-run detection",
+  "task_id": "144",
+  "title": "Polish reify-mcp crate: validation hardening, derives, error handling",
   "files": [
-    "gui/src-tauri/tauri.conf.json",
-    "gui/sidecar/src/session.ts",
-    "gui/sidecar/src/index.ts",
-    "gui/sidecar/src/cli.ts",
-    "gui/sidecar/package.json",
-    "gui/sidecar/src/__tests__/session.test.ts"
+    "crates/reify-mcp/src/types.rs",
+    "crates/reify-mcp/src/jsonrpc.rs",
+    "crates/reify-mcp/src/registry.rs",
+    "crates/reify-mcp/src/transport.rs",
+    "crates/reify-mcp/tests/registry_tests.rs",
+    "crates/reify-mcp/tests/jsonrpc_tests.rs",
+    "crates/reify-mcp/tests/transport_tests.rs"
   ],
   "modules": [
-    "gui/src-tauri",
-    "gui/sidecar"
+    "crates/reify-mcp"
   ],
-  "analysis": "Three independent polish items from task 134 code review.\n\nS1 (tauri.conf.json): The shell plugin scope entry at plugins.shell.scope[0] has both `name` and `sidecar: true`. In Tauri v2, scope entries should only have `name` \u2014 the `sidecar` flag belongs at plugins.shell.sidecar (which is already set at line 21). Remove the redundant `sidecar: true` from the scope object.\n\nS2 (session.ts timeout): `invokeSdk()` spawns a Claude CLI subprocess but has no timeout. If the CLI hangs (auth issues, network problems, stuck process), the sidecar hangs indefinitely. Add a configurable `timeoutMs` to `SessionConfig` (default 300_000 = 5 minutes). Use `setTimeout` + `AbortController.abort('timeout')` to abort after the timeout. In `handleSendMessage`, differentiate timeout abort (emit error with timeout message) from user abort (emit done). Clear the timeout in a `finally` block when `invokeSdk` completes normally.\n\nS3 (auto-run detection): `index.ts` has fragile auto-run detection using `process.argv[1].endsWith('/index.js')` which could misfire when tsup bundles the output (filenames change). The fix is to extract auto-run to a separate `cli.ts` entrypoint that simply imports and calls `main()`. Remove auto-run from `index.ts` so it becomes a clean module export. Update the build script to also compile `cli.ts` as an entrypoint.\n\nExisting test patterns: vitest with `vi.mock('node:child_process')`, `vi.mocked(spawn)`, `createMockProcess()` helper, `PassThrough` streams for IPC testing. Tests are in `src/__tests__/*.test.ts`.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "S1: Remove redundant `\"sidecar\": true` from plugins.shell.scope[0] in gui/src-tauri/tauri.conf.json. Tauri v2 scope entries should only have `name`. The top-level `plugins.shell.sidecar: true` already enables sidecar mode.",
-      "status": "done",
-      "commit": "7d41b30",
-      "tests": []
-    }
-  ],
+  "analysis": "The reify-mcp crate is a complete MCP server with 16 tools, a JSON-RPC 2.0 dispatcher, tool registry, and dual-mode transport (in-process + async streams). It has 76 existing tests across 8 test modules. This polish task addresses 5 issues found during code review:\n\nS1 (PartialEq): All types in types.rs lack PartialEq. All inner types (String, u32, bool, Option<String>, Vec<String>, Option<f64>) support PartialEq. ToolError uses thiserror but all variants contain only Strings, so PartialEq is derivable.\n\nS2 (JSON-RPC validation): The dispatcher currently trusts the parsed request without validating jsonrpc version or ID type. Per JSON-RPC 2.0 spec, jsonrpc MUST be '2.0' and id SHOULD be string or number. We need INVALID_REQUEST (-32600), INVALID_PARAMS (-32602), and INTERNAL_ERROR (-32603) constants. The arguments key in tools/call should be validated as an object.\n\nS3 (Error handling): handle_tools_call() uses unwrap_or('') for name extraction (line 121) and unwrap_or_default() for result serialization (line 127). The first silently treats missing/non-string name as empty string leading to confusing 'unknown tool: ' error. The second silently converts serialization failures to empty string. Both should produce proper error responses.\n\nS4 (Duplicate registration): register() silently appends duplicates to the Vec. Since tool registration is a startup concern, panicking on duplicates is appropriate \u2014 it's a programming error. This avoids changing the return type signature and churn across 16 tool registration calls.\n\nS5 (Transport logging): run_on_streams() silently swallows I/O errors via .is_err() checks and break. Since the workspace has no logging framework, we'll use eprintln! to stderr for debug visibility and change the return type to Result<(), io::Error> so callers can react to transport failures.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "S2: Write failing tests for SDK timeout in session.test.ts. Three new tests: (1) 'invokeSdk times out after configured timeoutMs' \u2014 use vi.useFakeTimers(), create a mock process that never completes (stdout stays open, no close event), construct SidecarSession with timeoutMs: 1000, send a message, advance fake timers by 1001ms via vi.advanceTimersByTime(), verify the session emits { type: 'error', id, message } where message contains 'timed out'. (2) 'normal completion clears timeout without error' \u2014 mock process that completes quickly, verify no timeout error is emitted (same as existing test, but with explicit timeoutMs set). (3) 'user abort still emits done, not timeout error' \u2014 same as existing abort test but with timeoutMs configured, verify the abort produces { type: 'done' } not a timeout error. Use the existing abort test mock pattern (signal.addEventListener('abort', ...)).",
+      "description": "S1: Write test in registry_tests.rs that asserts PartialEq on all MCP types \u2014 SourceContent, OpenFileInfo, DiagnosticInfo, ParameterInfo, ConstraintInfo, EvalStatusInfo, SelectionInfo, SourceLocationInfo, UpdateResult, SetParamResult, ToolInfo, ToolError. Uses == comparisons that won't compile without PartialEq derives. Create two instances of each type and assert_eq! them.",
       "status": "done",
-      "commit": "62e0d30"
+      "commit": "e47d21d"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "S2: Add `timeoutMs?: number` to `SessionConfig` interface (default 300_000). In `invokeSdk()`, after spawning the process, start `const timeoutId = setTimeout(() => { this.abortController?.abort('timeout'); }, this.config.timeoutMs ?? 300_000)`. In the finally block, call `clearTimeout(timeoutId)`. In `handleSendMessage()` catch block, change the abort check: if `this.abortController?.signal.reason === 'timeout'`, emit `{ type: 'error', id, message: 'Claude CLI timed out after Xms' }`; otherwise (user abort), emit `{ type: 'done', id }` as before.",
+      "description": "S1: Add PartialEq to all derive macros in types.rs. For ToolError: add PartialEq to the derive list (thiserror + PartialEq is fine since all variants contain only String). For all struct types (ToolInfo, SourceContent, OpenFileInfo, DiagnosticInfo, ParameterInfo, ConstraintInfo, EvalStatusInfo, SelectionInfo, SourceLocationInfo, UpdateResult, SetParamResult): add PartialEq to their derive macros.",
       "status": "done",
-      "commit": "3acc3fc"
+      "commit": "485d0a2"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "S3: Verify existing entrypoint tests still pass (they import main from index.js and test it directly). No new test file needed \u2014 the existing 'entrypoint wiring' tests in session.test.ts fully cover main() behavior. This step is a verification checkpoint before the structural refactor.",
+      "description": "S2: Write tests in jsonrpc_tests.rs for JSON-RPC request validation: (a) dispatch_invalid_jsonrpc_version_returns_error \u2014 request with jsonrpc:'1.0' returns error code -32600. (b) dispatch_null_id_returns_invalid_request \u2014 request with id:null returns -32600. (c) dispatch_array_id_returns_invalid_request \u2014 request with id:[1,2] returns -32600. All three use existing setup_registry() and MockToolContext.",
       "status": "done",
-      "commit": "cd32800"
+      "commit": "e402786"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "S3: Create gui/sidecar/src/cli.ts \u2014 a minimal entrypoint that imports main from './index.js' and calls `main().catch((err: unknown) => { console.error('Sidecar fatal error:', err); process.exit(1); })`. Remove the auto-run detection block (lines 60-71: isDirectRun variable and if block) from index.ts. Update gui/sidecar/package.json build script from `tsup src/index.ts --format esm --dts` to `tsup src/index.ts src/cli.ts --format esm --dts` so both library and CLI entrypoint are built.",
+      "description": "S2: Add INVALID_REQUEST (-32600), INVALID_PARAMS (-32602), INTERNAL_ERROR (-32603) pub(crate) constants to jsonrpc.rs. In dispatch(), after successful JSON parse: validate jsonrpc == '2.0' (return INVALID_REQUEST if not), validate id is string or number (return INVALID_REQUEST if null/array/object/bool). Use existing error_response() helper for both.",
       "status": "done",
-      "commit": "ec357e4"
+      "commit": "c976464"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "B1 (review fix): Write a failing test 'stdout stream error does not leak timeout to next request' in the 'SidecarSession timeout' describe block. The test creates a session with timeoutMs: 60000. The first spawn mock creates a hanging process whose stdout emits an error event after a short delay (via `process.nextTick(() => stdout.destroy(new Error('I/O error')))`) \u2014 this simulates a stream failure that causes the `for await` async iterator to throw. After handleMessage resolves (with the error output), send a second send_message using a normal createMockProcess. Verify that the second request completes with `{ type: 'done' }` and does NOT receive a spurious `{ type: 'error', message: '...timed out...' }`. This test should FAIL against the current code because the first request's dangling timeout is not cleared when the for-await throws, and when it fires it aborts the second request's AbortController.",
+      "description": "S2+S3: Write tests in jsonrpc_tests.rs for tools/call validation: (a) dispatch_tools_call_missing_name_returns_invalid_params \u2014 tools/call with params:{arguments:{}} (no name field) returns isError content with message mentioning 'name'. (b) dispatch_tools_call_numeric_name_returns_invalid_params \u2014 tools/call with params:{name:123, arguments:{}} returns isError content. (c) dispatch_tools_call_array_arguments_returns_invalid_params \u2014 tools/call with params:{name:'reify_get_source', arguments:[1,2]} returns isError content mentioning 'arguments'.",
       "status": "done",
-      "commit": "7b1b358"
+      "commit": "c789213"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "B1 (review fix): In `invokeSdk()` in session.ts, wrap the `for await` loop (lines 147-184) in a try/finally block, moving `clearTimeout(timeoutId)` from its current inline position (line 187) into the `finally` clause. The `exitPromise` await and exit-code check remain AFTER the try/finally, since they don't need timeout protection \u2014 the timeout only guards the streaming read. Structure becomes:\n```\ntry {\n  for await (const line of createLineReader(proc.stdout!)) {\n    // ... existing parsing logic ...\n  }\n} finally {\n  clearTimeout(timeoutId);\n}\nconst exitCode = await exitPromise;\n```\nThis guarantees clearTimeout is called regardless of how the loop exits (normal completion, thrown stream error, or rethrown abort), preventing cross-request interference from leaked timeouts.",
+      "description": "S2+S3: In handle_tools_call(): Replace unwrap_or('') with explicit match \u2014 if params['name'] is not a string, return an MCP isError content response with 'missing or invalid tool name'. Validate arguments: if present and not null, must be an object (reject arrays/strings/numbers with 'arguments must be an object'). If null or missing, default to empty object {}. Replace unwrap_or_default() on serde_json::to_string with .map_err to return an INTERNAL_ERROR JsonRpcResponse on serialization failure.",
       "status": "done",
-      "commit": "d0b4678"
+      "commit": "9df7534"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "S4: Write test in registry_tests.rs: registry_duplicate_name_panics \u2014 register a tool 'alpha', then register another tool with the same name 'alpha'. Use #[should_panic(expected = \"duplicate\")] to verify the panic message.",
+      "status": "done",
+      "commit": "ba5abce"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "S4: In ToolRegistry::register(), add at the top: if self.tools.iter().any(|e| e.info.name == name), panic with format!(\"duplicate tool registration: '{}'\", name). This catches programming errors at startup.",
+      "status": "done",
+      "commit": "27b10fe"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "S5: Write tests in transport_tests.rs: (a) stream_mode_write_error_returns_err \u2014 create an McpServer, use run_on_streams with a valid reader containing one JSON-RPC request but a writer that always returns io::Error. Assert the returned Result is Err. (b) stream_mode_graceful_eof_returns_ok \u2014 run_on_streams with an empty reader (immediate EOF), assert Result is Ok (graceful shutdown on clean EOF).",
+      "status": "done",
+      "commit": "cda8300"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "S5: Change run_on_streams() return type from () to Result<(), std::io::Error>. On write_all error: eprintln! the error, return Err(e). On flush error: eprintln! the error, return Err(e). On clean loop exit (EOF): return Ok(()). On read error (lines.next_line() returns Err): eprintln! and return Err(e) \u2014 change while let pattern to handle Err case explicitly. Update run_stdio() to call .await and log any error with eprintln! (fire-and-forget for CLI mode). Update existing stream_mode_tools_list test to .unwrap() the new Result.",
+      "status": "done",
+      "commit": "d625ca6"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use abort reason string 'timeout' to differentiate timeout abort from user abort",
-      "rationale": "AbortController.abort(reason) allows passing a reason. Default abort() sets reason to a DOMException('AbortError'). By passing the string 'timeout', handleSendMessage can check signal.reason === 'timeout' to emit an error for timeouts while still emitting 'done' for user aborts. This avoids adding extra boolean flags to the class."
+      "decision": "S4: Panic on duplicate tool registration instead of returning Result",
+      "rationale": "Duplicate registration is a programming error (all 16 tools are registered at startup in register_all_tools). Panicking avoids changing the register() return type which would require updating all 16 registration call sites and the register_all_tools signature. This follows the Rust convention of using panics for invariant violations that indicate bugs."
     },
     {
-      "decision": "Add timeoutMs to SessionConfig rather than hardcoding",
-      "rationale": "Makes the timeout configurable for different environments and testable with short values or fake timers. Default of 300_000ms (5 minutes) matches the task suggestion. Tests can override with a short value like 1000ms."
+      "decision": "S5: Use eprintln! for transport error logging instead of adding a logging framework",
+      "rationale": "The workspace has no logging framework (no tracing, log, or env_logger in any Cargo.toml). Adding one for a single crate's debug output would be disproportionate. eprintln! to stderr is sufficient for MCP transport debugging and is the simplest correct solution."
     },
     {
-      "decision": "Move auto-run to separate cli.ts rather than using a more robust detection pattern",
-      "rationale": "The task explicitly suggests 'move auto-run to a separate entrypoint file' as an option. This is the cleanest solution: index.ts becomes a pure library module (exports main), cli.ts is the executable entrypoint for the sidecar binary. No fragile heuristics needed. tsup can build both entry points in a single command."
+      "decision": "S5: Change run_on_streams return type to Result<(), io::Error>",
+      "rationale": "Returning Result lets callers distinguish between graceful shutdown (client disconnected, EOF) and I/O failures. run_stdio() will log errors to stderr. This surfaces errors that were previously silently swallowed."
     },
     {
-      "decision": "Use vi.useFakeTimers() for timeout tests",
-      "rationale": "Fake timers give deterministic, fast tests without flakiness from real timing. We can advance time precisely to trigger the timeout. The mock process that never completes simulates the real hang scenario without actually waiting."
+      "decision": "S2: Treat null ID as invalid request",
+      "rationale": "Per JSON-RPC 2.0 spec, null id means the server MUST NOT reply (notification). However MCP initialize/tools/list/tools/call all require responses. Rejecting null IDs is correct MCP behavior. If notification support is needed later, it can be added with method-specific handling."
     },
     {
-      "decision": "No dedicated test file for cli.ts",
-      "rationale": "cli.ts is a trivial 3-line wrapper (import + call main + catch). The existing entrypoint wiring tests in session.test.ts already thoroughly test main(). Adding a test for cli.ts would require mocking the module import of main(), adding complexity for near-zero value."
+      "decision": "S3: Missing/non-string name returns MCP content error, not JSON-RPC error",
+      "rationale": "Following the existing pattern where tool-level errors (unknown tool, missing params) are returned as MCP isError content, not JSON-RPC-level errors. This is consistent with how the crate differentiates transport-level vs tool-level errors. Unknown tool already follows this pattern."
     },
     {
-      "decision": "clearTimeout in try/finally around for-await loop only, not around exitPromise",
-      "rationale": "The timeout guards against the stdout streaming read hanging indefinitely. Once the for-await loop exits (normally or via error), the timeout's purpose is served and it must be cleared immediately. The subsequent exitPromise await and exit-code check don't need timeout protection \u2014 the process has already exited or will exit promptly after stdout closes. Keeping exitPromise outside the try/finally avoids masking exit-code errors with the finally clause."
+      "decision": "S2: Non-object arguments is rejected; null/missing defaults to empty object",
+      "rationale": "When arguments is missing (null from JSON indexing), treating it as empty object {} is reasonable since many tools accept no arguments. But if arguments is present as a non-object type (array, string, number), that's an explicit protocol error worth reporting."
     }
   ],
   "reuse": [
     {
-      "what": "createMockProcess() helper function",
-      "where": "gui/sidecar/src/__tests__/session.test.ts lines 19-38",
-      "how": "Reuse for the 'normal completion clears timeout' test. For the hanging process test, create a variant inline that never emits 'close' or ends stdout \u2014 just return an EventEmitter with PassThrough streams that stay open."
+      "what": "MockToolContext from context.rs",
+      "where": "All new tests",
+      "how": "Use existing MockToolContext::default() for setting up test dispatchers and registries, following the pattern in existing test files"
     },
     {
-      "what": "Existing abort test mock pattern",
-      "where": "gui/sidecar/src/__tests__/session.test.ts lines 136-184",
-      "how": "The existing abort test creates a hanging mock process with signal.addEventListener('abort', ...) to simulate the OS killing the process on abort. Reuse this exact pattern for both the timeout test (abort triggered by timer) and the 'user abort still works with timeout configured' test."
+      "what": "setup_registry() pattern from jsonrpc_tests.rs",
+      "where": "New jsonrpc validation tests (steps 3, 5)",
+      "how": "Reuse the existing setup_registry() helper that creates a minimal 2-tool registry for dispatcher tests"
     },
     {
-      "what": "vi.mocked(spawn) + beforeEach reset pattern",
-      "where": "gui/sidecar/src/__tests__/session.test.ts lines 44-53",
-      "how": "All existing tests use vi.mock('node:child_process') at module level and vi.mocked(spawn).mockReset() in beforeEach. New timeout tests follow the same pattern within the existing describe('SidecarSession') block."
+      "what": "error_response() helper in McpDispatcher",
+      "where": "S2 validation error responses (step 4)",
+      "how": "Use the existing error_response() method to generate properly formatted JSON-RPC error responses for validation failures"
     },
     {
-      "what": "outputs array collection via session.onOutput",
-      "where": "gui/sidecar/src/__tests__/session.test.ts lines 44-53",
-      "how": "Existing tests collect OutboundMessages in an outputs array. Timeout tests reuse this to assert on emitted error/done messages."
+      "what": "ToolError::InvalidParams variant",
+      "where": "S3 error handling in handle_tools_call (step 6)",
+      "how": "Use existing InvalidParams variant for name/arguments validation, following the pattern already used in tool handlers"
+    },
+    {
+      "what": "tokio::io::duplex pattern from transport_tests.rs",
+      "where": "S5 transport error tests (step 9)",
+      "how": "Follow the existing stream_mode_tools_list test's duplex channel pattern for testing stream behavior, plus a custom failing writer struct implementing AsyncWrite"
     }
   ],
-  "_session_id": "145-825f43ee",
-  "_created_at": "2026-03-23T16:16:47.635035+00:00",
-  "_schema_version": 1
+  "_session_id": "144-8072b50a",
+  "_created_at": "2026-03-23T18:23:49.757625+00:00"
 }

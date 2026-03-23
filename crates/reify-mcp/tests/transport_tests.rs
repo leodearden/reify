@@ -1,4 +1,7 @@
+use std::io;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use reify_mcp::context::MockToolContext;
 use reify_mcp::transport::McpServer;
@@ -65,7 +68,7 @@ async fn stream_mode_tools_list() {
     let server_clone = server.clone();
     let handle = tokio::spawn(async move {
         let reader = tokio::io::BufReader::new(server_reader);
-        server_clone.run_on_streams(reader, server_writer).await;
+        server_clone.run_on_streams(reader, server_writer).await.unwrap();
     });
 
     // Write a tools/list request
@@ -192,4 +195,54 @@ fn integration_tools_call_nonexistent_tool() {
         text.contains("nonexistent_tool"),
         "Error should mention tool name: {text}"
     );
+}
+
+// --- S5: Transport error handling tests ---
+
+/// A writer that always fails on write_all.
+struct FailingWriter;
+
+impl tokio::io::AsyncWrite for FailingWriter {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "test write error")))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn stream_mode_write_error_returns_err() {
+    let ctx = Arc::new(MockToolContext::default());
+    let server = McpServer::new(ctx);
+
+    // A reader with one valid request
+    let request = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}\n";
+    let reader = tokio::io::BufReader::new(&request[..]);
+    let writer = FailingWriter;
+
+    let result = server.run_on_streams(reader, writer).await;
+    assert!(result.is_err(), "Expected Err from write failure, got Ok");
+}
+
+#[tokio::test]
+async fn stream_mode_graceful_eof_returns_ok() {
+    let ctx = Arc::new(MockToolContext::default());
+    let server = McpServer::new(ctx);
+
+    // Empty reader — immediate EOF
+    let reader = tokio::io::BufReader::new(&b""[..]);
+    let (_, writer) = tokio::io::duplex(4096);
+
+    let result = server.run_on_streams(reader, writer).await;
+    assert!(result.is_ok(), "Expected Ok on graceful EOF, got Err: {:?}", result.err());
 }
