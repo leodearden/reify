@@ -1,5 +1,5 @@
 use reify_mcp::context::MockToolContext;
-use reify_mcp::jsonrpc::McpDispatcher;
+use reify_mcp::jsonrpc::{McpDispatcher, INVALID_REQUEST};
 use reify_mcp::registry::ToolRegistry;
 use reify_mcp::types::ToolError;
 
@@ -141,4 +141,45 @@ fn response_has_correct_jsonrpc_fields() {
     assert_eq!(response["id"], "abc");
     assert!(response.get("result").is_some());
     assert!(response.get("error").is_none());
+}
+
+// --- S2: JSON-RPC request validation tests ---
+
+#[test]
+fn dispatch_invalid_jsonrpc_version_returns_error() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+    let dispatcher = McpDispatcher::new(&registry, &ctx);
+
+    let request = r#"{"jsonrpc":"1.0","id":1,"method":"tools/list","params":{}}"#;
+    let response_str = dispatcher.dispatch(request);
+    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+    assert_eq!(response["error"]["code"], INVALID_REQUEST);
+}
+
+#[test]
+fn dispatch_null_id_returns_invalid_request() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+    let dispatcher = McpDispatcher::new(&registry, &ctx);
+
+    let request = r#"{"jsonrpc":"2.0","id":null,"method":"tools/list","params":{}}"#;
+    let response_str = dispatcher.dispatch(request);
+    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+    assert_eq!(response["error"]["code"], INVALID_REQUEST);
+}
+
+#[test]
+fn dispatch_array_id_returns_invalid_request() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+    let dispatcher = McpDispatcher::new(&registry, &ctx);
+
+    let request = r#"{"jsonrpc":"2.0","id":[1,2],"method":"tools/list","params":{}}"#;
+    let response_str = dispatcher.dispatch(request);
+    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+    assert_eq!(response["error"]["code"], INVALID_REQUEST);
 }
