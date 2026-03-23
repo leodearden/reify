@@ -230,20 +230,36 @@
       "id": "step-24",
       "type": "impl",
       "description": "Verify all sub-components integrate correctly. Fix any type mismatches between props. Ensure chat/index.ts exports new components (ContextPicker, ContextChip, DiffView, SystemMessage). Ensure panels/index.ts is unchanged (ChatPanel already exported)",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "d5853e4"
     },
     {
       "id": "step-25",
       "type": "test",
       "description": "Write failing test for App.tsx wiring in gui/src/__tests__/contextIntegration.test.tsx (additional cases): (1) verify ChatPanel receives selectionStore.selectedEntity as selectedEntity prop; (2) verify ConstraintPanel receives onAskClaude handler; (3) verify StatusBar receives claudeStatus from claudeStore.state.sessionStatus; (4) verify StatusBar onToggleChat toggles a chatOpen signal that controls ChatPanel visibility",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "2c494a9"
     },
     {
       "id": "step-26",
       "type": "impl",
-      "description": "Wire everything in gui/src/App.tsx: (1) pass selectedEntity={selectionStore.state.selectedEntity}, engineConstraints={engineStore.state.constraints}, engineValues={engineStore.state.values}, activeFile={editorStore.state.activeFile} to ChatPanel; (2) add onAskClaude handler to ConstraintPanel that builds context, sets ChatPanel input text, and opens chat panel if closed; (3) pass claudeStatus={claudeStore.state.sessionStatus} and onToggleChat to StatusBar; (4) add chatOpen signal to control ChatPanel visibility, toggled by StatusBar click. Use the existing useChatPanelPersistence hook for open/closed state"
+      "description": "Wire everything in gui/src/App.tsx: (1) pass selectedEntity={selectionStore.state.selectedEntity}, engineConstraints={engineStore.state.constraints}, engineValues={engineStore.state.values}, activeFile={editorStore.state.activeFile} to ChatPanel; (2) add onAskClaude handler to ConstraintPanel that builds context, sets ChatPanel input text, and opens chat panel if closed; (3) pass claudeStatus={claudeStore.state.sessionStatus} and onToggleChat to StatusBar; (4) add chatOpen signal to control ChatPanel visibility, toggled by StatusBar click. Use the existing useChatPanelPersistence hook for open/closed state",
+      "status": "done",
+      "commit": "2c4f376"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Write failing tests in gui/src/__tests__/claudeStore.test.ts \u2014 new describe block 'stuck state recovery on unmatched message id': (1) 'done with unmatched id still sets sessionStatus to idle': send a message to put store in responding state (text_delta), then dispatch done with a non-existent id (e.g. 'unknown-id-999') \u2014 assert sessionStatus === 'idle' (currently fails because the break skips the batch that sets idle); (2) 'error with unmatched id still sets sessionStatus to idle': send a message, dispatch text_delta to set responding, then dispatch error with non-existent id \u2014 assert sessionStatus === 'idle'; (3) 'error with unmatched id still adds classified system message': dispatch error with unmatched id and message 'Rate limit exceeded (429)' \u2014 assert a system message with errorType='rate-limit' is added to messages (currently fails because break skips addSystemMessage); (4) 'done with valid id still works correctly after fix': existing behavior preserved \u2014 done with matching id sets idle and marks complete",
+      "status": "done",
+      "commit": "26919eb"
+    },
+    {
+      "id": "step-28",
+      "type": "impl",
+      "description": "Fix gui/src/stores/claudeStore.ts done and error handlers to prevent stuck state on unmatched message id. In the 'done' handler (lines 195-212): move setState('sessionStatus', 'idle') to execute unconditionally before the if (idx === -1) guard \u2014 i.e. cancelAndFlush(); setState('sessionStatus', 'idle'); const idx = findAssistantIdx(msg.id); if (idx === -1) break; then the remaining batch only updates the message (complete, thinkingComplete). In the 'error' handler (lines 214-234): same pattern \u2014 move setState('sessionStatus', 'idle') before the guard, AND move the classifyError + addSystemMessage call before the guard so error classification and system messages always fire even when the assistant message cannot be located. The idx===-1 guard should only skip the message-level mutation (setting error text and complete flag), not the session-level recovery. This ensures the UI always returns to idle on done/error regardless of whether msg.id matches.",
+      "status": "done",
+      "commit": "09a63c4"
     }
   ],
   "design_decisions": [
@@ -282,6 +298,10 @@
     {
       "decision": "StatusBar Claude indicator is optional via props, maintaining backward compatibility",
       "rationale": "Adding claudeStatus as an optional prop means existing StatusBar tests continue passing without modification. The Claude section only renders when the prop is provided, so the component works both with and without Claude integration."
+    },
+    {
+      "decision": "Session-level state (sessionStatus, error classification) must be set before the message-id guard in done/error handlers",
+      "rationale": "The idx === -1 early return should only skip message-level mutations (marking complete, setting error text). Session-level recovery (returning to idle, emitting system messages) must always execute on done/error events \u2014 otherwise an unmatched message id permanently locks the UI in an active state with no recovery path short of a full session reload."
     }
   ],
   "reuse": [
@@ -334,8 +354,13 @@
       "what": "useChatPanelPersistence hook for chat panel open/closed state",
       "where": "gui/src/hooks/useChatPanelPersistence.ts",
       "how": "Reuse for the chat panel toggle triggered by StatusBar click and Ask Claude actions."
+    },
+    {
+      "what": "Existing claudeStore test patterns: makeStore() factory, OutboundMessage dispatch, state assertions",
+      "where": "gui/src/__tests__/claudeStore.test.ts",
+      "how": "The new stuck-state tests follow the identical pattern: makeStore(), sendMessage to create assistant message, handleOutboundMessage to set active status, then dispatch done/error with mismatched id and assert sessionStatus recovery."
     }
   ],
   "_session_id": "143-91bb2704",
-  "_created_at": "2026-03-23T20:11:20.380202+00:00"
+  "_created_at": "2026-03-23T20:52:52.851844+00:00"
 }
