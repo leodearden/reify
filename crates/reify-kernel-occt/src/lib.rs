@@ -11,18 +11,37 @@
 //!
 //! [`GeometryKernel`]: reify_types::GeometryKernel
 
+/// Whether OCCT libraries were found at build time.
+///
+/// This constant is `true` when the build detected OCCT include/lib
+/// directories, and `false` otherwise (stub types are used instead).
+/// Downstream crates can check this to skip OCCT-dependent tests
+/// at runtime.
+pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
+
+#[cfg(has_occt)]
 #[allow(dead_code)]
 mod ffi;
+#[cfg(has_occt)]
 mod handle;
+#[cfg(has_occt)]
 pub use handle::OcctKernelHandle;
 
+#[cfg(not(has_occt))]
+mod stubs;
+#[cfg(not(has_occt))]
+pub use stubs::{OcctKernel, OcctKernelHandle};
+
+#[cfg(has_occt)]
 use std::collections::HashMap;
 
+#[cfg(has_occt)]
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp,
     GeometryQuery, Mesh, OpaqueState, QueryError, ReprKind, TessError, Value, WarmStartable,
 };
 
+#[cfg(has_occt)]
 /// Send-safe payload for OCCT warm-start state.
 ///
 /// Contains BRep ASCII serializations of all shapes in the kernel, plus the
@@ -35,12 +54,14 @@ struct OcctWarmState {
     next_id: u64,
 }
 
+#[cfg(has_occt)]
 /// Extract an f64 from a Value (Int, Real, or Scalar → SI value).
 fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
     v.as_f64()
         .ok_or_else(|| GeometryError::OperationFailed("expected numeric value".into()))
 }
 
+#[cfg(has_occt)]
 /// OpenCASCADE geometry kernel (raw, `!Send + !Sync`).
 ///
 /// Contains `cxx::UniquePtr<OcctShape>` handles which are `!Send`, so the
@@ -57,6 +78,7 @@ pub struct OcctKernel {
 // Use OcctKernelHandle for cross-thread usage — it communicates with a dedicated
 // OS thread that owns the kernel.
 
+#[cfg(has_occt)]
 impl OcctKernel {
     pub fn new() -> Self {
         Self {
@@ -88,12 +110,14 @@ impl OcctKernel {
     }
 }
 
+#[cfg(has_occt)]
 impl Default for OcctKernel {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(has_occt)]
 /// Inherent methods — same bodies as the former `GeometryKernel` impl.
 /// Called directly by the kernel thread in `OcctKernelHandle`.
 impl OcctKernel {
@@ -476,6 +500,7 @@ impl OcctKernel {
     }
 }
 
+#[cfg(has_occt)]
 impl WarmStartable for OcctKernel {
     fn warm_state(&self) -> Option<OpaqueState> {
         if self.shapes.is_empty() {
@@ -544,7 +569,7 @@ impl WarmStartable for OcctKernel {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, has_occt))]
 impl OcctKernel {
     /// Store a raw OcctShape and return its GeometryHandleId for testing.
     fn store_raw(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandleId {
@@ -570,9 +595,17 @@ impl OcctKernel {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, has_occt))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn occt_available_is_true_when_built_with_occt() {
+        assert!(
+            crate::OCCT_AVAILABLE,
+            "OCCT_AVAILABLE should be true on a system with OCCT installed"
+        );
+    }
 
     #[test]
     fn warm_state_returns_none_on_fresh_kernel() {

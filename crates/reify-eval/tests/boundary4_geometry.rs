@@ -137,6 +137,10 @@ mod occt_tests {
     };
     #[test]
     fn create_box_export_step() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
         let mut kernel = OcctKernel::new();
         let handle = kernel
             .execute(&GeometryOp::Box {
@@ -161,6 +165,10 @@ mod occt_tests {
 
     #[test]
     fn cylinder_volume_query() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
         let mut kernel = OcctKernel::new();
         let handle = kernel
             .execute(&GeometryOp::Cylinder {
@@ -189,6 +197,10 @@ mod occt_tests {
 
     #[test]
     fn boolean_difference() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
         let mut kernel = OcctKernel::new();
 
         let box1 = kernel
@@ -226,6 +238,10 @@ mod occt_tests {
 
     #[test]
     fn fillet_edges() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
         let mut kernel = OcctKernel::new();
         let handle = kernel
             .execute(&GeometryOp::Box {
@@ -254,6 +270,10 @@ mod occt_tests {
 
     #[test]
     fn translate_centroid() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
         let mut kernel = OcctKernel::new();
         let handle = kernel
             .execute(&GeometryOp::Box {
@@ -295,6 +315,10 @@ mod occt_tests {
 
     #[test]
     fn invalid_reference_error() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
         let mut kernel = OcctKernel::new();
         let result = kernel.execute(&GeometryOp::Union {
             left: GeometryHandleId(999),
@@ -312,6 +336,10 @@ mod occt_tests {
 
     #[test]
     fn zero_dimension_error() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
         let mut kernel = OcctKernel::new();
         let result = kernel.execute(&GeometryOp::Box {
             width: mm(0.0),
@@ -330,6 +358,10 @@ mod occt_tests {
 
     #[test]
     fn tessellation_valid_mesh() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
         let mut kernel = OcctKernel::new();
         let handle = kernel
             .execute(&GeometryOp::Sphere {
@@ -355,6 +387,10 @@ mod occt_tests {
 
     #[test]
     fn box_volume_10mm() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
         let mut kernel = OcctKernel::new();
         let handle = kernel
             .execute(&GeometryOp::Box {

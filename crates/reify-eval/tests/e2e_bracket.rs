@@ -10,6 +10,10 @@
 use reify_types::{ExportFormat, ModulePath, Satisfaction};
 
 fn run_bracket_e2e(source: &str) {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
     // Parse
     let parsed = reify_syntax::parse(source, ModulePath::single("bracket"));
     assert!(
