@@ -194,42 +194,38 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
 
       case 'done': {
         cancelAndFlush();
+        setState('sessionStatus', 'idle');
         const idx = findAssistantIdx(msg.id);
         if (idx === -1) break;
-        batch(() => {
-          setState('sessionStatus', 'idle');
-          setState(
-            'messages',
-            idx,
-            produce((m: ChatMessage) => {
-              if (m.role !== 'assistant') return;
-              m.complete = true;
-              m.thinkingComplete = true;
-            }),
-          );
-        });
+        setState(
+          'messages',
+          idx,
+          produce((m: ChatMessage) => {
+            if (m.role !== 'assistant') return;
+            m.complete = true;
+            m.thinkingComplete = true;
+          }),
+        );
         break;
       }
 
       case 'error': {
         cancelAndFlush();
-        const idx = findAssistantIdx(msg.id);
-        if (idx === -1) break;
-        batch(() => {
-          setState('sessionStatus', 'idle');
-          setState(
-            'messages',
-            idx,
-            produce((m: ChatMessage) => {
-              if (m.role !== 'assistant') return;
-              m.error = msg.message;
-              m.complete = true;
-            }),
-          );
-        });
+        setState('sessionStatus', 'idle');
         // Auto-classify error and add system message
         const classified = classifyError(msg.message);
         addSystemMessage(classified.type, classified.userMessage);
+        const idx = findAssistantIdx(msg.id);
+        if (idx === -1) break;
+        setState(
+          'messages',
+          idx,
+          produce((m: ChatMessage) => {
+            if (m.role !== 'assistant') return;
+            m.error = msg.message;
+            m.complete = true;
+          }),
+        );
         break;
       }
     }
