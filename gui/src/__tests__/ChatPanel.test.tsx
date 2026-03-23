@@ -66,3 +66,34 @@ describe('ChatPanel header buttons', () => {
     expect(onClearSession).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('ChatPanel message list rendering', () => {
+  const testMessages: ChatMessage[] = [
+    { id: '1', role: 'user', content: 'Hello', timestamp: 1 },
+    { id: '2', role: 'assistant', content: 'Hi there', timestamp: 2 },
+  ];
+
+  it('user messages render with data-role="user"', () => {
+    render(() => <ChatPanel {...defaultProps()} messages={testMessages} />);
+    const msg = screen.getByTestId('chat-message-1');
+    expect(msg.getAttribute('data-role')).toBe('user');
+  });
+
+  it('assistant messages render with data-role="assistant"', () => {
+    render(() => <ChatPanel {...defaultProps()} messages={testMessages} />);
+    const msg = screen.getByTestId('chat-message-2');
+    expect(msg.getAttribute('data-role')).toBe('assistant');
+  });
+
+  it('message content text is visible', () => {
+    render(() => <ChatPanel {...defaultProps()} messages={testMessages} />);
+    expect(screen.getByText('Hello')).toBeTruthy();
+    expect(screen.getByText('Hi there')).toBeTruthy();
+  });
+
+  it('correct number of message elements rendered', () => {
+    const { container } = render(() => <ChatPanel {...defaultProps()} messages={testMessages} />);
+    const messageEls = container.querySelectorAll('[data-testid^="chat-message-"]');
+    expect(messageEls.length).toBe(testMessages.length);
+  });
+});
