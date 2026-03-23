@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { ChatPanel } from '../panels/ChatPanel';
 import type { ChatMessage } from '../types';
 
@@ -147,5 +148,76 @@ describe('ChatPanel input bar', () => {
     fireEvent.input(textarea, { target: { value: 'Hi!' } });
     fireEvent.click(screen.getByTestId('chat-send-btn'));
     expect(onSendMessage).toHaveBeenCalledWith('Hi!');
+  });
+});
+
+describe('ChatPanel auto-scroll', () => {
+  it('scrolls to bottom when new messages are added and user is near bottom', async () => {
+    const initialMessages: ChatMessage[] = Array.from({ length: 20 }, (_, i) => ({
+      id: String(i),
+      role: 'user' as const,
+      content: `Message ${i} with enough text to take up space`,
+      timestamp: i,
+    }));
+
+    const [messages, setMessages] = createSignal<ChatMessage[]>(initialMessages);
+
+    render(() => (
+      <ChatPanel
+        messages={messages()}
+        sessionStatus="idle"
+        onSendMessage={vi.fn()}
+        onClearSession={vi.fn()}
+        onToggle={vi.fn()}
+        open={true}
+        height={150}
+        onResize={vi.fn()}
+      />
+    ));
+
+    const messageList = screen.getByTestId('chat-message-list');
+    // Mock layout properties to simulate overflow
+    Object.defineProperty(messageList, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(messageList, 'clientHeight', { value: 150, configurable: true });
+    // Start near bottom so auto-scroll triggers (850 + 150 >= 1000 - 50)
+    messageList.scrollTop = 100;
+
+    setMessages([
+      ...initialMessages,
+      { id: '20', role: 'assistant', content: 'New message!', timestamp: 20 },
+    ]);
+
+    // Wait for effect to run
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Without auto-scroll implementation, scrollTop stays at 100
+    // With auto-scroll, it should be set to scrollHeight (1000)
+    expect(messageList.scrollTop).toBe(1000);
+  });
+});
+
+describe('ChatPanel disabled state', () => {
+  it('textarea is disabled when sessionStatus is busy', () => {
+    render(() => <ChatPanel {...defaultProps()} sessionStatus="busy" />);
+    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    expect(textarea.disabled).toBe(true);
+  });
+
+  it('send button is disabled when sessionStatus is busy', () => {
+    render(() => <ChatPanel {...defaultProps()} sessionStatus="busy" />);
+    const btn = screen.getByTestId('chat-send-btn') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it('textarea is NOT disabled when sessionStatus is idle', () => {
+    render(() => <ChatPanel {...defaultProps()} sessionStatus="idle" />);
+    const textarea = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    expect(textarea.disabled).toBe(false);
+  });
+
+  it('send button is NOT disabled when sessionStatus is idle', () => {
+    render(() => <ChatPanel {...defaultProps()} sessionStatus="idle" />);
+    const btn = screen.getByTestId('chat-send-btn') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
   });
 });
