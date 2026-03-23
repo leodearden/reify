@@ -93,7 +93,7 @@ describe('ChatPanel message list rendering', () => {
 
   it('correct number of message elements rendered', () => {
     const { container } = render(() => <ChatPanel {...defaultProps()} messages={testMessages} />);
-    const messageEls = container.querySelectorAll('[data-testid^="chat-message-"]');
+    const messageEls = container.querySelectorAll('[data-role]');
     expect(messageEls.length).toBe(testMessages.length);
   });
 });

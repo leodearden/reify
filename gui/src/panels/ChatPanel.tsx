@@ -1,4 +1,4 @@
-import { type Component, Show } from 'solid-js';
+import { type Component, Show, For } from 'solid-js';
 import type { ChatMessage, SessionStatus } from '../types';
 import styles from './ChatPanel.module.css';
 
@@ -50,6 +50,21 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
       <Show when={props.messages.length === 0}>
         <div class={styles.emptyState}>
           Start a conversation with Claude to get help with your design.
+        </div>
+      </Show>
+      <Show when={props.messages.length > 0}>
+        <div data-testid="chat-message-list" class={styles.messageList}>
+          <For each={props.messages}>
+            {(msg) => (
+              <div
+                data-testid={`chat-message-${msg.id}`}
+                data-role={msg.role}
+                class={`${styles.message} ${msg.role === 'user' ? styles.userMessage : styles.assistantMessage}`}
+              >
+                {msg.content}
+              </div>
+            )}
+          </For>
         </div>
       </Show>
     </div>
