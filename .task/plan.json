@@ -14,7 +14,7 @@
   "modules": [
     "gui/src-tauri"
   ],
-  "analysis": "This task connects the existing reify-mcp crate to the Tauri GUI backend by implementing the ReifyToolContext trait for the engine state accessible through AppState. The architecture follows the existing pattern: EngineSession is behind Arc<Mutex<>>, and trait implementations delegate to EngineSession methods.\n\nKey observations from codebase exploration:\n- ReifyToolContext trait has 15 methods (8 read, 5 write, 2 navigation) defined in crates/reify-mcp/src/context.rs\n- AppState holds engine: Arc<Mutex<EngineSession>>, last_state: Mutex<Option<GuiState>>, watcher: Mutex<Option<FileWatcher>>\n- EngineSession has methods: load_from_source, load_file, update_source, set_parameter, export, get_source_location, build_gui_state\n- EngineSession.source_map is HashMap<String, String> (normalized key like 'module.ri' -> content)\n- Existing commands use _impl pattern for testability (e.g., set_parameter_impl takes &Mutex<EngineSession>)\n- MCP types (ParameterInfo, ConstraintInfo, etc.) closely mirror GUI types (ValueData, ConstraintData) but are decoupled\n- ToolRegistry.call_tool dispatches by name to handler closures taking (Value, &dyn ReifyToolContext)\n- register_all_tools registers all 16 tools; McpServer wraps registry+context\n- Tests use reify-test-support crate with bracket_source() and MockGeometryKernel\n\nApproach: Create TauriToolContext struct in new mcp_context.rs module. It holds Arc<Mutex<EngineSession>> and an optional event emitter callback for navigation tools. Each ReifyToolContext method locks the engine, delegates to EngineSession, and converts between GUI types and MCP types. A mcp_tool_call_impl function creates a ToolRegistry and dispatches tool calls. The Tauri command wrapper in main.rs constructs the context with an AppHandle-based event emitter.",
+  "analysis": "This task connects the existing reify-mcp crate to the Tauri GUI backend by implementing the ReifyToolContext trait for the engine state accessible through AppState. The architecture follows the existing pattern: EngineSession is behind Arc<Mutex<>>, and trait implementations delegate to EngineSession methods.\n\nKey observations from codebase exploration:\n- ReifyToolContext trait has 15 methods (8 read, 5 write, 2 navigation) defined in crates/reify-mcp/src/context.rs\n- AppState holds engine: Arc<Mutex<EngineSession>>, last_state: Mutex<Option<GuiState>>, watcher: Mutex<Option<FileWatcher>>\n- EngineSession has methods: load_from_source, load_file, update_source, set_parameter, export, get_source_location, build_gui_state\n- EngineSession.source_map is HashMap<String, String> (normalized key like 'module.ri' -> content)\n- Existing commands use _impl pattern for testability (e.g., set_parameter_impl takes &Mutex<EngineSession>)\n- MCP types (ParameterInfo, ConstraintInfo, etc.) closely mirror GUI types (ValueData, ConstraintData) but are decoupled\n- ToolRegistry.call_tool dispatches by name to handler closures taking (Value, &dyn ReifyToolContext)\n- register_all_tools registers all 16 tools; McpServer wraps registry+context\n- Tests use reify-test-support crate with bracket_source() and MockGeometryKernel\n\nApproach: Create TauriToolContext struct in new mcp_context.rs module. It holds Arc<Mutex<EngineSession>> and an optional event emitter callback for navigation tools. Each ReifyToolContext method locks the engine, delegates to EngineSession, and converts between GUI types and MCP types. A mcp_tool_call_impl function creates a ToolRegistry and dispatches tool calls. The Tauri command wrapper in main.rs constructs the context with an AppHandle-based event emitter.\n\nReview fix (stale_state_cache): The mcp_tool_call Tauri command must update state.last_state and emit delta events after tool calls, matching the pattern used by set_parameter, update_source, and open_file_engine. Without this, MCP-triggered mutations leave last_state stale, causing (a) no frontend notification of MCP changes, and (b) inflated spurious deltas on the next regular command. The fix rebuilds GuiState via build_gui_state() after each MCP call, computes the delta against last_state, emits delta events, and wraps the call in emit_status('evaluating') + IdleGuard for evaluation-status consistency. The conservative approach of always syncing (even after read-only tools) is correct because build_gui_state is cheap for unchanged state and compute_delta produces an empty delta when nothing changed.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -94,6 +94,20 @@
       "description": "Add mcp_tool_call Tauri command to main.rs: #[tauri::command] fn mcp_tool_call(app: AppHandle, state: State<AppState>, name: String, params: Value) -> Result<Value, String>. Constructs TauriToolContext::with_event_emitter using a closure that calls app.emit(). Calls mcp_tool_call_impl. Add to generate_handler! list. No event emission for eval status needed since MCP calls are synchronous.",
       "status": "done",
       "commit": "56984ec"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test `mcp_write_tool_produces_state_delta` in tests/mcp_dispatch_tests.rs that validates the state-sync pattern needed by the Tauri wrapper. The test: (1) creates an engine with bracket_source, builds initial GuiState via build_gui_state(), stores it in a Mutex<Option<GuiState>> (simulating AppState.last_state); (2) creates a TauriToolContext and calls mcp_tool_call_impl('reify_set_parameter', {cell_id:'Bracket.width', value:'100mm'}) \u2014 confirming the MCP write succeeds; (3) rebuilds GuiState from the engine via build_gui_state(); (4) calls compute_delta(&last_state, &new_gui_state); (5) asserts the delta's changed_values is non-empty (width value changed from 80 to 100); (6) asserts last_state was updated by compute_delta (no longer the initial snapshot). Also write a companion test `mcp_read_tool_produces_empty_delta` that performs the same flow but with a read-only tool ('reify_get_parameters'), asserting the delta's changed_values/changed_constraints/changed_meshes are all empty \u2014 proving the conservative always-sync approach is safe for reads.",
+      "status": "done",
+      "commit": "d3556d4"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Fix mcp_tool_call Tauri command in main.rs to sync state and emit events after MCP tool dispatch, matching the pattern used by set_parameter/update_source/open_file_engine. Changes: (1) clone app before moving it into the event_emitter closure (let app_for_emitter = app.clone()); (2) add emit_status(&app, 'evaluating') before the dispatch call; (3) add let _idle = IdleGuard(app.clone()) for RAII idle emission; (4) after mcp_tool_call_impl returns (regardless of result, conservatively), lock the engine, call build_gui_state(), call compute_delta(&state.last_state, &gui_state), and call emit_delta(&app, &delta). This ensures last_state is always current after MCP mutations, the frontend receives immediate delta events for MCP-triggered changes, and evaluation-status events bracket the call for UI spinner consistency. The state sync runs even for read-only tools since compute_delta produces an empty delta when nothing changed, avoiding the need to categorize tools.",
+      "status": "done",
+      "commit": "a00f9a7"
     }
   ],
   "design_decisions": [
@@ -128,6 +142,10 @@
     {
       "decision": "mcp_tool_call_impl takes &dyn ReifyToolContext rather than &Mutex<EngineSession>",
       "rationale": "Unlike existing _impl functions which take &Mutex<EngineSession>, the MCP dispatch layer works with the abstract ReifyToolContext trait. This allows the same dispatch function to work with both TauriToolContext (production) and MockToolContext (testing), and matches the ToolRegistry::call_tool interface."
+    },
+    {
+      "decision": "Always sync state after MCP tool calls (conservative approach) rather than only after known write tools",
+      "rationale": "Categorizing tools as read vs write would require maintaining a separate list or adding metadata to the registry, which is fragile and could drift. The conservative approach calls build_gui_state() + compute_delta() after every MCP call. For read-only tools, build_gui_state() is cheap (no re-evaluation), and compute_delta() produces an empty delta with zero events emitted. The negligible overhead is worth the simplicity and correctness guarantee."
     }
   ],
   "reuse": [
@@ -160,8 +178,13 @@
       "what": "Existing Tauri command registration and event emission patterns",
       "where": "gui/src-tauri/src/main.rs (generate_handler!, app.emit())",
       "how": "Add mcp_tool_call to generate_handler! list; use app.emit('focus-entity', ...) pattern for navigation events"
+    },
+    {
+      "what": "compute_delta + emit_delta state-sync pattern from existing write commands",
+      "where": "gui/src-tauri/src/main.rs (set_parameter, update_source, open_file_engine) + gui/src-tauri/src/diff.rs",
+      "how": "After mcp_tool_call_impl returns, call build_gui_state() then compute_delta(&state.last_state, &gui_state) to update last_state and get the diff, then emit_delta(&app, &delta) to notify the frontend. Reuse IdleGuard RAII pattern for evaluation-status events."
     }
   ],
   "_session_id": "138-70feeab3",
-  "_created_at": "2026-03-23T20:09:20.543085+00:00"
+  "_created_at": "2026-03-23T20:29:08.038519+00:00"
 }
