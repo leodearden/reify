@@ -43,13 +43,13 @@
       "type": "test",
       "description": "S3: Verify existing entrypoint tests still pass (they import main from index.js and test it directly). No new test file needed \u2014 the existing 'entrypoint wiring' tests in session.test.ts fully cover main() behavior. This step is a verification checkpoint before the structural refactor.",
       "status": "done",
-      "commit": null
+      "commit": "cd32800"
     },
     {
       "id": "step-4",
       "type": "impl",
       "description": "S3: Create gui/sidecar/src/cli.ts \u2014 a minimal entrypoint that imports main from './index.js' and calls `main().catch((err: unknown) => { console.error('Sidecar fatal error:', err); process.exit(1); })`. Remove the auto-run detection block (lines 60-71: isDirectRun variable and if block) from index.ts. Update gui/sidecar/package.json build script from `tsup src/index.ts --format esm --dts` to `tsup src/index.ts src/cli.ts --format esm --dts` so both library and CLI entrypoint are built.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     }
   ],
