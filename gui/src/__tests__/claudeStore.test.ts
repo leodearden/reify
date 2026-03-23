@@ -1,0 +1,204 @@
+import { describe, it, expect, vi } from 'vitest';
+import { createClaudeStore } from '../stores/claudeStore';
+import type { OutboundMessage } from '../../sidecar/src/types';
+
+describe('claudeStore', () => {
+  function makeStore(overrides?: { onSend?: ReturnType<typeof vi.fn>; onAbort?: ReturnType<typeof vi.fn> }) {
+    const onSend = overrides?.onSend ?? vi.fn();
+    const onAbort = overrides?.onAbort ?? vi.fn();
+    return { ...createClaudeStore({ onSend, onAbort }), onSend, onAbort };
+  }
+
+  describe('initial state', () => {
+    it('has sessionStatus="idle"', () => {
+      const { state } = makeStore();
+      expect(state.sessionStatus).toBe('idle');
+    });
+
+    it('has empty messages array', () => {
+      const { state } = makeStore();
+      expect(state.messages).toEqual([]);
+    });
+
+    it('has currentMessageId=null', () => {
+      const { state } = makeStore();
+      expect(state.currentMessageId).toBeNull();
+    });
+  });
+
+  describe('handleOutboundMessage', () => {
+    it('Ready event keeps idle state', () => {
+      const { state, handleOutboundMessage } = makeStore();
+      handleOutboundMessage({ type: 'ready' } as OutboundMessage);
+      expect(state.sessionStatus).toBe('idle');
+    });
+
+    it('TextDelta accumulates responseText on current assistant message', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      handleOutboundMessage({ type: 'text_delta', id: state.currentMessageId!, content: 'Hello' } as OutboundMessage);
+      // Flush rAF
+      handleOutboundMessage({ type: 'done', id: state.currentMessageId! } as OutboundMessage);
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant');
+      expect(assistantMsg).toBeTruthy();
+      expect(assistantMsg!.responseText).toBe('Hello');
+    });
+
+    it('TextDelta sets sessionStatus to "responding"', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      handleOutboundMessage({ type: 'text_delta', id: state.currentMessageId!, content: 'Hi' } as OutboundMessage);
+      expect(state.sessionStatus).toBe('responding');
+    });
+
+    it('ThinkingDelta accumulates thinkingText', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      handleOutboundMessage({ type: 'thinking_delta', id: state.currentMessageId!, content: 'Let me think...' } as OutboundMessage);
+      // Flush via done
+      handleOutboundMessage({ type: 'done', id: state.currentMessageId! } as OutboundMessage);
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant');
+      expect(assistantMsg!.thinkingText).toBe('Let me think...');
+    });
+
+    it('ThinkingDelta sets sessionStatus to "thinking"', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      handleOutboundMessage({ type: 'thinking_delta', id: state.currentMessageId!, content: 'hmm' } as OutboundMessage);
+      expect(state.sessionStatus).toBe('thinking');
+    });
+
+    it('ToolCall adds ToolCallInfo with status="pending"', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({
+        type: 'tool_call',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        tool_input: { entity: 'box1' },
+      } as OutboundMessage);
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant');
+      expect(assistantMsg!.toolCalls).toHaveLength(1);
+      expect(assistantMsg!.toolCalls[0].toolName).toBe('reify_get_parameters');
+      expect(assistantMsg!.toolCalls[0].status).toBe('pending');
+    });
+
+    it('ToolCall sets sessionStatus to "tool-calling"', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      handleOutboundMessage({
+        type: 'tool_call',
+        id: state.currentMessageId!,
+        tool_name: 'reify_get_parameters',
+        tool_input: {},
+      } as OutboundMessage);
+      expect(state.sessionStatus).toBe('tool-calling');
+    });
+
+    it('ToolResult updates matching tool call status to "complete" and stores result', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({
+        type: 'tool_call',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        tool_input: {},
+      } as OutboundMessage);
+      handleOutboundMessage({
+        type: 'tool_result',
+        id: msgId,
+        tool_name: 'reify_get_parameters',
+        result: [{ name: 'width', value: 10 }],
+      } as OutboundMessage);
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant');
+      expect(assistantMsg!.toolCalls[0].status).toBe('complete');
+      expect(assistantMsg!.toolCalls[0].result).toEqual([{ name: 'width', value: 10 }]);
+    });
+
+    it('Done marks assistant message complete and sets sessionStatus="idle"', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'Hi' } as OutboundMessage);
+      handleOutboundMessage({ type: 'done', id: msgId } as OutboundMessage);
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant');
+      expect(assistantMsg!.complete).toBe(true);
+      expect(state.sessionStatus).toBe('idle');
+    });
+
+    it('ErrorMessage sets error on assistant message and sets sessionStatus="idle"', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({
+        type: 'error',
+        id: msgId,
+        message: 'Rate limit exceeded',
+      } as OutboundMessage);
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant');
+      expect(assistantMsg!.error).toBe('Rate limit exceeded');
+      expect(state.sessionStatus).toBe('idle');
+    });
+  });
+
+  describe('sendMessage', () => {
+    it('adds a user ChatMessage to messages', () => {
+      const { state, sendMessage } = makeStore();
+      sendMessage('hello world', {});
+      const userMsg = state.messages.find((m) => m.role === 'user');
+      expect(userMsg).toBeTruthy();
+      expect(userMsg!.text).toBe('hello world');
+    });
+
+    it('sets currentMessageId', () => {
+      const { state, sendMessage } = makeStore();
+      sendMessage('hello', {});
+      expect(state.currentMessageId).not.toBeNull();
+    });
+
+    it('calls onSend callback with message text and context', () => {
+      const onSend = vi.fn();
+      const { sendMessage } = makeStore({ onSend });
+      const ctx = { selected_entity: 'box1' };
+      sendMessage('hello', ctx);
+      expect(onSend).toHaveBeenCalledTimes(1);
+      expect(onSend).toHaveBeenCalledWith(expect.any(String), 'hello', ctx);
+    });
+
+    it('creates an assistant message shell after user message', () => {
+      const { state, sendMessage } = makeStore();
+      sendMessage('hello', {});
+      expect(state.messages).toHaveLength(2);
+      expect(state.messages[0].role).toBe('user');
+      expect(state.messages[1].role).toBe('assistant');
+    });
+  });
+
+  describe('claudeAbort', () => {
+    it('calls onAbort callback', () => {
+      const onAbort = vi.fn();
+      const { claudeAbort } = makeStore({ onAbort });
+      claudeAbort();
+      expect(onAbort).toHaveBeenCalledTimes(1);
+    });
+
+    it('sets sessionStatus to "idle"', () => {
+      const { state, sendMessage, claudeAbort } = makeStore();
+      sendMessage('hello', {});
+      claudeAbort();
+      expect(state.sessionStatus).toBe('idle');
+    });
+  });
+
+  describe('clearSession', () => {
+    it('resets messages to empty array', () => {
+      const { state, sendMessage, clearSession } = makeStore();
+      sendMessage('hello', {});
+      expect(state.messages.length).toBeGreaterThan(0);
+      clearSession();
+      expect(state.messages).toEqual([]);
+    });
+  });
+});
