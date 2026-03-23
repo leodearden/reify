@@ -1,9 +1,71 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@solidjs/testing-library';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor, cleanup } from '@solidjs/testing-library';
+
+// Mock Tauri APIs before any component imports
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
+}));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+
+// Mock Viewport
+vi.mock('../viewport', () => ({
+  Viewport: (props: any) => {
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'viewport-container');
+    if (props.fitToViewRef) props.fitToViewRef(() => {});
+    if (props.flyToEntityRef) props.flyToEntityRef(() => {});
+    return el;
+  },
+}));
+
+// Mock Editor
+vi.mock('../editor/Editor', () => ({
+  Editor: () => {
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'editor-container');
+    return el;
+  },
+}));
+
+// Mock FileTabs
+vi.mock('../editor/FileTabs', () => ({
+  FileTabs: () => {
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'file-tabs');
+    return el;
+  },
+}));
+
+// Mock bridge functions
+vi.mock('../bridge', () => ({
+  getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
+  setParameter: vi.fn().mockResolvedValue(undefined),
+  exportGeometry: vi.fn().mockResolvedValue(undefined),
+  pickSavePath: vi.fn().mockResolvedValue('/path.step'),
+  pickOpenPath: vi.fn().mockResolvedValue(null),
+  updateSource: vi.fn().mockResolvedValue(undefined),
+  openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
+  openFileEngine: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
+  getSourceLocation: vi.fn().mockResolvedValue({ file: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
+  focusEntity: vi.fn().mockResolvedValue(undefined),
+  onMeshUpdate: vi.fn().mockResolvedValue(() => {}),
+  onValueUpdate: vi.fn().mockResolvedValue(() => {}),
+  onConstraintUpdate: vi.fn().mockResolvedValue(() => {}),
+  onEvaluationStatus: vi.fn().mockResolvedValue(() => {}),
+  onMeshRemoved: vi.fn().mockResolvedValue(() => {}),
+  onValueRemoved: vi.fn().mockResolvedValue(() => {}),
+  onConstraintRemoved: vi.fn().mockResolvedValue(() => {}),
+  onFileChanged: vi.fn().mockResolvedValue(() => {}),
+}));
+
 import { ChatPanel } from '../panels/ChatPanel';
 import { ConstraintPanel } from '../panels/ConstraintPanel';
 import { StatusBar } from '../panels/StatusBar';
+import App from '../App';
 import { createClaudeStore } from '../stores/claudeStore';
+import * as bridge from '../bridge';
 import type { ConstraintData, ValueData, EvaluationStatus } from '../types';
 
 function makeStore(overrides?: { onSend?: ReturnType<typeof vi.fn>; onAbort?: ReturnType<typeof vi.fn> }) {
@@ -34,6 +96,25 @@ function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueDa
     kind: overrides.kind ?? 'Param',
   };
 }
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  localStorage.clear();
+  // Reset bridge mock implementations
+  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
+  vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
+  vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
+  vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(() => {});
+  vi.mocked(bridge.onEvaluationStatus).mockResolvedValue(() => {});
+  vi.mocked(bridge.onMeshRemoved).mockResolvedValue(() => {});
+  vi.mocked(bridge.onValueRemoved).mockResolvedValue(() => {});
+  vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(() => {});
+  vi.mocked(bridge.onFileChanged).mockResolvedValue(() => {});
+});
+
+afterEach(() => {
+  cleanup();
+});
 
 describe('Context integration', () => {
   it('ChatPanel with violated constraints enables "Violated constraints" context picker option', () => {
@@ -130,5 +211,69 @@ describe('Context integration', () => {
     render(() => <ChatPanel store={store} />);
     expect(screen.getByTestId('system-message')).toBeTruthy();
     expect(screen.getByTestId('system-message').textContent).toContain('Authentication required');
+  });
+});
+
+/** Helper: render App and wait for init to complete (ready state). */
+async function renderAndWaitForReady() {
+  const result = render(() => <App />);
+  await waitFor(() => {
+    expect(screen.getByTestId('app-layout')).toBeTruthy();
+  });
+  return result;
+}
+
+describe('App wiring', () => {
+  it('StatusBar receives claudeStatus from claudeStore sessionStatus', async () => {
+    await renderAndWaitForReady();
+    // The StatusBar should have a claude-status section showing the claude store's idle status
+    expect(screen.getByTestId('claude-status')).toBeTruthy();
+    expect(screen.getByTestId('claude-status').textContent).toContain('idle');
+  });
+
+  it('ConstraintPanel receives onAskClaude handler — right-clicking shows context menu', async () => {
+    // Provide initial state with a constraint
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [],
+      values: [],
+      constraints: [
+        { node_id: 'c1', expression: 'width > 100', status: 'violated', label: null, parameter_ids: [] },
+      ],
+      files: [],
+    });
+    await renderAndWaitForReady();
+    const row = screen.getByTestId('constraint-row-c1');
+    fireEvent.contextMenu(row);
+    expect(screen.getByTestId('constraint-context-menu')).toBeTruthy();
+  });
+
+  it('ChatPanel receives engineConstraints from engineStore', async () => {
+    // Provide initial state with a violated constraint
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [],
+      values: [],
+      constraints: [
+        { node_id: 'c1', expression: 'width > 100', status: 'violated', label: null, parameter_ids: [] },
+      ],
+      files: [],
+    });
+    await renderAndWaitForReady();
+    // Open context picker — 'Violated constraints' should be enabled
+    fireEvent.click(screen.getByTestId('context-picker-btn'));
+    const option = screen.getByText('Violated constraints');
+    expect((option as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('StatusBar onToggleChat toggles ChatPanel visibility', async () => {
+    await renderAndWaitForReady();
+    // ChatPanel should be visible initially
+    expect(screen.getByTestId('chat-panel')).toBeTruthy();
+    // Click the Claude status indicator to toggle
+    fireEvent.click(screen.getByTestId('claude-status'));
+    // ChatPanel should be hidden
+    expect(screen.queryByTestId('chat-panel')).toBeNull();
+    // Click again to show
+    fireEvent.click(screen.getByTestId('claude-status'));
+    expect(screen.getByTestId('chat-panel')).toBeTruthy();
   });
 });
