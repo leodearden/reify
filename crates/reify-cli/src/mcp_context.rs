@@ -4,10 +4,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use reify_compiler::ValueCellKind;
 use reify_mcp::{
     ConstraintInfo, DiagnosticInfo, EvalStatusInfo, OpenFileInfo, ParameterInfo, ReifyToolContext,
     SelectionInfo, SetParamResult, SourceContent, SourceLocationInfo, ToolError, UpdateResult,
 };
+use reify_types::{DeterminacyState, Value};
 
 /// Tracks the state of an open file.
 struct FileEntry {
@@ -88,6 +90,33 @@ impl CliToolContext {
     }
 }
 
+/// Convert a byte offset to (line, column), both 1-based.
+fn byte_offset_to_line_col(source: &str, offset: u32) -> (u32, u32) {
+    let offset = offset as usize;
+    let mut line = 1u32;
+    let mut col = 1u32;
+    for (i, ch) in source.char_indices() {
+        if i >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+/// Format a dimension as a human-readable unit string.
+fn dimension_unit(ty: &reify_types::ty::Type) -> String {
+    match ty {
+        reify_types::ty::Type::Scalar { dimension } => format!("{}", dimension),
+        _ => String::new(),
+    }
+}
+
 impl ReifyToolContext for CliToolContext {
     fn get_source(&self, file_path: Option<&str>) -> Result<SourceContent, ToolError> {
         let state = self.state.lock().unwrap();
@@ -121,15 +150,122 @@ impl ReifyToolContext for CliToolContext {
     }
 
     fn get_diagnostics(&self) -> Result<Vec<DiagnosticInfo>, ToolError> {
-        Ok(vec![])
+        let state = self.state.lock().unwrap();
+        let mut result = Vec::new();
+
+        if let Some(compiled) = &state.compiled {
+            let file_path = state.active_file.clone().unwrap_or_default();
+            let source = state
+                .files
+                .get(&file_path)
+                .map(|f| f.content.as_str())
+                .unwrap_or("");
+
+            for diag in &compiled.diagnostics {
+                // Use the first label's span if available, otherwise default to (1,1)
+                let (line, column, end_line, end_column) =
+                    if let Some(label) = diag.labels.first() {
+                        let (l, c) = byte_offset_to_line_col(source, label.span.start);
+                        let (el, ec) = byte_offset_to_line_col(source, label.span.end);
+                        (l, c, el, ec)
+                    } else {
+                        (1, 1, 1, 1)
+                    };
+                result.push(DiagnosticInfo {
+                    file_path: file_path.clone(),
+                    line,
+                    column,
+                    end_line,
+                    end_column,
+                    severity: format!("{}", diag.severity),
+                    message: diag.message.clone(),
+                    code: None,
+                });
+            }
+        }
+
+        Ok(result)
     }
 
     fn get_parameters(&self) -> Result<Vec<ParameterInfo>, ToolError> {
-        Ok(vec![])
+        let state = self.state.lock().unwrap();
+        let snapshot = match state.engine.as_ref().and_then(|e| e.snapshot()) {
+            Some(s) => s,
+            None => return Ok(vec![]),
+        };
+
+        let compiled = match &state.compiled {
+            Some(c) => c,
+            None => return Ok(vec![]),
+        };
+
+        let mut params = Vec::new();
+
+        // Iterate through all templates to get cell metadata (kind, type)
+        for template in &compiled.templates {
+            for cell_decl in &template.value_cells {
+                let id = &cell_decl.id;
+                let (value, determinacy) = snapshot
+                    .values
+                    .get(id)
+                    .cloned()
+                    .unwrap_or((Value::Undef, DeterminacyState::Undetermined));
+
+                let kind_str = match cell_decl.kind {
+                    ValueCellKind::Param => "Param",
+                    ValueCellKind::Let => "Let",
+                    ValueCellKind::Auto => "Auto",
+                };
+
+                let det_str = match determinacy {
+                    DeterminacyState::Determined => "determined",
+                    DeterminacyState::Undetermined => "undetermined",
+                    DeterminacyState::Provisional => "provisional",
+                    DeterminacyState::Auto => "auto",
+                };
+
+                params.push(ParameterInfo {
+                    cell_id: format!("{}", id),
+                    name: id.member.clone(),
+                    value: format!("{}", value),
+                    unit: dimension_unit(&cell_decl.cell_type),
+                    kind: kind_str.to_string(),
+                    entity_path: id.entity.clone(),
+                    determinacy: det_str.to_string(),
+                });
+            }
+        }
+
+        Ok(params)
     }
 
     fn get_constraints(&self) -> Result<Vec<ConstraintInfo>, ToolError> {
-        Ok(vec![])
+        let state = self.state.lock().unwrap();
+        let compiled = match &state.compiled {
+            Some(c) => c,
+            None => return Ok(vec![]),
+        };
+
+        // We need to run check to get constraint satisfaction status.
+        // If the engine has been initialized, use the snapshot's constraint data.
+        let mut result = Vec::new();
+
+        // Get constraint results from the engine if available
+        // For now, use the compiled constraints with "unknown" status,
+        // then we'll upgrade when we have check results
+        for template in &compiled.templates {
+            for constraint in &template.constraints {
+                result.push(ConstraintInfo {
+                    node_id: format!("{}", constraint.id),
+                    expression: format!("{:?}", constraint.expr),
+                    status: "unknown".to_string(),
+                    label: constraint.label.clone(),
+                    parameter_ids: vec![],
+                });
+            }
+        }
+
+        Ok(result)
     }
 
     fn get_eval_status(&self) -> Result<EvalStatusInfo, ToolError> {
@@ -153,10 +289,56 @@ impl ReifyToolContext for CliToolContext {
         })
     }
 
-    fn get_source_location(&self, _entity_path: &str) -> Result<SourceLocationInfo, ToolError> {
-        Err(ToolError::EngineError(
-            "source location lookup not yet implemented".to_string(),
-        ))
+    fn get_source_location(&self, entity_path: &str) -> Result<SourceLocationInfo, ToolError> {
+        let state = self.state.lock().unwrap();
+        let compiled = state
+            .compiled
+            .as_ref()
+            .ok_or_else(|| ToolError::EngineError("no compiled module".to_string()))?;
+        let file_path = state.active_file.clone().unwrap_or_default();
+        let source = state
+            .files
+            .get(&file_path)
+            .map(|f| f.content.as_str())
+            .unwrap_or("");
+
+        // Search templates for matching entity
+        for template in &compiled.templates {
+            if template.name == entity_path {
+                // Return the span of the first value cell as a proxy for the entity
+                if let Some(cell) = template.value_cells.first() {
+                    let (line, column) = byte_offset_to_line_col(source, cell.span.start);
+                    let (end_line, end_column) = byte_offset_to_line_col(source, cell.span.end);
+                    return Ok(SourceLocationInfo {
+                        file: file_path,
+                        line,
+                        column,
+                        end_line,
+                        end_column,
+                    });
+                }
+            }
+
+            // Also check for entity.member pattern
+            for cell in &template.value_cells {
+                let cell_id_str = format!("{}", cell.id);
+                if cell_id_str == entity_path || cell.id.member == entity_path {
+                    let (line, column) = byte_offset_to_line_col(source, cell.span.start);
+                    let (end_line, end_column) = byte_offset_to_line_col(source, cell.span.end);
+                    return Ok(SourceLocationInfo {
+                        file: file_path,
+                        line,
+                        column,
+                        end_line,
+                        end_column,
+                    });
+                }
+            }
+        }
+
+        Err(ToolError::EngineError(format!(
+            "entity not found: {entity_path}"
+        )))
     }
 
     fn update_source(&self, _file_path: &str, _content: &str) -> Result<UpdateResult, ToolError> {
