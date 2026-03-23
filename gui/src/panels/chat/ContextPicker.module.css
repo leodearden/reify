@@ -1,0 +1,56 @@
+.container {
+  position: relative;
+  display: inline-block;
+}
+
+.btn {
+  border: 1px dashed var(--reify-border);
+  background: transparent;
+  color: var(--reify-text-muted);
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  border-color: var(--reify-accent);
+  color: var(--reify-text);
+}
+
+.dropdown {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  background: var(--reify-background);
+  border: 1px solid var(--reify-border);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 180px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+}
+
+.option {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--reify-text);
+  padding: 6px 12px;
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.option:hover:not(:disabled) {
+  background: var(--reify-surface0);
+}
+
+.option:disabled {
+  color: var(--reify-text-muted);
+  cursor: not-allowed;
+  opacity: 0.5;
+}

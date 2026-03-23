@@ -6,3 +6,4 @@ export { StreamingText } from './StreamingText';
 export { MessageGroup } from './MessageGroup';
 export { SystemMessage } from './SystemMessage';
 export { ContextChip } from './ContextChip';
+export { ContextPicker } from './ContextPicker';
