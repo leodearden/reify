@@ -245,6 +245,58 @@ describe('ChatPanel drag-to-resize', () => {
   });
 });
 
+describe('ChatPanel markdown rendering', () => {
+  it('assistant message with code block renders a <pre> element containing a <code> element', () => {
+    const messages: ChatMessage[] = [
+      { id: '1', role: 'assistant', content: '```\nconst x = 1;\n```', timestamp: 1 },
+    ];
+    const { container } = render(() => <ChatPanel {...defaultProps()} messages={messages} />);
+    const msgEl = container.querySelector('[data-testid="chat-message-1"]')!;
+    const pre = msgEl.querySelector('pre');
+    expect(pre).toBeTruthy();
+    const code = pre!.querySelector('code');
+    expect(code).toBeTruthy();
+    expect(code!.textContent).toContain('const x = 1;');
+  });
+
+  it('assistant message with inline code renders a <code> element not inside <pre>', () => {
+    const messages: ChatMessage[] = [
+      { id: '1', role: 'assistant', content: 'Use `foo()` here', timestamp: 1 },
+    ];
+    const { container } = render(() => <ChatPanel {...defaultProps()} messages={messages} />);
+    const msgEl = container.querySelector('[data-testid="chat-message-1"]')!;
+    const codes = msgEl.querySelectorAll('code');
+    expect(codes.length).toBeGreaterThanOrEqual(1);
+    // Should NOT be inside a <pre>
+    const pre = msgEl.querySelector('pre');
+    expect(pre).toBeNull();
+    expect(codes[0].textContent).toBe('foo()');
+  });
+
+  it('assistant message with bold renders a <strong> element', () => {
+    const messages: ChatMessage[] = [
+      { id: '1', role: 'assistant', content: 'This is **bold** text', timestamp: 1 },
+    ];
+    const { container } = render(() => <ChatPanel {...defaultProps()} messages={messages} />);
+    const msgEl = container.querySelector('[data-testid="chat-message-1"]')!;
+    const strong = msgEl.querySelector('strong');
+    expect(strong).toBeTruthy();
+    expect(strong!.textContent).toBe('bold');
+  });
+
+  it('user messages do NOT get markdown rendering', () => {
+    const messages: ChatMessage[] = [
+      { id: '1', role: 'user', content: 'This is **bold** and `code`', timestamp: 1 },
+    ];
+    const { container } = render(() => <ChatPanel {...defaultProps()} messages={messages} />);
+    const msgEl = container.querySelector('[data-testid="chat-message-1"]')!;
+    expect(msgEl.querySelector('strong')).toBeNull();
+    expect(msgEl.querySelector('code')).toBeNull();
+    // The raw text should be there
+    expect(msgEl.textContent).toContain('**bold**');
+  });
+});
+
 describe('ChatPanel disabled state', () => {
   it('textarea is disabled when sessionStatus is busy', () => {
     render(() => <ChatPanel {...defaultProps()} sessionStatus="busy" />);
