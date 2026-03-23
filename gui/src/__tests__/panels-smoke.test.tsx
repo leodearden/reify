@@ -9,7 +9,9 @@ import {
   FileBrowser,
   ExportDialog,
   ReloadPrompt,
+  ChatPanel,
 } from '../panels';
+import { createClaudeStore } from '../stores';
 
 describe('panels smoke integration', () => {
   it('all four original components mount and have expected data-testid attributes', () => {
@@ -59,5 +61,11 @@ describe('panels smoke integration', () => {
     expect(screen.getByTestId('file-browser')).toBeTruthy();
     expect(screen.getByTestId('export-dialog')).toBeTruthy();
     expect(screen.getByTestId('reload-prompt')).toBeTruthy();
+  });
+
+  it('ChatPanel mounts with expected data-testid', () => {
+    const store = createClaudeStore({ onSend: vi.fn(), onAbort: vi.fn() });
+    render(() => <ChatPanel store={store} />);
+    expect(screen.getByTestId('chat-panel')).toBeTruthy();
   });
 });
