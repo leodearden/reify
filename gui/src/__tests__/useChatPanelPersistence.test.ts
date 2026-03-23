@@ -68,4 +68,21 @@ describe('useChatPanelPersistence', () => {
       expect(JSON.parse(stored!)).toBe(true);
     });
   });
+
+  describe('persistence round-trip', () => {
+    it('saveChatPanelHeight then loadChatPanelHeight returns the saved value', () => {
+      saveChatPanelHeight(400);
+      expect(loadChatPanelHeight()).toBe(400);
+    });
+
+    it('saveChatPanelOpen(true) then loadChatPanelOpen() returns true', () => {
+      saveChatPanelOpen(true);
+      expect(loadChatPanelOpen()).toBe(true);
+    });
+
+    it('saveChatPanelOpen(false) then loadChatPanelOpen() returns false', () => {
+      saveChatPanelOpen(false);
+      expect(loadChatPanelOpen()).toBe(false);
+    });
+  });
 });
