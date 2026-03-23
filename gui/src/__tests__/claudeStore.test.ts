@@ -429,4 +429,72 @@ describe('claudeStore', () => {
       expect(assistant!.responseText).toBe('');
     });
   });
+
+  describe('system messages', () => {
+    it('addSystemMessage adds a message with role="system" to messages array', () => {
+      const { state, addSystemMessage } = makeStore();
+      addSystemMessage('network', 'Connection failed.');
+      expect(state.messages).toHaveLength(1);
+      expect(state.messages[0].role).toBe('system');
+    });
+
+    it('system message has errorType and text fields', () => {
+      const { state, addSystemMessage } = makeStore();
+      addSystemMessage('auth', 'Please authenticate.');
+      const msg = state.messages[0] as any;
+      expect(msg.errorType).toBe('auth');
+      expect(msg.text).toBe('Please authenticate.');
+    });
+
+    it('system messages appear in correct position in timeline (after the last message)', () => {
+      const { state, sendMessage, handleOutboundMessage, addSystemMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({ type: 'done', id: msgId } as OutboundMessage);
+      addSystemMessage('network', 'Connection lost.');
+      expect(state.messages).toHaveLength(3); // user + assistant + system
+      expect(state.messages[2].role).toBe('system');
+    });
+
+    it('error OutboundMessage with auth-pattern text adds a classified system message automatically', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({
+        type: 'error',
+        id: msgId,
+        message: 'Authentication failed: 401 Unauthorized',
+      } as OutboundMessage);
+      const systemMsgs = state.messages.filter((m) => m.role === 'system');
+      expect(systemMsgs).toHaveLength(1);
+      expect((systemMsgs[0] as any).errorType).toBe('auth');
+    });
+
+    it('error OutboundMessage with rate-limit pattern adds rate-limit system message', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({
+        type: 'error',
+        id: msgId,
+        message: 'Rate limit exceeded (429)',
+      } as OutboundMessage);
+      const systemMsgs = state.messages.filter((m) => m.role === 'system');
+      expect(systemMsgs).toHaveLength(1);
+      expect((systemMsgs[0] as any).errorType).toBe('rate-limit');
+    });
+
+    it('first auth error includes first-run instructions in text', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({
+        type: 'error',
+        id: msgId,
+        message: '401 Unauthorized',
+      } as OutboundMessage);
+      const systemMsg = state.messages.find((m) => m.role === 'system') as any;
+      expect(systemMsg.text).toContain('claude login');
+    });
+  });
 });
