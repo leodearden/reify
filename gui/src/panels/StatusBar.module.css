@@ -67,3 +67,43 @@
   color: var(--reify-text-muted, #6c7086);
   background: rgba(108, 112, 134, 0.1);
 }
+
+.claudeStatus {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.claudeStatus:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.claudeStatusText {
+  font-weight: 500;
+}
+
+.claudeStatus[data-claude-status="idle"] .claudeStatusText {
+  color: var(--reify-text-muted, #6c7086);
+}
+
+.claudeStatus[data-claude-status="thinking"] .claudeStatusText {
+  color: var(--reify-accent, #89b4fa);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.claudeStatus[data-claude-status="tool-calling"] .claudeStatusText {
+  color: var(--reify-accent, #89b4fa);
+}
+
+.claudeStatus[data-claude-status="responding"] .claudeStatusText {
+  color: var(--reify-accent, #89b4fa);
+}
+
+.claudeStatus[data-claude-status="error"] .claudeStatusText {
+  color: var(--reify-error, #f38ba8);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}

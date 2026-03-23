@@ -1,11 +1,14 @@
-import { type Component, createMemo } from 'solid-js';
+import { type Component, createMemo, Show } from 'solid-js';
 import type { EvaluationStatus, MeshData, ConstraintData } from '../types';
+import type { SessionStatus } from '../stores/claudeStore';
 import styles from './StatusBar.module.css';
 
 export interface StatusBarProps {
   evalStatus: EvaluationStatus;
   meshes: Record<string, MeshData>;
   constraints: Record<string, ConstraintData>;
+  claudeStatus?: SessionStatus;
+  onToggleChat?: () => void;
 }
 
 export const StatusBar: Component<StatusBarProps> = (props) => {
@@ -26,6 +29,15 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
     }
     return counts;
   });
+
+  function claudeStatusText(status: SessionStatus): string {
+    switch (status) {
+      case 'thinking': return 'thinking...';
+      case 'tool-calling': return 'calling tool...';
+      case 'responding': return 'responding...';
+      default: return status;
+    }
+  }
 
   return (
     <div data-testid="status-bar" class={styles.container} role="status" aria-live="polite">
@@ -52,6 +64,22 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           {constraintSummary().indeterminate}
         </span>
       </span>
+      <Show when={props.claudeStatus}>
+        {(status) => (
+          <>
+            <span class={styles.divider} />
+            <span
+              class={`${styles.section} ${styles.claudeStatus}`}
+              data-testid="claude-status"
+              data-claude-status={status()}
+              onClick={() => props.onToggleChat?.()}
+            >
+              <span class={styles.label}>Claude:</span>
+              <span class={styles.claudeStatusText}>{claudeStatusText(status())}</span>
+            </span>
+          </>
+        )}
+      </Show>
     </div>
   );
 };
