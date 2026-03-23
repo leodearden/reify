@@ -21,7 +21,32 @@ pub fn register(registry: &mut ToolRegistry) {
             },
             "required": ["file_path", "content"]
         }),
-        |_params, _ctx| Err(ToolError::NotImplemented),
+        |params, ctx| {
+            let file_path = params["file_path"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("file_path is required".to_string()))?;
+            let content = params["content"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("content is required".to_string()))?;
+
+            ctx.update_source(file_path, content)?;
+
+            let diagnostics = ctx.get_diagnostics()?;
+            let filtered: Vec<_> = diagnostics
+                .into_iter()
+                .filter(|d| d.file_path == file_path)
+                .collect();
+
+            let diagnostics_count = filtered.len();
+            let diagnostics_json = serde_json::to_value(&filtered)
+                .map_err(|e| ToolError::InternalError(e.to_string()))?;
+
+            Ok(serde_json::json!({
+                "success": true,
+                "diagnostics_count": diagnostics_count,
+                "diagnostics": diagnostics_json,
+            }))
+        },
     );
 
     registry.register(
