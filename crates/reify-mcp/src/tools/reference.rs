@@ -1,7 +1,7 @@
-// Reference tool stubs (1 tool)
+// Reference tools (1 tool)
 
+use super::language_chunks;
 use crate::registry::ToolRegistry;
-use crate::types::ToolError;
 
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(
@@ -12,10 +12,44 @@ pub fn register(registry: &mut ToolRegistry) {
             "properties": {
                 "topic": {
                     "type": "string",
-                    "description": "The language feature or topic to look up (e.g., 'param', 'constraint', 'sketch')."
+                    "description": "The language feature or topic to look up (e.g., 'syntax', 'constraints', 'parameters')."
                 }
             }
         }),
-        |_params, _ctx| Err(ToolError::NotImplemented),
+        |params, _ctx| {
+            let topic = params["topic"].as_str();
+
+            match topic {
+                Some(t) => {
+                    if let Some(content) = language_chunks::get_chunk(t) {
+                        Ok(serde_json::json!({
+                            "topic": t,
+                            "content": content,
+                        }))
+                    } else {
+                        let help = format_topics_help();
+                        Ok(serde_json::json!({
+                            "topic": t,
+                            "content": help,
+                        }))
+                    }
+                }
+                None => {
+                    let help = format_topics_help();
+                    Ok(serde_json::json!({
+                        "topic": "help",
+                        "content": help,
+                    }))
+                }
+            }
+        },
     );
+}
+
+fn format_topics_help() -> String {
+    let topics = language_chunks::available_topics();
+    format!(
+        "Available topics: {}. Pass one as the 'topic' parameter to get documentation.",
+        topics.join(", ")
+    )
 }

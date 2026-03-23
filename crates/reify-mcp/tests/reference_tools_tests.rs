@@ -1,7 +1,7 @@
 use reify_mcp::context::MockToolContext;
 use reify_mcp::registry::ToolRegistry;
 use reify_mcp::tools::register_all_tools;
-use reify_mcp::types::ToolError;
+// ToolError not used directly — reference tool returns Ok for all cases
 
 fn setup_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
