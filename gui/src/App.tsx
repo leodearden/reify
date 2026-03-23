@@ -82,6 +82,9 @@ const App: Component = () => {
   // Init phase: loading → ready | error
   const [initPhase, setInitPhase] = createSignal<'loading' | 'ready' | 'error'>('loading');
 
+  // Chat panel open/closed state
+  const [chatOpen, setChatOpen] = createSignal(true);
+
   // Export dialog state
   const [showExportDialog, setShowExportDialog] = createSignal(false);
 
@@ -408,6 +411,17 @@ const App: Component = () => {
     });
   }
 
+  function handleAskClaude(context: string) {
+    // Open chat panel if closed, and pre-populate with context
+    setChatOpen(true);
+    // Send context as a message to Claude
+    claudeStore.sendMessage(context, {});
+  }
+
+  function handleToggleChat() {
+    setChatOpen((v) => !v);
+  }
+
   return (
     <>
       <Show when={showHelp()}>
@@ -480,14 +494,24 @@ const App: Component = () => {
                 constraints={engineStore.state.constraints}
                 values={engineStore.state.values}
                 onConstraintSelect={handleConstraintSelect}
+                onAskClaude={handleAskClaude}
               />
-              <ChatPanel store={claudeStore} />
+              <Show when={chatOpen()}>
+                <ChatPanel
+                  store={claudeStore}
+                  selectedEntity={selectionStore.state.selectedEntity ?? undefined}
+                  engineConstraints={Object.values(engineStore.state.constraints)}
+                  activeFile={editorStore.state.activeFile ?? undefined}
+                />
+              </Show>
             </div>
           </div>
           <StatusBar
             evalStatus={engineStore.state.evalStatus}
             meshes={engineStore.state.meshes}
             constraints={engineStore.state.constraints}
+            claudeStatus={claudeStore.state.sessionStatus}
+            onToggleChat={handleToggleChat}
           />
           <ExportDialog
             open={showExportDialog()}
