@@ -34,7 +34,16 @@ pub fn register(registry: &mut ToolRegistry) {
         "Get all diagnostics (errors and warnings) from the engine.",
         serde_json::json!({
             "type": "object",
-            "properties": {}
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Filter diagnostics by file path."
+                },
+                "severity": {
+                    "type": "string",
+                    "description": "Filter diagnostics by severity (e.g. 'error', 'warning')."
+                }
+            }
         }),
         |_params, _ctx| Err(ToolError::NotImplemented),
     );
@@ -44,7 +53,12 @@ pub fn register(registry: &mut ToolRegistry) {
         "Get all parameters (value cells) in the current model.",
         serde_json::json!({
             "type": "object",
-            "properties": {}
+            "properties": {
+                "entity_path": {
+                    "type": "string",
+                    "description": "Filter parameters by entity path prefix."
+                }
+            }
         }),
         |_params, _ctx| Err(ToolError::NotImplemented),
     );
@@ -54,7 +68,12 @@ pub fn register(registry: &mut ToolRegistry) {
         "Get all constraints and their satisfaction status.",
         serde_json::json!({
             "type": "object",
-            "properties": {}
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Filter constraints by status (e.g. 'satisfied', 'violated')."
+                }
+            }
         }),
         |_params, _ctx| Err(ToolError::NotImplemented),
     );

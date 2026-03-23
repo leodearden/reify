@@ -9,7 +9,7 @@ use crate::types::*;
 /// async tasks and stored behind `Arc<dyn ReifyToolContext>`.
 pub trait ReifyToolContext: Send + Sync {
     /// Get source code for a file (or the active file if path is None).
-    fn get_source(&self, file_path: Option<&str>) -> Result<String, ToolError>;
+    fn get_source(&self, file_path: Option<&str>) -> Result<SourceContent, ToolError>;
 
     /// List all open files.
     fn get_open_files(&self) -> Result<Vec<OpenFileInfo>, ToolError>;
@@ -60,55 +60,85 @@ pub trait ReifyToolContext: Send + Sync {
 }
 
 /// Mock implementation of ReifyToolContext for testing.
+///
+/// All fields are public so tests can configure specific data.
+/// Use struct update syntax: `MockToolContext { diagnostics: vec![...], ..Default::default() }`.
 #[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Default)]
-pub struct MockToolContext;
+#[derive(Debug)]
+pub struct MockToolContext {
+    pub source: SourceContent,
+    pub open_files: Vec<OpenFileInfo>,
+    pub diagnostics: Vec<DiagnosticInfo>,
+    pub parameters: Vec<ParameterInfo>,
+    pub constraints: Vec<ConstraintInfo>,
+    pub eval_status: EvalStatusInfo,
+    pub selection: SelectionInfo,
+    pub source_locations: std::collections::HashMap<String, SourceLocationInfo>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Default for MockToolContext {
+    fn default() -> Self {
+        Self {
+            source: SourceContent {
+                content: String::new(),
+                file_path: String::new(),
+            },
+            open_files: vec![],
+            diagnostics: vec![],
+            parameters: vec![],
+            constraints: vec![],
+            eval_status: EvalStatusInfo {
+                phase: "idle".to_string(),
+                progress: None,
+                dirty_count: 0,
+            },
+            selection: SelectionInfo {
+                selected_entity: None,
+                hovered_entity: None,
+            },
+            source_locations: std::collections::HashMap::new(),
+        }
+    }
+}
 
 #[cfg(any(test, feature = "test-support"))]
 impl ReifyToolContext for MockToolContext {
-    fn get_source(&self, _file_path: Option<&str>) -> Result<String, ToolError> {
-        Ok(String::new())
+    fn get_source(&self, _file_path: Option<&str>) -> Result<SourceContent, ToolError> {
+        Ok(self.source.clone())
     }
 
     fn get_open_files(&self) -> Result<Vec<OpenFileInfo>, ToolError> {
-        Ok(vec![])
+        Ok(self.open_files.clone())
     }
 
     fn get_diagnostics(&self) -> Result<Vec<DiagnosticInfo>, ToolError> {
-        Ok(vec![])
+        Ok(self.diagnostics.clone())
     }
 
     fn get_parameters(&self) -> Result<Vec<ParameterInfo>, ToolError> {
-        Ok(vec![])
+        Ok(self.parameters.clone())
     }
 
     fn get_constraints(&self) -> Result<Vec<ConstraintInfo>, ToolError> {
-        Ok(vec![])
+        Ok(self.constraints.clone())
     }
 
     fn get_eval_status(&self) -> Result<EvalStatusInfo, ToolError> {
-        Ok(EvalStatusInfo {
-            phase: "idle".to_string(),
-            progress: None,
-            dirty_count: 0,
-        })
+        Ok(self.eval_status.clone())
     }
 
     fn get_selection(&self) -> Result<SelectionInfo, ToolError> {
-        Ok(SelectionInfo {
-            entity_path: None,
-            cell_ids: vec![],
-        })
+        Ok(self.selection.clone())
     }
 
-    fn get_source_location(&self, _entity_path: &str) -> Result<SourceLocationInfo, ToolError> {
-        Ok(SourceLocationInfo {
-            file: String::new(),
-            line: 0,
-            column: 0,
-            end_line: 0,
-            end_column: 0,
-        })
+    fn get_source_location(&self, entity_path: &str) -> Result<SourceLocationInfo, ToolError> {
+        self.source_locations
+            .get(entity_path)
+            .cloned()
+            .ok_or_else(|| {
+                ToolError::EngineError(format!("entity not found: {entity_path}"))
+            })
     }
 
     fn update_source(&self, _file_path: &str, _content: &str) -> Result<UpdateResult, ToolError> {
@@ -130,6 +160,7 @@ impl ReifyToolContext for MockToolContext {
         Ok(OpenFileInfo {
             path: file_path.to_string(),
             language: "reify".to_string(),
+            dirty: false,
         })
     }
 
