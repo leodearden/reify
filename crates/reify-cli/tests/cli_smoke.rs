@@ -31,6 +31,10 @@ fn no_args_shows_help_with_all_commands() {
         stderr.contains("gui"),
         "help text should mention 'gui' command, got: {stderr}"
     );
+    assert!(
+        stderr.contains("mcp-server"),
+        "help text should mention 'mcp-server' command, got: {stderr}"
+    );
 }
 
 #[test]
