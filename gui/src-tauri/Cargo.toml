@@ -44,3 +44,4 @@ tauri-build = { version = "2", features = [] }
 [dev-dependencies]
 reify-test-support.workspace = true
 reify-lsp = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true

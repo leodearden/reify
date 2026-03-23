@@ -93,7 +93,7 @@ describe('bridge commands', () => {
   it('setParameter returns a GuiState with typed arrays', async () => {
     const rawState: RawGuiState = {
       meshes: [{ entity_path: 'Box.body', vertices: [0, 1, 2], indices: [0, 1, 2], normals: null }],
-      values: [{ cell_id: 'c1', name: 'w', value: '10', unit: 'mm', determinacy: 'determined', entity_path: 'Box.w' }],
+      values: [{ cell_id: 'c1', name: 'w', value: '10', unit: 'mm', determinacy: 'determined', entity_path: 'Box.w', kind: 'parameter' }],
       constraints: [],
       files: [],
     };
@@ -114,7 +114,7 @@ describe('bridge commands', () => {
     const rawState: RawGuiState = {
       meshes: [],
       values: [],
-      constraints: [{ node_id: 'n1', expression: 'x > 0', status: 'satisfied', details: null, parameter_ids: [] }],
+      constraints: [{ node_id: 'n1', expression: 'x > 0', status: 'satisfied', label: null, parameter_ids: [] }],
       files: [{ path: 'main.ri', content: 'updated' }],
     };
     mockInvoke.mockResolvedValue(rawState);

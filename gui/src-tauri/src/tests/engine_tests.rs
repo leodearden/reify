@@ -265,19 +265,14 @@ fn export_end_to_end() {
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
-    let dir = std::env::temp_dir().join("reify-gui-test-export-e2e");
-    std::fs::create_dir_all(&dir).ok();
-    let path = dir.join("bracket.step");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bracket.step");
 
     let result = session.export(ExportFormat::Step, &path);
     assert!(result.is_ok(), "export should succeed: {:?}", result.err());
 
     let data = std::fs::read(&path).expect("exported file should be readable");
     assert!(!data.is_empty(), "exported file should not be empty");
-
-    // Cleanup
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_dir(&dir);
 }
 
 // --- Step 15: Review bug regression tests ---
@@ -361,9 +356,8 @@ fn export_no_unnecessary_clone() {
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
-    let dir = std::env::temp_dir().join("reify-gui-test-export-no-clone");
-    std::fs::create_dir_all(&dir).ok();
-    let path = dir.join("bracket.step");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bracket.step");
 
     let result = session.export(ExportFormat::Step, &path);
     assert!(result.is_ok(), "export should succeed: {:?}", result.err());
@@ -375,10 +369,6 @@ fn export_no_unnecessary_clone() {
     // Verify engine state is still usable after export (no moved/consumed fields)
     let state = session.build_gui_state().expect("build_gui_state after export");
     assert!(!state.values.is_empty(), "values should still be available after export");
-
-    // Cleanup
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_dir(&dir);
 }
 
 /// Review bug #4: [state_corruption_not_tested] + [state_inconsistency_on_error]

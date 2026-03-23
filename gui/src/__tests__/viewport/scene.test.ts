@@ -226,7 +226,7 @@ describe('createScene', () => {
 
   it('adjustClipping updates camera.near, camera.far and calls updateProjectionMatrix (V-11)', () => {
     const { camera, adjustClipping } = setup();
-    camera.updateProjectionMatrix.mockClear();
+    vi.mocked(camera.updateProjectionMatrix).mockClear();
 
     // Mock a Box3-like bounds object: center at (10, 10, 10), size 20x20x20
     const bounds = {
@@ -277,7 +277,7 @@ describe('createScene', () => {
     const { camera, adjustClipping } = setup();
     const origNear = camera.near;
     const origFar = camera.far;
-    camera.updateProjectionMatrix.mockClear();
+    vi.mocked(camera.updateProjectionMatrix).mockClear();
 
     const emptyBounds = {
       isEmpty: () => true,

@@ -17,7 +17,7 @@ function makeConstraint(nodeId: string, status: string): ConstraintData {
     node_id: nodeId,
     expression: 'x > 0',
     status,
-    details: null,
+    label: null,
     parameter_ids: [],
   };
 }
