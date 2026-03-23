@@ -211,3 +211,102 @@ fn set_parameter_context_error_propagates() {
         other => panic!("expected EngineError, got: {other:?}"),
     }
 }
+
+// === reify_save_file ===
+
+#[test]
+fn save_file_with_path_returns_success() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+
+    let result = registry
+        .call_tool(
+            "reify_save_file",
+            serde_json::json!({"file_path": "main.ri"}),
+            &ctx,
+        )
+        .expect("should succeed");
+
+    assert_eq!(result["success"], true);
+}
+
+#[test]
+fn save_file_without_path_saves_active_file() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+
+    let result = registry
+        .call_tool("reify_save_file", serde_json::json!({}), &ctx)
+        .expect("should succeed");
+
+    assert_eq!(result["success"], true);
+}
+
+// === reify_export ===
+
+#[test]
+fn export_step_returns_success() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+
+    let result = registry
+        .call_tool(
+            "reify_export",
+            serde_json::json!({"format": "step", "output_path": "/tmp/out.step"}),
+            &ctx,
+        )
+        .expect("should succeed");
+
+    assert_eq!(result["success"], true);
+    assert_eq!(result["path"], "/tmp/out.step");
+}
+
+#[test]
+fn export_stl_returns_success() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+
+    let result = registry
+        .call_tool(
+            "reify_export",
+            serde_json::json!({"format": "stl", "output_path": "/tmp/out.stl"}),
+            &ctx,
+        )
+        .expect("should succeed");
+
+    assert_eq!(result["success"], true);
+}
+
+#[test]
+fn export_missing_format_returns_invalid_params() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+
+    let result = registry.call_tool(
+        "reify_export",
+        serde_json::json!({"output_path": "/tmp/out.step"}),
+        &ctx,
+    );
+
+    match result {
+        Err(ToolError::InvalidParams(_)) => {} // expected
+        other => panic!("expected InvalidParams, got: {other:?}"),
+    }
+}
+
+#[test]
+fn export_missing_output_path_returns_invalid_params() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+
+    let result = registry.call_tool(
+        "reify_export",
+        serde_json::json!({"format": "step"}),
+        &ctx,
+    );
+
+    match result {
+        Err(ToolError::InvalidParams(_)) => {} // expected
+        other => panic!("expected InvalidParams, got: {other:?}"),
+    }
+}
