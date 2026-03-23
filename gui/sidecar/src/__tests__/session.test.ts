@@ -1,0 +1,396 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import type { OutboundMessage } from '../types.js';
+
+// Mock the claude CLI subprocess spawning
+vi.mock('node:child_process', () => ({
+  spawn: vi.fn(),
+}));
+
+import { spawn } from 'node:child_process';
+import { SidecarSession } from '../session.js';
+import { main } from '../index.js';
+
+/**
+ * Create a mock child process that emits streaming JSON events on stdout,
+ * then closes with the given exit code.
+ */
+function createMockProcess(events: object[], exitCode = 0): any {
+  const proc = new EventEmitter() as any;
+  const stdout = new PassThrough();
+  proc.stdout = stdout;
+  proc.stderr = new PassThrough();
+  proc.stdin = new PassThrough();
+  proc.exitCode = null;
+
+  process.nextTick(() => {
+    for (const event of events) {
+      stdout.push(JSON.stringify(event) + '\n');
+    }
+    stdout.push(null);
+    proc.stderr.push(null);
+    proc.exitCode = exitCode;
+    proc.emit('close', exitCode);
+  });
+
+  return proc;
+}
+
+describe('SidecarSession', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are a test assistant.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('constructor creates session with config', () => {
+    expect(session).toBeDefined();
+    expect(session).toBeInstanceOf(SidecarSession);
+  });
+
+  it('init() calls onOutput with ready message', async () => {
+    await session.init();
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]).toEqual({ type: 'ready' });
+  });
+
+  it('handleMessage with send_message streams text deltas and emits done', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello world' }] } },
+      { type: 'result', session_id: 'sess-123' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({
+      type: 'send_message',
+      id: 'msg-1',
+      text: 'Hello',
+    });
+
+    const types = outputs.map((o) => o.type);
+    expect(types).toContain('text_delta');
+    expect(types[types.length - 1]).toBe('done');
+
+    // Check deltas are correct — first "Hello", then " world"
+    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
+    expect(textDeltas[0]).toEqual({ type: 'text_delta', id: 'msg-1', content: 'Hello' });
+    expect(textDeltas[1]).toEqual({ type: 'text_delta', id: 'msg-1', content: ' world' });
+  });
+
+  it('handleMessage streams thinking deltas', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Let me' }] } },
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Let me think' }] } },
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Let me think' }, { type: 'text', text: 'Answer' }] } },
+      { type: 'result', session_id: 'sess-456' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-t', text: 'Think' });
+
+    const thinkDeltas = outputs.filter((o) => o.type === 'thinking_delta');
+    expect(thinkDeltas[0]).toEqual({ type: 'thinking_delta', id: 'msg-t', content: 'Let me' });
+    expect(thinkDeltas[1]).toEqual({ type: 'thinking_delta', id: 'msg-t', content: ' think' });
+
+    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
+    expect(textDeltas[0]).toEqual({ type: 'text_delta', id: 'msg-t', content: 'Answer' });
+  });
+
+  it('handleMessage emits tool_call events', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'tu-1', name: 'reify_get_source', input: { file: 'main.ri' } },
+      ] } },
+      { type: 'result', session_id: 'sess-789' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-tc', text: 'Read file' });
+
+    const toolCalls = outputs.filter((o) => o.type === 'tool_call');
+    expect(toolCalls).toHaveLength(1);
+    expect(toolCalls[0]).toEqual({
+      type: 'tool_call',
+      id: 'msg-tc',
+      tool_name: 'reify_get_source',
+      tool_input: { file: 'main.ri' },
+    });
+  });
+
+  it('handleMessage with abort cancels in-flight request', async () => {
+    // Create a process that hangs until aborted
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+    mockProc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation(((_cmd: string, _args: string[], opts: any) => {
+      // Simulate abort killing the process
+      if (opts?.signal) {
+        opts.signal.addEventListener('abort', () => {
+          stdout.end();
+          mockProc.exitCode = null;
+          mockProc.emit('close', null);
+        });
+      }
+      return mockProc;
+    }) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    // Start a message (will hang waiting for stdout)
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-2',
+      text: 'Long task',
+    });
+
+    // Give it a tick to set up
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Abort
+    await session.handleMessage({ type: 'abort' });
+
+    // Wait for cleanup
+    await msgPromise;
+
+    // Should emit done (not error) on abort
+    const doneMsg = outputs.find((o) => o.type === 'done');
+    expect(doneMsg).toBeDefined();
+    expect(doneMsg).toEqual({ type: 'done', id: 'msg-2' });
+
+    // Should NOT emit an error
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(0);
+  });
+
+  it('handleMessage with clear_session resets session and emits ready', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Response' }] } },
+      { type: 'result', session_id: 'sess-abc' },
+    ])) as any);
+
+    await session.init();
+    await session.handleMessage({
+      type: 'send_message',
+      id: 'msg-3',
+      text: 'First message',
+    });
+
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'clear_session' });
+
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]).toEqual({ type: 'ready' });
+    expect((session as any).sessionId).toBeNull();
+  });
+
+  it('SDK errors produce error outbound message', async () => {
+    // Process exits with non-zero code
+    const proc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    proc.stdout = stdout;
+    proc.stderr = new PassThrough();
+    proc.stdin = new PassThrough();
+    proc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation((() => {
+      process.nextTick(() => {
+        proc.stderr.push('Authentication failed: invalid API key');
+        proc.stderr.push(null);
+        stdout.push(null);
+        proc.exitCode = 1;
+        proc.emit('close', 1);
+      });
+      return proc;
+    }) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({
+      type: 'send_message',
+      id: 'msg-4',
+      text: 'Hello',
+    });
+
+    const errorMsgs = outputs.filter((o) => o.type === 'error');
+    expect(errorMsgs).toHaveLength(1);
+    expect((errorMsgs[0] as any).message).toContain('Authentication failed');
+    expect((errorMsgs[0] as any).id).toBe('msg-4');
+  });
+
+  it('multiple sequential messages use session_id for resume', async () => {
+    const mockSpawn = vi.mocked(spawn);
+
+    // First call returns a session_id
+    mockSpawn.mockImplementationOnce((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'First' }] } },
+      { type: 'result', session_id: 'sess-abc' },
+    ])) as any);
+
+    // Second call
+    mockSpawn.mockImplementationOnce((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Second' }] } },
+      { type: 'result', session_id: 'sess-abc' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({
+      type: 'send_message',
+      id: 'msg-5',
+      text: 'Message one',
+    });
+
+    await session.handleMessage({
+      type: 'send_message',
+      id: 'msg-6',
+      text: 'Message two',
+    });
+
+    // Second spawn call should include --resume with session id
+    const secondCallArgs = mockSpawn.mock.calls[1]?.[1] as string[];
+    expect(secondCallArgs).toContain('--resume');
+    expect(secondCallArgs).toContain('sess-abc');
+  });
+});
+
+describe('entrypoint wiring', () => {
+  /**
+   * Helper to collect all newline-delimited JSON messages from
+   * the output stream until the stream ends or a timeout.
+   */
+  function collectOutput(output: PassThrough, timeoutMs = 2000): Promise<OutboundMessage[]> {
+    return new Promise((resolve) => {
+      const msgs: OutboundMessage[] = [];
+      let buffer = '';
+
+      const onData = (chunk: Buffer | string) => {
+        buffer += chunk.toString();
+        let idx: number;
+        while ((idx = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 1);
+          if (line.length > 0) {
+            msgs.push(JSON.parse(line));
+          }
+        }
+      };
+
+      output.on('data', onData);
+
+      const timer = setTimeout(() => {
+        output.removeListener('data', onData);
+        resolve(msgs);
+      }, timeoutMs);
+
+      output.on('end', () => {
+        clearTimeout(timer);
+        // flush remaining buffer
+        if (buffer.length > 0) {
+          msgs.push(JSON.parse(buffer));
+        }
+        resolve(msgs);
+      });
+    });
+  }
+
+  it('main() reads from provided input stream and writes to provided output stream', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    const collecting = collectOutput(output, 500);
+
+    // Start main with injected streams
+    const mainPromise = main(input, output);
+
+    // Give it a moment to set up, then close
+    await new Promise((r) => setTimeout(r, 50));
+    input.end();
+    await mainPromise;
+
+    const msgs = await collecting;
+    // main() should produce at least a ready message on the output
+    expect(msgs.length).toBeGreaterThanOrEqual(1);
+    // All messages should be valid OutboundMessage objects with a 'type' field
+    for (const msg of msgs) {
+      expect(msg).toHaveProperty('type');
+    }
+  });
+
+  it('sending a valid JSON line through input produces outbound messages on output', async () => {
+    // Configure spawn mock to return a process that emits streaming events
+    const mockSpawn = vi.mocked(spawn);
+    mockSpawn.mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Test response' }] } },
+      { type: 'result', session_id: 'sess-e2e' },
+    ])) as any);
+
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    const collecting = collectOutput(output, 1000);
+
+    const mainPromise = main(input, output);
+
+    // Wait for ready, then send a message
+    await new Promise((r) => setTimeout(r, 50));
+    input.write(JSON.stringify({ type: 'send_message', id: 'e2e-1', text: 'Hello' }) + '\n');
+
+    // Give session time to process, then close
+    await new Promise((r) => setTimeout(r, 200));
+    input.end();
+    await mainPromise;
+
+    const msgs = await collecting;
+    const types = msgs.map((m) => m.type);
+
+    // Should have ready from init, then text_delta and done from the message
+    expect(types).toContain('ready');
+    expect(types).toContain('text_delta');
+    expect(types).toContain('done');
+
+    mockSpawn.mockReset();
+  });
+
+  it('process sends ready message on startup', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    const collecting = collectOutput(output, 500);
+
+    const mainPromise = main(input, output);
+
+    // Wait for ready
+    await new Promise((r) => setTimeout(r, 50));
+    input.end();
+    await mainPromise;
+
+    const msgs = await collecting;
+    // The first message should be 'ready'
+    expect(msgs.length).toBeGreaterThanOrEqual(1);
+    expect(msgs[0]).toEqual({ type: 'ready' });
+  });
+});

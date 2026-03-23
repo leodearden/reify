@@ -6,6 +6,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    exclude: ['sidecar/**', 'node_modules/**'],
     transformMode: {
       web: [/\.[jt]sx?$/],
     },
