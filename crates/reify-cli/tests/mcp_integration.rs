@@ -240,6 +240,13 @@ fn mcp_server_set_parameter_changes_value() {
         "set_parameter should return success=true: {:?}",
         set_result
     );
+    // Verify set_parameter response itself reports the correct new value
+    assert_eq!(
+        set_result["new_value"].as_str().unwrap_or(""),
+        "100 m",
+        "set_parameter response new_value should be '100 m', got: {:?}",
+        set_result["new_value"]
+    );
 
     // get_parameters response — verify width changed
     let get_response = &responses[2];
@@ -255,10 +262,9 @@ fn mcp_server_set_parameter_changes_value() {
         .expect("should have width parameter");
 
     let width_value = width_param["value"].as_str().unwrap_or("");
-    // Original was 80mm (0.08 SI), new should be 100mm (0.1 SI)
-    // The value is set as raw number which will be interpreted in the cell's dimension
-    assert!(
-        width_value != "0.08 m",
-        "width should have changed from original 0.08 m, got: {width_value}"
+    // Original was 80mm (0.08 m SI), new should be 100 m after setting to 100
+    assert_eq!(
+        width_value, "100 m",
+        "width should be 100 m after setting to 100"
     );
 }
