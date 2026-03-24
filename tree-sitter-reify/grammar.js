@@ -26,6 +26,8 @@ module.exports = grammar({
     [$.maximize_declaration],
     [$.sub_declaration],
     [$.port_declaration],
+    [$.pragma_arg],
+    [$.pragma],
   ],
 
   rules: {
@@ -42,6 +44,7 @@ module.exports = grammar({
       $.purpose_declaration,
       $.constraint_definition,
       $.unit_declaration,
+      $.pragma,
     ),
 
     // ── Enum ──────────────────────────────────────────────────
@@ -139,6 +142,7 @@ module.exports = grammar({
       $.constraint_declaration,
       $.sub_declaration,
       $.associated_type,
+      $.pragma,
     ),
 
     // ── Field definition ─────────────────────────────────────
@@ -225,6 +229,7 @@ module.exports = grammar({
       $.minimize_declaration,
       $.maximize_declaration,
       $.guarded_block,
+      $.pragma,
     ),
 
     // ── Constraint definition (top-level) ────────────────────
@@ -246,6 +251,7 @@ module.exports = grammar({
       $.param_declaration,
       $.let_declaration,
       $.constraint_def_predicate,
+      $.pragma,
     ),
 
     // A bare expression predicate inside a constraint def body.
@@ -336,6 +342,7 @@ module.exports = grammar({
       $.port_declaration,
       $.connect_statement,
       $.chain_statement,
+      $.pragma,
     ),
 
     // ── Where clause (guard) ────────────────────────────────
@@ -736,6 +743,29 @@ module.exports = grammar({
     bool_literal: $ => choice('true', 'false'),
 
     identifier: $ => /[a-zA-Z_][a-zA-Z0-9_]*/,
+
+    // ── Pragma ──────────────────────────────────────────────
+    // `#optimize` or `#config(level=3, name="test")`
+    // '#' must be immediately followed by the name (no whitespace allowed).
+    pragma: $ => seq(
+      '#',
+      field('name', alias($.immediate_identifier, $.identifier)),
+      optional(seq('(', commaSep($.pragma_arg), ')')),
+    ),
+
+    // A pragma argument: either `key=value` or a bare value.
+    pragma_arg: $ => choice(
+      seq(field('key', $.identifier), '=', field('value', $._pragma_value)),
+      field('value', $._pragma_value),
+    ),
+
+    // Pragma values are restricted to compile-time constants.
+    _pragma_value: $ => choice(
+      $.number_literal,
+      $.string_literal,
+      $.bool_literal,
+      $.identifier,
+    ),
 
     // ── Comments ────────────────────────────────────────────
     line_comment: $ => token(seq('//', /.*/)),

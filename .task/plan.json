@@ -1,75 +1,318 @@
 {
-  "task_id": "362",
-  "title": "Fix silent Type::Real default for fully-unbounded Range in test builders",
+  "task_id": "278",
+  "title": "Pragma framework: parser",
   "files": [
-    "crates/reify-test-support/src/builders.rs"
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "tree-sitter-reify/src/grammar.json",
+    "tree-sitter-reify/src/node-types.json",
+    "tree-sitter-reify/src/lib.rs",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/pragma_tests.rs"
   ],
   "modules": [
-    "crates/reify-test-support"
+    "tree-sitter-reify",
+    "crates/reify-syntax"
   ],
-  "analysis": "The `infer_value_type` function in `crates/reify-test-support/src/builders.rs` (line 49-56) handles `Value::Range { lower, upper, .. }` by chaining `lower.map(infer_value_type).or_else(|| upper.map(infer_value_type)).unwrap_or(Type::Real)`. When both bounds are `None` (fully-unbounded range), this silently defaults to `Type::Real`, violating the project convention against silent defaults (feedback_silent_defaults_pattern.md). The `Value::Tensor` arm at line 44-46 already correctly panics with a descriptive message directing users to `CompiledExpr::literal(value, type)`. The fix mirrors this pattern for Range. Only one file is affected since both the implementation and tests live in `builders.rs`. No callers currently construct fully-unbounded ranges via `literal()`, so this is a safety net against future misuse.",
-  "prerequisites": [],
+  "analysis": "This task adds pragma parsing (`#ident(args)`) at module level and block level to the Reify language.\n\n**Current state:** No pragma/annotation support exists. The `#` character currently produces a parse error (verified by `test_hash_not_parsed_as_comment` in tree-sitter-reify). The parser uses tree-sitter CST-to-AST lowering via grammar.js -> parser.c -> ts_parser.rs.\n\n**Architecture \u2014 three layers must change:**\n1. **Grammar (tree-sitter-reify/grammar.js):** Add `pragma` rule with `#identifier(comma_sep_args)` syntax. Args are `key=value` pairs or bare values. Pragmas appear at module level (in `source_file` via `_declaration`) and block level (in `_member`, `trait_member`, `purpose_member`).\n2. **AST types (reify-syntax/lib.rs):** Add `Pragma`, `PragmaArg`, `PragmaValue` types. Add `pragmas: Vec<Pragma>` to `ParsedModule` (module-level) and to block-scoped types (`StructureDef`, `OccurrenceDef`, `TraitDecl`, `PurposeDef`, `ConstraintDef`).\n3. **Lowering (reify-syntax/ts_parser.rs):** Add `lower_pragma()` method. Update `lower_source_file()` to collect module-level pragmas. Update block lowering methods to collect block-level pragmas into each definition's pragmas vec.\n\n**Backward compatibility:** Adding `pragmas` fields to existing structs is fully backward-compatible in Rust since struct fields are accessed by name, not by position. The `Declaration` enum is NOT changed \u2014 pragmas are metadata, not declarations. Downstream exhaustive matches on `Declaration` in reify-compiler (12 arms) and reify-lsp won't break. All existing struct construction sites in ts_parser.rs just need `pragmas: Vec::new()` added.\n\n**Grammar design:** Pragmas use `#` prefix (like Rust attributes, but without brackets). The tree-sitter grammar requires `#` to be immediately followed by an identifier. Pragma values support identifiers, numbers, strings, and booleans \u2014 the same literal types already in the grammar. The existing `test_hash_not_parsed_as_comment` test remains valid because `# not` (hash-space-word) is still a parse error.\n\n**Key risk:** The grammar change + `tree-sitter generate` is a prerequisite for all tests. The test `test_hash_not_parsed_as_comment` must be checked after grammar changes (it should still pass since `# ` with space is invalid).\n\n**Review fix (steps 23-28):** Code review identified that `lower_purpose_members()` and `lower_constraint_def()` both hardcode `pragmas: Vec::new()`, silently discarding any pragma nodes inside purpose and constraint blocks. The grammar already has `$.pragma` in `purpose_member`, so purpose only needs a lowering fix. For constraint, `_constraint_def_body_item` does NOT include `$.pragma`, so both grammar and lowering need updating.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add pragma grammar rules to tree-sitter-reify/grammar.js: (1) `pragma` rule: seq('#', field('name', $.identifier), optional(seq('(', commaSep($.pragma_arg), ')'))); (2) `pragma_arg` rule: choice(seq(field('key', $.identifier), '=', field('value', $._pragma_value)), field('value', $._pragma_value)); (3) `_pragma_value` rule: choice($.identifier, $.number_literal, $.string_literal, $.bool_literal). Add $.pragma to source_file repeat, to _member choice, to trait_member choice, and to purpose_member choice. Add [$.pragma_arg] to conflicts array.",
+      "status": "done",
+      "commit": "a4a4972",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Regenerate the tree-sitter parser by running `npx tree-sitter generate` in tree-sitter-reify/. This updates parser.c, grammar.json, and node-types.json. Verify the existing test_hash_not_parsed_as_comment still passes (# followed by space is still invalid). Add a new positive test test_pragma_parsed that verifies `#optimize\\nstructure S {}` parses without errors and the CST contains a 'pragma' node kind.",
+      "status": "done",
+      "commit": "a4a4972",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add Pragma, PragmaArg, and PragmaValue AST types to crates/reify-syntax/src/lib.rs. Pragma has name:String, args:Vec<PragmaArg>, span:SourceSpan. PragmaArg is enum with KeyValue{key,value} and Bare(PragmaValue). PragmaValue is enum with Ident(String), Number(f64), String(String), Bool(bool). Add `pragmas: Vec<Pragma>` field to ParsedModule, StructureDef, OccurrenceDef, TraitDecl, PurposeDef, and ConstraintDef. Initialize all new pragmas fields to Vec::new() in every struct construction site in ts_parser.rs so existing tests keep passing.",
+      "status": "done",
+      "commit": "4f843a1",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write a `#[test]` `#[should_panic(expected = \"literal() cannot infer Range element type\")]` test named `literal_fully_unbounded_range_panics` that calls `literal(Value::Range { lower: None, upper: None, lower_inclusive: false, upper_inclusive: false })`. This test will FAIL because the current code silently returns Type::Real instead of panicking. Place it in the existing `mod tests` block near line 715, after the other literal_* tests.",
+      "description": "Write failing test: parse bare pragma `#optimize` at module level (no args). Source: `#optimize\\nstructure S { param x: Real }`. Assert ParsedModule.pragmas.len()==1, pragmas[0].name=='optimize', pragmas[0].args is empty.",
       "status": "done",
-      "commit": "d29f313"
+      "commit": "3088c2e"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "In the `Value::Range` arm of `infer_value_type` (line 54), replace `.unwrap_or(Type::Real)` with `.unwrap_or_else(|| panic!(\"literal() cannot infer Range element type for fully unbounded range. Use CompiledExpr::literal(value, type) directly.\"))`. This mirrors the Tensor arm's panic pattern at line 45. The step-1 test now passes.",
+      "description": "Implement `lower_pragma()` in ts_parser.rs: extract 'name' field via child_by_field_name, create Pragma with name and empty args. Update `lower_source_file()` second pass to handle 'pragma' node kind: call lower_pragma and push to a new pragmas vec. Pass pragmas vec into ParsedModule construction.",
       "status": "done",
-      "commit": "0017317"
+      "commit": "6347acd"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Add positive test `literal_range_with_lower_bound_infers_type` verifying `literal(Value::Range { lower: Some(Box::new(Value::Int(1))), upper: None, lower_inclusive: true, upper_inclusive: false })` produces `Type::Range(Box::new(Type::Int))`. Ensures the lower-bound inference path still works.",
+      "description": "Write failing test: parse pragma with key=value args `#config(level=3, name=\"test\")`. Assert pragmas[0].args.len()==2, first arg is KeyValue{key:'level', value:Number(3.0)}, second is KeyValue{key:'name', value:String('test')}.",
       "status": "done",
-      "commit": "402f66c"
+      "commit": "aa4b7b2"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Add positive test `literal_range_with_upper_bound_only_infers_type` verifying `literal(Value::Range { lower: None, upper: Some(Box::new(Value::Real(5.0))), lower_inclusive: false, upper_inclusive: true })` produces `Type::Range(Box::new(Type::Real))`. Covers the or_else fallback branch (upper bound used when lower is None).",
+      "type": "impl",
+      "description": "Extend `lower_pragma()` to iterate pragma_arg children. For each pragma_arg: if it has a 'key' field, emit PragmaArg::KeyValue with key from field name and value from lower_pragma_value(). Implement lower_pragma_value() to dispatch on node kind: identifier->Ident, number_literal->Number, string_literal->String, bool_literal->Bool.",
       "status": "done",
-      "commit": "402f66c"
+      "commit": "aa4b7b2"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing test: parse pragma with bare value args `#feature(sse2, avx)`. Assert pragmas[0].args.len()==2, both are Bare(Ident('sse2')) and Bare(Ident('avx')).",
+      "status": "done",
+      "commit": "35ccfdf"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Extend lower_pragma() arg handling: if pragma_arg has no 'key' field, emit PragmaArg::Bare with the value from lower_pragma_value().",
+      "status": "done",
+      "commit": "35ccfdf"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test: parse pragma with mixed args `#config(debug, level=2, name=\"prod\")`. Assert 3 args: Bare(Ident('debug')), KeyValue('level', Number(2.0)), KeyValue('name', String('prod')).",
+      "status": "done",
+      "commit": "35ccfdf"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Verify mixed args handling works from steps 4+6 combined. Fix if needed.",
+      "status": "done",
+      "commit": "35ccfdf"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write test: parse multiple module-level pragmas. Source: `#optimize\\n#config(level=3)\\nstructure S {}`. Assert ParsedModule.pragmas.len()==2 with names 'optimize' and 'config'.",
+      "status": "done",
+      "commit": "448992f"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Verify multiple pragma accumulation in lower_source_file works. Should already work from step-2 loop, fix if needed.",
+      "status": "done",
+      "commit": "448992f"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test: parse pragma at block level inside structure. Source: `structure S { #internal\\nparam x: Real }`. Assert S.pragmas.len()==1, S.pragmas[0].name=='internal'. Assert module-level pragmas is empty.",
+      "status": "done",
+      "commit": "448992f"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Refactor lower_members() to return (Vec<MemberDecl>, Vec<Pragma>) tuple, collecting pragma nodes separately from member nodes. Update lower_structure() to unpack the tuple and set pragmas on StructureDef.",
+      "status": "done",
+      "commit": "448992f"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test: parse pragma inside occurrence block. Source: `occurrence P { #temporal\\nparam t: Real }`. Assert OccurrenceDef.pragmas.len()==1, name=='temporal'.",
+      "status": "done",
+      "commit": "448992f"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Update lower_occurrence() to use the refactored lower_members() and unpack pragmas into OccurrenceDef.pragmas.",
+      "status": "done",
+      "commit": "448992f"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test: parse pragma inside trait block. Source: `trait R { #required\\nparam mass: Real }`. Assert TraitDecl.pragmas.len()==1, name=='required'.",
+      "status": "done",
+      "commit": "448992f"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Update lower_trait_members() to return (Vec<MemberDecl>, Vec<Pragma>). Update lower_trait() to unpack and set TraitDecl.pragmas.",
+      "status": "done",
+      "commit": "448992f"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write test: pragmas are scoped to enclosing block. Source: `#module_level\\nstructure S { #block_level\\nparam x: Real }`. Assert module.pragmas==['module_level'], S.pragmas==['block_level'] \u2014 no cross-contamination.",
+      "status": "done",
+      "commit": "448992f"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Verify scoping isolation works. Module pragmas collected in lower_source_file, block pragmas collected in lower_members. Should already be correct by design.",
+      "status": "done",
+      "commit": "448992f"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write test: pragma with boolean and number value types. Source: `#feature(enabled=true, count=42)`. Assert KeyValue('enabled', Bool(true)) and KeyValue('count', Number(42.0)).",
+      "status": "done",
+      "commit": "448992f"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Verify all PragmaValue variants work in lower_pragma_value. Should already work from step-4.",
+      "status": "done",
+      "commit": "448992f"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Run full reify-syntax test suite (`cargo test -p reify-syntax`) to verify all existing tests still pass with the new pragmas fields on AST types. No existing behavior should change.",
+      "status": "done",
+      "commit": "448992f"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Fix any compilation or test failures. All existing struct constructions must include `pragmas: Vec::new()` (from pre-3). Verify tree-sitter-reify tests also pass.",
+      "status": "done",
+      "commit": "448992f"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write failing test `parse_block_pragma_in_purpose`: parse source `purpose Optimize(s: Sphere) { #solver\\nminimize area(s) }` (with a structure Sphere defined above so parsing succeeds). Assert PurposeDef.pragmas.len()==1, pragmas[0].name==\"solver\", pragmas[0].args is empty. This test will fail because lower_purpose_members() currently returns Vec<MemberDecl> and discards pragma nodes \u2014 pragmas will be empty.",
+      "status": "done",
+      "commit": "7cc2fc4"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Refactor lower_purpose_members() to return (Vec<MemberDecl>, Vec<Pragma>) by adding a pragmas vec alongside members. Inside the purpose_member iteration, check if the inner named child has kind()==\"pragma\" and route to lower_pragma(), mirroring the lower_trait_members() pattern exactly. Update lower_purpose() to unpack the tuple: `let (members, pragmas) = self.lower_purpose_members(node);` and pass pragmas into PurposeDef { pragmas, .. } instead of Vec::new().",
+      "status": "done",
+      "commit": "a626a30"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Write failing test `parse_block_pragma_in_constraint`: parse source `constraint def Positive { #validate\\nparam x: Real\\nx > 0 }`. Assert ConstraintDef.pragmas.len()==1, pragmas[0].name==\"validate\", pragmas[0].args is empty. This test will fail for two reasons: (1) the grammar's _constraint_def_body_item does not include $.pragma so the pragma won't parse, and (2) lower_constraint_def() has no pragma arm.",
+      "status": "done",
+      "commit": "7cc2fc4"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Fix constraint pragma support at both layers: (1) In tree-sitter-reify/grammar.js, add $.pragma to the _constraint_def_body_item choice rule (alongside $.param_declaration, $.let_declaration, $.constraint_def_predicate). (2) Regenerate the tree-sitter parser via `npx tree-sitter generate`. (3) In ts_parser.rs lower_constraint_def(), add a \"pragma\" arm to the match block that calls self.lower_pragma(child) and pushes to a new pragmas vec. (4) Replace `pragmas: Vec::new()` with the collected pragmas vec in the ConstraintDef construction.",
+      "status": "done",
+      "commit": "a626a30"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Run full test suite (`cargo test -p reify-syntax` and `cargo test -p tree-sitter-reify`) to verify all existing tests still pass after the purpose and constraint pragma fixes. Confirm all pragma tests pass including the two new ones from steps 23 and 25.",
+      "status": "done",
+      "commit": "a626a30"
+    },
+    {
+      "id": "step-28",
+      "type": "impl",
+      "description": "Fix any compilation or test failures from the constraint grammar change or purpose/constraint lowering refactors. Verify that the generated parser.c, grammar.json, and node-types.json are consistent with the grammar.js changes.",
+      "status": "done",
+      "commit": "a626a30"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use `unwrap_or_else(|| panic!(...))` instead of restructuring the match arm",
-      "rationale": "Keeps the existing chain structure (lower → upper → panic) readable and minimally invasive. The panic only triggers when both bounds are None, preserving the valid inference paths intact."
+      "decision": "Pragmas are stored as a flat Vec<Pragma> on module/block AST nodes, NOT as Declaration variants or MemberDecl variants.",
+      "rationale": "Pragmas are metadata directives, not declarations. Adding them to Declaration would break exhaustive matches in reify-compiler (which has 12 match arms on Declaration). Storing them as a separate field is backward-compatible \u2014 downstream code that doesn't care about pragmas won't need changes."
     },
     {
-      "decision": "Panic message mirrors the Tensor arm's wording pattern",
-      "rationale": "Consistency with the existing Tensor panic at line 45: 'literal() cannot infer X type (reason). Use CompiledExpr::literal(value, type) directly.' Both direct users to the explicit-type alternative."
+      "decision": "Pragma syntax is `#ident(args)` with `#` immediately followed by identifier (no space, no brackets like Rust's `#[...]`).",
+      "rationale": "The task specifies `#ident(args)` syntax explicitly. The `#` token is currently unused (produces parse error). Simpler than Rust's `#[attr]` and appropriate for a DSL."
     },
     {
-      "decision": "Add positive tests for lower-only and upper-only Range bounds alongside the panic test",
-      "rationale": "The change modifies a code path handling three cases (lower present, upper present, neither). Testing both valid paths ensures no regression from the change, and the panic test covers the invalid third case."
+      "decision": "PragmaValue is a restricted enum (Ident, Number, String, Bool) \u2014 NOT the full expression language.",
+      "rationale": "Pragma arguments should be compile-time constants, not arbitrary expressions. Using the full expression system would create parser ambiguity (e.g., `#cfg(a + b)` would need expression precedence inside pragma args). A restricted value set is easier to evaluate statically and matches how pragmas/attributes work in other languages."
+    },
+    {
+      "decision": "Add pragmas field to StructureDef, OccurrenceDef, TraitDecl, PurposeDef, and ConstraintDef \u2014 the five block-scoped types.",
+      "rationale": "These are the AST types that have `{ body }` blocks where members/items live. FnDef has a different body structure (let bindings + result expr), EnumDecl and UnitDecl have no block body. The task says 'block-level scopes' which maps to these five types."
+    },
+    {
+      "decision": "Grammar adds pragma to _member, trait_member, and purpose_member choice nodes so pragmas can appear anywhere members can.",
+      "rationale": "This allows pragmas to be interspersed with other declarations inside any block scope. Tree-sitter's grammar structure requires pragma to be an option in each member choice node since they're separate rules."
+    },
+    {
+      "decision": "Refactor lower_members() to return (Vec<MemberDecl>, Vec<Pragma>) rather than adding pragma as a MemberDecl variant.",
+      "rationale": "Keeping pragmas out of MemberDecl maintains the clean separation between metadata and declarations. The refactored return type explicitly represents that block children are either members or pragmas. This avoids downstream code needing to filter pragmas out of member lists."
+    },
+    {
+      "decision": "lower_purpose_members() uses the same inner-node dispatch pattern as lower_trait_members() rather than the direct-child pattern of lower_members().",
+      "rationale": "purpose_member and trait_member are both choice wrapper nodes in the grammar \u2014 the actual member/pragma is a named child of the wrapper. lower_members() works on _member nodes which are direct children. The wrapper pattern requires checking inner.kind()==\"pragma\" on the named_child(0), not on the outer child itself."
+    },
+    {
+      "decision": "ConstraintDef pragma collection is done inline in lower_constraint_def() via a new match arm, not via a shared helper.",
+      "rationale": "lower_constraint_def() already has its own bespoke child iteration loop (matching param_declaration, let_declaration, constraint_def_predicate, ERROR) unlike the other block types that use lower_members()/lower_trait_members(). Adding a \"pragma\" arm to the existing match is the minimal, consistent change. Extracting a shared helper would require unifying very different child-kind sets."
     }
   ],
   "reuse": [
     {
-      "what": "Existing Tensor panic pattern",
-      "where": "crates/reify-test-support/src/builders.rs line 44-46",
-      "how": "Mirror the panic message format: 'literal() cannot infer X type (reason). Use CompiledExpr::literal(value, type) directly.'"
+      "what": "commaSep() helper function in grammar.js",
+      "where": "tree-sitter-reify/grammar.js lines 8-10",
+      "how": "Use commaSep($.pragma_arg) for the optional argument list in pragma rule, exactly as done for named_argument_list, fn_param_list, etc."
     },
     {
-      "what": "Existing literal_* test patterns in mod tests",
-      "where": "crates/reify-test-support/src/builders.rs lines 663-715",
-      "how": "Follow the same structure: construct a Value, call literal(), assert on result_type. Add #[should_panic] for the panic test."
+      "what": "Existing literal rules (number_literal, string_literal, bool_literal, identifier)",
+      "where": "tree-sitter-reify/grammar.js lines 724-738",
+      "how": "Pragma values reuse the same literal rules already defined in the grammar rather than defining new ones. _pragma_value is just choice() over existing rules."
     },
     {
-      "what": "Value::Range struct shape",
-      "where": "crates/reify-types/src/value.rs line 58-62",
-      "how": "Construct Range values directly in tests using Value::Range { lower, upper, lower_inclusive, upper_inclusive } matching the struct definition."
+      "what": "Lowering pattern: node_text(), span(), content_hash() helpers",
+      "where": "crates/reify-syntax/src/ts_parser.rs Lowering impl lines 69-81",
+      "how": "lower_pragma() follows the same pattern as lower_import(), lower_enum() etc \u2014 extract field nodes, call node_text() for names, span() for source spans."
+    },
+    {
+      "what": "check_and_lower! macro for error-resilient lowering",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 12-24",
+      "how": "Can be used when lowering pragma nodes in block contexts to gracefully handle parse errors, consistent with other member lowering."
+    },
+    {
+      "what": "Test pattern: parse_decls() helper + match + assert",
+      "where": "crates/reify-syntax/tests/unit_decl_tests.rs lines 7-11",
+      "how": "New pragma_tests.rs follows same pattern: parse source, extract module pragmas from ParsedModule, extract block pragmas from structure definitions, assert with descriptive error messages."
+    },
+    {
+      "what": "lower_members() pattern for collecting block children",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 862-871",
+      "how": "Extend lower_members() to also return collected pragmas alongside members. The iteration pattern (walk cursor, match child kind) stays the same with a new 'pragma' arm."
+    },
+    {
+      "what": "lower_trait_members() inner-node dispatch pattern for purpose pragma fix",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 881-900",
+      "how": "lower_purpose_members() refactor mirrors lower_trait_members() exactly: both iterate wrapper nodes (trait_member/purpose_member), extract named_child(0), check inner.kind()==\"pragma\" to route to lower_pragma(), else route to lower_member(). Return (Vec<MemberDecl>, Vec<Pragma>) tuple."
+    },
+    {
+      "what": "lower_constraint_def() inline match pattern for constraint pragma fix",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 630-658",
+      "how": "Add a \"pragma\" arm to the existing match block in lower_constraint_def(), calling self.lower_pragma(child) and pushing to a pragmas vec, following the same pattern as the existing \"param_declaration\" and \"constraint_def_predicate\" arms."
     }
   ],
-  "_session_id": "362-094fb15d",
-  "_created_at": "2026-03-24T17:16:01.467479+00:00"
+  "_session_id": "278-f0780968",
+  "_created_at": "2026-03-24T17:19:34.033276+00:00"
 }

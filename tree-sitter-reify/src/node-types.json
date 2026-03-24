@@ -1203,6 +1203,10 @@
           "named": true
         },
         {
+          "type": "pragma",
+          "named": true
+        },
+        {
           "type": "type_parameters",
           "named": true
         }
@@ -2079,6 +2083,10 @@
         },
         {
           "type": "port_declaration",
+          "named": true
+        },
+        {
+          "type": "pragma",
           "named": true
         },
         {
@@ -3666,6 +3674,10 @@
           "named": true
         },
         {
+          "type": "pragma",
+          "named": true
+        },
+        {
           "type": "sub_declaration",
           "named": true
         },
@@ -4241,6 +4253,70 @@
     }
   },
   {
+    "type": "pragma",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "pragma_arg",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "pragma_arg",
+    "named": true,
+    "fields": {
+      "key": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "bool_literal",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "number_literal",
+            "named": true
+          },
+          {
+            "type": "string_literal",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "purpose_declaration",
     "named": true,
     "fields": {
@@ -4300,6 +4376,10 @@
         },
         {
           "type": "minimize_declaration",
+          "named": true
+        },
+        {
+          "type": "pragma",
           "named": true
         }
       ]
@@ -4786,6 +4866,10 @@
           "named": true
         },
         {
+          "type": "pragma",
+          "named": true
+        },
+        {
           "type": "purpose_declaration",
           "named": true
         },
@@ -4857,6 +4941,10 @@
         },
         {
           "type": "port_declaration",
+          "named": true
+        },
+        {
+          "type": "pragma",
           "named": true
         },
         {
@@ -5043,6 +5131,10 @@
         },
         {
           "type": "param_declaration",
+          "named": true
+        },
+        {
+          "type": "pragma",
           "named": true
         },
         {
@@ -5539,6 +5631,10 @@
   },
   {
     "type": "!=",
+    "named": false
+  },
+  {
+    "type": "#",
     "named": false
   },
   {

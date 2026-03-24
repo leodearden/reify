@@ -9,6 +9,8 @@ pub struct ParsedModule {
     pub declarations: Vec<Declaration>,
     pub errors: Vec<ParseError>,
     pub content_hash: ContentHash,
+    /// Module-level pragmas (e.g., `#optimize` at the top of a file).
+    pub pragmas: Vec<Pragma>,
 }
 
 /// A top-level declaration in a module.
@@ -36,6 +38,8 @@ pub struct StructureDef {
     pub members: Vec<MemberDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+    /// Block-level pragmas inside this structure.
+    pub pragmas: Vec<Pragma>,
 }
 
 /// A trait bound reference with optional type arguments (e.g., `Rigid` or `Container<Bolt>`).
@@ -57,6 +61,8 @@ pub struct OccurrenceDef {
     pub members: Vec<MemberDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+    /// Block-level pragmas inside this occurrence.
+    pub pragmas: Vec<Pragma>,
 }
 
 /// A member declaration within a structure or trait.
@@ -273,6 +279,8 @@ pub struct TraitDecl {
     pub members: Vec<MemberDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+    /// Block-level pragmas inside this trait.
+    pub pragmas: Vec<Pragma>,
 }
 
 /// `field def temp : Point3 -> Scalar { source = analytical { |p| p } }`
@@ -297,6 +305,8 @@ pub struct PurposeDef {
     pub members: Vec<MemberDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+    /// Block-level pragmas inside this purpose.
+    pub pragmas: Vec<Pragma>,
 }
 
 /// A purpose parameter binding an entity reference: `subject : Structure`
@@ -321,6 +331,8 @@ pub struct ConstraintDef {
     pub predicates: Vec<Expr>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+    /// Block-level pragmas inside this constraint definition.
+    pub pragmas: Vec<Pragma>,
 }
 
 /// A unit declaration: `unit meter : Length` or `unit degC : Temperature = 1 offset 273.15`
@@ -514,6 +526,35 @@ pub struct TypeExpr {
     pub name: String,
     pub type_args: Vec<TypeExpr>,
     pub span: SourceSpan,
+}
+
+/// A pragma directive: `#name` or `#name(args)`.
+///
+/// Pragmas are metadata directives that appear at module level or inside block scopes.
+/// They do not affect the semantics of declarations but can influence compiler passes.
+#[derive(Debug, Clone)]
+pub struct Pragma {
+    pub name: String,
+    pub args: Vec<PragmaArg>,
+    pub span: SourceSpan,
+}
+
+/// A single pragma argument: either `key=value` or a bare value.
+#[derive(Debug, Clone)]
+pub enum PragmaArg {
+    /// `key = value`
+    KeyValue { key: String, value: PragmaValue },
+    /// bare value (no key)
+    Bare(PragmaValue),
+}
+
+/// A restricted pragma value (compile-time constant only).
+#[derive(Debug, Clone, PartialEq)]
+pub enum PragmaValue {
+    Ident(String),
+    Number(f64),
+    String(String),
+    Bool(bool),
 }
 
 /// A parse error.
