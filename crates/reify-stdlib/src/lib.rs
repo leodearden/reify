@@ -2064,6 +2064,67 @@ mod tests {
         assert!(eval_builtin("orient_identity", &[Value::Real(1.0)]).is_undef());
     }
 
+    // ── orient_quaternion tests (step-8) ────────────────────────────────────
+
+    #[test]
+    fn orient_quaternion_normalizes_unnormalized() {
+        // (2,0,0,0) should normalize to (1,0,0,0)
+        assert_orientation_approx!(
+            eval_builtin("orient_quaternion", &[
+                Value::Real(2.0), Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)
+            ]),
+            1.0, 0.0, 0.0, 0.0
+        );
+    }
+
+    #[test]
+    fn orient_quaternion_preserves_normalized() {
+        assert_orientation_approx!(
+            eval_builtin("orient_quaternion", &[
+                Value::Real(1.0), Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)
+            ]),
+            1.0, 0.0, 0.0, 0.0
+        );
+    }
+
+    #[test]
+    fn orient_quaternion_arbitrary_normalizes() {
+        // (1,1,1,1) norm = 2, normalized = (0.5, 0.5, 0.5, 0.5)
+        assert_orientation_approx!(
+            eval_builtin("orient_quaternion", &[
+                Value::Real(1.0), Value::Real(1.0), Value::Real(1.0), Value::Real(1.0)
+            ]),
+            0.5, 0.5, 0.5, 0.5
+        );
+    }
+
+    #[test]
+    fn orient_quaternion_zero_returns_undef() {
+        assert!(eval_builtin("orient_quaternion", &[
+            Value::Real(0.0), Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)
+        ]).is_undef());
+    }
+
+    #[test]
+    fn orient_quaternion_nan_returns_undef() {
+        assert!(eval_builtin("orient_quaternion", &[
+            Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)
+        ]).is_undef());
+    }
+
+    #[test]
+    fn orient_quaternion_inf_returns_undef() {
+        assert!(eval_builtin("orient_quaternion", &[
+            Value::Real(f64::INFINITY), Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)
+        ]).is_undef());
+    }
+
+    #[test]
+    fn orient_quaternion_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("orient_quaternion", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("orient_quaternion", &[]).is_undef());
+    }
+
     #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
