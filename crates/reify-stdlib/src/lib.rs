@@ -1727,6 +1727,45 @@ mod tests {
         );
     }
 
+    // --- cross() tests: dimensioned vectors (step-5) ---
+
+    #[test]
+    fn cross_length_force_vectors() {
+        // cross([1m,0,0], [0,1N,0]) == [0,0,1 m·N] each component has Length*Force dimension
+        let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
+        let a = Value::Tensor(vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]);
+        let b = Value::Tensor(vec![
+            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
+            Value::Scalar { si_value: 1.0, dimension: reify_types::dimension::FORCE },
+            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
+        ]);
+        let result = eval_builtin("cross", &[a, b]);
+        match result {
+            Value::Tensor(items) => {
+                assert_eq!(items.len(), 3, "cross product must have 3 components");
+                // [1,0,0] x [0,1,0] = [0*0-0*1, 0*0-1*0, 1*1-0*0] = [0, 0, 1]
+                for (i, item) in items.iter().enumerate() {
+                    match item {
+                        Value::Scalar { si_value, dimension } => {
+                            assert_eq!(*dimension, length_force, "component {} dimension mismatch", i);
+                            let expected = if i == 2 { 1.0 } else { 0.0 };
+                            assert!(
+                                (si_value - expected).abs() < 1e-12,
+                                "component {}: expected {}, got {}", i, expected, si_value
+                            );
+                        }
+                        other => panic!("expected Scalar at component {}, got {:?}", i, other),
+                    }
+                }
+            }
+            other => panic!("expected Tensor, got {:?}", other),
+        }
+    }
+
     // --- dot() tests: dimensioned vectors (step-2) ---
 
     #[test]
