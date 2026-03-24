@@ -619,6 +619,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             normalize_quaternion(c, s * nax, s * nay, s * naz).unwrap_or(Value::Undef)
         }
 
+        // --- Point/Vector constructors ---
+        // These produce Value::Tensor since Value::Point/Vector are not runtime variants.
+        "point3" => construct_point_or_vector(args, 3),
+
         // --- Field operations (stubs) ---
         // These are handled by reify-expr's eval_expr FunctionCall interceptor
         // for actual lambda application; the stdlib entries serve as documentation
@@ -630,6 +634,30 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 
         _ => Value::Undef,
     }
+}
+
+/// Validate args for a point/vector constructor and return `Value::Tensor` on success.
+///
+/// Validates:
+/// 1. `args.len() == expected_n`
+/// 2. All args are numeric (Int, Real, or Scalar — `as_f64()` returns Some)
+/// 3. All args share the same physical dimension
+///
+/// Returns `Value::Undef` on any validation failure.
+fn construct_point_or_vector(args: &[Value], expected_n: usize) -> Value {
+    if args.len() != expected_n {
+        return Value::Undef;
+    }
+    // All args must be numeric
+    if !args.iter().all(|a| a.as_f64().is_some()) {
+        return Value::Undef;
+    }
+    // All args must share the same physical dimension
+    let first_dim = args[0].dimension();
+    if !args.iter().all(|a| a.dimension() == first_dim) {
+        return Value::Undef;
+    }
+    Value::Tensor(args.to_vec())
 }
 
 /// Apply a function to a single argument (by reference, for pattern matching).
