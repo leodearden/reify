@@ -568,17 +568,16 @@ async fn sidecar_handle_state_starts_as_starting() {
 
     let state = Arc::new(Mutex::new(SidecarState::Starting));
 
-    // Construct handle via from_parts with a dummy reader that ends immediately
-    let data: &[u8] = b"";
-    let reader = BufReader::new(data);
+    // Use duplex so the reader task stays open (no immediate EOF → no Crashed transition).
+    // b"" would cause immediate EOF which fires on_exit → Crashed, making the old
+    // assertion vacuous (Starting | NotStarted | Crashed always matches).
+    let (_data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
     let (writer, _reader_end) = tokio::io::duplex(1024);
 
     let handle = SidecarHandle::from_parts(writer, reader, state.clone());
-    // State should still be Starting since we haven't sent ready
-    assert!(matches!(
-        *handle.state().lock().await,
-        SidecarState::Starting | SidecarState::NotStarted | SidecarState::Crashed(_)
-    ));
+    // State must be exactly Starting — reader task has no data and the connection stays open.
+    assert!(matches!(*handle.state().lock().await, SidecarState::Starting));
 }
 
 #[tokio::test]
