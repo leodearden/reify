@@ -4098,7 +4098,7 @@ fn check_trait_conformance(
     let mut all_defaults: Vec<TraitDefault> = Vec::new();
     let mut visited_traits: HashSet<String> = HashSet::new();
     let mut seen_requirement_names: HashMap<String, Type> = HashMap::new();
-    let mut seen_default_names: HashMap<String, Type> = HashMap::new();
+    let mut seen_default_names: HashMap<String, (Type, Option<ContentHash>)> = HashMap::new();
 
     for trait_bound in structure.trait_bounds {
         collect_all_requirements(
@@ -4287,7 +4287,7 @@ fn collect_all_requirements(
     defaults: &mut Vec<TraitDefault>,
     visited: &mut HashSet<String>,
     seen_names: &mut HashMap<String, Type>,
-    seen_defaults: &mut HashMap<String, Type>,
+    seen_defaults: &mut HashMap<String, (Type, Option<ContentHash>)>,
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
@@ -4355,17 +4355,18 @@ fn collect_all_requirements(
             // Unnamed defaults (e.g., unlabeled constraints) — always push.
             defaults.push(default.clone());
         } else if let Some(name) = &default.name {
-            // Extract type for dedup comparison.
-            let default_type = match &default.kind {
-                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Let { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Constraint(_) => Type::Bool, // sentinel for constraint label dedup
+            // Extract type and optional content_hash for dedup comparison.
+            let (default_type, default_hash) = match &default.kind {
+                DefaultKind::Param { cell_type, .. } => (cell_type.clone(), None),
+                DefaultKind::Let { cell_type, let_decl } => {
+                    (cell_type.clone(), Some(let_decl.content_hash))
+                }
+                DefaultKind::Constraint(_) => (Type::Bool, None), // sentinel for label dedup
             };
 
-            if let Some(existing_type) = seen_defaults.get(name.as_str()) {
-                if existing_type != &default_type
-                    && !structure_members.contains_key(name.as_str())
-                {
+            if let Some((existing_type, existing_hash)) = seen_defaults.get(name.as_str()) {
+                let overridden = structure_members.contains_key(name.as_str());
+                if existing_type != &default_type && !overridden {
                     // Same name + different type + not overridden → conflict
                     diagnostics.push(
                         Diagnostic::error(format!(
@@ -4374,11 +4375,26 @@ fn collect_all_requirements(
                         ))
                         .with_label(DiagnosticLabel::new(span, "conflicting trait defaults")),
                     );
+                } else if existing_type == &default_type
+                    && existing_hash.is_some()
+                    && default_hash.is_some()
+                    && existing_hash != &default_hash
+                    && !overridden
+                {
+                    // Same name + same type + different expression + not overridden → conflict
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "conflicting let expressions for '{}': \
+                             two traits provide the same-typed let with different expressions",
+                            name
+                        ))
+                        .with_label(DiagnosticLabel::new(span, "conflicting trait defaults")),
+                    );
                 }
                 // Same name already seen → skip (deduplicate).
                 continue;
             }
-            seen_defaults.insert(name.clone(), default_type);
+            seen_defaults.insert(name.clone(), (default_type, default_hash));
             defaults.push(default.clone());
         }
     }
