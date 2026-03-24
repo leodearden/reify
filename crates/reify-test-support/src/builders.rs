@@ -833,6 +833,20 @@ mod module_builder_tests {
         assert_eq!(module.trait_defs[0].name, "Rigid");
     }
 
+    // step-26: failing test — content_hash must differ when trait_defs differ
+    #[test]
+    fn module_builder_trait_defs_affect_content_hash() {
+        let path = ModulePath::single("test");
+        let module_no_traits = CompiledModuleBuilder::new(path.clone()).build();
+        let ct = TraitDefBuilder::new("Rigid").build();
+        let module_with_trait = CompiledModuleBuilder::new(path).trait_def(ct).build();
+        assert_ne!(
+            module_no_traits.content_hash,
+            module_with_trait.content_hash,
+            "modules differing only in trait_defs must produce distinct content_hashes"
+        );
+    }
+
     // step-13: failing tests for constraint expression helpers
     #[test]
     fn range_constraint_returns_two_constraints() {
