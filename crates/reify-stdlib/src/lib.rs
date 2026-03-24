@@ -3638,4 +3638,58 @@ mod tests {
             other => panic!("expected Tensor, got {:?}", other),
         }
     }
+
+    // --- Semantic distinction: point vs vector ---
+
+    #[test]
+    fn point_vector_semantic_distinction() {
+        // point2 and vec2 with identical args must produce distinct Value variants
+        let a = Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH };
+        let b = Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH };
+
+        let p2 = eval_builtin("point2", &[a.clone(), b.clone()]);
+        let v2 = eval_builtin("vec2",   &[a.clone(), b.clone()]);
+
+        // point2 must produce Value::Point
+        assert!(
+            matches!(&p2, Value::Point(items) if items.len() == 2),
+            "expected Value::Point(2), got {:?}",
+            p2
+        );
+
+        // vec2 must produce Value::Vector
+        assert!(
+            matches!(&v2, Value::Vector(items) if items.len() == 2),
+            "expected Value::Vector(2), got {:?}",
+            v2
+        );
+
+        // point2(a,b) != vec2(a,b) — different variants
+        assert_ne!(p2, v2, "point2 and vec2 with identical args must differ");
+
+        // point3 vs vec3
+        let c = Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH };
+        let p3 = eval_builtin("point3", &[a.clone(), b.clone(), c.clone()]);
+        let v3 = eval_builtin("vec3",   &[a.clone(), b.clone(), c.clone()]);
+
+        assert!(
+            matches!(&p3, Value::Point(items) if items.len() == 3),
+            "expected Value::Point(3), got {:?}",
+            p3
+        );
+        assert!(
+            matches!(&v3, Value::Vector(items) if items.len() == 3),
+            "expected Value::Vector(3), got {:?}",
+            v3
+        );
+        assert_ne!(p3, v3, "point3 and vec3 with identical args must differ");
+
+        // Display: point(...) vs vec(...)
+        if let Value::Point(items) = &p2 {
+            let _ = items; // variants accessible
+        }
+        if let Value::Vector(items) = &v2 {
+            let _ = items;
+        }
+    }
 }
