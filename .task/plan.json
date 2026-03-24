@@ -1,248 +1,250 @@
 {
-  "task_id": "207",
-  "title": "Unit declarations: parser",
+  "task_id": "289",
+  "title": "M11 test support: builder extensions",
   "files": [
-    "tree-sitter-reify/grammar.js",
-    "tree-sitter-reify/src/parser.c",
-    "tree-sitter-reify/src/grammar.json",
-    "tree-sitter-reify/src/node-types.json",
-    "crates/reify-syntax/src/lib.rs",
-    "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/unit_decl_tests.rs"
+    "crates/reify-test-support/src/values.rs",
+    "crates/reify-test-support/src/builders.rs",
+    "crates/reify-test-support/src/fixtures.rs",
+    "crates/reify-test-support/src/lib.rs",
+    "crates/reify-test-support/Cargo.toml"
   ],
   "modules": [
-    "tree-sitter-reify",
-    "crates/reify-syntax"
+    "crates/reify-test-support"
   ],
-  "analysis": "The task requires adding parser support for `unit ident : type_expr (= expr)? (offset expr)?` declarations. This is a new top-level declaration type, structurally analogous to `constraint_definition` or `enum_declaration`.\n\nThe implementation requires three layers:\n1. **Grammar (tree-sitter-reify/grammar.js):** Add `unit_declaration` rule to the grammar with fields for name, dimension type, optional conversion expression (`= expr`), and optional offset expression (`offset expr`). Add `$.unit_declaration` to the `_declaration` choice.\n2. **AST (crates/reify-syntax/src/lib.rs):** Add `UnitDecl` struct with fields: name, is_pub, dimension_type (TypeExpr), conversion (Option<Expr>), offset (Option<Expr>), span, content_hash. Add `Unit(UnitDecl)` variant to the `Declaration` enum.\n3. **Lowering (crates/reify-syntax/src/ts_parser.rs):** Add `lower_unit` function following the pattern from `lower_enum`/`lower_constraint_def`. Add dispatch arm `\"unit_declaration\"` in `lower_source_file`.\n\nKey design consideration: `'unit'` and `'offset'` become reserved keywords. `'unit'` doesn't conflict with the `$.unit` alias in `quantity_literal` because that alias references `$.immediate_identifier` (a `token.immediate` rule requiring no whitespace). `'offset'` as a keyword prevents expression-greedy parsing from consuming it as an identifier in the conversion expression \u2014 e.g., `unit degC : Temperature = 1 offset 273.15` correctly parses `conversion = 1` then `offset = 273.15`.\n\nTask 208 (unit registry) and 209 (user-defined units) depend on this parser task. The `UnitDecl` AST node must carry enough information for the compiler to build a unit registry: name for lookup, dimension_type for dimensional analysis, conversion expression for SI multiplier computation, and offset expression for affine unit conversions (e.g., Celsius/Fahrenheit).\n\nTest strategy from task: simple unit (base unit, no conversion/offset), derived unit (with conversion factor), offset unit (with both conversion and offset).",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Add `unit_declaration` rule to tree-sitter-reify/grammar.js: `seq(optional('pub'), 'unit', field('name', $.identifier), ':', field('type', $.type_expr), optional(seq('=', field('conversion', $._expression))), optional(seq('offset', field('offset', $._expression))))`. Add `$.unit_declaration` to the `_declaration` choice. Add `[$.unit_declaration]` to conflicts array (optional clauses may need GLR disambiguation).",
-      "status": "done",
-      "commit": "9866603",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Regenerate tree-sitter parser by running `npx tree-sitter generate` in tree-sitter-reify/. This updates src/parser.c, src/grammar.json, and src/node-types.json.",
-      "status": "done",
-      "commit": "9866603",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Add `UnitDecl` struct to crates/reify-syntax/src/lib.rs with fields: name (String), is_pub (bool), dimension_type (TypeExpr), conversion (Option<Expr>), offset (Option<Expr>), span (SourceSpan), content_hash (ContentHash). Add `Unit(UnitDecl)` variant to the Declaration enum.",
-      "status": "done",
-      "commit": "9866603",
-      "tests": []
-    }
-  ],
+  "analysis": "The reify-test-support crate has four modules: builders (TopologyTemplateBuilder, CompiledModuleBuilder, expression helpers), values (scalar/ID constructors), fixtures (bracket/parent-child modules), and mocks. The task requires extending it in four areas:\n\n1. **Complex value constructors** \u2014 values.rs only has scalar helpers (mm, deg, etc.). Tests constructing List, Set, Map, Enum, Option, Field, Lambda values must use verbose manual construction. We need convenience constructors.\n\n2. **Extended literal() and expression builders** \u2014 literal() panics on M5 types (Enum, List, Set, Map, Option, Lambda, Field). CompiledExpr has no named constructors for Conditional, FunctionCall, or UserFunctionCall \u2014 they must be built manually with CompiledExprKind + content_hash computation. We need: (a) extend literal() to handle complex types, (b) add collection expression builders (list_expr, set_expr, map_expr), (c) add conditional_expr, fn_call, user_fn_call, method_call_expr, lambda_expr helpers.\n\n3. **Field operator test helpers** \u2014 Field operations (sample, gradient, divergence, curl) are resolved as FunctionCall exprs at std::field::*. We need CompiledFieldBuilder (for CompiledField with analytical/sampled/composed/imported CompiledFieldSource variants) and field operation expression helpers that wrap fn_call.\n\n4. **Annotated entity builders and fixtures** \u2014 CompiledModuleBuilder is missing trait_def(), field(), enum_def(), compiled_purpose() methods (it initializes these as empty vecs in build()). We need CompiledPurposeBuilder (for CompiledPurpose: params, constraints, objective, resolved_queries), CompiledTraitBuilder (for CompiledTrait: type_params, refinements, required_members as TraitRequirement, defaults as TraitDefault), the module builder extensions, and fixture modules demonstrating annotated entities.\n\nKey types: CompiledField{name, is_pub, domain_type, codomain_type, source: CompiledFieldSource, content_hash}, CompiledPurpose{name, is_pub, params: Vec<CompiledPurposeParam>, constraints, objective, resolved_queries: Vec<ResolvedSchemaQuery>, content_hash}, CompiledTrait{name, is_pub, type_params: Vec<TypeParam>, refinements, required_members: Vec<TraitRequirement>, defaults: Vec<TraitDefault>, content_hash}, EnumDef{name, variants}. All from reify-compiler and reify-types, already dependencies.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `parse_simple_unit` in unit_decl_tests.rs: parse `unit meter : Length`, assert no errors, assert 1 declaration of type Declaration::Unit, assert name is 'meter', assert dimension_type.name is 'Length', assert conversion is None, assert offset is None.",
+      "description": "Write tests for complex value constructors in values.rs: int_val(42)->Value::Int(42), real_val(3.14)->Value::Real(3.14), bool_val(true)->Value::Bool(true), string_val(\"hi\")->Value::String, enum_val(\"Color\",\"Red\")->Value::Enum{type_name,variant}, list_val(vec![Value::Int(1)])->Value::List, set_val(vec![Value::Int(1)])->Value::Set(BTreeSet), map_val(vec![(Value::String(..),Value::Int(..))])->Value::Map(BTreeMap), some_val(Value::Int(1))->Value::Option(Some(..)), none_val()->Value::Option(None), undef()->Value::Undef. Each test asserts the correct variant and inner contents.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "9d80b6e"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `lower_unit` function in ts_parser.rs extracting name (from 'name' field), is_pub (via has_pub_keyword), dimension_type (from 'type' field via lower_type_expr_node), conversion (from optional 'conversion' field via lower_expr), offset (from optional 'offset' field via lower_expr). Add dispatch arm `\"unit_declaration\" => { if let Some(decl) = self.lower_unit(child) { self.declarations.push(Declaration::Unit(decl)); } }` in `lower_source_file`.",
+      "description": "Implement complex value constructors in values.rs. Add: int_val(i64)->Value::Int, real_val(f64)->Value::Real, bool_val(bool)->Value::Bool, string_val(&str)->Value::String(s.to_string()), enum_val(&str,&str)->Value::Enum{type_name,variant}, list_val(Vec<Value>)->Value::List, set_val(Vec<Value>)->Value::Set(items.into_iter().collect::<BTreeSet>()), map_val(Vec<(Value,Value)>)->Value::Map(entries.into_iter().collect::<BTreeMap>()), some_val(Value)->Value::Option(Some(Box::new(v))), none_val()->Value::Option(None), undef()->Value::Undef. Add use std::collections::{BTreeSet, BTreeMap}.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "b0b4bf4"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `parse_derived_unit` in unit_decl_tests.rs: parse `unit mm : Length = 0.001`, assert no errors, assert name is 'mm', assert dimension_type.name is 'Length', assert conversion is Some with NumberLiteral(0.001), assert offset is None.",
+      "description": "Write tests for extended literal() function in builders.rs: literal(Value::Enum{type_name:\"Color\",variant:\"Red\"}) produces CompiledExpr with result_type=Type::Enum(\"Color\"), literal(Value::List(vec![Value::Int(1)])) produces Type::List(Box::new(Type::Int)), literal(Value::Set(btreeset)) produces Type::Set(..), literal(Value::Map(btreemap)) produces Type::Map(..), literal(Value::Option(Some(Box::new(Value::Int(1))))) produces Type::Option(Box::new(Type::Int)), literal(Value::Option(None)) produces Type::Option(Box::new(Type::Bool)) as fallback. Replace existing should_panic tests.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "e831408"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify conversion expression extraction works in lower_unit. The optional 'conversion' field from child_by_field_name should already work via lower_expr. Fix if needed.",
+      "description": "Extend literal() in builders.rs to handle M5 types. Remove the panic branch. Add match arms: Value::Enum{type_name,..}->Type::Enum(type_name.clone()), Value::List(v)->Type::List(Box::new(infer from first element or Type::Int)), Value::Set(s)->Type::Set(Box::new(infer from first or Type::Int)), Value::Map(m)->Type::Map(Box::new(key type), Box::new(val type)), Value::Option(Some(v))->Type::Option(Box::new(infer inner)), Value::Option(None)->Type::Option(Box::new(Type::Bool)), Value::Lambda{params,body,..}->Type::Function{params: infer from param types, return_type: body.result_type}, Value::Field{domain_type,codomain_type,..}->Type::Field{domain,codomain}. Extract helper fn infer_value_type(v:&Value)->Type for reuse.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "e24beb5"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `parse_offset_unit` in unit_decl_tests.rs: parse `unit degC : Temperature = 1 offset 273.15`, assert no errors, assert name is 'degC', assert dimension_type.name is 'Temperature', assert conversion is Some with NumberLiteral(1.0), assert offset is Some with NumberLiteral(273.15).",
+      "description": "Write tests for collection expression builders in builders.rs: list_expr(vec![literal(Value::Int(1)), literal(Value::Int(2))]) produces CompiledExprKind::ListLiteral with result_type=Type::List(Box::new(Type::Int)). set_expr(vec![literal(Value::Int(1))]) produces SetLiteral with Type::Set(Box::new(Type::Int)). map_expr(vec![(literal(Value::String(..)), literal(Value::Int(..)))]) produces MapLiteral with Type::Map(String,Int). Assert kinds and result_types.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "79415a0"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify offset expression extraction works in lower_unit. The optional 'offset' field from child_by_field_name should already work via lower_expr. Fix if needed.",
+      "description": "Implement collection expression builders in builders.rs: list_expr(elements: Vec<CompiledExpr>)->CompiledExpr infers element type from first element's result_type, wraps CompiledExpr::list_literal with Type::List(Box::new(elem_type)). set_expr(elements)->CompiledExpr similarly with Type::Set. map_expr(entries: Vec<(CompiledExpr,CompiledExpr)>)->CompiledExpr infers key/val types from first entry, wraps CompiledExpr::map_literal. Panic with descriptive message if elements/entries are empty (caller must use CompiledExpr constructors directly for empty collections).",
       "status": "done",
-      "commit": "9866603"
+      "commit": "e6f6352"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `parse_pub_unit` in unit_decl_tests.rs: parse `pub unit mm : Length = 0.001`, assert no errors, assert is_pub is true, assert name is 'mm'.",
+      "description": "Write tests for conditional_expr and function call helpers: conditional_expr(literal(Value::Bool(true)), literal(Value::Int(1)), literal(Value::Int(2))) produces Conditional kind with result_type=Type::Int (from then_branch). fn_call(\"sin\",\"std::math::sin\",vec![literal(Value::Real(1.0))],Type::Real) produces FunctionCall with ResolvedFunction{name:\"sin\",qualified_name:\"std::math::sin\"}. user_fn_call(\"my_func\",vec![literal(Value::Int(1))],Type::Int) produces UserFunctionCall.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "39fe838"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Should already pass since lower_unit uses has_pub_keyword(). Verify and fix if needed.",
+      "description": "Implement conditional_expr(condition, then_branch, else_branch)->CompiledExpr: result_type from then_branch, content_hash with tag byte [4] combined with condition+then+else hashes, kind=Conditional. fn_call(name: &str, qualified_name: &str, args: Vec<CompiledExpr>, result_type: Type)->CompiledExpr: content_hash with tag [5]+name hash+arg hashes, kind=FunctionCall{function: ResolvedFunction{name, qualified_name}}. user_fn_call(function_name: &str, args, result_type)->CompiledExpr: content_hash with tag [6]+name+args, kind=UserFunctionCall.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "854d07f"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test `parse_unit_complex_conversion` in unit_decl_tests.rs: parse `unit inch : Length = 25.4 * 0.001`, assert no errors, assert conversion is Some with BinOp { op: '*', left: NumberLiteral(25.4), right: NumberLiteral(0.001) }.",
+      "description": "Write tests for method_call_expr and lambda_expr: method_call_expr(literal(Value::List(..)), \"count\", vec![], Type::Int) produces MethodCall{object, method:\"count\", args:[]}. lambda_expr(vec![(\"x\", Type::Real)], literal(Value::Real(1.0))) produces Lambda with param_ids containing ValueCellId::new(\"__lambda\",\"x\"), result_type=Type::Function{params:[Type::Real], return_type: Box::new(Type::Real)}.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "83844b1"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Should already pass since the conversion field accepts any _expression and lower_expr handles BinOp. Verify and fix if needed.",
+      "description": "Implement method_call_expr(object: CompiledExpr, method: &str, args: Vec<CompiledExpr>, result_type: Type)->CompiledExpr wrapping CompiledExpr::method_call(object, method.to_string(), args, result_type). Implement lambda_expr(params: Vec<(&str, Type)>, body: CompiledExpr)->CompiledExpr: generate param_ids as ValueCellId::new(\"__lambda\", name) for each param, build params as Vec<(String, Option<Type>)>, infer Function result_type, wrap CompiledExpr::lambda with empty captures.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "63c997f"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test `parse_unit_quantity_literal_conversion` in unit_decl_tests.rs: parse `unit thou : Length = 0.0254mm`, assert no errors, assert conversion is Some with QuantityLiteral { value: 0.0254, unit: 'mm' }. This validates that quantity literals work in conversion expressions (critical for task 209 user-defined units).",
+      "description": "Write tests for field operation expression helpers: sample_call(field_expr, point_expr, Type::Real) produces FunctionCall with function.qualified_name=\"std::field::sample\". gradient_call(field_expr, Type::Real) produces FunctionCall with function.qualified_name=\"std::field::gradient\" and single arg. divergence_call and curl_call similarly with their qualified names.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "954bfe8"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Should already pass since lower_expr handles quantity_literal. Verify and fix if needed.",
+      "description": "Implement field operation helpers in builders.rs: sample_call(field, point, result_type)->fn_call(\"sample\",\"std::field::sample\",vec![field,point],result_type). gradient_call(field, result_type)->fn_call(\"gradient\",\"std::field::gradient\",vec![field],result_type). divergence_call(field, result_type)->fn_call(\"divergence\",\"std::field::divergence\",vec![field],result_type). curl_call(field, result_type)->fn_call(\"curl\",\"std::field::curl\",vec![field],result_type).",
       "status": "done",
-      "commit": "9866603"
+      "commit": "53f71fd"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write test `parse_unit_offset_only` in unit_decl_tests.rs: parse `unit kelvin : Temperature offset 273.15`, assert no errors, assert conversion is None, assert offset is Some with NumberLiteral(273.15). This validates that offset works without a conversion expression.",
+      "description": "Write tests for CompiledFieldBuilder: CompiledFieldBuilder::new(\"temp\",Type::Geometry,Type::Real).analytical(expr).build() produces CompiledField{name:\"temp\",is_pub:false,source:Analytical{expr}}. .public().sampled(config).build() produces is_pub:true,source:Sampled. .composed(expr).build() and .imported().build() produce their respective source variants. Assert content_hash is non-zero for all.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "4c743c7"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Should already pass since both optional clauses are independent in the grammar. Verify and fix if needed.",
+      "description": "Implement CompiledFieldBuilder struct{name:String, is_pub:bool, domain_type:Type, codomain_type:Type, source:Option<CompiledFieldSource>}. Methods: new(name,domain,codomain)->Self (is_pub=false, source=None), public()->Self, analytical(expr)->Self (source=Some(Analytical{expr})), sampled(config: Vec<(&str,CompiledExpr)>)->Self, composed(expr)->Self, imported()->Self, build()->CompiledField (panics if source is None, computes content_hash from name+source hash).",
       "status": "done",
-      "commit": "9866603"
+      "commit": "1dedfc9"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write test `parse_unit_parameterized_dimension_type` in unit_decl_tests.rs: parse `unit newton : Derived<Force> = 1`, assert no errors, assert dimension_type.name is 'Derived', assert dimension_type.type_args has 1 entry with name 'Force'. This validates TypeExpr with type arguments for the dimension type.",
+      "description": "Write tests for CompiledPurposeBuilder: CompiledPurposeBuilder::new(\"mfg_ready\").param(\"subject\",\"Structure\").constraint(\"subject\",0,Some(\"thick_enough\"),gt_expr).build() produces CompiledPurpose with name, 1 param (name:\"subject\",entity_kind:\"Structure\"), 1 constraint with label. .objective(Minimize{..}).schema_query(\"subject\",\"params\",vec![vcid]).build() adds objective and resolved_queries. Assert content_hash non-zero.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "79e4488"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Should already pass since lower_type_expr_node handles parameterized_type. Verify and fix if needed.",
+      "description": "Implement CompiledPurposeBuilder struct{name, is_pub, params: Vec<CompiledPurposeParam>, constraints: Vec<CompiledConstraint>, objective: Option<OptimizationObjective>, resolved_queries: Vec<ResolvedSchemaQuery>}. Methods: new(name)->Self, public()->Self, param(name,entity_kind)->Self, constraint(entity,index,label,expr)->Self, objective(obj)->Self, schema_query(param_name,query_kind,resolved_ids)->Self, build()->CompiledPurpose with content_hash from name+constraints+queries.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "7c0cf55"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write test `parse_multiple_unit_declarations` in unit_decl_tests.rs: parse source with 3 unit declarations (meter, mm, inch), assert 3 declarations all of type Declaration::Unit, assert names are correct. Verifies multiple unit declarations coexist.",
+      "description": "Write tests for CompiledTraitBuilder: CompiledTraitBuilder::new(\"Rigid\").require_param(\"thickness\",Type::length()).build() produces CompiledTrait with 1 required_member (TraitRequirement{name:\"thickness\",kind:RequirementKind::Param(Type::length())}). .public().refinement(\"Bounded\").require_let(\"vol\",Type::Real).require_sub(\"mount\",\"MountPoint\").build() populates all fields. Assert content_hash non-zero.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "5548c2a"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Should already pass since lower_source_file iterates all children. Verify and fix if needed.",
+      "description": "Implement CompiledTraitBuilder struct{name, is_pub, type_params: Vec<TypeParam>, refinements: Vec<String>, required_members: Vec<TraitRequirement>, defaults: Vec<TraitDefault>}. Methods: new(name)->Self, public()->Self, type_param(name,bounds:Vec<TraitBound>)->Self (adds TypeParam{name,bounds,default:None}), refinement(name)->Self, require_param(name,ty)->Self (adds TraitRequirement with RequirementKind::Param(ty)), require_let(name,ty)->Self, require_sub(name,structure)->Self, build()->CompiledTrait with content_hash from name+members.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "938fcaa"
     },
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write test `parse_unit_among_other_declarations` in unit_decl_tests.rs: parse source with a structure, unit declaration, and enum interleaved, assert all 3 are parsed correctly (Structure, Unit, Enum). Verifies unit declarations interoperate with existing declaration types.",
+      "description": "Write tests for extended CompiledModuleBuilder: CompiledModuleBuilder::new(path).trait_def(compiled_trait).field(compiled_field).enum_def(EnumDef{name:\"Color\",variants:vec![\"Red\",\"Blue\"]}).compiled_purpose(purpose).template(tpl).build() produces CompiledModule where trait_defs.len()==1, fields.len()==1, enum_defs.len()==1, compiled_purposes.len()==1. Assert content_hash changes when these new fields are added (differs from empty module hash).",
       "status": "done",
-      "commit": "9866603"
+      "commit": "964fe6d"
     },
     {
       "id": "step-20",
       "type": "impl",
-      "description": "Should already pass since the _declaration choice includes all declaration types. Verify and fix if needed.",
+      "description": "Extend CompiledModuleBuilder: add fields trait_defs: Vec<CompiledTrait>, fields: Vec<CompiledField>, enum_defs: Vec<EnumDef>, compiled_purposes: Vec<CompiledPurpose> (init empty in new()). Add methods trait_def(t)->Self, field(f)->Self, enum_def(e)->Self, compiled_purpose(p)->Self. Update build() to populate these in CompiledModule and chain their content_hashes into the combined hash.",
       "status": "done",
-      "commit": "9866603"
+      "commit": "4fea382"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write tests for annotated entity fixtures: trait_structure_module() returns CompiledModule with 1 trait_def (\"Rigid\" requiring thickness:Length), 1 template (\"Plate\" with thickness param), 0 diagnostics. field_module() returns module with 1 field (analytical), 1 template. purpose_module() returns module with 1 compiled_purpose, 1 template. Assert expected counts and key field values.",
+      "status": "done",
+      "commit": "pending"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Implement annotated entity fixtures in fixtures.rs using the new builders: trait_structure_module()->CompiledModule (CompiledTraitBuilder::new(\"Rigid\").require_param(\"thickness\",Type::length()).build() + TopologyTemplateBuilder::new(\"Plate\") with thickness param). field_module()->CompiledModule (CompiledFieldBuilder::new(\"temp\",..).analytical(lambda).build() + template). purpose_module()->CompiledModule (CompiledPurposeBuilder::new(\"mfg_ready\").param(\"subject\",\"Structure\").constraint(..).build() + template).",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "UnitDecl uses `dimension_type: TypeExpr` rather than a plain `String` for the type annotation",
-      "rationale": "TypeExpr supports both simple types (`Length`) and parameterized types (`Derived<Force>`), which future dimension algebra may require. Consistent with how other declarations store type information (ParamDecl, LetDecl, FnParam). Task 208 (registry) needs the full TypeExpr for dimensional analysis."
+      "decision": "Keep all builder extensions in existing files (builders.rs, values.rs, fixtures.rs) rather than splitting into new modules",
+      "rationale": "The crate has an established 4-module convention (builders, values, fixtures, mocks). Splitting would add complexity without clear benefit at this size. builders.rs will grow from ~550 to ~900 lines, which is manageable."
     },
     {
-      "decision": "Both `conversion` and `offset` are `Option<Expr>` \u2014 fully general expression types, not just numeric literals",
-      "rationale": "Task 209 shows `unit thou : Length = 0.0254mm` where the conversion uses a quantity literal. Future units may use arithmetic expressions (`25.4 * 0.001`). General expressions give maximum flexibility with zero extra implementation cost (reuse lower_expr). The compiler (task 208) evaluates these to numeric values."
+      "decision": "Extend literal() to handle M5 types rather than creating a separate typed_literal() function",
+      "rationale": "The existing panic message says 'not yet implemented', indicating the intent was always to extend it. Keeping a single entry point reduces API surface and cognitive load. Type inference uses the same logic as the compiler: infer element types from collection contents."
     },
     {
-      "decision": "'unit' and 'offset' become reserved keywords in the grammar",
-      "rationale": "'unit' is a declaration keyword like 'structure', 'enum', 'fn' \u2014 all effectively reserved. 'offset' as a keyword prevents the expression parser from consuming it as an identifier in the conversion expression, ensuring `= 1 offset 273.15` correctly parses as two clauses. Tree-sitter's tokenization gives string literals priority over the identifier regex. The `immediate_identifier` in quantity_literal is unaffected (token.immediate requires no whitespace, so `5unit` still works)."
+      "decision": "Collection expression builders (list_expr, set_expr, map_expr) infer types from first element rather than requiring explicit type arguments",
+      "rationale": "Follows the ergonomic pattern of literal() \u2014 infer when possible. In tests, collections almost always have uniform element types. For empty collections, callers use CompiledExpr::list_literal/set_literal/map_literal directly with explicit types."
     },
     {
-      "decision": "No `type_params` field on UnitDecl (unlike ConstraintDef or StructureDef)",
-      "rationale": "The task syntax `unit ident : type_expr (= expr)? (offset expr)?` has no type parameter syntax. Units are concrete (mm, inch, degC), not generic. If parameterized units are needed later, the grammar and AST can be extended."
+      "decision": "Field operation helpers (sample_call, gradient_call, etc.) delegate to fn_call() rather than constructing FunctionCall variants directly",
+      "rationale": "Layered API: fn_call() is the general-purpose FunctionCall builder, field ops are convenient wrappers with hardcoded qualified names. This mirrors how the compiler resolves these to std::field::* functions."
     },
     {
-      "decision": "UnitDecl includes `is_pub: bool` following the convention of all other Declaration types",
-      "rationale": "Task 209 explicitly requires `pub unit` for cross-module unit imports. Adding is_pub now (via `optional('pub')` in the grammar) avoids a future grammar change."
+      "decision": "Lambda expression builder generates ValueCellIds with '__lambda' entity prefix for param IDs",
+      "rationale": "Matches the compiler convention for lambda parameter scoping (seen as FIELD_ENTITY_PREFIX='__field' for fields). Keeps generated IDs distinct from structure-level cells."
     },
     {
-      "decision": "Grammar uses `optional(seq('offset', field('offset', $._expression)))` as a keyword-prefixed clause, not a separate member or struct field syntax",
-      "rationale": "Matches the task's specified syntax `(offset expr)?`. The offset clause is specific to unit declarations (affine conversions like Celsius), not a general-purpose feature. A keyword prefix clearly delimits where the conversion expression ends and the offset begins."
+      "decision": "CompiledTraitBuilder omits default_constraint/default_param methods in initial implementation \u2014 only required_members are built",
+      "rationale": "TraitDefault wraps syntax-level AST declarations (reify_syntax::ConstraintDecl, ParamDecl, LetDecl), which require complex manual construction. The primary test need is for trait requirements (the contract). Default handling can be added later if tests need it."
+    },
+    {
+      "decision": "Annotated entity fixtures use the new builders exclusively rather than manual struct construction",
+      "rationale": "Serves as integration tests for the builder API and demonstrates intended usage patterns. If a builder can't express a fixture, that's a signal the builder API is incomplete."
+    },
+    {
+      "decision": "Content hash tag bytes for new expression helpers (Conditional=[4], FunctionCall=[5], UserFunctionCall=[6]) are test-only values, not matching compiler exactly",
+      "rationale": "The test-support builders produce structurally correct but not compiler-identical hashes. The existing TopologyTemplateBuilder already follows this pattern (hash from name+children, not matching compile_structure byte-for-byte). What matters is that distinct expressions produce distinct hashes."
     }
   ],
   "reuse": [
     {
-      "what": "has_pub_keyword() helper",
-      "where": "ts_parser.rs Lowering impl",
-      "how": "Reuse directly for is_pub extraction in lower_unit, same pattern as lower_structure, lower_enum, lower_constraint_def."
+      "what": "ContentHash::of, ContentHash::combine, ContentHash::of_str",
+      "where": "reify-types",
+      "how": "All new builders use these for content hash computation, matching the project's hash scheme"
     },
     {
-      "what": "lower_type_expr_node() helper",
-      "where": "ts_parser.rs Lowering impl",
-      "how": "Reuse directly for extracting the dimension_type from the 'type' field node. Handles both bare identifiers (Length) and parameterized types (Derived<Force>)."
+      "what": "SourceSpan::new(0, 0) pattern for test spans",
+      "where": "Existing builders in builders.rs (lines 193, 209, 244, etc.)",
+      "how": "All new builders use zero-span for test convenience, same as TopologyTemplateBuilder"
     },
     {
-      "what": "lower_expr() function",
-      "where": "ts_parser.rs Lowering impl",
-      "how": "Reuse directly to lower optional conversion and offset expressions. Handles all expression types including NumberLiteral, QuantityLiteral, BinOp."
+      "what": "Fluent builder pattern (consume self, return Self)",
+      "where": "TopologyTemplateBuilder, CompiledModuleBuilder",
+      "how": "CompiledFieldBuilder, CompiledPurposeBuilder, CompiledTraitBuilder all follow the same owned-self fluent API with terminal build()"
     },
     {
-      "what": "span() and content_hash() helpers",
-      "where": "ts_parser.rs Lowering impl",
-      "how": "Reuse for SourceSpan and ContentHash on the UnitDecl node."
+      "what": "CompiledExpr named constructors (literal, list_literal, set_literal, map_literal, method_call, lambda)",
+      "where": "reify-types/src/expr.rs",
+      "how": "New expression builders wrap these with ergonomic type inference. list_expr wraps list_literal, set_expr wraps set_literal, etc."
     },
     {
-      "what": "child_by_field_name() pattern",
-      "where": "ts_parser.rs throughout",
-      "how": "Same field extraction pattern as lower_enum, lower_import, etc. Use child_by_field_name('name'), child_by_field_name('type'), child_by_field_name('conversion'), child_by_field_name('offset')."
+      "what": "Value::content_hash() method",
+      "where": "reify-types/src/value.rs",
+      "how": "Used by the extended literal() and by CompiledExpr::literal internally for computing expression content hashes"
     },
     {
-      "what": "constraint_def_tests.rs test patterns",
-      "where": "tests/constraint_def_tests.rs",
-      "how": "Follow the same parse_decls() helper pattern, assertion style, match-on-Declaration-variant idiom, and test naming conventions for unit_decl_tests.rs."
+      "what": "Existing fixture patterns (bracket_compiled_module, parent_child_module)",
+      "where": "fixtures.rs",
+      "how": "New fixtures follow same doc-comment and function-returning-CompiledModule pattern"
     },
     {
-      "what": "Grammar _declaration choice and lower_source_file dispatch patterns",
-      "where": "grammar.js and ts_parser.rs",
-      "how": "Add $.unit_declaration to the _declaration choice (same as constraint_definition, enum_declaration, etc.). Add 'unit_declaration' match arm in lower_source_file dispatch (same pattern as all other declaration types)."
+      "what": "CompiledConstraint struct for constraint construction",
+      "where": "reify-compiler",
+      "how": "Reused in CompiledPurposeBuilder.constraint() and existing TopologyTemplateBuilder.constraint(), same construction pattern"
+    },
+    {
+      "what": "Existing expression helpers (gt, lt, ge, le, eq, ne, and, or, not, neg, binop)",
+      "where": "builders.rs lines 41-96",
+      "how": "Field operation helpers and fixture construction use these to build constraint expressions without verbose CompiledExpr construction"
     }
   ],
-  "_session_id": "207-8eceede1",
-  "_created_at": "2026-03-24T07:57:43.553773+00:00"
+  "_session_id": "289-5c7e2f5f",
+  "_created_at": "2026-03-24T07:45:08.996375+00:00"
 }

@@ -2,7 +2,10 @@ use reify_compiler::CompiledModule;
 use reify_syntax::ParsedModule;
 use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value};
 
-use crate::builders::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use crate::builders::{
+    CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
+    TopologyTemplateBuilder,
+};
 
 /// The canonical bracket source code for end-to-end testing.
 pub fn bracket_source() -> &'static str {
@@ -408,6 +411,84 @@ pub fn bracket_compiled_module() -> CompiledModule {
         .build()
 }
 
+/// Return a `CompiledModule` containing a "Rigid" trait and a "Plate" structure.
+///
+/// The "Rigid" trait requires a `thickness: Scalar(LENGTH)` parameter.
+/// The "Plate" template has a single `thickness` parameter and satisfies the trait.
+pub fn trait_structure_module() -> CompiledModule {
+    use reify_types::CompiledExpr;
+
+    let rigid_trait = CompiledTraitBuilder::new("Rigid")
+        .require_param("thickness", Type::length())
+        .build();
+
+    let mm_literal = |v: f64| CompiledExpr::literal(crate::mm(v), Type::length());
+
+    let plate_template = TopologyTemplateBuilder::new("Plate")
+        .param("Plate", "thickness", Type::length(), Some(mm_literal(5.0)))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("trait_structure"))
+        .trait_def(rigid_trait)
+        .template(plate_template)
+        .build()
+}
+
+/// Return a `CompiledModule` containing an analytical field "temp" and a template.
+///
+/// The "temp" field maps `Geometry -> Real` with an analytical source expression.
+/// The module also includes a "TempModel" structure template.
+pub fn field_module() -> CompiledModule {
+    use reify_types::CompiledExpr;
+
+    // A simple constant analytical body: f(x) = 273.15 (temperature in Kelvin)
+    let body = CompiledExpr::literal(Value::Real(273.15), Type::Real);
+    let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+        .analytical(body)
+        .build();
+
+    let mm_literal = |v: f64| CompiledExpr::literal(crate::mm(v), Type::length());
+    let model_template = TopologyTemplateBuilder::new("TempModel")
+        .param("TempModel", "size", Type::length(), Some(mm_literal(100.0)))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("field_module"))
+        .field(temp_field)
+        .template(model_template)
+        .build()
+}
+
+/// Return a `CompiledModule` containing a "mfg_ready" purpose and a template.
+///
+/// The "mfg_ready" purpose has a single "subject" param (entity_kind "Structure")
+/// and a thickness constraint. The module also includes a "Part" structure template.
+pub fn purpose_module() -> CompiledModule {
+    use reify_types::CompiledExpr;
+
+    let mm_literal = |v: f64| CompiledExpr::literal(crate::mm(v), Type::length());
+
+    // constraint: subject.thickness > 2mm
+    let thickness_ref =
+        CompiledExpr::value_ref(crate::vcid("subject", "thickness"), Type::length());
+    let min_thickness = mm_literal(2.0);
+    let constraint_expr =
+        CompiledExpr::binop(BinOp::Gt, thickness_ref, min_thickness, Type::Bool);
+
+    let purpose = CompiledPurposeBuilder::new("mfg_ready")
+        .param("subject", "Structure")
+        .constraint("subject", 0, Some("thick_enough"), constraint_expr)
+        .build();
+
+    let part_template = TopologyTemplateBuilder::new("Part")
+        .param("Part", "thickness", Type::length(), Some(mm_literal(5.0)))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("purpose_module"))
+        .compiled_purpose(purpose)
+        .template(part_template)
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,6 +551,38 @@ mod tests {
         assert!(source.contains("param width"));
         assert!(source.contains("constraint thickness > 2mm"));
         assert!(source.contains("let body = box("));
+    }
+
+    // --- Annotated entity fixture tests (step-21) ---
+
+    #[test]
+    fn trait_structure_module_has_trait_and_template() {
+        let module = trait_structure_module();
+        assert_eq!(module.trait_defs.len(), 1);
+        assert_eq!(module.trait_defs[0].name, "Rigid");
+        assert_eq!(module.trait_defs[0].required_members.len(), 1);
+        assert_eq!(module.trait_defs[0].required_members[0].name, "thickness");
+        assert_eq!(module.templates.len(), 1);
+        assert_eq!(module.templates[0].name, "Plate");
+        assert!(module.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn field_module_has_field_and_template() {
+        let module = field_module();
+        assert_eq!(module.fields.len(), 1);
+        assert_eq!(module.fields[0].name, "temp");
+        assert_eq!(module.templates.len(), 1);
+    }
+
+    #[test]
+    fn purpose_module_has_purpose_and_template() {
+        let module = purpose_module();
+        assert_eq!(module.compiled_purposes.len(), 1);
+        assert_eq!(module.compiled_purposes[0].name, "mfg_ready");
+        assert_eq!(module.compiled_purposes[0].params.len(), 1);
+        assert_eq!(module.compiled_purposes[0].params[0].name, "subject");
+        assert_eq!(module.templates.len(), 1);
     }
 
     #[test]
