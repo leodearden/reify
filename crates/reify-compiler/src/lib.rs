@@ -365,6 +365,8 @@ pub enum ModifyKind {
 pub enum TransformKind {
     Translate,
     Rotate,
+    Scale,
+    RotateAround,
 }
 
 /// Pattern operations.
@@ -409,6 +411,10 @@ fn is_geometry_function(name: &str) -> bool {
             | "difference"
             | "union_all"
             | "intersection_all"
+            | "translate"
+            | "rotate"
+            | "rotate_around"
+            | "scale"
     )
 }
 
@@ -2599,7 +2605,7 @@ fn compile_entity(
                 // For lets, we need to infer the type from the expression.
                 // Geometry lets produce realizations (not value cells) but still
                 // need to be registered in scope so subsequent lets can reference them.
-                if is_geometry_let(&let_decl.value) {
+                if is_geometry_let(&let_decl.value, functions) {
                     scope.register(&let_decl.name, Type::Geometry);
                 } else {
                     // We'll register with a placeholder type; the actual type will
@@ -2609,8 +2615,8 @@ fn compile_entity(
                 }
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                register_guarded_names(&g.members, &mut scope, diagnostics);
-                register_guarded_names(&g.else_members, &mut scope, diagnostics);
+                register_guarded_names(&g.members, &mut scope, diagnostics, functions);
+                register_guarded_names(&g.else_members, &mut scope, diagnostics, functions);
             }
             reify_syntax::MemberDecl::Port(port_decl) => {
                 if let Some(first_span) = port_names.get(&port_decl.name) {
@@ -2780,7 +2786,7 @@ fn compile_entity(
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
                 // Skip geometry-producing function calls
-                if is_geometry_let(&let_decl.value) {
+                if is_geometry_let(&let_decl.value, functions) {
                     continue;
                 }
 
@@ -3164,7 +3170,7 @@ fn compile_entity(
 
     for member in structure.members {
         if let reify_syntax::MemberDecl::Let(let_decl) = member
-            && is_geometry_let(&let_decl.value)
+            && is_geometry_let(&let_decl.value, functions)
             && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, enum_defs, functions, diagnostics, 0)
         {
             realizations.push(RealizationDecl {
@@ -4059,6 +4065,7 @@ fn register_guarded_names(
     members: &[reify_syntax::MemberDecl],
     scope: &mut CompilationScope,
     diagnostics: &mut Vec<Diagnostic>,
+    functions: &[CompiledFunction],
 ) {
     for member in members {
         match member {
@@ -4077,15 +4084,15 @@ fn register_guarded_names(
                 scope.register(&param.name, ty);
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
-                if is_geometry_let(&let_decl.value) {
+                if is_geometry_let(&let_decl.value, functions) {
                     scope.register(&let_decl.name, Type::Geometry);
                 } else {
                     scope.register(&let_decl.name, Type::Real);
                 }
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                register_guarded_names(&g.members, scope, diagnostics);
-                register_guarded_names(&g.else_members, scope, diagnostics);
+                register_guarded_names(&g.members, scope, diagnostics, functions);
+                register_guarded_names(&g.else_members, scope, diagnostics, functions);
             }
             _ => {}
         }
@@ -4244,7 +4251,7 @@ fn compile_guarded_members(
                 members.push(decl);
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
-                if is_geometry_let(&let_decl.value) {
+                if is_geometry_let(&let_decl.value, functions) {
                     continue;
                 }
                 let compiled_expr = { let mut lc = 0u32; compile_expr_guarded(&let_decl.value, scope, enum_defs, functions, diagnostics, guard_ctx, &mut lc) };
@@ -5005,11 +5012,19 @@ fn check_field_composition_types(
 }
 
 /// Check if a let declaration's value is a geometry-producing function call.
-fn is_geometry_let(expr: &reify_syntax::Expr) -> bool {
-    matches!(
-        &expr.kind,
-        reify_syntax::ExprKind::FunctionCall { name, .. } if is_geometry_function(name)
-    )
+///
+/// A call is treated as geometry only when:
+/// 1. The name is in the geometry function registry (`is_geometry_function`), AND
+/// 2. There is no user-defined function with the same name (user functions shadow
+///    geometry builtins, exactly like the stdlib call path in `compile_expr`).
+fn is_geometry_let(expr: &reify_syntax::Expr, functions: &[CompiledFunction]) -> bool {
+    match &expr.kind {
+        reify_syntax::ExprKind::FunctionCall { name, .. } => {
+            is_geometry_function(name)
+                && !functions.iter().any(|f| f.name == name.as_str())
+        }
+        _ => false,
+    }
 }
 
 /// Compile a geometry function call expression into CompiledGeometryOps.
@@ -5388,6 +5403,94 @@ fn compile_geometry_call(
                 ],
             }])
         }
+        // --- Transforms ---
+        // translate(target, dx, dy, dz)
+        "translate" => {
+            if compiled_args.len() != 4 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "translate() expects 4 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Transform {
+                kind: TransformKind::Translate,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("dx".to_string(), it.next().unwrap()),
+                    ("dy".to_string(), it.next().unwrap()),
+                    ("dz".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // rotate(target, axis_x, axis_y, axis_z, angle)
+        "rotate" => {
+            if compiled_args.len() != 5 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "rotate() expects 5 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Transform {
+                kind: TransformKind::Rotate,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("axis_x".to_string(), it.next().unwrap()),
+                    ("axis_y".to_string(), it.next().unwrap()),
+                    ("axis_z".to_string(), it.next().unwrap()),
+                    ("angle".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // scale(target, factor)
+        "scale" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "scale() expects 2 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Transform {
+                kind: TransformKind::Scale,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("factor".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // rotate_around(target, px, py, pz, axis_x, axis_y, axis_z, angle)
+        "rotate_around" => {
+            if compiled_args.len() != 8 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "rotate_around() expects 8 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Transform {
+                kind: TransformKind::RotateAround,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("px".to_string(), it.next().unwrap()),
+                    ("py".to_string(), it.next().unwrap()),
+                    ("pz".to_string(), it.next().unwrap()),
+                    ("axis_x".to_string(), it.next().unwrap()),
+                    ("axis_y".to_string(), it.next().unwrap()),
+                    ("axis_z".to_string(), it.next().unwrap()),
+                    ("angle".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
         _ => {
             diagnostics.push(Diagnostic::error(format!(
                 "unsupported geometry function: {}",
@@ -5645,6 +5748,126 @@ mod tests {
         assert!(
             matches!(op, CompiledGeometryOp::Pattern { kind: PatternKind::Circular, .. }),
             "expected Pattern(Circular), got {:?}",
+            op
+        );
+    }
+
+    // --- Transform function recognition tests (task-311 step-1) ---
+
+    #[test]
+    fn compile_geometry_translate_recognized() {
+        assert!(is_geometry_function("translate"));
+    }
+
+    #[test]
+    fn compile_geometry_rotate_recognized() {
+        assert!(is_geometry_function("rotate"));
+    }
+
+    #[test]
+    fn compile_geometry_rotate_around_recognized() {
+        assert!(is_geometry_function("rotate_around"));
+    }
+
+    #[test]
+    fn compile_geometry_scale_recognized() {
+        assert!(is_geometry_function("scale"));
+    }
+
+    // --- Transform compile-to-realization tests (task-311 step-3) ---
+
+    #[test]
+    fn compile_translate_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let moved = translate(w, 1, 0, 0)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_translate"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for translate call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Transform { kind: TransformKind::Translate, .. }),
+            "expected Transform(Translate), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_rotate_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let rotated = rotate(w, 0, 0, 1, 90)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_rotate"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for rotate call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Transform { kind: TransformKind::Rotate, .. }),
+            "expected Transform(Rotate), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_scale_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let scaled = scale(w, 2)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_scale"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for scale call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Transform { kind: TransformKind::Scale, .. }),
+            "expected Transform(Scale), got {:?}",
+            op
+        );
+    }
+
+    #[test]
+    fn compile_rotate_around_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let rotated = rotate_around(w, 1, 0, 0, 0, 0, 1, 90)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_rotate_around"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for rotate_around call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(op, CompiledGeometryOp::Transform { kind: TransformKind::RotateAround, .. }),
+            "expected Transform(RotateAround), got {:?}",
             op
         );
     }
