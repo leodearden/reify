@@ -1,81 +1,169 @@
 {
-  "task_id": "2",
-  "title": "Extract complex_abs helper to deduplicate magnitude/complex_magnitude",
+  "task_id": "191",
+  "title": "Qualified trait access: parser",
   "files": [
-    "crates/reify-stdlib/src/lib.rs"
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/qualified_access_tests.rs"
   ],
   "modules": [
-    "crates/reify-stdlib"
+    "tree-sitter-reify",
+    "crates/reify-syntax"
   ],
-  "analysis": "The `complex_magnitude` match arm (lines 427-437) duplicates the Complex branch of `magnitude` (lines 285-291) verbatim. Both compute `(re*re + im*im).sqrt()` then branch on `dimension == DimensionVector::DIMENSIONLESS` to return either `sanitize_value(Value::Real(mag))` or `sanitize_value(Value::Scalar { si_value: mag, dimension })`. The fix is to extract a private `#[inline(always)] fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value` helper placed in the private helpers section (after `unary` at line 653, before `normalize_quaternion` at line 655). Both call sites then delegate to `complex_abs`. Additionally, we add a `complex_magnitude_overflow_returns_undef` test following the established pattern from `complex_add_overflow_returns_undef` (line 3309) and `complex_mul_overflow_returns_undef` (line 3297). The new test goes in the `// ── complex_magnitude() tests (step-5)` section before line 3391 (the closing brace). All changes are confined to a single file: `crates/reify-stdlib/src/lib.rs`.",
-  "prerequisites": [],
+  "analysis": "This task adds two new expression forms to the parser: (1) `TypeName::ident` as QualifiedAccess (precedence 2, left-associative) and (2) `expr.(TypeName::ident)` as InstanceQualifiedAccess (precedence 8, left-associative postfix). The implementation spans three layers: grammar rules in tree-sitter-reify/grammar.js, AST node variants in reify-syntax/src/lib.rs (ExprKind enum), and CST→AST lowering functions in reify-syntax/src/ts_parser.rs. Both forms already exist in the current branch — grammar rules (qualified_access at prec.left(2), instance_qualified_access at prec.left(8)), AST variants (QualifiedAccess, InstanceQualifiedAccess), lowering functions (lower_qualified_access, lower_instance_qualified_access), and 7 integration tests all pass. The compiler crate already has a placeholder match arm for both variants that emits a diagnostic (resolution is out of scope for this parser task). Verification should confirm all 7 tests pass and no regressions exist.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Ensure tree-sitter-reify grammar includes qualified_access rule: `prec.left(2, seq(field('qualifier', $._expression), '::', field('member', $.identifier)))` and instance_qualified_access rule: `prec.left(8, seq(field('object', $._expression), '.', '(', field('qualified', $.qualified_access), ')'))`. Both must be listed in the _expression choice. Regenerate parser.c if grammar.js was modified.",
+      "status": "done",
+      "commit": "31ae3f7a",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write `complex_magnitude_overflow_returns_undef` test in the `// ── complex_magnitude() tests (step-5)` section (before line 3391). Pattern: create `Value::Complex { re: f64::MAX, im: f64::MAX, dimension: DimensionVector::DIMENSIONLESS }`, call `eval_builtin(\"complex_magnitude\", &[z])`, assert `.is_undef()` with message 'complex_magnitude with f64::MAX components must return Undef (Inf overflow)'. This parallels `complex_add_overflow_returns_undef` at line 3309. The test should pass immediately (sanitize_value already catches Inf from f64::MAX²+f64::MAX²→Inf), establishing the behavioral contract before refactoring.",
+      "description": "Write test `parse_basic_qualified_access`: parse `structure S { let x = Rigid::mass }`, assert no errors, assert the let value is ExprKind::QualifiedAccess with qualifier=Ident(\"Rigid\") and member=\"mass\".",
       "status": "done",
-      "commit": "be9c2da9"
+      "commit": "31ae3f7a"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Extract `#[inline(always)] fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value` helper. Place it after `unary()` (line 653) and before `normalize_quaternion()` (line 655). Body: `let mag = (re * re + im * im).sqrt(); if dimension == DimensionVector::DIMENSIONLESS { sanitize_value(Value::Real(mag)) } else { sanitize_value(Value::Scalar { si_value: mag, dimension }) }`. Then replace the `magnitude` Complex branch (lines 285-291) with `return complex_abs(*re, *im, *dimension);` and replace the `complex_magnitude` match arm body (lines 428-434) with `complex_abs(*re, *im, *dimension)`. Run `cargo test -p reify-stdlib` to verify all existing tests plus the new overflow test pass.",
+      "description": "Add ExprKind::QualifiedAccess { qualifier: Box<Expr>, member: String } variant to lib.rs. Add `lower_qualified_access` function in ts_parser.rs that reads 'qualifier' and 'member' fields from the tree-sitter node. Add dispatch case `\"qualified_access\" => self.lower_qualified_access(node)` in lower_expr. Verify step-1 test passes.",
       "status": "done",
-      "commit": "8268785a"
+      "commit": "31ae3f7a"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Final verification: run `cargo test -p reify-stdlib` confirming all tests pass including: complex_magnitude_3_4_returns_5, complex_magnitude_dimensioned_returns_scalar, complex_magnitude_non_complex_returns_undef, complex_magnitude_voltage, complex_magnitude_overflow_returns_undef, and all magnitude tests. This confirms the refactor is behavior-preserving.",
+      "description": "Write test `parse_chained_qualified_access`: parse `structure S { let x = A::B::c }`, assert nested QualifiedAccess { qualifier: QualifiedAccess { qualifier: Ident(\"A\"), member: \"B\" }, member: \"c\" } — verifying left-associative chaining.",
       "status": "done",
-      "commit": "8268785a"
+      "commit": "31ae3f7a"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Verify left-associativity — the `prec.left(2, ...)` grammar rule handles chaining automatically. The recursive `lower_expr` call on the qualifier field naturally produces nested QualifiedAccess nodes. Step-3 test should pass without code changes.",
+      "status": "done",
+      "commit": "31ae3f7a"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test `parse_qualified_access_in_binary_expr`: parse `structure S { let x = Rigid::mass + 1 }`, assert BinOp { op: \"+\", left: QualifiedAccess(Rigid, mass), right: NumberLiteral(1.0) } — verifying precedence 2 binds tighter than precedence 5 additive but can participate in larger expressions.",
+      "status": "done",
+      "commit": "31ae3f7a"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Verify precedence interaction — QualifiedAccess at prec 2 is lower than additive prec 5, so `Rigid::mass + 1` parses as `(Rigid::mass) + 1` because `::` binds its operands before `+` claims the left side. Step-5 test should pass without code changes.",
+      "status": "done",
+      "commit": "31ae3f7a"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test `parse_basic_instance_qualified_access`: parse `structure S { let x = motor.(Driveable::torque) }`, assert InstanceQualifiedAccess { object: Ident(\"motor\"), qualified: QualifiedAccess(Ident(\"Driveable\"), \"torque\") }.",
+      "status": "done",
+      "commit": "31ae3f7a"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Add ExprKind::InstanceQualifiedAccess { object: Box<Expr>, qualified: Box<Expr> } variant to lib.rs. Add `lower_instance_qualified_access` function in ts_parser.rs that reads 'object' and 'qualified' fields. Add dispatch case `\"instance_qualified_access\" => self.lower_instance_qualified_access(node)` in lower_expr. Verify step-7 test passes.",
+      "status": "done",
+      "commit": "31ae3f7a"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write test `parse_instance_qualified_with_member_chain`: parse `structure S { let x = self.motor.(Driveable::torque) }`, assert InstanceQualifiedAccess { object: MemberAccess(Ident(\"self\"), \"motor\"), qualified: QualifiedAccess(Ident(\"Driveable\"), \"torque\") } — verifying that the object field can be a chained member access expression.",
+      "status": "done",
+      "commit": "31ae3f7a"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Verify member chain interaction — both instance_qualified_access and member_access are at prec.left(8), so `self.motor.(...)` parses left-to-right: first `self.motor` as MemberAccess, then `(MemberAccess).(...)` as InstanceQualifiedAccess. Step-9 test should pass without code changes.",
+      "status": "done",
+      "commit": "31ae3f7a"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write test `parse_instance_qualified_with_chained_path`: parse `structure S { let x = obj.(A::B::c) }`, assert InstanceQualifiedAccess { object: Ident(\"obj\"), qualified: QualifiedAccess { qualifier: QualifiedAccess(Ident(\"A\"), \"B\"), member: \"c\" } } — verifying the qualified field supports chained qualified paths.",
+      "status": "done",
+      "commit": "31ae3f7a"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Verify chained path inside instance qualified — the grammar constrains `field('qualified', $.qualified_access)` which is itself left-recursive. Step-11 test should pass without code changes.",
+      "status": "done",
+      "commit": "31ae3f7a"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write test `parse_distinct_ast_nodes`: parse `structure S { let a = Rigid::mass  let b = obj.(Rigid::mass) }`, assert first member is QualifiedAccess and second is InstanceQualifiedAccess — verifying both forms produce distinct AST node variants as required by the task.",
+      "status": "done",
+      "commit": "31ae3f7a"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Name the helper `complex_abs` rather than `complex_magnitude_inner` or similar",
-      "rationale": "The operation is mathematically the complex absolute value (modulus). `complex_abs` is concise, standard mathematical terminology, and clearly conveys intent. It also distinguishes from the public-facing `complex_magnitude` builtin name."
+      "decision": "QualifiedAccess qualifier is Box<Expr> (not String) to support chaining",
+      "rationale": "Chained qualified access like `A::B::c` requires the qualifier to be an expression that can itself be a QualifiedAccess. Using Box<Expr> enables left-recursive chaining: `(A::B)::c` where `A::B` is a QualifiedAccess and the outer `(A::B)::c` is also a QualifiedAccess. A String qualifier would only allow single-level `TypeName::ident`."
     },
     {
-      "decision": "Take `re: f64, im: f64, dimension: DimensionVector` by value rather than by reference",
-      "rationale": "All three types are Copy (f64 is 8 bytes, DimensionVector is a [Rational; 9] which derives Copy). Passing by value avoids lifetime noise at call sites where we destructure `&Value::Complex { re, im, dimension }` and would otherwise need to dereference. Callers pass `*re, *im, *dimension`."
+      "decision": "Qualified access at precedence 2 (same level as &&)",
+      "rationale": "Precedence 2 means `::` binds tighter than logical operators (&&, ||) but looser than comparison, arithmetic, and postfix operators. This allows `Rigid::mass + 1` to parse as `(Rigid::mass) + 1` naturally, and `A::b && C::d` to parse as `(A::b) && (C::d)`. This matches the intuition that `::` is a tight access operator, though not as tight as `.` (prec 8)."
     },
     {
-      "decision": "Place helper between `unary` and `normalize_quaternion` in the private helpers section",
-      "rationale": "This groups it with other private computation helpers rather than inside the `eval_builtin` match block. It follows the existing code organization pattern where `sanitize_value`, `unary`, `binary`, `normalize_quaternion` etc. are all private fns after the main dispatch function."
+      "decision": "Instance qualified access constrains inner field to $.qualified_access (not $._expression)",
+      "rationale": "The grammar rule `field('qualified', $.qualified_access)` prevents nonsensical forms like `expr.(42)` or `expr.(x + y)`. Only `TypeName::ident` chains are allowed inside the parenthesized part. This is enforced at the grammar level for free."
     },
     {
-      "decision": "Mark as `#[inline(always)]` per the task description",
-      "rationale": "The function is tiny (a sqrt + a branch + sanitize_value call) and called from two hot paths in `eval_builtin`. Inlining avoids function call overhead and matches the task specification."
+      "decision": "Instance qualified access at precedence 8 (postfix level)",
+      "rationale": "Instance qualified access `expr.(T::m)` is syntactically a postfix operator on the object expression, like member access `expr.member`. Putting it at prec 8 (same as member_access, function_call, index_access) allows natural left-to-right chaining: `self.motor.(Driveable::torque)` parses as `(self.motor).(Driveable::torque)`."
     },
     {
-      "decision": "Write the overflow test first even though it passes immediately",
-      "rationale": "The test validates that the sanitize_value defense-in-depth continues to work for complex_magnitude after the refactor. Writing it first establishes the behavioral contract before we touch the implementation. f64::MAX² + f64::MAX² overflows to Inf, which sanitize_value converts to Undef."
+      "decision": "No separate TypeName AST node — qualifier uses Ident",
+      "rationale": "At the parser level, `Rigid` in `Rigid::mass` is just an identifier. Semantic analysis (trait resolution in the compiler) will distinguish type names from variable names. Keeping the qualifier as a plain Expr avoids premature semantic coupling in the parser."
     }
   ],
   "reuse": [
     {
-      "what": "`sanitize_value` function (line 706)",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Called inside `complex_abs` to convert non-finite results (NaN, Inf) to Undef, exactly as both current call sites already do."
+      "what": "Existing lower_expr dispatch pattern",
+      "where": "crates/reify-syntax/src/ts_parser.rs (lower_expr match)",
+      "how": "Add two new match arms (`\"qualified_access\"` and `\"instance_qualified_access\"`) following the same pattern as other expression kinds like `\"member_access\"` and `\"binary_expression\"`."
     },
     {
-      "what": "`unary` helper (line 648)",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Both `magnitude` and `complex_magnitude` already use `unary(args, |v| ...)` — this stays unchanged; only the closure body changes to delegate to `complex_abs`."
+      "what": "lower_member_access structure as template for lower_qualified_access",
+      "where": "crates/reify-syntax/src/ts_parser.rs (lines 1863-1893)",
+      "how": "Both functions read a node and two named fields, lower one as expression and one as text, then construct an ExprKind variant. The qualified_access lowering mirrors this pattern exactly."
     },
     {
-      "what": "Overflow test pattern from `complex_add_overflow_returns_undef` (line 3309) and `complex_mul_overflow_returns_undef` (line 3297)",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "The new `complex_magnitude_overflow_returns_undef` test follows the identical pattern: construct Complex with f64::MAX components, call eval_builtin, assert `.is_undef()` with descriptive message."
+      "what": "ExprKind enum extension pattern",
+      "where": "crates/reify-syntax/src/lib.rs (ExprKind enum)",
+      "how": "Add two new variants following the established pattern of doc comments + field types. QualifiedAccess mirrors MemberAccess structure; InstanceQualifiedAccess is similar but with two Box<Expr> fields."
     },
     {
-      "what": "`DimensionVector::DIMENSIONLESS` constant",
-      "where": "crates/reify-types/src/dimension.rs",
-      "how": "Used in both the helper function (for the dimensionless branch) and in the test (for constructing the test Complex value)."
+      "what": "Test helper parse_decls",
+      "where": "crates/reify-syntax/tests/qualified_access_tests.rs",
+      "how": "Reuse the standard test pattern: `parse_decls(source) -> (Vec<Declaration>, Vec<ParseError>)` calling `reify_syntax::parse()` with a test ModulePath. This pattern is used across all 20 test files."
+    },
+    {
+      "what": "Tree-sitter prec.left grammar pattern",
+      "where": "tree-sitter-reify/grammar.js",
+      "how": "The qualified_access rule uses `prec.left(N, seq(field(...), token, field(...)))` identical to how binary_expression and member_access define left-associative rules."
     }
   ],
-  "_session_id": "2-1ab7323c",
-  "_created_at": "2026-03-24T21:10:15.236515+00:00"
+  "_session_id": "191-5658d92e",
+  "_created_at": "2026-03-24T21:25:30.140132+00:00"
 }
