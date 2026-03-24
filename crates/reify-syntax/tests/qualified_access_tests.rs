@@ -78,3 +78,44 @@ fn parse_basic_qualified_access() {
         other => panic!("expected QualifiedAccess, got {:?}", other),
     }
 }
+
+// ── Step 5: qualified access in binary expression ──────────────────────────
+
+#[test]
+fn parse_qualified_access_in_binary_expr() {
+    let (decls, errors) = parse_decls("structure S { let x = Rigid::mass + 1 }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let s = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let let_decl = match &s.members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+
+    // Expected: BinOp { op: "+", left: QualifiedAccess(Ident("Rigid"), "mass"), right: NumberLiteral(1.0) }
+    match &let_decl.value.kind {
+        ExprKind::BinOp { op, left, right } => {
+            assert_eq!(op, "+");
+            match &left.kind {
+                ExprKind::QualifiedAccess { qualifier, member } => {
+                    assert_eq!(member, "mass");
+                    match &qualifier.kind {
+                        ExprKind::Ident(name) => assert_eq!(name, "Rigid"),
+                        other => panic!("expected Ident qualifier, got {:?}", other),
+                    }
+                }
+                other => panic!("expected QualifiedAccess left operand, got {:?}", other),
+            }
+            match &right.kind {
+                ExprKind::NumberLiteral(v) => assert!((v - 1.0).abs() < f64::EPSILON),
+                other => panic!("expected NumberLiteral right operand, got {:?}", other),
+            }
+        }
+        other => panic!("expected BinOp, got {:?}", other),
+    }
+}
