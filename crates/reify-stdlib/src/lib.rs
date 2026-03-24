@@ -2651,4 +2651,405 @@ mod tests {
             "dot of vector with mixed component dimensions should be Undef"
         );
     }
+
+    // ── complex() constructor tests (step-1) ──────────────────────────────────
+
+    #[test]
+    fn complex_real_real_returns_dimensionless() {
+        // complex(Real, Real) → Complex with DIMENSIONLESS dimension
+        let result = eval_builtin("complex", &[Value::Real(3.0), Value::Real(4.0)]);
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 3.0).abs() < 1e-12, "expected re=3.0, got {}", re);
+                assert!((im - 4.0).abs() < 1e-12, "expected im=4.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{3,4,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_int_int_returns_dimensionless() {
+        // complex(Int, Int) → Complex with DIMENSIONLESS dimension
+        let result = eval_builtin("complex", &[Value::Int(5), Value::Int(-2)]);
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 5.0).abs() < 1e-12, "expected re=5.0, got {}", re);
+                assert!((im - (-2.0)).abs() < 1e-12, "expected im=-2.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{5,-2,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_int_real_mixed_coercion_dimensionless() {
+        // complex(Int, Real) → Complex with DIMENSIONLESS dimension (both dimensionless)
+        let result = eval_builtin("complex", &[Value::Int(1), Value::Real(2.5)]);
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 1.0).abs() < 1e-12, "expected re=1.0, got {}", re);
+                assert!((im - 2.5).abs() < 1e-12, "expected im=2.5, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{1,2.5,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    // ── complex() with Scalar args (step-3) ───────────────────────────────────
+
+    #[test]
+    fn complex_scalar_mm_preserves_length_dimension() {
+        // complex(Scalar{5mm}, Scalar{3mm}) → Complex{0.005, 0.003, LENGTH}
+        let result = eval_builtin(
+            "complex",
+            &[
+                Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
+            ],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 0.005).abs() < 1e-15, "expected re=0.005, got {}", re);
+                assert!((im - 0.003).abs() < 1e-15, "expected im=0.003, got {}", im);
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Complex{{0.005,0.003,LENGTH}}, got {:?}", other),
+        }
+    }
+
+    // ── complex() error cases (step-5) ────────────────────────────────────────
+
+    #[test]
+    fn complex_dimension_mismatch_returns_undef() {
+        // complex(3mm, 4s) → Undef (LENGTH ≠ TIME)
+        let result = eval_builtin(
+            "complex",
+            &[
+                Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 4.0, dimension: DimensionVector::TIME },
+            ],
+        );
+        assert!(result.is_undef(), "expected Undef for dimension mismatch, got {:?}", result);
+    }
+
+    #[test]
+    fn complex_real_with_scalar_dimension_mismatch_returns_undef() {
+        // complex(Real(3.0), Scalar{4, LENGTH}) → Undef
+        // Real is DIMENSIONLESS, Scalar{LENGTH} is not — mismatch
+        let result = eval_builtin(
+            "complex",
+            &[
+                Value::Real(3.0),
+                Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
+            ],
+        );
+        assert!(result.is_undef(), "expected Undef for Real+Scalar mismatch, got {:?}", result);
+    }
+
+    #[test]
+    fn complex_zero_args_returns_undef() {
+        let result = eval_builtin("complex", &[]);
+        assert!(result.is_undef(), "expected Undef for 0 args, got {:?}", result);
+    }
+
+    #[test]
+    fn complex_three_args_returns_undef() {
+        let result =
+            eval_builtin("complex", &[Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        assert!(result.is_undef(), "expected Undef for 3 args, got {:?}", result);
+    }
+
+    #[test]
+    fn complex_non_numeric_re_returns_undef() {
+        let result = eval_builtin("complex", &[Value::Bool(true), Value::Real(3.0)]);
+        assert!(result.is_undef(), "expected Undef for non-numeric re, got {:?}", result);
+    }
+
+    #[test]
+    fn complex_nan_arg_returns_undef() {
+        let result = eval_builtin("complex", &[Value::Real(f64::NAN), Value::Real(3.0)]);
+        assert!(result.is_undef(), "expected Undef for NaN re, got {:?}", result);
+    }
+
+    #[test]
+    fn complex_inf_arg_returns_undef() {
+        let result = eval_builtin("complex", &[Value::Real(f64::INFINITY), Value::Real(3.0)]);
+        assert!(result.is_undef(), "expected Undef for Inf re, got {:?}", result);
+    }
+
+    // ── re() and im() accessor tests (step-7) ────────────────────────────────
+
+    #[test]
+    fn re_dimensionless_returns_real() {
+        // re(Complex{3,4,DIMLESS}) → Real(3.0)
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_real_approx!(eval_builtin("re", &[z]), 3.0);
+    }
+
+    #[test]
+    fn im_dimensionless_returns_real() {
+        // im(Complex{3,4,DIMLESS}) → Real(4.0)
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_real_approx!(eval_builtin("im", &[z]), 4.0);
+    }
+
+    #[test]
+    fn re_dimensioned_returns_scalar() {
+        // re(Complex{5,3,LENGTH}) → Scalar{5.0, LENGTH}
+        let z = Value::Complex { re: 5.0, im: 3.0, dimension: DimensionVector::LENGTH };
+        assert_scalar_approx!(eval_builtin("re", &[z]), 5.0, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn im_dimensioned_returns_scalar() {
+        // im(Complex{5,3,LENGTH}) → Scalar{3.0, LENGTH}
+        let z = Value::Complex { re: 5.0, im: 3.0, dimension: DimensionVector::LENGTH };
+        assert_scalar_approx!(eval_builtin("im", &[z]), 3.0, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn re_non_complex_returns_undef() {
+        assert!(eval_builtin("re", &[Value::Real(3.0)]).is_undef());
+    }
+
+    #[test]
+    fn im_non_complex_returns_undef() {
+        assert!(eval_builtin("im", &[Value::Real(3.0)]).is_undef());
+    }
+
+    // ── conjugate() tests (step-9) ────────────────────────────────────────────
+
+    #[test]
+    fn conjugate_dimensionless_negates_im() {
+        // conjugate(Complex{3,4,DIMLESS}) → Complex{3,-4,DIMLESS}
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let result = eval_builtin("conjugate", &[z]);
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 3.0).abs() < 1e-12);
+                assert!((im - (-4.0)).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{3,-4,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn conjugate_dimensioned_preserves_dimension() {
+        // conjugate(Complex{5,3,LENGTH}) → Complex{5,-3,LENGTH}
+        let z = Value::Complex { re: 5.0, im: 3.0, dimension: DimensionVector::LENGTH };
+        let result = eval_builtin("conjugate", &[z]);
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 5.0).abs() < 1e-12);
+                assert!((im - (-3.0)).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Complex{{5,-3,LENGTH}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn conjugate_non_complex_returns_undef() {
+        assert!(eval_builtin("conjugate", &[Value::Real(3.0)]).is_undef());
+    }
+
+    // ── magnitude on Complex tests (step-11) ─────────────────────────────────
+
+    #[test]
+    fn magnitude_complex_dimensionless_3_4_returns_5() {
+        // magnitude(Complex{3,4,DIMLESS}) → Real(5.0) (3-4-5 Pythagorean triple)
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_real_approx!(eval_builtin("magnitude", &[z]), 5.0);
+    }
+
+    #[test]
+    fn magnitude_complex_dimensioned_3_4_returns_scalar_5() {
+        // magnitude(Complex{3,4,LENGTH}) → Scalar{5.0, LENGTH}
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::LENGTH };
+        assert_scalar_approx!(eval_builtin("magnitude", &[z]), 5.0, DimensionVector::LENGTH);
+    }
+
+    // ── phase() tests (step-13) ───────────────────────────────────────────────
+
+    #[test]
+    fn phase_complex_1_1_returns_pi_over_4() {
+        // phase(1+1i) = π/4
+        let z = Value::Complex { re: 1.0, im: 1.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_scalar_approx!(
+            eval_builtin("phase", &[z]),
+            std::f64::consts::FRAC_PI_4,
+            DimensionVector::ANGLE
+        );
+    }
+
+    #[test]
+    fn phase_complex_1_0_returns_0() {
+        // phase(1+0i) = 0
+        let z = Value::Complex { re: 1.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_scalar_approx!(eval_builtin("phase", &[z]), 0.0, DimensionVector::ANGLE);
+    }
+
+    #[test]
+    fn phase_complex_0_1_returns_pi_over_2() {
+        // phase(0+1i) = π/2
+        let z = Value::Complex { re: 0.0, im: 1.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_scalar_approx!(
+            eval_builtin("phase", &[z]),
+            std::f64::consts::FRAC_PI_2,
+            DimensionVector::ANGLE
+        );
+    }
+
+    #[test]
+    fn phase_non_complex_returns_undef() {
+        assert!(eval_builtin("phase", &[Value::Real(1.0)]).is_undef());
+    }
+
+    // ── complex_add() tests (step-15) ─────────────────────────────────────────
+
+    #[test]
+    fn complex_add_dimensionless() {
+        // complex_add(1+2i, 3+4i) = 4+6i
+        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
+        let b = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let result = eval_builtin("complex_add", &[a, b]);
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 4.0).abs() < 1e-12);
+                assert!((im - 6.0).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{4,6,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_add_dimensioned_preserves_dimension() {
+        // complex_add(a+bi [LENGTH], c+di [LENGTH]) = (a+c)+(b+d)i [LENGTH]
+        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::LENGTH };
+        let b = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::LENGTH };
+        let result = eval_builtin("complex_add", &[a, b]);
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 4.0).abs() < 1e-12);
+                assert!((im - 6.0).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Complex{{4,6,LENGTH}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_add_dimension_mismatch_returns_undef() {
+        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::LENGTH };
+        let b = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert!(eval_builtin("complex_add", &[a, b]).is_undef());
+    }
+
+    #[test]
+    fn complex_add_non_complex_arg_returns_undef() {
+        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert!(eval_builtin("complex_add", &[a, Value::Real(3.0)]).is_undef());
+    }
+
+    // ── complex_mul() tests (step-17) ─────────────────────────────────────────
+
+    #[test]
+    fn complex_mul_dimensionless() {
+        // (1+2i)(3+4i) = (3-8) + (4+6)i = -5 + 10i
+        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
+        let b = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let result = eval_builtin("complex_mul", &[a, b]);
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - (-5.0)).abs() < 1e-12, "expected re=-5.0, got {}", re);
+                assert!((im - 10.0).abs() < 1e-12, "expected im=10.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{-5,10,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_mul_dimensioned_combines_dimensions() {
+        // complex_mul(LENGTH, LENGTH) → result dimension is LENGTH^2 (AREA)
+        let area_dim = DimensionVector::LENGTH.mul(&DimensionVector::LENGTH);
+        let a = Value::Complex { re: 1.0, im: 0.0, dimension: DimensionVector::LENGTH };
+        let b = Value::Complex { re: 2.0, im: 0.0, dimension: DimensionVector::LENGTH };
+        let result = eval_builtin("complex_mul", &[a, b]);
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 2.0).abs() < 1e-12, "expected re=2.0, got {}", re);
+                assert!((im - 0.0).abs() < 1e-12, "expected im=0.0, got {}", im);
+                assert_eq!(dimension, area_dim, "expected AREA dimension");
+            }
+            other => panic!("expected Complex{{2,0,AREA}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_mul_non_complex_returns_undef() {
+        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert!(eval_builtin("complex_mul", &[a, Value::Real(3.0)]).is_undef());
+    }
+
+    // ── Complex<Impedance> integration test (step-19) ─────────────────────────
+
+    #[test]
+    fn complex_impedance_integration() {
+        // Impedance = kg·m²·s⁻³·A⁻² = MASS·LENGTH²·TIME⁻³·CURRENT⁻²
+        // Build as MASS * LENGTH^2 * TIME^-3 * CURRENT^-2
+        use reify_types::DimensionVector;
+        let mass_dim = DimensionVector::MASS;
+        let length_dim = DimensionVector::LENGTH;
+        let area = length_dim.mul(&length_dim);
+        let mass_area = mass_dim.mul(&area);
+        let time3 = DimensionVector::TIME.pow(3);
+        let current2 = DimensionVector::CURRENT.pow(2);
+        let impedance = mass_area.div(&time3).div(&current2);
+
+        // Create 50 Ω (real part) + -25j Ω (imaginary part)
+        let z = eval_builtin(
+            "complex",
+            &[
+                Value::Scalar { si_value: 50.0, dimension: impedance },
+                Value::Scalar { si_value: -25.0, dimension: impedance },
+            ],
+        );
+        match &z {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 50.0).abs() < 1e-12, "re={}", re);
+                assert!((im - (-25.0)).abs() < 1e-12, "im={}", im);
+                assert_eq!(*dimension, impedance);
+            }
+            other => panic!("expected Complex (impedance), got {:?}", other),
+        }
+
+        // re accessor → Scalar{50, IMPEDANCE}
+        assert_scalar_approx!(eval_builtin("re", &[z.clone()]), 50.0, impedance);
+
+        // im accessor → Scalar{-25, IMPEDANCE}
+        assert_scalar_approx!(eval_builtin("im", &[z.clone()]), -25.0, impedance);
+
+        // magnitude → Scalar{sqrt(50²+25²), IMPEDANCE} = Scalar{sqrt(3125), IMPEDANCE}
+        let expected_mag = (50.0_f64 * 50.0 + 25.0 * 25.0).sqrt();
+        assert_scalar_approx!(eval_builtin("magnitude", &[z.clone()]), expected_mag, impedance);
+
+        // conjugate → Complex{50, 25, IMPEDANCE}
+        let conj = eval_builtin("conjugate", &[z.clone()]);
+        match &conj {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 50.0).abs() < 1e-12);
+                assert!((im - 25.0).abs() < 1e-12);
+                assert_eq!(*dimension, impedance);
+            }
+            other => panic!("expected conjugate Complex, got {:?}", other),
+        }
+
+        // phase → Scalar{atan2(-25, 50), ANGLE}
+        let expected_phase = (-25.0_f64).atan2(50.0);
+        assert_scalar_approx!(eval_builtin("phase", &[z.clone()]), expected_phase, DimensionVector::ANGLE);
+    }
 }

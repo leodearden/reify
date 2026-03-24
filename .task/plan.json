@@ -1,27 +1,19 @@
 {
-  "task_id": "233",
-  "title": "Orientation: Type, Value, constructors",
+  "task_id": "288",
+  "title": "Complex<Q>: constructor and tests",
   "files": [
-    "crates/reify-types/src/ty.rs",
-    "crates/reify-types/src/value.rs",
-    "crates/reify-types/tests/exports.rs",
-    "crates/reify-stdlib/src/lib.rs",
-    "crates/reify-lsp/src/analysis.rs",
-    "crates/reify-constraints/src/classifier.rs"
+    "crates/reify-stdlib/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-stdlib",
-    "crates/reify-lsp",
-    "crates/reify-constraints"
+    "crates/reify-stdlib"
   ],
-  "analysis": "The task adds an Orientation type for representing spatial rotations via unit quaternions. The Type enum (ty.rs) gets a new Orientation(usize) tuple variant where usize is spatial dimension N (2 or 3). The Value enum (value.rs) gets a new Orientation { w, x, y, z } struct variant storing the quaternion components as f64. Five stdlib constructor functions are added to eval_builtin() in lib.rs. All constructors normalize the quaternion to unit length and return Undef for invalid inputs (NaN, Inf, zero-length). The Type enum derives Debug/Clone/PartialEq/Eq/Hash so those are automatic; Display is manual and needs a new arm. The Value enum has manual impls for PartialEq, Ord, Display, and content_hash \u2014 all need new arms. Two downstream crates (reify-lsp, reify-constraints) have exhaustive match statements on Value that will fail to compile without an Orientation arm.",
+  "analysis": "Task 288 adds a complex(re, im) constructor and supporting functions to the stdlib. All type infrastructure is already in place: Type::Complex(Box<Type>) exists in reify-types/ty.rs (line 45), Value::Complex { re, im, dimension } exists in value.rs (line 54), Display/PartialEq/Ord/content_hash are implemented, and downstream match arms (LSP, constraints, classifier) already handle Complex. The test-support builders.rs also handles Complex for type inference (line 47). The only remaining work is adding stdlib functions to eval_builtin() in lib.rs and writing comprehensive tests. The implementation follows the established pattern: constructor functions validated via match arms in the eval_builtin match statement, with unary/binary helpers for arg count validation, sanitize_value for NaN/Inf defense, and dimension comparison using DimensionVector equality. Functions added: complex(re,im) constructor, re(z)/im(z) accessors, conjugate(z), phase(z), complex_add(a,b), complex_mul(a,b), and extending existing magnitude(z) for Complex. All operations respect dimensions: construction requires matching dimensions, addition requires matching dimensions, multiplication combines dimensions via DimensionVector::mul(), and accessors/magnitude return Scalar when dimensioned or Real when dimensionless.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Verify current workspace compiles and tests pass on the worktree baseline (cargo check --workspace)",
+      "description": "Verify current workspace compiles and tests pass on the worktree baseline (cargo check --workspace && cargo test -p reify-stdlib)",
       "status": "done",
-      "commit": "78c33d1",
+      "commit": "661275f",
       "tests": []
     }
   ],
@@ -29,219 +21,214 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for Type::Orientation in ty.rs: variant construction with Orientation(3), Display format 'Orientation3', factory method Type::orientation(n), Eq/Hash consistency, is_numeric() returns false, as_name() returns None",
-      "status": "done",
-      "commit": "5136510"
+      "description": "Write failing tests for complex(re, im) constructor with dimensionless args: complex(Real, Real), complex(Int, Int), complex(Int, Real) mixed coercion. Verify each returns Value::Complex with DIMENSIONLESS dimension.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add Orientation(usize) variant to Type enum, add orientation(n) factory method, add Display arm writing 'Orientation{n}'. Derives (Debug, Clone, PartialEq, Eq, Hash) are automatic.",
-      "status": "done",
-      "commit": "280585a"
+      "description": "Add 'complex' match arm to eval_builtin: validate 2 args, extract f64 via as_f64(), extract dimension via Value::dimension(), require both dimensions equal, construct Value::Complex { re, im, dimension }. Apply sanitize_value pattern for NaN/Inf.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for Value::Orientation in value.rs: variant construction, PartialEq (same quaternion equal, different not equal, NaN bitwise equality via to_bits), Ord (type_tag ordering, within-type lexicographic on w/x/y/z bits), Display format '[w, x, y, z]q', content_hash (tag=16, NaN canonicalization, distinct from other variants)",
-      "status": "done",
-      "commit": "a3aaf2f"
+      "description": "Write failing test for complex(Scalar{5mm}, Scalar{3mm}) \u2192 Complex{0.005, 0.003, LENGTH}. Verify dimension is preserved from Scalar arguments.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add Orientation { w: f64, x: f64, y: f64, z: f64 } variant to Value enum. Add arms to: content_hash (tag=16 with NaN canonicalization for all 4 components), PartialEq (bitwise f64 comparison), Ord (type_tag=15, compare w/x/y/z via to_bits), Display (format as quaternion). Add is_undef/as_f64/dimension pass-through (Orientation is not numeric, dimension is DIMENSIONLESS).",
-      "status": "done",
-      "commit": "10fb1be"
+      "description": "Ensure the 'complex' arm handles Scalar arguments correctly \u2014 dimension extraction from Value::dimension() already returns the Scalar's dimension, so this should pass after step-2 impl. Fix if needed.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
-      "type": "impl",
-      "description": "Fix downstream exhaustive matches: add Value::Orientation arm to format_value() in reify-lsp/src/analysis.rs (format as quaternion string), add Value::Orientation arm to domain classifier in reify-constraints/src/classifier.rs (Orientation doesn't contribute to domain classification, same as Complex/Tensor). Add Type::Orientation and Value::Orientation to exports.rs verification test.",
-      "status": "done",
-      "commit": "44e5071"
+      "type": "test",
+      "description": "Write failing tests for error cases: (1) dimension mismatch complex(3mm, 4s) \u2192 Undef, (2) mixed Real+Scalar complex(Real(3.0), Scalar{4,LENGTH}) \u2192 Undef, (3) wrong arg count complex()/complex(1,2,3) \u2192 Undef, (4) non-numeric complex('hi', 3) \u2192 Undef, (5) NaN arg \u2192 Undef, (6) Inf arg \u2192 Undef.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write failing test for orient_identity: no-arg call returns Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }; call with args returns Undef",
-      "status": "done",
-      "commit": "79778f9"
+      "type": "impl",
+      "description": "Add NaN/Inf sanitization to the 'complex' arm: check re.is_finite() && im.is_finite(), return Undef if not. Other error cases (mismatch, wrong count, non-numeric) should already be handled by step-2 impl.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
-      "type": "impl",
-      "description": "Add orient_identity match arm in eval_builtin: check args.is_empty(), return identity quaternion (1,0,0,0)",
-      "status": "done",
-      "commit": "9e2587a"
+      "type": "test",
+      "description": "Write failing tests for re(z) and im(z) accessors: (1) re(Complex{3,4,DIMLESS}) \u2192 Real(3.0), (2) im(Complex{3,4,DIMLESS}) \u2192 Real(4.0), (3) re(Complex{5,3,LENGTH}) \u2192 Scalar{5.0, LENGTH}, (4) im(Complex{5,3,LENGTH}) \u2192 Scalar{3.0, LENGTH}, (5) re(non-complex) \u2192 Undef, (6) im(non-complex) \u2192 Undef.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Write failing tests for orient_quaternion(w,x,y,z): (1) unnormalized input (2,0,0,0) normalizes to (1,0,0,0); (2) already normalized input preserved; (3) arbitrary input normalizes correctly; (4) zero quaternion (0,0,0,0) returns Undef; (5) NaN/Inf input returns Undef; (6) wrong arg count returns Undef",
-      "status": "done",
-      "commit": "1edde1c"
+      "type": "impl",
+      "description": "Add 're' and 'im' match arms to eval_builtin using unary() helper. Match Value::Complex, return Real when dimension is DIMENSIONLESS, Scalar with the complex's dimension otherwise. Return Undef for non-Complex input.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-9",
-      "type": "impl",
-      "description": "Add orient_quaternion match arm in eval_builtin: extract 4 f64 args, compute norm, reject zero/non-finite, divide by norm, return normalized Orientation. Add normalize_quaternion(w,x,y,z) -> Option<Value> helper function.",
-      "status": "done",
-      "commit": "8e11d45"
+      "type": "test",
+      "description": "Write failing tests for conjugate(z): (1) conjugate(Complex{3,4,DIMLESS}) \u2192 Complex{3,-4,DIMLESS}, (2) conjugate(Complex{5,3,LENGTH}) \u2192 Complex{5,-3,LENGTH} preserves dimension, (3) conjugate(non-complex) \u2192 Undef.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-10",
-      "type": "test",
-      "description": "Write failing tests for orient_axis_angle(axis, angle): (1) 90-deg rotation around Z axis produces correct quaternion (w=cos(pi/4), x=0, y=0, z=sin(pi/4)); (2) 180-deg around X axis; (3) angle as Angle Scalar accepted; (4) zero-length axis returns Undef; (5) non-3D axis returns Undef; (6) wrong arg count returns Undef",
-      "status": "done",
-      "commit": "70075b5"
+      "type": "impl",
+      "description": "Add 'conjugate' match arm to eval_builtin using unary() helper. Match Value::Complex, return Complex with negated im, same re and dimension. Return Undef for non-Complex.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-11",
-      "type": "impl",
-      "description": "Add orient_axis_angle match arm: extract axis via tensor_components_f64 (must be 3 components), extract angle via trig_input pattern (accept Real or Angle Scalar), normalize axis, compute q = (cos(theta/2), sin(theta/2)*axis), return via normalize_quaternion",
-      "status": "done",
-      "commit": "da6eb5c"
+      "type": "test",
+      "description": "Write failing tests for magnitude on Complex: (1) magnitude(Complex{3,4,DIMLESS}) \u2192 Real(5.0), (2) magnitude(Complex{3,4,LENGTH}) \u2192 Scalar{5.0, LENGTH}. These should currently fail because magnitude only handles Tensor via tensor_components_f64.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-12",
-      "type": "test",
-      "description": "Write failing tests for orient_euler(convention, a, b, c): (1) 'xyz' intrinsic with known angles produces correct quaternion; (2) 'zyx' convention; (3) all-zero angles produce identity; (4) invalid convention string returns Undef; (5) non-string convention returns Undef; (6) angles as Angle Scalar accepted; (7) wrong arg count returns Undef",
-      "status": "done",
-      "commit": "92ed969"
+      "type": "impl",
+      "description": "Extend the existing 'magnitude' match arm in eval_builtin to handle Value::Complex before the Tensor fallback. Compute sqrt(re\u00b2+im\u00b2), return Real if DIMENSIONLESS, Scalar with dimension otherwise. Apply sanitize_value.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-13",
-      "type": "impl",
-      "description": "Add orient_euler match arm: extract convention as String, extract 3 angles via trig_input pattern, implement intrinsic Euler-to-quaternion conversion for 6 Tait-Bryan conventions (xyz, xzy, yxz, yzx, zxy, zyx) and 6 proper Euler conventions (xyx, xzx, yxy, yzy, zxz, zyz) by composing elementary rotation quaternions. Return Undef for unrecognized conventions.",
-      "status": "done",
-      "commit": "1bab91e"
+      "type": "test",
+      "description": "Write failing tests for phase(z): (1) phase(Complex{1,1,DIMLESS}) \u2192 Scalar{\u03c0/4, ANGLE}, (2) phase(Complex{1,0,DIMLESS}) \u2192 Scalar{0.0, ANGLE}, (3) phase(Complex{0,1,DIMLESS}) \u2192 Scalar{\u03c0/2, ANGLE}, (4) phase(non-complex) \u2192 Undef.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-14",
-      "type": "test",
-      "description": "Write failing tests for orient_basis(x_axis, y_axis, z_axis): (1) identity basis vectors produce identity quaternion; (2) 90-deg rotated basis produces correct quaternion; (3) non-orthogonal basis returns Undef; (4) non-3D vectors return Undef; (5) zero-length vector returns Undef; (6) wrong arg count returns Undef",
-      "status": "done",
-      "commit": "557258c"
+      "type": "impl",
+      "description": "Add 'phase' match arm to eval_builtin using unary() helper. Match Value::Complex, compute atan2(im, re), return Scalar{angle, ANGLE}. Return Undef for non-Complex. Apply sanitize_value for degenerate cases.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-15",
-      "type": "impl",
-      "description": "Add orient_basis match arm: extract 3 axis vectors via tensor_components_f64 (each must be 3 components), verify approximate orthonormality (dot products near zero, magnitudes near 1, within tolerance), build rotation matrix from basis vectors, convert rotation matrix to quaternion using Shepperd's method, return via normalize_quaternion. Return Undef for non-orthonormal input.",
-      "status": "done",
-      "commit": "8128684"
+      "type": "test",
+      "description": "Write failing tests for complex_add(a, b): (1) complex_add(Complex{1,2,DIMLESS}, Complex{3,4,DIMLESS}) \u2192 Complex{4,6,DIMLESS}, (2) complex_add(Complex{a,b,LENGTH}, Complex{c,d,LENGTH}) \u2192 Complex{a+c,b+d,LENGTH}, (3) complex_add with mismatched dimensions \u2192 Undef, (4) complex_add with non-complex arg \u2192 Undef.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-16",
-      "type": "test",
-      "description": "Review fix [untested_core_behavior]: Add orient_euler compound rotation tests that exercise quat_mul with multiple non-identity operands. (1) orient_euler('xyz', \u03c0/2, \u03c0/2, 0) \u2014 two non-zero angles \u2014 verifies q_x(\u03c0/2)*q_y(\u03c0/2) composition yields (0.5, 0.5, 0.5, 0.5); (2) orient_euler('zyx', \u03c0/3, \u03c0/4, \u03c0/6) \u2014 three non-zero angles \u2014 verifies full three-way quat_mul composition against analytically computed result; (3) orient_euler('xzx', \u03c0/2, \u03c0/2, 0) \u2014 proper Euler convention with compound rotation. These tests validate the quat_mul Hamilton product and composition ordering that single-axis tests cannot catch.",
-      "status": "done",
-      "commit": "f6f42ca"
+      "type": "impl",
+      "description": "Add 'complex_add' match arm to eval_builtin using binary() helper. Match two Value::Complex, verify dimensions match, return Complex{re1+re2, im1+im2, dimension}. Return Undef for dimension mismatch or non-Complex args.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Review fix [missing_validation]: Add orient_basis left-handed (improper rotation) rejection tests. (1) x=(1,0,0), y=(0,1,0), z=(0,0,-1) \u2014 reflection through XY plane, det=-1 \u2014 must return Undef; (2) x=(1,0,0), y=(0,0,1), z=(0,1,0) \u2014 another left-handed basis, det=-1 \u2014 must return Undef; (3) verify that a valid right-handed basis near tolerance still passes (sanity check). These tests will FAIL against the current implementation because orient_basis only checks orthonormality but not handedness (determinant).",
-      "status": "done",
-      "commit": "c6a14f3"
+      "description": "Write failing tests for complex_mul(a, b) with dimensional analysis: (1) complex_mul(Complex{1,2,DIMLESS}, Complex{3,4,DIMLESS}) \u2192 Complex{-5,10,DIMLESS} via (1+2i)(3+4i)=(3-8)+(4+6)i, (2) complex_mul with dimensioned args \u2192 result dimension is D1.mul(D2), (3) complex_mul with non-complex \u2192 Undef.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Review fix [missing_validation]: Add handedness validation to orient_basis. After the dot-product orthonormality checks (line ~448), compute the scalar triple product (determinant): det = xc[0]*(yc[1]*zc[2] - yc[2]*zc[1]) + xc[1]*(yc[2]*zc[0] - yc[0]*zc[2]) + xc[2]*(yc[0]*zc[1] - yc[1]*zc[0]). Return Value::Undef if (det - 1.0).abs() > tol. This rejects left-handed orthonormal bases (det=-1), reflections, and improper rotations that pass orthonormality checks but are not in SO(3).",
-      "status": "done",
-      "commit": "359be1c"
+      "description": "Add 'complex_mul' match arm to eval_builtin using binary() helper. Match two Value::Complex, compute (ac-bd, ad+bc) for (a+bi)(c+di), combine dimensions via DimensionVector::mul(). Apply sanitize_value for overflow.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write Complex<Impedance> integration test: construct impedance dimension (kg\u00b7m\u00b2\u00b7s\u207b\u00b3\u00b7A\u207b\u00b2), create complex(Scalar{50,IMPEDANCE}, Scalar{-25,IMPEDANCE}) representing 50-25j \u03a9, verify re/im/magnitude/conjugate/phase all return correct values with impedance dimension preserved.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Type::Orientation(usize) as a tuple variant, not struct variant",
-      "rationale": "Only one parameter (spatial dimension N), matching task spec. Simpler than struct variant like Point { n, quantity } since orientations are inherently dimensionless \u2014 no quantity parameter needed."
+      "decision": "All complex operations implemented as stdlib functions, not as operator extensions in reify-expr",
+      "rationale": "Keeps scope focused on stdlib (the primary target), makes all behaviors directly testable via eval_builtin(), and avoids modifying the expression evaluator's binary operation dispatch. Operator support for Complex arithmetic in reify-expr can be added as a follow-up task."
     },
     {
-      "decision": "Value::Orientation { w, x, y, z } stores raw quaternion components as f64",
-      "rationale": "Matches existing patterns like Value::Complex { re, im, dimension }. Quaternion components are always dimensionless so no DimensionVector needed. f64 provides sufficient precision for rotation representation."
+      "decision": "Dimension must match exactly for construction \u2014 no coercion between dimensionless and dimensioned",
+      "rationale": "The task spec says 'both arguments must have the same dimension'. complex(Real(3.0), Scalar{4, LENGTH}) returns Undef because Real has DIMENSIONLESS dimension while Scalar has LENGTH. This follows the 'logic errors should be noisy' principle from feedback_silent_defaults_pattern."
     },
     {
-      "decision": "Content hash tag=16 for Orientation, Ord type_tag=15",
-      "rationale": "Next available slots after Complex (content_hash tag=15, Ord type_tag=14). Tags 0-15 are used by existing variants plus the reserved Satisfaction tag at position 10."
+      "decision": "re/im accessors return Scalar when dimensioned, Real when dimensionless",
+      "rationale": "Follows the exact pattern used by the existing magnitude() function for Tensors: if dimension == DIMENSIONLESS return Real, else return Scalar{value, dimension}. Keeps type consistency in the dimension system."
     },
     {
-      "decision": "All constructors normalize to unit quaternion unconditionally",
-      "rationale": "Unit quaternion invariant simplifies downstream rotation composition, interpolation, and conversion. Normalization is cheap (one sqrt + 4 divides) and prevents drift. Follows the 'correct by construction' pattern."
+      "decision": "phase() returns Scalar with ANGLE dimension",
+      "rationale": "Consistent with existing atan2/asin/acos/atan functions in stdlib, which all return Scalar{value, ANGLE}. This ensures phase values participate correctly in dimensional analysis."
     },
     {
-      "decision": "Return Value::Undef for invalid inputs (NaN, Inf, zero-length) rather than panicking",
-      "rationale": "Consistent with existing stdlib pattern \u2014 all functions return Undef for type mismatches and domain errors. Follows 'silent defaults should be noisy' convention (Undef propagates visibly rather than silently producing garbage)."
+      "decision": "complex_mul combines dimensions via DimensionVector::mul()",
+      "rationale": "Matches how Scalar multiplication works in eval_mul (reify-expr line 813: dimension: ad.mul(bd)). This enables physically meaningful operations like Complex<Impedance> * Complex<Current> = Complex<Voltage>."
     },
     {
-      "decision": "orient_euler supports 12 conventions (6 Tait-Bryan + 6 proper Euler) via string parameter",
-      "rationale": "Covers all standard rotation conventions used in engineering (aerospace, robotics, CAD). String parameter ('xyz', 'zyx', etc.) is self-documenting. Invalid convention returns Undef. Implemented by composing elementary quaternion rotations \u2014 no external dependency needed."
+      "decision": "NaN/Inf arguments to complex() produce Undef",
+      "rationale": "Follows the sanitize_value defense-in-depth pattern used throughout stdlib. Non-finite values are domain errors that should not silently propagate."
     },
     {
-      "decision": "orient_basis validates approximate orthonormality with tolerance",
-      "rationale": "Exact orthonormality is unrealistic with floating-point inputs. A tolerance (e.g., 1e-6) allows for minor numerical drift while rejecting clearly non-orthogonal bases. Returns Undef for bases outside tolerance to keep errors noisy."
-    },
-    {
-      "decision": "Downstream crate fixes (reify-lsp, reify-constraints) included in task scope",
-      "rationale": "Both crates have exhaustive match statements on Value that will fail to compile when Orientation is added. Fixes are trivial (one match arm each) but required for workspace-wide cargo check/test to pass."
-    },
-    {
-      "decision": "Use Shepperd's method for rotation-matrix-to-quaternion conversion in orient_basis",
-      "rationale": "Shepperd's method is numerically stable for all rotation matrices (avoids the singularity at trace=-1 that affects naive methods). Well-established algorithm used in production rotation libraries."
-    },
-    {
-      "decision": "orient_basis validates handedness via scalar triple product (determinant)",
-      "rationale": "Review fix: orthonormality alone is necessary but not sufficient for a valid rotation basis. A left-handed orthonormal basis (det=-1) passes unit-magnitude and perpendicularity checks but represents an improper rotation (reflection), not a member of SO(3). Shepperd's method silently produces a geometrically meaningless quaternion for such inputs. The determinant check (det \u2248 +1.0 within tolerance) ensures only proper rotations are accepted; improper inputs return Undef to keep errors noisy."
+      "decision": "Use function names 'complex_add' and 'complex_mul' for binary complex operations",
+      "rationale": "Avoids ambiguity with the generic add/mul operators and makes the complex-specific behavior explicit. These are stdlib-level operations called via eval_builtin, not operator overloads."
     }
   ],
   "reuse": [
     {
-      "what": "tensor_components_f64() helper",
-      "where": "crates/reify-stdlib/src/lib.rs:470",
-      "how": "Extract axis vector components in orient_axis_angle and orient_basis. Validates tensor structure, extracts f64 values, and checks dimension consistency."
+      "what": "binary() helper function",
+      "where": "crates/reify-stdlib/src/lib.rs line 606",
+      "how": "Use for complex_add and complex_mul to validate arg count (exactly 2) before applying operation"
     },
     {
-      "what": "trig_input() helper",
-      "where": "crates/reify-stdlib/src/lib.rs:415",
-      "how": "Extract angle value in radians from orient_axis_angle and orient_euler arguments. Accepts both bare Real and Angle Scalar, rejects non-angle dimensioned Scalars."
+      "what": "unary() helper function",
+      "where": "crates/reify-stdlib/src/lib.rs line 526",
+      "how": "Use for re, im, conjugate, phase to validate single arg before applying operation"
     },
     {
-      "what": "sanitize_value() pattern",
-      "where": "crates/reify-stdlib/src/lib.rs:383",
-      "how": "Model the normalize_quaternion helper after this \u2014 return None/Undef for non-finite results."
+      "what": "sanitize_value() function",
+      "where": "crates/reify-stdlib/src/lib.rs line 584",
+      "how": "Apply to complex construction result to catch NaN/Inf from arguments. Also apply to magnitude and phase results."
     },
     {
-      "what": "unary/binary/ternary helper pattern",
-      "where": "crates/reify-stdlib/src/lib.rs:369-436",
-      "how": "Follow the same arity-checking closure pattern for orient_axis_angle (binary), orient_euler (4-arg custom), orient_quaternion (4-arg custom)."
+      "what": "Value::as_f64() method",
+      "where": "crates/reify-types/src/value.rs line 83",
+      "how": "Extract f64 from Int, Real, or Scalar arguments for the complex constructor"
     },
     {
-      "what": "assert_real_approx! / assert_scalar_approx! test macros",
-      "where": "crates/reify-stdlib/src/lib.rs:515-548",
-      "how": "Create analogous assert_orientation_approx! macro for testing quaternion values with floating-point tolerance (1e-12)."
+      "what": "Value::dimension() method",
+      "where": "crates/reify-types/src/value.rs line 93",
+      "how": "Extract dimension from both constructor arguments and verify they match"
     },
     {
-      "what": "Complex variant implementation pattern",
-      "where": "crates/reify-types/src/value.rs:198-207,248-251,344-350,431-449",
-      "how": "Follow same pattern for Orientation in content_hash (NaN canonicalization on each f64 component), PartialEq (bitwise f64 comparison), Ord (compare component bits), Display (formatted output)."
+      "what": "DimensionVector::mul() method",
+      "where": "crates/reify-types/src/dimension.rs line 147",
+      "how": "Combine dimensions in complex_mul: result dimension = D1.mul(D2)"
     },
     {
-      "what": "Complex format_value arm in LSP",
-      "where": "crates/reify-lsp/src/analysis.rs:193",
-      "how": "Add Orientation arm following the same formatting convention as Complex \u2014 display quaternion components with appropriate formatting."
+      "what": "Existing magnitude handler pattern",
+      "where": "crates/reify-stdlib/src/lib.rs line 283",
+      "how": "Extend with a Complex check before the tensor_components_f64 path: match Value::Complex first, compute sqrt(re\u00b2+im\u00b2)"
     },
     {
-      "what": "Complex domain classifier arm",
-      "where": "crates/reify-constraints/src/classifier.rs:92",
-      "how": "Add Orientation to the same multi-pattern arm as Complex/Tensor/Lambda/Field \u2014 orientations don't contribute to domain classification."
+      "what": "assert_real_approx! and assert_scalar_approx! test macros",
+      "where": "crates/reify-stdlib/src/lib.rs lines 716-750",
+      "how": "Use for asserting magnitude/phase results in tests"
     },
     {
-      "what": "Existing orthonormality tolerance (tol = 1e-6) in orient_basis",
-      "where": "crates/reify-stdlib/src/lib.rs:436",
-      "how": "Reuse the same tolerance for the determinant check \u2014 (det - 1.0).abs() > tol. Consistent with existing dot-product and magnitude tolerance."
+      "what": "Orientation constructor test patterns",
+      "where": "crates/reify-stdlib/src/lib.rs lines 2244-2636",
+      "how": "Follow the same test structure: test happy path, test edge cases, test wrong arg count \u2192 Undef, test invalid input \u2192 Undef"
     }
   ],
-  "_session_id": "233-1146333e",
-  "_created_at": "2026-03-24T16:30:52.734413+00:00"
+  "_session_id": "288-4214edb0",
+  "_created_at": "2026-03-24T17:02:39.568062+00:00"
 }
