@@ -2067,6 +2067,27 @@ fn eval_method_concat_two_args() {
 // ─── task-168: generate as FunctionCall ───
 
 #[test]
+fn eval_fn_generate_undef_count() {
+    // generate(Undef, |i| i) -> Undef (FunctionCall Undef short-circuit fires before handler)
+    let i_id = ValueCellId::new("$lambda_fgen_undef.S", "i");
+    let body = CompiledExpr::value_ref(i_id.clone(), Type::Int);
+    let lambda_arg = lambda_literal(vec![("i", i_id)], body, ValueMap::new());
+
+    // Use a ValueRef to a missing cell — evaluates to Undef
+    let undef_count_id = ValueCellId::new("$missing2.S", "count");
+    let count_arg = CompiledExpr::value_ref(undef_count_id, Type::Int);
+
+    let expr = make_fn_call(
+        "generate",
+        vec![count_arg, lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "FunctionCall generate with Undef count should return Undef");
+}
+
+#[test]
 fn eval_method_generate_wrong_arity() {
     // [].generate(3) -> Undef (missing lambda arg, only 1 arg passed)
     let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
