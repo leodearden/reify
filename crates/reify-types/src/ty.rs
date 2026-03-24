@@ -192,6 +192,18 @@ mod tests {
     }
 
     #[test]
+    fn type_point_factory_methods() {
+        assert_eq!(
+            Type::point2(Type::length()),
+            Type::Point { n: 2, quantity: Box::new(Type::length()) }
+        );
+        assert_eq!(
+            Type::point3(Type::Real),
+            Type::Point { n: 3, quantity: Box::new(Type::Real) }
+        );
+    }
+
+    #[test]
     fn type_vector_display() {
         let v3_length = Type::Vector {
             n: 3,
