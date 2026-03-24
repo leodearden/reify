@@ -1991,7 +1991,7 @@ pub fn compile(
                 // span than the one recorded in seen_entity_names.
                 let is_first_def = seen_entity_names
                     .get(&structure.name)
-                    .map_or(true, |(first_span, _)| *first_span == structure.span);
+                    .is_none_or(|(first_span, _)| *first_span == structure.span);
                 if is_first_def {
                     let entity_ref = EntityDefRef::from(structure);
                     let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
@@ -2027,7 +2027,7 @@ pub fn compile(
                 // span than the one recorded in seen_entity_names.
                 let is_first_def = seen_entity_names
                     .get(&occurrence.name)
-                    .map_or(true, |(first_span, _)| *first_span == occurrence.span);
+                    .is_none_or(|(first_span, _)| *first_span == occurrence.span);
                 if is_first_def {
                     let entity_ref = EntityDefRef::from(occurrence);
                     let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
