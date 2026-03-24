@@ -37,6 +37,8 @@ pub enum Type {
     Geometry,
     /// N-dimensional point with a quantity type (e.g., Point3<Scalar[m]>).
     Point { n: usize, quantity: Box<Type> },
+    /// N-dimensional vector with a quantity type (e.g., Vector3<Scalar[m]>).
+    Vector { n: usize, quantity: Box<Type> },
 }
 
 impl Type {
@@ -254,6 +256,7 @@ impl std::fmt::Display for Type {
             Type::Field { domain, codomain } => write!(f, "Field<{}, {}>", domain, codomain),
             Type::Geometry => write!(f, "Geometry"),
             Type::Point { n, quantity } => write!(f, "Point{}<{}>", n, quantity),
+            Type::Vector { n, quantity } => write!(f, "Vector{}<{}>", n, quantity),
         }
     }
 }
