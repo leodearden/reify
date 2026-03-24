@@ -453,6 +453,35 @@ structure def S {
     );
 }
 
+// ── step-9: port_type_compatibility_refinement_ok ────────────────────
+
+#[test]
+fn port_type_compatibility_refinement_ok() {
+    let source = r#"
+trait TraitA {}
+trait TraitB : TraitA {}
+structure def S {
+    port a : out TraitA {}
+    port b : in TraitB {}
+    connect a -> b
+}
+"#;
+
+    let (_template, diagnostics) = compile_first_template(source);
+
+    // No type compatibility warning when TraitB refines TraitA
+    let type_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning
+            && (d.message.contains("incompatible port types") || d.message.contains("port type mismatch")))
+        .collect();
+    assert!(
+        type_warnings.is_empty(),
+        "unexpected type compatibility warnings: {:?}",
+        type_warnings
+    );
+}
+
 // ── step-3: frame_alignment_none_when_ports_not_located ──────────────
 
 #[test]
