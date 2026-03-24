@@ -1,6 +1,7 @@
 use reify_compiler::{CompiledModule, RequirementKind};
 use reify_syntax::ParsedModule;
 use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value};
+use reify_types::dimension::FORCE;
 
 use crate::builders::{
     range_constraint, CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder,
@@ -1056,5 +1057,43 @@ pub fn mutual_recursion_module() -> CompiledModule {
     CompiledModuleBuilder::new(ModulePath::single("mutual_recursion"))
         .template(node_a)
         .template(node_b)
+        .build()
+}
+
+/// Create a `CompiledModule` demonstrating aliased dimensional types.
+///
+/// Structure `HeatExchanger`:
+///   - `auto max_temp: Scalar[TEMPERATURE]` — a free temperature parameter
+///   - `param operating_pressure: Scalar[PRESSURE]` — pressure with default 101325 Pa
+///   - `param flow_rate: Scalar[VELOCITY]` — flow rate with default 1 m/s
+///
+/// Used to demonstrate TypeAliasMap patterns and temperature/pressure dimensional types.
+pub fn type_alias_module() -> CompiledModule {
+    let e = "HeatExchanger";
+
+    let pressure_dim = FORCE.div(&DimensionVector::AREA);
+    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+    let temp_type = Type::Scalar { dimension: DimensionVector::TEMPERATURE };
+    let pressure_type = Type::Scalar { dimension: pressure_dim };
+    let velocity_type = Type::Scalar { dimension: velocity_dim };
+
+    // Default values
+    let pressure_default = crate::builders::literal(Value::Scalar {
+        si_value: 101_325.0, // 1 atm in Pa
+        dimension: pressure_dim,
+    });
+    let flow_default = crate::builders::literal(Value::Scalar {
+        si_value: 1.0, // 1 m/s
+        dimension: velocity_dim,
+    });
+
+    let template = TopologyTemplateBuilder::new(e)
+        .auto_param(e, "max_temp", temp_type)
+        .param(e, "operating_pressure", pressure_type, Some(pressure_default))
+        .param(e, "flow_rate", velocity_type, Some(flow_default))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("heat_exchanger"))
+        .template(template)
         .build()
 }
