@@ -63,6 +63,16 @@ impl Type {
         }
     }
 
+    /// Shorthand for a 2D vector with a given quantity type.
+    pub fn vec2(quantity: Type) -> Self {
+        Type::Vector { n: 2, quantity: Box::new(quantity) }
+    }
+
+    /// Shorthand for a 3D vector with a given quantity type.
+    pub fn vec3(quantity: Type) -> Self {
+        Type::Vector { n: 3, quantity: Box::new(quantity) }
+    }
+
     /// Shorthand for a 2D point with a given quantity type.
     pub fn point2(quantity: Type) -> Self {
         Type::Point { n: 2, quantity: Box::new(quantity) }
