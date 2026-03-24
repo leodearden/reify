@@ -1042,40 +1042,35 @@ fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
     }
 }
 
+/// Recursively negate a value.
+///
+/// Handles scalars (Int, Real, Scalar) and arbitrarily nested Tensors (rank-1
+/// vectors and rank-2 matrices represented as Tensor-of-Tensors).  Returns
+/// `Value::Undef` for any variant that cannot be negated.
+fn neg_value(v: Value) -> Value {
+    match v {
+        Value::Int(i) => Value::Int(-i),
+        Value::Real(r) => Value::Real(-r),
+        Value::Scalar { si_value, dimension } => Value::Scalar { si_value: -si_value, dimension },
+        Value::Tensor(components) => {
+            let results: Vec<Value> = components.into_iter().map(neg_value).collect();
+            if results.iter().any(|x| x.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(results)
+            }
+        }
+        _ => Value::Undef,
+    }
+}
+
 fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
     let v = eval_expr(operand, ctx);
     if v.is_undef() {
         return Value::Undef;
     }
     match op {
-        UnOp::Neg => match v {
-            Value::Int(i) => Value::Int(-i),
-            Value::Real(r) => Value::Real(-r),
-            Value::Scalar { si_value, dimension } => Value::Scalar {
-                si_value: -si_value,
-                dimension,
-            },
-            // Negate all components of a Tensor
-            Value::Tensor(components) => {
-                let results: Vec<Value> = components
-                    .into_iter()
-                    .map(|c| match c {
-                        Value::Int(i) => Value::Int(-i),
-                        Value::Real(r) => Value::Real(-r),
-                        Value::Scalar { si_value, dimension } => {
-                            Value::Scalar { si_value: -si_value, dimension }
-                        }
-                        _ => Value::Undef,
-                    })
-                    .collect();
-                if results.iter().any(|x| x.is_undef()) {
-                    Value::Undef
-                } else {
-                    Value::Tensor(results)
-                }
-            }
-            _ => Value::Undef,
-        },
+        UnOp::Neg => neg_value(v),
         UnOp::Not => match v {
             Value::Bool(b) => Value::Bool(!b),
             _ => Value::Undef,
