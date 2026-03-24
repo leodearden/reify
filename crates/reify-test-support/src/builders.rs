@@ -1186,3 +1186,58 @@ mod purpose_builder_tests {
         assert_eq!(purpose.resolved_queries[0].resolved_ids[0], vcid);
     }
 }
+
+// --- Tests for CompiledTraitBuilder (step-17) ---
+
+#[cfg(test)]
+mod trait_builder_tests {
+    use super::*;
+    use reify_compiler::{CompiledTrait, RequirementKind};
+
+    #[test]
+    fn trait_builder_require_param_produces_required_member() {
+        let t: CompiledTrait = CompiledTraitBuilder::new("Rigid")
+            .require_param("thickness", Type::length())
+            .build();
+        assert_eq!(t.name, "Rigid");
+        assert!(!t.is_pub);
+        assert_eq!(t.required_members.len(), 1);
+        assert_eq!(t.required_members[0].name, "thickness");
+        if let RequirementKind::Param(ty) = &t.required_members[0].kind {
+            assert_eq!(*ty, Type::length());
+        } else {
+            panic!("expected RequirementKind::Param");
+        }
+        assert_ne!(t.content_hash, ContentHash(0));
+    }
+
+    #[test]
+    fn trait_builder_public() {
+        let t: CompiledTrait = CompiledTraitBuilder::new("Rigid")
+            .public()
+            .build();
+        assert!(t.is_pub);
+    }
+
+    #[test]
+    fn trait_builder_refinement_and_multiple_requirements() {
+        let t: CompiledTrait = CompiledTraitBuilder::new("RigidMount")
+            .refinement("Rigid")
+            .require_let("vol", Type::Real)
+            .require_sub("mount", "MountPoint")
+            .build();
+        assert_eq!(t.refinements.len(), 1);
+        assert_eq!(t.refinements[0], "Rigid");
+        assert_eq!(t.required_members.len(), 2);
+        assert!(matches!(&t.required_members[0].kind, RequirementKind::Let(_)));
+        assert!(matches!(&t.required_members[1].kind, RequirementKind::Sub(s) if s == "MountPoint"));
+        assert_ne!(t.content_hash, ContentHash(0));
+    }
+
+    #[test]
+    fn trait_builder_defaults_initially_empty() {
+        let t: CompiledTrait = CompiledTraitBuilder::new("Bounded").build();
+        assert_eq!(t.defaults.len(), 0);
+        assert_eq!(t.type_params.len(), 0);
+    }
+}

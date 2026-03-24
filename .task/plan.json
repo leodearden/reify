@@ -124,7 +124,7 @@
       "type": "impl",
       "description": "Implement CompiledPurposeBuilder struct{name, is_pub, params: Vec<CompiledPurposeParam>, constraints: Vec<CompiledConstraint>, objective: Option<OptimizationObjective>, resolved_queries: Vec<ResolvedSchemaQuery>}. Methods: new(name)->Self, public()->Self, param(name,entity_kind)->Self, constraint(entity,index,label,expr)->Self, objective(obj)->Self, schema_query(param_name,query_kind,resolved_ids)->Self, build()->CompiledPurpose with content_hash from name+constraints+queries.",
       "status": "done",
-      "commit": "pending"
+      "commit": "7c0cf55"
     },
     {
       "id": "step-17",
