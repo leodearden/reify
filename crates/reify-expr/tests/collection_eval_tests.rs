@@ -3,7 +3,24 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use reify_expr::{eval_expr, EvalContext};
-use reify_types::{BinOp, CompiledExpr, Type, Value, ValueCellId, ValueMap};
+use reify_types::{BinOp, CompiledExpr, CompiledExprKind, ContentHash, ResolvedFunction, Type, Value, ValueCellId, ValueMap};
+
+// ─── Helper: construct a FunctionCall CompiledExpr ───
+
+fn make_fn_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExpr {
+    let hash = ContentHash::of(name.as_bytes());
+    CompiledExpr {
+        kind: CompiledExprKind::FunctionCall {
+            function: ResolvedFunction {
+                name: name.to_string(),
+                qualified_name: format!("std::{}", name),
+            },
+            args,
+        },
+        result_type,
+        content_hash: hash,
+    }
+}
 
 // ─── step-1: List literal evaluation ───
 
@@ -2045,4 +2062,31 @@ fn eval_method_concat_two_args() {
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert!(result.is_undef(), "concat with 2 args should be Undef");
+}
+
+// ─── task-168: generate as FunctionCall ───
+
+#[test]
+fn eval_fn_generate_basic() {
+    // generate(3, |i| i * 2) -> [0, 2, 4]
+    let i_id = ValueCellId::new("$lambda_fgen.S", "i");
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(i_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Int,
+    );
+    let lambda_arg = lambda_literal(vec![("i", i_id)], body, ValueMap::new());
+    let count_arg = CompiledExpr::literal(Value::Int(3), Type::Int);
+    let expr = make_fn_call(
+        "generate",
+        vec![count_arg, lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(0), Value::Int(2), Value::Int(4)])
+    );
 }
