@@ -141,7 +141,8 @@ export class SidecarSession {
     // Track content lengths for delta extraction from partial messages
     let lastTextLen = 0;
     let lastThinkingLen = 0;
-    const seenToolIds = new Set<string>();
+    // Maps tool_use_id → tool_name so tool_result blocks can emit the correct name
+    const toolNameById = new Map<string, string>();
 
     // Parse streaming JSON events from stdout
     try {
@@ -159,8 +160,8 @@ export class SidecarSession {
                 const delta = block.thinking.slice(lastThinkingLen);
                 lastThinkingLen = block.thinking.length;
                 this.onOutput({ type: 'thinking_delta', id, content: delta });
-              } else if (block.type === 'tool_use' && block.id && !seenToolIds.has(block.id)) {
-                seenToolIds.add(block.id);
+              } else if (block.type === 'tool_use' && block.id && !toolNameById.has(block.id)) {
+                toolNameById.set(block.id, block.name);
                 this.onOutput({
                   type: 'tool_call',
                   id,
@@ -171,7 +172,7 @@ export class SidecarSession {
                 this.onOutput({
                   type: 'tool_result',
                   id,
-                  tool_name: block.tool_use_id ?? '',
+                  tool_name: toolNameById.get(block.tool_use_id) ?? '',
                   result: block.content,
                 });
               }
