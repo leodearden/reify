@@ -59,107 +59,175 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             }
         }),
         "pow" => binary_f64(args, |x, y| Value::Real(x.powf(y))),
+        "mod" => binary(args, |a, b| match (a, b) {
+            (Value::Int(x), Value::Int(y)) => {
+                if *y == 0 || (*x == i64::MIN && *y == -1) {
+                    Value::Undef
+                } else {
+                    Value::Int(x % y)
+                }
+            }
+            _ => Value::Undef,
+        }),
 
         // --- Three-arg numeric functions ---
         "clamp" => ternary(args, |x, lo, hi| match (x, lo, hi) {
-            (Value::Int(x), Value::Int(lo), Value::Int(hi)) => {
-                if lo > hi {
-                    return Value::Undef;
+            (Value::Int(xv), Value::Int(lov), Value::Int(hiv)) => {
+                if lov > hiv {
+                    Value::Undef
+                } else {
+                    Value::Int((*xv).clamp(*lov, *hiv))
                 }
-                Value::Int(*x.clamp(lo, hi))
             }
-            (Value::Real(x), Value::Real(lo), Value::Real(hi)) => {
-                if lo.is_nan() || hi.is_nan() || lo > hi {
-                    return Value::Undef;
+            (Value::Real(xv), Value::Real(lov), Value::Real(hiv)) => {
+                if xv.is_nan() || !valid_f64_range(*lov, *hiv) {
+                    Value::Undef
+                } else {
+                    sanitize_value(Value::Real(xv.clamp(*lov, *hiv)))
                 }
-                sanitize_value(Value::Real(x.clamp(*lo, *hi)))
             }
             (
-                Value::Scalar { si_value: x, dimension: d1 },
-                Value::Scalar { si_value: lo, dimension: d2 },
-                Value::Scalar { si_value: hi, dimension: d3 },
-            ) if d1 == d2 && d2 == d3 => {
-                if lo.is_nan() || hi.is_nan() || lo > hi {
+                Value::Scalar { si_value: xv, dimension: dx },
+                Value::Scalar { si_value: lov, dimension: dlo },
+                Value::Scalar { si_value: hiv, dimension: dhi },
+            ) => {
+                if dx != dlo || dx != dhi {
                     return Value::Undef;
                 }
-                sanitize_value(Value::Scalar { si_value: x.clamp(*lo, *hi), dimension: *d1 })
+                if xv.is_nan() || !valid_f64_range(*lov, *hiv) {
+                    return Value::Undef;
+                }
+                sanitize_value(Value::Scalar {
+                    si_value: xv.clamp(*lov, *hiv),
+                    dimension: *dx,
+                })
             }
             _ => {
-                // Fallback: require all three to have the same dimension
-                let dx = x.dimension();
-                let dlo = lo.dimension();
-                let dhi = hi.dimension();
-                if dx != dlo || dlo != dhi {
+                // Fallback: try to extract f64 from all three args.
+                // If all three were Scalar with matching dimension, the explicit Scalar arm above
+                // handles them. In this fallback, at least one arg is non-Scalar. Non-Scalar
+                // Value::dimension() always returns DIMENSIONLESS, so any non-DIMENSIONLESS
+                // dimension means a type mismatch that would silently drop the dimension.
+                // Return Undef to keep logic errors noisy.
+                if x.dimension() != DimensionVector::DIMENSIONLESS
+                    || lo.dimension() != DimensionVector::DIMENSIONLESS
+                    || hi.dimension() != DimensionVector::DIMENSIONLESS
+                {
                     return Value::Undef;
                 }
-                match (x.as_f64(), lo.as_f64(), hi.as_f64()) {
-                    (Some(xv), Some(lov), Some(hiv)) => {
-                        if lov.is_nan() || hiv.is_nan() || lov > hiv {
-                            return Value::Undef;
-                        }
-                        sanitize_value(Value::Real(xv.clamp(lov, hiv)))
-                    }
-                    _ => Value::Undef,
+                let (xv, lov, hiv) = match (x.as_f64(), lo.as_f64(), hi.as_f64()) {
+                    (Some(a), Some(b), Some(c)) => (a, b, c),
+                    _ => return Value::Undef,
+                };
+                if xv.is_nan() || !valid_f64_range(lov, hiv) {
+                    return Value::Undef;
                 }
+                sanitize_value(Value::Real(xv.clamp(lov, hiv)))
             }
         }),
 
         "lerp" => ternary(args, |a, b, t| {
-            // t must be dimensionless (pure scalar or Int/Real)
-            if t.dimension() != DimensionVector::DIMENSIONLESS {
+            // t must be dimensionless (Real or Int; reject dimensioned Scalar)
+            if let Value::Scalar { dimension, .. } = t
+                && *dimension != DimensionVector::DIMENSIONLESS
+            {
                 return Value::Undef;
             }
-            let Some(tv) = t.as_f64() else {
-                return Value::Undef;
+            let tv = match t.as_f64() {
+                Some(v) => v,
+                None => return Value::Undef,
             };
+            if tv.is_nan() {
+                return Value::Undef;
+            }
             match (a, b) {
-                (Value::Real(a), Value::Real(b)) => {
-                    sanitize_value(Value::Real(a + tv * (b - a)))
+                (Value::Real(av), Value::Real(bv)) => {
+                    sanitize_value(Value::Real(lerp_f64(*av, *bv, tv)))
                 }
                 (
                     Value::Scalar { si_value: av, dimension: da },
                     Value::Scalar { si_value: bv, dimension: db },
-                ) if da == db => sanitize_value(Value::Scalar {
-                    si_value: av + tv * (bv - av),
-                    dimension: *da,
-                }),
-                _ => {
-                    // Fallback: require a and b to have the same dimension
-                    if a.dimension() != b.dimension() {
+                ) => {
+                    if da != db {
                         return Value::Undef;
                     }
-                    match (a.as_f64(), b.as_f64()) {
-                        (Some(av), Some(bv)) => sanitize_value(Value::Real(av + tv * (bv - av))),
-                        _ => Value::Undef,
+                    sanitize_value(Value::Scalar {
+                        si_value: lerp_f64(*av, *bv, tv),
+                        dimension: *da,
+                    })
+                }
+                // Int fast path: documents the explicit Int->Real coercion
+                (Value::Int(av), Value::Int(bv)) => {
+                    sanitize_value(Value::Real(lerp_f64(*av as f64, *bv as f64, tv)))
+                }
+                _ => {
+                    // Fallback: extract f64 from a and b.
+                    // If both a and b were Scalar with matching dimension, the explicit Scalar
+                    // arm above handles them. In this fallback, at least one is non-Scalar.
+                    // Non-Scalar dimension() always returns DIMENSIONLESS, so any
+                    // non-DIMENSIONLESS dimension would be silently dropped — return Undef
+                    // to keep logic errors noisy (per feedback_silent_defaults_pattern).
+                    if a.dimension() != DimensionVector::DIMENSIONLESS
+                        || b.dimension() != DimensionVector::DIMENSIONLESS
+                    {
+                        return Value::Undef;
                     }
+                    let av = match a.as_f64() {
+                        Some(v) => v,
+                        None => return Value::Undef,
+                    };
+                    let bv = match b.as_f64() {
+                        Some(v) => v,
+                        None => return Value::Undef,
+                    };
+                    sanitize_value(Value::Real(lerp_f64(av, bv, tv)))
                 }
             }
-        }),
-
-        // --- Integer functions ---
-        "mod" => binary(args, |x, y| match (x, y) {
-            (Value::Int(x), Value::Int(y)) if *y != 0 && !(*x == i64::MIN && *y == -1) => Value::Int(x % y),
-            _ => Value::Undef,
         }),
 
         "remap" => {
-            // remap(x, from_lo, from_hi, to_lo, to_hi)
             if args.len() != 5 {
                 return Value::Undef;
             }
-            match (
-                args[0].as_f64(),
-                args[1].as_f64(),
-                args[2].as_f64(),
-                args[3].as_f64(),
-                args[4].as_f64(),
-            ) {
-                (Some(x), Some(from_lo), Some(from_hi), Some(to_lo), Some(to_hi)) => {
-                    let result = to_lo + (x - from_lo) * (to_hi - to_lo) / (from_hi - from_lo);
-                    sanitize_value(Value::Real(result))
+            let (x, from_lo, from_hi, to_lo, to_hi) =
+                (&args[0], &args[1], &args[2], &args[3], &args[4]);
+
+            // Dimension-aware path: activate when any arg is a Scalar
+            let any_scalar = args.iter().any(|a| matches!(a, Value::Scalar { .. }));
+            if any_scalar {
+                // x/from_lo/from_hi must share a dimension (input space)
+                let from_dim = from_lo.dimension();
+                if from_hi.dimension() != from_dim || x.dimension() != from_dim {
+                    return Value::Undef;
                 }
-                _ => Value::Undef,
+                // to_lo/to_hi must share a dimension (output space)
+                let to_dim = to_lo.dimension();
+                if to_hi.dimension() != to_dim {
+                    return Value::Undef;
+                }
+                // Extract si_values via as_f64()
+                let (xv, flov, fhiv, tlov, thiv) = match (
+                    x.as_f64(), from_lo.as_f64(), from_hi.as_f64(),
+                    to_lo.as_f64(), to_hi.as_f64(),
+                ) {
+                    (Some(a), Some(b), Some(c), Some(d), Some(e)) => (a, b, c, d, e),
+                    _ => return Value::Undef,
+                };
+                if flov == fhiv {
+                    return Value::Undef; // early-exit: division by zero
+                }
+                let result = tlov + (xv - flov) * (thiv - tlov) / (fhiv - flov);
+                return sanitize_value(Value::Scalar { si_value: result, dimension: to_dim });
             }
+
+            // Non-Scalar path: use quinary_f64 helper
+            quinary_f64(args, |x, from_lo, from_hi, to_lo, to_hi| {
+                if from_lo == from_hi {
+                    return Value::Undef; // early-exit: division by zero
+                }
+                let result = to_lo + (x - from_lo) * (to_hi - to_lo) / (from_hi - from_lo);
+                Value::Real(result)
+            })
         }
 
         // --- Trig functions: accept Angle Scalar or bare Real (radians) ---
@@ -293,10 +361,79 @@ fn binary_f64(args: &[Value], f: impl FnOnce(f64, f64) -> Value) -> Value {
     }
 }
 
+/// Returns true iff `lo` and `hi` form a valid (non-NaN, non-inverted) range.
+///
+/// Used by clamp Real/Scalar/fallback arms instead of inline `lo.is_nan() || hi.is_nan() || lo > hi`.
+fn valid_f64_range(lo: f64, hi: f64) -> bool {
+    !lo.is_nan() && !hi.is_nan() && lo <= hi
+}
+
+/// Linear interpolation: `a + t * (b - a)`.
+fn lerp_f64(a: f64, b: f64, t: f64) -> f64 {
+    a + t * (b - a)
+}
+
+/// Apply a function to five f64 arguments (extracted via `as_f64()`).
+///
+/// Returns `Undef` on wrong argument count or extraction failure.
+/// Applies `sanitize_value` to the result.
+fn quinary_f64(args: &[Value], f: impl FnOnce(f64, f64, f64, f64, f64) -> Value) -> Value {
+    if args.len() != 5 {
+        return Value::Undef;
+    }
+    match (
+        args[0].as_f64(),
+        args[1].as_f64(),
+        args[2].as_f64(),
+        args[3].as_f64(),
+        args[4].as_f64(),
+    ) {
+        (Some(a), Some(b), Some(c), Some(d), Some(e)) => sanitize_value(f(a, b, c, d, e)),
+        _ => Value::Undef,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use reify_types::DimensionVector;
+
+    /// Assert that an expression evaluates to `Value::Real(v)` where `|v - expected| < 1e-12`.
+    macro_rules! assert_real_approx {
+        ($expr:expr, $expected:expr) => {
+            match $expr {
+                Value::Real(v) => assert!(
+                    (v - $expected).abs() < 1e-12,
+                    "expected Real({}) got Real({})",
+                    $expected,
+                    v
+                ),
+                other => panic!("expected Real({}), got {:?}", $expected, other),
+            }
+        };
+    }
+
+    /// Assert that an expression evaluates to `Value::Scalar { si_value, dimension }` where
+    /// `|si_value - expected_si| < 1e-12` and `dimension == expected_dim`.
+    macro_rules! assert_scalar_approx {
+        ($expr:expr, $expected_si:expr, $expected_dim:expr) => {
+            match $expr {
+                Value::Scalar { si_value, dimension } => {
+                    assert!(
+                        (si_value - $expected_si).abs() < 1e-12,
+                        "expected si_value={}, got {}",
+                        $expected_si,
+                        si_value
+                    );
+                    assert_eq!(dimension, $expected_dim);
+                }
+                other => panic!(
+                    "expected Scalar{{si={}, dim={:?}}}, got {:?}",
+                    $expected_si, $expected_dim, other
+                ),
+            }
+        };
+    }
 
     #[test]
     fn abs_real_negative() {
@@ -805,425 +942,6 @@ mod tests {
         assert!(result.is_undef(), "curl stub should return Undef, got {:?}", result);
     }
 
-    // --- clamp tests (step-1) ---
-
-    #[test]
-    fn clamp_real_within_range() {
-        let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0)]);
-        match result {
-            Value::Real(v) => assert!((v - 5.0).abs() < 1e-12),
-            other => panic!("expected Real(5.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn clamp_real_below_lo() {
-        let result = eval_builtin("clamp", &[Value::Real(-1.0), Value::Real(0.0), Value::Real(10.0)]);
-        match result {
-            Value::Real(v) => assert!((v - 0.0).abs() < 1e-12),
-            other => panic!("expected Real(0.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn clamp_real_above_hi() {
-        let result = eval_builtin("clamp", &[Value::Real(15.0), Value::Real(0.0), Value::Real(10.0)]);
-        match result {
-            Value::Real(v) => assert!((v - 10.0).abs() < 1e-12),
-            other => panic!("expected Real(10.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn clamp_at_lo_boundary() {
-        let result = eval_builtin("clamp", &[Value::Real(0.0), Value::Real(0.0), Value::Real(10.0)]);
-        match result {
-            Value::Real(v) => assert!((v - 0.0).abs() < 1e-12),
-            other => panic!("expected Real(0.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn clamp_at_hi_boundary() {
-        let result = eval_builtin("clamp", &[Value::Real(10.0), Value::Real(0.0), Value::Real(10.0)]);
-        match result {
-            Value::Real(v) => assert!((v - 10.0).abs() < 1e-12),
-            other => panic!("expected Real(10.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn clamp_int_preserves_type() {
-        let result = eval_builtin("clamp", &[Value::Int(3), Value::Int(1), Value::Int(7)]);
-        match result {
-            Value::Int(3) => {}
-            other => panic!("expected Int(3), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn clamp_scalar_preserves_dimension() {
-        // 5mm, 0mm, 10mm in SI (m): 0.005, 0.0, 0.01
-        let result = eval_builtin(
-            "clamp",
-            &[
-                Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.0,   dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.01,  dimension: DimensionVector::LENGTH },
-            ],
-        );
-        match result {
-            Value::Scalar { si_value, dimension } => {
-                assert!((si_value - 0.005).abs() < 1e-12);
-                assert_eq!(dimension, DimensionVector::LENGTH);
-            }
-            other => panic!("expected Scalar{{LENGTH}}, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn clamp_dimension_mismatch_returns_undef() {
-        // x in LENGTH, bounds in TIME — should return Undef
-        let result = eval_builtin(
-            "clamp",
-            &[
-                Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.0,   dimension: DimensionVector::TIME },
-                Value::Scalar { si_value: 10.0,  dimension: DimensionVector::TIME },
-            ],
-        );
-        assert!(result.is_undef(), "clamp with dimension mismatch should be Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn clamp_nan_returns_undef() {
-        let result = eval_builtin(
-            "clamp",
-            &[Value::Real(f64::NAN), Value::Real(0.0), Value::Real(10.0)],
-        );
-        assert!(result.is_undef(), "clamp(NaN,...) should be Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn clamp_wrong_arg_count_returns_undef() {
-        let result = eval_builtin("clamp", &[Value::Real(5.0)]);
-        assert!(result.is_undef(), "clamp with wrong arg count should be Undef, got {:?}", result);
-    }
-
-    // --- clamp edge-case tests (step-9): inverted range and NaN bounds ---
-
-    #[test]
-    fn clamp_inverted_range_real_returns_undef() {
-        // lo > hi: f64::clamp panics with assert!(min <= max) — guard should return Undef
-        let result = eval_builtin(
-            "clamp",
-            &[Value::Real(5.0), Value::Real(10.0), Value::Real(0.0)],
-        );
-        assert!(result.is_undef(), "clamp with inverted Real range should be Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn clamp_inverted_range_int_returns_undef() {
-        // lo > hi: i64::clamp has debug_assert — guard should return Undef in all build modes
-        let result = eval_builtin(
-            "clamp",
-            &[Value::Int(5), Value::Int(10), Value::Int(0)],
-        );
-        assert!(result.is_undef(), "clamp with inverted Int range should be Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn clamp_inverted_range_scalar_returns_undef() {
-        // 5mm lo=10mm hi=0mm (inverted): guard should return Undef
-        let result = eval_builtin(
-            "clamp",
-            &[
-                Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.010, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.000, dimension: DimensionVector::LENGTH },
-            ],
-        );
-        assert!(result.is_undef(), "clamp with inverted Scalar range should be Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn clamp_nan_lo_returns_undef() {
-        // NaN lo bound: f64::clamp panics because NaN <= x is false — guard should return Undef
-        let result = eval_builtin(
-            "clamp",
-            &[Value::Real(5.0), Value::Real(f64::NAN), Value::Real(10.0)],
-        );
-        assert!(result.is_undef(), "clamp(5.0, NaN, 10.0) should be Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn clamp_nan_hi_returns_undef() {
-        // NaN hi bound: f64::clamp panics because NaN <= x is false — guard should return Undef
-        let result = eval_builtin(
-            "clamp",
-            &[Value::Real(5.0), Value::Real(0.0), Value::Real(f64::NAN)],
-        );
-        assert!(result.is_undef(), "clamp(5.0, 0.0, NaN) should be Undef, got {:?}", result);
-    }
-
-    // --- mod tests (step-7) ---
-
-    #[test]
-    fn mod_basic() {
-        let result = eval_builtin("mod", &[Value::Int(7), Value::Int(3)]);
-        match result {
-            Value::Int(1) => {}
-            other => panic!("expected Int(1), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn mod_exact_division() {
-        let result = eval_builtin("mod", &[Value::Int(10), Value::Int(5)]);
-        match result {
-            Value::Int(0) => {}
-            other => panic!("expected Int(0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn mod_negative_dividend() {
-        // Rust remainder semantics: -7 % 3 == -1 (sign of dividend)
-        let result = eval_builtin("mod", &[Value::Int(-7), Value::Int(3)]);
-        match result {
-            Value::Int(-1) => {}
-            other => panic!("expected Int(-1), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn mod_negative_divisor() {
-        // 7 % -3 == 1 in Rust (sign of dividend)
-        let result = eval_builtin("mod", &[Value::Int(7), Value::Int(-3)]);
-        match result {
-            Value::Int(1) => {}
-            other => panic!("expected Int(1), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn mod_by_zero_returns_undef() {
-        let result = eval_builtin("mod", &[Value::Int(7), Value::Int(0)]);
-        assert!(result.is_undef(), "mod(7,0) should be Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn mod_non_int_returns_undef() {
-        // mod is strictly Int — Real args return Undef
-        let result = eval_builtin("mod", &[Value::Real(7.0), Value::Real(3.0)]);
-        assert!(result.is_undef(), "mod(7.0, 3.0) should be Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn mod_wrong_arg_count_returns_undef() {
-        let result = eval_builtin("mod", &[Value::Int(7)]);
-        assert!(result.is_undef(), "mod with wrong arg count should be Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn mod_i64_min_neg1_returns_undef() {
-        // i64::MIN % -1 overflows (panics in debug builds) — must return Undef
-        let result = eval_builtin("mod", &[Value::Int(i64::MIN), Value::Int(-1)]);
-        assert!(result.is_undef(), "mod(i64::MIN, -1) should be Undef, got {:?}", result);
-    }
-
-    // --- remap tests (step-5) ---
-
-    #[test]
-    fn remap_midpoint() {
-        // remap(5, 0→10, 0→100) == 50
-        let result = eval_builtin(
-            "remap",
-            &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)],
-        );
-        match result {
-            Value::Real(v) => assert!((v - 50.0).abs() < 1e-12),
-            other => panic!("expected Real(50.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn remap_at_from_lo() {
-        let result = eval_builtin(
-            "remap",
-            &[Value::Real(0.0), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)],
-        );
-        match result {
-            Value::Real(v) => assert!((v - 0.0).abs() < 1e-12),
-            other => panic!("expected Real(0.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn remap_at_from_hi() {
-        let result = eval_builtin(
-            "remap",
-            &[Value::Real(10.0), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)],
-        );
-        match result {
-            Value::Real(v) => assert!((v - 100.0).abs() < 1e-12),
-            other => panic!("expected Real(100.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn remap_extrapolation() {
-        // x=15 beyond [0,10] → 150 (extrapolation allowed)
-        let result = eval_builtin(
-            "remap",
-            &[Value::Real(15.0), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)],
-        );
-        match result {
-            Value::Real(v) => assert!((v - 150.0).abs() < 1e-12),
-            other => panic!("expected Real(150.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn remap_inverse() {
-        // remap(50, 0→100, 0→10) == 5
-        let result = eval_builtin(
-            "remap",
-            &[Value::Real(50.0), Value::Real(0.0), Value::Real(100.0), Value::Real(0.0), Value::Real(10.0)],
-        );
-        match result {
-            Value::Real(v) => assert!((v - 5.0).abs() < 1e-12),
-            other => panic!("expected Real(5.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn remap_division_by_zero_returns_undef() {
-        // from_lo == from_hi → division by zero
-        let result = eval_builtin(
-            "remap",
-            &[Value::Real(5.0), Value::Real(5.0), Value::Real(5.0), Value::Real(0.0), Value::Real(100.0)],
-        );
-        assert!(result.is_undef(), "remap with from_lo==from_hi should be Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn remap_nan_returns_undef() {
-        let result = eval_builtin(
-            "remap",
-            &[Value::Real(f64::NAN), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)],
-        );
-        assert!(result.is_undef(), "remap(NaN,...) should be Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn remap_wrong_arg_count_returns_undef() {
-        let result = eval_builtin("remap", &[Value::Real(5.0), Value::Real(0.0)]);
-        assert!(result.is_undef(), "remap with wrong arg count should be Undef, got {:?}", result);
-    }
-
-    // --- lerp tests (step-3) ---
-
-    #[test]
-    fn lerp_midpoint() {
-        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(0.5)]);
-        match result {
-            Value::Real(v) => assert!((v - 5.0).abs() < 1e-12),
-            other => panic!("expected Real(5.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn lerp_t_zero() {
-        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(0.0)]);
-        match result {
-            Value::Real(v) => assert!((v - 0.0).abs() < 1e-12),
-            other => panic!("expected Real(0.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn lerp_t_one() {
-        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(1.0)]);
-        match result {
-            Value::Real(v) => assert!((v - 10.0).abs() < 1e-12),
-            other => panic!("expected Real(10.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn lerp_negative_t_extrapolation() {
-        // lerp with t=-0.5 extrapolates below a
-        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(-0.5)]);
-        match result {
-            Value::Real(v) => assert!((v - (-5.0)).abs() < 1e-12),
-            other => panic!("expected Real(-5.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn lerp_scalar_preserves_dimension() {
-        // lerp(2mm, 8mm, 0.5) → 5mm  (SI: 0.002, 0.008, 0.005)
-        let result = eval_builtin(
-            "lerp",
-            &[
-                Value::Scalar { si_value: 0.002, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.008, dimension: DimensionVector::LENGTH },
-                Value::Real(0.5),
-            ],
-        );
-        match result {
-            Value::Scalar { si_value, dimension } => {
-                assert!((si_value - 0.005).abs() < 1e-12);
-                assert_eq!(dimension, DimensionVector::LENGTH);
-            }
-            other => panic!("expected Scalar{{LENGTH}}, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn lerp_dimension_mismatch_a_b_returns_undef() {
-        // a=2mm, b=8s, t=0.5 — mismatched dimensions
-        let result = eval_builtin(
-            "lerp",
-            &[
-                Value::Scalar { si_value: 0.002, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 8.0,   dimension: DimensionVector::TIME },
-                Value::Real(0.5),
-            ],
-        );
-        assert!(result.is_undef(), "lerp with mismatched a/b dimensions should be Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn lerp_t_dimensioned_returns_undef() {
-        // t must be dimensionless; lerp(0.0, 10.0, 5mm) is semantically wrong
-        let result = eval_builtin(
-            "lerp",
-            &[
-                Value::Real(0.0),
-                Value::Real(10.0),
-                Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
-            ],
-        );
-        assert!(result.is_undef(), "lerp with dimensioned t should be Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn lerp_nan_returns_undef() {
-        let result = eval_builtin(
-            "lerp",
-            &[Value::Real(0.0), Value::Real(10.0), Value::Real(f64::NAN)],
-        );
-        assert!(result.is_undef(), "lerp with NaN t should be Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn lerp_wrong_arg_count_returns_undef() {
-        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0)]);
-        assert!(result.is_undef(), "lerp with wrong arg count should be Undef, got {:?}", result);
-    }
-
     #[test]
     fn sample_in_stdlib_returns_undef() {
         // sample() in stdlib returns Undef because lambda application
@@ -1236,5 +954,621 @@ mod tests {
         };
         let result = eval_builtin("sample", &[field, Value::Int(42)]);
         assert!(result.is_undef(), "sample in stdlib should return Undef (handled in eval_expr), got {:?}", result);
+    }
+
+    // --- mod builtin tests (step-1) ---
+
+    #[test]
+    fn mod_basic() {
+        let result = eval_builtin("mod", &[Value::Int(7), Value::Int(3)]);
+        match result {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mod_exact_division() {
+        let result = eval_builtin("mod", &[Value::Int(6), Value::Int(3)]);
+        match result {
+            Value::Int(0) => {}
+            other => panic!("expected Int(0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mod_negative_dividend() {
+        // Rust's % truncates toward zero: -7 % 3 == -1
+        let result = eval_builtin("mod", &[Value::Int(-7), Value::Int(3)]);
+        match result {
+            Value::Int(-1) => {}
+            other => panic!("expected Int(-1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mod_negative_divisor() {
+        // -7 % -3 == -1 (truncation toward zero)
+        let result = eval_builtin("mod", &[Value::Int(-7), Value::Int(-3)]);
+        match result {
+            Value::Int(-1) => {}
+            other => panic!("expected Int(-1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mod_by_zero_returns_undef() {
+        let result = eval_builtin("mod", &[Value::Int(7), Value::Int(0)]);
+        assert!(result.is_undef(), "mod by zero should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn mod_non_int_returns_undef() {
+        let result = eval_builtin("mod", &[Value::Real(3.5), Value::Real(2.0)]);
+        assert!(result.is_undef(), "mod on Real should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn mod_wrong_arg_count_returns_undef() {
+        let result = eval_builtin("mod", &[Value::Int(7)]);
+        assert!(result.is_undef(), "mod with 1 arg should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn mod_i64_min_neg1_returns_undef() {
+        // i64::MIN % -1 overflows in Rust (panics in debug mode)
+        let result = eval_builtin("mod", &[Value::Int(i64::MIN), Value::Int(-1)]);
+        assert!(result.is_undef(), "mod(i64::MIN, -1) should be Undef (overflow), got {:?}", result);
+    }
+
+    // --- clamp Real tests (step-3) ---
+
+    #[test]
+    fn clamp_real_within_range() {
+        assert_real_approx!(
+            eval_builtin("clamp", &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0)]),
+            5.0
+        );
+    }
+
+    #[test]
+    fn clamp_real_below_lo() {
+        assert_real_approx!(
+            eval_builtin("clamp", &[Value::Real(-3.0), Value::Real(0.0), Value::Real(10.0)]),
+            0.0
+        );
+    }
+
+    #[test]
+    fn clamp_real_above_hi() {
+        assert_real_approx!(
+            eval_builtin("clamp", &[Value::Real(15.0), Value::Real(0.0), Value::Real(10.0)]),
+            10.0
+        );
+    }
+
+    #[test]
+    fn clamp_at_lo_boundary() {
+        assert_real_approx!(
+            eval_builtin("clamp", &[Value::Real(0.0), Value::Real(0.0), Value::Real(10.0)]),
+            0.0
+        );
+    }
+
+    #[test]
+    fn clamp_at_hi_boundary() {
+        assert_real_approx!(
+            eval_builtin("clamp", &[Value::Real(10.0), Value::Real(0.0), Value::Real(10.0)]),
+            10.0
+        );
+    }
+
+    #[test]
+    fn clamp_nan_x_returns_undef() {
+        // x is NaN — explicit x.is_nan() guard
+        let result = eval_builtin("clamp", &[Value::Real(f64::NAN), Value::Real(0.0), Value::Real(10.0)]);
+        assert!(result.is_undef(), "clamp(NaN, 0, 10) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_nan_lo_returns_undef() {
+        let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(f64::NAN), Value::Real(10.0)]);
+        assert!(result.is_undef(), "clamp(5, NaN, 10) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_nan_hi_returns_undef() {
+        let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(0.0), Value::Real(f64::NAN)]);
+        assert!(result.is_undef(), "clamp(5, 0, NaN) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_inverted_range_real_returns_undef() {
+        // lo > hi is invalid
+        let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(10.0), Value::Real(0.0)]);
+        assert!(result.is_undef(), "clamp with inverted range should be Undef, got {:?}", result);
+    }
+
+    // --- clamp Int tests (step-5) ---
+
+    #[test]
+    fn clamp_int_preserves_type() {
+        // within range: value passes through, returns Int
+        let result = eval_builtin("clamp", &[Value::Int(5), Value::Int(0), Value::Int(10)]);
+        match result {
+            Value::Int(5) => {}
+            other => panic!("expected Int(5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_int_below_lo() {
+        let result = eval_builtin("clamp", &[Value::Int(-3), Value::Int(0), Value::Int(10)]);
+        match result {
+            Value::Int(0) => {}
+            other => panic!("expected Int(0) (clamped to lo), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_int_above_hi() {
+        let result = eval_builtin("clamp", &[Value::Int(15), Value::Int(0), Value::Int(10)]);
+        match result {
+            Value::Int(10) => {}
+            other => panic!("expected Int(10) (clamped to hi), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_inverted_range_int_returns_undef() {
+        let result = eval_builtin("clamp", &[Value::Int(5), Value::Int(10), Value::Int(0)]);
+        assert!(result.is_undef(), "clamp Int with inverted range should be Undef, got {:?}", result);
+    }
+
+    // --- clamp Scalar + fallback tests (step-7) ---
+
+    #[test]
+    fn clamp_scalar_preserves_dimension() {
+        // All three args: same LENGTH dimension, result should be LENGTH Scalar
+        assert_scalar_approx!(
+            eval_builtin(
+                "clamp",
+                &[
+                    Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 0.001, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 0.010, dimension: DimensionVector::LENGTH },
+                ]
+            ),
+            0.005,
+            DimensionVector::LENGTH
+        );
+    }
+
+    #[test]
+    fn clamp_dimension_mismatch_returns_undef() {
+        // lo/hi have different dimensions -> Undef
+        let result = eval_builtin(
+            "clamp",
+            &[
+                Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 10.0, dimension: DimensionVector::TIME },
+            ],
+        );
+        assert!(result.is_undef(), "clamp with dimension mismatch should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_inverted_range_scalar_returns_undef() {
+        let result = eval_builtin(
+            "clamp",
+            &[
+                Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            ],
+        );
+        assert!(result.is_undef(), "clamp Scalar with inverted range should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_scalar_nan_x_returns_undef() {
+        let result = eval_builtin(
+            "clamp",
+            &[
+                Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
+            ],
+        );
+        assert!(result.is_undef(), "clamp Scalar NaN x should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_wrong_arg_count_returns_undef() {
+        let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(0.0)]);
+        assert!(result.is_undef(), "clamp with 2 args should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_fallback_dimension_mismatch_returns_undef() {
+        // Fallback arm: x is Real (DIMENSIONLESS) but lo/hi are Scalar LENGTH.
+        // The fallback cannot silently drop LENGTH → must return Undef.
+        let result = eval_builtin(
+            "clamp",
+            &[
+                Value::Real(5.0),
+                Value::Scalar { si_value: 0.001, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.010, dimension: DimensionVector::LENGTH },
+            ],
+        );
+        assert!(
+            result.is_undef(),
+            "clamp with mismatched dimensions should be Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn clamp_fallback_all_dimensionless_returns_real() {
+        // Fallback arm: x is Int, lo/hi are Real → all DIMENSIONLESS → clamp coerces to Real.
+        let result = eval_builtin(
+            "clamp",
+            &[Value::Int(5), Value::Real(0.0), Value::Real(10.0)],
+        );
+        assert_real_approx!(result, 5.0);
+    }
+
+    // --- lerp Real tests (step-9) ---
+
+    #[test]
+    fn lerp_midpoint() {
+        // lerp(0, 10, 0.5) = 5
+        assert_real_approx!(
+            eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(0.5)]),
+            5.0
+        );
+    }
+
+    #[test]
+    fn lerp_t_zero() {
+        // lerp(a, b, 0) = a
+        assert_real_approx!(
+            eval_builtin("lerp", &[Value::Real(3.0), Value::Real(7.0), Value::Real(0.0)]),
+            3.0
+        );
+    }
+
+    #[test]
+    fn lerp_t_one() {
+        // lerp(a, b, 1) = b
+        assert_real_approx!(
+            eval_builtin("lerp", &[Value::Real(3.0), Value::Real(7.0), Value::Real(1.0)]),
+            7.0
+        );
+    }
+
+    #[test]
+    fn lerp_negative_t_extrapolation() {
+        // lerp(0, 10, -0.5) = -5 (extrapolation below)
+        assert_real_approx!(
+            eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(-0.5)]),
+            -5.0
+        );
+    }
+
+    #[test]
+    fn lerp_nan_t_returns_undef() {
+        // t is NaN — explicit NaN check after extraction
+        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(f64::NAN)]);
+        assert!(result.is_undef(), "lerp with NaN t should be Undef, got {:?}", result);
+    }
+
+    // --- lerp Scalar + dimension tests (step-11) ---
+
+    #[test]
+    fn lerp_scalar_preserves_dimension() {
+        // lerp(Scalar{0.0, LENGTH}, Scalar{1.0, LENGTH}, Real(0.5)) = Scalar{0.5, LENGTH}
+        assert_scalar_approx!(
+            eval_builtin(
+                "lerp",
+                &[
+                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+                    Value::Real(0.5),
+                ]
+            ),
+            0.5,
+            DimensionVector::LENGTH
+        );
+    }
+
+    #[test]
+    fn lerp_dimension_mismatch_a_b_returns_undef() {
+        // a and b have different dimensions -> Undef
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 1.0, dimension: DimensionVector::TIME },
+                Value::Real(0.5),
+            ],
+        );
+        assert!(result.is_undef(), "lerp dimension mismatch a/b should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn lerp_t_dimensioned_returns_undef() {
+        // t must be dimensionless; a LENGTH t is invalid
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Real(0.0),
+                Value::Real(10.0),
+                Value::Scalar { si_value: 0.5, dimension: DimensionVector::LENGTH },
+            ],
+        );
+        assert!(result.is_undef(), "lerp with dimensioned t should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn lerp_nan_a_returns_undef() {
+        // NaN in a -> Undef (via sanitize_value)
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+                Value::Real(0.5),
+            ],
+        );
+        assert!(result.is_undef(), "lerp with NaN a should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn lerp_nan_b_returns_undef() {
+        // NaN in b -> Undef (via sanitize_value)
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH },
+                Value::Real(0.5),
+            ],
+        );
+        assert!(result.is_undef(), "lerp with NaN b should be Undef, got {:?}", result);
+    }
+
+    // --- lerp Int/edge tests (step-13) ---
+
+    #[test]
+    fn lerp_int_inputs_coerce_to_real() {
+        // lerp(Int(0), Int(10), Real(0.5)) -> Real(5.0)
+        // The Int fast path extracts as f64, computes, returns Real
+        assert_real_approx!(
+            eval_builtin("lerp", &[Value::Int(0), Value::Int(10), Value::Real(0.5)]),
+            5.0
+        );
+    }
+
+    #[test]
+    fn lerp_wrong_arg_count_returns_undef() {
+        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0)]);
+        assert!(result.is_undef(), "lerp with 2 args should be Undef, got {:?}", result);
+    }
+
+    // --- lerp fallback tests (step-21) ---
+
+    #[test]
+    fn lerp_fallback_scalar_a_real_b_returns_undef() {
+        // Fallback arm: a is Scalar LENGTH, b is Real → a's dimension would be silently
+        // dropped if we returned Real. Per feedback_silent_defaults_pattern, must return Undef.
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+                Value::Real(3.0),
+                Value::Real(0.5),
+            ],
+        );
+        assert!(
+            result.is_undef(),
+            "lerp with Scalar a and Real b should be Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn lerp_fallback_real_a_scalar_b_returns_undef() {
+        // Fallback arm: a is Real, b is Scalar LENGTH → symmetric case, also must be Undef.
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Real(3.0),
+                Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+                Value::Real(0.5),
+            ],
+        );
+        assert!(
+            result.is_undef(),
+            "lerp with Real a and Scalar b should be Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn lerp_fallback_all_dimensionless_returns_real() {
+        // Fallback arm: a is Int, b is Real → both DIMENSIONLESS → valid coercion to Real.
+        assert_real_approx!(
+            eval_builtin(
+                "lerp",
+                &[Value::Int(0), Value::Real(10.0), Value::Real(0.5)],
+            ),
+            5.0
+        );
+    }
+
+    // --- remap Real tests (step-15) ---
+    // remap(x, from_lo, from_hi, to_lo, to_hi)
+    // formula: to_lo + (x - from_lo) * (to_hi - to_lo) / (from_hi - from_lo)
+
+    #[test]
+    fn remap_midpoint() {
+        // remap(5, 0, 10, 0, 100) = 50
+        assert_real_approx!(
+            eval_builtin(
+                "remap",
+                &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)]
+            ),
+            50.0
+        );
+    }
+
+    #[test]
+    fn remap_at_from_lo() {
+        // remap(from_lo, from_lo, from_hi, to_lo, to_hi) = to_lo
+        assert_real_approx!(
+            eval_builtin(
+                "remap",
+                &[Value::Real(0.0), Value::Real(0.0), Value::Real(10.0), Value::Real(20.0), Value::Real(30.0)]
+            ),
+            20.0
+        );
+    }
+
+    #[test]
+    fn remap_at_from_hi() {
+        // remap(from_hi, from_lo, from_hi, to_lo, to_hi) = to_hi
+        assert_real_approx!(
+            eval_builtin(
+                "remap",
+                &[Value::Real(10.0), Value::Real(0.0), Value::Real(10.0), Value::Real(20.0), Value::Real(30.0)]
+            ),
+            30.0
+        );
+    }
+
+    #[test]
+    fn remap_extrapolation() {
+        // x outside [from_lo, from_hi] extrapolates
+        assert_real_approx!(
+            eval_builtin(
+                "remap",
+                &[Value::Real(15.0), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)]
+            ),
+            150.0
+        );
+    }
+
+    #[test]
+    fn remap_inverse() {
+        // remap from [0,100] to [0,10] — inverse of remap_midpoint
+        assert_real_approx!(
+            eval_builtin(
+                "remap",
+                &[Value::Real(50.0), Value::Real(0.0), Value::Real(100.0), Value::Real(0.0), Value::Real(10.0)]
+            ),
+            5.0
+        );
+    }
+
+    #[test]
+    fn remap_division_by_zero_returns_undef() {
+        // from_lo == from_hi -> division by zero -> Undef (early-exit)
+        let result = eval_builtin(
+            "remap",
+            &[Value::Real(5.0), Value::Real(3.0), Value::Real(3.0), Value::Real(0.0), Value::Real(10.0)],
+        );
+        assert!(result.is_undef(), "remap with from_lo==from_hi should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn remap_nan_returns_undef() {
+        let result = eval_builtin(
+            "remap",
+            &[Value::Real(f64::NAN), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)],
+        );
+        assert!(result.is_undef(), "remap with NaN x should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn remap_wrong_arg_count_returns_undef() {
+        let result = eval_builtin("remap", &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0)]);
+        assert!(result.is_undef(), "remap with 3 args should be Undef, got {:?}", result);
+    }
+
+    // --- remap Scalar tests (step-17) ---
+    // remap(x, from_lo, from_hi, to_lo, to_hi)
+
+    #[test]
+    fn remap_scalar_preserves_dimension() {
+        // All 5 args LENGTH -> result is LENGTH
+        // remap(Scalar{5m}, Scalar{0m}, Scalar{10m}, Scalar{0m}, Scalar{100m}) = Scalar{50m}
+        assert_scalar_approx!(
+            eval_builtin(
+                "remap",
+                &[
+                    Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 100.0, dimension: DimensionVector::LENGTH },
+                ]
+            ),
+            50.0,
+            DimensionVector::LENGTH
+        );
+    }
+
+    #[test]
+    fn remap_scalar_cross_dimension() {
+        // x in LENGTH, from in LENGTH, to in TIME -> result is TIME
+        // remap(Scalar{5m, LENGTH}, Scalar{0m}, Scalar{10m}, Scalar{0s, TIME}, Scalar{100s, TIME}) = Scalar{50s, TIME}
+        assert_scalar_approx!(
+            eval_builtin(
+                "remap",
+                &[
+                    Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::TIME },
+                    Value::Scalar { si_value: 100.0, dimension: DimensionVector::TIME },
+                ]
+            ),
+            50.0,
+            DimensionVector::TIME
+        );
+    }
+
+    #[test]
+    fn remap_scalar_dimension_mismatch_x_from_returns_undef() {
+        // x has TIME dimension but from_lo/from_hi are LENGTH -> Undef
+        let result = eval_builtin(
+            "remap",
+            &[
+                Value::Scalar { si_value: 5.0, dimension: DimensionVector::TIME },
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 100.0, dimension: DimensionVector::LENGTH },
+            ],
+        );
+        assert!(result.is_undef(), "remap with x dim != from dim should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn remap_scalar_to_range_mismatch_returns_undef() {
+        // to_lo and to_hi have different dimensions -> Undef
+        let result = eval_builtin(
+            "remap",
+            &[
+                Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::TIME },
+                Value::Scalar { si_value: 100.0, dimension: DimensionVector::LENGTH }, // mismatch
+            ],
+        );
+        assert!(result.is_undef(), "remap with to_lo/to_hi dim mismatch should be Undef, got {:?}", result);
     }
 }

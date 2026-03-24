@@ -1,57 +1,47 @@
 {
-  "task_id": "142",
-  "title": "Chat panel: streaming renderer, thinking blocks, tool call cards",
+  "task_id": "356",
+  "title": "Stdlib math builtins polish (clamp/lerp/remap)",
   "files": [
-    "gui/src/stores/claudeStore.ts",
-    "gui/src/panels/ChatPanel.tsx",
-    "gui/src/panels/ChatPanel.module.css",
-    "gui/src/panels/chat/MessageGroup.tsx",
-    "gui/src/panels/chat/MessageGroup.module.css",
-    "gui/src/panels/chat/StreamingText.tsx",
-    "gui/src/panels/chat/StreamingText.module.css",
-    "gui/src/panels/chat/ThinkingBlock.tsx",
-    "gui/src/panels/chat/ThinkingBlock.module.css",
-    "gui/src/panels/chat/ToolCallCard.tsx",
-    "gui/src/panels/chat/ToolCallCard.module.css",
-    "gui/src/panels/chat/AbortButton.tsx",
-    "gui/src/panels/chat/AbortButton.module.css",
-    "gui/src/panels/chat/DiffView.tsx",
-    "gui/src/panels/chat/DiffView.module.css",
-    "gui/src/panels/chat/markdown.ts",
-    "gui/src/panels/chat/SystemMessage.tsx",
-    "gui/src/panels/chat/SystemMessage.module.css",
-    "gui/src/utils/errorClassifier.ts",
-    "gui/src/utils/diff.ts",
-    "gui/sidecar/src/types.ts",
-    "gui/src/__tests__/claudeStore.test.ts",
-    "gui/src/__tests__/ChatPanel.test.tsx",
-    "gui/src/__tests__/ToolCallCard.test.tsx",
-    "gui/src/__tests__/ThinkingBlock.test.tsx",
-    "gui/src/__tests__/StreamingText.test.tsx",
-    "gui/src/__tests__/AbortButton.test.tsx"
+    "crates/reify-stdlib/src/lib.rs"
   ],
   "modules": [
-    "gui/src/stores",
-    "gui/src/panels",
-    "gui/src/panels/chat",
-    "gui/src/utils",
-    "gui/src/__tests__",
-    "gui/sidecar/src"
+    "crates/reify-stdlib"
   ],
-  "analysis": "Task 142 adds rich streaming display components to the ChatPanel. The codebase already has substantial implementation on main: claudeStore.ts provides rAF-based delta batching (60fps), FIFO tool-result matching, session status management, and abort/clear. The ChatPanel.tsx orchestrates message display with MessageGroup rendering ThinkingBlock + ToolCallCards + StreamingText in correct DOM order. ThinkingBlock shows animated pulsing dots during streaming and a collapsible section after completion. StreamingText renders markdown via renderMarkdown() with a blinking cursor. ToolCallCard has read/write icon coloring, status indicators (spinner/checkmark/X), expandable details with JSON or DiffView for source updates. AbortButton replaces SendButton when sessionStatus !== 'idle'. Tests exist across 6 test files: claudeStore.test.ts (579 lines, 50+ cases covering rAF batching, FIFO matching, status transitions, error classification), ChatPanel.test.tsx (305 lines covering MessageGroup composition, context integration, abort visibility), ToolCallCard.test.tsx (140 lines covering status states, expand/collapse, diff view), plus dedicated ThinkingBlock, StreamingText, and AbortButton tests. Gaps identified: (1) resultSummary() only handles reify_get_parameters but not reify_get_constraints — task spec says 'e.g., 2 violated constraints', (2) ChatPanel abort button tests cover 'responding'/'idle' but not 'thinking'/'tool-calling' explicitly, (3) no high-volume streaming performance test (current rAF test uses 10 deltas; task says 'rendering doesn't block at high token rates'). Plan structures TDD steps for the full feature set; steps where both test and impl exist will be verified-and-passed quickly by the executor.",
+  "analysis": "Task 356 is a code-review follow-up that polishes the clamp/lerp/remap builtins in reify-stdlib. The worktree branch has already removed all clamp/lerp/remap/mod implementations and their tests (~530 lines) from main, providing a clean slate for re-implementation with improvements.\n\nKey issues to fix:\n1. **remap dimension stripping**: remap uses as_f64() on all args, silently dropping Scalar dimension. Need dimension-aware Scalar arms mirroring clamp/lerp.\n2. **NaN guard completeness**: clamp guards NaN in lo/hi but not x; lerp passes NaN t through to sanitize_value. Need explicit x.is_nan() in clamp and NaN check on t after extraction in lerp.\n3. **Helper extraction**: (a) quinary_f64 for remap, (b) valid_f64_range(lo,hi) for repeated NaN+inverted guard, (c) lerp_f64(a,b,t) for repeated formula, (d) assert_real_approx!/assert_scalar_approx! test macros.\n4. **Additional coverage**: clamp Int below-lo/above-hi, lerp NaN in a/b, lerp Int inputs, remap Scalar inputs.\n5. **Minor cleanup**: Move mod to two-arg section, add lerp Int fast path, remap early-exit for from_lo==from_hi, Scalar reconstruction in clamp fallback.\n\nThe existing codebase convention is: (a) helper functions (unary, binary, etc.) handle arg count, (b) builtins pattern-match on Value variants with explicit Scalar arms for dimension, (c) NaN/inf always becomes Undef via guards or sanitize_value, (d) fallback uses as_f64() after checking dimension consistency. Memory confirms stdlib min/max previously dropped Scalar dimension via as_f64() fallback and was fixed by adding explicit Scalar match arms.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Install GUI dependencies: cd gui && npm install (node_modules not present in worktree)",
+      "description": "Add assert_real_approx! and assert_scalar_approx! test helper macros in the #[cfg(test)] module to reduce the ~20 repeated match-on-Real/Scalar assertion blocks to one-liners",
       "status": "done",
-      "commit": null,
+      "commit": "caeb71f",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Verify vitest runs: npx vitest run --reporter=verbose src/__tests__/claudeStore.test.ts to confirm test infrastructure works",
+      "description": "Restore the ternary(args, f) helper function (was removed along with clamp/lerp in the branch diff). Place after binary() definition",
       "status": "done",
-      "commit": null,
+      "commit": "caeb71f",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add valid_f64_range(lo: f64, hi: f64) -> bool helper: returns false if either is NaN or lo > hi. Used by clamp Real/Scalar/fallback arms",
+      "status": "done",
+      "commit": "caeb71f",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Add lerp_f64(a: f64, b: f64, t: f64) -> f64 helper: computes a + t * (b - a). Used by lerp Real/Scalar/fallback arms",
+      "status": "done",
+      "commit": "caeb71f",
+      "tests": []
+    },
+    {
+      "id": "pre-5",
+      "description": "Add quinary_f64(args, f) helper: extracts 5 f64 args via as_f64(), returns Undef on wrong count or extraction failure, applies sanitize_value to result. Used by remap",
+      "status": "done",
+      "commit": "caeb71f",
       "tests": []
     }
   ],
@@ -59,254 +49,209 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for claudeStore delta batching: (a) buffers multiple text_delta events and flushes on rAF, (b) buffers thinking_delta events, (c) done event flushes immediately without waiting for rAF, (d) abort clears pending buffer. File: gui/src/__tests__/claudeStore.test.ts — verify 'rAF delta batching' describe block exists with these 3 cases.",
+      "description": "Write failing tests for mod: mod_basic, mod_exact_division, mod_negative_dividend, mod_negative_divisor, mod_by_zero_returns_undef, mod_non_int_returns_undef, mod_wrong_arg_count_returns_undef, mod_i64_min_neg1_returns_undef. These are restored from main but now test mod in the two-arg section",
       "status": "done",
-      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
+      "commit": "f09e7a3"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement rAF delta batching in claudeStore.ts: textBuffer/thinkingBuffer arrays, scheduleFlush() with requestAnimationFrame, cancelAndFlush() for terminal events, cancelAndClear() for abort. Verify step-1 tests pass.",
+      "description": "Implement mod in the two-arg section (after pow, before trig). Use binary() helper with Int-only match: guards for y==0 and i64::MIN%-1 overflow. Remove the separate 'Integer functions' section comment",
       "status": "done",
-      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
+      "commit": "a496517"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for claudeStore session status transitions: text_delta sets 'responding', thinking_delta sets 'thinking', tool_call sets 'tool-calling', done/error/abort reset to 'idle'. File: gui/src/__tests__/claudeStore.test.ts — verify handleOutboundMessage tests exist.",
+      "description": "Write failing tests for clamp Real: clamp_real_within_range, clamp_real_below_lo, clamp_real_above_hi, clamp_at_lo_boundary, clamp_at_hi_boundary, clamp_nan_x_returns_undef (NEW: x.is_nan() guard), clamp_nan_lo_returns_undef, clamp_nan_hi_returns_undef, clamp_inverted_range_real_returns_undef. Use assert_real_approx! macro where applicable",
       "status": "done",
-      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
+      "commit": "e910071"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement session status transitions in claudeStore handleOutboundMessage: set sessionStatus on each event type. Verify step-3 tests pass.",
+      "description": "Implement clamp Real arm in eval_builtin using ternary(). Guard with x.is_nan() (NEW) and valid_f64_range(lo, hi). Apply sanitize_value to result",
       "status": "done",
-      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
+      "commit": "92dce19"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for claudeStore tool call FIFO matching: (a) tool_call adds ToolCallInfo with status='pending', (b) tool_result marks first pending tool with matching name as 'complete', (c) sequential same-tool calls resolve in order, (d) mixed tool names match correctly, (e) locally-unique IDs. File: gui/src/__tests__/claudeStore.test.ts — verify 'tool_result FIFO matching' describe block.",
+      "description": "Write failing tests for clamp Int: clamp_int_preserves_type (within range), clamp_int_below_lo (NEW), clamp_int_above_hi (NEW), clamp_inverted_range_int_returns_undef",
       "status": "done",
-      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
+      "commit": "daf030d"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement FIFO tool-result matching in claudeStore: tool_call pushes to toolCalls array with generated ID, tool_result finds first pending call with matching toolName. Verify step-5 tests pass.",
+      "description": "Implement clamp Int arm: guard lo > hi returns Undef, use i64::clamp(). No NaN possible for Int",
       "status": "done",
-      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
+      "commit": "4b4863c"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for StreamingText component: (a) renders text content, (b) shows blinking cursor when streaming=true, (c) hides cursor when streaming=false, (d) bold markdown renders as <strong>, (e) code block renders as <pre><code>, (f) inline code renders as <code>, (g) empty text renders without errors. File: gui/src/__tests__/StreamingText.test.tsx.",
+      "description": "Write failing tests for clamp Scalar + fallback: clamp_scalar_preserves_dimension, clamp_dimension_mismatch_returns_undef, clamp_inverted_range_scalar_returns_undef, clamp_scalar_nan_x_returns_undef (NEW: x NaN guard in Scalar arm), clamp_wrong_arg_count_returns_undef, clamp_fallback_scalar_reconstruction (NEW: when all args have matching non-DIMENSIONLESS dimension via mixed types, fallback should return Scalar not Real)",
       "status": "done",
-      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
+      "commit": "b037acf"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement StreamingText component: createMemo for renderMarkdown(text), div with innerHTML for prose, Show for cursor span with blink animation. Plus StreamingText.module.css with prose styles, cursor animation. Verify step-7 tests pass.",
+      "description": "Implement clamp Scalar arm with x.is_nan() guard (NEW) + valid_f64_range. Implement fallback arm: check dimension consistency, use as_f64(), reconstruct Scalar when dimension is non-DIMENSIONLESS (NEW: instead of always returning Real)",
       "status": "done",
-      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
+      "commit": "8c91006"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for ThinkingBlock component: (a) complete=false shows thinking-indicator with animated dots, (b) complete=false does NOT show text content, (c) complete=true shows thinking-block section, (d) complete=true text is collapsed by default, (e) clicking header expands to show text, (f) clicking again collapses. File: gui/src/__tests__/ThinkingBlock.test.tsx.",
+      "description": "Write failing tests for lerp Real: lerp_midpoint, lerp_t_zero, lerp_t_one, lerp_negative_t_extrapolation, lerp_nan_t_returns_undef. Use assert_real_approx! macro",
       "status": "done",
-      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
+      "commit": "052e5b4"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement ThinkingBlock component: Show when=complete with fallback indicator (pulsing dots), collapsed section with createSignal(false) for expanded, click handler toggles. Plus ThinkingBlock.module.css with pulse animation, muted styling. Verify step-9 tests pass.",
+      "description": "Implement lerp Real arm using ternary(). Check t dimension is DIMENSIONLESS, extract tv via as_f64(), add explicit NaN check on tv (NEW: instead of relying on sanitize_value backstop), compute via lerp_f64 helper. Apply sanitize_value",
       "status": "done",
-      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
+      "commit": "b0fe39f"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing tests for ToolCallCard component: (a) renders with data-testid, (b) displays tool name, (c) spinner when pending, (d) checkmark when complete, (e) X when error, (f) click expands to show input JSON, (g) read tools have blue icon, (h) write tools have orange icon. File: gui/src/__tests__/ToolCallCard.test.tsx.",
+      "description": "Write failing tests for lerp Scalar + dimension: lerp_scalar_preserves_dimension, lerp_dimension_mismatch_a_b_returns_undef, lerp_t_dimensioned_returns_undef, lerp_nan_a_returns_undef (NEW), lerp_nan_b_returns_undef (NEW). Use assert_scalar_approx! where applicable",
       "status": "done",
-      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
+      "commit": "60de8bf"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement ToolCallCard: header with icon (data-tool-type), toolName, paramSummary, status indicator (spinner/char), expandable details with JSON. Plus ToolCallCard.module.css with icon colors, spinner animation. Verify step-11 tests pass.",
+      "description": "Implement lerp Scalar arm: match Scalar pairs with da==db, compute via lerp_f64, preserve dimension. Add NaN guards on a/b si_values (NEW). Implement fallback with dimension check",
       "status": "done",
-      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
+      "commit": "064948e"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing tests for ToolCallCard DiffView integration: (a) reify_update_source when complete shows DiffView on expand, (b) DiffView receives before from toolInput and after from result, (c) non-update tools show JSON details not DiffView, (d) 'View diff' summary text visible for update_source. File: gui/src/__tests__/ToolCallCard.test.tsx — verify 'diff view for source updates' describe block.",
+      "description": "Write failing tests for lerp Int/edge: lerp_int_inputs_coerce_to_real (NEW: documents Int->Real coercion), lerp_wrong_arg_count_returns_undef. The Int test verifies lerp(Int(0), Int(10), Real(0.5)) returns Real(5.0)",
       "status": "done",
-      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
+      "commit": "d5560a2"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement DiffView rendering in ToolCallCard: isSourceUpdateDiff() check, extractDiffBefore/extractDiffAfter helpers, conditional DiffView vs JSON details. resultSummary returns 'View diff' for update_source. Verify step-13 tests pass.",
+      "description": "Add lerp Int fast path (NEW): when both a and b are Int, extract as f64, compute via lerp_f64, return Real. This avoids the as_f64() fallback path and documents the coercion explicitly",
       "status": "done",
-      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
+      "commit": "b7ee3a6"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing tests for ToolCallCard result summaries: (a) reify_get_parameters with array result shows 'N parameters', (b) reify_get_constraints with array result shows 'N constraints' count. File: gui/src/__tests__/ToolCallCard.test.tsx — add test case for constraint summary.",
+      "description": "Write failing tests for remap Real: remap_midpoint, remap_at_from_lo, remap_at_from_hi, remap_extrapolation, remap_inverse, remap_division_by_zero_returns_undef, remap_nan_returns_undef, remap_wrong_arg_count_returns_undef. Use assert_real_approx! macro",
       "status": "done",
-      "commit": "f213c99"
+      "commit": "6f97b5c"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Extend resultSummary() in ToolCallCard to handle reify_get_constraints: if result is array, return `${result.length} constraints`. Verify step-15 tests pass.",
+      "description": "Implement remap Real path. For non-Scalar inputs, use quinary_f64 helper (NEW: replaces inline arg-count check). Add early-exit for from_lo==from_hi (NEW: explicit Undef instead of relying on division-by-zero producing inf->sanitize_value). Formula: to_lo + (x - from_lo) * (to_hi - to_lo) / (from_hi - from_lo)",
       "status": "done",
-      "commit": "4cfee83"
+      "commit": "d1aa975"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write failing tests for AbortButton component: (a) renders with data-testid, (b) calls onAbort on click, (c) has aria-label='Abort generation', (d) contains stop icon. File: gui/src/__tests__/AbortButton.test.tsx.",
+      "description": "Write failing tests for remap Scalar (NEW): remap_scalar_preserves_dimension (all 5 args same LENGTH dimension, result preserves LENGTH), remap_scalar_cross_dimension (from in LENGTH, to in TIME, result is TIME), remap_scalar_dimension_mismatch_returns_undef (x dimension differs from from_lo/from_hi), remap_scalar_to_range_mismatch_returns_undef (to_lo/to_hi have different dimensions)",
       "status": "done",
-      "commit": "4cfee83"
+      "commit": "0502af7"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Implement AbortButton: button with data-testid, aria-label, onClick calls onAbort, stop icon span. Plus AbortButton.module.css with hover-to-red transition. Verify step-17 tests pass.",
+      "description": "Implement remap dimension-aware path (NEW): before quinary_f64 fallback, check if any arg is Scalar. If so: validate from_lo/from_hi/x share a dimension, validate to_lo/to_hi share a dimension, extract si_values, compute remap formula, return Scalar with to-range dimension. On mismatch return Undef. Non-Scalar inputs fall through to quinary_f64",
       "status": "done",
-      "commit": "4cfee83"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write failing tests for abort button visibility in ChatPanel across all session states: (a) visible when 'thinking', (b) visible when 'responding', (c) visible when 'tool-calling', (d) NOT visible when 'idle', (e) send button visible when 'idle'. File: gui/src/__tests__/ChatPanel.test.tsx — add test cases for 'thinking' and 'tool-calling' states.",
-      "status": "done",
-      "commit": "5e2d68e"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Verify ChatPanel conditional rendering: isActive() returns true for thinking/responding/tool-calling, Show when=isActive() renders AbortButton else SendButton. Verify step-19 tests pass.",
-      "status": "done",
-      "commit": "5e2d68e"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing tests for MessageGroup composition and ordering: (a) ThinkingBlock renders when thinkingText non-empty, (b) no ThinkingBlock when thinkingText empty, (c) ToolCallCard renders for each tool call, (d) StreamingText renders response, (e) DOM order: thinking before tool calls before streaming text. File: gui/src/__tests__/ChatPanel.test.tsx — verify MessageGroup describe block.",
-      "status": "done",
-      "commit": "5e2d68e"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Implement MessageGroup: Show when=thinkingText for ThinkingBlock, For each=toolCalls for ToolCallCard, StreamingText with text/streaming props. Verify step-21 tests pass.",
-      "status": "done",
-      "commit": "5e2d68e"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write failing test for full ChatPanel event sequence integration: sendMessage, thinking_delta, text_delta(s), done — verify user message rendered, response text combined, thinking block appears as collapsed, session returns to idle. File: gui/src/__tests__/ChatPanel.test.tsx — verify 'full event sequence' test.",
-      "status": "done",
-      "commit": "5e2d68e"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Verify ChatPanel integrates all components: messages rendered via For loop, assistant messages via MessageGroup, system messages via SystemMessage, user messages inline. Verify step-23 tests pass.",
-      "status": "done",
-      "commit": "5e2d68e"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Write failing performance test: send 200 text_delta events in rapid succession, then fire rAF — verify all content is concatenated in a single flush, test completes within 500ms timeout. File: gui/src/__tests__/claudeStore.test.ts — add to 'rAF delta batching' describe block.",
-      "status": "done",
-      "commit": "5feb3af"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "Verify rAF batching handles high token volume: buffer accumulates unbounded, single flush concatenates all. No implementation change expected — the existing rAF batching already handles this. Verify step-25 test passes.",
-      "status": "done",
-      "commit": "5feb3af"
+      "commit": "a952898"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use requestAnimationFrame for delta batching instead of debounce/throttle",
-      "rationale": "rAF aligns with the browser's paint cycle, naturally achieving 60fps without artificial timers. Multiple deltas within one frame are concatenated and applied in a single store update, preventing excessive DOM re-renders."
+      "decision": "Use valid_f64_range(lo, hi) -> bool helper instead of inline NaN+inverted checks",
+      "rationale": "The pattern 'lo.is_nan() || hi.is_nan() || lo > hi' appears 4 times in clamp (Real, Scalar, fallback-Real, fallback-Scalar). Extracting to a helper reduces duplication and ensures consistency. Returns false when range is invalid (NaN or inverted)"
     },
     {
-      "decision": "FIFO tool-result matching by tool name instead of by explicit tool call ID",
-      "rationale": "The sidecar protocol's tool_result only carries tool_name, not a unique call ID. FIFO matching (first pending call with matching name) correctly handles interleaved same-name calls (A, B, A → results match in order). Locally-generated IDs (msg-{ts}-tc-{idx}) provide uniqueness for React keys."
+      "decision": "Add explicit x.is_nan() guard in clamp Real/Scalar/fallback arms",
+      "rationale": "The current implementation only guards NaN in lo/hi but relies on sanitize_value backstop for NaN in x. While sanitize_value catches it, the task explicitly requests making this guard explicit for defense-in-depth clarity. f64::clamp with NaN x returns NaN, which sanitize_value catches, but an explicit early return is clearer"
     },
     {
-      "decision": "HTML-escape before markdown transforms in StreamingText",
-      "rationale": "Security-first approach: all user/LLM content has HTML entities neutralized before any tags are introduced by the markdown renderer. This prevents XSS without needing a heavy sanitizer library."
+      "decision": "Add explicit NaN check on t after as_f64() extraction in lerp",
+      "rationale": "as_f64() on Real(NaN) returns Some(NaN). The current code passes this through to the lerp formula which produces NaN, caught by sanitize_value. Adding tv.is_nan() check immediately after extraction is more explicit and matches the pattern in clamp"
     },
     {
-      "decision": "ThinkingBlock collapsed by default after completion",
-      "rationale": "Thinking text is internal reasoning — typically long and less important to the user than the final response. Collapsed-by-default reduces visual noise while keeping content accessible via click."
+      "decision": "Reconstruct Scalar in clamp fallback when dimension is non-DIMENSIONLESS",
+      "rationale": "Currently the fallback arm always returns Real, silently dropping dimension when e.g. clamp(Int(5), Scalar{3mm}, Scalar{10mm}) is called with mixed types that share a dimension. The fix returns Scalar when all dimensions match and are non-DIMENSIONLESS"
     },
     {
-      "decision": "Abort button replaces send button position rather than appearing alongside",
-      "rationale": "Prevents accidental sends during generation. The user's muscle memory for the send button location naturally maps to 'stop what you're doing' during active generation."
+      "decision": "remap dimension-aware design: validate from-range and to-range dimensions independently",
+      "rationale": "For remap(x, from_lo, from_hi, to_lo, to_hi): x/from_lo/from_hi must share a dimension (input space), to_lo/to_hi must share a dimension (output space). The two spaces need not match (e.g. remap a LENGTH to a TIME range). Result gets the to-range dimension. This is mathematically correct: remap is a linear map between two potentially different dimensional spaces"
     },
     {
-      "decision": "Constraint result summary added to resultSummary() for reify_get_constraints",
-      "rationale": "Task spec explicitly mentions 'e.g., 2 violated constraints' as a result summary example. Extending the existing resultSummary() function with an additional tool name check is minimal and consistent with the existing reify_get_parameters handler."
+      "decision": "Use quinary_f64 helper for remap f64-only path instead of inline arg extraction",
+      "rationale": "Follows the established pattern of unary_f64/binary_f64 helpers. Handles arg count check, as_f64() extraction, and sanitize_value in one place. The dimension-aware arms are handled separately before falling through to quinary_f64"
+    },
+    {
+      "decision": "Move mod into two-arg section rather than separate 'Integer functions' section",
+      "rationale": "mod is a two-arg function and logically belongs with min/max/pow in the two-arg section. The separate section header was inconsistent with the organization pattern"
+    },
+    {
+      "decision": "Add lerp Int fast path with Real return type",
+      "rationale": "lerp(Int, Int, t) should work without falling through to the generic as_f64() path. The fast path extracts i64 values, converts to f64, computes via lerp_f64, and returns Real. This documents the Int->Real coercion explicitly"
+    },
+    {
+      "decision": "remap early-exit for from_lo==from_hi returns Undef explicitly",
+      "rationale": "Currently relies on division-by-zero producing inf/NaN caught by sanitize_value. An explicit check is clearer and avoids relying on floating-point edge behavior. This is analogous to clamp's inverted range guard"
+    },
+    {
+      "decision": "Test macros assert_real_approx! and assert_scalar_approx! use 1e-12 epsilon",
+      "rationale": "This matches the existing test convention throughout the file. The macros take (expr, expected) for Real and (expr, expected_si, expected_dim) for Scalar, reducing ~20 repetitive match blocks to one-liners"
     }
   ],
   "reuse": [
     {
-      "what": "renderMarkdown() utility",
-      "where": "gui/src/panels/chat/markdown.ts",
-      "how": "StreamingText uses createMemo(() => renderMarkdown(props.text)) to transform accumulated text to safe HTML. Already handles code blocks, bold, italic, headers, links, lists with XSS prevention."
+      "what": "sanitize_value() function",
+      "where": "Same file, line 128-136",
+      "how": "Reuse as-is for all NaN/inf->Undef conversion at return points of clamp/lerp/remap"
     },
     {
-      "what": "computeUnifiedDiff() utility",
-      "where": "gui/src/utils/diff.ts",
-      "how": "DiffView component uses it to compute line-level diffs between before/after source for reify_update_source tool calls."
+      "what": "unary/binary/binary_f64 helper pattern",
+      "where": "Same file, lines 115-184",
+      "how": "Follow the same pattern for ternary (3-arg by-ref) and quinary_f64 (5-arg f64 extraction). ternary already existed in main and is restored"
     },
     {
-      "what": "classifyError() utility",
-      "where": "gui/src/utils/errorClassifier.ts",
-      "how": "claudeStore uses it in the error handler to auto-classify error messages (auth, rate-limit, network, sidecar, unknown) and generate user-friendly system messages."
+      "what": "Value::as_f64() method",
+      "where": "crates/reify-types/src/value.rs:79-86",
+      "how": "Used in fallback arms and quinary_f64 for extracting numeric values from any Value variant"
     },
     {
-      "what": "SolidJS createStore + produce pattern",
-      "where": "gui/src/stores/claudeStore.ts",
-      "how": "Immutable updates via produce() for nested message mutations (appending text, updating tool call status). batch() groups multiple setState calls to prevent intermediate renders."
+      "what": "Value::dimension() method",
+      "where": "crates/reify-types/src/value.rs:89-94",
+      "how": "Used in fallback arms to check dimension consistency across mixed-type arguments. Returns DIMENSIONLESS for non-Scalar"
     },
     {
-      "what": "CSS custom properties (design tokens)",
-      "where": "gui/src/panels/ChatPanel.module.css and all chat/*.module.css",
-      "how": "All components use --reify-* CSS custom properties for colors (--reify-text, --reify-text-muted, --reify-accent, --reify-surface0, --reify-background, --reify-blue, --reify-peach, --reify-green, --reify-red) and --reify-font-mono for code styling."
+      "what": "DimensionVector::DIMENSIONLESS constant",
+      "where": "crates/reify-types/src/dimension.rs",
+      "how": "Used for lerp t-dimension check and clamp/remap fallback Scalar reconstruction decision"
     },
     {
-      "what": "Collapsible section pattern (chevron + click toggle)",
-      "where": "gui/src/panels/chat/ThinkingBlock.tsx, ToolCallCard.tsx, DiffView.tsx",
-      "how": "Consistent UX pattern: role='button' div with tabindex=0, onClick/onKeyDown handlers toggling a createSignal(false), chevron character (▶/▼) indicating state, Show when=expanded for content."
+      "what": "Existing test patterns (match on variant, assert with epsilon)",
+      "where": "Same file, test module",
+      "how": "The assert_real_approx!/assert_scalar_approx! macros encapsulate the existing pattern used ~20 times in the test module"
     },
     {
-      "what": "Sidecar message protocol types",
-      "where": "gui/sidecar/src/types.ts",
-      "how": "OutboundMessage union type defines the streaming event protocol. claudeStore imports and switches on msg.type for all 7 event types (ready, text_delta, thinking_delta, tool_call, tool_result, done, error)."
-    },
-    {
-      "what": "@solidjs/testing-library + vitest patterns",
-      "where": "gui/src/__tests__/*.test.tsx",
-      "how": "All component tests use render(() => <Component />), screen.getByTestId/queryByTestId, fireEvent.click/input. Store tests create store via factory function with vi.fn() callbacks. rAF tests mock globalThis.requestAnimationFrame."
+      "what": "min/max explicit Scalar arms pattern (from prior fix)",
+      "where": "Same file, lines 37-60 (min/max in eval_builtin)",
+      "how": "Memory confirms min/max had the same dimension-dropping bug and was fixed with explicit Scalar match arms. Apply same pattern to clamp/lerp/remap"
     }
   ],
-  "_session_id": "142-b26e400e",
-  "_created_at": "2026-03-24T08:58:49.933427+00:00"
+  "_session_id": "356-ae1cdbbc",
+  "_created_at": "2026-03-24T08:41:11.884148+00:00"
 }
