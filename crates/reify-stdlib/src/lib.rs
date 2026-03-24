@@ -183,8 +183,41 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         }),
 
         "remap" => {
-            // Dimension-aware path handled in step-18; for now use quinary_f64 fallback.
-            // Will be extended with Scalar arms before falling through here.
+            if args.len() != 5 {
+                return Value::Undef;
+            }
+            let (x, from_lo, from_hi, to_lo, to_hi) =
+                (&args[0], &args[1], &args[2], &args[3], &args[4]);
+
+            // Dimension-aware path: activate when any arg is a Scalar
+            let any_scalar = args.iter().any(|a| matches!(a, Value::Scalar { .. }));
+            if any_scalar {
+                // x/from_lo/from_hi must share a dimension (input space)
+                let from_dim = from_lo.dimension();
+                if from_hi.dimension() != from_dim || x.dimension() != from_dim {
+                    return Value::Undef;
+                }
+                // to_lo/to_hi must share a dimension (output space)
+                let to_dim = to_lo.dimension();
+                if to_hi.dimension() != to_dim {
+                    return Value::Undef;
+                }
+                // Extract si_values via as_f64()
+                let (xv, flov, fhiv, tlov, thiv) = match (
+                    x.as_f64(), from_lo.as_f64(), from_hi.as_f64(),
+                    to_lo.as_f64(), to_hi.as_f64(),
+                ) {
+                    (Some(a), Some(b), Some(c), Some(d), Some(e)) => (a, b, c, d, e),
+                    _ => return Value::Undef,
+                };
+                if flov == fhiv {
+                    return Value::Undef; // early-exit: division by zero
+                }
+                let result = tlov + (xv - flov) * (thiv - tlov) / (fhiv - flov);
+                return sanitize_value(Value::Scalar { si_value: result, dimension: to_dim });
+            }
+
+            // Non-Scalar path: use quinary_f64 helper
             quinary_f64(args, |x, from_lo, from_hi, to_lo, to_hi| {
                 if from_lo == from_hi {
                     return Value::Undef; // early-exit: division by zero
