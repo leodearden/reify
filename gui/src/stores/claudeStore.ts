@@ -258,7 +258,10 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
       options.onSend(id, text, context);
     } else {
       bridgeSendMessage(text, context).then((bridgeId) => {
-        setState('currentMessageId', bridgeId);
+        batch(() => {
+          setState('messages', (m) => m.id === id && m.role === 'assistant', 'id', bridgeId);
+          setState('currentMessageId', bridgeId);
+        });
       }).catch(() => {
         // Bridge call failed; currentMessageId stays as local id
       });
