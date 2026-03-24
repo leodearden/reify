@@ -54,6 +54,210 @@ fn parse_bare_value_pragma_args() {
     }
 }
 
+// ── Step 7/8: pragma with mixed args ─────────────────────────────
+
+#[test]
+fn parse_mixed_pragma_args() {
+    let source = "#config(debug, level=2, name=\"prod\")\nstructure S {}";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert_eq!(module.pragmas.len(), 1, "expected 1 pragma");
+
+    let pragma = &module.pragmas[0];
+    assert_eq!(pragma.name, "config");
+    assert_eq!(pragma.args.len(), 3, "expected 3 args, got {:?}", pragma.args);
+
+    match &pragma.args[0] {
+        PragmaArg::Bare(PragmaValue::Ident(s)) => assert_eq!(s, "debug"),
+        other => panic!("expected Bare(Ident('debug')), got {:?}", other),
+    }
+
+    match &pragma.args[1] {
+        PragmaArg::KeyValue { key, value } => {
+            assert_eq!(key, "level");
+            assert_eq!(*value, PragmaValue::Number(2.0));
+        }
+        other => panic!("expected KeyValue('level', Number(2.0)), got {:?}", other),
+    }
+
+    match &pragma.args[2] {
+        PragmaArg::KeyValue { key, value } => {
+            assert_eq!(key, "name");
+            assert_eq!(*value, PragmaValue::String("prod".to_string()));
+        }
+        other => panic!("expected KeyValue('name', String('prod')), got {:?}", other),
+    }
+}
+
+// ── Step 9/10: multiple module-level pragmas ─────────────────────
+
+#[test]
+fn parse_multiple_module_pragmas() {
+    let source = "#optimize\n#config(level=3)\nstructure S {}";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert_eq!(
+        module.pragmas.len(),
+        2,
+        "expected 2 module-level pragmas, got {:?}",
+        module.pragmas
+    );
+    assert_eq!(module.pragmas[0].name, "optimize");
+    assert!(module.pragmas[0].args.is_empty());
+    assert_eq!(module.pragmas[1].name, "config");
+    assert_eq!(module.pragmas[1].args.len(), 1);
+}
+
+// ── Step 11/12: block-level pragma inside structure ───────────────
+
+#[test]
+fn parse_block_pragma_in_structure() {
+    let source = "structure S { #internal\nparam x: Real }";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    // Module-level pragmas should be empty
+    assert!(
+        module.pragmas.is_empty(),
+        "expected no module-level pragmas, got {:?}",
+        module.pragmas
+    );
+
+    // Find S and check block-level pragma
+    let s = module.declarations.iter().find_map(|d| {
+        if let reify_syntax::Declaration::Structure(s) = d {
+            if s.name == "S" { Some(s) } else { None }
+        } else {
+            None
+        }
+    });
+    let s = s.expect("structure S not found");
+    assert_eq!(
+        s.pragmas.len(),
+        1,
+        "expected 1 block-level pragma on S, got {:?}",
+        s.pragmas
+    );
+    assert_eq!(s.pragmas[0].name, "internal");
+}
+
+// ── Step 13/14: block-level pragma inside occurrence ─────────────
+
+#[test]
+fn parse_block_pragma_in_occurrence() {
+    let source = "occurrence P { #temporal\nparam t: Real }";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(module.pragmas.is_empty(), "expected no module-level pragmas");
+
+    let p = module.declarations.iter().find_map(|d| {
+        if let reify_syntax::Declaration::Occurrence(p) = d {
+            if p.name == "P" { Some(p) } else { None }
+        } else {
+            None
+        }
+    });
+    let p = p.expect("occurrence P not found");
+    assert_eq!(
+        p.pragmas.len(),
+        1,
+        "expected 1 pragma on P, got {:?}",
+        p.pragmas
+    );
+    assert_eq!(p.pragmas[0].name, "temporal");
+}
+
+// ── Step 15/16: block-level pragma inside trait ───────────────────
+
+#[test]
+fn parse_block_pragma_in_trait() {
+    let source = "trait R { #required\nparam mass: Real }";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(module.pragmas.is_empty(), "expected no module-level pragmas");
+
+    let r = module.declarations.iter().find_map(|d| {
+        if let reify_syntax::Declaration::Trait(r) = d {
+            if r.name == "R" { Some(r) } else { None }
+        } else {
+            None
+        }
+    });
+    let r = r.expect("trait R not found");
+    assert_eq!(
+        r.pragmas.len(),
+        1,
+        "expected 1 pragma on R, got {:?}",
+        r.pragmas
+    );
+    assert_eq!(r.pragmas[0].name, "required");
+}
+
+// ── Step 17/18: pragma scoping isolation ─────────────────────────
+
+#[test]
+fn parse_pragma_scoping_isolation() {
+    let source = "#module_level\nstructure S { #block_level\nparam x: Real }";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    // Module-level pragma: only "module_level"
+    assert_eq!(
+        module.pragmas.len(),
+        1,
+        "expected 1 module-level pragma, got {:?}",
+        module.pragmas
+    );
+    assert_eq!(module.pragmas[0].name, "module_level");
+
+    // Block-level pragma on S: only "block_level"
+    let s = module.declarations.iter().find_map(|d| {
+        if let reify_syntax::Declaration::Structure(s) = d {
+            if s.name == "S" { Some(s) } else { None }
+        } else {
+            None
+        }
+    });
+    let s = s.expect("structure S not found");
+    assert_eq!(
+        s.pragmas.len(),
+        1,
+        "expected 1 block-level pragma on S, got {:?}",
+        s.pragmas
+    );
+    assert_eq!(s.pragmas[0].name, "block_level");
+}
+
+// ── Step 19/20: boolean and number value types ────────────────────
+
+#[test]
+fn parse_pragma_bool_and_number_values() {
+    let source = "#feature(enabled=true, count=42)\nstructure S {}";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert_eq!(module.pragmas.len(), 1, "expected 1 pragma");
+
+    let pragma = &module.pragmas[0];
+    assert_eq!(pragma.name, "feature");
+    assert_eq!(pragma.args.len(), 2, "expected 2 args, got {:?}", pragma.args);
+
+    match &pragma.args[0] {
+        PragmaArg::KeyValue { key, value } => {
+            assert_eq!(key, "enabled");
+            assert_eq!(*value, PragmaValue::Bool(true));
+        }
+        other => panic!("expected KeyValue('enabled', Bool(true)), got {:?}", other),
+    }
+
+    match &pragma.args[1] {
+        PragmaArg::KeyValue { key, value } => {
+            assert_eq!(key, "count");
+            assert_eq!(*value, PragmaValue::Number(42.0));
+        }
+        other => panic!("expected KeyValue('count', Number(42.0)), got {:?}", other),
+    }
+}
+
 // ── Step 3/4: pragma with key=value args ─────────────────────────
 
 #[test]
