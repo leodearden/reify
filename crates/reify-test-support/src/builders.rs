@@ -540,7 +540,7 @@ mod tests {
             .build();
         assert_eq!(ct.required_members.len(), 1);
         assert_eq!(ct.required_members[0].name, "mass");
-        matches!(&ct.required_members[0].kind, RequirementKind::Param(_));
+        assert!(matches!(&ct.required_members[0].kind, RequirementKind::Param(_)));
     }
 
     #[test]
