@@ -587,6 +587,73 @@ mod tests {
         assert_ne!(ct1.content_hash, ct2.content_hash);
     }
 
+    #[test]
+    fn trait_def_builder_with_default() {
+        let ct = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("mass_positive"),
+                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+                    label: Some("mass_positive".to_string()),
+                    expr: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::BoolLiteral(true),
+                        span: SourceSpan::new(0, 0),
+                    },
+                    where_clause: None,
+                    span: SourceSpan::new(0, 0),
+                    content_hash: ContentHash::of_str("true"),
+                }),
+            )
+            .build();
+        assert_eq!(ct.defaults.len(), 1);
+        assert_eq!(ct.defaults[0].name.as_deref(), Some("mass_positive"));
+    }
+
+    #[test]
+    fn trait_def_content_hash_differs_by_type_param() {
+        use reify_types::{TraitBound, TraitRef};
+        let ct1 = TraitDefBuilder::new("Container").build();
+        let ct2 = TraitDefBuilder::new("Container")
+            .type_param(TypeParam {
+                name: "T".to_string(),
+                bounds: vec![TraitBound {
+                    trait_ref: TraitRef {
+                        name: "Rigid".to_string(),
+                        type_args: vec![],
+                    },
+                }],
+                default: None,
+            })
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "traits differing only in type_params must produce distinct content_hashes"
+        );
+    }
+
+    #[test]
+    fn trait_def_content_hash_differs_by_default() {
+        let ct1 = TraitDefBuilder::new("Rigid").build();
+        let ct2 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("mass_positive"),
+                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+                    label: Some("mass_positive".to_string()),
+                    expr: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::BoolLiteral(true),
+                        span: SourceSpan::new(0, 0),
+                    },
+                    where_clause: None,
+                    span: SourceSpan::new(0, 0),
+                    content_hash: ContentHash::of_str("true"),
+                }),
+            )
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "traits differing only in defaults must produce distinct content_hashes"
+        );
+    }
+
     // step-5: failing tests for TopologyTemplateBuilder trait extensions
     #[test]
     fn topology_with_trait_bound() {
@@ -678,7 +745,7 @@ impl TraitDefBuilder {
         self
     }
 
-    pub fn default(mut self, name: Option<impl Into<String>>, kind: DefaultKind) -> Self {
+    pub fn add_default(mut self, name: Option<impl Into<String>>, kind: DefaultKind) -> Self {
         self.defaults.push(TraitDefault {
             name: name.map(|n| n.into()),
             kind,
@@ -693,14 +760,24 @@ impl TraitDefBuilder {
             let req_hashes = self
                 .required_members
                 .iter()
-                .map(|r| ContentHash::of_str(&r.name));
+                .map(|r| ContentHash::of_str(&format!("{}:{:?}", r.name, std::mem::discriminant(&r.kind))));
             let ref_hashes = self
                 .refinements
                 .iter()
                 .map(|r| ContentHash::of_str(r));
+            let type_param_hashes = self
+                .type_params
+                .iter()
+                .map(|p| ContentHash::of_str(&p.name));
+            let default_hashes = self
+                .defaults
+                .iter()
+                .map(|d| ContentHash::of_str(d.name.as_deref().unwrap_or("")));
             let all_hashes = std::iter::once(name_hash)
                 .chain(req_hashes)
-                .chain(ref_hashes);
+                .chain(ref_hashes)
+                .chain(type_param_hashes)
+                .chain(default_hashes);
             ContentHash::combine_all(all_hashes)
         };
 

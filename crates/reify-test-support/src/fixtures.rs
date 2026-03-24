@@ -586,7 +586,7 @@ pub fn rigid_trait_module() -> CompiledModule {
 
     let rigid_trait = TraitDefBuilder::new("Rigid")
         .requirement("mass", RequirementKind::Param(mass_type.clone()))
-        .default(Some("mass_positive"), DefaultKind::Constraint(mass_constraint_decl))
+        .add_default(Some("mass_positive"), DefaultKind::Constraint(mass_constraint_decl))
         .build();
 
     // Bolt: Rigid with param mass: Mass = 1kg (1.0 SI)
@@ -682,9 +682,9 @@ mod tests {
         assert!(height.is_some(), "Beam should have param height");
         // At least 4 constraints: range on width (2) + range on height (2)
         assert!(beam.constraints.len() >= 4, "expected at least 4 constraints, got {}", beam.constraints.len());
-        // At least one labeled constraint
-        let labeled = beam.constraints.iter().any(|c| c.label.is_some());
-        assert!(labeled, "expected at least one labeled constraint");
+        // The ratio constraint should have label "slender"
+        let slender = beam.constraints.iter().find(|c| c.label.as_deref() == Some("slender"));
+        assert!(slender.is_some(), "expected labeled constraint 'slender'");
     }
 
     // step-11: failing test for generic_container_module fixture
@@ -708,7 +708,9 @@ mod tests {
         assert_eq!(module.templates.len(), 2);
         let bolt = module.templates.iter().find(|t| t.name == "Bolt");
         let crate_t = module.templates.iter().find(|t| t.name == "Crate");
-        assert!(bolt.is_some(), "should have Bolt template");
+        let bolt = bolt.expect("should have Bolt template");
+        // Bolt conforms to Rigid
+        assert!(bolt.trait_bounds.contains(&"Rigid".to_string()), "Bolt should have Rigid trait bound");
         let crate_t = crate_t.expect("should have Crate template");
         // Crate conforms to Container
         assert!(crate_t.trait_bounds.contains(&"Container".to_string()));
