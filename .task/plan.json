@@ -1,81 +1,221 @@
 {
-  "task_id": "2",
-  "title": "Extract complex_abs helper to deduplicate magnitude/complex_magnitude",
+  "task_id": "311",
+  "title": "Stdlib: wire translate, rotate + add scale through compiler",
   "files": [
-    "crates/reify-stdlib/src/lib.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-types/src/geometry.rs",
+    "crates/reify-kernel-occt/src/ffi.rs",
+    "crates/reify-kernel-occt/cpp/occt_wrapper.h",
+    "crates/reify-kernel-occt/cpp/occt_wrapper.cpp",
+    "crates/reify-kernel-occt/src/lib.rs",
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/tests/boundary4_geometry.rs"
   ],
   "modules": [
-    "crates/reify-stdlib"
+    "crates/reify-compiler",
+    "crates/reify-types",
+    "crates/reify-kernel-occt",
+    "crates/reify-kernel-occt/cpp",
+    "crates/reify-eval"
   ],
-  "analysis": "The `complex_magnitude` match arm (lines 427-437) duplicates the Complex branch of `magnitude` (lines 285-291) verbatim. Both compute `(re*re + im*im).sqrt()` then branch on `dimension == DimensionVector::DIMENSIONLESS` to return either `sanitize_value(Value::Real(mag))` or `sanitize_value(Value::Scalar { si_value: mag, dimension })`. The fix is to extract a private `#[inline(always)] fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value` helper placed in the private helpers section (after `unary` at line 653, before `normalize_quaternion` at line 655). Both call sites then delegate to `complex_abs`. Additionally, we add a `complex_magnitude_overflow_returns_undef` test following the established pattern from `complex_add_overflow_returns_undef` (line 3309) and `complex_mul_overflow_returns_undef` (line 3297). The new test goes in the `// ── complex_magnitude() tests (step-5)` section before line 3391 (the closing brace). All changes are confined to a single file: `crates/reify-stdlib/src/lib.rs`.",
-  "prerequisites": [],
+  "analysis": "GeometryOp::Translate and GeometryOp::Rotate already exist in reify-types, and their FFI functions (translate_shape, rotate_shape) are fully implemented in the OCCT kernel with C++ wrappers. The eval layer already dispatches TransformKind::Translate and TransformKind::Rotate. However, these functions are NOT in is_geometry_function() and have no compile_geometry_call() match arms, meaning they cannot be called from .ri source files. The task requires: (1) wiring existing translate/rotate through the compiler, (2) adding scale as a new FFI function (gp_Trsf::SetScale), (3) adding rotate_around as a compound translate-rotate-translate operation. The approach follows the established pattern: positional scalar args at .ri source level, compiled to CompiledGeometryOp::Transform with named args, evaluated to GeometryOp variants, dispatched to OCCT FFI calls. Scale uses origin center (0,0,0) for uniform scaling. RotateAround gets a dedicated C++ function that composes gp_Trsf transforms internally for a single BRepBuilderAPI_Transform call.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add RotateAround and Scale variants to TransformKind enum in crates/reify-compiler/src/lib.rs (lines 364-368). These are data-only enum variants needed before tests can reference them.",
+      "status": "done",
+      "commit": "c2f5e179",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add Scale { target: GeometryHandleId, factor: f64 } and RotateAround { target: GeometryHandleId, point: [f64; 3], axis: [f64; 3], angle_rad: f64 } variants to GeometryOp enum in crates/reify-types/src/geometry.rs (after line 92).",
+      "status": "done",
+      "commit": "e9bb4e49",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Implement scale_shape C++ function in occt_wrapper.cpp using gp_Trsf::SetScale(gp_Pnt(cx,cy,cz), factor) + BRepBuilderAPI_Transform. Add declaration to occt_wrapper.h. Add FFI bridge declaration fn scale_shape(shape: &OcctShape, factor: f64, cx: f64, cy: f64, cz: f64) -> Result<UniquePtr<OcctShape>> to ffi.rs.",
+      "status": "done",
+      "commit": "881edfe7",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Implement rotate_around_shape C++ function in occt_wrapper.cpp: compose gp_Trsf translate(-point) * rotate(axis, angle) * translate(+point) into a single BRepBuilderAPI_Transform. Add declaration to occt_wrapper.h. Add FFI bridge declaration fn rotate_around_shape(shape: &OcctShape, px: f64, py: f64, pz: f64, ax: f64, ay: f64, az: f64, angle_rad: f64) -> Result<UniquePtr<OcctShape>> to ffi.rs.",
+      "status": "done",
+      "commit": "881edfe7",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write `complex_magnitude_overflow_returns_undef` test in the `// ── complex_magnitude() tests (step-5)` section (before line 3391). Pattern: create `Value::Complex { re: f64::MAX, im: f64::MAX, dimension: DimensionVector::DIMENSIONLESS }`, call `eval_builtin(\"complex_magnitude\", &[z])`, assert `.is_undef()` with message 'complex_magnitude with f64::MAX components must return Undef (Inf overflow)'. This parallels `complex_add_overflow_returns_undef` at line 3309. The test should pass immediately (sanitize_value already catches Inf from f64::MAX²+f64::MAX²→Inf), establishing the behavioral contract before refactoring.",
+      "description": "Write failing tests in compiler mod tests: assert is_geometry_function returns true for 'translate', 'rotate', 'rotate_around', 'scale'. Four #[test] functions following the pattern at line 5446 (compile_geometry_linear_pattern_recognized). All four will fail since these names are not in the match.",
       "status": "done",
-      "commit": "be9c2da9"
+      "commit": "c2f5e179"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Extract `#[inline(always)] fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value` helper. Place it after `unary()` (line 653) and before `normalize_quaternion()` (line 655). Body: `let mag = (re * re + im * im).sqrt(); if dimension == DimensionVector::DIMENSIONLESS { sanitize_value(Value::Real(mag)) } else { sanitize_value(Value::Scalar { si_value: mag, dimension }) }`. Then replace the `magnitude` Complex branch (lines 285-291) with `return complex_abs(*re, *im, *dimension);` and replace the `complex_magnitude` match arm body (lines 428-434) with `complex_abs(*re, *im, *dimension)`. Run `cargo test -p reify-stdlib` to verify all existing tests plus the new overflow test pass.",
+      "description": "Add 'translate' | 'rotate' | 'rotate_around' | 'scale' to the is_geometry_function() match expression (lines 396-412 in crates/reify-compiler/src/lib.rs). Tests from step-1 pass.",
       "status": "done",
-      "commit": "8268785a"
+      "commit": "c2f5e179"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Final verification: run `cargo test -p reify-stdlib` confirming all tests pass including: complex_magnitude_3_4_returns_5, complex_magnitude_dimensioned_returns_scalar, complex_magnitude_non_complex_returns_undef, complex_magnitude_voltage, complex_magnitude_overflow_returns_undef, and all magnitude tests. This confirms the refactor is behavior-preserving.",
+      "description": "Write failing compiler tests that parse+compile .ri source containing translate(w, 1, 0, 0), rotate(w, 0, 0, 1, 90), scale(w, 2), rotate_around(w, 1, 0, 0, 0, 0, 1, 90) calls and assert each produces a realization with CompiledGeometryOp::Transform of the correct TransformKind. Four tests following the compile_linear_pattern_produces_realization pattern (line 5483). Will fail with 'unsupported geometry function' diagnostic since no compile_geometry_call arms exist yet.",
       "status": "done",
-      "commit": "8268785a"
+      "commit": "c2f5e179"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Add match arms in compile_geometry_call() (before the _ fallback at line 5391) for: 'translate' (4 args: target, dx, dy, dz -> Transform/Translate), 'rotate' (5 args: target, axis_x, axis_y, axis_z, angle -> Transform/Rotate), 'rotate_around' (8 args: target, px, py, pz, axis_x, axis_y, axis_z, angle -> Transform/RotateAround), 'scale' (2 args: target, factor -> Transform/Scale). Follow existing pattern: first arg is target compiled as named arg, target field is GeomRef::Step(0).",
+      "status": "done",
+      "commit": "c2f5e179"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing kernel test in crates/reify-kernel-occt/src/lib.rs: create a 10mm box, execute GeometryOp::Scale { target, factor: 2.0 }, query volume, assert volume approx 8e-6 m^3 (8x original 1e-6). Also test scale(1.0) preserves volume. Guard with OCCT_AVAILABLE. Tests fail because OcctKernel::execute() has no Scale match arm.",
+      "status": "done",
+      "commit": "088e5af8"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Add GeometryOp::Scale dispatch in OcctKernel::execute() (after the Rotate arm around line 250): validate factor is finite and non-zero, call ffi::ffi::scale_shape(shape, *factor, 0.0, 0.0, 0.0) with center at origin. Map errors with .map_err(|e| GeometryError::OperationFailed(e.to_string())).",
+      "status": "done",
+      "commit": "088e5af8"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing kernel test: create a 10mm box at origin, execute GeometryOp::RotateAround with point=(0.05, 0, 0), axis=(0,0,1), angle=PI/2. Query centroid and verify it differs from a simple rotate around origin. Guard with OCCT_AVAILABLE. Test fails because no RotateAround dispatch in execute().",
+      "status": "done",
+      "commit": "088e5af8"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Add GeometryOp::RotateAround dispatch in OcctKernel::execute(): validate point/axis components are finite, axis non-zero. Call ffi::ffi::rotate_around_shape(shape, point[0..2], axis[0..2], angle_rad). Map errors.",
+      "status": "done",
+      "commit": "088e5af8"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing eval tests: construct CompiledGeometryOp::Transform with kind TransformKind::Scale and named args [(target,...), (factor, literal 2.0)], call compile_geometry_op, assert it returns Some(GeometryOp::Scale { factor: 2.0 }). Similarly for TransformKind::RotateAround with point/axis/angle args. Tests fail because eval match is exhaustive on TransformKind and new variants cause compile error or unmatched arm.",
+      "status": "done",
+      "commit": "fbed8e54"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Add eval dispatch in compile_geometry_op() in crates/reify-eval/src/lib.rs (after the Rotate arm at line 2982): TransformKind::Scale -> GeometryOp::Scale { target: target_id, factor: eval_arg_f64('factor') }. TransformKind::RotateAround -> GeometryOp::RotateAround { target: target_id, point: [eval_arg_f64('px'), eval_arg_f64('py'), eval_arg_f64('pz')], axis: [eval_arg_f64('axis_x'), eval_arg_f64('axis_y'), eval_arg_f64('axis_z')], angle_rad: eval_arg_f64('angle') }.",
+      "status": "done",
+      "commit": "fbed8e54"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write integration tests in boundary4_geometry.rs exercising the full stack: (1) translate 10mm box by 50mm in x via GeometryOp::Translate, verify centroid x approx 0.05 (confirms existing kernel path), (2) rotate box 90deg around Z, verify volume preserved, (3) scale box by 2.0, verify volume = 8x, (4) rotate_around non-origin point, verify centroid at expected position, (5) scale(box, 1.0) = identity (volume unchanged). All should pass with prior implementations.",
+      "status": "done",
+      "commit": "fbed8e54"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Fix rotate_around_point_preserves_volume test in boundary4_geometry.rs (line 565) to validate the non-origin pivot logic. After the existing volume assertion, add: (1) query GeometryQuery::Centroid(rotated.id), parse the x/y/z coordinates from the JSON string, (2) assert centroid is approximately at (0.045, -0.045, 0.005) within 1e-4 tolerance \u2014 analytically: 10mm box centroid at (0.005, 0.005, 0.005) rotated 90\u00b0 around Z through point (0.05, 0, 0) maps to (0.05 + Rz(PI/2)*(0.005-0.05, 0.005, 0.005)) = (0.05 + (\u22120.005, \u22120.045, 0.005)) = (0.045, \u22120.045, 0.005), (3) also execute a plain GeometryOp::Rotate (no pivot) on the same box with same axis/angle, query its centroid, and assert the two centroids differ by at least 0.01 in at least one coordinate \u2014 confirming the pivot point parameter is actually used. This test should pass immediately since the kernel implementation is correct, but it now properly guards against regressions where the point parameter is silently ignored.",
+      "status": "done",
+      "commit": "bb17f1a0"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing kernel tests in crates/reify-kernel-occt/src/lib.rs: (1) rotate_near_degenerate_axis_rejected: create a box, call GeometryOp::Rotate with axis=[1e-10, 0.0, 0.0] and angle=PI/4, assert the result is Err(GeometryError::OperationFailed(..)) containing 'zero-length'. (2) rotate_around_near_degenerate_axis_rejected: same but with GeometryOp::RotateAround using axis=[0.0, 1e-8, 0.0]. Both tests will FAIL because the current guard (mag_sq < f64::EPSILON * f64::EPSILON \u2248 4.9e-32) allows these near-degenerate axes through \u2014 1e-10 has mag_sq=1e-20, far above the threshold.",
+      "status": "done",
+      "commit": "231ddcb3"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Change the zero-axis guard threshold from `mag_sq < f64::EPSILON * f64::EPSILON` to `mag_sq < 1e-12` in both the GeometryOp::Rotate dispatch (line 243) and the GeometryOp::RotateAround dispatch (line 418) in crates/reify-kernel-occt/src/lib.rs. The new threshold 1e-12 means any axis with length < 1e-6 (one micron) is rejected, matching OCCT's own precision floor for axis validity. Tests from step-13 now pass.",
+      "status": "done",
+      "commit": "fb058d6f"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Name the helper `complex_abs` rather than `complex_magnitude_inner` or similar",
-      "rationale": "The operation is mathematically the complex absolute value (modulus). `complex_abs` is concise, standard mathematical terminology, and clearly conveys intent. It also distinguishes from the public-facing `complex_magnitude` builtin name."
+      "decision": "Use decomposed positional scalar args at .ri source level (translate(geo, dx, dy, dz) not translate(geo, vec3(...)))",
+      "rationale": "Matches the established pattern used by linear_pattern, circular_pattern, mirror, etc. where direction/position components are passed as separate scalar args. Avoids needing vector-decomposition logic in the eval layer. Vector API can be added as syntactic sugar later."
     },
     {
-      "decision": "Take `re: f64, im: f64, dimension: DimensionVector` by value rather than by reference",
-      "rationale": "All three types are Copy (f64 is 8 bytes, DimensionVector is a [Rational; 9] which derives Copy). Passing by value avoids lifetime noise at call sites where we destructure `&Value::Complex { re, im, dimension }` and would otherwise need to dereference. Callers pass `*re, *im, *dimension`."
+      "decision": "Implement rotate_around as a dedicated C++ FFI function with composed gp_Trsf transforms rather than emitting 3 separate GeometryOps",
+      "rationale": "compile_geometry_op returns Option<GeometryOp> (single op). Changing to Vec would be a wider refactor. A single compound transform via gp_Trsf composition (translate * rotate * translate) applied in one BRepBuilderAPI_Transform call is also more efficient and numerically stable."
     },
     {
-      "decision": "Place helper between `unary` and `normalize_quaternion` in the private helpers section",
-      "rationale": "This groups it with other private computation helpers rather than inside the `eval_builtin` match block. It follows the existing code organization pattern where `sanitize_value`, `unary`, `binary`, `normalize_quaternion` etc. are all private fns after the main dispatch function."
+      "decision": "scale_shape FFI takes (shape, factor, cx, cy, cz) but GeometryOp::Scale only stores factor, with center hardcoded to origin in kernel dispatch",
+      "rationale": "Task specifies 'Uniform only' for scale. The FFI is designed with flexibility for future center-point support, but the .ri API and GeometryOp keep it simple. Adding a center parameter later is backward-compatible."
     },
     {
-      "decision": "Mark as `#[inline(always)]` per the task description",
-      "rationale": "The function is tiny (a sqrt + a branch + sanitize_value call) and called from two hot paths in `eval_builtin`. Inlining avoids function call overhead and matches the task specification."
+      "decision": "Add Scale and RotateAround as new GeometryOp variants rather than reusing compound operations from existing Translate+Rotate",
+      "rationale": "Each variant maps cleanly to a single FFI call. Scale requires new OCCT wrapper (gp_Trsf::SetScale). RotateAround needs composed transforms that are best done atomically in C++. Separate variants also give kernel implementations the chance to validate parameters independently."
     },
     {
-      "decision": "Write the overflow test first even though it passes immediately",
-      "rationale": "The test validates that the sanitize_value defense-in-depth continues to work for complex_magnitude after the refactor. Writing it first establishes the behavioral contract before we touch the implementation. f64::MAX² + f64::MAX² overflows to Inf, which sanitize_value converts to Undef."
+      "decision": "translate/rotate .ri signatures: translate(geo, dx, dy, dz) with 4 args, rotate(geo, ax, ay, az, angle) with 5 args",
+      "rationale": "Existing eval layer already handles TransformKind::Translate extracting (dx, dy, dz) and TransformKind::Rotate extracting (axis_x, axis_y, axis_z, angle). The compile_geometry_call just needs to map positional args to these same named args. Zero changes needed in eval for translate/rotate \u2014 only compiler wiring."
+    },
+    {
+      "decision": "Use mag_sq < 1e-12 threshold for near-degenerate axis rejection in both Rotate and RotateAround",
+      "rationale": "The original threshold (f64::EPSILON^2 \u2248 4.9e-32) only catches axes shorter than ~7e-16, which is machine epsilon. Near-degenerate axes (e.g. length 1e-10) pass through and cause NaN/garbage in OCCT's gp_Trsf normalization. The new threshold 1e-12 (axis length < 1e-6 = 1 micron) matches OCCT's own geometric precision floor while accepting all physically meaningful rotation axes."
+    },
+    {
+      "decision": "Centroid verification in rotate_around integration test uses analytical geometry to compute expected position",
+      "rationale": "For a 10mm OCCT box at origin (centroid at (0.005,0.005,0.005) in meters), rotating 90\u00b0 around Z through pivot (0.05,0,0): translate to pivot-relative coords, apply Rz(PI/2), translate back. Expected centroid = (0.045, -0.045, 0.005). This deterministic assertion catches bugs where the pivot point is silently ignored, which a volume-only check cannot."
     }
   ],
   "reuse": [
     {
-      "what": "`sanitize_value` function (line 706)",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Called inside `complex_abs` to convert non-finite results (NaN, Inf) to Undef, exactly as both current call sites already do."
+      "what": "Existing translate_shape/rotate_shape FFI and C++ implementations",
+      "where": "crates/reify-kernel-occt/src/ffi.rs lines 50-62, cpp/occt_wrapper.cpp lines 222-263",
+      "how": "translate and rotate from .ri compile through existing TransformKind::Translate/Rotate -> eval dispatch (lines 2964-2982) -> GeometryOp::Translate/Rotate -> OcctKernel::execute() (lines 211-249). Only compiler wiring (is_geometry_function + compile_geometry_call) is needed."
     },
     {
-      "what": "`unary` helper (line 648)",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Both `magnitude` and `complex_magnitude` already use `unary(args, |v| ...)` — this stays unchanged; only the closure body changes to delegate to `complex_abs`."
+      "what": "Existing TransformKind::Translate/Rotate eval dispatch",
+      "where": "crates/reify-eval/src/lib.rs lines 2952-2983",
+      "how": "The eval layer already handles CompiledGeometryOp::Transform for Translate and Rotate kinds. New Scale and RotateAround kinds follow the exact same pattern with eval_arg_f64() extraction."
     },
     {
-      "what": "Overflow test pattern from `complex_add_overflow_returns_undef` (line 3309) and `complex_mul_overflow_returns_undef` (line 3297)",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "The new `complex_magnitude_overflow_returns_undef` test follows the identical pattern: construct Complex with f64::MAX components, call eval_builtin, assert `.is_undef()` with descriptive message."
+      "what": "BRepBuilderAPI_Transform + gp_Trsf C++ pattern",
+      "where": "cpp/occt_wrapper.cpp lines 222-263 (translate_shape, rotate_shape)",
+      "how": "scale_shape and rotate_around_shape follow identical pattern: create gp_Trsf, configure transform (SetScale/SetRotation+SetTranslation composition), pass to BRepBuilderAPI_Transform, check IsDone(), return wrapped shape. Same error handling with Standard_Failure catch."
     },
     {
-      "what": "`DimensionVector::DIMENSIONLESS` constant",
-      "where": "crates/reify-types/src/dimension.rs",
-      "how": "Used in both the helper function (for the dimensionless branch) and in the test (for constructing the test Complex value)."
+      "what": "compile_geometry_call positional-arg-to-named-arg pattern",
+      "where": "crates/reify-compiler/src/lib.rs lines 5229-5370 (linear_pattern, mirror, shell, thicken, draft)",
+      "how": "All new compile arms follow the same pattern: check arg count, iterate compiled_args, emit CompiledGeometryOp with (name, expr) pairs. First arg is always ('target', ...) with target: GeomRef::Step(0)."
+    },
+    {
+      "what": "Kernel test patterns with OCCT_AVAILABLE guard",
+      "where": "crates/reify-eval/tests/boundary4_geometry.rs lines 272-314 (translate_centroid test)",
+      "how": "All new kernel/integration tests follow: check OCCT_AVAILABLE, create OcctKernel, execute primitive, execute transform, query volume/centroid, assert expected values with tolerance."
+    },
+    {
+      "what": "Compiler test patterns for geometry recognition and realization production",
+      "where": "crates/reify-compiler/src/lib.rs lines 5446-5650",
+      "how": "Recognition tests: assert!(is_geometry_function('name')). Realization tests: parse .ri source, compile, check template.realizations[0].operations[0] matches expected CompiledGeometryOp variant."
+    },
+    {
+      "what": "Centroid JSON parsing pattern from kernel test rotate_around_non_origin_differs_from_rotate_at_origin",
+      "where": "crates/reify-kernel-occt/src/lib.rs lines 2305-2325",
+      "how": "GeometryQuery::Centroid returns Value::String with JSON like {\"x\":0.045,\"y\":-0.045,\"z\":0.005}. Parse x/y/z by finding '\"x\":' prefix and extracting the float. Reuse this same parsing approach in the boundary4 integration test for centroid verification."
     }
   ],
-  "_session_id": "2-1ab7323c",
-  "_created_at": "2026-03-24T21:10:15.236515+00:00"
+  "_session_id": "311-6f6488cf",
+  "_created_at": "2026-03-24T21:08:14.912740+00:00"
 }

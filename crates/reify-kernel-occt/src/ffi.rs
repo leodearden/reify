@@ -60,6 +60,23 @@ pub mod ffi {
             az: f64,
             angle_rad: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        fn scale_shape(
+            shape: &OcctShape,
+            factor: f64,
+            cx: f64,
+            cy: f64,
+            cz: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn rotate_around_shape(
+            shape: &OcctShape,
+            px: f64,
+            py: f64,
+            pz: f64,
+            ax: f64,
+            ay: f64,
+            az: f64,
+            angle_rad: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Mirror / Pattern / Circular pattern ---
         fn mirror_shape(

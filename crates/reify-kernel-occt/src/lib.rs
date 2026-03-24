@@ -240,7 +240,7 @@ impl OcctKernel {
                     )));
                 }
                 let mag_sq = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
-                if mag_sq < f64::EPSILON * f64::EPSILON {
+                if mag_sq < 1e-12 {
                     return Err(GeometryError::OperationFailed(
                         "rotation axis must not be zero-length".into(),
                     ));
@@ -383,6 +383,54 @@ impl OcctKernel {
                     faces_to_remove.iter().map(|&i| i as u32).collect();
                 ffi::ffi::shell_shape(shape, th, &face_indices)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::Scale { target, factor } => {
+                let shape = self.get_shape(*target)?;
+                if !factor.is_finite() || *factor == 0.0 {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "scale factor must be finite and non-zero, got {factor}"
+                    )));
+                }
+                ffi::ffi::scale_shape(shape, *factor, 0.0, 0.0, 0.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::RotateAround {
+                target,
+                point,
+                axis,
+                angle_rad,
+            } => {
+                let shape = self.get_shape(*target)?;
+                if !point[0].is_finite()
+                    || !point[1].is_finite()
+                    || !point[2].is_finite()
+                    || !axis[0].is_finite()
+                    || !axis[1].is_finite()
+                    || !axis[2].is_finite()
+                    || !angle_rad.is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "rotate_around parameters must be finite: point={:?}, axis={:?}, angle={}",
+                        point, axis, angle_rad
+                    )));
+                }
+                let mag_sq = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
+                if mag_sq < 1e-12 {
+                    return Err(GeometryError::OperationFailed(
+                        "rotate_around axis must not be zero-length".into(),
+                    ));
+                }
+                ffi::ffi::rotate_around_shape(
+                    shape,
+                    point[0],
+                    point[1],
+                    point[2],
+                    axis[0],
+                    axis[1],
+                    axis[2],
+                    *angle_rad,
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
         };
         Ok(self.store(shape))
@@ -1425,6 +1473,69 @@ mod tests {
         }
     }
 
+    // --- Near-degenerate axis rejection tests (task-311 step-13) ---
+
+    #[test]
+    fn rotate_near_degenerate_axis_rejected() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // axis=[1e-10, 0, 0] has mag_sq=1e-20, physically meaningless (0.1 nanometer)
+        // but above the current threshold of f64::EPSILON^2 ≈ 4.9e-32
+        let result = kernel.execute(&GeometryOp::Rotate {
+            target: box_h.id,
+            axis: [1e-10, 0.0, 0.0],
+            angle_rad: std::f64::consts::FRAC_PI_4,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                let lower = msg.to_lowercase();
+                assert!(
+                    lower.contains("zero"),
+                    "error should mention 'zero', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for near-degenerate axis [1e-10, 0, 0] in rotate"),
+        }
+    }
+
+    #[test]
+    fn rotate_around_near_degenerate_axis_rejected() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // axis=[0, 1e-8, 0] has mag_sq=1e-16, physically meaningless (10 nanometers)
+        // but above the current threshold of f64::EPSILON^2 ≈ 4.9e-32
+        let result = kernel.execute(&GeometryOp::RotateAround {
+            target: box_h.id,
+            point: [5.0, 0.0, 0.0],
+            axis: [0.0, 1e-8, 0.0],
+            angle_rad: std::f64::consts::FRAC_PI_4,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                let lower = msg.to_lowercase();
+                assert!(
+                    lower.contains("zero"),
+                    "error should mention 'zero', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for near-degenerate axis [0, 1e-8, 0] in rotate_around"),
+        }
+    }
+
     // --- Error message quality regression tests (step-7) ---
 
     #[test]
@@ -2119,6 +2230,162 @@ mod tests {
             "make_circle_wire(10.0, 0.0) should succeed, got {:?}",
             wire.err()
         );
+    }
+
+    // --- Scale tests (task-311 step-5) ---
+
+    #[test]
+    fn scale_doubles_volume() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10 box, volume = 1000
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Scale by 2: linear dimensions double, volume becomes 8x = 8000
+        let scaled_h = kernel
+            .execute(&GeometryOp::Scale {
+                target: box_h.id,
+                factor: 2.0,
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(scaled_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 8000.0).abs() < 1.0,
+                    "scale(2.0) should give volume ≈ 8000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real for volume, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scale_identity_preserves_volume() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let scaled_h = kernel
+            .execute(&GeometryOp::Scale {
+                target: box_h.id,
+                factor: 1.0,
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(scaled_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 1000.0).abs() < 1.0,
+                    "scale(1.0) should preserve volume ≈ 1000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real for volume, got {:?}", other),
+        }
+    }
+
+    // --- RotateAround tests (task-311 step-7) ---
+
+    #[test]
+    fn rotate_around_non_origin_differs_from_rotate_at_origin() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10 box centered at origin.
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+
+        // Rotate around Z through origin by PI/2 — centroid stays at (0,0,0).
+        let rotated_origin = kernel
+            .execute(&GeometryOp::Rotate {
+                target: box_h.id,
+                axis: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::FRAC_PI_2,
+            })
+            .unwrap();
+
+        // Rotate around Z through (50, 0, 0) by PI/2 — centroid moves.
+        let rotated_around = kernel
+            .execute(&GeometryOp::RotateAround {
+                target: box_h.id,
+                point: [50.0, 0.0, 0.0],
+                axis: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::FRAC_PI_2,
+            })
+            .unwrap();
+
+        // Both should succeed (volumes must be preserved).
+        let vol_origin = kernel
+            .query(&GeometryQuery::Volume(rotated_origin.id))
+            .unwrap();
+        let vol_around = kernel
+            .query(&GeometryQuery::Volume(rotated_around.id))
+            .unwrap();
+
+        match (vol_origin, vol_around) {
+            (Value::Real(v1), Value::Real(v2)) => {
+                assert!(
+                    (v1 - 1000.0).abs() < 1.0,
+                    "rotate-at-origin should preserve volume ≈ 1000, got {v1}"
+                );
+                assert!(
+                    (v2 - 1000.0).abs() < 1.0,
+                    "rotate-around-point should preserve volume ≈ 1000, got {v2}"
+                );
+            }
+            other => panic!("expected (Value::Real, Value::Real), got {:?}", other),
+        }
+
+        // The centroids should be different: rotate_around (point=(50,0,0), axis=Z, angle=PI/2)
+        // moves centroid of origin-centered box from (0,0,0) to roughly (-50, 50, 0).
+        let centroid_around = kernel
+            .query(&GeometryQuery::Centroid(rotated_around.id))
+            .unwrap();
+        match centroid_around {
+            Value::String(s) => {
+                let x_start = s.find("\"x\":").unwrap() + 4;
+                let x_end = s[x_start..].find([',', '}']).unwrap() + x_start;
+                let x: f64 = s[x_start..x_end].parse().unwrap();
+                // After rotating (0,0,0) 90° around Z through (50,0,0):
+                // new position = (50,0,0) + Rz(PI/2) * (0-50, 0-0, 0-0)
+                //              = (50,0,0) + Rz(PI/2) * (-50, 0, 0)
+                //              = (50,0,0) + (0, -50, 0)  [Rz(PI/2)*(-1,0,0) = (0,-1,0)]
+                //              = (50, -50, 0)
+                // So x ≈ 50
+                assert!(
+                    (x - 50.0).abs() < 1.0,
+                    "rotate_around centroid x should be ≈ 50, got {x}"
+                );
+            }
+            other => panic!("expected String centroid, got {:?}", other),
+        }
     }
 
     #[test]

@@ -90,6 +90,18 @@ pub enum GeometryOp {
         axis: [f64; 3],
         angle_rad: f64,
     },
+    /// Uniform scale by factor around a center point.
+    Scale {
+        target: GeometryHandleId,
+        factor: f64,
+    },
+    /// Rotate around an arbitrary axis passing through a given point.
+    RotateAround {
+        target: GeometryHandleId,
+        point: [f64; 3],
+        axis: [f64; 3],
+        angle_rad: f64,
+    },
     /// Create a linear pattern of copies along a direction.
     LinearPattern {
         target: GeometryHandleId,

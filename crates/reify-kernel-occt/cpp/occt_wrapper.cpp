@@ -262,6 +262,55 @@ std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, doubl
     }
 }
 
+std::unique_ptr<OcctShape> scale_shape(const OcctShape& shape, double factor, double cx, double cy, double cz) {
+    try {
+        gp_Trsf trsf;
+        trsf.SetScale(gp_Pnt(cx, cy, cz), factor);
+        BRepBuilderAPI_Transform transform(shape.shape, trsf, true);
+        transform.Build();
+        if (!transform.IsDone()) {
+            throw std::runtime_error("BRepBuilderAPI_Transform (scale) failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = transform.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT scale_shape: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT scale_shape: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT scale_shape: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape,
+    double px, double py, double pz,
+    double ax, double ay, double az,
+    double angle_rad) {
+    try {
+        // gp_Ax1 defines an axis through a point with a direction.
+        // trsf.SetRotation(axis, angle) then rotates around that axis,
+        // correctly handling the non-origin pivot point.
+        gp_Ax1 axis(gp_Pnt(px, py, pz), gp_Dir(ax, ay, az));
+        gp_Trsf trsf;
+        trsf.SetRotation(axis, angle_rad);
+        BRepBuilderAPI_Transform transform(shape.shape, trsf, true);
+        transform.Build();
+        if (!transform.IsDone()) {
+            throw std::runtime_error("BRepBuilderAPI_Transform (rotate_around) failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = transform.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT rotate_around_shape: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT rotate_around_shape: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT rotate_around_shape: unknown C++ exception");
+    }
+}
+
 // --- Mirror / Pattern ---
 
 std::unique_ptr<OcctShape> mirror_shape(const OcctShape& shape,
