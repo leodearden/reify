@@ -39,27 +39,27 @@
       "type": "test",
       "description": "Add 3 failing tests: (a) eval_some_wraps_int — OptionSome(literal(Int(5))) evaluates to Value::Option(Some(Box::new(Value::Int(5)))). (b) eval_some_wraps_bool — OptionSome(literal(Bool(true))) evaluates to Value::Option(Some(Box::new(Value::Bool(true)))). (c) eval_some_wraps_real — OptionSome(literal(Real(3.14))) evaluates to Value::Option(Some(Box::new(Value::Real(3.14)))).",
       "status": "done",
-      "commit": null
+      "commit": "0e0037b"
     },
     {
       "id": "step-4",
       "type": "impl",
       "description": "Add OptionSome match arm in eval_expr: `CompiledExprKind::OptionSome(inner) => { let val = eval_expr(inner, ctx); Value::Option(Some(Box::new(val))) }`. IMPORTANT: No Undef short-circuit — wrapping Undef is intentional semantics. Tests from step-3 pass.",
       "status": "done",
-      "commit": null
+      "commit": "0e0037b"
     },
     {
       "id": "step-5",
       "type": "test",
       "description": "Add 3 verification tests for Undef semantics (should pass with step-4 impl): (a) eval_some_undef_produces_option_some_undef — some(literal(Undef)) yields Value::Option(Some(Box::new(Value::Undef))), NOT Value::Undef. (b) eval_some_undef_not_equal_to_none — assert some(undef) != Value::Option(None). (c) eval_some_undef_not_equal_to_bare_undef — assert some(undef) != Value::Undef.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {
       "id": "step-6",
       "type": "test",
       "description": "Add 4 verification tests for nesting and value refs (should pass with step-4 impl): (a) eval_some_nested_some — some(some(Int(3))) yields Value::Option(Some(Box::new(Value::Option(Some(Box::new(Value::Int(3))))))). (b) eval_some_wraps_none — some(none) yields Value::Option(Some(Box::new(Value::Option(None)))). (c) eval_some_value_ref — some(value_ref(x)) where x=Int(42) in ValueMap yields Value::Option(Some(Box::new(Value::Int(42)))). (d) eval_some_missing_ref_wraps_undef — some(value_ref(x)) where x is absent from ValueMap yields Value::Option(Some(Box::new(Value::Undef))), not bare Undef.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     }
   ],
