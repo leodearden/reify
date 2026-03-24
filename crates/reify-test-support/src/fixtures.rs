@@ -639,6 +639,36 @@ mod tests {
     }
 
     #[test]
+    fn constrained_structure_module_constraint_indices_are_sequential() {
+        use reify_types::ConstraintNodeId;
+        let module = constrained_structure_module();
+        let t = &module.templates[0];
+        assert_eq!(t.name, "Beam");
+        assert_eq!(t.constraints.len(), 5);
+        // All constraints are for entity "Beam" with sequential indices 0-4
+        for (i, c) in t.constraints.iter().enumerate() {
+            assert_eq!(
+                c.id,
+                ConstraintNodeId::new("Beam", i as u32),
+                "constraint {} should have index {}",
+                i,
+                i
+            );
+        }
+        // Index 4 has label "slender"
+        assert_eq!(t.constraints[4].label.as_deref(), Some("slender"));
+        // First 4 have no labels
+        for i in 0..4 {
+            assert_eq!(
+                t.constraints[i].label,
+                None,
+                "constraint {} should have no label",
+                i
+            );
+        }
+    }
+
+    #[test]
     fn constrained_structure_module_has_beam_template() {
         let module = constrained_structure_module();
         assert_eq!(module.templates.len(), 1);
