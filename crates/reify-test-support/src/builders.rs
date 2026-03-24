@@ -41,6 +41,9 @@ fn infer_value_type(v: &Value) -> Type {
             domain: Box::new(domain_type.clone()),
             codomain: Box::new(codomain_type.clone()),
         },
+        Value::Tensor(_) => {
+            panic!("literal() cannot infer Tensor type (rank/n/quantity). Use CompiledExpr::literal(value, type) directly.")
+        }
         Value::Undef => Type::Bool,
     }
 }

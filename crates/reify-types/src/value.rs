@@ -48,6 +48,8 @@ pub enum Value {
         body: Box<CompiledExpr>,
         captures: ValueMap,
     },
+    /// Rank-r tensor: recursive nesting of Vec<Value> (innermost elements are scalars).
+    Tensor(Vec<Value>),
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -182,6 +184,14 @@ impl Value {
                 }
                 h
             }
+            Value::Tensor(items) => {
+                let mut h = ContentHash::of(&[14]);
+                h = h.combine(ContentHash::of(&(items.len() as u64).to_le_bytes()));
+                for item in items {
+                    h = h.combine(item.content_hash());
+                }
+                h
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -201,6 +211,7 @@ impl PartialEq for Value {
                 a == b && av == bv
             }
             (Value::List(a), Value::List(b)) => a == b,
+            (Value::Tensor(a), Value::Tensor(b)) => a == b,
             (Value::Set(a), Value::Set(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => a == b,
             (Value::Option(a), Value::Option(b)) => a == b,
@@ -240,7 +251,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Lambda=11
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -256,6 +267,7 @@ impl Ord for Value {
                 Value::Option(_) => 10,
                 Value::Field { .. } => 11,
                 Value::Lambda { .. } => 12,
+                Value::Tensor(_) => 13,
             }
         }
 
@@ -284,6 +296,7 @@ impl Ord for Value {
                 a.cmp(b).then_with(|| av.cmp(bv))
             }
             (Value::List(a), Value::List(b)) => a.cmp(b),
+            (Value::Tensor(a), Value::Tensor(b)) => a.cmp(b),
             (Value::Set(a), Value::Set(b)) => a.cmp(b),
             (Value::Map(a), Value::Map(b)) => {
                 // Lexicographic on (key, value) pairs in sorted key order
@@ -335,6 +348,16 @@ impl std::fmt::Display for Value {
             }
             Value::Enum { type_name, variant } => write!(f, "{}::{}", type_name, variant),
             Value::List(items) => {
+                write!(f, "[")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, "]")
+            }
+            Value::Tensor(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 {
@@ -1352,5 +1375,112 @@ mod tests {
         assert!(map.get(&id_b).is_none(), "removed entry should be gone");
         assert_eq!(map.get(&id_a), Some(&Value::Int(1)), "other entries should remain");
         assert_eq!(map.get(&id_c), Some(&Value::Int(3)), "other entries should remain");
+    }
+
+    // --- Value::Tensor tests ---
+
+    #[test]
+    fn value_tensor_construction_and_partial_eq() {
+        // (a) rank-1 tensor with 3 length scalars equals itself rebuilt
+        let t1 = Value::Tensor(vec![
+            Value::length(0.08),
+            Value::length(0.10),
+            Value::length(0.12),
+        ]);
+        let t1b = Value::Tensor(vec![
+            Value::length(0.08),
+            Value::length(0.10),
+            Value::length(0.12),
+        ]);
+        assert_eq!(t1, t1b);
+
+        // (b) tensors with different elements are unequal
+        let t1c = Value::Tensor(vec![
+            Value::length(0.08),
+            Value::length(0.10),
+            Value::length(0.99),
+        ]);
+        assert_ne!(t1, t1c);
+
+        // (c) rank-2 nested tensor (Tensor of Tensors) equals itself
+        let inner_a = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
+        let inner_b = Value::Tensor(vec![Value::Int(3), Value::Int(4)]);
+        let t2 = Value::Tensor(vec![inner_a.clone(), inner_b.clone()]);
+        let t2_copy = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        assert_eq!(t2, t2_copy);
+
+        // (d) Tensor([Int(1), Int(2)]) != List([Int(1), Int(2)]) — distinct variants
+        let tensor_ints = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
+        let list_ints = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        assert_ne!(tensor_ints, list_ints);
+    }
+
+    #[test]
+    fn value_tensor_display() {
+        // rank-1 tensor of 3 length scalars
+        let t1 = Value::Tensor(vec![
+            Value::length(0.08),
+            Value::length(0.10),
+            Value::length(0.12),
+        ]);
+        assert_eq!(format!("{}", t1), "[0.08 m, 0.1 m, 0.12 m]");
+
+        // rank-2 nested tensor of Ints
+        let t2 = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        assert_eq!(format!("{}", t2), "[[1, 2], [3, 4]]");
+    }
+
+    #[test]
+    fn value_tensor_content_hash_determinism() {
+        // (a) identical rank-1 tensors produce identical hashes
+        let t1 = Value::Tensor(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let t1b = Value::Tensor(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        assert_eq!(t1.content_hash(), t1b.content_hash());
+
+        // (b) different elements produce different hashes
+        let t1c = Value::Tensor(vec![Value::Int(1), Value::Int(2), Value::Int(99)]);
+        assert_ne!(t1.content_hash(), t1c.content_hash());
+
+        // (c) Tensor hash differs from List hash with identical elements (tag [14] vs [7])
+        let list = Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        assert_ne!(t1.content_hash(), list.content_hash());
+
+        // (d) nested rank-2 tensor hash is deterministic
+        let t2 = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        let t2b = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        assert_eq!(t2.content_hash(), t2b.content_hash());
+    }
+
+    #[test]
+    fn value_tensor_ord() {
+        // (a) Tensor type_tag (13) > Lambda type_tag (12) — cross-type ordering
+        // We can't easily construct a Lambda here, but we can compare with Field (tag 11)
+        // and verify Tensor sorts after Lambda by inspecting the Ord contract.
+        // Instead, use List (tag=7) as a reference: Tensor (13) > List (7).
+        let tensor = Value::Tensor(vec![Value::Int(1)]);
+        let list = Value::List(vec![Value::Int(99)]);
+        assert!(tensor > list, "Tensor (tag 13) should order after List (tag 7)");
+
+        // (b) within-type lexicographic comparison of elements
+        let ta = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
+        let tb = Value::Tensor(vec![Value::Int(1), Value::Int(3)]);
+        assert!(ta < tb);
+
+        // (c) shorter tensor < longer tensor with same prefix elements
+        let short = Value::Tensor(vec![Value::Int(1)]);
+        let long = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
+        assert!(short < long);
     }
 }

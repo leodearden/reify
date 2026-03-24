@@ -39,6 +39,8 @@ pub enum Type {
     Point { n: usize, quantity: Box<Type> },
     /// N-dimensional vector with a quantity type (e.g., Vector3<Scalar[m]>).
     Vector { n: usize, quantity: Box<Type> },
+    /// Rank-r tensor with n elements per dimension and a quantity type (e.g., Tensor2x3<Scalar[m]>).
+    Tensor { rank: usize, n: usize, quantity: Box<Type> },
 }
 
 impl Type {
@@ -81,6 +83,11 @@ impl Type {
     /// Shorthand for a 3D point with a given quantity type.
     pub fn point3(quantity: Type) -> Self {
         Type::Point { n: 3, quantity: Box::new(quantity) }
+    }
+
+    /// Shorthand for a rank-r tensor with n elements per dimension and a given quantity type.
+    pub fn tensor(rank: usize, n: usize, quantity: Type) -> Self {
+        Type::Tensor { rank, n, quantity: Box::new(quantity) }
     }
 
     /// Is this type a numeric type (Int, Real, or Scalar)?
@@ -283,6 +290,77 @@ mod tests {
     }
 
     #[test]
+    fn type_tensor_display() {
+        // Tensor{rank}x{n}<{quantity}>
+        assert_eq!(
+            format!("{}", Type::tensor(2, 3, Type::length())),
+            "Tensor2x3<Scalar[m]>"
+        );
+        assert_eq!(
+            format!("{}", Type::tensor(1, 4, Type::Real)),
+            "Tensor1x4<Real>"
+        );
+        assert_eq!(
+            format!("{}", Type::tensor(3, 2, Type::Int)),
+            "Tensor3x2<Int>"
+        );
+    }
+
+    #[test]
+    fn type_tensor_factory_method() {
+        // rank-2 tensor, 3 elements per level, quantity = length scalar
+        assert_eq!(
+            Type::tensor(2, 3, Type::length()),
+            Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::length()) }
+        );
+        // rank-1 tensor, 4 elements, quantity = Real
+        assert_eq!(
+            Type::tensor(1, 4, Type::Real),
+            Type::Tensor { rank: 1, n: 4, quantity: Box::new(Type::Real) }
+        );
+    }
+
+    #[test]
+    fn type_tensor_eq_and_hash() {
+        use std::collections::HashMap;
+
+        let t2_3_len = Type::tensor(2, 3, Type::length());
+        let t2_3_len2 = Type::tensor(2, 3, Type::length());
+        let t1_3_len = Type::tensor(1, 3, Type::length());
+        let t2_4_len = Type::tensor(2, 4, Type::length());
+        let t2_3_real = Type::tensor(2, 3, Type::Real);
+        let v3_len = Type::vec3(Type::length());
+        let p3_len = Type::point3(Type::length());
+
+        // (a) Same rank/n/quantity => equal
+        assert_eq!(t2_3_len, t2_3_len2);
+
+        // (b) Different rank => not equal
+        assert_ne!(t2_3_len, t1_3_len);
+
+        // (c) Different n => not equal
+        assert_ne!(t2_3_len, t2_4_len);
+
+        // (d) Different quantity => not equal
+        assert_ne!(t2_3_len, t2_3_real);
+
+        // (e) Tensor != Vector/Point with same n/quantity
+        assert_ne!(t2_3_len, v3_len);
+        assert_ne!(t2_3_len, p3_len);
+
+        // (f) Hash consistency via HashMap
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(t2_3_len.clone(), "t2_3_len");
+        assert_eq!(map.get(&t2_3_len2), Some(&"t2_3_len"));
+    }
+
+    #[test]
+    fn type_tensor_not_numeric() {
+        assert!(!Type::tensor(1, 3, Type::length()).is_numeric());
+        assert!(!Type::tensor(2, 2, Type::Real).is_numeric());
+    }
+
+    #[test]
     fn type_vector_display() {
         let v3_length = Type::Vector {
             n: 3,
@@ -348,6 +426,7 @@ impl std::fmt::Display for Type {
             Type::Geometry => write!(f, "Geometry"),
             Type::Point { n, quantity } => write!(f, "Point{}<{}>", n, quantity),
             Type::Vector { n, quantity } => write!(f, "Vector{}<{}>", n, quantity),
+            Type::Tensor { rank, n, quantity } => write!(f, "Tensor{}x{}<{}>", rank, n, quantity),
         }
     }
 }
