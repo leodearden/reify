@@ -758,4 +758,74 @@ describe('claudeStore', () => {
       expect(bridge.claudeAbort).not.toHaveBeenCalled();
     });
   });
+
+  describe('bridge-mode ID reconciliation', () => {
+    const BRIDGE_ID = 'bridge-id-reconcile';
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+      (bridge.claudeSendMessage as ReturnType<typeof vi.fn>).mockResolvedValue(BRIDGE_ID);
+    });
+
+    it('assistant message id is updated to bridgeId after bridge resolves', async () => {
+      const store = createClaudeStore({});
+      store.sendMessage('hello', {});
+
+      // Wait for the microtask queue to flush (.then() executes)
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      const assistantMsg = store.state.messages.find((m) => m.role === 'assistant');
+      expect(assistantMsg!.id).toBe(BRIDGE_ID);
+    });
+
+    it('flushBuffers works after ID reconciliation: text_delta + done accumulates responseText', async () => {
+      const store = createClaudeStore({});
+      store.sendMessage('hello', {});
+
+      // Wait for ID reconciliation
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      // Now send events with bridgeId — they should find the assistant message
+      store.handleOutboundMessage({ type: 'text_delta', id: BRIDGE_ID, content: 'Hello from bridge' } as OutboundMessage);
+      // done triggers cancelAndFlush which synchronously calls flushBuffers
+      store.handleOutboundMessage({ type: 'done', id: BRIDGE_ID } as OutboundMessage);
+
+      const assistantMsg = store.state.messages.find((m) => m.role === 'assistant') as any;
+      expect(assistantMsg!.responseText).toBe('Hello from bridge');
+      expect(assistantMsg!.complete).toBe(true);
+    });
+
+    it('findAssistantIdx works after ID reconciliation: tool_call adds to toolCalls', async () => {
+      const store = createClaudeStore({});
+      store.sendMessage('hello', {});
+
+      // Wait for ID reconciliation
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      store.handleOutboundMessage({
+        type: 'tool_call',
+        id: BRIDGE_ID,
+        tool_name: 'reify_get_parameters',
+        tool_input: { entity: 'box1' },
+      } as OutboundMessage);
+
+      const assistantMsg = store.state.messages.find((m) => m.role === 'assistant') as any;
+      expect(assistantMsg!.toolCalls).toHaveLength(1);
+      expect(assistantMsg!.toolCalls[0].toolName).toBe('reify_get_parameters');
+    });
+
+    it('done event marks correct message complete after ID reconciliation', async () => {
+      const store = createClaudeStore({});
+      store.sendMessage('hello', {});
+
+      // Wait for ID reconciliation
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      store.handleOutboundMessage({ type: 'done', id: BRIDGE_ID } as OutboundMessage);
+
+      const assistantMsg = store.state.messages.find((m) => m.role === 'assistant') as any;
+      expect(assistantMsg!.complete).toBe(true);
+      expect(store.state.sessionStatus).toBe('idle');
+    });
+  });
 });
