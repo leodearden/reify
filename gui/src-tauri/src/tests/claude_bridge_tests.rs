@@ -249,6 +249,50 @@ fn parse_outbound_missing_required_field_returns_err() {
     assert!(result.is_err());
 }
 
+// --- SidecarHandle::kill and crash detection tests (step-19) ---
+
+#[tokio::test]
+async fn sidecar_handle_kill_sets_state_to_not_started() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Ready));
+    let (writer, _reader_end) = tokio::io::duplex(1024);
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let mut handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    handle.kill().await;
+
+    assert!(matches!(*handle.state().lock().await, SidecarState::NotStarted));
+}
+
+#[tokio::test]
+async fn crash_detection_sets_state_to_crashed_on_eof() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Ready));
+    // Use a duplex where we control the writer - dropping it simulates crash
+    let (data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
+    let (writer, _reader_end) = tokio::io::duplex(1024);
+
+    // Drop the data_writer to simulate EOF (crash)
+    drop(data_writer);
+
+    let handle = SidecarHandle::from_parts(writer, reader, state);
+
+    // Wait for reader task to notice the EOF and set Crashed
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+
+    assert!(matches!(*handle.state().lock().await, SidecarState::Crashed(_)));
+}
+
 // --- SidecarHandle::abort and clear_session tests (step-17) ---
 
 #[tokio::test]
@@ -379,15 +423,19 @@ async fn sidecar_handle_state_starts_as_starting() {
 #[tokio::test]
 async fn sidecar_handle_transitions_to_ready_on_ready_message() {
     use std::sync::Arc;
-    use tokio::io::BufReader;
+    use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::sync::Mutex;
 
     let state = Arc::new(Mutex::new(SidecarState::Starting));
-    let data = b"{\"type\":\"ready\"}\n";
-    let reader = BufReader::new(&data[..]);
-    let (writer, _) = tokio::io::duplex(1024);
+    // Use a duplex so we can write the ready message without causing immediate EOF
+    let (mut data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
+    let (writer, _writer_end) = tokio::io::duplex(1024);
 
     let handle = SidecarHandle::from_parts(writer, reader, state.clone());
+
+    // Write the ready message (without closing the writer, so no EOF)
+    data_writer.write_all(b"{\"type\":\"ready\"}\n").await.unwrap();
 
     // Yield control multiple times to let the spawned reader task execute
     for _ in 0..20 {
@@ -396,6 +444,8 @@ async fn sidecar_handle_transitions_to_ready_on_ready_message() {
 
     let s = handle.state().lock().await;
     assert!(matches!(*s, SidecarState::Ready), "Expected Ready, got {:?}", *s);
+    // Keep data_writer alive so reader task stays open (no EOF/Crashed)
+    drop(data_writer);
 }
 
 // --- write_to_sidecar tests (step-11) ---

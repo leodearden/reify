@@ -162,20 +162,28 @@ impl SidecarHandle {
         W: AsyncWrite + Unpin + Send + 'static,
         R: AsyncBufRead + Unpin + Send + 'static,
     {
-        let state_for_reader = Arc::clone(&state);
+        let state_for_ready = Arc::clone(&state);
+        let state_for_crash = Arc::clone(&state);
         let reader_handle = tokio::spawn(async move {
             read_sidecar_output(
                 reader,
                 move |msg| {
                     if let OutboundMessage::Ready = &msg {
-                        let state_inner = Arc::clone(&state_for_reader);
+                        let state_inner = Arc::clone(&state_for_ready);
                         tokio::spawn(async move {
                             *state_inner.lock().await = SidecarState::Ready;
                         });
                     }
                 },
-                || {
-                    // on_exit: reader task ends
+                move || {
+                    // on_exit: set state to Crashed unless we're already NotStarted (killed)
+                    let state_inner = state_for_crash;
+                    tokio::spawn(async move {
+                        let mut s = state_inner.lock().await;
+                        if !matches!(*s, SidecarState::NotStarted) {
+                            *s = SidecarState::Crashed("sidecar exited unexpectedly".to_string());
+                        }
+                    });
                 },
             )
             .await;
@@ -191,6 +199,12 @@ impl SidecarHandle {
     /// Get a reference to the state mutex.
     pub fn state(&self) -> &Arc<Mutex<SidecarState>> {
         &self.state
+    }
+
+    /// Kill the sidecar: abort the reader task and reset state to NotStarted.
+    pub async fn kill(&mut self) {
+        self.reader_handle.abort();
+        *self.state.lock().await = SidecarState::NotStarted;
     }
 
     /// Send an abort signal to the sidecar (cancels the current message).
