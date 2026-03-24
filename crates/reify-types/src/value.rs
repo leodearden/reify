@@ -272,9 +272,17 @@ impl Value {
                 }
                 h
             }
-            Value::Matrix(_rows) => {
-                // Stub — replaced in step-6 with tag=18 implementation
-                ContentHash::of(&[0])
+            Value::Matrix(rows) => {
+                // tag=18; hash row count, then per-row col count + element hashes
+                let mut h = ContentHash::of(&[18]);
+                h = h.combine(ContentHash::of(&(rows.len() as u64).to_le_bytes()));
+                for row in rows {
+                    h = h.combine(ContentHash::of(&(row.len() as u64).to_le_bytes()));
+                    for elem in row {
+                        h = h.combine(elem.content_hash());
+                    }
+                }
+                h
             }
             Value::Undef => ContentHash::of(&[5]),
         }
