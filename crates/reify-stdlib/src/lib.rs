@@ -622,6 +622,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         // --- Point/Vector constructors ---
         // These produce Value::Tensor since Value::Point/Vector are not runtime variants.
         "point3" => construct_point_or_vector(args, 3),
+        "vec3"   => construct_point_or_vector(args, 3),
 
         // --- Field operations (stubs) ---
         // These are handled by reify-expr's eval_expr FunctionCall interceptor
