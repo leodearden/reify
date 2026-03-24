@@ -799,6 +799,91 @@ fn outbound_to_event_ready() {
     assert!(payload.as_object().unwrap().is_empty());
 }
 
+// --- SidecarHandle child process lifecycle tests (step-28) ---
+
+#[tokio::test]
+async fn kill_without_child_sets_state_to_not_started() {
+    // from_parts creates a handle with no child (existing behavior preserved)
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Ready));
+    let (writer, _reader_end) = tokio::io::duplex(1024);
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let mut handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    // from_parts creates no child
+    assert!(!handle.has_child(), "from_parts handle should have no child");
+
+    // kill() should not panic even without a child
+    handle.kill().await;
+    assert!(matches!(*handle.state().lock().await, SidecarState::NotStarted));
+}
+
+#[tokio::test]
+async fn set_child_makes_has_child_return_true() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Starting));
+    let (writer, _reader_end) = tokio::io::duplex(1024);
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let mut handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    assert!(!handle.has_child(), "should have no child before set_child");
+
+    // Spawn a real process (sleep) to use as the child
+    let child = tokio::process::Command::new("sleep")
+        .arg("999")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to spawn sleep process");
+
+    handle.set_child(child);
+    assert!(handle.has_child(), "should have child after set_child");
+
+    // Clean up: kill the child
+    handle.kill().await;
+    assert!(!handle.has_child(), "should have no child after kill");
+}
+
+#[tokio::test]
+async fn kill_with_child_terminates_process_and_clears_child() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Ready));
+    let (writer, _reader_end) = tokio::io::duplex(1024);
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let mut handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    // Spawn a long-running process
+    let child = tokio::process::Command::new("sleep")
+        .arg("999")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to spawn sleep process");
+
+    handle.set_child(child);
+    assert!(handle.has_child());
+
+    // kill() should terminate the process and clear the child field
+    handle.kill().await;
+
+    assert!(!handle.has_child(), "child should be cleared after kill");
+    assert!(matches!(*handle.state().lock().await, SidecarState::NotStarted));
+}
+
 // --- SidecarHandle::wait_ready tests (step-26) ---
 
 #[tokio::test]
