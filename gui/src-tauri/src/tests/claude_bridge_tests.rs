@@ -1304,3 +1304,37 @@ async fn event_sink_accepts_str_ref() {
         |_name: &str, _payload: Value| {},
     );
 }
+
+// --- S3: subscribe_ready() owned future tests (step-8/step-9) ---
+
+#[tokio::test]
+async fn subscribe_ready_returns_awaitable_future() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncWriteExt, BufReader};
+
+    let state = Arc::new(std::sync::Mutex::new(SidecarState::Starting));
+    let (mut data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
+    let (writer, _writer_end) = tokio::io::duplex(1024);
+
+    let handle = SidecarHandle::from_parts(writer, reader, state);
+
+    // subscribe_ready() must return an owned 'static future — safe to hold
+    // across lock boundaries without holding a reference to the handle.
+    let ready_future = handle.subscribe_ready();
+
+    // Drop the handle reference so only the future remains.
+    // If ready_future held a reference to handle, this would not compile.
+    let handle_slot: Option<SidecarHandle> = Some(handle);
+    drop(handle_slot);
+
+    // Now deliver the ready message.
+    data_writer.write_all(b"{\"type\":\"ready\"}\n").await.unwrap();
+
+    // The future should resolve within 5 seconds.
+    tokio::time::timeout(Duration::from_secs(5), ready_future)
+        .await
+        .expect("subscribe_ready future should resolve when ready message arrives");
+    drop(data_writer);
+}
