@@ -3,6 +3,17 @@ import { createStore, produce } from 'solid-js/store';
 import type { OutboundMessage } from '../../sidecar/src/types';
 import { classifyError } from '../utils/errorClassifier';
 import type { MessageContext, ToolCallInfo, ClaudeSessionStatus } from '../types';
+import {
+  onClaudeTextDelta,
+  onClaudeThinkingDelta,
+  onClaudeToolCall,
+  onClaudeToolResult,
+  onClaudeDone,
+  onClaudeError,
+  onClaudeReady,
+  claudeSendMessage as bridgeSendMessage,
+  claudeAbort as bridgeAbort,
+} from '../bridge';
 
 // Re-export shared types so consumers can import from either location.
 export type { MessageContext, ToolCallInfo };
@@ -44,8 +55,8 @@ export interface ClaudeState {
 }
 
 export interface ClaudeStoreOptions {
-  onSend: (id: string, text: string, context: MessageContext) => void;
-  onAbort: () => void;
+  onSend?: (id: string, text: string, context: MessageContext) => void;
+  onAbort?: () => void;
 }
 
 let messageCounter = 0;
@@ -243,13 +254,52 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
       setState('currentMessageId', id);
     });
 
-    options.onSend(id, text, context);
+    if (options.onSend) {
+      options.onSend(id, text, context);
+    } else {
+      bridgeSendMessage(text, context).then((bridgeId) => {
+        setState('currentMessageId', bridgeId);
+      }).catch(() => {
+        // Bridge call failed; currentMessageId stays as local id
+      });
+    }
   }
 
   function claudeAbort(): void {
     cancelAndClear();
     setState('sessionStatus', 'idle');
-    options.onAbort();
+    if (options.onAbort) {
+      options.onAbort();
+    } else {
+      bridgeAbort();
+    }
+  }
+
+  async function subscribeToEvents(): Promise<() => void> {
+    const results = await Promise.allSettled([
+      onClaudeTextDelta((p) => handleOutboundMessage({ type: 'text_delta', id: p.id, content: p.content })),
+      onClaudeThinkingDelta((p) => handleOutboundMessage({ type: 'thinking_delta', id: p.id, content: p.content })),
+      onClaudeToolCall((p) => handleOutboundMessage({ type: 'tool_call', id: p.id, tool_name: p.tool_name, tool_input: p.tool_input })),
+      onClaudeToolResult((p) => handleOutboundMessage({ type: 'tool_result', id: p.id, tool_name: p.tool_name, result: p.result })),
+      onClaudeDone((p) => handleOutboundMessage({ type: 'done', id: p.id })),
+      onClaudeError((p) => handleOutboundMessage({ type: 'error', id: p.id, message: p.message })),
+      onClaudeReady(() => handleOutboundMessage({ type: 'ready' })),
+    ]);
+
+    const unlisteners: (() => void)[] = [];
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        unlisteners.push(result.value);
+      } else {
+        console.warn('Failed to subscribe to Claude event:', result.reason);
+      }
+    }
+
+    return () => {
+      for (const unlisten of unlisteners) {
+        unlisten();
+      }
+    };
   }
 
   function clearSession(): void {
@@ -268,5 +318,6 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     addSystemMessage,
     claudeAbort,
     clearSession,
+    subscribeToEvents,
   };
 }
