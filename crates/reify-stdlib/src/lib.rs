@@ -785,4 +785,69 @@ mod tests {
         let result = eval_builtin("sample", &[field, Value::Int(42)]);
         assert!(result.is_undef(), "sample in stdlib should return Undef (handled in eval_expr), got {:?}", result);
     }
+
+    // --- mod builtin tests (step-1) ---
+
+    #[test]
+    fn mod_basic() {
+        let result = eval_builtin("mod", &[Value::Int(7), Value::Int(3)]);
+        match result {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mod_exact_division() {
+        let result = eval_builtin("mod", &[Value::Int(6), Value::Int(3)]);
+        match result {
+            Value::Int(0) => {}
+            other => panic!("expected Int(0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mod_negative_dividend() {
+        // Rust's % truncates toward zero: -7 % 3 == -1
+        let result = eval_builtin("mod", &[Value::Int(-7), Value::Int(3)]);
+        match result {
+            Value::Int(-1) => {}
+            other => panic!("expected Int(-1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mod_negative_divisor() {
+        // -7 % -3 == -1 (truncation toward zero)
+        let result = eval_builtin("mod", &[Value::Int(-7), Value::Int(-3)]);
+        match result {
+            Value::Int(-1) => {}
+            other => panic!("expected Int(-1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mod_by_zero_returns_undef() {
+        let result = eval_builtin("mod", &[Value::Int(7), Value::Int(0)]);
+        assert!(result.is_undef(), "mod by zero should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn mod_non_int_returns_undef() {
+        let result = eval_builtin("mod", &[Value::Real(3.5), Value::Real(2.0)]);
+        assert!(result.is_undef(), "mod on Real should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn mod_wrong_arg_count_returns_undef() {
+        let result = eval_builtin("mod", &[Value::Int(7)]);
+        assert!(result.is_undef(), "mod with 1 arg should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn mod_i64_min_neg1_returns_undef() {
+        // i64::MIN % -1 overflows in Rust (panics in debug mode)
+        let result = eval_builtin("mod", &[Value::Int(i64::MIN), Value::Int(-1)]);
+        assert!(result.is_undef(), "mod(i64::MIN, -1) should be Undef (overflow), got {:?}", result);
+    }
 }
