@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use reify_types::{
     dimension::{DimensionVector, FORCE},
     ConstraintNodeId, Value, ValueCellId,
@@ -63,6 +65,66 @@ pub fn vcid(entity: &str, member: &str) -> ValueCellId {
 /// Create a ConstraintNodeId from entity name and index.
 pub fn cnid(entity: &str, index: u32) -> ConstraintNodeId {
     ConstraintNodeId::new(entity, index)
+}
+
+// --- Complex value constructors ---
+
+/// Create a Value::Int.
+pub fn int_val(n: i64) -> Value {
+    Value::Int(n)
+}
+
+/// Create a Value::Real.
+pub fn real_val(f: f64) -> Value {
+    Value::Real(f)
+}
+
+/// Create a Value::Bool.
+pub fn bool_val(b: bool) -> Value {
+    Value::Bool(b)
+}
+
+/// Create a Value::String.
+pub fn string_val(s: &str) -> Value {
+    Value::String(s.to_string())
+}
+
+/// Create a Value::Enum with the given type name and variant.
+pub fn enum_val(type_name: &str, variant: &str) -> Value {
+    Value::Enum {
+        type_name: type_name.to_string(),
+        variant: variant.to_string(),
+    }
+}
+
+/// Create a Value::List from a Vec of values.
+pub fn list_val(items: Vec<Value>) -> Value {
+    Value::List(items)
+}
+
+/// Create a Value::Set from a Vec of values (duplicates are removed).
+pub fn set_val(items: Vec<Value>) -> Value {
+    Value::Set(items.into_iter().collect::<BTreeSet<_>>())
+}
+
+/// Create a Value::Map from a Vec of (key, value) pairs.
+pub fn map_val(entries: Vec<(Value, Value)>) -> Value {
+    Value::Map(entries.into_iter().collect::<BTreeMap<_, _>>())
+}
+
+/// Create a Value::Option(Some(v)).
+pub fn some_val(v: Value) -> Value {
+    Value::Option(Some(Box::new(v)))
+}
+
+/// Create a Value::Option(None).
+pub fn none_val() -> Value {
+    Value::Option(None)
+}
+
+/// Create a Value::Undef.
+pub fn undef() -> Value {
+    Value::Undef
 }
 
 #[cfg(test)]
