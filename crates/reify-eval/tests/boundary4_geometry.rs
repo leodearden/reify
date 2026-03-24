@@ -415,4 +415,185 @@ mod occt_tests {
             other => panic!("expected Real, got {:?}", other),
         }
     }
+
+    // --- task-311 integration tests (step-11) ---
+
+    #[test]
+    fn translate_10mm_box_50mm_x_centroid() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Box {
+                width: mm(10.0),
+                height: mm(10.0),
+                depth: mm(10.0),
+            })
+            .unwrap();
+        let translated = kernel
+            .execute(&GeometryOp::Translate {
+                target: handle.id,
+                dx: 0.05,
+                dy: 0.0,
+                dz: 0.0,
+            })
+            .unwrap();
+        let centroid = kernel
+            .query(&GeometryQuery::Centroid(translated.id))
+            .unwrap();
+        match centroid {
+            Value::String(s) => {
+                let x_start = s.find("\"x\":").unwrap() + 4;
+                let x_end = s[x_start..].find([',', '}']).unwrap() + x_start;
+                let x: f64 = s[x_start..x_end].parse().unwrap();
+                assert!(
+                    (x - 0.05).abs() < 1e-9,
+                    "translate 50mm: centroid x should be ≈ 0.05, got {x}"
+                );
+            }
+            other => panic!("expected String centroid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rotate_box_90deg_z_preserves_volume() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Box {
+                width: mm(10.0),
+                height: mm(10.0),
+                depth: mm(10.0),
+            })
+            .unwrap();
+        let rotated = kernel
+            .execute(&GeometryOp::Rotate {
+                target: handle.id,
+                axis: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::FRAC_PI_2,
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(rotated.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 1e-6).abs() < 1e-9,
+                    "rotate 90°Z: volume should be preserved ≈ 1e-6 m³, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scale_box_2x_volume_becomes_8x() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Box {
+                width: mm(10.0),
+                height: mm(10.0),
+                depth: mm(10.0),
+            })
+            .unwrap();
+        let scaled = kernel
+            .execute(&GeometryOp::Scale {
+                target: handle.id,
+                factor: 2.0,
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(scaled.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                // Original volume = 1e-6 m³, scaled by 2x → 8e-6 m³
+                assert!(
+                    (v - 8e-6).abs() < 1e-9,
+                    "scale(2.0): volume should be ≈ 8e-6 m³, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scale_identity_volume_unchanged() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Box {
+                width: mm(10.0),
+                height: mm(10.0),
+                depth: mm(10.0),
+            })
+            .unwrap();
+        let scaled = kernel
+            .execute(&GeometryOp::Scale {
+                target: handle.id,
+                factor: 1.0,
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(scaled.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 1e-6).abs() < 1e-9,
+                    "scale(1.0): volume should be unchanged ≈ 1e-6 m³, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rotate_around_point_preserves_volume() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Box {
+                width: mm(10.0),
+                height: mm(10.0),
+                depth: mm(10.0),
+            })
+            .unwrap();
+        let rotated = kernel
+            .execute(&GeometryOp::RotateAround {
+                target: handle.id,
+                point: [0.05, 0.0, 0.0],
+                axis: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::FRAC_PI_2,
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(rotated.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 1e-6).abs() < 1e-9,
+                    "rotate_around: volume should be preserved ≈ 1e-6 m³, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
 }
