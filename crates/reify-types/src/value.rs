@@ -2353,6 +2353,7 @@ mod tests {
     // with an invariant violation (lower/upper_inclusive=true when bound is None).
     // Each impl (content_hash, PartialEq, Ord, Display) must panic via debug_assert!.
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "Range invariant violated")]
     fn value_range_invariant_bypass_lower_none_inclusive_content_hash() {
@@ -2365,6 +2366,7 @@ mod tests {
         let _ = r.content_hash();
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "Range invariant violated")]
     fn value_range_invariant_bypass_lower_none_inclusive_eq() {
@@ -2378,6 +2380,7 @@ mod tests {
         let _ = bad == good;
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "Range invariant violated")]
     fn value_range_invariant_bypass_lower_none_inclusive_cmp() {
@@ -2391,6 +2394,7 @@ mod tests {
         let _ = bad.cmp(&good);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "Range invariant violated")]
     fn value_range_invariant_bypass_lower_none_inclusive_display() {
@@ -2403,6 +2407,7 @@ mod tests {
         let _ = format!("{}", r);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "Range invariant violated")]
     fn value_range_invariant_bypass_upper_none_inclusive_content_hash() {
@@ -2415,6 +2420,7 @@ mod tests {
         let _ = r.content_hash();
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "Range invariant violated")]
     fn value_range_invariant_bypass_upper_none_inclusive_display() {
