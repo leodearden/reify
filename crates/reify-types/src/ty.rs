@@ -212,6 +212,14 @@ mod tests {
     }
 
     #[test]
+    fn type_point_vector_not_numeric() {
+        assert!(!Type::point2(Type::length()).is_numeric());
+        assert!(!Type::point3(Type::Real).is_numeric());
+        assert!(!Type::vec2(Type::length()).is_numeric());
+        assert!(!Type::vec3(Type::Real).is_numeric());
+    }
+
+    #[test]
     fn type_point_vector_eq_and_hash() {
         use std::collections::HashMap;
 
