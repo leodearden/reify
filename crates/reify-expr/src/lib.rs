@@ -888,6 +888,9 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         }
         // Matrix * Vector: rank-2 Tensor (rows of Tensors) × rank-1 Tensor (flat elements).
         // Produces a rank-1 Tensor (vector) of dot-product results.
+        // Uses eval_dot for each row's dot product (single-pass, short-circuiting on Undef).
+        // Uses try_fold over rows for row-level early exit: if any row's dot product is Undef,
+        // the entire mat*vec short-circuits to Undef.
         (Value::Tensor(rows), Value::Tensor(vec_elems))
             if !rows.is_empty()
                 && !vec_elems.is_empty()
@@ -895,35 +898,28 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 && !matches!(vec_elems[0], Value::Tensor(_)) =>
         {
             let k = vec_elems.len();
-            let result_elems: Vec<Value> = rows
-                .iter()
-                .map(|row| {
-                    if let Value::Tensor(row_elems) = row {
+            rows.iter()
+                .try_fold(Vec::with_capacity(rows.len()), |mut acc, row| {
+                    let dot = if let Value::Tensor(row_elems) = row {
                         if row_elems.len() != k {
-                            return Value::Undef;
+                            Value::Undef
+                        } else {
+                            eval_dot(
+                                row_elems.iter().zip(vec_elems.iter()).map(|(a, b)| eval_mul(a, b)),
+                            )
                         }
-                        let prods: Vec<Value> = row_elems
-                            .iter()
-                            .zip(vec_elems.iter())
-                            .map(|(a, b)| eval_mul(a, b))
-                            .collect();
-                        if prods.iter().any(|v| v.is_undef()) {
-                            return Value::Undef;
-                        }
-                        prods
-                            .into_iter()
-                            .reduce(|acc, x| eval_add(&acc, &x))
-                            .unwrap_or(Value::Undef)
                     } else {
                         Value::Undef
+                    };
+                    if dot.is_undef() {
+                        Err(())
+                    } else {
+                        acc.push(dot);
+                        Ok(acc)
                     }
                 })
-                .collect();
-            if result_elems.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(result_elems)
-            }
+                .map(Value::Tensor)
+                .unwrap_or(Value::Undef)
         }
         // Matrix * Matrix: rank-2 Tensor × rank-2 Tensor.
         // Computes standard O(m*n*k) matrix multiplication with automatic
