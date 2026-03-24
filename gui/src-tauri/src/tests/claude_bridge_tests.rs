@@ -355,26 +355,19 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
         .await
         .unwrap();
 
-    // Allow reader task to process the tool_call and run the spawned MCP handler
-    for _ in 0..100 {
-        tokio::task::yield_now().await;
-    }
-
-    // Verify the tool_call event was emitted to the event sink
-    let emitted = events.lock().unwrap();
-    assert!(
-        emitted.iter().any(|(name, _)| name == "claude-tool-call"),
-        "Expected claude-tool-call event in sink, got: {:?}",
-        emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
-    );
-    drop(emitted);
-
-    // Verify tool_result was written back to sidecar stdin
+    // Await the tool_result write to sidecar stdin — this is the natural synchronization
+    // point. Events are emitted synchronously (inside on_message) before the MCP handler
+    // is spawned. Once the MCP handler writes the tool_result, all prior events are done.
     let mut buf = vec![0u8; 4096];
-    let n = stdin_reader.read(&mut buf).await.unwrap_or(0);
+    let n = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stdin_reader.read(&mut buf),
+    )
+    .await
+    .expect("Timeout: tool_result was never written back to sidecar stdin")
+    .unwrap_or(0);
     assert!(n > 0, "Expected tool_result to be written back to sidecar stdin");
     let written = std::str::from_utf8(&buf[..n]).unwrap();
-    // The response should be a tool_result JSON line
     let json_val: serde_json::Value =
         serde_json::from_str(written.trim()).unwrap_or(serde_json::json!(null));
     assert_eq!(
@@ -384,6 +377,16 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
     );
     assert_eq!(json_val["tool_name"], "reify_get_diagnostics");
 
+    // Verify the tool_call event was emitted to the event sink.
+    // Events are emitted synchronously before the MCP spawn, so by the time
+    // we reach here (after awaiting tool_result), they're already recorded.
+    let emitted = events.lock().unwrap();
+    assert!(
+        emitted.iter().any(|(name, _)| name == "claude-tool-call"),
+        "Expected claude-tool-call event in sink, got: {:?}",
+        emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+    );
+    drop(emitted);
     drop(stdout_writer);
 }
 
@@ -432,10 +435,14 @@ async fn sidecar_handle_kill_sets_state_to_not_started() {
 #[tokio::test]
 async fn crash_detection_sets_state_to_crashed_on_eof() {
     use std::sync::Arc;
+    use std::time::Duration;
     use tokio::io::BufReader;
     use tokio::sync::Mutex;
 
-    let state = Arc::new(Mutex::new(SidecarState::Ready));
+    // Start as Starting (not Ready) so wait_ready uses the slow path and waits
+    // for the Notify fired by on_exit. If state were Ready, wait_ready would
+    // return Ok immediately via the fast path before the crash is detected.
+    let state = Arc::new(Mutex::new(SidecarState::Starting));
     // Use a duplex where we control the writer - dropping it simulates crash
     let (data_writer, data_reader) = tokio::io::duplex(1024);
     let reader = BufReader::new(data_reader);
@@ -446,11 +453,10 @@ async fn crash_detection_sets_state_to_crashed_on_eof() {
 
     let handle = SidecarHandle::from_parts(writer, reader, state);
 
-    // Wait for reader task to notice the EOF and set Crashed
-    for _ in 0..50 {
-        tokio::task::yield_now().await;
-    }
-
+    // wait_ready returns Err when the sidecar crashes — deterministic sync
+    // (on_exit fires notify_waiters, wait_ready wakes and sees Crashed state).
+    let result = handle.wait_ready(Duration::from_secs(5)).await;
+    assert!(result.is_err(), "Expected Err since sidecar crashed (EOF)");
     assert!(matches!(*handle.state().lock().await, SidecarState::Crashed(_)));
 }
 
@@ -568,22 +574,22 @@ async fn sidecar_handle_state_starts_as_starting() {
 
     let state = Arc::new(Mutex::new(SidecarState::Starting));
 
-    // Construct handle via from_parts with a dummy reader that ends immediately
-    let data: &[u8] = b"";
-    let reader = BufReader::new(data);
+    // Use duplex so the reader task stays open (no immediate EOF → no Crashed transition).
+    // b"" would cause immediate EOF which fires on_exit → Crashed, making the old
+    // assertion vacuous (Starting | NotStarted | Crashed always matches).
+    let (_data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
     let (writer, _reader_end) = tokio::io::duplex(1024);
 
     let handle = SidecarHandle::from_parts(writer, reader, state.clone());
-    // State should still be Starting since we haven't sent ready
-    assert!(matches!(
-        *handle.state().lock().await,
-        SidecarState::Starting | SidecarState::NotStarted | SidecarState::Crashed(_)
-    ));
+    // State must be exactly Starting — reader task has no data and the connection stays open.
+    assert!(matches!(*handle.state().lock().await, SidecarState::Starting));
 }
 
 #[tokio::test]
 async fn sidecar_handle_transitions_to_ready_on_ready_message() {
     use std::sync::Arc;
+    use std::time::Duration;
     use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::sync::Mutex;
 
@@ -598,13 +604,10 @@ async fn sidecar_handle_transitions_to_ready_on_ready_message() {
     // Write the ready message (without closing the writer, so no EOF)
     data_writer.write_all(b"{\"type\":\"ready\"}\n").await.unwrap();
 
-    // Yield control multiple times to let the spawned reader task execute
-    for _ in 0..20 {
-        tokio::task::yield_now().await;
-    }
+    // wait_ready uses Notify internally — deterministic, no yield-count guessing.
+    handle.wait_ready(Duration::from_secs(5)).await.unwrap();
 
-    let s = handle.state().lock().await;
-    assert!(matches!(*s, SidecarState::Ready), "Expected Ready, got {:?}", *s);
+    assert!(matches!(*handle.state().lock().await, SidecarState::Ready));
     // Keep data_writer alive so reader task stays open (no EOF/Crashed)
     drop(data_writer);
 }
@@ -1098,4 +1101,114 @@ fn format_inbound_send_message_with_context_includes_context() {
     assert!(line.ends_with('\n'));
     let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
     assert_eq!(json_val["context"]["selected_entity"], "box1");
+}
+
+// --- New coverage tests (task-354) ---
+
+#[tokio::test]
+async fn claude_abort_impl_errors_when_sidecar_is_none() {
+    let sidecar: tokio::sync::Mutex<Option<SidecarHandle>> = tokio::sync::Mutex::new(None);
+
+    let result = claude_abort_impl(&sidecar).await;
+
+    assert!(result.is_err(), "Expected error when sidecar is not started");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("not started"),
+        "Error should mention 'not started': {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn claude_clear_session_impl_errors_when_sidecar_is_none() {
+    let sidecar: tokio::sync::Mutex<Option<SidecarHandle>> = tokio::sync::Mutex::new(None);
+
+    let result = claude_clear_session_impl(&sidecar).await;
+
+    assert!(result.is_err(), "Expected error when sidecar is not started");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("not started"),
+        "Error should mention 'not started': {}",
+        msg
+    );
+}
+
+#[test]
+fn inbound_tool_result_serialization_round_trip() {
+    let msg = InboundMessage::ToolResult {
+        id: "msg-42".to_string(),
+        tool_name: "reify_get_shape".to_string(),
+        result: json!({"status": "ok", "vertices": 8}),
+    };
+    let json_val: Value = serde_json::to_value(&msg).unwrap();
+    assert_eq!(json_val["type"], "tool_result");
+    assert_eq!(json_val["id"], "msg-42");
+    assert_eq!(json_val["tool_name"], "reify_get_shape");
+    assert_eq!(json_val["result"]["status"], "ok");
+    assert_eq!(json_val["result"]["vertices"], 8);
+
+    // Round-trip: deserialize back and assert equality
+    let deserialized: InboundMessage = serde_json::from_value(json_val).unwrap();
+    assert_eq!(deserialized, msg);
+}
+
+#[tokio::test]
+async fn claude_send_message_impl_errors_when_sidecar_crashed() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+
+    let state = Arc::new(tokio::sync::Mutex::new(
+        SidecarState::Crashed("segfault".to_string()),
+    ));
+    let (writer, _reader_end) = tokio::io::duplex(1024);
+    let empty_reader = BufReader::new(&b""[..]);
+    let handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    let sidecar = tokio::sync::Mutex::new(Some(handle));
+
+    let result = claude_send_message_impl(&sidecar, "hello", None).await;
+
+    assert!(result.is_err(), "Expected error when sidecar is crashed");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("crashed"),
+        "Error should propagate crash reason: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn wait_ready_handles_notify_registration_race() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Starting));
+    let (mut data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
+    let (writer, _writer_end) = tokio::io::duplex(1024);
+
+    let handle = SidecarHandle::from_parts(writer, reader, state.clone());
+
+    // Write the ready message BEFORE calling wait_ready — the message is buffered
+    // in the duplex but its processing by the reader task is nondeterministic.
+    // The reader task may process it:
+    //   (a) during wait_ready's fast-path state check
+    //   (b) between fast-path and Notify subscription (the classic race window)
+    //   (c) after Notify subscription
+    // wait_ready uses the subscribe-before-recheck pattern to handle all three.
+    data_writer.write_all(b"{\"type\":\"ready\"}\n").await.unwrap();
+
+    // wait_ready must return Ok regardless of which scheduling order occurs.
+    let result = handle.wait_ready(Duration::from_secs(5)).await;
+    assert!(
+        result.is_ok(),
+        "wait_ready should handle notify registration race correctly: {:?}",
+        result
+    );
+    assert!(matches!(*handle.state().lock().await, SidecarState::Ready));
+    drop(data_writer);
 }
