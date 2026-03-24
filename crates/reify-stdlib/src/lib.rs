@@ -446,6 +446,15 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             if dot_xy.abs() > tol || dot_xz.abs() > tol || dot_yz.abs() > tol {
                 return Value::Undef;
             }
+            // Verify right-handedness via scalar triple product (determinant).
+            // det(R) = x · (y × z). For a proper rotation (SO(3)), det ≈ +1.
+            // Left-handed orthonormal bases have det = -1 and must be rejected.
+            let det = xc[0] * (yc[1] * zc[2] - yc[2] * zc[1])
+                    + xc[1] * (yc[2] * zc[0] - yc[0] * zc[2])
+                    + xc[2] * (yc[0] * zc[1] - yc[1] * zc[0]);
+            if (det - 1.0).abs() > tol {
+                return Value::Undef;
+            }
             // Rotation matrix from basis vectors (columns are the new axes)
             // R = [xc | yc | zc], where row i, col j = R[i][j]
             // R[0][0]=xc[0], R[1][0]=xc[1], R[2][0]=xc[2]
