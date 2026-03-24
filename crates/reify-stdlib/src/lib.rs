@@ -72,6 +72,13 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 
         // --- Three-arg numeric functions ---
         "clamp" => ternary(args, |x, lo, hi| match (x, lo, hi) {
+            (Value::Int(xv), Value::Int(lov), Value::Int(hiv)) => {
+                if lov > hiv {
+                    Value::Undef
+                } else {
+                    Value::Int((*xv).clamp(*lov, *hiv))
+                }
+            }
             (Value::Real(xv), Value::Real(lov), Value::Real(hiv)) => {
                 if xv.is_nan() || !valid_f64_range(*lov, *hiv) {
                     Value::Undef
