@@ -292,6 +292,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
         ],
         span: SourceSpan::new(0, 387),
         content_hash,
+        pragmas: vec![],
     };
 
     ParsedModule {
@@ -299,6 +300,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
         declarations: vec![reify_syntax::Declaration::Structure(structure)],
         errors: vec![],
         content_hash,
+        pragmas: vec![],
     }
 }
 

@@ -43,6 +43,7 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
         declarations: lowering.declarations,
         errors: lowering.errors,
         content_hash,
+        pragmas: Vec::new(),
     }
 }
 
@@ -510,6 +511,7 @@ impl<'a> Lowering<'a> {
             members,
             span: self.span(node),
             content_hash: self.content_hash(node),
+            pragmas: Vec::new(),
         })
     }
 
@@ -601,6 +603,7 @@ impl<'a> Lowering<'a> {
             members,
             span: self.span(node),
             content_hash: self.content_hash(node),
+            pragmas: Vec::new(),
         })
     }
 
@@ -655,6 +658,7 @@ impl<'a> Lowering<'a> {
             predicates,
             span: self.span(node),
             content_hash: self.content_hash(node),
+            pragmas: Vec::new(),
         })
     }
 
@@ -895,6 +899,7 @@ impl<'a> Lowering<'a> {
             members,
             span: self.span(node),
             content_hash,
+            pragmas: Vec::new(),
         })
     }
 
@@ -916,6 +921,7 @@ impl<'a> Lowering<'a> {
             members,
             span: self.span(node),
             content_hash,
+            pragmas: Vec::new(),
         })
     }
 
