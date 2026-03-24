@@ -341,8 +341,12 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Type, ctx: &EvalContext) -> Value {
     match method {
         "count" => match obj {
-            Value::List(items) => Value::Int(items.len() as i64),
-            Value::Set(items) => Value::Int(items.len() as i64),
+            Value::List(items) => {
+                if items.iter().any(|v| v.is_undef()) { Value::Undef } else { Value::Int(items.len() as i64) }
+            },
+            Value::Set(items) => {
+                if items.iter().any(|v| v.is_undef()) { Value::Undef } else { Value::Int(items.len() as i64) }
+            },
             Value::Map(entries) => Value::Int(entries.len() as i64),
             _ => Value::Undef,
         },
@@ -570,8 +574,8 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                         match pred {
                             Value::Bool(true) => results.push(item.clone()),
                             Value::Bool(false) => {} // skip
-                            Value::Undef => return Value::Undef,
-                            _ => return Value::Undef,
+                            Value::Undef => results.push(item.clone()), // conservative: retain when predicate is unknown
+                            _ => return Value::Undef, // type error: non-Bool predicate
                         }
                     }
                     Value::List(results)
