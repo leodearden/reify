@@ -138,6 +138,36 @@ fn parse_constraint_def_with_type_params() {
     assert_eq!(cd.type_params[0].name, "T");
 }
 
+// ── Step 13: complex integration test ────────────────────────────
+
+#[test]
+fn parse_constraint_def_complex() {
+    // A realistic constraint def from the spec style (DFM-like)
+    let source = "pub constraint def MinWallThickness<M : ManufacturingProcess> {
+        param wall : Length
+        param process : M
+        wall >= process.min_wall_thickness
+        wall > 0
+    }";
+    let (decls, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let cd = match &decls[0] {
+        Declaration::Constraint(c) => c,
+        other => panic!("expected Constraint, got {:?}", other),
+    };
+
+    assert_eq!(cd.name, "MinWallThickness");
+    assert!(cd.is_pub);
+    assert_eq!(cd.type_params.len(), 1);
+    assert_eq!(cd.type_params[0].name, "M");
+    assert_eq!(cd.params.len(), 2);
+    assert_eq!(cd.params[0].name, "wall");
+    assert_eq!(cd.params[1].name, "process");
+    assert_eq!(cd.predicates.len(), 2);
+}
+
 // ── Step 15: syntax error in constraint body ──────────────────────
 
 #[test]
@@ -172,60 +202,35 @@ fn parse_constraint_def_body_syntax_error() {
 
 #[test]
 fn parse_constraint_def_error_param() {
-    // `param : Length` is missing the param name — tree-sitter produces a
-    // param_declaration node with has_error() == true.
-    // With bare `self.lower_param(child)` (no check_and_lower!), the error param
-    // is silently dropped with no diagnostic pushed.
-    // After step-18 fix, check_and_lower! emits 'invalid constraint param: ...'.
-    let source = "constraint def Bad { param : Length  x > 0 }";
+    // `param wall : Box<>` — empty type args cause tree-sitter to insert a
+    // MISSING identifier node inside type_args, making the param_declaration
+    // node have `has_error() == true`.
+    //
+    // Without `check_and_lower!` (before step-18), `self.lower_param()` is called
+    // directly: it succeeds (name "wall" is found) and silently adds the malformed
+    // param to params with no diagnostic pushed.
+    //
+    // After step-18 fix, `check_and_lower!` detects `has_error()`, emits
+    // 'invalid constraint param: ...', and skips the param entirely.
+    let source = "constraint def Bad { param wall : Box<>  x > 0 }";
     let (decls, errors) = parse_decls(source);
     assert!(
         !errors.is_empty(),
-        "expected parse errors for malformed param_declaration, got none"
+        "expected parse errors for malformed param_declaration (Box<> has MISSING type arg), got none"
     );
     assert!(
         errors.iter().any(|e| e.message.contains("invalid constraint param")),
         "expected an error message containing 'invalid constraint param', got: {:?}",
         errors
     );
-    // The constraint should still be constructed (0 params, 1 valid predicate).
+    // The constraint should still be constructed: 0 params (bad param skipped), 1 valid predicate.
     assert_eq!(decls.len(), 1, "expected constraint decl to be constructed despite param error");
     match &decls[0] {
         Declaration::Constraint(c) => {
             assert_eq!(c.name, "Bad");
-            assert_eq!(c.params.len(), 0, "expected 0 params (bad param skipped)");
-            assert_eq!(c.predicates.len(), 1, "expected 1 valid predicate");
+            assert_eq!(c.params.len(), 0, "expected 0 params (malformed param skipped by check_and_lower!)");
+            assert_eq!(c.predicates.len(), 1, "expected 1 valid predicate (x > 0)");
         }
         other => panic!("expected Declaration::Constraint, got {:?}", other),
     }
-}
-
-// ── Step 13: complex integration test ────────────────────────────
-
-#[test]
-fn parse_constraint_def_complex() {
-    // A realistic constraint def from the spec style (DFM-like)
-    let source = "pub constraint def MinWallThickness<M : ManufacturingProcess> {
-        param wall : Length
-        param process : M
-        wall >= process.min_wall_thickness
-        wall > 0
-    }";
-    let (decls, errors) = parse_decls(source);
-    assert!(errors.is_empty(), "parse errors: {:?}", errors);
-    assert_eq!(decls.len(), 1);
-
-    let cd = match &decls[0] {
-        Declaration::Constraint(c) => c,
-        other => panic!("expected Constraint, got {:?}", other),
-    };
-
-    assert_eq!(cd.name, "MinWallThickness");
-    assert!(cd.is_pub);
-    assert_eq!(cd.type_params.len(), 1);
-    assert_eq!(cd.type_params[0].name, "M");
-    assert_eq!(cd.params.len(), 2);
-    assert_eq!(cd.params[0].name, "wall");
-    assert_eq!(cd.params[1].name, "process");
-    assert_eq!(cd.predicates.len(), 2);
 }

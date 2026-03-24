@@ -615,9 +615,8 @@ impl<'a> Lowering<'a> {
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "param_declaration" => {
-                    if let Some(p) = self.lower_param(child) {
-                        params.push(p);
-                    }
+                    let _ = check_and_lower!(self, child, "constraint param",
+                        self.lower_param(child).map(|p| params.push(p)));
                 }
                 "let_declaration" => {
                     // let declarations in constraint def body are ignored for now
@@ -629,6 +628,15 @@ impl<'a> Lowering<'a> {
                     {
                         predicates.push(expr);
                     }
+                }
+                "ERROR" => {
+                    self.errors.push(ParseError {
+                        message: format!(
+                            "syntax error in constraint body: {}",
+                            self.node_text(child)
+                        ),
+                        span: self.span(child),
+                    });
                 }
                 _ => {}
             }
