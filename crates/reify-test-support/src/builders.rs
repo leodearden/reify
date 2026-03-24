@@ -715,6 +715,17 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "literal() cannot infer Range element type")]
+    fn literal_fully_unbounded_range_panics() {
+        let _ = literal(Value::Range {
+            lower: None,
+            upper: None,
+            lower_inclusive: false,
+            upper_inclusive: false,
+        });
+    }
+
+    #[test]
     fn auto_param_builder() {
         let template = TopologyTemplateBuilder::new("T")
             .auto_param("T", "x", Type::length())
