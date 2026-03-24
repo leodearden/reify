@@ -79,6 +79,69 @@ pub enum DefaultKind {
     Constraint(reify_syntax::ConstraintDecl),
 }
 
+/// An error returned by `check_trait_conformance` describing why a structure
+/// member map does not satisfy a trait requirement.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConformanceError {
+    /// The structure is missing a required `param` member.
+    MissingParam { name: String, expected_type: Type },
+    /// The structure has a `param` member with the wrong type.
+    TypeMismatch { name: String, expected_type: Type, actual_type: Type },
+    /// The structure is missing a required `let` member.
+    MissingLet { name: String, expected_type: Type },
+    /// The structure has a `let` member with the wrong type.
+    LetTypeMismatch { name: String, expected_type: Type, actual_type: Type },
+}
+
+/// Pure conformance check: given a flat member map and a single compiled trait
+/// definition, return all conformance errors for required `param` and `let`
+/// members.  Sub requirements are not checked (they need richer input).
+/// Refinement hierarchy walking remains the caller's responsibility.
+pub fn check_trait_conformance(
+    structure_members: &HashMap<String, Type>,
+    trait_def: &CompiledTrait,
+) -> Vec<ConformanceError> {
+    let mut errors = Vec::new();
+    for req in &trait_def.required_members {
+        match &req.kind {
+            RequirementKind::Param(expected_type) => {
+                match structure_members.get(&req.name) {
+                    None => errors.push(ConformanceError::MissingParam {
+                        name: req.name.clone(),
+                        expected_type: expected_type.clone(),
+                    }),
+                    Some(actual_type) if actual_type != expected_type => {
+                        errors.push(ConformanceError::TypeMismatch {
+                            name: req.name.clone(),
+                            expected_type: expected_type.clone(),
+                            actual_type: actual_type.clone(),
+                        });
+                    }
+                    Some(_) => {} // satisfied
+                }
+            }
+            RequirementKind::Let(expected_type) => {
+                match structure_members.get(&req.name) {
+                    None => errors.push(ConformanceError::MissingLet {
+                        name: req.name.clone(),
+                        expected_type: expected_type.clone(),
+                    }),
+                    Some(actual_type) if actual_type != expected_type => {
+                        errors.push(ConformanceError::LetTypeMismatch {
+                            name: req.name.clone(),
+                            expected_type: expected_type.clone(),
+                            actual_type: actual_type.clone(),
+                        });
+                    }
+                    Some(_) => {} // satisfied
+                }
+            }
+            RequirementKind::Sub(_) => {} // Sub checking not in scope for this function
+        }
+    }
+    errors
+}
+
 /// The compiled source of a field.
 #[derive(Debug, Clone)]
 pub enum CompiledFieldSource {
@@ -2682,7 +2745,7 @@ fn compile_entity(
 
     // Trait conformance checking: verify structure satisfies all trait bounds.
     if !structure.trait_bounds.is_empty() {
-        check_trait_conformance(
+        check_and_apply_trait_conformance(
             structure,
             trait_registry,
             &mut scope,
@@ -4396,7 +4459,7 @@ fn compile_per_decl_constraint_guard(
 /// refinement chains), and verifies the structure satisfies them.
 /// Injects trait defaults for members not overridden by the structure.
 #[allow(clippy::too_many_arguments)]
-fn check_trait_conformance(
+fn check_and_apply_trait_conformance(
     structure: &EntityDefRef<'_>,
     trait_registry: &HashMap<String, &CompiledTrait>,
     scope: &mut CompilationScope,
