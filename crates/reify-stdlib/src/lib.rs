@@ -260,6 +260,19 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 
         // --- Linear algebra: dot, cross, magnitude, normalize ---
 
+        "normalize" => unary(args, |v| {
+            let (vals, _dim) = match tensor_components_f64(v) {
+                Some(c) => c,
+                None => return Value::Undef,
+            };
+            let sum_sq: f64 = vals.iter().map(|x| x * x).sum();
+            let mag = sum_sq.sqrt();
+            if mag == 0.0 {
+                return Value::Undef;
+            }
+            Value::Tensor(vals.iter().map(|x| Value::Real(x / mag)).collect())
+        }),
+
         "magnitude" => unary(args, |v| {
             let (vals, dim) = match tensor_components_f64(v) {
                 Some(c) => c,
