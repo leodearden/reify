@@ -104,6 +104,90 @@ fn conformance_type_mismatch_error() {
     }
 }
 
+/// step-7: satisfied param → no errors (happy path).
+#[test]
+fn conformance_satisfied_param_no_errors() {
+    let trait_def = CompiledTrait {
+        name: "HasWidth".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "width".to_string(),
+            kind: RequirementKind::Param(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("HasWidth"),
+    };
+    let mut structure_members = std::collections::HashMap::new();
+    structure_members.insert(
+        "width".to_string(),
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+    );
+    let errors = check_trait_conformance(&structure_members, &trait_def);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+}
+
+/// step-8: multiple requirements — one satisfied, one mismatched, one missing.
+#[test]
+fn conformance_multiple_requirements_mixed() {
+    let trait_def = CompiledTrait {
+        name: "Complex".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![
+            TraitRequirement {
+                name: "width".to_string(),
+                kind: RequirementKind::Param(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                }),
+                span: test_span(),
+            },
+            TraitRequirement {
+                name: "mass".to_string(),
+                kind: RequirementKind::Param(Type::Scalar {
+                    dimension: DimensionVector::MASS,
+                }),
+                span: test_span(),
+            },
+            TraitRequirement {
+                name: "name".to_string(),
+                kind: RequirementKind::Param(Type::String),
+                span: test_span(),
+            },
+        ],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("Complex"),
+    };
+    // 'width' correct, 'mass' wrong type (Length not Mass), 'name' missing.
+    let mut structure_members = std::collections::HashMap::new();
+    structure_members.insert(
+        "width".to_string(),
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+    );
+    structure_members.insert(
+        "mass".to_string(),
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+    );
+    let errors = check_trait_conformance(&structure_members, &trait_def);
+    assert_eq!(errors.len(), 2, "expected 2 errors, got: {:?}", errors);
+
+    let has_type_mismatch = errors.iter().any(|e| matches!(
+        e,
+        ConformanceError::TypeMismatch { name, .. } if name == "mass"
+    ));
+    let has_missing_param = errors.iter().any(|e| matches!(
+        e,
+        ConformanceError::MissingParam { name, .. } if name == "name"
+    ));
+    assert!(has_type_mismatch, "expected TypeMismatch for 'mass', errors: {:?}", errors);
+    assert!(has_missing_param, "expected MissingParam for 'name', errors: {:?}", errors);
+}
+
 /// Helper: parse source and compile, returning the CompiledModule.
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
