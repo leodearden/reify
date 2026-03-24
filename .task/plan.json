@@ -95,6 +95,20 @@
       "description": "Add 'dot', 'cross', 'normalize', 'magnitude' to the BUILTIN_FUNCTIONS const array in crates/reify-lsp/src/completion.rs (line 84-86)",
       "status": "done",
       "commit": "597ce0a"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing tests for normalize() sanitization: (1) normalize(Tensor([NaN, 1.0, 0.0])) returns Undef \u2014 a NaN component causes sum_sq to be NaN, mag to be NaN, mag==0.0 is false, and x/mag produces NaN which must be caught by sanitize_value; (2) normalize(Tensor([Inf, 1.0, 0.0])) returns Undef \u2014 Inf component causes Inf magnitude, division produces NaN/Inf components that must be sanitized; (3) normalize(Tensor([f64::MAX, f64::MAX, 0.0])) returns Undef \u2014 squaring overflows to Inf, magnitude is Inf, division produces NaN that must be sanitized. These tests will FAIL against the current normalize implementation because it does not wrap output components with sanitize_value.",
+      "status": "done",
+      "commit": "0d456c8"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Fix normalize() sanitization gap: wrap each output component with sanitize_value in the normalize match arm. Change line 273 from `Value::Tensor(vals.iter().map(|x| Value::Real(x / mag)).collect())` to `Value::Tensor(vals.iter().map(|x| sanitize_value(Value::Real(x / mag))).collect())`. This ensures NaN/Inf from non-finite inputs or overflow is converted to Undef, consistent with cross(), magnitude(), and dot() which all sanitize their outputs. Since sanitize_value returns Undef for NaN/Inf Real values, a Tensor containing any Undef components after sanitization indicates the normalize result is invalid \u2014 but the current Tensor representation allows mixed components, so individual NaN components become Undef within the Tensor. Alternative: add an up-front guard `if vals.iter().any(|x| !x.is_finite()) { return Value::Undef; }` to reject non-finite inputs early and return Undef for the whole result, which is cleaner since a partially-Undef Tensor is not meaningful.",
+      "status": "done",
+      "commit": "df8409e"
     }
   ],
   "design_decisions": [
@@ -121,6 +135,10 @@
     {
       "decision": "Factor out a tensor_components_f64 helper to extract (Vec<f64>, DimensionVector) from a Tensor",
       "rationale": "All four builtins need the same extraction logic: validate Tensor, extract f64 from each component, verify dimension consistency. A shared helper avoids code duplication and ensures consistent error handling across dot/cross/magnitude/normalize."
+    },
+    {
+      "decision": "normalize() uses up-front non-finite guard rather than per-component sanitize_value",
+      "rationale": "A partially-Undef Tensor (e.g. Tensor([Undef, Real(0.8), Undef])) is not meaningful for normalize \u2014 the whole result is invalid. An up-front check `if vals.iter().any(|x| !x.is_finite()) { return Value::Undef; }` rejects the entire input cleanly, returning a single Undef. This is more correct than per-component sanitization which would produce a mixed Tensor. The guard also catches the case early before any division arithmetic."
     }
   ],
   "reuse": [
@@ -171,5 +189,5 @@
     }
   ],
   "_session_id": "301-4bedc068",
-  "_created_at": "2026-03-24T10:47:05.948193+00:00"
+  "_created_at": "2026-03-24T10:59:50.575498+00:00"
 }
