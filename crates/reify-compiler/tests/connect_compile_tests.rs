@@ -453,6 +453,36 @@ structure def S {
     );
 }
 
+// ── step-11: connector_param_validation_unknown_param ────────────────
+
+#[test]
+fn connector_param_validation_unknown_param() {
+    let source = r#"
+trait T {}
+structure def BoltSet { param grade : Real = 8.8 }
+structure def S {
+    port a : out T {}
+    port b : in T {}
+    connect a -> b : BoltSet { unknown_param = 5.0 }
+}
+"#;
+
+    let module = compile_module(source);
+
+    // Should have an error about unknown_param
+    let unknown_errors: Vec<_> = module.diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error
+            && d.message.contains("unknown")
+            && d.message.contains("unknown_param"))
+        .collect();
+    assert!(
+        !unknown_errors.is_empty(),
+        "expected error about unknown connector param 'unknown_param', diagnostics: {:?}",
+        module.diagnostics
+    );
+}
+
 // ── step-9: port_type_compatibility_refinement_ok ────────────────────
 
 #[test]
