@@ -1,239 +1,258 @@
 {
-  "task_id": "203",
-  "title": "Recursive structures: detection",
+  "task_id": "278",
+  "title": "Pragma framework: parser",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/recursive_structure_tests.rs"
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "tree-sitter-reify/src/grammar.json",
+    "tree-sitter-reify/src/node-types.json",
+    "tree-sitter-reify/src/lib.rs",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/pragma_tests.rs"
   ],
   "modules": [
-    "crates/reify-compiler"
+    "tree-sitter-reify",
+    "crates/reify-syntax"
   ],
-  "analysis": "Task 203 requires detecting self-referential structure definitions during compilation. Structures in Reify can contain `sub` declarations that reference other structures (e.g., `sub x = B()`). When structure A contains a sub of type B, and B contains a sub of type A (or transitively through any chain), we have a recursive cycle.\n\nThe compiler already has all the infrastructure needed: (1) TopologyTemplate has `sub_components: Vec<SubComponentDecl>` where each SubComponentDecl has a `structure_name` field identifying the referenced structure. (2) After all templates are compiled (line 1894), a template_registry HashMap<String, &TopologyTemplate> is built for deferred checks. (3) module_dag.rs provides a pattern for DFS cycle detection.\n\nApproach: Add a post-compilation pass (after all templates are compiled, similar to bound checks) that builds a directed graph of structure references from sub_components, then runs DFS to detect cycles. When a cycle is found, emit a diagnostic and tag the participating templates with `is_recursive = true`. This flag will be consumed by downstream tasks for special handling (e.g., preventing infinite elaboration in reify-eval).\n\nThe reference graph is: for each TopologyTemplate T, for each SubComponentDecl S in T.sub_components, add edge T.name -> S.structure_name. Then run DFS with gray/black coloring to find back-edges indicating cycles. When a back-edge is found, extract the cycle path from the DFS stack.\n\nKey design choice: Tag templates with `is_recursive: bool` rather than blocking compilation. Recursive structures may be valid with collection subs or guarded subs \u2014 they need special handling at elaboration time, not outright rejection. The diagnostic is a warning-level note identifying the cycle path.\n\n--- REVIEW FIX (reviewer_robustness/incorrect_cycle_detection) ---\n\nThe DFS-based cycle detection has a bug: the `Some(false)` arm (black/fully-explored node) takes no action, so when a second DFS path reaches a cycle member that's already fully explored, intermediate nodes on that path are never tagged in_cycle. Example: graph A\u2192B, A\u2192D, B\u2192C, D\u2192C, C\u2192A. DFS finds A\u2192B\u2192C\u2192A and marks A,B,C in_cycle. Then A visits D; D visits C (black, in_cycle), but the `Some(false)` arm does nothing \u2014 D is never tagged, yet D participates in the genuine cycle A\u2192D\u2192C\u2192A.\n\nNaive fix (propagate in_cycle when black neighbor is in_cycle) would cause false positives: if X\u2192Y\u2192X is a cycle and Z\u2192Y exists, Z would be wrongly marked even though there's no path Y\u2192Z.\n\nCorrect fix: replace the DFS with Tarjan's SCC algorithm. Tarjan's finds all strongly connected components in O(V+E). Every node in an SCC of size > 1 is a cycle participant. Self-loops (SCC of size 1 with self-edge) are also cycles. This handles multi-path convergence correctly because SCC membership is determined by mutual reachability, not by DFS tree structure. Cycle paths for diagnostics can be reconstructed from the SCC's adjacency sub-graph.",
-  "prerequisites": [],
+  "analysis": "This task adds pragma parsing (`#ident(args)`) at module level and block level to the Reify language.\n\n**Current state:** No pragma/annotation support exists. The `#` character currently produces a parse error (verified by `test_hash_not_parsed_as_comment` in tree-sitter-reify). The parser uses tree-sitter CST-to-AST lowering via grammar.js -> parser.c -> ts_parser.rs.\n\n**Architecture \u2014 three layers must change:**\n1. **Grammar (tree-sitter-reify/grammar.js):** Add `pragma` rule with `#identifier(comma_sep_args)` syntax. Args are `key=value` pairs or bare values. Pragmas appear at module level (in `source_file` via `_declaration`) and block level (in `_member`, `trait_member`, `purpose_member`).\n2. **AST types (reify-syntax/lib.rs):** Add `Pragma`, `PragmaArg`, `PragmaValue` types. Add `pragmas: Vec<Pragma>` to `ParsedModule` (module-level) and to block-scoped types (`StructureDef`, `OccurrenceDef`, `TraitDecl`, `PurposeDef`, `ConstraintDef`).\n3. **Lowering (reify-syntax/ts_parser.rs):** Add `lower_pragma()` method. Update `lower_source_file()` to collect module-level pragmas. Update block lowering methods to collect block-level pragmas into each definition's pragmas vec.\n\n**Backward compatibility:** Adding `pragmas` fields to existing structs is fully backward-compatible in Rust since struct fields are accessed by name, not by position. The `Declaration` enum is NOT changed \u2014 pragmas are metadata, not declarations. Downstream exhaustive matches on `Declaration` in reify-compiler (12 arms) and reify-lsp won't break. All existing struct construction sites in ts_parser.rs just need `pragmas: Vec::new()` added.\n\n**Grammar design:** Pragmas use `#` prefix (like Rust attributes, but without brackets). The tree-sitter grammar requires `#` to be immediately followed by an identifier. Pragma values support identifiers, numbers, strings, and booleans \u2014 the same literal types already in the grammar. The existing `test_hash_not_parsed_as_comment` test remains valid because `# not` (hash-space-word) is still a parse error.\n\n**Key risk:** The grammar change + `tree-sitter generate` is a prerequisite for all tests. The test `test_hash_not_parsed_as_comment` must be checked after grammar changes (it should still pass since `# ` with space is invalid).",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add pragma grammar rules to tree-sitter-reify/grammar.js: (1) `pragma` rule: seq('#', field('name', $.identifier), optional(seq('(', commaSep($.pragma_arg), ')'))); (2) `pragma_arg` rule: choice(seq(field('key', $.identifier), '=', field('value', $._pragma_value)), field('value', $._pragma_value)); (3) `_pragma_value` rule: choice($.identifier, $.number_literal, $.string_literal, $.bool_literal). Add $.pragma to source_file repeat, to _member choice, to trait_member choice, and to purpose_member choice. Add [$.pragma_arg] to conflicts array.",
+      "status": "done",
+      "commit": "a4a4972",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Regenerate the tree-sitter parser by running `npx tree-sitter generate` in tree-sitter-reify/. This updates parser.c, grammar.json, and node-types.json. Verify the existing test_hash_not_parsed_as_comment still passes (# followed by space is still invalid). Add a new positive test test_pragma_parsed that verifies `#optimize\\nstructure S {}` parses without errors and the CST contains a 'pragma' node kind.",
+      "status": "done",
+      "commit": "a4a4972",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add Pragma, PragmaArg, and PragmaValue AST types to crates/reify-syntax/src/lib.rs. Pragma has name:String, args:Vec<PragmaArg>, span:SourceSpan. PragmaArg is enum with KeyValue{key,value} and Bare(PragmaValue). PragmaValue is enum with Ident(String), Number(f64), String(String), Bool(bool). Add `pragmas: Vec<Pragma>` field to ParsedModule, StructureDef, OccurrenceDef, TraitDecl, PurposeDef, and ConstraintDef. Initialize all new pragmas fields to Vec::new() in every struct construction site in ts_parser.rs so existing tests keep passing.",
+      "status": "done",
+      "commit": "4f843a1",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: direct self-reference (structure A has sub x = A()) is detected and tagged as recursive \u2014 assert template.is_recursive == true and a warning diagnostic contains 'recursive structure cycle'",
+      "description": "Write failing test: parse bare pragma `#optimize` at module level (no args). Source: `#optimize\\nstructure S { param x: Real }`. Assert ParsedModule.pragmas.len()==1, pragmas[0].name=='optimize', pragmas[0].args is empty.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "3088c2e"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `is_recursive: bool` field to TopologyTemplate (default false). Add `detect_recursive_structures()` function that builds adjacency list from templates' sub_components and runs DFS cycle detection. Wire it into compile() after all templates are compiled. Set is_recursive=true on templates in cycles. Emit warning diagnostic with cycle path.",
+      "description": "Implement `lower_pragma()` in ts_parser.rs: extract 'name' field via child_by_field_name, create Pragma with name and empty args. Update `lower_source_file()` second pass to handle 'pragma' node kind: call lower_pragma and push to a new pragmas vec. Pass pragmas vec into ParsedModule construction.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "6347acd"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: mutual recursion (A has sub b = B(), B has sub a = A()) \u2014 both A and B are tagged as is_recursive=true",
+      "description": "Write failing test: parse pragma with key=value args `#config(level=3, name=\"test\")`. Assert pragmas[0].args.len()==2, first arg is KeyValue{key:'level', value:Number(3.0)}, second is KeyValue{key:'name', value:String('test')}.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "aa4b7b2"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Ensure detect_recursive_structures handles mutual/indirect cycles by propagating is_recursive to all nodes in any cycle, not just the back-edge node",
+      "description": "Extend `lower_pragma()` to iterate pragma_arg children. For each pragma_arg: if it has a 'key' field, emit PragmaArg::KeyValue with key from field name and value from lower_pragma_value(). Implement lower_pragma_value() to dispatch on node kind: identifier->Ident, number_literal->Number, string_literal->String, bool_literal->Bool.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "aa4b7b2"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: indirect cycle through 3 structures (A->B->C->A) \u2014 all three tagged as is_recursive=true and diagnostic message contains full cycle path 'A -> B -> C -> A'",
+      "description": "Write failing test: parse pragma with bare value args `#feature(sse2, avx)`. Assert pragmas[0].args.len()==2, both are Bare(Ident('sse2')) and Bare(Ident('avx')).",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "35ccfdf"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Ensure cycle path reconstruction works for chains of arbitrary length by tracking the DFS path stack and extracting the cycle when a back edge is found",
+      "description": "Extend lower_pragma() arg handling: if pragma_arg has no 'key' field, emit PragmaArg::Bare with the value from lower_pragma_value().",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "35ccfdf"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test: non-recursive structures (A->B, C->D, no cycles) \u2014 none tagged as recursive, no warning diagnostics emitted about recursion",
+      "description": "Write test: parse pragma with mixed args `#config(debug, level=2, name=\"prod\")`. Assert 3 args: Bare(Ident('debug')), KeyValue('level', Number(2.0)), KeyValue('name', String('prod')).",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "35ccfdf"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify non-recursive DAG structures produce no false positives (should already pass if DFS is correct, fix if not)",
+      "description": "Verify mixed args handling works from steps 4+6 combined. Fix if needed.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "35ccfdf"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test: mixed recursive and non-recursive structures in same module \u2014 only cycle participants are tagged is_recursive=true, others remain false. E.g., A->B->A cycle plus standalone C->D \u2014 C and D stay is_recursive=false",
+      "description": "Write test: parse multiple module-level pragmas. Source: `#optimize\\n#config(level=3)\\nstructure S {}`. Assert ParsedModule.pragmas.len()==2 with names 'optimize' and 'config'.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "448992f"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Ensure tagging is precise: only structures participating in a cycle get is_recursive=true. Structures that reference a recursive structure but aren't themselves in a cycle remain false.",
+      "description": "Verify multiple pragma accumulation in lower_source_file works. Should already work from step-2 loop, fix if needed.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "448992f"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test: sub referencing unknown/external structure name does not cause panic or false positive \u2014 structure with sub pointing to non-existent type compiles without recursion diagnostics",
+      "description": "Write failing test: parse pragma at block level inside structure. Source: `structure S { #internal\\nparam x: Real }`. Assert S.pragmas.len()==1, S.pragmas[0].name=='internal'. Assert module-level pragmas is empty.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "448992f"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Ensure detect_recursive_structures only adds edges for structure_names that exist in the template set \u2014 skip unknown/external references gracefully",
+      "description": "Refactor lower_members() to return (Vec<MemberDecl>, Vec<Pragma>) tuple, collecting pragma nodes separately from member nodes. Update lower_structure() to unpack the tuple and set pragmas on StructureDef.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "448992f"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test: structure with multiple sub declarations, one creating a cycle and one not \u2014 structure is correctly tagged as recursive. E.g., A has sub b = B() and sub c = C(), B has sub a = A() \u2014 A and B are recursive, C is not",
+      "description": "Write failing test: parse pragma inside occurrence block. Source: `occurrence P { #temporal\\nparam t: Real }`. Assert OccurrenceDef.pragmas.len()==1, name=='temporal'.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "448992f"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Verify all edges from a template are considered (multiple subs), and the diagnostic label points to the specific sub creating the back-edge",
+      "description": "Update lower_occurrence() to use the refactored lower_members() and unpack pragmas into OccurrenceDef.pragmas.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "448992f"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write test: structure with no subs at all is not tagged as recursive and produces no recursion diagnostics",
+      "description": "Write failing test: parse pragma inside trait block. Source: `trait R { #required\\nparam mass: Real }`. Assert TraitDecl.pragmas.len()==1, name=='required'.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "448992f"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Verify edge case: templates with empty sub_components are handled correctly (no edges added, no iteration issues)",
+      "description": "Update lower_trait_members() to return (Vec<MemberDecl>, Vec<Pragma>). Update lower_trait() to unpack and set TraitDecl.pragmas.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "448992f"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write failing test for multi-path cycle convergence (reviewer bug): graph A\u2192B, A\u2192D, B\u2192C, D\u2192C, C\u2192A. All four structures participate in cycles (A\u2192B\u2192C\u2192A and A\u2192D\u2192C\u2192A). Assert all four are tagged is_recursive=true. This test will FAIL with the current DFS because D is reached via a black (already-explored) node C and the Some(false) arm takes no action, leaving D untagged.",
+      "description": "Write test: pragmas are scoped to enclosing block. Source: `#module_level\\nstructure S { #block_level\\nparam x: Real }`. Assert module.pragmas==['module_level'], S.pragmas==['block_level'] \u2014 no cross-contamination.",
       "status": "done",
-      "commit": "c68e309"
+      "commit": "448992f"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Replace dfs_detect_cycle with Tarjan's SCC algorithm. Tarjan's correctly finds all strongly connected components in O(V+E) by tracking index and lowlink values on a stack. Tag all nodes in SCCs of size > 1 as in_cycle. Also tag self-loop SCCs (size 1 where node has edge to itself). Reconstruct one representative cycle path per SCC from the adjacency sub-graph for diagnostic messages. Remove the old dfs_detect_cycle function entirely.",
+      "description": "Verify scoping isolation works. Module pragmas collected in lower_source_file, block pragmas collected in lower_members. Should already be correct by design.",
       "status": "done",
-      "commit": "e6d821d"
+      "commit": "448992f"
     },
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write test for false-positive resistance: structure Z has sub a = A(), and A\u2192B\u2192A is a cycle, but there is no path from A or B back to Z. Assert Z is NOT tagged is_recursive (Z merely points into a cycle without being part of one). This validates that Tarjan's SCC correctly excludes nodes that have edges into an SCC but aren't members of it.",
+      "description": "Write test: pragma with boolean and number value types. Source: `#feature(enabled=true, count=42)`. Assert KeyValue('enabled', Bool(true)) and KeyValue('count', Number(42.0)).",
       "status": "done",
-      "commit": "c68e309"
+      "commit": "448992f"
     },
     {
       "id": "step-20",
       "type": "impl",
-      "description": "Verify the false-positive test passes with Tarjan's SCC (should pass because SCC membership requires mutual reachability \u2014 Z can reach A but A cannot reach Z, so Z is in its own singleton SCC with no self-edge).",
+      "description": "Verify all PragmaValue variants work in lower_pragma_value. Should already work from step-4.",
       "status": "done",
-      "commit": "e6d821d"
+      "commit": "448992f"
     },
     {
       "id": "step-21",
       "type": "test",
-      "description": "Write tests for annotated entity fixtures: trait_structure_module() returns CompiledModule with 1 trait_def (\"Rigid\" requiring thickness:Length), 1 template (\"Plate\" with thickness param), 0 diagnostics. field_module() returns module with 1 field (analytical), 1 template. purpose_module() returns module with 1 compiled_purpose, 1 template. Assert expected counts and key field values.",
+      "description": "Run full reify-syntax test suite (`cargo test -p reify-syntax`) to verify all existing tests still pass with the new pragmas fields on AST types. No existing behavior should change.",
       "status": "done",
-      "commit": "9550026"
+      "commit": "448992f"
     },
     {
       "id": "step-22",
       "type": "impl",
-      "description": "Implement annotated entity fixtures in fixtures.rs using the new builders: trait_structure_module()->CompiledModule (CompiledTraitBuilder::new(\"Rigid\").require_param(\"thickness\",Type::length()).build() + TopologyTemplateBuilder::new(\"Plate\") with thickness param). field_module()->CompiledModule (CompiledFieldBuilder::new(\"temp\",..).analytical(lambda).build() + template). purpose_module()->CompiledModule (CompiledPurposeBuilder::new(\"mfg_ready\").param(\"subject\",\"Structure\").constraint(..).build() + template).",
+      "description": "Fix any compilation or test failures. All existing struct constructions must include `pragmas: Vec::new()` (from pre-3). Verify tree-sitter-reify tests also pass.",
       "status": "done",
-      "commit": "aad3efb"
+      "commit": "448992f"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add `is_recursive: bool` field to TopologyTemplate rather than a separate data structure",
-      "rationale": "TopologyTemplate is the compiled representation consumed by reify-eval. Tagging it directly makes the information immediately available during elaboration without requiring a side-channel lookup. The field is cheap (1 byte) and zero-cost when false."
+      "decision": "Pragmas are stored as a flat Vec<Pragma> on module/block AST nodes, NOT as Declaration variants or MemberDecl variants.",
+      "rationale": "Pragmas are metadata directives, not declarations. Adding them to Declaration would break exhaustive matches in reify-compiler (which has 12 match arms on Declaration). Storing them as a separate field is backward-compatible \u2014 downstream code that doesn't care about pragmas won't need changes."
     },
     {
-      "decision": "Use warning-level diagnostics, not errors, for recursive cycles",
-      "rationale": "Recursive structures are not necessarily invalid \u2014 they may be meaningful with collection subs (bounded count) or guarded subs (conditional inclusion). The task says 'tag for special handling', not 'reject'. Downstream elaboration can decide how to handle them (e.g., depth limits, lazy expansion)."
+      "decision": "Pragma syntax is `#ident(args)` with `#` immediately followed by identifier (no space, no brackets like Rust's `#[...]`).",
+      "rationale": "The task specifies `#ident(args)` syntax explicitly. The `#` token is currently unused (produces parse error). Simpler than Rust's `#[attr]` and appropriate for a DSL."
     },
     {
-      "decision": "Implement detection as a post-compilation pass rather than inline during compile_entity",
-      "rationale": "Following the existing pattern of deferred bound checks: all templates must be compiled before we can build the full reference graph. Forward references are allowed within a module, so inline detection during entity compilation would miss structures defined later in the file."
+      "decision": "PragmaValue is a restricted enum (Ident, Number, String, Bool) \u2014 NOT the full expression language.",
+      "rationale": "Pragma arguments should be compile-time constants, not arbitrary expressions. Using the full expression system would create parser ambiguity (e.g., `#cfg(a + b)` would need expression precedence inside pragma args). A restricted value set is easier to evaluate statically and matches how pragmas/attributes work in other languages."
     },
     {
-      "decision": "Replace DFS gray/black cycle detection with Tarjan's SCC algorithm",
-      "rationale": "The original DFS approach misses cycle participants reachable through already-explored (black) nodes. When multiple paths converge on a cycle, the DFS only finds members on the first path. Tarjan's SCC correctly identifies ALL nodes in ALL strongly connected components in O(V+E) by tracking index/lowlink values, handling multi-path convergence without the early-exit issue. Cycle paths for diagnostics are reconstructed from each SCC's adjacency sub-graph."
+      "decision": "Add pragmas field to StructureDef, OccurrenceDef, TraitDecl, PurposeDef, and ConstraintDef \u2014 the five block-scoped types.",
+      "rationale": "These are the AST types that have `{ body }` blocks where members/items live. FnDef has a different body structure (let bindings + result expr), EnumDecl and UnitDecl have no block body. The task says 'block-level scopes' which maps to these five types."
     },
     {
-      "decision": "Place all tests in a dedicated integration test file rather than inline unit tests",
-      "rationale": "Follows the established codebase pattern where each feature area has its own test file in tests/ (e.g., collection_sub_tests.rs, trait_bounds_tests.rs). The tests need the compile + check diagnostics pattern that integration tests use."
+      "decision": "Grammar adds pragma to _member, trait_member, and purpose_member choice nodes so pragmas can appear anywhere members can.",
+      "rationale": "This allows pragmas to be interspersed with other declarations inside any block scope. Tree-sitter's grammar structure requires pragma to be an option in each member choice node since they're separate rules."
     },
     {
-      "decision": "Only consider sub_components for reference graph edges, not type_args",
-      "rationale": "Type arguments (e.g., Box<Bolt>) reference structures but don't create containment relationships that cause infinite elaboration. A Box<T> parameterized by T doesn't contain T as a sub \u2014 it's a type parameter. Recursion through sub containment is what causes structural cycles."
-    },
-    {
-      "decision": "Rejected naive propagation fix (mark in_cycle when black neighbor is in_cycle) in favor of Tarjan's SCC",
-      "rationale": "Naive propagation causes false positives: if Z\u2192A where A is in cycle A\u2192B\u2192A, Z would be wrongly tagged because its black neighbor A is in_cycle, even though there's no path from A back to Z. Tarjan's SCC correctly requires mutual reachability for cycle membership."
+      "decision": "Refactor lower_members() to return (Vec<MemberDecl>, Vec<Pragma>) rather than adding pragma as a MemberDecl variant.",
+      "rationale": "Keeping pragmas out of MemberDecl maintains the clean separation between metadata and declarations. The refactored return type explicitly represents that block children are either members or pragmas. This avoids downstream code needing to filter pragmas out of member lists."
     }
   ],
   "reuse": [
     {
-      "what": "DFS cycle detection pattern from module_dag.rs",
-      "where": "crates/reify-compiler/src/module_dag.rs lines 118-126",
-      "how": "Adapt the in_progress HashSet + early return pattern for structure reference graph traversal, extending it with path tracking to report cycle chains"
+      "what": "commaSep() helper function in grammar.js",
+      "where": "tree-sitter-reify/grammar.js lines 8-10",
+      "how": "Use commaSep($.pragma_arg) for the optional argument list in pragma rule, exactly as done for named_argument_list, fn_param_list, etc."
     },
     {
-      "what": "Post-compilation pass pattern",
-      "where": "crates/reify-compiler/src/lib.rs lines 1896-1942",
-      "how": "Add the recursive structure detection pass after the existing deferred bound check pass, using the same template_registry HashMap<String, &TopologyTemplate>"
+      "what": "Existing literal rules (number_literal, string_literal, bool_literal, identifier)",
+      "where": "tree-sitter-reify/grammar.js lines 724-738",
+      "how": "Pragma values reuse the same literal rules already defined in the grammar rather than defining new ones. _pragma_value is just choice() over existing rules."
     },
     {
-      "what": "Diagnostic emission pattern with labels",
-      "where": "crates/reify-compiler/src/lib.rs (used throughout, e.g., lines 1783-1802)",
-      "how": "Use Diagnostic::warning() with DiagnosticLabel::new(span, message) pointing to the sub declarations that form the cycle"
+      "what": "Lowering pattern: node_text(), span(), content_hash() helpers",
+      "where": "crates/reify-syntax/src/ts_parser.rs Lowering impl lines 69-81",
+      "how": "lower_pragma() follows the same pattern as lower_import(), lower_enum() etc \u2014 extract field nodes, call node_text() for names, span() for source spans."
     },
     {
-      "what": "Test helper compile_no_errors() / compile pattern",
-      "where": "crates/reify-compiler/tests/collection_sub_tests.rs lines 6-27",
-      "how": "Reuse the same pattern: parse source, assert no parse errors, compile, return CompiledModule. Create a compile_module() helper that allows warnings (since recursion detection emits warnings, not errors)."
+      "what": "check_and_lower! macro for error-resilient lowering",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 12-24",
+      "how": "Can be used when lowering pragma nodes in block contexts to gracefully handle parse errors, consistent with other member lowering."
     },
     {
-      "what": "SubComponentDecl.structure_name field",
-      "where": "crates/reify-compiler/src/lib.rs line 208",
-      "how": "Use structure_name from each SubComponentDecl to build the adjacency list edges in the reference graph"
+      "what": "Test pattern: parse_decls() helper + match + assert",
+      "where": "crates/reify-syntax/tests/unit_decl_tests.rs lines 7-11",
+      "how": "New pragma_tests.rs follows same pattern: parse source, extract module pragmas from ParsedModule, extract block pragmas from structure definitions, assert with descriptive error messages."
     },
     {
-      "what": "TopologyTemplate.sub_components and template name",
-      "where": "crates/reify-compiler/src/lib.rs lines 159-178",
-      "how": "Iterate compiled templates to extract (template.name -> sub.structure_name) edges for graph construction"
-    },
-    {
-      "what": "Tarjan's SCC algorithm (standard)",
-      "where": "Well-known algorithm, no codebase dependency",
-      "how": "Implement iterative Tarjan's with index counter, lowlink array, and explicit stack. Each SCC of size > 1 (or size 1 with self-edge) maps to a set of in_cycle nodes. Reconstruct one cycle path per SCC by walking adjacency within the SCC."
+      "what": "lower_members() pattern for collecting block children",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 862-871",
+      "how": "Extend lower_members() to also return collected pragmas alongside members. The iteration pattern (walk cursor, match child kind) stays the same with a new 'pragma' arm."
     }
   ],
-  "_session_id": "248-5e08a36b",
-  "_created_at": "2026-03-24T16:33:41.948215+00:00",
-  "_schema_version": 1
+  "_session_id": "278-f0780968",
+  "_created_at": "2026-03-24T16:51:18.569664+00:00"
 }
