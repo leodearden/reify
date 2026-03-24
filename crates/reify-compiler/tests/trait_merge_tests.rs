@@ -136,6 +136,38 @@ structure def V : A + B {
     );
 }
 
+/// Step 6: Trait A requires `param x : Length` (no default),
+/// trait B provides `param x : Length = 10mm` (default).
+/// Structure implements both with empty body — the default from B satisfies A's requirement.
+/// NOTE: This test is EXPECTED TO FAIL until step-7 cross-checks requirements against defaults.
+#[test]
+fn requirement_satisfied_by_cross_trait_default() {
+    let source = r#"
+trait NeedsX {
+    param x : Length
+}
+
+trait ProvidesX {
+    param x : Length = 10mm
+}
+
+structure def W : NeedsX + ProvidesX {
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected 0 errors (default from ProvidesX satisfies NeedsX requirement), got: {:?}",
+        errors
+    );
+}
+
 /// Step 1b: Two traits each requiring `param x : Length`.
 /// Structure provides `param x : Length = 5mm` — requirement dedup baseline.
 /// Expect 0 errors (existing behavior).
