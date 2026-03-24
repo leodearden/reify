@@ -10,7 +10,7 @@ use reify_types::{ModulePath, Severity, ValueCellId};
 #[test]
 fn e2e_user_fn_double_in_let() {
     let source = r#"
-fn double(x: Real) -> Real { x + x }
+fn double(x: Int) -> Int { x + x }
 
 structure S {
     let v = double(3)
