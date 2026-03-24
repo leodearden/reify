@@ -1,6 +1,6 @@
 {
-  "task_id": "195",
-  "title": "Constraint def: parser verification",
+  "task_id": "207",
+  "title": "Unit declarations: parser",
   "files": [
     "tree-sitter-reify/grammar.js",
     "tree-sitter-reify/src/parser.c",
@@ -8,33 +8,33 @@
     "tree-sitter-reify/src/node-types.json",
     "crates/reify-syntax/src/lib.rs",
     "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/constraint_def_tests.rs"
+    "crates/reify-syntax/tests/unit_decl_tests.rs"
   ],
   "modules": [
     "tree-sitter-reify",
     "crates/reify-syntax"
   ],
-  "analysis": "The task requires adding support for top-level `constraint def Name { params, predicate_lines }` parsing. Currently, `ConstraintDecl` exists only as a member-level declaration (inside structures, traits, purposes) using the syntax `constraint <expr>`. The task needs a NEW top-level `ConstraintDef` that is a named, parameterized constraint definition with bare expression predicates in the body.\n\nThe language spec (Section 4.1.3, 10.1, 12.1) defines constraint def syntax with examples like:\n```\nconstraint def MinWallThickness {\n    param wall : Length\n    param process : ManufacturingProcess\n    wall >= process.min_wall_thickness\n}\n```\n\nThe implementation requires three layers:\n1. **Grammar**: Add `constraint_definition` rule to tree-sitter grammar with body items being either `param_declaration`, `let_declaration`, or bare expression predicates (`constraint_def_predicate`)\n2. **AST**: Add `ConstraintDef` struct and `Constraint(ConstraintDef)` variant to `Declaration` enum\n3. **Lowering**: Add `lower_constraint_def` function and dispatch in `lower_source_file`\n\nKey insight: `constraint_definition` (top-level, starts with `constraint def`) operates in `_declaration` context, while `constraint_declaration` (member-level, starts with `constraint <expr>`) operates in `_member` context. No grammar conflict between them.\n\nThe body uses `_constraint_def_body_item` choice: param_declaration, let_declaration, or constraint_def_predicate (bare _expression). Bare expressions are predicate assertions; multiple predicates form a conjunction. Keywords like `param`/`let` disambiguate member declarations from bare expressions.\n\n**Review fix (2026-03-24):** Two robustness issues in `lower_constraint_def` body iteration loop: (1) the `_ => {}` catch-all silently swallows ERROR tree-sitter nodes \u2014 must add explicit \"ERROR\" arm matching `lower_member` and `lower_source_file` patterns; (2) `param_declaration` arm uses bare `self.lower_param(child)` without `check_and_lower!` guard \u2014 must wrap with `check_and_lower!` for consistency with `lower_member`.",
+  "analysis": "The task requires adding parser support for `unit ident : type_expr (= expr)? (offset expr)?` declarations. This is a new top-level declaration type, structurally analogous to `constraint_definition` or `enum_declaration`.\n\nThe implementation requires three layers:\n1. **Grammar (tree-sitter-reify/grammar.js):** Add `unit_declaration` rule to the grammar with fields for name, dimension type, optional conversion expression (`= expr`), and optional offset expression (`offset expr`). Add `$.unit_declaration` to the `_declaration` choice.\n2. **AST (crates/reify-syntax/src/lib.rs):** Add `UnitDecl` struct with fields: name, is_pub, dimension_type (TypeExpr), conversion (Option<Expr>), offset (Option<Expr>), span, content_hash. Add `Unit(UnitDecl)` variant to the `Declaration` enum.\n3. **Lowering (crates/reify-syntax/src/ts_parser.rs):** Add `lower_unit` function following the pattern from `lower_enum`/`lower_constraint_def`. Add dispatch arm `\"unit_declaration\"` in `lower_source_file`.\n\nKey design consideration: `'unit'` and `'offset'` become reserved keywords. `'unit'` doesn't conflict with the `$.unit` alias in `quantity_literal` because that alias references `$.immediate_identifier` (a `token.immediate` rule requiring no whitespace). `'offset'` as a keyword prevents expression-greedy parsing from consuming it as an identifier in the conversion expression \u2014 e.g., `unit degC : Temperature = 1 offset 273.15` correctly parses `conversion = 1` then `offset = 273.15`.\n\nTask 208 (unit registry) and 209 (user-defined units) depend on this parser task. The `UnitDecl` AST node must carry enough information for the compiler to build a unit registry: name for lookup, dimension_type for dimensional analysis, conversion expression for SI multiplier computation, and offset expression for affine unit conversions (e.g., Celsius/Fahrenheit).\n\nTest strategy from task: simple unit (base unit, no conversion/offset), derived unit (with conversion factor), offset unit (with both conversion and offset).",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add `constraint_definition`, `_constraint_def_body_item`, and `constraint_def_predicate` rules to tree-sitter-reify/grammar.js. Add `$.constraint_definition` to the `_declaration` choice. Add `[$.constraint_def_predicate]` to conflicts if needed.",
+      "description": "Add `unit_declaration` rule to tree-sitter-reify/grammar.js: `seq(optional('pub'), 'unit', field('name', $.identifier), ':', field('type', $.type_expr), optional(seq('=', field('conversion', $._expression))), optional(seq('offset', field('offset', $._expression))))`. Add `$.unit_declaration` to the `_declaration` choice. Add `[$.unit_declaration]` to conflicts array (optional clauses may need GLR disambiguation).",
       "status": "done",
-      "commit": "730d914",
+      "commit": "9866603",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Regenerate tree-sitter parser by running `tree-sitter generate` in tree-sitter-reify/. This updates src/parser.c, src/grammar.json, and src/node-types.json.",
+      "description": "Regenerate tree-sitter parser by running `npx tree-sitter generate` in tree-sitter-reify/. This updates src/parser.c, src/grammar.json, and src/node-types.json.",
       "status": "done",
-      "commit": "730d914",
+      "commit": "9866603",
       "tests": []
     },
     {
       "id": "pre-3",
-      "description": "Add `ConstraintDef` struct to crates/reify-syntax/src/lib.rs with fields: name (String), is_pub (bool), type_params (Vec<TypeParamDecl>), params (Vec<ParamDecl>), predicates (Vec<Expr>), span (SourceSpan), content_hash (ContentHash). Add `Constraint(ConstraintDef)` variant to the Declaration enum.",
+      "description": "Add `UnitDecl` struct to crates/reify-syntax/src/lib.rs with fields: name (String), is_pub (bool), dimension_type (TypeExpr), conversion (Option<Expr>), offset (Option<Expr>), span (SourceSpan), content_hash (ContentHash). Add `Unit(UnitDecl)` variant to the Declaration enum.",
       "status": "done",
-      "commit": "730d914",
+      "commit": "9866603",
       "tests": []
     }
   ],
@@ -42,202 +42,207 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `parse_basic_constraint_def` in constraint_def_tests.rs: parse `constraint def Foo { x > 0 }`, assert no errors, assert 1 declaration of type Declaration::Constraint, assert name is 'Foo'.",
+      "description": "Write failing test `parse_simple_unit` in unit_decl_tests.rs: parse `unit meter : Length`, assert no errors, assert 1 declaration of type Declaration::Unit, assert name is 'meter', assert dimension_type.name is 'Length', assert conversion is None, assert offset is None.",
       "status": "done",
-      "commit": "852c0f3"
+      "commit": "9866603"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `lower_constraint_def` function in ts_parser.rs extracting name, is_pub, type_params, params, predicates. Add dispatch arm `\"constraint_definition\" => ...` in `lower_source_file`. Follow pattern from lower_purpose/lower_structure.",
+      "description": "Add `lower_unit` function in ts_parser.rs extracting name (from 'name' field), is_pub (via has_pub_keyword), dimension_type (from 'type' field via lower_type_expr_node), conversion (from optional 'conversion' field via lower_expr), offset (from optional 'offset' field via lower_expr). Add dispatch arm `\"unit_declaration\" => { if let Some(decl) = self.lower_unit(child) { self.declarations.push(Declaration::Unit(decl)); } }` in `lower_source_file`.",
       "status": "done",
-      "commit": "0d4776e"
+      "commit": "9866603"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `parse_constraint_def_predicate_expr`: verify the predicate expression content \u2014 parse `constraint def Check { a > 5mm }`, assert predicates.len() == 1, assert the predicate is a BinOp with op '>' and left Ident('a').",
+      "description": "Write test `parse_derived_unit` in unit_decl_tests.rs: parse `unit mm : Length = 0.001`, assert no errors, assert name is 'mm', assert dimension_type.name is 'Length', assert conversion is Some with NumberLiteral(0.001), assert offset is None.",
       "status": "done",
-      "commit": "852c0f3"
+      "commit": "9866603"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify predicate extraction works in lower_constraint_def by iterating constraint_def_predicate children and lowering their 'expr' field. Fix if needed.",
+      "description": "Verify conversion expression extraction works in lower_unit. The optional 'conversion' field from child_by_field_name should already work via lower_expr. Fix if needed.",
       "status": "done",
-      "commit": "0d4776e"
+      "commit": "9866603"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `parse_constraint_def_with_params`: parse `constraint def MinWall { param wall : Length  param process : Process  wall >= process.min_wall }`, assert params.len() == 2, assert params[0].name == 'wall', assert predicates.len() == 1.",
+      "description": "Write test `parse_offset_unit` in unit_decl_tests.rs: parse `unit degC : Temperature = 1 offset 273.15`, assert no errors, assert name is 'degC', assert dimension_type.name is 'Temperature', assert conversion is Some with NumberLiteral(1.0), assert offset is Some with NumberLiteral(273.15).",
       "status": "done",
-      "commit": "852c0f3"
+      "commit": "9866603"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify param extraction works in lower_constraint_def by iterating param_declaration children and lowering them via existing lower_param. Fix if needed.",
+      "description": "Verify offset expression extraction works in lower_unit. The optional 'offset' field from child_by_field_name should already work via lower_expr. Fix if needed.",
       "status": "done",
-      "commit": "0d4776e"
+      "commit": "9866603"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `parse_constraint_def_multiple_predicates`: parse a constraint def with 3 bare expression predicates (conjunction), assert predicates.len() == 3, verifying multiple predicates represent logical AND.",
+      "description": "Write test `parse_pub_unit` in unit_decl_tests.rs: parse `pub unit mm : Length = 0.001`, assert no errors, assert is_pub is true, assert name is 'mm'.",
       "status": "done",
-      "commit": "852c0f3"
+      "commit": "9866603"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Should already pass since predicates Vec collects all constraint_def_predicate nodes. Verify and fix if needed.",
+      "description": "Should already pass since lower_unit uses has_pub_keyword(). Verify and fix if needed.",
       "status": "done",
-      "commit": "0d4776e"
+      "commit": "9866603"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test `parse_pub_constraint_def`: parse `pub constraint def Visible { x > 0 }`, assert is_pub == true.",
+      "description": "Write test `parse_unit_complex_conversion` in unit_decl_tests.rs: parse `unit inch : Length = 25.4 * 0.001`, assert no errors, assert conversion is Some with BinOp { op: '*', left: NumberLiteral(25.4), right: NumberLiteral(0.001) }.",
       "status": "done",
-      "commit": "852c0f3"
+      "commit": "9866603"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Should already pass since lower_constraint_def uses has_pub_keyword(). Verify and fix if needed.",
+      "description": "Should already pass since the conversion field accepts any _expression and lower_expr handles BinOp. Verify and fix if needed.",
       "status": "done",
-      "commit": "0d4776e"
+      "commit": "9866603"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test `parse_constraint_def_with_type_params`: parse `constraint def Aligned<T : Rigid> { ... }`, assert type_params.len() == 1, assert type_params[0].name == 'T'.",
+      "description": "Write test `parse_unit_quantity_literal_conversion` in unit_decl_tests.rs: parse `unit thou : Length = 0.0254mm`, assert no errors, assert conversion is Some with QuantityLiteral { value: 0.0254, unit: 'mm' }. This validates that quantity literals work in conversion expressions (critical for task 209 user-defined units).",
       "status": "done",
-      "commit": "852c0f3"
+      "commit": "9866603"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Should already pass since lower_constraint_def uses lower_type_parameters(). Verify and fix if needed.",
+      "description": "Should already pass since lower_expr handles quantity_literal. Verify and fix if needed.",
       "status": "done",
-      "commit": "0d4776e"
+      "commit": "9866603"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write integration test `parse_constraint_def_complex`: parse a realistic constraint def from the spec (DFM_Milling-style with params, forall quantifier predicates, and multiple predicates), verify all fields.",
+      "description": "Write test `parse_unit_offset_only` in unit_decl_tests.rs: parse `unit kelvin : Temperature offset 273.15`, assert no errors, assert conversion is None, assert offset is Some with NumberLiteral(273.15). This validates that offset works without a conversion expression.",
       "status": "done",
-      "commit": "852c0f3"
+      "commit": "9866603"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Should already pass as an integration verification. Fix any edge cases discovered.",
+      "description": "Should already pass since both optional clauses are independent in the grammar. Verify and fix if needed.",
       "status": "done",
-      "commit": "0d4776e"
+      "commit": "9866603"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write test `parse_constraint_def_body_syntax_error` in constraint_def_tests.rs: parse a constraint def with a syntax error inside the body (e.g. `constraint def Bad { x >< 0 }` or similar invalid syntax that produces an ERROR tree-sitter node inside the body). Assert that errors is non-empty and contains a ParseError with message matching 'syntax error in constraint body'. This tests the [reviewer_robustness] silent_error_suppression fix \u2014 currently the `_ => {}` catch-all silently swallows ERROR nodes.",
+      "description": "Write test `parse_unit_parameterized_dimension_type` in unit_decl_tests.rs: parse `unit newton : Derived<Force> = 1`, assert no errors, assert dimension_type.name is 'Derived', assert dimension_type.type_args has 1 entry with name 'Force'. This validates TypeExpr with type arguments for the dimension type.",
       "status": "done",
-      "commit": "2c867aa"
+      "commit": "9866603"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Add explicit `\"ERROR\"` arm to the body iteration match in `lower_constraint_def` (ts_parser.rs line ~633), replacing the silent `_ => {}` catch-all for ERROR nodes. Push a ParseError with message `format!(\"syntax error in constraint body: {}\", self.node_text(child))` and span `self.span(child)`, matching the pattern used in `lower_member` (line 809) and `lower_source_file` (line 158). The `_ => {}` arm remains for non-ERROR unknown node kinds (e.g. punctuation like `{`, `}`).",
+      "description": "Should already pass since lower_type_expr_node handles parameterized_type. Verify and fix if needed.",
       "status": "done",
-      "commit": "2c867aa"
+      "commit": "9866603"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write test `parse_constraint_def_error_param` in constraint_def_tests.rs: parse a constraint def with a malformed param_declaration inside the body (e.g. `constraint def Bad { param : Length  x > 0 }` \u2014 param missing its name, which gives a param_declaration node with `has_error() == true`). Assert that errors is non-empty and contains a ParseError with message matching 'invalid constraint param'. Assert that the constraint is still constructed (with 0 params) and the valid predicate is still collected. This tests the [reviewer_robustness] missing_error_guard fix \u2014 currently the bare `self.lower_param(child)` silently drops error params without diagnostics.",
+      "description": "Write test `parse_multiple_unit_declarations` in unit_decl_tests.rs: parse source with 3 unit declarations (meter, mm, inch), assert 3 declarations all of type Declaration::Unit, assert names are correct. Verifies multiple unit declarations coexist.",
       "status": "done",
-      "commit": "12f0c52"
+      "commit": "9866603"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Guard the `\"param_declaration\"` arm in `lower_constraint_def` body iteration (ts_parser.rs line ~617-620) with `check_and_lower!` macro, matching the pattern used in `lower_member` (line 786). Replace the bare `if let Some(p) = self.lower_param(child) { params.push(p); }` with: `check_and_lower!(self, child, \"constraint param\", self.lower_param(child).map(|p| { params.push(p); Some(()) }));` \u2014 this checks `child.is_error() || child.has_error()` and emits a diagnostic before skipping the node.",
+      "description": "Should already pass since lower_source_file iterates all children. Verify and fix if needed.",
       "status": "done",
-      "commit": "2c867aa"
+      "commit": "9866603"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write test `parse_unit_among_other_declarations` in unit_decl_tests.rs: parse source with a structure, unit declaration, and enum interleaved, assert all 3 are parsed correctly (Structure, Unit, Enum). Verifies unit declarations interoperate with existing declaration types.",
+      "status": "done",
+      "commit": "9866603"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Should already pass since the _declaration choice includes all declaration types. Verify and fix if needed.",
+      "status": "done",
+      "commit": "9866603"
     }
   ],
   "design_decisions": [
     {
-      "decision": "ConstraintDef stores `params: Vec<ParamDecl>` and `predicates: Vec<Expr>` as separate fields rather than a unified body Vec",
-      "rationale": "Matches the task description's 'params, predicate_lines' separation. Cleaner API for downstream consumers (compiler can iterate params and predicates independently). If let/sub support is needed later, a `lets: Vec<LetDecl>` field or unified body enum can be added."
+      "decision": "UnitDecl uses `dimension_type: TypeExpr` rather than a plain `String` for the type annotation",
+      "rationale": "TypeExpr supports both simple types (`Length`) and parameterized types (`Derived<Force>`), which future dimension algebra may require. Consistent with how other declarations store type information (ParamDecl, LetDecl, FnParam). Task 208 (registry) needs the full TypeExpr for dimensional analysis."
     },
     {
-      "decision": "Grammar uses `constraint def` (required `def` keyword) rather than `constraint` alone for top-level definitions",
-      "rationale": "Follows the language spec (Section 4.1.3). The required `def` keyword cleanly disambiguates top-level `constraint def Name { ... }` from member-level `constraint <expr>`. structure_definition uses optional('def'), but constraint_definition requires it because `constraint <expr>` at the top level would be ambiguous without it."
+      "decision": "Both `conversion` and `offset` are `Option<Expr>` \u2014 fully general expression types, not just numeric literals",
+      "rationale": "Task 209 shows `unit thou : Length = 0.0254mm` where the conversion uses a quantity literal. Future units may use arithmetic expressions (`25.4 * 0.001`). General expressions give maximum flexibility with zero extra implementation cost (reuse lower_expr). The compiler (task 208) evaluates these to numeric values."
     },
     {
-      "decision": "Grammar body accepts param_declaration, let_declaration, and constraint_def_predicate (bare expression)",
-      "rationale": "Task says 'not preceded by param/let/etc keywords are predicate assertions', implying param and let ARE valid keyword-prefixed body items. Bare expressions (starting with identifiers, literals, operators) are unambiguously distinguishable from keyword-prefixed declarations."
+      "decision": "'unit' and 'offset' become reserved keywords in the grammar",
+      "rationale": "'unit' is a declaration keyword like 'structure', 'enum', 'fn' \u2014 all effectively reserved. 'offset' as a keyword prevents the expression parser from consuming it as an identifier in the conversion expression, ensuring `= 1 offset 273.15` correctly parses as two clauses. Tree-sitter's tokenization gives string literals priority over the identifier regex. The `immediate_identifier` in quantity_literal is unaffected (token.immediate requires no whitespace, so `5unit` still works)."
     },
     {
-      "decision": "constraint_def_predicate is a named grammar rule wrapping _expression, not an inline anonymous rule",
-      "rationale": "A named node ('constraint_def_predicate') is needed so the lowering code can identify bare expression predicates by node kind, distinguishing them from param_declaration and let_declaration children."
+      "decision": "No `type_params` field on UnitDecl (unlike ConstraintDef or StructureDef)",
+      "rationale": "The task syntax `unit ident : type_expr (= expr)? (offset expr)?` has no type parameter syntax. Units are concrete (mm, inch, degC), not generic. If parameterized units are needed later, the grammar and AST can be extended."
     },
     {
-      "decision": "No semicolons or explicit statement terminators for predicates in the body",
-      "rationale": "Consistent with the rest of the Reify grammar where members (param, let, constraint, etc.) don't use terminators. Tree-sitter's GLR parser resolves expression boundaries by operator precedence \u2014 a new predicate begins when no binary operator connects adjacent expressions."
+      "decision": "UnitDecl includes `is_pub: bool` following the convention of all other Declaration types",
+      "rationale": "Task 209 explicitly requires `pub unit` for cross-module unit imports. Adding is_pub now (via `optional('pub')` in the grammar) avoids a future grammar change."
     },
     {
-      "decision": "ERROR nodes in constraint def body get 'syntax error in constraint body' message prefix (not generic 'syntax error')",
-      "rationale": "Using a context-specific message ('in constraint body') helps users locate errors when multiple parse errors are reported. Matches the contextual messaging pattern \u2014 lower_member uses generic 'syntax error' because it's already scoped to a member context, but constraint def body errors benefit from the extra disambiguation."
-    },
-    {
-      "decision": "param_declaration arm uses check_and_lower! macro with label 'constraint param' rather than just 'param'",
-      "rationale": "The label 'constraint param' disambiguates from regular member params in error messages. When a user sees 'invalid constraint param: ...', they know the error is inside a constraint def body, not inside a structure or trait body where 'invalid param: ...' would appear from lower_member."
+      "decision": "Grammar uses `optional(seq('offset', field('offset', $._expression)))` as a keyword-prefixed clause, not a separate member or struct field syntax",
+      "rationale": "Matches the task's specified syntax `(offset expr)?`. The offset clause is specific to unit declarations (affine conversions like Celsius), not a general-purpose feature. A keyword prefix clearly delimits where the conversion expression ends and the offset begins."
     }
   ],
   "reuse": [
     {
       "what": "has_pub_keyword() helper",
       "where": "ts_parser.rs Lowering impl",
-      "how": "Reuse directly for is_pub extraction in lower_constraint_def, same pattern as lower_structure, lower_purpose, lower_trait."
+      "how": "Reuse directly for is_pub extraction in lower_unit, same pattern as lower_structure, lower_enum, lower_constraint_def."
     },
     {
-      "what": "lower_type_parameters() helper",
+      "what": "lower_type_expr_node() helper",
       "where": "ts_parser.rs Lowering impl",
-      "how": "Reuse directly for extracting optional type parameters from constraint_definition node."
-    },
-    {
-      "what": "lower_param() function",
-      "where": "ts_parser.rs Lowering impl",
-      "how": "Reuse directly to lower param_declaration children in the constraint def body into ParamDecl."
+      "how": "Reuse directly for extracting the dimension_type from the 'type' field node. Handles both bare identifiers (Length) and parameterized types (Derived<Force>)."
     },
     {
       "what": "lower_expr() function",
       "where": "ts_parser.rs Lowering impl",
-      "how": "Reuse directly to lower constraint_def_predicate children (bare expressions) into Expr."
-    },
-    {
-      "what": "check_and_lower! macro",
-      "where": "ts_parser.rs",
-      "how": "Reuse for error-checking child nodes before lowering params and predicates in the body."
-    },
-    {
-      "what": "PurposeDef test patterns",
-      "where": "tests/purpose_tests.rs",
-      "how": "Follow the same parse_decls() helper pattern, assertion style, and test naming conventions for constraint_def_tests.rs."
+      "how": "Reuse directly to lower optional conversion and offset expressions. Handles all expression types including NumberLiteral, QuantityLiteral, BinOp."
     },
     {
       "what": "span() and content_hash() helpers",
       "where": "ts_parser.rs Lowering impl",
-      "how": "Reuse for SourceSpan and ContentHash on the ConstraintDef node."
+      "how": "Reuse for SourceSpan and ContentHash on the UnitDecl node."
     },
     {
-      "what": "ERROR handling pattern from lower_member (line 809) and lower_source_file (line 158)",
-      "where": "ts_parser.rs",
-      "how": "Reuse the exact same push-ParseError-with-span pattern for the new \"ERROR\" arm in lower_constraint_def's body iteration loop."
+      "what": "child_by_field_name() pattern",
+      "where": "ts_parser.rs throughout",
+      "how": "Same field extraction pattern as lower_enum, lower_import, etc. Use child_by_field_name('name'), child_by_field_name('type'), child_by_field_name('conversion'), child_by_field_name('offset')."
+    },
+    {
+      "what": "constraint_def_tests.rs test patterns",
+      "where": "tests/constraint_def_tests.rs",
+      "how": "Follow the same parse_decls() helper pattern, assertion style, match-on-Declaration-variant idiom, and test naming conventions for unit_decl_tests.rs."
+    },
+    {
+      "what": "Grammar _declaration choice and lower_source_file dispatch patterns",
+      "where": "grammar.js and ts_parser.rs",
+      "how": "Add $.unit_declaration to the _declaration choice (same as constraint_definition, enum_declaration, etc.). Add 'unit_declaration' match arm in lower_source_file dispatch (same pattern as all other declaration types)."
     }
   ],
-  "_session_id": "195-84380801",
-  "_created_at": "2026-03-24T07:22:34.651702+00:00"
+  "_session_id": "207-8eceede1",
+  "_created_at": "2026-03-24T07:57:43.553773+00:00"
 }
