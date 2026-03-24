@@ -255,6 +255,7 @@ impl<'a> Lowering<'a> {
             is_pub,
             span: self.span(node),
             content_hash: self.content_hash(node),
+            annotations: vec![],
         })
     }
 
@@ -280,6 +281,7 @@ impl<'a> Lowering<'a> {
             variants,
             span: self.span(node),
             content_hash: self.content_hash(node),
+            annotations: vec![],
         })
     }
 
@@ -494,6 +496,7 @@ impl<'a> Lowering<'a> {
             body,
             span: self.span(node),
             content_hash: self.content_hash(node),
+            annotations: vec![],
         })
     }
 
@@ -520,6 +523,7 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
             pragmas,
+            annotations: vec![],
         })
     }
 
@@ -545,6 +549,7 @@ impl<'a> Lowering<'a> {
             source,
             span: self.span(node),
             content_hash: self.content_hash(node),
+            annotations: vec![],
         })
     }
 
@@ -612,6 +617,7 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
             pragmas,
+            annotations: vec![],
         })
     }
 
@@ -673,6 +679,7 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
             pragmas,
+            annotations: vec![],
         })
     }
 
@@ -701,6 +708,7 @@ impl<'a> Lowering<'a> {
             offset,
             span: self.span(node),
             content_hash: self.content_hash(node),
+            annotations: vec![],
         })
     }
 
@@ -1012,6 +1020,7 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash,
             pragmas,
+            annotations: vec![],
         })
     }
 
@@ -1034,6 +1043,7 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash,
             pragmas,
+            annotations: vec![],
         })
     }
 
