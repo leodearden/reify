@@ -1348,7 +1348,7 @@ fn eval_undef_count() {
 
 #[test]
 fn eval_list_with_undef_count() {
-    // [1, undef, 3].count -> Int(3) (count the structure, not the values)
+    // [1, undef, 3].count -> Undef (count must propagate uncertainty when any element is Undef — three-valued logic)
     let undef_id = ValueCellId::new("S", "missing_elem");
     let list = CompiledExpr::list_literal(
         vec![
@@ -1361,7 +1361,7 @@ fn eval_list_with_undef_count() {
     let expr = CompiledExpr::method_call(list, "count".to_string(), vec![], Type::Int);
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert_eq!(result, Value::Int(3));
+    assert!(result.is_undef(), "[1,undef,3].count should be Undef (uncertain membership)");
 }
 
 #[test]
