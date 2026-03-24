@@ -3437,6 +3437,47 @@ mod tests {
         );
     }
 
+    // --- dimension mismatch → Undef ---
+
+    #[test]
+    fn point3_dimension_mismatch_undef() {
+        // point3(Scalar(1,LENGTH), Scalar(2,MASS), Scalar(3,LENGTH)) → Undef
+        let args = vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::MASS },
+            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
+        ];
+        assert!(eval_builtin("point3", &args).is_undef(), "mixed dimensions must return Undef");
+    }
+
+    #[test]
+    fn vec3_dimension_mismatch_undef() {
+        let args = vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 3.0, dimension: DimensionVector::MASS },
+        ];
+        assert!(eval_builtin("vec3", &args).is_undef(), "mixed dimensions must return Undef");
+    }
+
+    #[test]
+    fn point2_dimension_mismatch_undef() {
+        let args = vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::MASS },
+        ];
+        assert!(eval_builtin("point2", &args).is_undef(), "mixed dimensions must return Undef");
+    }
+
+    #[test]
+    fn vec2_dimension_mismatch_undef() {
+        let args = vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+        ];
+        assert!(eval_builtin("vec2", &args).is_undef(), "mixed dimensions must return Undef");
+    }
+
     // --- dimensionless components ---
 
     #[test]
