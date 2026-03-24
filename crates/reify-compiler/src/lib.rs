@@ -2682,7 +2682,7 @@ fn compile_entity(
 
     // Trait conformance checking: verify structure satisfies all trait bounds.
     if !structure.trait_bounds.is_empty() {
-        check_trait_conformance(
+        check_and_apply_trait_conformance(
             structure,
             trait_registry,
             &mut scope,
@@ -4396,7 +4396,7 @@ fn compile_per_decl_constraint_guard(
 /// refinement chains), and verifies the structure satisfies them.
 /// Injects trait defaults for members not overridden by the structure.
 #[allow(clippy::too_many_arguments)]
-fn check_trait_conformance(
+fn check_and_apply_trait_conformance(
     structure: &EntityDefRef<'_>,
     trait_registry: &HashMap<String, &CompiledTrait>,
     scope: &mut CompilationScope,
