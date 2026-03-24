@@ -283,12 +283,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "magnitude" => unary(args, |v| {
             // Handle Complex before the Tensor fallback.
             if let Value::Complex { re, im, dimension } = v {
-                let mag = (re * re + im * im).sqrt();
-                return if *dimension == DimensionVector::DIMENSIONLESS {
-                    sanitize_value(Value::Real(mag))
-                } else {
-                    sanitize_value(Value::Scalar { si_value: mag, dimension: *dimension })
-                };
+                return complex_abs(*re, *im, *dimension);
             }
             let (vals, dim) = match tensor_components_f64(v) {
                 Some(c) => c,
@@ -425,14 +420,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         // Returns Real if DIMENSIONLESS, Scalar otherwise.
         // Returns Undef for non-Complex inputs (unlike generic `magnitude` which handles Tensors).
         "complex_magnitude" => unary(args, |v| match v {
-            Value::Complex { re, im, dimension } => {
-                let mag = (re * re + im * im).sqrt();
-                if *dimension == DimensionVector::DIMENSIONLESS {
-                    sanitize_value(Value::Real(mag))
-                } else {
-                    sanitize_value(Value::Scalar { si_value: mag, dimension: *dimension })
-                }
-            }
+            Value::Complex { re, im, dimension } => complex_abs(*re, *im, *dimension),
             _ => Value::Undef,
         }),
 
@@ -650,6 +638,21 @@ fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
         return Value::Undef;
     }
     f(&args[0])
+}
+
+/// Compute the absolute value (modulus) of a complex number.
+///
+/// Returns `Value::Real(mag)` when `dimension` is dimensionless, or
+/// `Value::Scalar { si_value: mag, dimension }` otherwise. Non-finite
+/// results are converted to `Undef` by [`sanitize_value`].
+#[inline(always)]
+fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
+    let mag = (re * re + im * im).sqrt();
+    if dimension == DimensionVector::DIMENSIONLESS {
+        sanitize_value(Value::Real(mag))
+    } else {
+        sanitize_value(Value::Scalar { si_value: mag, dimension })
+    }
 }
 
 /// Normalize a quaternion (w, x, y, z) to unit length.
@@ -3387,5 +3390,19 @@ mod tests {
     fn complex_magnitude_non_complex_returns_undef() {
         // unlike generic magnitude which handles Tensors, complex_magnitude rejects non-Complex
         assert!(eval_builtin("complex_magnitude", &[Value::Real(5.0)]).is_undef());
+    }
+
+    #[test]
+    fn complex_magnitude_overflow_returns_undef() {
+        // f64::MAX² + f64::MAX² overflows to +Inf; sanitize_value must catch it.
+        let z = Value::Complex {
+            re: f64::MAX,
+            im: f64::MAX,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("complex_magnitude", &[z]).is_undef(),
+            "complex_magnitude with f64::MAX components must return Undef (Inf overflow)"
+        );
     }
 }

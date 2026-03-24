@@ -1,229 +1,81 @@
 {
-  "task_id": "230",
-  "title": "Tensor/Matrix: arithmetic",
+  "task_id": "2",
+  "title": "Extract complex_abs helper to deduplicate magnitude/complex_magnitude",
   "files": [
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs"
+    "crates/reify-stdlib/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-expr"
+    "crates/reify-stdlib"
   ],
-  "analysis": "Task 230 implements arithmetic operations for tensors and matrices in the expression evaluator. The codebase already has component-wise tensor addition/subtraction, scalar*tensor multiplication, tensor/scalar division, and tensor negation in eval_add/eval_sub/eval_mul/eval_div/eval_unop (lib.rs lines 710-1084). These work recursively on Value::Tensor(Vec<Value>) and handle dimension checking through scalar-level DimensionVector arithmetic.\n\nTask 229 (dependency, status=done) adds Type::Matrix { m, n, quantity } and a Matrix value representation to reify-types. This task needs those types available to implement: (1) Matrix+Matrix addition with shape checking, (2) Matrix-Matrix subtraction, (3) Scalar*Matrix scaling, (4) Matrix/Scalar division, (5) -Matrix negation, (6) Matrix*Vector multiplication M(M,K,Q1)*V(K,Q2)->V(M,Q1*Q2), and (7) Matrix*Matrix multiplication M(M,K,Q1)*M(K,N,Q2)->M(M,N,Q1*Q2).\n\nExisting tensor arithmetic (eval_add/eval_sub) already handles rank-2 tensors correctly via recursive Vec length checking, but the new Matrix value variant needs dedicated match arms. The matrix multiplication operations are entirely new \u2014 requiring dot-product row computations for mat-vec and standard O(m*n*k) multiplication for mat-mat, both with dimension product tracking (Q1*Q2 via DimensionVector::mul).\n\nTests follow the established pattern in point_vector_eval_tests.rs: construct CompiledExpr literals with known values/types, build binop/unop expressions, evaluate via eval_expr, and assert expected Value results. A new test file keeps matrix arithmetic tests separate from point/vector tests.\n\nNote: the Matrix type/value is NOT yet present in this worktree despite task 229 being marked done. This must be resolved as a prerequisite before implementation begins.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Verify task 229 (Matrix type/value) is merged into this worktree. Type::Matrix { m, n, quantity } and a Matrix value variant must exist in reify-types. If not present, rebase onto main or cherry-pick task 229 commits. Escalate as blocker if task 229 code cannot be found anywhere.",
-      "status": "done",
-      "commit": "3c5a8ebe",
-      "tests": [],
-      "note": "Value::Matrix not found anywhere (task 229 unimplemented). Escalated esc-230-4 (non-blocking). Proceeding with rank-2 Value::Tensor as matrix representation."
-    },
-    {
-      "id": "pre-2",
-      "description": "Create test file crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs with module imports (reify_expr::{eval_expr, EvalContext}, reify_types::{BinOp, CompiledExpr, DimensionVector, Type, UnOp, Value, ValueMap}).",
-      "status": "done",
-      "commit": "3c5a8ebe",
-      "tests": []
-    }
-  ],
+  "analysis": "The `complex_magnitude` match arm (lines 427-437) duplicates the Complex branch of `magnitude` (lines 285-291) verbatim. Both compute `(re*re + im*im).sqrt()` then branch on `dimension == DimensionVector::DIMENSIONLESS` to return either `sanitize_value(Value::Real(mag))` or `sanitize_value(Value::Scalar { si_value: mag, dimension })`. The fix is to extract a private `#[inline(always)] fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value` helper placed in the private helpers section (after `unary` at line 653, before `normalize_quaternion` at line 655). Both call sites then delegate to `complex_abs`. Additionally, we add a `complex_magnitude_overflow_returns_undef` test following the established pattern from `complex_add_overflow_returns_undef` (line 3309) and `complex_mul_overflow_returns_undef` (line 3297). The new test goes in the `// ── complex_magnitude() tests (step-5)` section before line 3391 (the closing brace). All changes are confined to a single file: `crates/reify-stdlib/src/lib.rs`.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for Matrix+Matrix component-wise addition: (a) Matrix(2,3,Length)+Matrix(2,3,Length)->Matrix(2,3,Length) with correct element sums, (b) row-count mismatch Matrix(2,3)+Matrix(3,3)->Undef, (c) col-count mismatch Matrix(2,3)+Matrix(2,4)->Undef, (d) dimension mismatch Matrix(2,2,Length)+Matrix(2,2,Angle)->Undef.",
+      "description": "Write `complex_magnitude_overflow_returns_undef` test in the `// ── complex_magnitude() tests (step-5)` section (before line 3391). Pattern: create `Value::Complex { re: f64::MAX, im: f64::MAX, dimension: DimensionVector::DIMENSIONLESS }`, call `eval_builtin(\"complex_magnitude\", &[z])`, assert `.is_undef()` with message 'complex_magnitude with f64::MAX components must return Undef (Inf overflow)'. This parallels `complex_add_overflow_returns_undef` at line 3309. The test should pass immediately (sanitize_value already catches Inf from f64::MAX²+f64::MAX²→Inf), establishing the behavioral contract before refactoring.",
       "status": "done",
-      "commit": "3c5a8ebe"
+      "commit": "be9c2da9"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add (Value::Matrix(a), Value::Matrix(b)) arm to eval_add in lib.rs. Check a.len()==b.len() (row count) and a[i].len()==b[i].len() (col count per row). Map over rows/cols calling eval_add on each element. Return Undef on any mismatch or undef component. Wrap result in Value::Matrix.",
+      "description": "Extract `#[inline(always)] fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value` helper. Place it after `unary()` (line 653) and before `normalize_quaternion()` (line 655). Body: `let mag = (re * re + im * im).sqrt(); if dimension == DimensionVector::DIMENSIONLESS { sanitize_value(Value::Real(mag)) } else { sanitize_value(Value::Scalar { si_value: mag, dimension }) }`. Then replace the `magnitude` Complex branch (lines 285-291) with `return complex_abs(*re, *im, *dimension);` and replace the `complex_magnitude` match arm body (lines 428-434) with `complex_abs(*re, *im, *dimension)`. Run `cargo test -p reify-stdlib` to verify all existing tests plus the new overflow test pass.",
       "status": "done",
-      "commit": "3c5a8ebe",
-      "note": "No new impl needed \u2014 existing Tensor+Tensor recursive arm in eval_add handles rank-2 tensors correctly."
+      "commit": "8268785a"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for Matrix-Matrix component-wise subtraction: (a) Matrix(2,3,Length)-Matrix(2,3,Length)->Matrix(2,3,Length) with correct element differences, (b) shape mismatch returns Undef.",
+      "description": "Final verification: run `cargo test -p reify-stdlib` confirming all tests pass including: complex_magnitude_3_4_returns_5, complex_magnitude_dimensioned_returns_scalar, complex_magnitude_non_complex_returns_undef, complex_magnitude_voltage, complex_magnitude_overflow_returns_undef, and all magnitude tests. This confirms the refactor is behavior-preserving.",
       "status": "done",
-      "commit": "3c5a8ebe"
-    },
-    {
-      "id": "step-4",
-      "type": "impl",
-      "description": "Add (Value::Matrix(a), Value::Matrix(b)) arm to eval_sub in lib.rs. Same structure as eval_add arm but calling eval_sub on each element pair.",
-      "status": "done",
-      "commit": "3c5a8ebe",
-      "note": "No new impl needed \u2014 existing Tensor-Tensor recursive arm in eval_sub handles rank-2 tensors correctly."
-    },
-    {
-      "id": "step-5",
-      "type": "test",
-      "description": "Write failing tests for Scalar*Matrix scaling: (a) Scalar(Length,2.0)*Matrix(2,2,Length)->Matrix(2,2,Area) scales all elements, (b) Matrix*Scalar is commutative (same result), (c) Int*Matrix(2,2,Real) scales by integer, (d) Real*Matrix(2,2,Length) scales by real.",
-      "status": "done",
-      "commit": "3c5a8ebe"
-    },
-    {
-      "id": "step-6",
-      "type": "impl",
-      "description": "Add Scalar*Matrix and Matrix*Scalar arms to eval_mul in lib.rs. Pattern: (Value::Matrix(rows), scalar) | (scalar, Value::Matrix(rows)) guarded by !matches!(scalar, Value::Matrix(_) | Value::Tensor(_)). Map over rows, then over each element calling eval_mul(element, scalar). Return Undef on any undef. Wrap in Value::Matrix.",
-      "status": "done",
-      "commit": "3c5a8ebe",
-      "note": "No new impl needed \u2014 existing Scalar*Tensor recursive arm in eval_mul handles rank-2 tensors correctly."
-    },
-    {
-      "id": "step-7",
-      "type": "test",
-      "description": "Write failing tests for Matrix/Scalar division: (a) Matrix(2,2,Area)/Scalar(Length)->Matrix(2,2,Length) divides all elements, (b) Matrix/Real divides each element, (c) Matrix/Int(0) returns Undef (div by zero).",
-      "status": "done",
-      "commit": "3c5a8ebe"
-    },
-    {
-      "id": "step-8",
-      "type": "impl",
-      "description": "Add (Value::Matrix(rows), scalar) arm to eval_div in lib.rs, guarded by !matches!(scalar, Value::Matrix(_) | Value::Tensor(_)). Map over rows/elements calling eval_div(element, scalar). The existing div-by-zero check at the top of eval_div handles the zero case.",
-      "status": "done",
-      "commit": "3c5a8ebe",
-      "note": "No new impl needed \u2014 existing Tensor/Scalar arm in eval_div handles rank-2 tensors correctly."
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Write failing tests for -Matrix negation: (a) -Matrix(2,3,Length) negates all elements (si_value sign flips, dimension preserved), (b) -Matrix with Int/Real components negates correctly.",
-      "status": "done",
-      "commit": "3c5a8ebe"
-    },
-    {
-      "id": "step-10",
-      "type": "impl",
-      "description": "Add Value::Matrix(rows) arm to eval_unop Neg case in lib.rs. Map over each row, then each element, negating Int/Real/Scalar values. Return Undef if any element cannot be negated. Wrap result in Value::Matrix.",
-      "status": "done",
-      "commit": "8d0c947c"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write failing tests for Matrix*Vector multiplication: (a) Matrix(2,3,Real)*Vector3(Real)->Vector2(Real) with correct dot-product results (e.g., [[1,2,3],[4,5,6]]*[1,1,1]->[6,15]), (b) Matrix(2,3,Length)*Vector3(Length)->Vector2(Area) verifying Q1*Q2 dimension product on each result component, (c) inner dimension mismatch Matrix(2,3)*Vector2->Undef.",
-      "status": "done",
-      "commit": "3c5a8ebe"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Add (Value::Matrix(rows), Value::Tensor(vec)) arm to eval_mul. Check inner dimension: rows[0].len()==vec.len(). For each row, compute dot product: sum of eval_mul(row[j], vec[j]) for j=0..K, accumulating via eval_add. Collect M results into Value::Tensor (vector output). Return Undef on dimension mismatch or any undef intermediate.",
-      "status": "done",
-      "commit": "a9b12e00"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing tests for Matrix*Matrix multiplication: (a) Matrix(2,3,Real)*Matrix(3,4,Real)->Matrix(2,4,Real) with correct products (verify several elements), (b) Matrix(2,3,Length)*Matrix(3,2,Length)->Matrix(2,2,Area) verifying Q1*Q2 dimension tracking, (c) inner dimension mismatch Matrix(2,3)*Matrix(4,2)->Undef, (d) identity: Matrix(2,2,Real)*I(2,2)->same matrix.",
-      "status": "done",
-      "commit": "3c5a8ebe"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Add (Value::Matrix(a_rows), Value::Matrix(b_rows)) arm to eval_mul. Check inner dimension: a_rows[0].len()==b_rows.len(). Compute C[i][j] = sum(eval_mul(a[i][k], b[k][j]) for k=0..K) using eval_add for accumulation. Build result as Vec<Vec<Value>> and wrap in Value::Matrix. Return Undef on dimension mismatch, empty matrices, or any undef intermediate.",
-      "status": "done",
-      "commit": "a9b12e00"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write tests for edge cases: (a) rank-2 Tensor(Tensor) addition works via recursive eval_add (verify with 2x3 nested tensors), (b) Undef propagation: Matrix with Undef element in addition->Undef, (c) Matrix(1,1)*Vector1->Vector1 degenerate case, (d) empty matrix operations return Undef.",
-      "status": "done",
-      "commit": "3c5a8ebe"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Handle any edge cases not covered: add empty-matrix guards (return Undef for 0-row or 0-col matrices in all eval_* functions), verify nested tensor addition works without changes. Fix any failing edge-case tests.",
-      "status": "done",
-      "commit": "ecd2537c"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing test for jagged-matrix panic in Matrix*Matrix multiplication (review issue: index_out_of_bounds_panic). Test: construct a jagged A matrix where first row has 3 columns but second row has 2 columns (e.g., A=[[1,2,3],[4,5]]), multiply by a well-formed 3\u00d72 B matrix. The test must assert the result is Value::Undef (not panic). This reproduces the bug at lib.rs:925 where `a_elems[kk]` indexes without bounds checking when a_elems.len() < k for non-first rows.",
-      "status": "done",
-      "commit": "26f93942"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Fix the jagged-matrix panic in the Matrix*Matrix arm of eval_mul (lib.rs ~line 925). Replace `&a_elems[kk]` with `a_elems.get(kk).unwrap_or(&Value::Undef)` so that jagged rows where a_elems.len() < k produce Value::Undef instead of panicking. This is the minimal safe-indexing fix \u2014 the Undef will propagate through eval_mul and the `prods.iter().any(|v| v.is_undef())` check on line 928 will catch it, returning Undef for the entire row and ultimately for the whole result.",
-      "status": "done",
-      "commit": "6427d30f"
+      "commit": "8268785a"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Matrix arithmetic operates on the Matrix value variant from task 229, separate from Value::Tensor",
-      "rationale": "Task 229 defines Matrix as a distinct type/value from Tensor. Matrices have explicit row/column structure (Vec<Vec<Value>>) while tensors use flat Vec<Value> with recursive nesting. This distinction is important for matrix multiplication which requires knowing rows vs columns."
+      "decision": "Name the helper `complex_abs` rather than `complex_magnitude_inner` or similar",
+      "rationale": "The operation is mathematically the complex absolute value (modulus). `complex_abs` is concise, standard mathematical terminology, and clearly conveys intent. It also distinguishes from the public-facing `complex_magnitude` builtin name."
     },
     {
-      "decision": "Matrix*Vector returns Value::Tensor (vector), not Value::Matrix",
-      "rationale": "Per the task spec M(M,K,Q1)*V(K,Q2)->V(M,Q1*Q2), the result is a vector (rank-1 tensor), not a matrix. This matches the mathematical semantics where matrix-vector product reduces rank."
+      "decision": "Take `re: f64, im: f64, dimension: DimensionVector` by value rather than by reference",
+      "rationale": "All three types are Copy (f64 is 8 bytes, DimensionVector is a [Rational; 9] which derives Copy). Passing by value avoids lifetime noise at call sites where we destructure `&Value::Complex { re, im, dimension }` and would otherwise need to dereference. Callers pass `*re, *im, *dimension`."
     },
     {
-      "decision": "Dimension products (Q1*Q2) computed via DimensionVector::mul through recursive eval_mul on scalar elements",
-      "rationale": "The existing eval_mul for scalars already handles dimension arithmetic (Scalar*Scalar adds dimension exponents via DimensionVector::mul). By building matrix multiply from element-wise eval_mul and eval_add, dimension tracking is automatic and correct without separate dimension logic."
+      "decision": "Place helper between `unary` and `normalize_quaternion` in the private helpers section",
+      "rationale": "This groups it with other private computation helpers rather than inside the `eval_builtin` match block. It follows the existing code organization pattern where `sanitize_value`, `unary`, `binary`, `normalize_quaternion` etc. are all private fns after the main dispatch function."
     },
     {
-      "decision": "No Tensor*Tensor multiplication \u2014 only Matrix*Vector and Matrix*Matrix",
-      "rationale": "General tensor contraction is not specified in the task. The existing Tensor*Tensor falls through to Undef, which is correct. Only the Matrix variants implement multiplication semantics."
+      "decision": "Mark as `#[inline(always)]` per the task description",
+      "rationale": "The function is tiny (a sqrt + a branch + sanitize_value call) and called from two hot paths in `eval_builtin`. Inlining avoids function call overhead and matches the task specification."
     },
     {
-      "decision": "Shape validation via runtime Vec length checks, not type-level checks in eval_binop",
-      "rationale": "Following the existing pattern where eval_add checks a.len()!=b.len() at the Value level rather than adding type guards in eval_binop. This keeps the type-level guards minimal (only Point+Point has one) and lets the arithmetic functions handle structural validation."
-    },
-    {
-      "decision": "New test file tensor_matrix_arithmetic_tests.rs rather than extending point_vector_eval_tests.rs",
-      "rationale": "point_vector_eval_tests.rs is already 22KB with 22+ tests focused on point/vector semantics. Matrix arithmetic is a distinct feature area that warrants its own test module for clarity and parallel test execution."
-    },
-    {
-      "decision": "Matrix-scalar operations placed BEFORE tensor-scalar arms in match order",
-      "rationale": "In eval_mul and eval_div, the existing tensor-scalar arms use pattern guards like !matches!(scalar, Value::Tensor(_)). If Matrix is a separate variant, these guards would NOT exclude it, so Matrix*Scalar would match the Tensor arm incorrectly. The Matrix arms must appear first, or the guards must be updated to also exclude Value::Matrix."
-    },
-    {
-      "decision": "Fix jagged-matrix panic via safe indexing (.get().unwrap_or) rather than upfront validation loop",
-      "rationale": "Using a_elems.get(kk).unwrap_or(&Value::Undef) is the minimal, idiomatic fix that matches the existing pattern used for B-matrix access on line 921 (b_row_k.get(j).cloned().unwrap_or(Value::Undef)). The Undef propagates through the existing any(is_undef) checks, producing the correct result without adding a separate validation pass. This is consistent with the project norm of preferring noisy failures (Undef) over silent defaults."
+      "decision": "Write the overflow test first even though it passes immediately",
+      "rationale": "The test validates that the sanitize_value defense-in-depth continues to work for complex_magnitude after the refactor. Writing it first establishes the behavioral contract before we touch the implementation. f64::MAX² + f64::MAX² overflows to Inf, which sanitize_value converts to Undef."
     }
   ],
   "reuse": [
     {
-      "what": "eval_add/eval_mul/eval_sub/eval_div scalar-level dimension arithmetic",
-      "where": "crates/reify-expr/src/lib.rs lines 710-903",
-      "how": "Matrix element operations call eval_mul/eval_add on scalar components, reusing existing dimension tracking (DimensionVector::mul for Q1*Q2 products, dimension equality checks for addition)."
+      "what": "`sanitize_value` function (line 706)",
+      "where": "crates/reify-stdlib/src/lib.rs",
+      "how": "Called inside `complex_abs` to convert non-finite results (NaN, Inf) to Undef, exactly as both current call sites already do."
     },
     {
-      "what": "Test pattern from point_vector_eval_tests.rs",
-      "where": "crates/reify-expr/tests/point_vector_eval_tests.rs",
-      "how": "Follow identical pattern: CompiledExpr::literal for values, CompiledExpr::binop/unop for operations, eval_expr with EvalContext::simple(&ValueMap::new()), assert_eq on result."
+      "what": "`unary` helper (line 648)",
+      "where": "crates/reify-stdlib/src/lib.rs",
+      "how": "Both `magnitude` and `complex_magnitude` already use `unary(args, |v| ...)` — this stays unchanged; only the closure body changes to delegate to `complex_abs`."
     },
     {
-      "what": "Existing Tensor arithmetic arms as templates",
-      "where": "crates/reify-expr/src/lib.rs eval_add (738-747), eval_mul (827-836), eval_div (893-900), eval_unop (1059-1076)",
-      "how": "Matrix arms follow the same structural pattern: iterate over components, call the recursive eval_* function, check for Undef in results, wrap in Value::Matrix. The Matrix arms have an extra nesting level (row then col)."
+      "what": "Overflow test pattern from `complex_add_overflow_returns_undef` (line 3309) and `complex_mul_overflow_returns_undef` (line 3297)",
+      "where": "crates/reify-stdlib/src/lib.rs",
+      "how": "The new `complex_magnitude_overflow_returns_undef` test follows the identical pattern: construct Complex with f64::MAX components, call eval_builtin, assert `.is_undef()` with descriptive message."
     },
     {
-      "what": "DimensionVector constants and arithmetic",
+      "what": "`DimensionVector::DIMENSIONLESS` constant",
       "where": "crates/reify-types/src/dimension.rs",
-      "how": "Use DimensionVector::LENGTH, AREA, MASS, DIMENSIONLESS for test assertions. Use .mul() for verifying dimension products in multiplication results."
-    },
-    {
-      "what": "Value factory methods",
-      "where": "crates/reify-types/src/value.rs (Value::length, Value::angle, etc.)",
-      "how": "Use existing Value::length(f64), Value::angle(f64) factories to construct test matrix elements with known dimensions."
-    },
-    {
-      "what": "Existing safe-indexing pattern for B-matrix in mat-mat multiply",
-      "where": "crates/reify-expr/src/lib.rs line 921",
-      "how": "The B-matrix access already uses b_row_k.get(j).cloned().unwrap_or(Value::Undef) for safe indexing. Apply the same pattern to the A-matrix access on line 925 for consistency."
+      "how": "Used in both the helper function (for the dimensionless branch) and in the test (for constructing the test Complex value)."
     }
   ],
-  "_session_id": "230-79297743",
-  "_created_at": "2026-03-24T21:06:58.634542+00:00"
+  "_session_id": "2-1ab7323c",
+  "_created_at": "2026-03-24T21:10:15.236515+00:00"
 }
