@@ -2,6 +2,9 @@ use reify_compiler::CompiledModule;
 use reify_syntax::ParsedModule;
 use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value};
 
+// NOTE: The following fixture functions are declared here and implemented
+// in step-22. Tests in the `tests` module below reference them.
+
 use crate::builders::{CompiledModuleBuilder, TopologyTemplateBuilder};
 
 /// The canonical bracket source code for end-to-end testing.
@@ -470,6 +473,38 @@ mod tests {
         assert!(source.contains("param width"));
         assert!(source.contains("constraint thickness > 2mm"));
         assert!(source.contains("let body = box("));
+    }
+
+    // --- Annotated entity fixture tests (step-21) ---
+
+    #[test]
+    fn trait_structure_module_has_trait_and_template() {
+        let module = trait_structure_module();
+        assert_eq!(module.trait_defs.len(), 1);
+        assert_eq!(module.trait_defs[0].name, "Rigid");
+        assert_eq!(module.trait_defs[0].required_members.len(), 1);
+        assert_eq!(module.trait_defs[0].required_members[0].name, "thickness");
+        assert_eq!(module.templates.len(), 1);
+        assert_eq!(module.templates[0].name, "Plate");
+        assert!(module.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn field_module_has_field_and_template() {
+        let module = field_module();
+        assert_eq!(module.fields.len(), 1);
+        assert_eq!(module.fields[0].name, "temp");
+        assert_eq!(module.templates.len(), 1);
+    }
+
+    #[test]
+    fn purpose_module_has_purpose_and_template() {
+        let module = purpose_module();
+        assert_eq!(module.compiled_purposes.len(), 1);
+        assert_eq!(module.compiled_purposes[0].name, "mfg_ready");
+        assert_eq!(module.compiled_purposes[0].params.len(), 1);
+        assert_eq!(module.compiled_purposes[0].params[0].name, "subject");
+        assert_eq!(module.templates.len(), 1);
     }
 
     #[test]

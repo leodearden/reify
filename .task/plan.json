@@ -152,14 +152,14 @@
       "type": "impl",
       "description": "Extend CompiledModuleBuilder: add fields trait_defs: Vec<CompiledTrait>, fields: Vec<CompiledField>, enum_defs: Vec<EnumDef>, compiled_purposes: Vec<CompiledPurpose> (init empty in new()). Add methods trait_def(t)->Self, field(f)->Self, enum_def(e)->Self, compiled_purpose(p)->Self. Update build() to populate these in CompiledModule and chain their content_hashes into the combined hash.",
       "status": "done",
-      "commit": "pending"
+      "commit": "4fea382"
     },
     {
       "id": "step-21",
       "type": "test",
       "description": "Write tests for annotated entity fixtures: trait_structure_module() returns CompiledModule with 1 trait_def (\"Rigid\" requiring thickness:Length), 1 template (\"Plate\" with thickness param), 0 diagnostics. field_module() returns module with 1 field (analytical), 1 template. purpose_module() returns module with 1 compiled_purpose, 1 template. Assert expected counts and key field values.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "pending"
     },
     {
       "id": "step-22",
