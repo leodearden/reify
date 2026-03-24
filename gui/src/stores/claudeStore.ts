@@ -2,18 +2,14 @@ import { batch } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import type { OutboundMessage } from '../../sidecar/src/types';
 import { classifyError } from '../utils/errorClassifier';
+import type { MessageContext, ToolCallInfo, ClaudeSessionStatus } from '../types';
+
+// Re-export shared types so consumers can import from either location.
+export type { MessageContext, ToolCallInfo };
 
 // --- Domain types for UI consumption ---
 
-export type SessionStatus = 'idle' | 'thinking' | 'responding' | 'tool-calling';
-
-export interface ToolCallInfo {
-  id: string;
-  toolName: string;
-  toolInput: Record<string, unknown>;
-  status: 'pending' | 'complete' | 'error';
-  result?: unknown;
-}
+export type SessionStatus = ClaudeSessionStatus;
 
 export interface AssistantMessage {
   role: 'assistant';
@@ -37,14 +33,6 @@ export interface SystemMessage {
   id: string;
   errorType: string;
   text: string;
-}
-
-export interface MessageContext {
-  selectedEntity?: string;
-  diagnostics?: string[];
-  constraints?: string[];
-  currentFile?: string;
-  attachedContexts?: string[];
 }
 
 export type ChatMessage = UserMessage | AssistantMessage | SystemMessage;

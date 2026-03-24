@@ -129,3 +129,27 @@ export interface ChatMessage {
 
 /** Current status of the Claude chat session. */
 export type SessionStatus = 'idle' | 'busy' | 'error';
+
+/**
+ * Richer session status used by the claudeStore (distinct from the simpler SessionStatus above).
+ * The simpler SessionStatus is kept for backward-compat with existing display components.
+ */
+export type ClaudeSessionStatus = 'idle' | 'thinking' | 'responding' | 'tool-calling';
+
+/** Contextual information attached to a user message sent to Claude. */
+export interface MessageContext {
+  selectedEntity?: string;
+  diagnostics?: string[];
+  constraints?: string[];
+  currentFile?: string;
+  attachedContexts?: string[];
+}
+
+/** Information about a single tool call made by the Claude assistant. */
+export interface ToolCallInfo {
+  id: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  status: 'pending' | 'complete' | 'error';
+  result?: unknown;
+}
