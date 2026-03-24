@@ -3204,4 +3204,68 @@ mod tests {
             "complex_add with f64::MAX components must return Undef (Inf overflow)"
         );
     }
+
+    // ── real() alias tests (step-1) ───────────────────────────────────────────
+
+    #[test]
+    fn real_dimensionless_returns_real() {
+        // real(Complex{3,4,DIMLESS}) → Real(3.0)
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_real_approx!(eval_builtin("real", &[z]), 3.0);
+    }
+
+    #[test]
+    fn real_dimensioned_returns_scalar() {
+        // real(Complex{5,3,LENGTH}) → Scalar{5.0, LENGTH}
+        let z = Value::Complex { re: 5.0, im: 3.0, dimension: DimensionVector::LENGTH };
+        assert_scalar_approx!(eval_builtin("real", &[z]), 5.0, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn real_non_complex_returns_undef() {
+        assert!(eval_builtin("real", &[Value::Real(3.0)]).is_undef());
+    }
+
+    // ── imag() alias tests (step-3) ───────────────────────────────────────────
+
+    #[test]
+    fn imag_dimensionless_returns_real() {
+        // imag(Complex{3,4,DIMLESS}) → Real(4.0)
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_real_approx!(eval_builtin("imag", &[z]), 4.0);
+    }
+
+    #[test]
+    fn imag_dimensioned_returns_scalar() {
+        // imag(Complex{5,3,LENGTH}) → Scalar{3.0, LENGTH}
+        let z = Value::Complex { re: 5.0, im: 3.0, dimension: DimensionVector::LENGTH };
+        assert_scalar_approx!(eval_builtin("imag", &[z]), 3.0, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn imag_non_complex_returns_undef() {
+        assert!(eval_builtin("imag", &[Value::Real(3.0)]).is_undef());
+    }
+
+    // ── complex_magnitude() tests (step-5) ───────────────────────────────────
+
+    #[test]
+    fn complex_magnitude_3_4_returns_5() {
+        // complex_magnitude(Complex{3,4,DIMLESS}) → Real(5.0)
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_real_approx!(eval_builtin("complex_magnitude", &[z]), 5.0);
+    }
+
+    #[test]
+    fn complex_magnitude_dimensioned_returns_scalar() {
+        // complex_magnitude(Complex{3,4,LENGTH}) → Scalar{5.0, LENGTH}
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::LENGTH };
+        assert_scalar_approx!(eval_builtin("complex_magnitude", &[z]), 5.0, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn complex_magnitude_non_complex_returns_undef() {
+        // unlike generic magnitude which handles Tensors, complex_magnitude rejects non-Complex
+        assert!(eval_builtin("complex_magnitude", &[Value::Real(5.0)]).is_undef());
+    }
 }
