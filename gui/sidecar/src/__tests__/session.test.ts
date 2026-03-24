@@ -240,6 +240,44 @@ describe('SidecarSession', () => {
     expect((errorMsgs[0] as any).id).toBe('msg-4');
   });
 
+  it('tool_result emits correct tool_name from corresponding tool_use block', async () => {
+    // The tool_use block has id='toolu_abc' and name='reify_get_source'.
+    // The tool_result block references tool_use_id='toolu_abc'.
+    // The emitted ToolResult must carry tool_name='reify_get_source', not the UUID 'toolu_abc'.
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: 'toolu_abc', name: 'reify_get_source', input: { file: 'main.ri' } },
+          ],
+        },
+      },
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: 'toolu_abc', name: 'reify_get_source', input: { file: 'main.ri' } },
+            { type: 'tool_result', tool_use_id: 'toolu_abc', content: 'file contents' },
+          ],
+        },
+      },
+      { type: 'result', session_id: 'sess-tr' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-tr', text: 'Read file' });
+
+    const toolResults = outputs.filter((o) => o.type === 'tool_result');
+    expect(toolResults).toHaveLength(1);
+    // tool_name must be the actual tool name, NOT the UUID tool_use_id
+    expect((toolResults[0] as any).tool_name).toBe('reify_get_source');
+    expect((toolResults[0] as any).tool_name).not.toBe('toolu_abc');
+    expect((toolResults[0] as any).result).toBe('file contents');
+  });
+
   it('multiple sequential messages use session_id for resume', async () => {
     const mockSpawn = vi.mocked(spawn);
 
