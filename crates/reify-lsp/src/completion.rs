@@ -83,6 +83,7 @@ const KEYWORDS: &[&str] = &[
 /// Built-in geometry and math functions.
 const BUILTIN_FUNCTIONS: &[&str] = &[
     "box", "cylinder", "sphere", "sin", "cos", "tan", "sqrt", "abs", "min", "max",
+    "dot", "cross", "normalize", "magnitude",
 ];
 
 /// Built-in type names.
